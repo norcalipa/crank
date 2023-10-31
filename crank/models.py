@@ -39,6 +39,7 @@ class ScoreAlgorithm(models.Model):
         return self.name
 
     name = models.CharField(max_length=100)
+    description_content = models.CharField(max_length=50, default="")
 
 
 class ScoreAlgorithmWeights(models.Model):
