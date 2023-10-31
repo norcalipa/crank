@@ -15,7 +15,6 @@ class OrganizationType(models.Model):
 
     short_name = models.CharField(max_length=1, default=COMPANY)
     name = models.CharField(max_length=20)
-    gives_ratings = models.BooleanField(default=False)
 
 
 class Organization(models.Model):
@@ -24,6 +23,8 @@ class Organization(models.Model):
 
     name = models.CharField(max_length=100, unique=True)
     type = models.ForeignKey(OrganizationType, on_delete=models.RESTRICT)
+    url = models.URLField(max_length=200, default="")
+    gives_ratings = models.BooleanField(default=False)
 
 
 class ScoreType(models.Model):
