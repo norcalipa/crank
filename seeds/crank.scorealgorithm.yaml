@@ -1,0 +1,41 @@
+- model: crank.scorealgorithm
+  pk: 1
+  fields:
+    created: 2023-10-31 22:12:45.792734+00:00
+    modified: 2023-10-31 22:12:45.794736+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.794736+00:00
+    deactivate_date: null
+    name: Balanced
+    description_content: /content/balanced.md
+- model: crank.scorealgorithm
+  pk: 2
+  fields:
+    created: 2023-10-31 22:12:45.792734+00:00
+    modified: 2023-10-31 22:12:45.794736+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.794736+00:00
+    activate_date: null
+    deactivate_date: null
+    name: Comp-focused
+    description_content: /content/comp-focused.md
+- model: crank.scorealgorithm
+  pk: 3
+  fields:
+    created: 2023-10-31 22:12:45.792734+00:00
+    modified: 2023-10-31 22:12:45.794736+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.794736+00:00
+    deactivate_date: null
+    name: Culture-focused
+    description_content: /content/culture-focused.md
+- model: crank.scorealgorithm
+  pk: 4
+  fields:
+    created: 2023-10-31 22:12:45.792734+00:00
+    modified: 2023-10-31 22:12:45.794736+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.794736+00:00
+    deactivate_date: null
+    name: Tech-focused
+    description_content: /content/tech-focused.md

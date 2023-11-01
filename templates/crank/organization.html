@@ -1,0 +1,10 @@
+<div>
+{% csrf_token %}
+<div>
+    <legend><h1>{{ organization.name }}</h1></legend>
+    {% if error_message %}<p><strong>{{ error_message }}</strong></p>{% endif %}
+    <div>Type: </div><div>{{ organization.type }}</div>
+    <div>URL: </div><div><a href="{{ organization.url }}">{{ organization.url }}</a></div>
+</div>
+</div>
+<a href="{% url 'index' %}">Company Listing</a>
