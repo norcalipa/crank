@@ -1,0 +1,108 @@
+- model: crank.organization
+  pk: 1
+  fields:
+    created: 2023-10-31 22:12:45.770308+00:00
+    modified: 2023-10-31 22:12:45.773892+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.773892+00:00
+    deactivate_date: null
+    name: Glassdoor
+    type: 1
+    url: https://www.glassdoor.com/
+    gives_ratings: true
+- model: crank.organization
+  pk: 2
+  fields:
+    created: 2023-10-31 22:12:45.770308+00:00
+    modified: 2023-10-31 22:12:45.773892+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.773892+00:00
+    deactivate_date: null
+    name: Blind
+    type: 1
+    url: https://www.teamblind.com/
+    gives_ratings: true
+- model: crank.organization
+  pk: 3
+  fields:
+    created: 2023-10-31 22:12:45.770308+00:00
+    modified: 2023-10-31 22:12:45.773892+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.773892+00:00
+    deactivate_date: null
+    name: Google
+    type: 1
+    url: https://www.google.com/
+    gives_ratings: true
+- model: crank.organization
+  pk: 4
+  fields:
+    created: 2023-10-31 22:12:45.770308+00:00
+    modified: 2023-10-31 22:12:45.773892+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.773892+00:00
+    deactivate_date: null
+    name: Yelp
+    type: 1
+    url: https://www.yelp.com/
+    gives_ratings: true
+- model: crank.organization
+  pk: 5
+  fields:
+    created: 2023-10-31 22:12:45.770308+00:00
+    modified: 2023-10-31 22:12:45.773892+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.773892+00:00
+    deactivate_date: null
+    name: Comparably
+    type: 1
+    url: https://www.comparably.com/
+    gives_ratings: true
+- model: crank.organization
+  pk: 6
+  fields:
+    created: 2023-10-31 22:12:45.770308+00:00
+    modified: 2023-10-31 22:12:45.773892+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.773892+00:00
+    deactivate_date: null
+    name: Indeed
+    type: 1
+    url: https://www.indeed.com/
+    gives_ratings: true
+- model: crank.organization
+  pk: 7
+  fields:
+    created: 2023-10-31 22:12:45.770308+00:00
+    modified: 2023-10-31 22:12:45.773892+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.773892+00:00
+    deactivate_date: null
+    name: Levels.fyi
+    type: 1
+    url: https://www.levels.fyi/
+    gives_ratings: true
+- model: crank.organization
+  pk: 8
+  fields:
+    created: 2023-10-31 22:12:45.770308+00:00
+    modified: 2023-10-31 22:12:45.773892+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.773892+00:00
+    deactivate_date: null
+    name: Salary.com
+    type: 1
+    url: https://www.salary.com/
+    gives_ratings: true
+- model: crank.organization
+  pk: 9
+  fields:
+    created: 2023-10-31 22:12:45.770308+00:00
+    modified: 2023-10-31 22:12:45.773892+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.773892+00:00
+    deactivate_date: null
+    name: Better Business Bureau
+    type: 2
+    url: https://www.bbb.org/
+    gives_ratings: true
