@@ -1,8 +1,11 @@
 
 from django.db import models
+# TimeStampedModel - adds created and updated timestamps to the model
+# ActivatorModel - adds active/inactive status to the model
+from django_extensions.db.models import TimeStampedModel, ActivatorModel
 
 
-class OrganizationType(models.Model):
+class OrganizationType(TimeStampedModel, ActivatorModel):
     COMPANY = "C"
     NON_PROFIT = "N"
     TYPE = (
@@ -17,7 +20,7 @@ class OrganizationType(models.Model):
     name = models.CharField(max_length=20)
 
 
-class Organization(models.Model):
+class Organization(TimeStampedModel, ActivatorModel):
     def __str__(self):
         return self.name
 
@@ -27,14 +30,14 @@ class Organization(models.Model):
     gives_ratings = models.BooleanField(default=False)
 
 
-class ScoreType(models.Model):
+class ScoreType(TimeStampedModel, ActivatorModel):
     def __str__(self):
         return self.name
 
     name = models.CharField(max_length=100)
 
 
-class ScoreAlgorithm(models.Model):
+class ScoreAlgorithm(TimeStampedModel, ActivatorModel):
     def __str__(self):
         return self.name
 
@@ -42,13 +45,13 @@ class ScoreAlgorithm(models.Model):
     description_content = models.CharField(max_length=50, default="")
 
 
-class ScoreAlgorithmWeights(models.Model):
+class ScoreAlgorithmWeight(TimeStampedModel, ActivatorModel):
     type = models.ForeignKey(ScoreType, on_delete=models.CASCADE)
     algorithm = models.ForeignKey(ScoreAlgorithm, on_delete=models.CASCADE)
     weight = models.FloatField(default=1.0)
 
 
-class Score(models.Model):
+class Score(TimeStampedModel, ActivatorModel):
     def __str__(self):
         return str(self.score)
 

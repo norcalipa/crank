@@ -1,0 +1,72 @@
+- model: crank.scoretype
+  pk: 1
+  fields:
+    created: 2023-10-31 22:12:45.805337+00:00
+    modified: 2023-10-31 22:12:45.807410+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.807410+00:00
+    deactivate_date: null
+    name: Culture
+- model: crank.scoretype
+  pk: 2
+  fields:
+    created: 2023-10-31 22:12:45.805337+00:00
+    modified: 2023-10-31 22:12:45.807410+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.807410+00:00
+    deactivate_date: null
+    name: Total Compensation
+- model: crank.scoretype
+  pk: 3
+  fields:
+    created: 2023-10-31 22:12:45.805337+00:00
+    modified: 2023-10-31 22:12:45.807410+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.807410+00:00
+    deactivate_date: null
+    name: Leadership
+- model: crank.scoretype
+  pk: 4
+  fields:
+    created: 2023-10-31 22:12:45.805337+00:00
+    modified: 2023-10-31 22:12:45.807410+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.807410+00:00
+    deactivate_date: null
+    name: Reputation
+- model: crank.scoretype
+  pk: 5
+  fields:
+    created: 2023-10-31 22:12:45.805337+00:00
+    modified: 2023-10-31 22:12:45.807410+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.807410+00:00
+    deactivate_date: null
+    name: Product and Mission
+- model: crank.scoretype
+  pk: 6
+  fields:
+    created: 2023-10-31 22:12:45.805337+00:00
+    modified: 2023-10-31 22:12:45.807410+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.807410+00:00
+    deactivate_date: null
+    name: Tech Stack
+- model: crank.scoretype
+  pk: 7
+  fields:
+    created: 2023-10-31 22:12:45.805337+00:00
+    modified: 2023-10-31 22:12:45.807410+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.807410+00:00
+    deactivate_date: null
+    name: Lifecycle and Financials
+- model: crank.scoretype
+  pk: 8
+  fields:
+    created: 2023-10-31 22:12:45.805337+00:00
+    modified: 2023-10-31 22:12:45.807410+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.807410+00:00
+    deactivate_date: null
+    name: RTO and Work Hours

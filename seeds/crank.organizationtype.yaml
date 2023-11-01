@@ -1,0 +1,20 @@
+- model: crank.organizationtype
+  pk: 1
+  fields:
+    created: 2023-10-31 22:12:45.778058+00:00
+    modified: 2023-10-31 22:12:45.780413+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.780413+00:00
+    deactivate_date: null
+    short_name: C
+    name: Company (for profit)
+- model: crank.organizationtype
+  pk: 2
+  fields:
+    created: 2023-10-31 22:12:45.778058+00:00
+    modified: 2023-10-31 22:12:45.780413+00:00
+    status: 1
+    activate_date: 2023-10-31 22:12:45.780413+00:00
+    deactivate_date: null
+    short_name: N
+    name: Non-Profit Organization
