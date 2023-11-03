@@ -29,6 +29,9 @@ class Organization(TimeStampedModel, ActivatorModel):
     url = models.URLField(max_length=200, default="")
     gives_ratings = models.BooleanField(default=False)
 
+    def average_scores(self):
+        return self.scores_received.order_by()
+
 
 class ScoreType(TimeStampedModel, ActivatorModel):
     def __str__(self):
@@ -53,10 +56,11 @@ class ScoreAlgorithmWeight(TimeStampedModel, ActivatorModel):
 
 class Score(TimeStampedModel, ActivatorModel):
     def __str__(self):
-        return str(self.score)
+        return "{}: {} [{}]={} ".format(self.target.name, self.type.name, self.source.name, self.score)
 
-    source = models.ForeignKey(Organization, on_delete=models.RESTRICT, related_name="source_organization")
-    target = models.ForeignKey(Organization, on_delete=models.RESTRICT, related_name="target_organization")
+    type = models.ForeignKey(ScoreType, on_delete=models.CASCADE, default=None)
+    source = models.ForeignKey(Organization, on_delete=models.RESTRICT, related_name="scores_given")
+    target = models.ForeignKey(Organization, on_delete=models.RESTRICT, related_name="scores_received")
     score = models.FloatField(default=0.0)
     low_threshold = models.FloatField(default=0.0)
     high_threshold = models.FloatField(default=5.0)
