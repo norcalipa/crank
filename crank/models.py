@@ -1,5 +1,6 @@
 
 from django.db import models
+from django.db.models import Avg
 # TimeStampedModel - adds created and updated timestamps to the model
 # ActivatorModel - adds active/inactive status to the model
 from django_extensions.db.models import TimeStampedModel, ActivatorModel
@@ -30,7 +31,12 @@ class Organization(TimeStampedModel, ActivatorModel):
     gives_ratings = models.BooleanField(default=False)
 
     def average_scores(self):
-        return self.scores_received.order_by()
+        return self.scores_received.values("type__name").annotate(avg_score=Avg("score"))
+
+    @property
+    def overall_score(self):
+        all_scores = self.average_scores()
+        return all_scores.aggregate(Avg("avg_score"))["avg_score__avg"]
 
 
 class ScoreType(TimeStampedModel, ActivatorModel):

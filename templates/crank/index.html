@@ -1,13 +1,25 @@
+{% include "./header.html" %}
+
 {% if top_organization_list %}
-    <table>
-    <th>
-    </th>
-    <tr>
-    {% for organization in top_organization_list %}
-        <li><a href="{% url 'organization' organization.id %}">{{ organization.name }}</a></li>
-    {% endfor %}
-    </tr>
-    </table>
-{% else %}
-    <p>No organizations are available.</p>
+    <div class="container">
+        <table class="table">
+            <tr>
+                <th>Name</th>
+                <th>Overall Score</th>
+            </tr>
+            {% for organization in top_organization_list %}
+                <tr>
+                    <td>
+                        <a href="{% url 'organization' organization.id %}">{{ organization.name }}</a>
+                    </td>
+                    <td>
+                        {{ organization.overall_score }}
+                    </td>
+                </tr>
+             {% endfor %}
+        </table>
+        {% else %}
+        <p>No organizations are available.</p>
+    </div>
 {% endif %}
+{% include "./footer.html" %}
