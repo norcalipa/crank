@@ -13,7 +13,7 @@ class IndexView(generic.ListView):
 
     def get_queryset(self):
         """Return the top 20 active organizations."""
-        return Organization.objects.filter(status=1).order_by("-name")[:20]
+        return Organization.objects.filter(status=1).order_by("name")
 
 
 class OrganizationView(generic.DetailView):

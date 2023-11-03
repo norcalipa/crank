@@ -1,14 +1,26 @@
-<div>
-{% csrf_token %}
-<div>
-    <legend><h1>{{ organization.name }}</h1></legend>
-    {% if error_message %}<p><strong>{{ error_message }}</strong></p>{% endif %}
-    <div>Type: </div><div>{{ organization.type }}</div>
-    <div>URL: </div><div><a href="{{ organization.url }}">{{ organization.url }}</a></div>
-    {% for score in organization.average_scores.all %}
-        <div>{{ score.type.name }}</div>
-        <div>{{ score.score }}</div>
-    {% endfor %}
+{% include "./header.html" %}
+
+<div class="container">
+    {% csrf_token %}
+    <div class="row">
+        <div class="col-2">
+            <legend><h1>{{ organization.name }}</h1></legend>
+            {% if error_message %}<p><strong>{{ error_message }}</strong></p>{% endif %}
+            <div>Type:</div>
+            <div>{{ organization.type }}</div>
+            <div>URL:</div>
+            <div><a href="{{ organization.url }}">{{ organization.url }}</a></div>
+        </div>
+        <div class="col-3">
+            <table class="table">
+            {% for score in organization.average_scores %}
+                <tr>
+                <td>{{ score.type__name }}</td>
+                <td>{{ score.avg_score }}</td>
+                </tr>
+            {% endfor %}
+            </table>
+        </div>
+    </div>
 </div>
-</div>
-<a href="{% url 'index' %}">Company Listing</a>
+{% include "./footer.html" %}
