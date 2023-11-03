@@ -4,7 +4,7 @@ from django.urls import reverse
 from django.views import generic
 from django.utils import timezone
 
-from .models import Organization
+from .models import Organization, Score
 
 
 class IndexView(generic.ListView):
@@ -23,3 +23,6 @@ class OrganizationView(generic.DetailView):
     def get_queryset(self):
         """make sure we can't see inactive organizations."""
         return Organization.objects.filter(status=1)
+
+    def get_scores(self):
+        return Score.objects.filter(target=self.id)
