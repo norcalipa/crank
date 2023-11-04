@@ -2,23 +2,29 @@
 
 <div class="container">
     {% csrf_token %}
+    {% if error_message %}<p><strong>{{ error_message }}</strong></p>{% endif %}
+    <legend><h1>{{ organization.name }}</h1></legend>
     <div class="row">
-        <div class="col-2">
-            <legend><h1>{{ organization.name }}</h1></legend>
-            {% if error_message %}<p><strong>{{ error_message }}</strong></p>{% endif %}
-            <div>Type:</div>
-            <div>{{ organization.type }}</div>
-            <div>URL:</div>
-            <div><a href="{{ organization.url }}">{{ organization.url }}</a></div>
+        <div class="col-md-auto">
+            <div class="container">
+                <div class="row">
+                    <div class="col-md-auto">Type:</div>
+                    <div class="col-md-auto">{{ organization.type }}</div>
+                </div>
+                <div class="row">
+                    <div class="col-md-auto">URL:</div>
+                    <div class="col-md-auto"><a href="{{ organization.url }}">{{ organization.url }}</a></div>
+                </div>
+            </div>
         </div>
-        <div class="col-3">
+        <div class="col-md-auto">
             <table class="table">
-            {% for score in organization.average_scores %}
-                <tr>
-                <td>{{ score.type__name }}</td>
-                <td>{{ score.avg_score }}</td>
-                </tr>
-            {% endfor %}
+                {% for score in organization.average_scores %}
+                    <tr>
+                        <td>{{ score.type__name }}</td>
+                        <td>{{ score.avg_score }}</td>
+                    </tr>
+                {% endfor %}
             </table>
         </div>
     </div>
