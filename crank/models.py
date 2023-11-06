@@ -1,9 +1,10 @@
 
 from django.db import models
-from django.db.models import Avg
+from django.db.models import Avg, TextChoices
 # TimeStampedModel - adds created and updated timestamps to the model
 # ActivatorModel - adds active/inactive status to the model
 from django_extensions.db.models import TimeStampedModel, ActivatorModel
+from django.utils.translation import gettext_lazy as _
 
 
 class OrganizationType(TimeStampedModel, ActivatorModel):
@@ -25,10 +26,39 @@ class Organization(TimeStampedModel, ActivatorModel):
     def __str__(self):
         return self.name
 
+    class FundingRound(TextChoices):
+        SEED = "S", _("Seed")
+        SERIES_A = "A", _("Series A")
+        SERIES_B = "B", _("Series B")
+        SERIES_C = "C", _("Series C")
+        SERIES_D = "D", _("Series D")
+        SERIES_E = "E", _("Series E")
+        SERIES_F = "F", _("Series F")
+        SERIES_X = "X", _("Series G or Later")
+        SERIES_O = "O", _("Other Private")
+        PUBLIC = "P", _("Public")
+
+    class RTOPolicy(TextChoices):
+        REMOTE = "R", _("Remote")
+        HYBRID = "H", _("Hybrid")
+        IN_OFFICE = "O", _("In-Office")
+
     name = models.CharField(max_length=100, unique=True)
     type = models.ForeignKey(OrganizationType, on_delete=models.RESTRICT)
     url = models.URLField(max_length=200, default="")
     gives_ratings = models.BooleanField(default=False)
+    public = models.BooleanField(default=True)
+    funding_round = models.CharField(
+        max_length=1,
+        default=FundingRound.PUBLIC,
+        choices=FundingRound.choices,
+    )
+    rto_policy = models.CharField(
+        max_length=1,
+        default=RTOPolicy.HYBRID,
+        choices=RTOPolicy.choices,
+    )
+
 
     def average_scores(self):
         return self.scores_received.values("type__name").annotate(avg_score=Avg("score"))

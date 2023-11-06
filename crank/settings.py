@@ -63,7 +63,8 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'crank',
-    'django_bootstrap5'
+    'django_bootstrap5',
+    'fontawesomefree'
 ]
 
 MIDDLEWARE = [
