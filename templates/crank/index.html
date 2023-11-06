@@ -1,4 +1,4 @@
-{% include "./header.html" %}
+{% include "crank/header.html" %}
 
 {% if top_organization_list %}
     <div class="container">
@@ -7,13 +7,13 @@
                 <th>Name</th>
                 <th>Overall Score</th>
             </tr>
-            {% for organization in top_organization_list %}
+            {% for org in top_organization_list %}
                 <tr>
                     <td>
-                        <a href="{% url 'organization' organization.id %}">{{ organization.name }}</a>
+                        <a href="{% url 'organization' org.id %}">{{ org.name }}</a>
                     </td>
                     <td>
-                        {{ organization.overall_score }}
+                        {{ org.avg_score }}
                     </td>
                 </tr>
             {% endfor %}
@@ -22,4 +22,4 @@
         <p>No organizations are available.</p>
     </div>
 {% endif %}
-{% include "./footer.html" %}
+{% include "crank/footer.html" %}
