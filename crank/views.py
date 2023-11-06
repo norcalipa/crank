@@ -1,9 +1,4 @@
-from django.db.models import Count
-from django.http import HttpResponseRedirect
-from django.shortcuts import get_object_or_404, render
-from django.urls import reverse
 from django.views import generic
-from django.utils import timezone
 
 from .models import Organization, Score
 
@@ -15,8 +10,8 @@ class IndexView(generic.ListView):
     def get_queryset(self):
         """Return all active organizations with scores in descending order."""
         return Organization.objects.raw(
-            "SELECT *, AVG(score) as avg_score "
-            "FROM (SELECT *, AVG(cs.score) AS score, ct.name AS score_type " +
+            "SELECT *, AVG(avg_type_score) as avg_score "
+            "FROM (SELECT *, AVG(cs.score) AS avg_type_score, ct.name AS score_type " +
             "FROM crank_organization AS co, crank_score AS cs, crank_scoretype AS ct " +
             "WHERE co.status = 1 AND " +
             "co.id = cs.target_id AND " +
