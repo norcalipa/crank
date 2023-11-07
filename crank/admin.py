@@ -1,12 +1,7 @@
 from django.contrib import admin
-from .models import OrganizationType
-from .models import Organization
-from .models import ScoreType
-from .models import ScoreAlgorithm
-from .models import ScoreAlgorithmWeight
-from .models import Score
+from crank.models.organization import Organization
+from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 
-admin.site.register(OrganizationType)
 admin.site.register(Organization)
 admin.site.register(ScoreType)
 admin.site.register(ScoreAlgorithm)

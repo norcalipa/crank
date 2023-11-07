@@ -9,7 +9,7 @@
             <div class="container">
                 <div class="row">
                     <div class="col-md-auto">Type:</div>
-                    <div class="col-md-auto">{{ organization.type }}</div>
+                    <div class="col-md-auto">{{ organization.get_type_display }}</div>
                 </div>
                 <div class="row">
                     <div class="col-md-auto">URL:</div>
@@ -19,7 +19,7 @@
         </div>
         <div class="col-md-auto">
             <table class="table">
-                {% for score in organization.average_scores %}
+                {% for score in organization.avg_scores.all %}
                     <tr>
                         <td>{{ score.type__name }}</td>
                         <td>{{ score.avg_score }}</td>
