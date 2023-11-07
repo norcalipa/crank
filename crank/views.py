@@ -1,6 +1,7 @@
 from django.views import generic
 
-from .models import Organization, Score
+# from crank.models.score import Score
+from crank.models.organization import Organization
 
 
 class IndexView(generic.ListView):
@@ -28,6 +29,3 @@ class OrganizationView(generic.DetailView):
     def get_queryset(self):
         """make sure we can't see inactive organizations."""
         return Organization.objects.filter(status=1)
-
-    def get_scores(self):
-        return Score.objects.filter(target=self.id)
