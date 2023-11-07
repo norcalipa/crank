@@ -64,7 +64,8 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'crank',
     'django_bootstrap5',
-    'fontawesomefree'
+    'fontawesomefree',
+    'coverage'
 ]
 
 MIDDLEWARE = [
@@ -97,7 +98,6 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'crank.wsgi.application'
-
 
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases

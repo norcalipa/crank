@@ -1,0 +1,56 @@
+- model: crank.score
+  pk: 1
+  fields:
+    created: 2023-11-02 00:24:08.847611+00:00
+    modified: 2023-11-02 00:24:08.847637+00:00
+    status: 1
+    activate_date: 2023-11-02 00:24:08.847367+00:00
+    deactivate_date: null
+    type: 1
+    source: 1
+    target: 3
+    score: 4.4
+    low_threshold: 0.0
+    high_threshold: 5.0
+- model: crank.score
+  pk: 2
+  fields:
+    created: 2023-11-02 00:31:11.332884+00:00
+    modified: 2023-11-02 00:31:11.332912+00:00
+    status: 1
+    activate_date: 2023-11-02 00:31:11.332593+00:00
+    deactivate_date: null
+    type: 2
+    source: 7
+    target: 3
+    score: 5.0
+    low_threshold: 0.0
+    high_threshold: 5.0
+- model: crank.score
+  pk: 3
+  fields:
+    created: 2023-11-02 00:32:46.994721+00:00
+    modified: 2023-11-02 00:32:46.994758+00:00
+    status: 1
+    activate_date: 2023-11-02 00:32:46.994519+00:00
+    deactivate_date: null
+    type: 1
+    source: 2
+    target: 3
+    score: 4.2
+    low_threshold: 0.0
+    high_threshold: 5.0
+- model: crank.score
+  pk: 4
+  fields:
+    created: 2023-11-02 00:35:15.705183+00:00
+    modified: 2023-11-03 18:02:04.662620+00:00
+    status: 1
+    activate_date: 2023-11-02 00:35:15+00:00
+    deactivate_date: null
+    type: 1
+    source: 5
+    target: 3
+    score: 4.6
+    low_threshold: 0.0
+    high_threshold: 5.0
