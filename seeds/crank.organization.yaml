@@ -7,7 +7,7 @@
     activate_date: 2023-10-31 22:12:45.773892+00:00
     deactivate_date: null
     name: Glassdoor
-    type: 1
+    type: C
     url: https://www.glassdoor.com/
     gives_ratings: true
 - model: crank.organization
@@ -19,7 +19,7 @@
     activate_date: 2023-10-31 22:12:45.773892+00:00
     deactivate_date: null
     name: Blind
-    type: 1
+    type: C
     url: https://www.teamblind.com/
     gives_ratings: true
 - model: crank.organization
@@ -31,7 +31,7 @@
     activate_date: 2023-10-31 22:12:45.773892+00:00
     deactivate_date: null
     name: Google
-    type: 1
+    type: C
     url: https://www.google.com/
     gives_ratings: true
 - model: crank.organization
@@ -43,7 +43,7 @@
     activate_date: 2023-10-31 22:12:45.773892+00:00
     deactivate_date: null
     name: Yelp
-    type: 1
+    type: C
     url: https://www.yelp.com/
     gives_ratings: true
 - model: crank.organization
@@ -55,7 +55,7 @@
     activate_date: 2023-10-31 22:12:45.773892+00:00
     deactivate_date: null
     name: Comparably
-    type: 1
+    type: C
     url: https://www.comparably.com/
     gives_ratings: true
 - model: crank.organization
@@ -67,7 +67,7 @@
     activate_date: 2023-10-31 22:12:45.773892+00:00
     deactivate_date: null
     name: Indeed
-    type: 1
+    type: C
     url: https://www.indeed.com/
     gives_ratings: true
 - model: crank.organization
@@ -79,7 +79,7 @@
     activate_date: 2023-10-31 22:12:45.773892+00:00
     deactivate_date: null
     name: Levels.fyi
-    type: 1
+    type: C
     url: https://www.levels.fyi/
     gives_ratings: true
 - model: crank.organization
@@ -91,7 +91,7 @@
     activate_date: 2023-10-31 22:12:45.773892+00:00
     deactivate_date: null
     name: Salary.com
-    type: 1
+    type: C
     url: https://www.salary.com/
     gives_ratings: true
 - model: crank.organization
@@ -103,6 +103,6 @@
     activate_date: 2023-10-31 22:12:45.773892+00:00
     deactivate_date: null
     name: Better Business Bureau
-    type: 2
+    type: N
     url: https://www.bbb.org/
     gives_ratings: true
