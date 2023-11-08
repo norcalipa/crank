@@ -1,4 +1,5 @@
 {% load static %}
+{% load socialaccount %}
 <html data-bs-theme="dark">
 <head>
     <link rel="stylesheet" type="text/css" href="{% static "css/bootstrap.min.css" %}"/>
@@ -16,6 +17,12 @@
 
         <div class="text-end">
             <button type="button" class="btn btn-dark me-2">Login</button>
+            <button class="btn btn-outline-info">
+                <a href="{% provider_login_url 'google' %}">
+                    <i class="fab fa-google"></i>
+                    Login with Google
+                </a>
+            </button>
             <button type="button" class="btn btn-warning">Sign-up</button>
         </div>
     </div>
