@@ -17,12 +17,13 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 
-from . import views
+from crank.views.index import IndexView
+from crank.views.organization import OrganizationView
 
 app_name = "crank"
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("", views.IndexView.as_view(), name="index"),
-    path("organization/<int:pk>/", views.OrganizationView.as_view(), name="organization"),
+    path("", IndexView.as_view(), name="index"),
+    path("organization/<int:pk>/", OrganizationView.as_view(), name="organization"),
 ]

@@ -21,12 +21,3 @@ class IndexView(generic.ListView):
             "GROUP BY id, name "
             "ORDER BY avg_score DESC"
         )
-
-
-class OrganizationView(generic.DetailView):
-    model = Organization
-    template_name = "crank/organization.html"
-
-    def get_queryset(self):
-        """make sure we can't see inactive organizations."""
-        return Organization.objects.filter(status=1)
