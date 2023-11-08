@@ -1,5 +1,8 @@
-{% include "crank/header.html" %}
+{% extends "base.html" %}
 
+{% block head_title %}CRank Home{% endblock %}
+
+{% block content %}
 {% if top_organization_list %}
     <div class="container">
         <table class="table">
@@ -13,7 +16,7 @@
                         <a href="{% url 'organization' org.id %}">{{ org.name }}</a>
                     </td>
                     <td>
-                        {{ org.avg_score }}
+                        {{ org.avg_score|floatformat:'2' }}
                     </td>
                 </tr>
             {% endfor %}
@@ -22,4 +25,4 @@
         <p>No organizations are available.</p>
     </div>
 {% endif %}
-{% include "crank/footer.html" %}
+{% endblock %}
