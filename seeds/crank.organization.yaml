@@ -10,6 +10,9 @@
     type: C
     url: https://www.glassdoor.com/
     gives_ratings: true
+    public: true
+    funding_round: P
+    rto_policy: H
 - model: crank.organization
   pk: 2
   fields:
@@ -22,18 +25,24 @@
     type: C
     url: https://www.teamblind.com/
     gives_ratings: true
+    public: true
+    funding_round: P
+    rto_policy: H
 - model: crank.organization
   pk: 3
   fields:
     created: 2023-10-31 22:12:45.770308+00:00
-    modified: 2023-10-31 22:12:45.773892+00:00
+    modified: 2023-11-08 00:52:09.962763+00:00
     status: 1
-    activate_date: 2023-10-31 22:12:45.773892+00:00
+    activate_date: 2023-10-31 22:12:45+00:00
     deactivate_date: null
     name: Google
     type: C
     url: https://www.google.com/
     gives_ratings: true
+    public: true
+    funding_round: P
+    rto_policy: H
 - model: crank.organization
   pk: 4
   fields:
@@ -46,6 +55,9 @@
     type: C
     url: https://www.yelp.com/
     gives_ratings: true
+    public: true
+    funding_round: P
+    rto_policy: H
 - model: crank.organization
   pk: 5
   fields:
@@ -58,6 +70,9 @@
     type: C
     url: https://www.comparably.com/
     gives_ratings: true
+    public: true
+    funding_round: P
+    rto_policy: H
 - model: crank.organization
   pk: 6
   fields:
@@ -70,6 +85,9 @@
     type: C
     url: https://www.indeed.com/
     gives_ratings: true
+    public: true
+    funding_round: P
+    rto_policy: H
 - model: crank.organization
   pk: 7
   fields:
@@ -82,6 +100,9 @@
     type: C
     url: https://www.levels.fyi/
     gives_ratings: true
+    public: true
+    funding_round: P
+    rto_policy: H
 - model: crank.organization
   pk: 8
   fields:
@@ -94,6 +115,9 @@
     type: C
     url: https://www.salary.com/
     gives_ratings: true
+    public: true
+    funding_round: P
+    rto_policy: H
 - model: crank.organization
   pk: 9
   fields:
@@ -106,3 +130,36 @@
     type: N
     url: https://www.bbb.org/
     gives_ratings: true
+    public: true
+    funding_round: P
+    rto_policy: H
+- model: crank.organization
+  pk: 10
+  fields:
+    created: 2023-11-07 02:58:11.722940+00:00
+    modified: 2023-11-07 02:58:11.722972+00:00
+    status: 1
+    activate_date: 2023-11-07 02:58:11.722683+00:00
+    deactivate_date: null
+    name: Atlassian
+    type: C
+    url: http://www.atlassian.com/
+    gives_ratings: false
+    public: true
+    funding_round: P
+    rto_policy: H
+- model: crank.organization
+  pk: 11
+  fields:
+    created: 2023-11-07 03:19:51.115380+00:00
+    modified: 2023-11-07 03:19:51.115402+00:00
+    status: 1
+    activate_date: 2023-11-07 03:19:51.115196+00:00
+    deactivate_date: null
+    name: Crank.fyi
+    type: N
+    url: https://crank.fyi/
+    gives_ratings: true
+    public: false
+    funding_round: O
+    rto_policy: H
