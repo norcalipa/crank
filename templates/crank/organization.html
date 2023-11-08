@@ -1,5 +1,8 @@
-{% include "crank/header.html" %}
+{% extends "base.html" %}
 
+{% block head_title %}Crank - Details: {{ organization.name }}{% endblock %}
+
+{% block content %}
 <div class="container">
     {% csrf_token %}
     {% if error_message %}<p><strong>{{ error_message }}</strong></p>{% endif %}
@@ -22,11 +25,11 @@
                 {% for score in organization.avg_scores.all %}
                     <tr>
                         <td>{{ score.type__name }}</td>
-                        <td>{{ score.avg_score }}</td>
+                        <td>{{ score.avg_score|floatformat:'2' }}</td>
                     </tr>
                 {% endfor %}
             </table>
         </div>
     </div>
 </div>
-{% include "crank/footer.html" %}
+{% endblock %}

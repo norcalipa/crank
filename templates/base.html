@@ -5,7 +5,9 @@
     <link href="{% static 'fontawesomefree/css/fontawesome.css' %}" rel="stylesheet" type="text/css">
     <link href="{% static 'fontawesomefree/css/brands.css' %}" rel="stylesheet" type="text/css">
     <link href="{% static 'fontawesomefree/css/solid.css' %}" rel="stylesheet" type="text/css">
+    <title>{% block head_title %}{% endblock %}</title>
 </head>
+<body>
 <div class="container">
     <div class="d-flex flex-wrap align-items-center justify-content-center justify-content-lg-start">
         <ul class="nav col-12 col-lg-auto me-lg-auto mb-2 justify-content-center mb-md-0">
@@ -19,3 +21,8 @@
     </div>
     </header>
 </div>
+<div>
+    {% block content %} {% endblock %}
+</div>
+</body>
+</html>
