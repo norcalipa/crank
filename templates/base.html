@@ -16,14 +16,17 @@
         </ul>
 
         <div class="text-end">
-            <button type="button" class="btn btn-dark me-2">Login</button>
-            <button class="btn btn-outline-info">
-                <a href="{% provider_login_url 'google' %}">
+            {% if user.is_authenticated %}
+                {% if user.is_staff %}
+                    <a class="btn btn-primary" href="/admin">Admin</a>
+                {% endif %}
+                <a class="btn btn-secondary" href="/logout">Logout {{user.username}}</a>
+            {% else %}
+                <a class="btn btn-light" href="{% provider_login_url 'google' %}">
                     <i class="fab fa-google"></i>
                     Login with Google
                 </a>
-            </button>
-            <button type="button" class="btn btn-warning">Sign-up</button>
+            {% endif %}
         </div>
     </div>
     </header>
