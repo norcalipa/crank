@@ -10,26 +10,25 @@
 </head>
 <body>
 <div class="container">
-    <div class="d-flex flex-wrap align-items-center justify-content-center justify-content-lg-start">
-        <ul class="nav col-12 col-lg-auto me-lg-auto mb-2 justify-content-center mb-md-0">
-            <li><a href="/" class="nav-link px-2"><i class="fa-solid fa-ranking-star"></i> CRank</a></li>
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+        <ul class="nav col-12 col-lg-auto me-lg-auto mb-3 justify-content-center">
+            <li><a href="/" class="navbar-brand"><i class="fa-solid fa-ranking-star"></i> CRank</a></li>
         </ul>
 
         <div class="text-end">
             {% if user.is_authenticated %}
                 {% if user.is_staff %}
-                    <a class="btn btn-primary" href="/admin">Admin</a>
+                    <a class="btn btn-primary btn-sm" href="/admin">Admin</a>
                 {% endif %}
-                <a class="btn btn-secondary" href="/logout">Logout {{user.username}}</a>
+                <a class="btn btn-secondary btn-sm" href="/logout">Logout {{user.username}}</a>
             {% else %}
-                <a class="btn btn-light" href="{% provider_login_url 'google' %}">
+                <a class="btn btn-light btn-sm" href="{% provider_login_url 'google' %}">
                     <i class="fab fa-google"></i>
                     Login with Google
                 </a>
             {% endif %}
         </div>
-    </div>
-    </header>
+    </nav>
 </div>
 <div>
     {% block content %} {% endblock %}
