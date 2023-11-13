@@ -14,6 +14,8 @@ class IndexView(generic.ListView):
 SELECT orgs.id, 
        orgs.name, 
        orgs.type,
+       orgs.rto_policy,
+       orgs.funding_round,
        AVG(orgs.avg_type_score) AS avg_score,
        (CAST(score_types.score_type_count AS REAL) / 
        /* Admittedly long calculation dividing total score types by the number present for each org */
@@ -23,6 +25,8 @@ FROM
     (SELECT co.id, 
             co.name, 
             co.type, 
+            co.rto_policy,
+            co.funding_round,
             AVG(cs.score) 
             AS avg_type_score, 
             ct.name AS score_type
