@@ -9,6 +9,9 @@
             <tr>
                 <th>Name</th>
                 <th>Overall Score</th>
+                <th>Funding Round</th>
+                <th>RTO Policy</th>
+                <th>Profile Completeness</th>
             </tr>
             {% for org in top_organization_list %}
                 <tr>
@@ -18,7 +21,16 @@
                     <td>
                         {{ org.avg_score|floatformat:'2' }}
                     </td>
-                </tr>
+                    <td>
+                        {{ org.get_funding_round_display }}
+                    </td>
+                    <td>
+                        {{ org.get_rto_policy_display }}
+                    </td>
+                    <td>
+                        {{ org.profile_completeness|floatformat:'0' }}%
+                    </td>
+               </tr>
             {% endfor %}
         </table>
         {% else %}
