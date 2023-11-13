@@ -10,14 +10,36 @@ class IndexView(generic.ListView):
 
     def get_queryset(self):
         """Return all active organizations with scores in descending order."""
-        return Organization.objects.raw(
-            "SELECT id, name, score_type, AVG(avg_type_score) as avg_score "
-            "FROM (SELECT co.id, co.name, AVG(cs.score) AS avg_type_score, ct.name AS score_type " +
-            "FROM crank_organization AS co, crank_score AS cs, crank_scoretype AS ct " +
-            "WHERE co.status = 1 AND " +
-            "co.id = cs.target_id AND " +
-            "cs.type_id = ct.id "
-            "GROUP BY co.id, co.name, ct.name)" +
-            "GROUP BY id, name "
-            "ORDER BY avg_score DESC"
-        )
+        return Organization.objects.raw("""
+SELECT orgs.id, 
+       orgs.name, 
+       orgs.type,
+       AVG(orgs.avg_type_score) AS avg_score,
+       (CAST(scores.score_type_count AS REAL) / 
+       /* Admittedly long calculation dividing total score types by the number present for each org */
+       (SELECT COUNT(*) FROM crank_scoretype ct WHERE ct.status = 1) * 100) AS profile_completeness
+FROM 
+    /* Subquery that gives core org details and avg score by type */
+    (SELECT co.id, 
+            co.name, 
+            co.type, 
+            AVG(cs.score) 
+            AS avg_type_score, 
+            ct.name AS score_type
+     FROM crank_organization AS co, crank_score AS cs, crank_scoretype AS ct
+     WHERE co.status = 1 AND
+     co.id = cs.target_id AND
+     cs.type_id = ct.id
+     GROUP BY co.id, co.name, ct.name) orgs,
+    /* Subquery that gives the number of score types present for an org */
+    (SELECT target_id, count(*) AS score_type_count FROM
+        (SELECT target_id,
+                type_id,
+                COUNT(type_id)
+         FROM crank_score cs
+         WHERE status = 1
+         GROUP BY target_id, type_id)
+     GROUP BY target_id) scores
+WHERE scores.target_id = orgs.id 
+GROUP BY id, name, type
+ORDER BY avg_score DESC""")
