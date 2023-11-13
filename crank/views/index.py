@@ -15,7 +15,7 @@ SELECT orgs.id,
        orgs.name, 
        orgs.type,
        AVG(orgs.avg_type_score) AS avg_score,
-       (CAST(scores.score_type_count AS REAL) / 
+       (CAST(score_types.score_type_count AS REAL) / 
        /* Admittedly long calculation dividing total score types by the number present for each org */
        (SELECT COUNT(*) FROM crank_scoretype ct WHERE ct.status = 1) * 100) AS profile_completeness
 FROM 
@@ -39,7 +39,7 @@ FROM
          FROM crank_score cs
          WHERE status = 1
          GROUP BY target_id, type_id)
-     GROUP BY target_id) scores
-WHERE scores.target_id = orgs.id 
+     GROUP BY target_id) score_types 
+WHERE score_types.target_id = orgs.id 
 GROUP BY id, name, type
 ORDER BY avg_score DESC""")
