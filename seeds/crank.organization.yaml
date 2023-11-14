@@ -32,7 +32,7 @@
   pk: 3
   fields:
     created: 2023-10-31 22:12:45.770308+00:00
-    modified: 2023-11-08 00:52:09.962763+00:00
+    modified: 2023-11-09 21:44:46.542235+00:00
     status: 1
     activate_date: 2023-10-31 22:12:45+00:00
     deactivate_date: null
@@ -122,24 +122,24 @@
   pk: 9
   fields:
     created: 2023-10-31 22:12:45.770308+00:00
-    modified: 2023-10-31 22:12:45.773892+00:00
+    modified: 2023-11-09 01:29:48.514149+00:00
     status: 1
-    activate_date: 2023-10-31 22:12:45.773892+00:00
+    activate_date: 2023-10-31 22:12:45+00:00
     deactivate_date: null
     name: Better Business Bureau
     type: N
     url: https://www.bbb.org/
     gives_ratings: true
-    public: true
+    public: false
     funding_round: P
     rto_policy: H
 - model: crank.organization
   pk: 10
   fields:
     created: 2023-11-07 02:58:11.722940+00:00
-    modified: 2023-11-07 02:58:11.722972+00:00
+    modified: 2023-11-14 00:04:19.435154+00:00
     status: 1
-    activate_date: 2023-11-07 02:58:11.722683+00:00
+    activate_date: 2023-11-07 02:58:11+00:00
     deactivate_date: null
     name: Atlassian
     type: C
@@ -162,4 +162,94 @@
     gives_ratings: true
     public: false
     funding_round: O
+    rto_policy: H
+- model: crank.organization
+  pk: 12
+  fields:
+    created: 2023-11-09 01:34:35.125278+00:00
+    modified: 2023-11-09 01:34:42.188567+00:00
+    status: 1
+    activate_date: 2023-11-09 01:34:35+00:00
+    deactivate_date: null
+    name: Snowflake
+    type: C
+    url: https://www.snowflake.com/
+    gives_ratings: false
+    public: true
+    funding_round: P
+    rto_policy: H
+- model: crank.organization
+  pk: 13
+  fields:
+    created: 2023-11-09 21:44:34.114245+00:00
+    modified: 2023-11-09 21:44:34.114279+00:00
+    status: 1
+    activate_date: 2023-11-09 21:44:34.114001+00:00
+    deactivate_date: null
+    name: Rippling
+    type: C
+    url: https://www.rippling.com/
+    gives_ratings: false
+    public: true
+    funding_round: E
+    rto_policy: H
+- model: crank.organization
+  pk: 14
+  fields:
+    created: 2023-11-09 21:49:43.016956+00:00
+    modified: 2023-11-14 00:04:40.767647+00:00
+    status: 1
+    activate_date: 2023-11-09 21:49:43+00:00
+    deactivate_date: null
+    name: Meta
+    type: C
+    url: https://www.meta.com/
+    gives_ratings: false
+    public: true
+    funding_round: P
+    rto_policy: H
+- model: crank.organization
+  pk: 15
+  fields:
+    created: 2023-11-14 00:01:10.461899+00:00
+    modified: 2023-11-14 00:01:10.461926+00:00
+    status: 1
+    activate_date: 2023-11-14 00:01:10.461693+00:00
+    deactivate_date: null
+    name: Flexport
+    type: C
+    url: https://www.flexport.com/
+    gives_ratings: false
+    public: true
+    funding_round: X
+    rto_policy: H
+- model: crank.organization
+  pk: 16
+  fields:
+    created: 2023-11-14 03:20:01.498728+00:00
+    modified: 2023-11-14 03:20:01.498769+00:00
+    status: 1
+    activate_date: 2023-11-14 03:20:01.498509+00:00
+    deactivate_date: null
+    name: Strava
+    type: C
+    url: https://www.crunchbase.com/
+    gives_ratings: false
+    public: false
+    funding_round: F
+    rto_policy: H
+- model: crank.organization
+  pk: 17
+  fields:
+    created: 2023-11-14 03:25:24.351372+00:00
+    modified: 2023-11-14 03:27:44.438785+00:00
+    status: 1
+    activate_date: 2023-11-14 03:25:24+00:00
+    deactivate_date: null
+    name: Roblox
+    type: C
+    url: https://www.roblox.com
+    gives_ratings: false
+    public: true
+    funding_round: P
     rto_policy: H
