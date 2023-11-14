@@ -3,38 +3,28 @@
 {% block head_title %}CRank Home{% endblock %}
 
 {% block content %}
-{% if top_organization_list %}
-    <div class="container">
-        <table class="table">
-            <tr>
-                <th>Name</th>
-                <th>Overall Score</th>
-                <th>Funding Round</th>
-                <th>RTO Policy</th>
-                <th>Profile Completeness</th>
-            </tr>
-            {% for org in top_organization_list %}
+    {% if top_organization_list %}
+        <div class="container">
+            <table class="table">
                 <tr>
-                    <td>
-                        <a href="{% url 'organization' org.id %}">{{ org.name }}</a>
-                    </td>
-                    <td>
-                        {{ org.avg_score|floatformat:'2' }}
-                    </td>
-                    <td>
-                        {{ org.get_funding_round_display }}
-                    </td>
-                    <td>
-                        {{ org.get_rto_policy_display }}
-                    </td>
-                    <td>
-                        {{ org.profile_completeness|floatformat:'0' }}%
-                    </td>
-               </tr>
-            {% endfor %}
-        </table>
-        {% else %}
-        <p>No organizations are available.</p>
-    </div>
-{% endif %}
+                    <th>Name</th>
+                    <th>Overall Score</th>
+                    <th>Funding Round</th>
+                    <th>RTO Policy</th>
+                    <th>Profile Completeness</th>
+                </tr>
+                {% for org in top_organization_list %}
+                    <tr>
+                        <td><a href="{% url 'organization' org.id %}">{{ org.name }}</a></td>
+                        <td>{{ org.avg_score|floatformat:'2' }}</td>
+                        <td>{{ org.get_funding_round_display }}</td>
+                        <td>{{ org.get_rto_policy_display }}</td>
+                        <td>{{ org.profile_completeness|floatformat:'0' }}%</td>
+                    </tr>
+                {% endfor %}
+            </table>
+            {% else %}
+            <p>No organizations are available.</p>
+        </div>
+    {% endif %}
 {% endblock %}
