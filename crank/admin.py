@@ -3,11 +3,25 @@ from crank.models.organization import Organization
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 
 
+# This function disables the inline icons for adding, changing, and deleting related objects.
+def disable_inline_icons(formset, fieldname):
+    formset.form.base_fields[fieldname].widget.can_view_related = False
+    formset.form.base_fields[fieldname].widget.can_add_related = False
+    formset.form.base_fields[fieldname].widget.can_change_related = False
+    formset.form.base_fields[fieldname].widget.can_delete_related = False
+
+
 class ScoreInline(admin.TabularInline):
     model = Score
     fk_name = 'target'
     fields = ['status', 'type', 'source', 'score']
     extra = 1
+
+    def get_formset(self, request, obj=None, **kwargs):
+        fs = super().get_formset(request, obj, **kwargs)
+        disable_inline_icons(fs, 'type')
+        disable_inline_icons(fs, 'source')
+        return fs
 
 
 class ScoreAdmin(admin.ModelAdmin):
