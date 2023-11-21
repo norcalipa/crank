@@ -24,6 +24,18 @@ class ScoreInline(admin.TabularInline):
         return fs
 
 
+class ScoreAlgorithmWeightInline(admin.TabularInline):
+    model = ScoreAlgorithmWeight
+    fk_name = 'algorithm'
+    fields = ['status', 'type', 'weight']
+    extra = 1
+
+    def get_formset(self, request, obj=None, **kwargs):
+        fs = super().get_formset(request, obj, **kwargs)
+        disable_inline_icons(fs, 'type')
+        return fs
+
+
 class ScoreAdmin(admin.ModelAdmin):
     model = Score
     list_display = ['target', 'type', 'score', 'source']
@@ -43,6 +55,7 @@ class ScoreAlgorithmAdmin(admin.ModelAdmin):
     model = ScoreAlgorithm
     list_display = ['name', 'description_content']
     list_filter = ['status']
+    inlines = [ScoreAlgorithmWeightInline]
 
 
 class OrganizationAdmin(admin.ModelAdmin):
