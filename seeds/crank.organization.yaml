@@ -32,7 +32,7 @@
   pk: 3
   fields:
     created: 2023-10-31 22:12:45.770308+00:00
-    modified: 2023-11-09 21:44:46.542235+00:00
+    modified: 2023-11-17 22:36:44.097630+00:00
     status: 1
     activate_date: 2023-10-31 22:12:45+00:00
     deactivate_date: null
@@ -167,7 +167,7 @@
   pk: 12
   fields:
     created: 2023-11-09 01:34:35.125278+00:00
-    modified: 2023-11-09 01:34:42.188567+00:00
+    modified: 2023-11-17 22:46:44.996212+00:00
     status: 1
     activate_date: 2023-11-09 01:34:35+00:00
     deactivate_date: null
@@ -197,7 +197,7 @@
   pk: 14
   fields:
     created: 2023-11-09 21:49:43.016956+00:00
-    modified: 2023-11-14 00:04:40.767647+00:00
+    modified: 2023-11-18 20:36:24.578856+00:00
     status: 1
     activate_date: 2023-11-09 21:49:43+00:00
     deactivate_date: null
@@ -257,7 +257,7 @@
   pk: 18
   fields:
     created: 2023-11-15 19:02:28.048443+00:00
-    modified: 2023-11-15 22:47:10.407526+00:00
+    modified: 2023-11-18 00:41:13.509952+00:00
     status: 1
     activate_date: 2023-11-15 19:02:28+00:00
     deactivate_date: null
@@ -312,4 +312,64 @@
     gives_ratings: false
     public: false
     funding_round: D
+    rto_policy: H
+- model: crank.organization
+  pk: 22
+  fields:
+    created: 2023-11-17 22:27:14.440304+00:00
+    modified: 2023-11-18 00:29:45.113498+00:00
+    status: 1
+    activate_date: 2023-11-17 22:27:14+00:00
+    deactivate_date: null
+    name: Uber
+    type: C
+    url: https://www.uber.com/
+    gives_ratings: false
+    public: true
+    funding_round: P
+    rto_policy: H
+- model: crank.organization
+  pk: 23
+  fields:
+    created: 2023-11-17 22:39:06.780381+00:00
+    modified: 2023-11-17 23:48:34.790754+00:00
+    status: 1
+    activate_date: 2023-11-17 22:39:06+00:00
+    deactivate_date: null
+    name: Simply Wall Street
+    type: C
+    url: https://simplywall.st/
+    gives_ratings: true
+    public: false
+    funding_round: O
+    rto_policy: H
+- model: crank.organization
+  pk: 24
+  fields:
+    created: 2023-11-21 18:53:43.376508+00:00
+    modified: 2023-11-21 18:53:43.376534+00:00
+    status: 1
+    activate_date: 2023-11-21 18:53:43.376286+00:00
+    deactivate_date: null
+    name: Stackshare.io
+    type: C
+    url: https://stackshare.io/
+    gives_ratings: true
+    public: false
+    funding_round: S
+    rto_policy: H
+- model: crank.organization
+  pk: 25
+  fields:
+    created: 2023-11-21 18:54:04.867870+00:00
+    modified: 2023-11-21 18:57:41.081721+00:00
+    status: 1
+    activate_date: 2023-11-21 18:54:04+00:00
+    deactivate_date: null
+    name: DoorDash
+    type: C
+    url: https://www.doordash.com/
+    gives_ratings: false
+    public: true
+    funding_round: P
     rto_policy: H
