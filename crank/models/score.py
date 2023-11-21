@@ -25,6 +25,15 @@ class ScoreAlgorithmWeight(TimeStampedModel, ActivatorModel):
     algorithm = models.ForeignKey(ScoreAlgorithm, on_delete=models.CASCADE)
     weight = models.FloatField(default=1.0)
 
+    class Meta:
+        constraints = [
+            # this constraint ensures there is only one active score for a given type, source, and target
+            UniqueConstraint(name="unique_type_algorithm_status",
+                             fields=["type", "algorithm", "status"],
+                             condition=Q(status=1),
+                             violation_error_message="There is already an weight for this type")
+        ]
+
 
 class Score(TimeStampedModel, ActivatorModel):
     def __str__(self):
