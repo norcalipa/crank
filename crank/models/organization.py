@@ -5,6 +5,7 @@ from django.db.models import TextChoices, Avg
 
 
 class Organization(TimeStampedModel, ActivatorModel):
+
     def __str__(self):
         return self.name
 

@@ -30,6 +30,7 @@ class ScoreAdmin(admin.ModelAdmin):
     list_editable = ['score', 'type', 'source']
     list_filter = ['status', 'type']
     search_fields = ['target__name']
+    list_select_related = ['type', 'source']
 
 
 class ScoreTypeAdmin(admin.ModelAdmin):
