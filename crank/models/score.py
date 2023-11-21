@@ -42,6 +42,8 @@ class Score(TimeStampedModel, ActivatorModel):
     class Meta:
         constraints = [
             # this constraint ensures there is only one active score for a given type, source, and target
-            UniqueConstraint(name="unique_score_type_source_target_status", fields=["type", "source", "target", "status"],
-                             condition=Q(status=1), violation_error_message="There is already an active score of this type")
+            UniqueConstraint(name="unique_score_type_source_target_status",
+                             fields=["type", "source", "target", "status"],
+                             condition=Q(status=1),
+                             violation_error_message="There is already an active score of this type")
         ]
