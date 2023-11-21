@@ -4,32 +4,37 @@
 
 {% block content %}
     <div class="container">
-        {% csrf_token %}
-        {% if error_message %}<p><strong>{{ error_message }}</strong></p>{% endif %}
-        <legend><h1>{{ organization.name }}</h1></legend>
-        <div class="row">
-            <div class="col-md-auto">
-                <div class="container">
-                    <div class="row">
-                        <div class="col-md-auto">Type:</div>
-                        <div class="col-md-auto">{{ organization.get_type_display }}</div>
-                    </div>
-                    <div class="row">
-                        <div class="col-md-auto">URL:</div>
-                        <div class="col-md-auto"><a href="{{ organization.url }}">{{ organization.url }}</a></div>
-                    </div>
-                </div>
+    {% csrf_token %}
+    {% if error_message %}<p><strong>{{ error_message }}</strong></p>{% endif %}
+    <legend><h1>{{ organization.name }}</h1></legend>
+    <div class="row">
+        <div class="col-md-4">
+            <div class="row">
+                <div class="col-4 text-end">URL:</div>
+                <div class="col-6"><a href="{{ organization.url }}">{{ organization.url }}</a></div>
             </div>
-            <div class="col-md-auto">
-                <table class="table">
-                    {% for score in organization.avg_scores.all %}
-                        <tr>
-                            <td>{{ score.type__name }}</td>
-                            <td>{{ score.avg_score|floatformat:'2' }}</td>
-                        </tr>
-                    {% endfor %}
-                </table>
+            <div class="row">
+                <div class="col-4 text-end">Type:</div>
+                <div class="col-6">{{ organization.get_type_display }}</div>
             </div>
+            <div class="row">
+                <div class="col-4 text-end">Funding Round:</div>
+                <div class="col-6">{{ organization.get_funding_round_display }}</div>
+            </div>
+            <div class="row">
+                <div class="col-4 text-end">RTO Policy:</div>
+                <div class="col-6">{{ organization.get_rto_policy_display }}</div>
+            </div>
+        </div>
+        <div class="col-4">
+            <table class="table">
+                {% for score in organization.avg_scores.all %}
+                    <tr>
+                        <td>{{ score.type__name }}</td>
+                        <td>{{ score.avg_score|floatformat:'2' }}</td>
+                    </tr>
+                {% endfor %}
+            </table>
         </div>
     </div>
 {% endblock %}
