@@ -8,10 +8,12 @@ class ScoreModelTests(TestCase):
     def test_score_type_creation(self):
         score_type = ScoreType.objects.create(name="Test Score Type")
         self.assertEqual(score_type.name, "Test Score Type")
+        self.assertEqual(str(score_type), "Test Score Type")
 
     def test_score_algorithm_creation(self):
         score_algorithm = ScoreAlgorithm.objects.create(name="Test Score Algorithm")
         self.assertEqual(score_algorithm.name, "Test Score Algorithm")
+        self.assertEqual(str(score_algorithm), "Test Score Algorithm")
 
     def test_score_algorithm_weight_creation(self):
         score_type = ScoreType.objects.create(name="Test Score Type")
@@ -31,3 +33,4 @@ class ScoreModelTests(TestCase):
         self.assertEqual(score.source, source_org)
         self.assertEqual(score.target, target_org)
         self.assertEqual(score.score, 3.0)
+        self.assertEqual(str(score), "Target Organization: Test Score Type [Source Organization]=3.0")
