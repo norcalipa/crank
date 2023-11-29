@@ -1,6 +1,5 @@
 from django.views import generic
 
-# from crank.models.score import Score
 from crank.models.organization import Organization
 
 
@@ -10,7 +9,8 @@ class IndexView(generic.ListView):
 
     def get_queryset(self):
         """Return all active organizations with scores in descending order."""
-        return Organization.objects.raw("""
+        try:
+            result = Organization.objects.raw("""
 SELECT orgs.id, 
        orgs.name, 
        orgs.type,
@@ -47,3 +47,6 @@ FROM
 WHERE score_types.target_id = orgs.id 
 GROUP BY id, name, type
 ORDER BY avg_score DESC""")
+            return result
+        except Organization.DoesNotExist:
+            return []

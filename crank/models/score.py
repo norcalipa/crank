@@ -37,7 +37,7 @@ class ScoreAlgorithmWeight(TimeStampedModel, ActivatorModel):
 
 class Score(TimeStampedModel, ActivatorModel):
     def __str__(self):
-        return "{}: {} [{}]={} ".format(self.target.name, self.type.name, self.source.name, self.score)
+        return "{}: {} [{}]={}".format(self.target.name, self.type.name, self.source.name, self.score)
 
     type = models.ForeignKey(ScoreType, on_delete=models.CASCADE, default=None,
                              limit_choices_to={"status": 1})
