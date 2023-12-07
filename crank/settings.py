@@ -121,6 +121,8 @@ DATABASES = {
 
 EXTENSIONS_MAX_UNIQUE_QUERY_ATTEMPTS = 1000
 
+SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"
+
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators
 

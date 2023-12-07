@@ -26,6 +26,7 @@ app_name = "crank"
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("", IndexView.as_view(), name="index"),
+    path("algo/<int:algorithm_id>/", IndexView.as_view(), name="index"),
     path("organization/<int:pk>/", OrganizationView.as_view(), name="organization"),
     path('api-auth/', include('rest_framework.urls')),
     path('accounts/', include('allauth.urls')),
