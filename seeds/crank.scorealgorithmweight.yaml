@@ -350,3 +350,91 @@
     type: 8
     algorithm: 1
     weight: 1.0
+- model: crank.scorealgorithmweight
+  pk: 34
+  fields:
+    created: 2023-12-04 00:47:13.469723+00:00
+    modified: 2023-12-04 00:47:13.469743+00:00
+    status: 1
+    activate_date: 2023-12-04 00:47:13.469563+00:00
+    deactivate_date: null
+    type: 1
+    algorithm: 5
+    weight: 1.5
+- model: crank.scorealgorithmweight
+  pk: 35
+  fields:
+    created: 2023-12-04 00:47:13.470581+00:00
+    modified: 2023-12-04 00:47:13.470608+00:00
+    status: 1
+    activate_date: 2023-12-04 00:47:13.470406+00:00
+    deactivate_date: null
+    type: 2
+    algorithm: 5
+    weight: 2.0
+- model: crank.scorealgorithmweight
+  pk: 36
+  fields:
+    created: 2023-12-04 00:47:13.471280+00:00
+    modified: 2023-12-04 00:47:13.471306+00:00
+    status: 1
+    activate_date: 2023-12-04 00:47:13.471110+00:00
+    deactivate_date: null
+    type: 3
+    algorithm: 5
+    weight: 1.5
+- model: crank.scorealgorithmweight
+  pk: 37
+  fields:
+    created: 2023-12-04 00:47:13.471942+00:00
+    modified: 2023-12-04 00:47:13.471969+00:00
+    status: 1
+    activate_date: 2023-12-04 00:47:13.471733+00:00
+    deactivate_date: null
+    type: 4
+    algorithm: 5
+    weight: 1.0
+- model: crank.scorealgorithmweight
+  pk: 38
+  fields:
+    created: 2023-12-04 00:47:13.472601+00:00
+    modified: 2023-12-04 00:47:13.472625+00:00
+    status: 1
+    activate_date: 2023-12-04 00:47:13.472432+00:00
+    deactivate_date: null
+    type: 5
+    algorithm: 5
+    weight: 1.0
+- model: crank.scorealgorithmweight
+  pk: 39
+  fields:
+    created: 2023-12-04 00:47:13.473097+00:00
+    modified: 2023-12-04 00:47:13.473116+00:00
+    status: 1
+    activate_date: 2023-12-04 00:47:13.472995+00:00
+    deactivate_date: null
+    type: 6
+    algorithm: 5
+    weight: 1.0
+- model: crank.scorealgorithmweight
+  pk: 40
+  fields:
+    created: 2023-12-04 00:47:13.473475+00:00
+    modified: 2023-12-04 00:47:13.473491+00:00
+    status: 1
+    activate_date: 2023-12-04 00:47:13.473375+00:00
+    deactivate_date: null
+    type: 7
+    algorithm: 5
+    weight: 1.5
+- model: crank.scorealgorithmweight
+  pk: 41
+  fields:
+    created: 2023-12-04 00:47:13.473827+00:00
+    modified: 2023-12-04 00:47:13.473841+00:00
+    status: 1
+    activate_date: 2023-12-04 00:47:13.473738+00:00
+    deactivate_date: null
+    type: 8
+    algorithm: 5
+    weight: 1.0

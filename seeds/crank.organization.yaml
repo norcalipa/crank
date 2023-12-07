@@ -302,7 +302,7 @@
   pk: 21
   fields:
     created: 2023-11-16 19:26:27.966627+00:00
-    modified: 2023-11-16 19:27:52.327474+00:00
+    modified: 2023-11-21 19:46:41.442281+00:00
     status: 1
     activate_date: 2023-11-16 19:26:27+00:00
     deactivate_date: null
@@ -362,13 +362,73 @@
   pk: 25
   fields:
     created: 2023-11-21 18:54:04.867870+00:00
-    modified: 2023-11-21 18:57:41.081721+00:00
+    modified: 2023-11-28 22:26:34.508827+00:00
     status: 1
     activate_date: 2023-11-21 18:54:04+00:00
     deactivate_date: null
     name: DoorDash
     type: C
     url: https://www.doordash.com/
+    gives_ratings: false
+    public: true
+    funding_round: P
+    rto_policy: H
+- model: crank.organization
+  pk: 26
+  fields:
+    created: 2023-11-21 20:07:13.040378+00:00
+    modified: 2023-11-21 20:10:33.814628+00:00
+    status: 1
+    activate_date: 2023-11-21 20:07:13+00:00
+    deactivate_date: null
+    name: Guidewire
+    type: C
+    url: https://www.guidewire.com/
+    gives_ratings: false
+    public: true
+    funding_round: P
+    rto_policy: H
+- model: crank.organization
+  pk: 27
+  fields:
+    created: 2023-11-22 00:53:53.944129+00:00
+    modified: 2023-11-22 00:56:20.258177+00:00
+    status: 1
+    activate_date: 2023-11-22 00:53:53+00:00
+    deactivate_date: null
+    name: Zoox (Amazon)
+    type: C
+    url: https://www.zoox.com/
+    gives_ratings: false
+    public: true
+    funding_round: P
+    rto_policy: H
+- model: crank.organization
+  pk: 28
+  fields:
+    created: 2023-11-28 22:25:22.121771+00:00
+    modified: 2023-11-29 03:22:44.523454+00:00
+    status: 1
+    activate_date: 2023-11-28 22:25:22+00:00
+    deactivate_date: null
+    name: OpenTable (Booking Holdings)
+    type: C
+    url: https://www.opentable.com/
+    gives_ratings: false
+    public: false
+    funding_round: P
+    rto_policy: H
+- model: crank.organization
+  pk: 29
+  fields:
+    created: 2023-12-05 21:53:52.981322+00:00
+    modified: 2023-12-06 23:13:21.143160+00:00
+    status: 1
+    activate_date: 2023-12-05 21:53:52+00:00
+    deactivate_date: null
+    name: Upstart
+    type: C
+    url: https://www.upstart.com/
     gives_ratings: false
     public: true
     funding_round: P
