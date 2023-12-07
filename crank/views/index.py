@@ -11,6 +11,11 @@ from crank.settings import BASE_DIR
 CONTENT_DIR = os.path.join(str(BASE_DIR), "crank/content")
 
 class IndexView(generic.ListView):
+    def __init__(self):
+        super().__init__()
+        self.object_list = None
+        self.kwargs = {}
+
     template_name = "crank/index.html"
     context_object_name = "top_organization_list"
 
@@ -36,7 +41,7 @@ class IndexView(generic.ListView):
 
         """Return all active organizations with scores in descending order."""
         try:
-            result = Organization.objects.raw('''
+            self.object_list = Organization.objects.raw('''
 SELECT orgs.id, 
        orgs.name, 
        orgs.type,
@@ -79,11 +84,15 @@ FROM
 WHERE score_types.target_id = orgs.id 
 GROUP BY id, name, type
 ORDER BY avg_score DESC''', [algorithm_id])
-            return result
+            return self.object_list
         except Organization.DoesNotExist:
-            return []
+            self.object_list = []
+
+        return self.object_list
 
     def get_context_data(self, **kwargs):
+        if kwargs is None:
+            kwargs = {}
         context = super().get_context_data(**kwargs)
         context['algorithm'] = self.get_algorithm_details()
         return context
