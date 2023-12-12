@@ -62,12 +62,13 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.sites',
     'crank',
     'django_bootstrap5',
     'fontawesomefree',
     'coverage',
+    'corsheaders',
     'rest_framework',
-    'django.contrib.sites',
     'allauth',
     'allauth.account',
     'allauth.socialaccount',
@@ -83,9 +84,16 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'allauth.account.middleware.AccountMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
 ]
 
 ROOT_URLCONF = 'crank.urls'
+
+SECURE_CROSS_ORIGIN_OPENER_POLICY = None
+CORS_ALLOWED_ORIGINS = [
+    "http://local.crank.fyi:3000",
+    "https://crank.fyi",
+]
 
 TEMPLATES = [
     {

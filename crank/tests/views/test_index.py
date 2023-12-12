@@ -44,6 +44,23 @@ class IndexViewTests(TestCase):
         self.assertContains(response, 'Test Algorithm')  # contents of the test.md file
         self.assertQuerySetEqual(response.context["top_organization_list"], [org])
 
+    def test_index_view_with_algo(self):
+        org = self.setup_scores()
+        algourl = self.index_url + 'algo/1/'
+        response = self.client.get(algourl)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'CRank')
+        self.assertContains(response, 'Test Algorithm')  # contents of the test.md file
+        self.assertQuerySetEqual(response.context["top_organization_list"], [org])
+
+    def test_index_view_with_bad_algo(self):
+        org = self.setup_scores()
+        algourl = self.index_url + 'algo/99999/'
+        response = self.client.get(algourl)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'CRank')
+        self.assertContains(response, 'Test Algorithm')  # contents of the test.md file
+        self.assertQuerySetEqual(response.context["top_organization_list"], [org])
     def test_empty_index_view(self):
         # we aren't adding data, so there should be no results
         request = self.factory.get(self.index_url)
