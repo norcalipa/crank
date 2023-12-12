@@ -6,12 +6,23 @@
     {% if top_organization_list %}
         <div class="container">
             <div class="row">
+
                 <div class="col-3">
                     <div class="card">
                         <div class="card-body">
-                            <h3 class="card-title">Scoring Algorithm: {{ algorithm.name }}</h3>
+                            <h3 class="card-title">Scoring Algorithm:</h3>
+                            <form method="get">
+                                <select class="form-select form-select-lg mb3" id="algorithm_id" onchange="submitForm()">
+                                    {% for algo in all_algorithms %}
+                                        <option value="{{ algo.id }}"
+                                                {% if algo.id == algorithm.id %}selected{% endif %}>
+                                            {{ algo.name }}
+                                        </option>
+                                    {% endfor %}
+                                </select>
+                            </form>
                             <div class="card-text">
-                            {{ algorithm.html_description_content |safe }}
+                                {{ algorithm.html_description_content |safe }}
                             </div>
                         </div>
                     </div>
@@ -41,4 +52,12 @@
             </div>
         </div>
     {% endif %}
+
+    <script>
+        function submitForm() {
+            var algorithmId = document.getElementById('algorithm_id').value;
+            var url = "{% url 'index' 0 %}".replace('0', algorithmId);
+            window.location.href = url;
+        }
+    </script>
 {% endblock %}
