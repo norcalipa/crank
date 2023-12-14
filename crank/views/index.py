@@ -1,15 +1,13 @@
 import os
 
 import markdown
-from django.core.cache import cache
-from django.http import HttpResponseRedirect
 from django.shortcuts import redirect
 from django.urls import reverse
 from django.views import generic
 
 from crank.models.organization import Organization
 from crank.models.score import ScoreAlgorithm
-from crank.settings import BASE_DIR
+from crank.settings.base import BASE_DIR
 
 CONTENT_DIR = os.path.join(str(BASE_DIR), "crank/content")
 

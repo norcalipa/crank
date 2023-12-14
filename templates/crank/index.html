@@ -12,7 +12,7 @@
                         <div class="card-body">
                             <h3 class="card-title">Scoring Algorithm:</h3>
                             <form method="get">
-                                <select class="form-select form-select-lg mb3" id="algorithm_id" onchange="submitForm()">
+                                <select class="form-select form-select-lg mb3 border-primary" id="algorithm_id" onchange="submitForm()">
                                     {% for algo in all_algorithms %}
                                         <option value="{{ algo.id }}"
                                                 {% if algo.id == algorithm.id %}selected{% endif %}>

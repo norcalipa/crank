@@ -2,40 +2,49 @@
   pk: 1
   fields:
     created: 2023-10-31 22:12:45.792734+00:00
-    modified: 2023-10-31 22:12:45.794736+00:00
+    modified: 2023-12-07 01:16:12.007904+00:00
     status: 1
-    activate_date: 2023-10-31 22:12:45.794736+00:00
+    activate_date: 2023-10-31 22:12:45+00:00
     deactivate_date: null
     name: Balanced
-    description_content: /content/balanced.md
+    description_content: balanced.md
 - model: crank.scorealgorithm
   pk: 2
   fields:
     created: 2023-10-31 22:12:45.792734+00:00
-    modified: 2023-10-31 22:12:45.794736+00:00
+    modified: 2023-12-07 01:16:05.449040+00:00
     status: 1
-    activate_date: 2023-10-31 22:12:45.794736+00:00
-    activate_date: null
+    activate_date: 2023-11-21 20:25:18+00:00
     deactivate_date: null
     name: Comp-focused
-    description_content: /content/comp-focused.md
+    description_content: comp-focused.md
 - model: crank.scorealgorithm
   pk: 3
   fields:
     created: 2023-10-31 22:12:45.792734+00:00
-    modified: 2023-10-31 22:12:45.794736+00:00
+    modified: 2023-12-07 01:15:58.730881+00:00
     status: 1
-    activate_date: 2023-10-31 22:12:45.794736+00:00
+    activate_date: 2023-10-31 22:12:45+00:00
     deactivate_date: null
     name: Culture-focused
-    description_content: /content/culture-focused.md
+    description_content: culture-focused.md
 - model: crank.scorealgorithm
   pk: 4
   fields:
     created: 2023-10-31 22:12:45.792734+00:00
-    modified: 2023-10-31 22:12:45.794736+00:00
+    modified: 2023-12-07 01:15:39.820252+00:00
     status: 1
-    activate_date: 2023-10-31 22:12:45.794736+00:00
+    activate_date: 2023-10-31 22:12:45+00:00
     deactivate_date: null
     name: Tech-focused
-    description_content: /content/tech-focused.md
+    description_content: tech-focused.md
+- model: crank.scorealgorithm
+  pk: 5
+  fields:
+    created: 2023-12-04 00:47:13.468857+00:00
+    modified: 2023-12-07 01:15:49.397213+00:00
+    status: 1
+    activate_date: 2023-12-04 00:47:13+00:00
+    deactivate_date: null
+    name: Crank Holistic
+    description_content: crank-holistic.md
