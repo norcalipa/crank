@@ -9,4 +9,3 @@ Weights are as follows:
 * RTO and Work Hours: 1.5
 
 Other score types retain the default weight of 1.
-
