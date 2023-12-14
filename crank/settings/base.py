@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 LOGGING = {
     'version': 1,
@@ -48,9 +48,6 @@ LOGGING = {
 SECRET_KEY = 'django-insecure-ig3(*35j=)-1lrn%*^3g--qr5wz9n90i(d4zucp8a^z56ja3_9'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
-ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -62,12 +59,13 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.sites',
     'crank',
     'django_bootstrap5',
     'fontawesomefree',
     'coverage',
+    'corsheaders',
     'rest_framework',
-    'django.contrib.sites',
     'allauth',
     'allauth.account',
     'allauth.socialaccount',
@@ -83,9 +81,16 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'allauth.account.middleware.AccountMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
 ]
 
 ROOT_URLCONF = 'crank.urls'
+
+SECURE_CROSS_ORIGIN_OPENER_POLICY = None
+CORS_ALLOWED_ORIGINS = [
+    "http://local.crank.fyi:3000",
+    "https://crank.fyi",
+]
 
 TEMPLATES = [
     {
@@ -109,15 +114,6 @@ WSGI_APPLICATION = 'crank.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-        'TEST': {
-            'NAME': BASE_DIR / 'test_db.sqlite3',
-        },
-    }
-}
 
 EXTENSIONS_MAX_UNIQUE_QUERY_ATTEMPTS = 1000
 
@@ -147,7 +143,7 @@ AUTHENTICATION_BACKENDS = (
 )
 
 SITE_ID = 1
-SOCIALACCOUNT_LOGIN_ON_GET=True
+SOCIALACCOUNT_LOGIN_ON_GET = True
 LOGIN_REDIRECT_URL = '/'
 LOGOUT_REDIRECT_URL = '/'
 
@@ -181,7 +177,6 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 
 USE_TZ = True
-
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/4.2/howto/static-files/
