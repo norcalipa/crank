@@ -2224,3 +2224,171 @@
     score: 4.0
     low_threshold: 0.0
     high_threshold: 5.0
+- model: crank.score
+  pk: 166
+  fields:
+    created: 2023-12-07 19:07:12.367106+00:00
+    modified: 2023-12-07 19:07:12.367121+00:00
+    status: 1
+    activate_date: 2023-12-07 19:07:12.366920+00:00
+    deactivate_date: null
+    type: 1
+    source: 1
+    target: 30
+    score: 3.8
+    low_threshold: 0.0
+    high_threshold: 5.0
+- model: crank.score
+  pk: 167
+  fields:
+    created: 2023-12-07 19:07:12.367933+00:00
+    modified: 2023-12-07 19:07:12.367947+00:00
+    status: 1
+    activate_date: 2023-12-07 19:07:12.367844+00:00
+    deactivate_date: null
+    type: 3
+    source: 1
+    target: 30
+    score: 2.0
+    low_threshold: 0.0
+    high_threshold: 5.0
+- model: crank.score
+  pk: 168
+  fields:
+    created: 2023-12-07 19:07:12.368278+00:00
+    modified: 2023-12-07 19:07:12.368291+00:00
+    status: 1
+    activate_date: 2023-12-07 19:07:12.368194+00:00
+    deactivate_date: null
+    type: 1
+    source: 2
+    target: 30
+    score: 3.7
+    low_threshold: 0.0
+    high_threshold: 5.0
+- model: crank.score
+  pk: 169
+  fields:
+    created: 2023-12-07 19:07:12.368596+00:00
+    modified: 2023-12-07 19:07:12.368608+00:00
+    status: 1
+    activate_date: 2023-12-07 19:07:12.368511+00:00
+    deactivate_date: null
+    type: 1
+    source: 5
+    target: 30
+    score: 4.5
+    low_threshold: 0.0
+    high_threshold: 5.0
+- model: crank.score
+  pk: 170
+  fields:
+    created: 2023-12-07 19:07:12.368923+00:00
+    modified: 2023-12-07 19:07:12.368935+00:00
+    status: 1
+    activate_date: 2023-12-07 19:07:12.368838+00:00
+    deactivate_date: null
+    type: 1
+    source: 6
+    target: 30
+    score: 4.1
+    low_threshold: 0.0
+    high_threshold: 5.0
+- model: crank.score
+  pk: 171
+  fields:
+    created: 2023-12-07 19:07:12.369247+00:00
+    modified: 2023-12-07 19:07:12.369259+00:00
+    status: 1
+    activate_date: 2023-12-07 19:07:12.369167+00:00
+    deactivate_date: null
+    type: 3
+    source: 5
+    target: 30
+    score: 3.0
+    low_threshold: 0.0
+    high_threshold: 5.0
+- model: crank.score
+  pk: 172
+  fields:
+    created: 2023-12-07 19:07:12.369556+00:00
+    modified: 2023-12-07 19:07:12.369569+00:00
+    status: 1
+    activate_date: 2023-12-07 19:07:12.369467+00:00
+    deactivate_date: null
+    type: 2
+    source: 7
+    target: 30
+    score: 3.0
+    low_threshold: 0.0
+    high_threshold: 5.0
+- model: crank.score
+  pk: 173
+  fields:
+    created: 2023-12-07 19:11:04.620107+00:00
+    modified: 2023-12-07 19:11:04.620124+00:00
+    status: 1
+    activate_date: 2023-12-07 19:11:04.619972+00:00
+    deactivate_date: null
+    type: 7
+    source: 23
+    target: 30
+    score: 5.0
+    low_threshold: 0.0
+    high_threshold: 5.0
+- model: crank.score
+  pk: 174
+  fields:
+    created: 2023-12-07 19:11:04.620706+00:00
+    modified: 2023-12-07 19:11:04.620722+00:00
+    status: 1
+    activate_date: 2023-12-07 19:11:04.620588+00:00
+    deactivate_date: null
+    type: 4
+    source: 11
+    target: 30
+    score: 5.0
+    low_threshold: 0.0
+    high_threshold: 5.0
+- model: crank.score
+  pk: 175
+  fields:
+    created: 2023-12-07 19:11:04.621067+00:00
+    modified: 2023-12-07 19:11:04.621081+00:00
+    status: 1
+    activate_date: 2023-12-07 19:11:04.620976+00:00
+    deactivate_date: null
+    type: 6
+    source: 24
+    target: 30
+    score: 3.0
+    low_threshold: 0.0
+    high_threshold: 5.0
+- model: crank.score
+  pk: 176
+  fields:
+    created: 2023-12-07 19:11:04.621390+00:00
+    modified: 2023-12-07 19:11:04.621403+00:00
+    status: 1
+    activate_date: 2023-12-07 19:11:04.621302+00:00
+    deactivate_date: null
+    type: 5
+    source: 11
+    target: 30
+    score: 5.0
+    low_threshold: 0.0
+    high_threshold: 5.0
+- model: crank.score
+  pk: 177
+  fields:
+    created: 2023-12-07 19:13:12.956259+00:00
+    modified: 2023-12-07 19:13:12.956298+00:00
+    status: 1
+    activate_date: 2023-12-07 19:13:12.956088+00:00
+    deactivate_date: null
+    type: 8
+    source: 1
+    target: 30
+    score: 4.0
+    low_threshold: 0.0
+    high_threshold: 5.0

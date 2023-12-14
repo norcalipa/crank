@@ -1,21 +1,87 @@
-from django.test import TestCase
-from django.test import RequestFactory
+from django.test import TestCase, Client, RequestFactory
+from django.urls import reverse
 from crank.models.organization import Organization
+from allauth.socialaccount.models import SocialApp
+from django.contrib.sites.models import Site
 
+from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 from crank.views.index import IndexView
 
 
 class IndexViewTests(TestCase):
+
+    def setUp(self):
+        self.factory = RequestFactory()
+        self.client = Client()
+        self.index_url = reverse('index')  # replace 'index' with the actual name of the IndexView in your urls.py
+
+        # Create a SocialApp object for testing
+        self.social_app = SocialApp.objects.create(
+            provider='google',
+            name='Google',
+            client_id='test',
+            secret='test',
+        )
+        self.social_app.sites.add(Site.objects.get_current())
+
+    def setup_scores(self):
+        org = Organization.objects.create(name='Test Organization')
+        score_type = ScoreType.objects.create(name='Test Score Type')
+        score_algorithm = ScoreAlgorithm.objects.create(name='Test Algorithm', description_content='test.md')
+        score_algorithm_weight = ScoreAlgorithmWeight.objects.create(algorithm_id=score_algorithm.id,
+                                                                     type_id=score_type.id, weight=1.0)
+        score = Score.objects.create(source_id=org.id, target_id=org.id, score=1.0, type_id=score_type.id)
+        return org
+
     def test_index_view(self):
-        org_name = "Test Organization"
-        org = Organization.objects.create(name=org_name)
+        request = self.factory.get(self.index_url)
+        request.session = {'algorithm_id': '1'}  # Set algorithm_id in session
 
-        #response = self.client.get('/') # + str(org.id))
-        request = RequestFactory().get('/')
-        view = IndexView()
-        view.request = request
-        qs = view.get_queryset()
-        self.assertContains(Organization.objects.all())
+        org = self.setup_scores()
+        response = self.client.get(self.index_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'CRank')
+        self.assertContains(response, 'Test Algorithm')  # contents of the test.md file
+        self.assertQuerySetEqual(response.context["top_organization_list"], [org])
 
-        #self.assertEqual(response.status_code, 200)
-        #self.assertTemplateUsed(response, 'index.html')
+    def test_index_view_with_algo(self):
+        org = self.setup_scores()
+        algourl = self.index_url + 'algo/1/'
+        response = self.client.get(algourl)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'CRank')
+        self.assertContains(response, 'Test Algorithm')  # contents of the test.md file
+        self.assertQuerySetEqual(response.context["top_organization_list"], [org])
+
+    def test_index_view_with_bad_algo(self):
+        org = self.setup_scores()
+        algourl = self.index_url + 'algo/99999/'
+        response = self.client.get(algourl)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'CRank')
+        self.assertContains(response, 'Test Algorithm')  # contents of the test.md file
+        self.assertQuerySetEqual(response.context["top_organization_list"], [org])
+    def test_empty_index_view(self):
+        # we aren't adding data, so there should be no results
+        request = self.factory.get(self.index_url)
+        request.session = {'algorithm_id': '1'}  # Set algorithm_id in session
+
+        response = self.client.get(self.index_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'CRank')
+        self.assertContains(response,
+                            "No organizations are available or the Score Algorithm you specified doesn't exist.")
+        self.assertQuerySetEqual(response.context["top_organization_list"], [])
+
+    def test_index_get_queryset(self):
+        request = self.factory.get(self.index_url)
+        request.session = {'algorithm_id': '1'}  # Set algorithm_id in session
+
+        # Create an IndexView instance
+        index_view = IndexView()
+        index_view.request = request
+        org = self.setup_scores()
+
+        # Call get_queryset() and check the returned queryset
+        queryset = index_view.get_queryset()
+        self.assertQuerySetEqual(queryset, [org])

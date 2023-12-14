@@ -1,42 +1,60 @@
 import os
 
 import markdown
-from django.core.cache import cache
+from django.shortcuts import redirect
+from django.urls import reverse
 from django.views import generic
 
 from crank.models.organization import Organization
 from crank.models.score import ScoreAlgorithm
-from crank.settings import BASE_DIR
+from crank.settings.base import BASE_DIR
 
 CONTENT_DIR = os.path.join(str(BASE_DIR), "crank/content")
 
+
 class IndexView(generic.ListView):
+    algorithm_cache = {}
+
+    def __init__(self):
+        super().__init__()
+        self.object_list = None
+        self.kwargs = {}
+        self.algorithm_id = None
+        self.algorithm = None
+        self.error = None
+
     template_name = "crank/index.html"
     context_object_name = "top_organization_list"
 
-    def get_queryset(self):
-        algorithm_id = None
-        # first, check for a valid algorithm_id in the URL
-        try:
+    def _check_algorithm_id(self):
+        if not self.algorithm:
             if 'algorithm_id' in self.kwargs:
-                algorithm_id = self.kwargs['algorithm_id']
-                if algorithm_id != self.request.session.get("algorithm_id"):
-                    self.request.session["algorithm_id"] = algorithm_id
-        except ValueError:
-            pass
+                self.algorithm_id = self.kwargs['algorithm_id']
+            if self.algorithm_id in IndexView.algorithm_cache.keys():
+                self.algorithm = IndexView.algorithm_cache[self.algorithm_id]
+                return
+            if not ScoreAlgorithm.objects.filter(id=self.algorithm_id).exists():
+                self.algorithm_id = 1
+                self.request.session["algorithm_id"] = self.algorithm_id
+                self.error = True
+                raise ValueError("Invalid algorithm_id")
+            if not self.algorithm:
+                self.algorithm = ScoreAlgorithm.objects.get(id=self.algorithm_id)
+                self.algorithm_cache[self.algorithm_id] = self.algorithm
 
+    def get_queryset(self):
         # if no algorithm_id in the URL, check for one in the session
-        if not algorithm_id:
-            algorithm_id = self.request.session.get("algorithm_id")
+        if not self.algorithm_id:
+            self.algorithm_id = self.request.session.get("algorithm_id")
 
         # if no algorithm_id in the session, use the default
-        if not algorithm_id:
-            algorithm_id = 1
-            self.request.session["algorithm_id"] = algorithm_id
+        try:
+            self._check_algorithm_id()
+        except ValueError:
+            return redirect('/')
 
         """Return all active organizations with scores in descending order."""
-        try:
-            result = Organization.objects.raw('''
+        self.object_list = Organization.objects.raw('''
 SELECT orgs.id, 
        orgs.name, 
        orgs.type,
@@ -78,26 +96,30 @@ FROM
      GROUP BY target_id) score_types 
 WHERE score_types.target_id = orgs.id 
 GROUP BY id, name, type
-ORDER BY avg_score DESC''', [algorithm_id])
-            return result
-        except Organization.DoesNotExist:
-            return []
+ORDER BY avg_score DESC''', [self.algorithm_id])
+        return self.object_list
 
     def get_context_data(self, **kwargs):
+        if kwargs is None:
+            kwargs = {}
         context = super().get_context_data(**kwargs)
         context['algorithm'] = self.get_algorithm_details()
+        context['all_algorithms'] = ScoreAlgorithm.objects.filter(status=1)
         return context
 
     def get_algorithm_details(self):
-        algorithm_id = self.request.session.get("algorithm_id")
+        if self.error:
+            return None
+        self.algorithm_id = self.request.session.get("algorithm_id")
 
         try:
-            algorithm = ScoreAlgorithm.objects.get(id=algorithm_id)
-            file_path = os.path.join(CONTENT_DIR, algorithm.description_content)
-            with open(file_path, 'r') as file:
-                md_content = file.read()
-            html_content = markdown.markdown(md_content)
-            algorithm.html_description_content = html_content
-            return algorithm
-        except ScoreAlgorithm.DoesNotExist:
-            return None
+            self._check_algorithm_id()
+            if not hasattr(self.algorithm, 'html_description_content'):
+                file_path = os.path.join(CONTENT_DIR, self.algorithm.description_content)
+                with open(file_path, 'r') as file:
+                    md_content = file.read()
+                html_content = markdown.markdown(md_content)
+                self.algorithm.html_description_content = html_content
+            return self.algorithm
+        except ValueError:
+            return redirect(reverse('index'))

@@ -2,7 +2,7 @@ The comp-focused algorithm gives greater weight to **Compensation** and **Lifecy
 
 Weights are as follows:
 
-* Compensation: 1.5
-* Lifecycle and Financials: 1.5
+* Compensation: 2.0
+* Lifecycle and Financials: 2.0
 
 Other score types retain the default weight of 1.
