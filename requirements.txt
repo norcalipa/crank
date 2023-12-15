@@ -1,3 +1,4 @@
 Django~=4.2
 django-allauth~=0.58.2
+django-bootstrap5~=23.3
 Markdown~=3.5.1
