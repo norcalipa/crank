@@ -7,7 +7,6 @@ on:
 
 env:
   PROJECT_ID: crank-404520
-  GAR_LOCATION: us-west1
   SERVICE: crank
   REGION: us-west1
   ARTIFACT_REPO: crank-repository
@@ -37,16 +36,16 @@ jobs:
         with:
           username: '_json_key'
           password: '${{ secrets.GCP_CREDENTIALS }}'
-          registry: '${{ env.GAR_LOCATION }}-docker.pkg.dev'
+          registry: '${{ env.REGION }}-docker.pkg.dev'
 
       - name: 'Build and Push Container'
         id: 'build-image'
         uses: 'docker/build-push-action@v3'
         with:
           push: true
-          tags: '${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.SERVICE }}:${{ github.sha }}'
+          tags: '${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.SERVICE }}:${{ github.sha }}'
           # NOTE: If using a pre-built image, update the image name here
-          # tags: '${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{ github.sha }}'
+          # tags: '${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{ github.sha }}'
 
       - name: 'Deploy to Cloud Run'
         id: 'deploy'
@@ -55,7 +54,7 @@ jobs:
           service: '${{ env.SERVICE }}'
           region: '${{ env.REGION }}'
           # NOTE: If using a pre-built image, update the image name here
-          image: '${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.SERVICE }}:${{ github.sha }}'
+          image: '${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.SERVICE }}:${{ github.sha }}'
 
       # If required, use the Cloud Run url output in later steps
       - name: 'Show Output'
