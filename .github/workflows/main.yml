@@ -51,6 +51,13 @@ jobs:
         id: 'deploy'
         uses: 'google-github-actions/deploy-cloudrun@v2'
         with:
+          env_vars: |
+            ENV=prod
+            DB_HOST=aws.connect.psdb.cloud
+            DB_NAME=crank
+          secrets: |
+            DB_USERNAME=DB_USERNAME:latest
+            DB_PASSWORD=DB_PASSWORD:latest
           service: '${{ env.SERVICE }}'
           region: '${{ env.REGION }}'
           # NOTE: If using a pre-built image, update the image name here
@@ -59,3 +66,7 @@ jobs:
       # If required, use the Cloud Run url output in later steps
       - name: 'Show Output'
         run: 'echo ${{ steps.deploy.outputs.url }}'
+DB_HOST=aws:
+  connect:
+    psdb:
+      cloud:
