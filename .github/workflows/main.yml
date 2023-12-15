@@ -43,8 +43,6 @@ jobs:
           docker build -t "${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{ github.sha }}" ./
           docker push "${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{ github.sha }}"
 
-
-
       - name: Install PlanetScale CLI
         run: |
           curl -L https://github.com/planetscale/cli/releases/latest/download/pscale-cli-linux-amd64 -o pscale
