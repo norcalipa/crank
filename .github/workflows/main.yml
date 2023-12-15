@@ -21,11 +21,11 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
         # Alternative option - authentication via credentials json
       - id: 'auth'
-        uses: 'google-github-actions/auth'
+        uses: 'google-github-actions/auth@v2'
         with:
           credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
 
