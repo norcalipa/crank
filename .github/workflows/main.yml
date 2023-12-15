@@ -10,6 +10,7 @@ env:
   GAR_LOCATION: us-west1
   SERVICE: crank
   REGION: us-west1
+  ARTIFACT-REPO: crank-repository
 
 jobs:
   deploy:
@@ -25,39 +26,39 @@ jobs:
 
         # Alternative option - authentication via credentials json
       - id: 'auth'
+        name: 'Authenticate with Google Cloud'
         uses: 'google-github-actions/auth@v2'
         with:
           credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
 
       # Authenticate Docker to Google Cloud Artifact Registry
-      - name: Docker Auth
-        id: docker-auth
-        uses: 'docker/login-action@v1'
+      - name: 'Authenticate with Google Cloud Artifact Registry'
+        uses: 'docker/login-action@v3'
         with:
+          registry: '${{ env.GAR_LOCATION }}-docker.pkg.dev'
           username: 'oauth2accesstoken'
           password: '${{ steps.auth.outputs.access_token }}'
-          registry: '${{ env.GAR_LOCATION }}-docker.pkg.dev'
 
-      - name: Build and Push Container
-        run: |-
-          docker build -t "${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{ github.sha }}" ./
-          docker push "${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{ github.sha }}"
-
-      - name: Install PlanetScale CLI
+      - name: 'Install PlanetScale CLI'
         run: |
           curl -L https://github.com/planetscale/cli/releases/latest/download/pscale-cli-linux-amd64 -o pscale
           chmod +x pscale
           sudo mv pscale /usr/local/bin/
 
-      - name: Log in to PlanetScale
+      - name: 'Log in to PlanetScale'
         run: |
           echo ${{ secrets.PSCALE_TOKEN }} | pscale auth login
 
-      - name: Connect to PlanetScale database
+      - name: 'Connect to PlanetScale database'
         run: |
           pscale connect my-database main
 
-      - name: Deploy to Cloud Run
+      - name: 'Build and Push Container'
+        run: |-
+          docker build -t "${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ ARTIFACT-REPO }}/${{ env.SERVICE }}:${{ github.sha }}" ./
+          docker push "${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ ARTIFACT-REPO }}/${{ env.SERVICE }}:${{ github.sha }}"
+
+      - name: 'Deploy to Cloud Run'
         id: deploy
         uses: google-github-actions/deploy-cloudrun@v0
         with:
@@ -67,5 +68,5 @@ jobs:
           image: ${{ env.GAR_LOCATION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{ github.sha }}
 
       # If required, use the Cloud Run url output in later steps
-      - name: Show Output
+      - name: 'Show Output'
         run: echo ${{ steps.deploy.outputs.url }}
