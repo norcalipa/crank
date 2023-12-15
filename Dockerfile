@@ -10,6 +10,10 @@ ADD . /app
 
 RUN apt-get update -y
 RUN apt-get install -y pkg-config
+RUN wget https://dev.mysql.com/get/mysql-apt-config_0.8.17-1_all.deb
+RUN dpkg -i mysql-apt-config_0.8.17-1_all.deb  # When prompted, select MySQL 8.0 and then Ok
+RUN apt-get update
+RUN apt-get install -y mysql-client
 # Upgrade pip
 RUN pip install --upgrade pip
 
