@@ -8,6 +8,8 @@ COPY .env-prod .env
 # Add current directory code to /app in container
 ADD . /app
 
+RUN apt-get update -y
+RUN apt-get install -y pkg-config
 # Upgrade pip
 RUN pip install --upgrade pip
 
