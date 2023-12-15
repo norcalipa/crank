@@ -8,6 +8,9 @@ COPY .env-prod .env
 # Add current directory code to /app in container
 ADD . /app
 
+# Upgrade pip
+RUN pip install --upgrade pip
+
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
