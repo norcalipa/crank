@@ -11,6 +11,7 @@ ADD . /app
 RUN apt-get update -y
 RUN apt-get install -y pkg-config
 RUN apt-get install -y wget
+RUN apt-get install -y gnupg
 RUN apt-get install -y lsb-release
 RUN wget https://dev.mysql.com/get/mysql-apt-config_0.8.17-1_all.deb
 RUN dpkg -i mysql-apt-config_0.8.17-1_all.deb
