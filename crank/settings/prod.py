@@ -19,29 +19,58 @@ DATABASES = {
         'OPTIONS': {'ssl': {'ca': os.environ.get('MYSQL_ATTR_SSL_CA')}}
     }
 }
-ALLOWED_HOSTS = ['crank.fyi']
+ALLOWED_HOSTS = [
+    'www.crank.fyi',
+    'crank.fyi',
+]
 LOGGING = {
     'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'local': {
+            'format': "[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s"
+        },
+
+        'verbose': {
+            'format': '{message}',
+            'style': '{',
+        },
+    },
     'filters': {
-        'require_debug_true': {
-            '()': 'django.utils.log.RequireDebugTrue',
+        'require_debug_false': {
+            '()': 'django.utils.log.RequireDebugFalse',
         }
     },
     'handlers': {
         'console': {
-            'level': 'INFO',
-            'filters': ['require_debug_true'],
             'class': 'logging.StreamHandler',
-        }
+            'formatter': 'local',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'WARNING',
     },
     'loggers': {
-        'django': {
-            'level': 'INFO',
+        'users': {
             'handlers': ['console'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
         },
         'django.db.backends': {
-            'level': 'INFO',
             'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'mail_admins': {
+            'level': 'ERROR',
+            'filters': ['require_debug_false'],
+            'class': 'django.utils.log.AdminEmailHandler'
         }
     }
 }
