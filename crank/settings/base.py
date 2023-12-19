@@ -24,8 +24,7 @@ LOGGING = {
     },
     'handlers': {
         'console': {
-            'level': 'DEBUG',
-            'filters': ['require_debug_true'],
+            'level': 'INFO',
             'class': 'logging.StreamHandler',
         }
     },
@@ -34,10 +33,6 @@ LOGGING = {
             'level': 'INFO',
             'handlers': ['console'],
         },
-        'django.db.backends': {
-            'level': 'DEBUG',
-            'handlers': ['console'],
-        }
     }
 }
 
@@ -88,7 +83,8 @@ ROOT_URLCONF = 'crank.urls'
 
 SECURE_CROSS_ORIGIN_OPENER_POLICY = None
 CORS_ALLOWED_ORIGINS = [
-    "http://local.crank.fyi:3000",
+    "http://local.crank.fyi:8000",
+    "https://www.crank.fyi",
     "https://crank.fyi",
 ]
 
