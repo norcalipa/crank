@@ -18,6 +18,7 @@ DATABASES = {
     }
 }
 ALLOWED_HOSTS = ['*']
+ACCOUNT_DEFAULT_HTTP_PROTOCOL = 'https'
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
