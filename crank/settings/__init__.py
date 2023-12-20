@@ -1,7 +1,10 @@
 from .base import *
+
 # you need to set "myproject = 'prod'" as an environment variable
 # in your OS (on which your website is hosted)
 if os.environ['ENV'] == 'prod':
-   from .prod import *
+    from .prod import *
+elif os.environ['ENV'] == 'staging':
+    from .staging import *
 else:
-   from .dev import *
+    from .dev import *
