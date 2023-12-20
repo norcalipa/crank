@@ -11,6 +11,9 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -86,6 +89,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://local.crank.fyi:8000",
     "https://www.crank.fyi",
     "https://crank.fyi",
+    "https://crank-c7vhrczuha-uw.a.run.app",
 ]
 
 TEMPLATES = [

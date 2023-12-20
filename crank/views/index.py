@@ -36,8 +36,6 @@ class IndexView(generic.ListView):
             if not ScoreAlgorithm.objects.filter(id=self.algorithm_id).exists():
                 self.algorithm_id = 1
                 self.request.session["algorithm_id"] = self.algorithm_id
-                self.error = True
-                raise ValueError("Invalid algorithm_id")
             if not self.algorithm:
                 self.algorithm = ScoreAlgorithm.objects.get(id=self.algorithm_id)
                 self.algorithm_cache[self.algorithm_id] = self.algorithm
