@@ -5,11 +5,7 @@ from pathlib import Path
 pymysql.install_as_MySQLdb()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-DEBUG = False
-SECURE_SSL_REDIRECT = True
-SECRET_KEY = os.environ.get('SECRET_KEY')
-SESSION_COOKIE_SECURE = True
-CSRF_COOKIE_SECURE = True
+DEBUG = True
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
