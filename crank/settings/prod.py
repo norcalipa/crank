@@ -19,10 +19,7 @@ DATABASES = {
         'OPTIONS': {'ssl': {'ca': os.environ.get('MYSQL_ATTR_SSL_CA')}}
     }
 }
-ALLOWED_HOSTS = [
-    'www.crank.fyi',
-    'crank.fyi',
-]
+ALLOWED_HOSTS = ['*']
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
