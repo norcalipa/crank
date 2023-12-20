@@ -58,6 +58,8 @@ jobs:
           secrets: |
             DB_USER=DB_USER:latest
             DB_PASS=DB_PASS:latest
+            SECRET_KEY=SECRET_KEY:latest
+
           service: '${{ env.SERVICE }}'
           region: '${{ env.REGION }}'
           # NOTE: If using a pre-built image, update the image name here
