@@ -1,13 +1,11 @@
 import os
 import pymysql
-from dotenv import load_dotenv
 from pathlib import Path
 
-load_dotenv()
 pymysql.install_as_MySQLdb()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-DEBUG = False
+DEBUG = True
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
