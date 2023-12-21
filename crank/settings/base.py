@@ -187,7 +187,7 @@ STATIC_URL = 'static/'
 STATICFILES_DIRS = (
     "templates/static/",
 )
-STATIC_ROOT = os.path.join(BASE_DIR, '/tmp/static')
+STATIC_ROOT = os.path.join(BASE_DIR, '/var/static')
 STORAGES = {
     # ...
     "staticfiles": {
