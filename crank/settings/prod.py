@@ -5,7 +5,7 @@ from pathlib import Path
 pymysql.install_as_MySQLdb()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-DEBUG = True
+DEBUG = False
 # SECURE_SSL_REDIRECT = True
 SECRET_KEY = os.environ.get('SECRET_KEY')
 #SESSION_COOKIE_SECURE = True
