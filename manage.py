@@ -3,10 +3,12 @@
 import os
 import sys
 from dotenv import load_dotenv
+from opentelemetry.instrumentation.django import DjangoInstrumentor
 
 
 def main():
     load_dotenv()
+    DjangoInstrumentor().instrument()
 
     """Run administrative tasks."""
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'crank.settings')
