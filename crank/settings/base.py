@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from opentelemetry.instrumentation.django import DjangoInstrumentor
 
 load_dotenv()
-DjangoInstrumentor().instrument()
+DjangoInstrumentor().instrument(is_sql_commentor_enabled=True)
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
