@@ -95,6 +95,12 @@ CORS_ALLOWED_ORIGINS = [
     "https://crank.fyi",
     "https://crank-c7vhrczuha-uw.a.run.app",
 ]
+CSRF_TRUSTED_ORIGINS = [
+    "http://local.crank.fyi:8000",
+    "https://www.crank.fyi",
+    "https://crank.fyi",
+    "https://crank-c7vhrczuha-uw.a.run.app",
+]
 
 TEMPLATES = [
     {
