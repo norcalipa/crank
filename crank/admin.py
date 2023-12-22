@@ -60,7 +60,7 @@ class ScoreAlgorithmAdmin(admin.ModelAdmin):
 
 class OrganizationAdmin(admin.ModelAdmin):
     list_display = ['name', 'type', 'url', 'gives_ratings', 'public', 'funding_round', 'rto_policy']
-    list_filter = ['status', 'type']
+    list_filter = ['status', 'type', 'gives_ratings']
     list_editable = ['type', 'funding_round', 'rto_policy']
     search_fields = ['name']
     model = Organization
