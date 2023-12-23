@@ -22,15 +22,15 @@ class IndexViewTests(TestCase):
             client_id='test',
             secret='test',
         )
+        self.score_algorithm = ScoreAlgorithm.objects.create(id=1, name='Test Algorithm', description_content='test.md')
         self.social_app.sites.add(Site.objects.get_current())
 
     def setup_scores(self):
-        org = Organization.objects.create(name='Test Organization')
-        score_type = ScoreType.objects.create(name='Test Score Type')
-        score_algorithm = ScoreAlgorithm.objects.create(name='Test Algorithm', description_content='test.md')
-        score_algorithm_weight = ScoreAlgorithmWeight.objects.create(algorithm_id=score_algorithm.id,
-                                                                     type_id=score_type.id, weight=1.0)
-        score = Score.objects.create(source_id=org.id, target_id=org.id, score=1.0, type_id=score_type.id)
+        org = Organization.objects.create(id=1, name='Test Organization')
+        score_type = ScoreType.objects.create(id=1, name='Test Score Type')
+        ScoreAlgorithmWeight.objects.create(algorithm_id=self.score_algorithm.id,
+                                            type_id=score_type.id, weight=1.0)
+        Score.objects.create(source_id=org.id, target_id=org.id, score=1.0, type_id=score_type.id)
         return org
 
     def test_index_view(self):
@@ -61,6 +61,7 @@ class IndexViewTests(TestCase):
         self.assertContains(response, 'CRank')
         self.assertContains(response, 'Test Algorithm')  # contents of the test.md file
         self.assertQuerySetEqual(response.context["top_organization_list"], [org])
+
     def test_empty_index_view(self):
         # we aren't adding data, so there should be no results
         request = self.factory.get(self.index_url)

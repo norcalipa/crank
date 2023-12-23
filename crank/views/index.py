@@ -36,9 +36,12 @@ class IndexView(generic.ListView):
             if not ScoreAlgorithm.objects.filter(id=self.algorithm_id).exists():
                 self.algorithm_id = 1
                 self.request.session["algorithm_id"] = self.algorithm_id
-            if not self.algorithm:
-                self.algorithm = ScoreAlgorithm.objects.get(id=self.algorithm_id)
-                self.algorithm_cache[self.algorithm_id] = self.algorithm
+            try:
+                if not self.algorithm:
+                    self.algorithm = ScoreAlgorithm.objects.get(id=self.algorithm_id)
+                    self.algorithm_cache[self.algorithm_id] = self.algorithm
+            except ScoreAlgorithm.DoesNotExist:
+                pass # we will handle empty algorithms by returning an empty object list
 
     def get_queryset(self):
         # if no algorithm_id in the URL, check for one in the session
@@ -48,11 +51,16 @@ class IndexView(generic.ListView):
         # if no algorithm_id in the session, use the default
         try:
             self._check_algorithm_id()
+            if not self.algorithm:
+                # this should generally not happen since there should *always* be a default algorithm
+                self.object_list = []
+                return self.object_list
         except ValueError:
             return redirect('/')
 
         """Return all active organizations with scores in descending order."""
-        self.object_list = Organization.objects.raw('''
+        try:
+            self.object_list = Organization.objects.raw('''
 SELECT orgs.id,
        orgs.name,
        orgs.type,
@@ -94,6 +102,10 @@ FROM
 WHERE score_types.target_id = orgs.id
 GROUP BY id, name, type
 ORDER BY avg_score DESC''', [self.algorithm_id])
+            return self.object_list
+        except Organization.DoesNotExist:
+            self.object_list = []
+
         return self.object_list
 
     def get_context_data(self, **kwargs):
