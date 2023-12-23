@@ -11,6 +11,9 @@ class ScoreType(TimeStampedModel, ActivatorModel):
 
     name = models.CharField(max_length=100)
 
+    class Meta:
+        app_label = 'crank'
+
 
 class ScoreAlgorithm(TimeStampedModel, ActivatorModel):
     def __str__(self):
@@ -19,6 +22,9 @@ class ScoreAlgorithm(TimeStampedModel, ActivatorModel):
     name = models.CharField(max_length=100)
     description_content = models.CharField(max_length=50, default="")
 
+    class Meta:
+        app_label = 'crank'
+
 
 class ScoreAlgorithmWeight(TimeStampedModel, ActivatorModel):
     type = models.ForeignKey(ScoreType, on_delete=models.CASCADE, limit_choices_to={"status": 1})
@@ -26,6 +32,7 @@ class ScoreAlgorithmWeight(TimeStampedModel, ActivatorModel):
     weight = models.FloatField(default=1.0)
 
     class Meta:
+        app_label = 'crank'
         constraints = [
             # this constraint ensures there is only one active score for a given type, source, and target
             UniqueConstraint(name="unique_type_algorithm_status",
@@ -49,6 +56,7 @@ class Score(TimeStampedModel, ActivatorModel):
     high_threshold = models.FloatField(default=5.0)
 
     class Meta:
+        app_label = 'crank'
         constraints = [
             # this constraint ensures there is only one active score for a given type, source, and target
             UniqueConstraint(name="unique_score_type_source_target_status",

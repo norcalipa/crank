@@ -52,3 +52,5 @@ class Organization(TimeStampedModel, ActivatorModel):
         results = self.scores.values("type__name").annotate(avg_score=Avg('score'))
         return results
 
+    class Meta:
+        app_label = 'crank'
