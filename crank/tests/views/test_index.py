@@ -6,7 +6,7 @@ from django.contrib.sites.models import Site
 
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 from crank.views.index import IndexView
-
+from crank.settings import DEFAULT_ALGORITHM_ID
 
 class IndexViewTests(TestCase):
 
@@ -22,7 +22,7 @@ class IndexViewTests(TestCase):
             client_id='test',
             secret='test',
         )
-        self.score_algorithm = ScoreAlgorithm.objects.create(id=1, name='Test Algorithm', description_content='test.md')
+        self.score_algorithm = ScoreAlgorithm.objects.create(id=DEFAULT_ALGORITHM_ID, name='Test Algorithm', description_content='test.md')
         self.social_app.sites.add(Site.objects.get_current())
 
     def setup_scores(self):
