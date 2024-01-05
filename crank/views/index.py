@@ -7,10 +7,7 @@ from django.views import generic
 
 from crank.models.organization import Organization
 from crank.models.score import ScoreAlgorithm
-from crank.settings.base import BASE_DIR
-
-CONTENT_DIR = os.path.join(str(BASE_DIR), "crank/content")
-
+from crank.settings.base import CONTENT_DIR, DEFAULT_ALGORITHM_ID
 
 class IndexView(generic.ListView):
     algorithm_cache = {}
@@ -34,7 +31,7 @@ class IndexView(generic.ListView):
                 self.algorithm = IndexView.algorithm_cache[self.algorithm_id]
                 return
             if not ScoreAlgorithm.objects.filter(id=self.algorithm_id).exists():
-                self.algorithm_id = 1
+                self.algorithm_id = DEFAULT_ALGORITHM_ID
                 self.request.session["algorithm_id"] = self.algorithm_id
             try:
                 if not self.algorithm:
