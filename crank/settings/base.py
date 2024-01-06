@@ -19,6 +19,8 @@ DjangoInstrumentor().instrument(is_sql_commentor_enabled=True)
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+CONTENT_DIR = os.path.join(str(BASE_DIR), "crank/content")
+DEFAULT_ALGORITHM_ID = 5
 
 LOGGING = {
     'version': 1,
