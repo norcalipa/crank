@@ -6,7 +6,8 @@ looking for great pay at a company that is well-run.
 Weights are as follows:
 
 * Compensation: 2.0
-* Lifecycle and Financials: 1.5
+* Lifecycle and Financials: 2.0
+* Vesting Schedule: 2.0
 * Culture: 1.5
 * Leadership: 1.5
 
