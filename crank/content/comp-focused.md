@@ -2,7 +2,7 @@ The comp-focused algorithm gives greater weight to **Compensation** and **Lifecy
 
 Weights are as follows:
 
-* Compensation: 2.0
+* Compensation: 3.0
 * Lifecycle and Financials: 2.0
 * Vesting Schedule: 2.0
 

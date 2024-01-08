@@ -2,7 +2,7 @@ The culture-focused algorithm gives greater weight to **Culture** and **Lifecycl
 
 Weights are as follows:
 
-* Culture: 2.0
+* Culture: 3.0
 * Leadership: 2.0
 * Reputation: 1.5
 * Product and Mission: 1.5
