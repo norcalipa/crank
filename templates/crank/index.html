@@ -30,6 +30,7 @@
                 <div class="col-8">
                     <table class="table">
                         <tr>
+                            <th>Rank</th>
                             <th>Name</th>
                             <th>Overall Score</th>
                             <th>Funding Round</th>
@@ -38,6 +39,7 @@
                         </tr>
                         {% for org in top_organization_list %}
                             <tr>
+                                <td>{{ org.ranking }}</td>
                                 <td><a href="{% url 'organization' org.id %}">{{ org.name }}</a></td>
                                 <td>{{ org.avg_score|floatformat:'2' }}</td>
                                 <td>{{ org.get_funding_round_display }}</td>
