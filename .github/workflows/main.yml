@@ -54,7 +54,7 @@ jobs:
 
       - name: 'Build and Push Container'
         id: 'build-image'
-        uses: 'docker/build-push-action@v3'
+        uses: 'docker/build-push-action@v5'
         with:
           push: true
           tags: '${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.SERVICE }}:${{ github.sha }}'
