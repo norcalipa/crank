@@ -11,6 +11,7 @@ COPY .env-prod .env
 
 RUN apk add --no-cache --virtual build-deps gcc musl-dev libffi-dev pkgconf mariadb-dev
 RUN apk add --no-cache mariadb-connector-c-dev
+RUN apk add --no-cache expat=2.6.0-r0
 RUN pip install --no-cache-dir -r requirements.txt
 RUN apk del build-deps
 RUN python manage.py collectstatic --noinput
