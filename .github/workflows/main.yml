@@ -1,6 +1,14 @@
 name: Deploy to Google Cloud
 
 on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
+  push:
+    branches:
+      - main
   workflow_run:
     workflows: [ "Run Tests" ]
     types:
@@ -22,6 +30,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Check if last commit was a merge commit
+        id: check
+        run: |
+            if [[ "$(git log --merges -1 --pretty=%H)" != "$(git log -1 --pretty=%H)" ]]; then
+              echo "This was not a merge commit. Exiting..."
+              exit 1
+            fi
+
       - name: Checkout code
         uses: actions/checkout@v4
 
