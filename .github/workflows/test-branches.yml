@@ -24,5 +24,6 @@ jobs:
       - name: Run tests
         env:
           ENV: dev
+          SECRET_KEY: '${{ secrets.SECRET_KEY }}'
         run: |
           pytest
