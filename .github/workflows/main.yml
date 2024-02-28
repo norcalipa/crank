@@ -50,6 +50,7 @@ jobs:
         name: Test with pytest
         env:
           ENV: dev
+          SECRET_KEY: '${{ secrets.SECRET_KEY }}'
         run: |
           pytest
 
