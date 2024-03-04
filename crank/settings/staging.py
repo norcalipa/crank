@@ -6,6 +6,7 @@ pymysql.install_as_MySQLdb()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEBUG = False
+SECRET_KEY = os.environ["SECRET_KEY"]
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
