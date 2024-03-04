@@ -1,7 +1,9 @@
 from pathlib import Path
+import os
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEBUG = True
+SECRET_KEY = os.environ["SECRET_KEY"]
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
