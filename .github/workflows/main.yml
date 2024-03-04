@@ -71,6 +71,8 @@ jobs:
 
       - name: 'Build and Push Container'
         id: 'build-image'
+        env:
+          SECRET_KEY: '${{ secrets.SECRET_KEY }}'
         uses: 'docker/build-push-action@v5'
         with:
           push: true
