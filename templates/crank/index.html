@@ -12,7 +12,8 @@
                         <div class="card-body">
                             <h3 class="card-title">Scoring Algorithm:</h3>
                             <form method="get">
-                                <select class="form-select form-select-lg mb3 border-primary" id="algorithm_id" onchange="submitForm()">
+                                <select class="form-select form-select-lg mb3 border-primary" id="algorithm_id"
+                                        onchange="submitForm()">
                                     {% for algo in all_algorithms %}
                                         <option value="{{ algo.id }}"
                                                 {% if algo.id == algorithm.id %}selected{% endif %}>
@@ -48,6 +49,43 @@
                             </tr>
                         {% endfor %}
                     </table>
+                    <div class="pagination">
+                        <ul class="pagination">
+                            {% if page_obj.has_previous %}
+                                <li class="page-item">
+                                    <a class="page-link" href="?page=1" aria-label="First">
+                                        <span aria-hidden="true">&laquo;</span>
+                                    </a>
+                                </li>
+                                <li class="page-item">
+                                    <a class="page-link" href="?page={{ page_obj.previous_page_number }}"
+                                       aria-label="Previous">
+                                        <span aria-hidden="true">Prev</span>
+                                    </a>
+                                </li>
+                            {% endif %}
+
+                            {% for i in page_obj.paginator.page_range %}
+                                <li class="page-item {% if page_obj.number == i %}active{% endif %}">
+                                    <a class="page-link" href="?page={{ i }}">{{ i }}</a>
+                                </li>
+                            {% endfor %}
+
+                            {% if page_obj.has_next %}
+                                <li class="page-item">
+                                    <a class="page-link" href="?page={{ page_obj.next_page_number }}" aria-label="Next">
+                                        <span aria-hidden="true">Next</span>
+                                    </a>
+                                </li>
+                                <li class="page-item">
+                                    <a class="page-link" href="?page={{ page_obj.paginator.num_pages }}"
+                                       aria-label="Last">
+                                        <span aria-hidden="true">&raquo;</span>
+                                    </a>
+                                </li>
+                            {% endif %}
+                        </ul>
+                    </div>
                     {% else %}
                     <p>No organizations are available or the Score Algorithm you specified doesn't exist.</p>
                 </div>
