@@ -1,6 +1,7 @@
 import os
 
 import markdown
+from django.core.paginator import Paginator
 from django.shortcuts import redirect
 from django.urls import reverse
 from django.views import generic
@@ -9,8 +10,12 @@ from crank.models.organization import Organization
 from crank.models.score import ScoreAlgorithm
 from crank.settings.base import CONTENT_DIR, DEFAULT_ALGORITHM_ID
 
+
 class IndexView(generic.ListView):
     algorithm_cache = {}
+    template_name = "crank/index.html"
+    context_object_name = "top_organization_list"
+    paginate_by = 15
 
     def __init__(self):
         super().__init__()
@@ -19,9 +24,6 @@ class IndexView(generic.ListView):
         self.algorithm_id = None
         self.algorithm = None
         self.error = None
-
-    template_name = "crank/index.html"
-    context_object_name = "top_organization_list"
 
     def _check_algorithm_id(self):
         if not self.algorithm:
@@ -38,7 +40,7 @@ class IndexView(generic.ListView):
                     self.algorithm = ScoreAlgorithm.objects.get(id=self.algorithm_id)
                     self.algorithm_cache[self.algorithm_id] = self.algorithm
             except ScoreAlgorithm.DoesNotExist:
-                pass # we will handle empty algorithms by returning an empty object list
+                pass  # we will handle empty algorithms by returning an empty object list
 
     def get_queryset(self):
         # if no algorithm_id in the URL, check for one in the session
