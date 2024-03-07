@@ -2,7 +2,7 @@ The tech-focused algorithm gives greater weight to **Tech Stack** and **Product 
 
 Weights are as follows:
 
-* Tech-Stack: 2.0
+* Tech-Stack: 4.0
 * Product and Mission: 2.0
 
 Other score types retain the default weight of 1.

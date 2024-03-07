@@ -1,1 +1,1 @@
-The balanced algorithm gives the default weight of 1 to all score types.
+The balanced algorithm gives an equal weight to all score types.
