@@ -1,5 +1,5 @@
-this algorithm places a much higher weight on compensation, with 
-slightly higher weights on Leadership, Lifecycle and Financials, and Culture.
+This algorithm places a much higher weight on **Compensation**, **Vesting Schedule**, and **Lifecycle and Financials** 
+score types, with slightly higher weights on **Leadership**, **Culture**, and **Layoffs**.
 This algorithm is intended to provide the best overall experience for individuals
 looking for great pay at a company that is well-run.
 

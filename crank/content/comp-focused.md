@@ -1,4 +1,5 @@
-The comp-focused algorithm gives greater weight to **Compensation** and **Lifecycle and Financials** score types.  
+The comp-focused algorithm gives greater weight to **Compensation**, **Vesting Schedule**, and **Lifecycle 
+and Financials** score types.  
 
 Weights are as follows:
 
