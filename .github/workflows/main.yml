@@ -69,7 +69,7 @@ jobs:
           password: '${{ secrets.GCP_CREDENTIALS }}'
           registry: '${{ env.REGION }}-docker.pkg.dev'
 
-      - name: 'Build and Push Container'
+      - name: 'Build and Push Container to Google Cloud Artifact Registry'
         id: 'build-image'
         env:
           SECRET_KEY: '${{ secrets.SECRET_KEY }}'
@@ -79,6 +79,20 @@ jobs:
           tags: '${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.SERVICE }}:${{ github.sha }}'
           # NOTE: If using a pre-built image, update the image name here
           # tags: '${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{ github.sha }}'
+
+      - name: 'Authenticate with GitHub Container Registry'
+        uses: 'docker/login-action@v1'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 'Build and Push Container to GitHub Container Registry'
+        uses: 'docker/build-push-action@v2'
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}/${{ env.SERVICE }}:${{ github.sha }}
 
       - name: 'Deploy to Cloud Run'
         id: 'deploy'
