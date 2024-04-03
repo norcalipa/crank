@@ -12,7 +12,7 @@ CREATE TABLE `account_emailaddress` (
   `user_id` int NOT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `account_emailaddress_user_id_email_987c8728_uniq` (`user_id`,`email`),
-  KEY `account_emailaddress_upper` ((upper(`email`))),
+  KEY `account_emailaddress_upper` ((UPPER(`email`))),
   CONSTRAINT `account_emailaddress_user_id_2c513194_fk_auth_user_id` FOREIGN KEY (`user_id`) REFERENCES `auth_user` (`id`)
 ) ENGINE=InnoDB AUTO_INCREMENT=7 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
