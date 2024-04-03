@@ -1,0 +1,31 @@
+name: Deploy to Kubernetes on Fats
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.5.3
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Install Cloudflared
+        run: |
+          wget https://bin.equinox.io/c/VdrWdbjqyF/cloudflared-stable-linux-amd64.deb
+          sudo dpkg -i cloudflared-stable-linux-amd64.deb
+
+      - name: Deploy to Kubernetes
+        run: |
+          cloudflared tunnel --hostname ${SSH_HOST} --url ssh://${SSH_HOST}
+          ssh -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} <<EOF
+          k0s kubectl apply -f deployment.yaml
+          EOF
