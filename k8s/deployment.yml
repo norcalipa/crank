@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crank-deployment
+  labels:
+    app: crank
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: crank
+  template:
+    metadata:
+      labels:
+        app: crank
+    spec:
+      containers:
+      - name: crank-container
+        image: ghcr.io/norcalipa/crank/crank:latest
+        ports:
+        - containerPort: 8080
