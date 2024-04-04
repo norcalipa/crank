@@ -31,7 +31,7 @@ jobs:
 
       - name: Deploy to Kubernetes
         run: |
-          cloudflared tunnel --hostname ${SSH_HOST} --url ssh://${SSH_HOST}
+          #cloudflared tunnel --hostname ${SSH_HOST} --url ssh://${SSH_HOST}
           ssh -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} <<EOF
-          k0s kubectl apply -f deployment.yaml
+          k0s kubectl apply -f deployment.yml
           EOF
