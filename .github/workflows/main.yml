@@ -1,12 +1,9 @@
-name: Deploy to Google Cloud
+name: Build Image
 
 on:
   pull_request:
     types:
       - closed
-    branches:
-      - main
-  push:
     branches:
       - main
   workflow_run:
@@ -47,40 +44,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - id: 'test'
-        name: Test with pytest
-        env:
-          ENV: dev
-          SECRET_KEY: '${{ secrets.SECRET_KEY }}'
-        run: |
-          pytest
-
-        # Alternative option - authentication via credentials json
-      - id: 'auth'
-        name: 'Authenticate with Google Cloud'
-        uses: 'google-github-actions/auth@v2'
-        with:
-          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
-
-      # Authenticate Docker to Google Cloud Artifact Registry
-      - name: 'Authenticate with Google Cloud Artifact Registry'
-        uses: 'docker/login-action@v3'
-        with:
-          username: '_json_key'
-          password: '${{ secrets.GCP_CREDENTIALS }}'
-          registry: '${{ env.REGION }}-docker.pkg.dev'
-
-      - name: 'Build and Push Container to Google Cloud Artifact Registry'
-        id: 'build-image'
-        env:
-          SECRET_KEY: '${{ secrets.SECRET_KEY }}'
-        uses: 'docker/build-push-action@v5'
-        with:
-          push: true
-          tags: '${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.SERVICE }}:${{ github.sha }}'
-          # NOTE: If using a pre-built image, update the image name here
-          # tags: '${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{ github.sha }}'
-
       - name: 'Authenticate with GitHub Container Registry'
         uses: 'docker/login-action@v1'
         with:
@@ -94,25 +57,3 @@ jobs:
           context: .
           push: true
           tags: ghcr.io/${{ github.repository }}/${{ env.SERVICE }}:${{ github.sha }}
-
-      - name: 'Deploy to Cloud Run'
-        id: 'deploy'
-        uses: 'google-github-actions/deploy-cloudrun@v2'
-        with:
-          env_vars: |
-            ENV=prod
-            DB_HOST=aws.connect.psdb.cloud
-            DB_NAME=crank
-          secrets: |
-            DB_USER=DB_USER:latest
-            DB_PASS=DB_PASS:latest
-            SECRET_KEY=SECRET_KEY:latest
-
-          service: '${{ env.SERVICE }}'
-          region: '${{ env.REGION }}'
-          # NOTE: If using a pre-built image, update the image name here
-          image: '${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/${{ env.SERVICE }}:${{ github.sha }}'
-
-      # If required, use the Cloud Run url output in later steps
-      - name: 'Show Output'
-        run: 'echo ${{ steps.deploy.outputs.url }}'
