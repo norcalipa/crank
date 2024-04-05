@@ -1,6 +1,4 @@
 name: Deploy to Kubernetes on Fats
-env:
-    GITHUB_SHA: ${{ github.sha }}
 on:
   pull_request:
     types:
@@ -43,6 +41,6 @@ jobs:
 
           # Apply the copied deployment.yml
           ssh -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} <<EOF
-          export GITHUB_SHA=${GITHUB_SHA}
+          export GITHUB_SHA=${{ github.sha }}
           k3s kubectl apply -f /tmp/deployment.yml
           EOF
