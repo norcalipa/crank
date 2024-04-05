@@ -13,7 +13,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
+    if: github.ref == 'refs/heads/main' && github.event.workflow_run.conclusion == 'success'
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -42,5 +42,5 @@ jobs:
           # Apply the copied deployment.yml
           ssh -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} <<EOF
           export GITHUB_SHA=${{ github.sha }}
-          k3s kubectl apply -f /tmp/deployment.yml
+          envsubst /tmp/deployment.yml | k3s kubectl apply -f -
           EOF
