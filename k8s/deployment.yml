@@ -1,21 +1,76 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: crank
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: crank-deployment
+  name: crank
+  namespace: crank
   labels:
-    app: crank
+    app.kubernetes.io/name: crank
+    app.kubernetes.io/instance: crank
+    app.kubernetes.io/version: ${GITHUB_SHA}
+
 spec:
-  replicas: 2
+  replicas: 1
+  strategy:
+    type: "Recreate"
   selector:
     matchLabels:
-      app: crank
+      app.kubernetes.io/name: crank
+      app.kubernetes.io/instance: crank
   template:
     metadata:
       labels:
-        app: crank
+        app.kubernetes.io/name: crank
+        app.kubernetes.io/instance: crank
     spec:
       containers:
       - name: crank-container
-        image: ghcr.io/norcalipa/crank/crank:latest
+        image: ghcr.io/norcalipa/crank/crank:${GITHUB_SHA}
         ports:
-        - containerPort: 8080
+          - name: http
+            containerPort: 8080
+            protocol: TCP
+        env:
+        - name: DB_HOST
+          value: "10.2.2.10"
+        - name: DB_NAME
+          value: "crank"
+        - name: DB_USER
+          value: "crank"
+        - name: DB_PORT
+          value: "3306"
+        - name: ENV
+          value: "prod"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        envFrom:
+        - secretRef:
+            name: db-connect-credentials
+      imagePullSecrets:
+        - name: ghcr-credentials
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: crank
+  namespace: crank
+  labels:
+    app.kubernetes.io/name: crank
+    app.kubernetes.io/instance: crank
+    app.kubernetes.io/version: ${GITHUB_SHA}
+spec:
+  type: NodePort
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+      nodePort: 30800
+  selector:
+    app.kubernetes.io/name: crank
+    app.kubernetes.io/instance: crank

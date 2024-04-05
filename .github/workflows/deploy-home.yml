@@ -1,5 +1,6 @@
 name: Deploy to Kubernetes on Fats
-
+env:
+    GITHUB_SHA: ${{ github.sha }}
 on:
   pull_request:
     types:
