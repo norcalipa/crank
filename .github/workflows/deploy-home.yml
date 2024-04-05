@@ -39,7 +39,7 @@ jobs:
       - name: Deploy to Kubernetes
         run: |
           # Copy deployment.yml to the remote system
-          scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./deployment.yml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/deployment.yml
+          scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/deployment.yml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/deployment.yml
 
           # Apply the copied deployment.yml
           ssh -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} <<EOF
