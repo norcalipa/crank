@@ -18,7 +18,7 @@ env:
   ARTIFACT_REPO: crank-repository
 
 jobs:
-  deploy:
+  deploy-gcp:
     if: github.ref == 'refs/heads/main' && github.event.workflow_run.conclusion == 'success'
     permissions:
       contents: 'read'
