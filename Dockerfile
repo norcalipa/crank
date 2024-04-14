@@ -7,8 +7,6 @@ WORKDIR /app
 # Add current directory code to /app in container
 ADD . /app
 
-ENV DEBUG=1
-
 COPY .env-prod .env
 
 RUN apk add --no-cache --virtual build-deps gcc musl-dev libffi-dev pkgconf mariadb-dev
