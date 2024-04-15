@@ -6,7 +6,8 @@ coverage==7.3.2
 cryptography==42.0.4
 defusedxml==0.7.1
 Deprecated==1.2.14
-Django==4.2.6
+distlib==0.3.8
+Django==4.2.11
 django-allauth==0.58.2
 django-bootstrap5==23.3
 django-cors-headers==4.3.1
@@ -18,6 +19,7 @@ django-seed==0.3.1
 django-sslserver==0.22
 djangorestframework==3.14.0
 Faker==19.12.0
+filelock==3.13.4
 fontawesomefree==6.4.2
 idna==3.7
 importlib-metadata==6.11.0
@@ -35,6 +37,7 @@ opentelemetry-sdk==1.22.0
 opentelemetry-semantic-conventions==0.43b0
 opentelemetry-util-http==0.43b0
 packaging==23.2
+platformdirs==4.2.0
 pluggy==1.3.0
 pycparser==2.21
 PyJWT==2.8.0
@@ -48,11 +51,13 @@ pytz==2023.3.post1
 PyYAML==6.0.1
 requests==2.31.0
 requests-oauthlib==1.3.1
+setuptools==69.5.1
 six==1.16.0
 sqlparse==0.4.4
 toposort==1.10
 typing_extensions==4.9.0
 urllib3==2.0.7
+virtualenv==20.25.1
 whitenoise==6.6.0
 wrapt==1.15.0
 zipp==3.17.0
