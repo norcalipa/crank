@@ -1,11 +1,12 @@
 # Use an official Python runtime as a parent image
-FROM python:3.13.0a6-alpine3.19
+FROM python:3.12.3-alpine3.19
 
 # Set the working directory in the container to /app
 WORKDIR /app
 
 # Add current directory code to /app in container
 ADD . /app
+
 
 COPY .env-prod .env
 
