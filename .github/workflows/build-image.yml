@@ -1,11 +1,6 @@
 name: Build Image
 
 on:
-  pull_request:
-    types:
-      - closed
-    branches:
-      - main
   workflow_run:
     workflows: [ "Run Tests" ]
     types:
@@ -19,7 +14,7 @@ env:
 
 jobs:
   build-image:
-    if: github.event.workflow_run.conclusion == 'success'
+    if: github.event.workflow_run.conclusion == 'success' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main'
     permissions:
       contents: 'read'
       id-token: 'write'
