@@ -17,9 +17,13 @@ env:
   REGION: us-west1
   ARTIFACT_REPO: crank-repository
 
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-image:
-    if: github.event.workflow_run.conclusion == 'success'
+    if: github.event.workflow_run.conclusion == 'success' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main'
     permissions:
       contents: 'read'
       id-token: 'write'
