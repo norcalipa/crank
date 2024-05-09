@@ -1,6 +1,11 @@
 name: Build Image
 
 on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
   workflow_run:
     workflows: [ "Run Tests" ]
     types:
@@ -11,6 +16,10 @@ env:
   SERVICE: crank
   REGION: us-west1
   ARTIFACT_REPO: crank-repository
+
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-image:
