@@ -19,7 +19,7 @@ env:
 
 jobs:
   build-image:
-    if: github.event.pull_request.merged == true && github.event.workflow_run.conclusion == 'success'
+    if: github.event.workflow_run.conclusion == 'success'
     permissions:
       contents: 'read'
       id-token: 'write'
