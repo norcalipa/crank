@@ -3,10 +3,6 @@ name: Run Tests
 on:
   push:
 
-concurrency:
-  group: run-tests-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   run-tests:
     runs-on: ubuntu-latest
