@@ -1,10 +1,5 @@
 name: Deploy to Kubernetes on Fats
 on:
-  pull_request:
-    types:
-      - closed
-    branches:
-      - main
   workflow_run:
     workflows: [ "Build Image" ]
     types:
@@ -12,6 +7,7 @@ on:
 
 jobs:
   deploy-home-k3s:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
