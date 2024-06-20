@@ -29,56 +29,56 @@ spec:
         app.kubernetes.io/instance: crank
     spec:
       containers:
-      - name: crank-container
-        image: ghcr.io/norcalipa/crank/crank:$GITHUB_SHA
-        imagePullPolicy: Always
-        livenessProbe:
+        - name: crank-container
+          image: ghcr.io/norcalipa/crank/crank:$GITHUB_SHA
+          imagePullPolicy: Always
+          livenessProbe:
             httpGet: /
             initialDelaySeconds: 20
             timeoutSeconds: 1
             periodSeconds: 5
             successThreshold: 1
             failureThreshold: 3
-        readinessProbe:
+          readinessProbe:
             httpGet: /
             initialDelaySeconds: 20
             timeoutSeconds: 1
             periodSeconds: 5
             successThreshold: 1
             failureThreshold: 3
-        resources:
+          resources:
             requests:
-                memory: "160Mi"
-                cpu: "250m"
+              memory: "160Mi"
+              cpu: "250m"
             limits:
-                memory: "512Mi"
-                cpu: "1"
-        ports:
-          - name: http
-            containerPort: 8080
-            protocol: TCP
-        env:
-        - name: DB_HOST
-          value: "10.2.2.10"
-        - name: DB_NAME
-          value: "crank"
-        - name: DB_USER
-          value: "crank"
-        - name: DB_PORT
-          value: "3306"
-        - name: ENV
-          value: "prod"
-        - name: PYTHONUNBUFFERED
-          value: "1"
-        envFrom:
-        - secretRef:
-            name: db-connect-credentials
-      imagePullSecrets:
-        - name: ghcr-credentials
+              memory: "512Mi"
+              cpu: "1"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: DB_HOST
+              value: "10.2.2.10"
+            - name: DB_NAME
+              value: "crank"
+            - name: DB_USER
+              value: "crank"
+            - name: DB_PORT
+              value: "3306"
+            - name: ENV
+              value: "prod"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          envFrom:
+            - secretRef:
+                name: db-connect-credentials
       securityContext:
         runAsUser: 1000
         runAsGroup: 3000
         fsGroup: 2000
+      imagePullSecrets:
+        - name: ghcr-credentials
 ---
 apiVersion: v1
 kind: Service
