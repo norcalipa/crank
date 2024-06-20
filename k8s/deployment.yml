@@ -12,7 +12,7 @@ metadata:
   labels:
     app.kubernetes.io/name: crank
     app.kubernetes.io/instance: crank
-    app.kubernetes.io/version: "${GITHUB_SHA}"
+    app.kubernetes.io/version: $GITHUB_SHA
 
 spec:
   replicas: 1
@@ -34,7 +34,7 @@ spec:
           fsGroup: 1000
        containers:
         - name: crank-container
-          image: ghcr.io/norcalipa/crank/crank:"${GITHUB_SHA}"
+          image: ghcr.io/norcalipa/crank/crank:$GITHUB_SHA
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
@@ -99,7 +99,7 @@ metadata:
   labels:
     app.kubernetes.io/name: crank
     app.kubernetes.io/instance: crank
-    app.kubernetes.io/version: "${GITHUB_SHA}"
+    app.kubernetes.io/version: $GITHUB_SHA
 spec:
   type: NodePort
   ports:
