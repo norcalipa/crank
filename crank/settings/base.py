@@ -68,7 +68,6 @@ INSTALLED_APPS = [
     'crank',
     'django_bootstrap5',
     'fontawesomefree',
-    'coverage',
     'corsheaders',
     'rest_framework',
     'allauth',
@@ -77,6 +76,13 @@ INSTALLED_APPS = [
     'allauth.socialaccount.providers.google',
     'whitenoise',
 ]
+
+if DEBUG:
+    INSTALLED_APPS += (
+        'coverage',
+        'django_extensions',
+        'debug_toolbar',
+    )
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
