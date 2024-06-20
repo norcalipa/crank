@@ -67,6 +67,7 @@ INSTALLED_APPS = [
     'django.contrib.sites',
     'crank',
     'django_bootstrap5',
+    'django_extensions',
     'fontawesomefree',
     'corsheaders',
     'rest_framework',
@@ -80,7 +81,6 @@ INSTALLED_APPS = [
 if DEBUG:
     INSTALLED_APPS += (
         'coverage',
-        'django_extensions',
         'debug_toolbar',
     )
 
