@@ -12,7 +12,7 @@ metadata:
   labels:
     app.kubernetes.io/name: crank
     app.kubernetes.io/instance: crank
-    app.kubernetes.io/version: $GITHUB_SHA
+    app.kubernetes.io/version: "${GITHUB_SHA}"
 
 spec:
   replicas: 1
@@ -28,10 +28,21 @@ spec:
         app.kubernetes.io/name: crank
         app.kubernetes.io/instance: crank
     spec:
-      containers:
+       securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+          fsGroup: 1000
+       containers:
         - name: crank-container
-          image: ghcr.io/norcalipa/crank/crank:$GITHUB_SHA
+          image: ghcr.io/norcalipa/crank/crank:"${GITHUB_SHA}"
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+                drop:
+                    - ALL
           livenessProbe:
             httpGet:
               path: /
@@ -77,11 +88,7 @@ spec:
           envFrom:
             - secretRef:
                 name: db-connect-credentials
-      securityContext:
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
-      imagePullSecrets:
+     imagePullSecrets:
         - name: ghcr-credentials
 ---
 apiVersion: v1
@@ -92,7 +99,7 @@ metadata:
   labels:
     app.kubernetes.io/name: crank
     app.kubernetes.io/instance: crank
-    app.kubernetes.io/version: $GITHUB_SHA
+    app.kubernetes.io/version: "${GITHUB_SHA}"
 spec:
   type: NodePort
   ports:
