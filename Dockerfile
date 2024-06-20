@@ -13,6 +13,10 @@ ADD . /app
 
 COPY .env-prod .env
 
+# fixing busybox vulnerabilities identified by synk
+RUN apk add --no-cache --upgrade busybox
+RUN apk add --no-cache busybox-extras
+
 RUN apk add --no-cache --virtual build-deps gcc musl-dev libffi-dev pkgconf mariadb-dev
 RUN apk add --no-cache mariadb-connector-c-dev
 RUN pip install --no-cache-dir -r requirements.txt
