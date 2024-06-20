@@ -31,6 +31,14 @@ spec:
       containers:
       - name: crank-container
         image: ghcr.io/norcalipa/crank/crank:$GITHUB_SHA
+        imagePullPolicy: Always
+        resources:
+            requests:
+                memory: "160Mi"
+                cpu: "250m"
+            limits:
+                memory: "512Mi"
+                cpu: "1"
         ports:
           - name: http
             containerPort: 8080
@@ -53,6 +61,23 @@ spec:
             name: db-connect-credentials
       imagePullSecrets:
         - name: ghcr-credentials
+      livenessProbe:
+        httpGet:
+          path: /
+          port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 3000
+        fsGroup: 2000
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        seLinuxOptions:
+          type: spc_t
 ---
 apiVersion: v1
 kind: Service
