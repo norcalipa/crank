@@ -13,7 +13,6 @@ metadata:
     app.kubernetes.io/name: crank
     app.kubernetes.io/instance: crank
     app.kubernetes.io/version: $GITHUB_SHA
-
 spec:
   replicas: 1
   strategy:
@@ -73,10 +72,6 @@ spec:
           envFrom:
             - secretRef:
                 name: db-connect-credentials
-      securityContext:
-        runAsUser: 1000
-        runAsGroup: 3000
-        fsGroup: 2000
       imagePullSecrets:
         - name: ghcr-credentials
 ---
