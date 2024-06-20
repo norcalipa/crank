@@ -79,8 +79,6 @@ spec:
         runAsUser: 1000
         runAsGroup: 3000
         fsGroup: 2000
-        seLinuxOptions:
-          type: spc_t
 ---
 apiVersion: v1
 kind: Service
