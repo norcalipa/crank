@@ -13,6 +13,7 @@ metadata:
     app.kubernetes.io/name: crank
     app.kubernetes.io/instance: crank
     app.kubernetes.io/version: $GITHUB_SHA
+
 spec:
   replicas: 1
   strategy:
@@ -32,14 +33,18 @@ spec:
           image: ghcr.io/norcalipa/crank/crank:$GITHUB_SHA
           imagePullPolicy: Always
           livenessProbe:
-            httpGet: /
+            httpGet:
+              path: /
+              port: 8080
             initialDelaySeconds: 20
             timeoutSeconds: 1
             periodSeconds: 5
             successThreshold: 1
             failureThreshold: 3
           readinessProbe:
-            httpGet: /
+            httpGet:
+              path: /
+              port: 8080
             initialDelaySeconds: 20
             timeoutSeconds: 1
             periodSeconds: 5
@@ -72,6 +77,10 @@ spec:
           envFrom:
             - secretRef:
                 name: db-connect-credentials
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 3000
+        fsGroup: 2000
       imagePullSecrets:
         - name: ghcr-credentials
 ---
