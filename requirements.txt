@@ -14,7 +14,7 @@ django-extensions==3.2.3
 django-filter==24.2
 django-oauth-toolkit==2.4.0
 django-seed==0.3.1
-djangorestframework==3.14.0
+djangorestframework==3.15.2
 filelock==3.13.4
 fontawesomefree==6.4.2
 idna==3.7
