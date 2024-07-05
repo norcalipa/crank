@@ -1,5 +1,5 @@
 # Use an official Python runtime as a parent image
-FROM python:3.13.0b2-alpine3.19
+FROM python:3.13.0b3-alpine3.19
 
 # create a non-root user to run the app as
 RUN addgroup -S appgroup -g 1000
