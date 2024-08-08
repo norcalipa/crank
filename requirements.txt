@@ -6,7 +6,7 @@ cryptography==42.0.8
 defusedxml==0.7.1
 Deprecated==1.2.14
 distlib==0.3.8
-Django==4.2.14
+Django==4.2.15
 django-allauth==0.63.6
 django-bootstrap5==23.3
 django-cors-headers==4.3.1
