@@ -47,6 +47,7 @@ class Organization(TimeStampedModel, ActivatorModel):
         default=RTOPolicy.HYBRID,
         choices=RTOPolicy.choices,
     )
+    accelerated_vesting = models.BooleanField(default=False)
 
     def avg_scores(self):
         results = self.scores.values("type__name").annotate(avg_score=Avg('score'))

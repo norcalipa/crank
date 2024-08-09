@@ -1,14 +1,16 @@
 import os
 
 import markdown
-from django.core.paginator import Paginator
 from django.shortcuts import redirect
 from django.urls import reverse
+from django.utils.decorators import method_decorator
 from django.views import generic
+from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 
 from crank.models.organization import Organization
 from crank.models.score import ScoreAlgorithm
 from crank.settings.base import CONTENT_DIR, DEFAULT_ALGORITHM_ID
+from crank.forms.organization_filter import OrganizationFilterForm
 
 
 class IndexView(generic.ListView):
@@ -24,6 +26,7 @@ class IndexView(generic.ListView):
         self.algorithm_id = None
         self.algorithm = None
         self.error = None
+        self.accelerated_vesting = None
 
     def _check_algorithm_id(self):
         if not self.algorithm:
@@ -42,10 +45,18 @@ class IndexView(generic.ListView):
             except ScoreAlgorithm.DoesNotExist:
                 pass  # we will handle empty algorithms by returning an empty object list
 
+    def post(self, request, *args, **kwargs):
+        self.kwargs = kwargs
+        form = OrganizationFilterForm(self.request.POST or None, request=self.request)
+        self.accelerated_vesting = form.clean_accelerated_vesting()
+        return self.get(request, *args, **kwargs)
+
     def get_queryset(self):
         # if no algorithm_id in the URL, check for one in the session
         if not self.algorithm_id:
             self.algorithm_id = self.request.session.get("algorithm_id")
+
+        self.accelerated_vesting = self.request.session.get('accelerated_vesting', False)
 
         # if no algorithm_id in the session, use the default
         try:
@@ -65,6 +76,7 @@ SELECT id,
        type,
        rto_policy,
        funding_round,           
+       accelerated_vesting,
        avg_score,
        profile_completeness,
        RANK() OVER (ORDER BY avg_score desc) as ranking
@@ -74,6 +86,7 @@ FROM
            orgs.type,
            orgs.rto_policy,
            orgs.funding_round,
+           orgs.accelerated_vesting,
            SUM(orgs.avg_type_score * orgs.weight) / SUM(orgs.weight) AS avg_score,
            (CAST(score_types.score_type_count AS REAL) /
            /* Admittedly long calculation dividing total score types by the number present for each org */
@@ -85,6 +98,7 @@ FROM
                 co.type,
                 co.rto_policy,
                 co.funding_round,
+                co.accelerated_vesting,
                 AVG(cs.score) AS avg_type_score,
                 cw.weight,
                 ct.name AS score_type
@@ -97,7 +111,7 @@ FROM
          cs.type_id = cw.type_id AND
          cw.algorithm_id = %s AND
          cs.type_id = ct.id
-         GROUP BY co.id, co.name, co.type, co.rto_policy, co.funding_round, cw.weight, ct.name) orgs,
+         GROUP BY co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting, cw.weight, ct.name) orgs,
         /* Subquery that gives the number of score types present for an org */
         (SELECT target_id, count(*) AS score_type_count FROM
             (SELECT target_id,
@@ -110,6 +124,8 @@ FROM
     WHERE score_types.target_id = orgs.id
     GROUP BY id, name, type) scored_results
 ''', [self.algorithm_id])
+            if self.accelerated_vesting:
+                self.object_list = [org for org in self.object_list if org.accelerated_vesting]
             return self.object_list
         except Organization.DoesNotExist:
             self.object_list = []
@@ -122,6 +138,8 @@ FROM
         context = super().get_context_data(**kwargs)
         context['algorithm'] = self.get_algorithm_details()
         context['all_algorithms'] = ScoreAlgorithm.objects.filter(status=1)
+        context['form'] = OrganizationFilterForm(
+            initial={'accelerated_vesting': self.request.session.get('accelerated_vesting')}, request=self.request)
         return context
 
     def get_algorithm_details(self):
