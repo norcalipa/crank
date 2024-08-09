@@ -85,8 +85,8 @@ if DEBUG:
     )
 
 MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.security.SecurityMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -102,16 +102,21 @@ ROOT_URLCONF = 'crank.urls'
 SECURE_CROSS_ORIGIN_OPENER_POLICY = None
 CORS_ALLOWED_ORIGINS = [
     "http://local.crank.fyi:8000",
+    "https://local.crank.fyi:8000",
+    "https://staging.crank.fyi:8000",
     "https://www.crank.fyi",
     "https://crank.fyi",
-    "https://crank-c7vhrczuha-uw.a.run.app",
+    "https://cloudflareinsights.com",
 ]
+CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = [
     "http://local.crank.fyi:8000",
+    "https://local.crank.fyi:8000",
+    "https://staging.crank.fyi:8000",
     "https://www.crank.fyi",
     "https://crank.fyi",
-    "https://crank-c7vhrczuha-uw.a.run.app",
 ]
+CSRF_COOKIE_DOMAIN = ".crank.fyi"
 
 TEMPLATES = [
     {
@@ -123,6 +128,7 @@ TEMPLATES = [
             'context_processors': [
                 'django.template.context_processors.debug',
                 'django.template.context_processors.request',
+                'django.template.context_processors.csrf',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
             ],
@@ -139,6 +145,8 @@ WSGI_APPLICATION = 'crank.wsgi.application'
 EXTENSIONS_MAX_UNIQUE_QUERY_ATTEMPTS = 1000
 
 SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"
+SESSION_COOKIE_DOMAIN = ".crank.fyi"
+SESSION_COOKIE_SECURE = False
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators

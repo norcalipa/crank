@@ -3,41 +3,47 @@
 {% block head_title %}CRank Home{% endblock %}
 
 {% block content %}
+
     {% if top_organization_list %}
         <div class="container">
-            <div class="row">
-
-                <div class="col-4">
-                    <div class="card">
-                        <div class="card-body">
-                            <h3 class="card-title"><label for="algorithm_id">Scoring Algorithm:</label></h3>
-                            <form method="get">
-                                <select class="form-select form-select-lg mb3 border-primary" id="algorithm_id"
-                                        onchange="submitForm()">
-                                    {% for algo in all_algorithms %}
-                                        <option value="{{ algo.id }}"
-                                                {% if algo.id == algorithm.id %}selected{% endif %}>
-                                            {{ algo.name }}
-                                        </option>
-                                    {% endfor %}
-                                </select>
-                            </form>
-                            <div class="card-text">
-                                {{ algorithm.html_description_content |safe }}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-8">
-                    <div class="pagination">
-                        <ul class="pagination">
-                            {% for i in page_obj.paginator.page_range %}
-                                <li class="page-item {% if page_obj.number == i %}active{% endif %}">
-                                    <a class="page-link" href="?page={{ i }}">{{ i }}</a>
-                                </li>
+        <div class="row">
+        <div class="col-4">
+            <div class="card">
+                <div class="card-body">
+                    <h3 class="card-title"><label for="algorithm_id">Scoring Algorithm:</label></h3>
+                    <form method="get">
+                        <select class="form-select form-select-lg mb3 border-primary" id="algorithm_id"
+                                onchange="submitForm()">
+                            {% for algo in all_algorithms %}
+                                <option value="{{ algo.id }}"
+                                        {% if algo.id == algorithm.id %}selected{% endif %}>
+                                    {{ algo.name }}
+                                </option>
                             {% endfor %}
-                        </ul>
-                    </div>
+                        </select>
+                        <div class="card-text">
+                            {{ algorithm.html_description_content |safe }}
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        <div class="col-8">
+            <div class="pagination">
+                <ul class="pagination">
+                    {% for i in page_obj.paginator.page_range %}
+                        <li class="page-item {% if page_obj.number == i %}active{% endif %}">
+                            <a class="page-link" href="?page={{ i }}">{{ i }}</a>
+                        </li>
+                    {% endfor %}
+                </ul>
+            </div>
+            <div class="align-content-end">
+                <form method="post" id="accelerated_vesting_form">
+                    {% csrf_token %}
+                    {{ form.as_p }}
+                </form>
+                <div>
                     <table class="table">
                         <tr>
                             <th>Rank</th>
@@ -66,11 +72,14 @@
         </div>
     {% endif %}
 
-    <script>
-        function submitForm() {
-            var algorithmId = document.getElementById('algorithm_id').value;
-            var url = "{% url 'index' 0 %}".replace('0', algorithmId);
-            window.location.href = url;
-        }
-    </script>
+<script>
+    function submitForm() {
+        var algorithmId = document.getElementById('algorithm_id').value;
+        window.location.href = "{% url 'index' 0 %}".replace('0', algorithmId);
+    }
+    
+    document.getElementById('id_accelerated_vesting').addEventListener('change', function() {
+        document.getElementById('accelerated_vesting_form').submit();
+    });
+</script>
 {% endblock %}
