@@ -17,7 +17,6 @@ Including another URLconf
 from allauth.account.views import LogoutView
 from django.contrib import admin
 from django.urls import path, include
-
 from crank.views.index import IndexView
 from crank.views.organization import OrganizationView
 
