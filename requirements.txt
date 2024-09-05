@@ -2,11 +2,11 @@ asgiref==3.7.2
 certifi==2024.7.4
 cffi==1.17.0rc1
 charset-normalizer==3.3.2
-cryptography==42.0.8
+cryptography==43.0.1
 defusedxml==0.7.1
 Deprecated==1.2.14
 distlib==0.3.8
-Django==4.2.15
+Django==4.2.16
 django-allauth==0.63.6
 django-bootstrap5==23.3
 django-cors-headers==4.3.1
