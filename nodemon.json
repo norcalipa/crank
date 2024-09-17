@@ -1,0 +1,5 @@
+{
+  "watch": ["static/js/**/*.js"],
+  "ext": "js",
+  "exec": "npx webpack"
+}
