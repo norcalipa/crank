@@ -3,83 +3,46 @@
 {% block head_title %}CRank Home{% endblock %}
 
 {% block content %}
-
     {% if top_organization_list %}
         <div class="container">
-        <div class="row">
-        <div class="col-4">
-            <div class="card">
-                <div class="card-body">
-                    <h3 class="card-title"><label for="algorithm_id">Scoring Algorithm:</label></h3>
-                    <form method="get">
-                        <select class="form-select form-select-lg mb3 border-primary" id="algorithm_id"
-                                onchange="submitForm()">
-                            {% for algo in all_algorithms %}
-                                <option value="{{ algo.id }}"
-                                        {% if algo.id == algorithm.id %}selected{% endif %}>
-                                    {{ algo.name }}
-                                </option>
-                            {% endfor %}
-                        </select>
-                        <div class="card-text">
-                            {{ algorithm.html_description_content |safe }}
+            <div class="row">
+                <div class="col-4">
+                    <div class="card">
+                        <div class="card-body">
+                            <h3 class="card-title"><label for="algorithm_id">Scoring Algorithm:</label></h3>
+                            <form method="get">
+                                <select class="form-select form-select-lg mb3 border-primary" id="algorithm_id"
+                                        onchange="submitForm()">
+                                    {% for algo in all_algorithms %}
+                                        <option value="{{ algo.id }}"
+                                                {% if algo.id == algorithm.id %}selected{% endif %}>
+                                            {{ algo.name }}
+                                        </option>
+                                    {% endfor %}
+                                </select>
+                                <div class="card-text">
+                                    {{ algorithm.html_description_content |safe }}
+                                </div>
+                            </form>
                         </div>
-                    </form>
+                    </div>
+                </div>
+                <div class="col-8">
+                    <div class="align-content-end">
+                        <div id="organization-list"></div>
+                        {{ top_organization_list|json_script:"organization-data" }}
+                    </div>
                 </div>
             </div>
         </div>
-        <div class="col-8">
-            <div class="pagination">
-                <ul class="pagination">
-                    {% for i in page_obj.paginator.page_range %}
-                        <li class="page-item {% if page_obj.number == i %}active{% endif %}">
-                            <a class="page-link" href="?page={{ i }}">{{ i }}</a>
-                        </li>
-                    {% endfor %}
-                </ul>
-            </div>
-            <div class="align-content-end">
-                <form method="post" id="accelerated_vesting_form">
-                    {% csrf_token %}
-                    {{ form.as_p }}
-                </form>
-                <div>
-                    <table class="table">
-                        <tr>
-                            <th>Rank</th>
-                            <th>Name</th>
-                            <th>Overall Score</th>
-                            <th>Funding Round</th>
-                            <th>RTO Policy</th>
-                            <th>Profile Completeness</th>
-                        </tr>
-                        {% for org in top_organization_list %}
-                            <tr>
-                                <td>{{ org.ranking }}</td>
-                                <td><a href="{% url 'organization' org.id %}">{{ org.name }}</a></td>
-                                <td>{{ org.avg_score|floatformat:'2' }}</td>
-                                <td>{{ org.get_funding_round_display }}</td>
-                                <td>{{ org.get_rto_policy_display }}</td>
-                                <td>{{ org.profile_completeness|floatformat:'0' }}%</td>
-                            </tr>
-                        {% endfor %}
-                    </table>
-
-                    {% else %}
-                    <p>No organizations are available or the Score Algorithm you specified doesn't exist.</p>
-                </div>
-            </div>
-        </div>
+    {% else %}
+        <p>No organizations are available or the Score Algorithm you specified doesn't exist.</p>
     {% endif %}
 
-<script>
-    function submitForm() {
-        var algorithmId = document.getElementById('algorithm_id').value;
-        window.location.href = "{% url 'index' 0 %}".replace('0', algorithmId);
-    }
-    
-    document.getElementById('id_accelerated_vesting').addEventListener('change', function() {
-        document.getElementById('accelerated_vesting_form').submit();
-    });
-</script>
+    <script>
+        function submitForm() {
+            var algorithmId = document.getElementById('algorithm_id').value;
+            window.location.href = "{% url 'index' 0 %}".replace('0', algorithmId);
+        }
+    </script>
 {% endblock %}

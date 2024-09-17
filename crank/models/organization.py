@@ -53,5 +53,13 @@ class Organization(TimeStampedModel, ActivatorModel):
         results = self.scores.values("type__name").annotate(avg_score=Avg('score'))
         return results
 
+    @staticmethod
+    def get_funding_round_choices():
+        return {choice.value: choice.label for choice in Organization.FundingRound}
+
+    @staticmethod
+    def get_rto_policy_choices():
+        return {choice.value: choice.label for choice in Organization.RTOPolicy}
+
     class Meta:
         app_label = 'crank'
