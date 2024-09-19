@@ -81,53 +81,58 @@ class OrganizationList extends React.Component {
 
         return (
             <div>
-                <div className="pagination">
-                    <ul className="pagination">
-                        {pageNumbers.map(number => (
-                            <li className={`page-item ${currentPage === number ? 'active' : ''}`}>
-                                <a className="page-link" key={number}
-                                   onClick={() => this.handlePageChange(number)}>{number}</a>
-                            </li>
-                        ))}
-                    </ul>
-                </div>
-                <div className="form-check">
-                    <label className="form-check-label" htmlFor="acceleratedVesting">
-                        Show only companies with first vesting in &lt; 1 year
-                    </label>
-                    <input
-                        type="checkbox"
-                        className="form-check-input"
-                        id="acceleratedVesting"
-                        checked={acceleratedVesting}
-                        onChange={this.handleFilterChange}
-                    />
-                </div>
-                <table className="table">
-                    <thead>
-                    <tr>
-                        <th>Rank</th>
-                        <th>Name</th>
-                        <th>Overall Score</th>
-                        <th>Funding Round</th>
-                        <th>RTO Policy</th>
-                        <th>Profile Completeness</th>
-                    </tr>
-                    </thead>
-                    <tbody>
-                    {currentOrganizations.map(org => (
-                        <tr key={org.id}>
-                            <td>{org.ranking}</td>
-                            <td><a href={`/organization/${org.id}`}>{org.name}</a></td>
-                            <td>{org.avg_score.toFixed(2)}</td>
-                            <td>{fundingRoundChoices[org.funding_round]}</td>
-                            <td>{rtoPolicyChoices[org.rto_policy]}</td>
-                            <td>{org.profile_completeness.toFixed(0)}%</td>
-                        </tr>
-                    ))}
-                    </tbody>
-                </table>
-
+                {filteredOrganizations.length === 0 ? (
+                    <p>No organizations are available or the Score Algorithm you specified doesn't exist.</p>
+                ) : (
+                    <>
+                        <div className="pagination">
+                            <ul className="pagination">
+                                {pageNumbers.map(number => (
+                                    <li className={`page-item ${currentPage === number ? 'active' : ''}`}>
+                                        <a className="page-link" key={number}
+                                           onClick={() => this.handlePageChange(number)}>{number}</a>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                        <div className="form-check">
+                            <label className="form-check-label" htmlFor="acceleratedVesting">
+                                Show only companies with first vesting in &lt; 1 year
+                            </label>
+                            <input
+                                type="checkbox"
+                                className="form-check-input"
+                                id="acceleratedVesting"
+                                checked={acceleratedVesting}
+                                onChange={this.handleFilterChange}
+                            />
+                        </div>
+                        <table className="table">
+                            <thead>
+                            <tr>
+                                <th>Rank</th>
+                                <th>Name</th>
+                                <th>Overall Score</th>
+                                <th>Funding Round</th>
+                                <th>RTO Policy</th>
+                                <th>Profile Completeness</th>
+                            </tr>
+                            </thead>
+                            <tbody>
+                            {currentOrganizations.map(org => (
+                                <tr key={org.id}>
+                                    <td>{org.ranking}</td>
+                                    <td><a href={`/organization/${org.id}`}>{org.name}</a></td>
+                                    <td>{org.avg_score.toFixed(2)}</td>
+                                    <td>{fundingRoundChoices[org.funding_round]}</td>
+                                    <td>{rtoPolicyChoices[org.rto_policy]}</td>
+                                    <td>{org.profile_completeness.toFixed(0)}%</td>
+                                </tr>
+                            ))}
+                            </tbody>
+                        </table>
+                    </>
+                )}
             </div>
         );
     }
