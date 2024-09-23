@@ -33,73 +33,75 @@ class IndexViewTests(TestCase):
                                                              description_content='test.md')
         self.social_app.sites.add(Site.objects.get_current())
 
-        self.date = datetime(2024, 1, 1)
+    def setup_scores(self):
         # Create some test data
         self.organization1 = Organization.objects.create(
-            accelerated_vesting=True,
-            activate_date=self.date,
-            created=self.date,
-            deactivate_date=None,
-            funding_round="A",
-            gives_ratings=False,
-            modified=self.date,
-            name="Org 1",
-            public=False,
-            rto_policy="R",
-            type="C",
+            name="Org 1", funding_round="P", rto_policy="R", accelerated_vesting=True, url='org1.com',
+            gives_ratings=True, public=True, type="C",
         )
         self.organization2 = Organization.objects.create(
-            name="Org 2", funding_round="B", rto_policy="H", accelerated_vesting=False, url='org2.com'
+            name="Org 2", funding_round="B", rto_policy="H", accelerated_vesting=False, url='org2.com',
+            gives_ratings=False, public=False, type="C",
         )
 
-    def setup_scores(self):
-        org = Organization.objects.create(
-            accelerated_vesting=False,
-            funding_round='P',
-            id=3,
-            name='Test Organization',
-            rto_policy='H',
-            type='C')
         score_type = ScoreType.objects.create(id=1, name='Test Score Type')
         ScoreAlgorithmWeight.objects.create(algorithm_id=self.score_algorithm.id,
                                             type_id=score_type.id, weight=1.0)
-        Score.objects.create(source_id=org.id, target_id=org.id, score=1.0, type_id=score_type.id)
-        return org
+        Score.objects.create(source_id=self.organization1.id, target_id=self.organization1.id, score=5.0, type_id=score_type.id)
+        Score.objects.create(source_id=self.organization2.id, target_id=self.organization2.id, score=1.0, type_id=score_type.id)
+
+    def assertOrgValues(self, expected, actual, checkExtended = False):
+        self.assertEqual(actual['accelerated_vesting'], expected['accelerated_vesting'])
+        if checkExtended:
+            self.assertIsNotNone(actual['id'])
+            self.assertEqual(actual['avg_score'], 5.0)
+            self.assertEqual(actual['ranking'], 1)
+            self.assertEqual(actual['profile_completeness'], 100.0)
+        self.assertEqual(actual['accelerated_vesting'], expected['accelerated_vesting'])
+        self.assertEqual(actual['funding_round'], expected['funding_round'])
+        self.assertEqual(actual['name'], expected['name'])
+        self.assertEqual(actual['rto_policy'], expected['rto_policy'])
+        self.assertEqual(actual['type'], expected['type'])
 
     def test_index_view_renders_organization_list(self):
-        response = self.client.get(reverse('index'))
+        self.setup_scores()
+        response = self.client.get(self.index_url)
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, escape(self.organization1.name))
-        self.assertContains(response, escape(self.organization2.name))
+        orgList = response.context['top_organization_list']
+        self.assertEqual(orgList[0]['name'], escape(self.organization1.name))
+        self.assertEqual(orgList[1]['name'], escape(self.organization2.name))
 
     def test_index_view(self):
         request = self.factory.get(self.index_url)
         request.session = {'algorithm_id': '1'}  # Set algorithm_id in session
 
-        org = self.setup_scores()
+        self.setup_scores()
+        serialized_org = json.loads(serialize('json', [self.organization1]))[0]['fields']
         response = self.client.get(self.index_url)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'CRank')
         self.assertContains(response, 'Test Algorithm')  # contents of the test.md file
-        self.assertQuerySetEqual(response.context["top_organization_list"], [org])
+        self.assertOrgValues(response.context["top_organization_list"][0], serialized_org)
 
     def test_index_view_with_algo(self):
-        org = self.setup_scores()
+        self.setup_scores()
         algourl = self.index_url + 'algo/1/'
         response = self.client.get(algourl)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'CRank')
         self.assertContains(response, 'Test Algorithm')  # contents of the test.md file
-        self.assertQuerySetEqual(response.context["top_organization_list"], [org])
+        serialized_org = json.loads(serialize('json', [self.organization1]))[0]['fields']
+        self.assertOrgValues(response.context["top_organization_list"][0], serialized_org)
 
     def test_index_view_with_bad_algo(self):
-        org = self.setup_scores()
+        self.setup_scores()
         algourl = self.index_url + 'algo/99999/'
         response = self.client.get(algourl)
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'CRank')
         self.assertContains(response, 'Test Algorithm')  # contents of the test.md file
-        self.assertQuerySetEqual(response.context["top_organization_list"], [org])
+        serialized_org = json.loads(serialize('json', [self.organization1]))[0]['fields']
+        self.assertOrgValues(response.context["top_organization_list"][0], serialized_org)
 
     def test_empty_index_view(self):
         # we aren't adding data, so there should be no results
@@ -111,7 +113,7 @@ class IndexViewTests(TestCase):
         self.assertContains(response, 'CRank')
         self.assertContains(response,
                             "No organizations are available or the Score Algorithm you specified doesn't exist.")
-        self.assertQuerySetEqual(response.context["top_organization_list"], [])
+        self.assertEqual(response.context["top_organization_list"], [])
 
     def test_index_get_queryset(self):
         request = self.factory.get(self.index_url)
@@ -120,9 +122,9 @@ class IndexViewTests(TestCase):
         # Create an IndexView instance
         index_view = IndexView()
         index_view.request = request
-        org = self.setup_scores()
+        self.setup_scores()
 
         # Call get_queryset() and check the returned queryset
         queryset = index_view.get_queryset()
-        serialized_org = json.loads(serialize('json', [org]))[0]['fields']
-        self.assertQuerySetEqual(queryset, [serialized_org])
+        serialized_org = json.loads(serialize('json', [self.organization1]))[0]['fields']
+        self.assertOrgValues(serialized_org, queryset[0], True)
