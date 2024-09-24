@@ -85,6 +85,8 @@ if DEBUG:
     )
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.common.CommonMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -93,7 +95,6 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'allauth.account.middleware.AccountMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
 ]
 
@@ -101,18 +102,17 @@ ROOT_URLCONF = 'crank.urls'
 
 SECURE_CROSS_ORIGIN_OPENER_POLICY = None
 CORS_ALLOWED_ORIGINS = [
+    "http://local.crank.fyi",
     "http://local.crank.fyi:8000",
-    "https://local.crank.fyi:8000",
-    "https://staging.crank.fyi:8000",
+    "http://staging.crank.fyi",
     "https://www.crank.fyi",
     "https://crank.fyi",
     "https://cloudflareinsights.com",
 ]
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = [
-    "http://local.crank.fyi:8000",
-    "https://local.crank.fyi:8000",
-    "https://staging.crank.fyi:8000",
+    "http://local.crank.fyi",
+    "http://staging.crank.fyi",
     "https://www.crank.fyi",
     "https://crank.fyi",
 ]

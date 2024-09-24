@@ -8,3 +8,4 @@ media
 .env
 backup.json
 dump
+node_modules
