@@ -1,5 +1,6 @@
 {% load static %}
 {% load socialaccount %}
+{% load manifest %}
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -10,7 +11,7 @@
     <title>{% block head_title %}{% endblock %}</title>
     <link href="{% static 'images/favicon.png' %}" rel="shortcut icon" type="image/png">
     <meta name="viewport" content="width=device-width">
-    <script src="{% static 'dist/bundle.js' %}" defer></script>
+    <script src="{% manifest 'main.js' %}"></script>
 </head>
 <body>
 <div class="container">
