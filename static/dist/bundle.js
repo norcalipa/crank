@@ -507,17 +507,30 @@ var OrganizationList = /*#__PURE__*/function (_React$Component) {
     _defineProperty(_this, "handleFilterChange", function () {
       _this.setState(function (prevState) {
         var newAcceleratedVesting = !prevState.acceleratedVesting;
-        var filteredOrganizations = newAcceleratedVesting ? prevState.organizations.filter(function (org) {
-          return org.accelerated_vesting;
-        }) : prevState.organizations;
-        var newPage = prevState.currentPage;
-        while (newPage > 1 && filteredOrganizations.slice((newPage - 1) * prevState.itemsPerPage, newPage * prevState.itemsPerPage).length === 0) {
-          newPage--;
-        }
         return {
-          acceleratedVesting: newAcceleratedVesting,
+          acceleratedVesting: newAcceleratedVesting
+        };
+      }, _this.applyFilters);
+    });
+    _defineProperty(_this, "handleSearchChange", function (event) {
+      var searchTerm = event.target.value.toLowerCase();
+      _this.setState({
+        searchTerm: searchTerm
+      }, _this.applyFilters);
+    });
+    _defineProperty(_this, "applyFilters", function () {
+      _this.setState(function (prevState) {
+        var organizations = prevState.organizations,
+          acceleratedVesting = prevState.acceleratedVesting,
+          searchTerm = prevState.searchTerm;
+        var filteredOrganizations = organizations.filter(function (org) {
+          var matchesSearch = org.name.toLowerCase().includes(searchTerm);
+          var matchesFilter = !acceleratedVesting || org.accelerated_vesting;
+          return matchesSearch && matchesFilter;
+        });
+        return {
           filteredOrganizations: filteredOrganizations,
-          currentPage: newPage
+          currentPage: 1
         };
       });
     });
@@ -528,7 +541,8 @@ var OrganizationList = /*#__PURE__*/function (_React$Component) {
       rtoPolicyChoices: {},
       currentPage: 1,
       itemsPerPage: 15,
-      acceleratedVesting: false
+      acceleratedVesting: false,
+      searchTerm: ''
     };
     return _this;
   }
@@ -566,7 +580,8 @@ var OrganizationList = /*#__PURE__*/function (_React$Component) {
         rtoPolicyChoices = _this$state.rtoPolicyChoices,
         currentPage = _this$state.currentPage,
         itemsPerPage = _this$state.itemsPerPage,
-        acceleratedVesting = _this$state.acceleratedVesting;
+        acceleratedVesting = _this$state.acceleratedVesting,
+        searchTerm = _this$state.searchTerm;
       var indexOfLastItem = currentPage * itemsPerPage;
       var indexOfFirstItem = indexOfLastItem - itemsPerPage;
       var currentOrganizations = filteredOrganizations.slice(indexOfFirstItem, indexOfLastItem);
@@ -574,7 +589,27 @@ var OrganizationList = /*#__PURE__*/function (_React$Component) {
       for (var i = 1; i <= Math.ceil(filteredOrganizations.length / itemsPerPage); i++) {
         pageNumbers.push(i);
       }
-      return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("div", null, filteredOrganizations.length === 0 ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("p", null, "No organizations are available or the Score Algorithm you specified doesn't exist.") : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement(react__WEBPACK_IMPORTED_MODULE_0__.Fragment, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("div", {
+      return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("div", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement(react__WEBPACK_IMPORTED_MODULE_0__.Fragment, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("div", {
+        className: "input-group mb-3"
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("input", {
+        type: "text",
+        className: "form-control",
+        "aria-label": "Search",
+        placeholder: "Search organizations",
+        value: searchTerm,
+        "aria-describedby": "inputGroup-sizing-default",
+        onChange: this.handleSearchChange
+      }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("div", {
+        className: "input-group-append"
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("span", {
+        "class": "input-group-text"
+      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("input", {
+        type: "checkbox",
+        className: "form-check-input",
+        id: "acceleratedVesting",
+        checked: acceleratedVesting,
+        onChange: this.handleFilterChange
+      }), "\xA0 Show only companies with first vesting in < 1 year"))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("div", {
         className: "pagination"
       }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("ul", {
         className: "pagination"
@@ -588,18 +623,10 @@ var OrganizationList = /*#__PURE__*/function (_React$Component) {
             return _this3.handlePageChange(number);
           }
         }, number));
-      }))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("div", {
-        className: "form-check"
-      }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("label", {
-        className: "form-check-label",
-        htmlFor: "acceleratedVesting"
-      }, "Show only companies with first vesting in < 1 year"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("input", {
-        type: "checkbox",
-        className: "form-check-input",
-        id: "acceleratedVesting",
-        checked: acceleratedVesting,
-        onChange: this.handleFilterChange
-      })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("table", {
+      }))), filteredOrganizations.length === 0 ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("div", {
+        "class": "alert alert-secondary",
+        role: "alert"
+      }, "There are no organizations that match the selected filters.") : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("div", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("table", {
         className: "table"
       }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("thead", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("tr", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("th", null, "Rank"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("th", null, "Name"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("th", null, "Overall Score"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("th", null, "Funding Round"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("th", null, "RTO Policy"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("th", null, "Profile Completeness"))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("tbody", null, currentOrganizations.map(function (org) {
         return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("tr", {
@@ -607,7 +634,7 @@ var OrganizationList = /*#__PURE__*/function (_React$Component) {
         }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("td", null, org.ranking), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("td", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("a", {
           href: "/organization/".concat(org.id)
         }, org.name)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("td", null, org.avg_score.toFixed(2)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("td", null, fundingRoundChoices[org.funding_round]), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("td", null, rtoPolicyChoices[org.rto_policy]), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("td", null, org.profile_completeness.toFixed(0), "%"));
-      })))));
+      }))))));
     }
   }]);
 }(react__WEBPACK_IMPORTED_MODULE_0__.Component);
