@@ -11,7 +11,8 @@ class OrganizationList extends React.Component {
             rtoPolicyChoices: {},
             currentPage: 1,
             itemsPerPage: 15,
-            acceleratedVesting: false
+            acceleratedVesting: false,
+            searchTerm: ''
         };
     }
 
@@ -32,25 +33,34 @@ class OrganizationList extends React.Component {
     }
 
     handlePageChange = (pageNumber) => {
-        this.setState({ currentPage: pageNumber });
+        this.setState({currentPage: pageNumber});
     }
 
     handleFilterChange = () => {
         this.setState(prevState => {
             const newAcceleratedVesting = !prevState.acceleratedVesting;
-            const filteredOrganizations = newAcceleratedVesting
-                ? prevState.organizations.filter(org => org.accelerated_vesting)
-                : prevState.organizations;
-
-            let newPage = prevState.currentPage;
-            while (newPage > 1 && filteredOrganizations.slice((newPage - 1) * prevState.itemsPerPage, newPage * prevState.itemsPerPage).length === 0) {
-                newPage--;
-            }
-
             return {
-                acceleratedVesting: newAcceleratedVesting,
+                acceleratedVesting: newAcceleratedVesting
+            };
+        }, this.applyFilters);
+    }
+
+    handleSearchChange = (event) => {
+        const searchTerm = event.target.value.toLowerCase();
+        this.setState({ searchTerm: searchTerm }, this.applyFilters);
+    }
+
+    applyFilters = () => {
+        this.setState(prevState => {
+            const { organizations, acceleratedVesting, searchTerm } = prevState;
+            const filteredOrganizations = organizations.filter(org => {
+                const matchesSearch = org.name.toLowerCase().includes(searchTerm);
+                const matchesFilter = !acceleratedVesting || org.accelerated_vesting;
+                return matchesSearch && matchesFilter;
+            });
+            return {
                 filteredOrganizations: filteredOrganizations,
-                currentPage: newPage
+                currentPage: 1
             };
         });
     }
@@ -62,7 +72,8 @@ class OrganizationList extends React.Component {
             rtoPolicyChoices,
             currentPage,
             itemsPerPage,
-            acceleratedVesting
+            acceleratedVesting,
+            searchTerm
         } = this.state;
 
         const indexOfLastItem = currentPage * itemsPerPage;
@@ -76,23 +87,19 @@ class OrganizationList extends React.Component {
 
         return (
             <div>
-                {filteredOrganizations.length === 0 ? (
-                    <p>No organizations are available or the Score Algorithm you specified doesn't exist.</p>
-                ) : (
-                    <>
-                        <div className="pagination">
-                            <ul className="pagination">
-                                {pageNumbers.map(number => (
-                                    <li className={`page-item ${currentPage === number ? 'active' : ''}`} key={number}>
-                                        <a className="page-link" onClick={() => this.handlePageChange(number)}>{number}</a>
-                                    </li>
-                                ))}
-                            </ul>
-                        </div>
-                        <div className="form-check">
-                            <label className="form-check-label" htmlFor="acceleratedVesting">
-                                Show only companies with first vesting in &lt; 1 year
-                            </label>
+                <>
+                    <div className="input-group mb-3">
+                        <input
+                            type="text"
+                            className="form-control"
+                            aria-label="Search"
+                            placeholder="Search organizations"
+                            value={searchTerm}
+                            aria-describedby="inputGroup-sizing-default"
+                            onChange={this.handleSearchChange}
+                        />
+                        <div className="input-group-append">
+                            <span class="input-group-text">
                             <input
                                 type="checkbox"
                                 className="form-check-input"
@@ -100,9 +107,29 @@ class OrganizationList extends React.Component {
                                 checked={acceleratedVesting}
                                 onChange={this.handleFilterChange}
                             />
+                                &nbsp; Show only companies with first vesting in &lt; 1 year
+                            </span>
                         </div>
-                        <table className="table">
-                            <thead>
+                    </div>
+                    <div className="pagination">
+                        <ul className="pagination">
+                            {pageNumbers.map(number => (
+                                <li className={`page-item ${currentPage === number ? 'active' : ''}`} key={number}>
+                                    <a className="page-link"
+                                       onClick={() => this.handlePageChange(number)}>{number}</a>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+
+                    {filteredOrganizations.length === 0 ? (
+                        <div class="alert alert-secondary" role="alert">
+                            There are no organizations that match the selected filters.
+                        </div>
+                    ) : (
+                        <div>
+                            <table className="table">
+                                <thead>
                                 <tr>
                                     <th>Rank</th>
                                     <th>Name</th>
@@ -111,8 +138,8 @@ class OrganizationList extends React.Component {
                                     <th>RTO Policy</th>
                                     <th>Profile Completeness</th>
                                 </tr>
-                            </thead>
-                            <tbody>
+                                </thead>
+                                <tbody>
                                 {currentOrganizations.map(org => (
                                     <tr key={org.id}>
                                         <td>{org.ranking}</td>
@@ -123,10 +150,11 @@ class OrganizationList extends React.Component {
                                         <td>{org.profile_completeness.toFixed(0)}%</td>
                                     </tr>
                                 ))}
-                            </tbody>
-                        </table>
-                    </>
-                )}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </>
             </div>
         );
     }
@@ -139,7 +167,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (organizationDataElement) {
         try {
             const organizationsData = JSON.parse(organizationDataElement.textContent);
-            ReactDOM.render(<OrganizationList organizations={organizationsData} />, document.getElementById('organization-list'));
+            ReactDOM.render(<OrganizationList
+                organizations={organizationsData}/>, document.getElementById('organization-list'));
         } catch (error) {
             console.error('Error parsing organization data:', error);
         }
