@@ -21,6 +21,17 @@ RUN apk add --no-cache --virtual build-deps gcc musl-dev libffi-dev pkgconf mari
 RUN apk add --no-cache mariadb-connector-c-dev
 RUN pip install --no-cache-dir -r requirements.txt
 RUN apk del build-deps
+
+# Install Node.js and npm
+RUN apk update
+RUN apk add nodejs npm
+
+# Install npm dependencies
+RUN npm install
+
+# Run Webpack to build the assets
+RUN npx webpack
+
 RUN python manage.py collectstatic --noinput
 
 RUN chown -R appuser:appgroup /app

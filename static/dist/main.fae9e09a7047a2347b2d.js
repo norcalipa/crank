@@ -503,6 +503,9 @@ var OrganizationList = /*#__PURE__*/function (_React$Component) {
       _this.setState({
         currentPage: pageNumber
       });
+      var params = new URLSearchParams(window.location.search);
+      params.set('page', pageNumber);
+      window.history.pushState({}, '', "".concat(window.location.pathname, "?").concat(params.toString()));
     });
     _defineProperty(_this, "handleFilterChange", function () {
       _this.setState(function (prevState) {
@@ -539,7 +542,7 @@ var OrganizationList = /*#__PURE__*/function (_React$Component) {
       filteredOrganizations: props.organizations,
       fundingRoundChoices: {},
       rtoPolicyChoices: {},
-      currentPage: 1,
+      currentPage: _this.getCurrentPageFromQueryString(),
       itemsPerPage: 15,
       acceleratedVesting: false,
       searchTerm: ''
@@ -569,6 +572,13 @@ var OrganizationList = /*#__PURE__*/function (_React$Component) {
       })["catch"](function (error) {
         return console.error('Error fetching RTO policy choices:', error);
       });
+    }
+  }, {
+    key: "getCurrentPageFromQueryString",
+    value: function getCurrentPageFromQueryString() {
+      var params = new URLSearchParams(window.location.search);
+      var page = params.get('page');
+      return page ? parseInt(page, 10) : 1;
     }
   }, {
     key: "render",
@@ -619,8 +629,10 @@ var OrganizationList = /*#__PURE__*/function (_React$Component) {
           key: number
         }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("a", {
           className: "page-link",
-          onClick: function onClick() {
-            return _this3.handlePageChange(number);
+          href: "?page-".concat(number),
+          onClick: function onClick(e) {
+            e.preventDefault();
+            _this3.handlePageChange(number);
           }
         }, number));
       }))), filteredOrganizations.length === 0 ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("div", {
