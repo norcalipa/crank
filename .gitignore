@@ -9,3 +9,4 @@ media
 backup.json
 dump
 node_modules
+static/dist/main.*.js

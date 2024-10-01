@@ -9,7 +9,7 @@ class OrganizationList extends React.Component {
             filteredOrganizations: props.organizations,
             fundingRoundChoices: {},
             rtoPolicyChoices: {},
-            currentPage: 1,
+            currentPage: this.getCurrentPageFromQueryString(),
             itemsPerPage: 15,
             acceleratedVesting: false,
             searchTerm: ''
@@ -32,8 +32,17 @@ class OrganizationList extends React.Component {
             .catch(error => console.error('Error fetching RTO policy choices:', error));
     }
 
+    getCurrentPageFromQueryString() {
+        const params = new URLSearchParams(window.location.search);
+        const page = params.get('page');
+        return page ? parseInt(page, 10) : 1;
+    }
+
     handlePageChange = (pageNumber) => {
-        this.setState({currentPage: pageNumber});
+        this.setState({ currentPage: pageNumber });
+        const params = new URLSearchParams(window.location.search);
+        params.set('page', pageNumber);
+        window.history.pushState({}, '', `${window.location.pathname}?${params.toString()}`);
     }
 
     handleFilterChange = () => {
@@ -116,7 +125,11 @@ class OrganizationList extends React.Component {
                             {pageNumbers.map(number => (
                                 <li className={`page-item ${currentPage === number ? 'active' : ''}`} key={number}>
                                     <a className="page-link"
-                                       onClick={() => this.handlePageChange(number)}>{number}</a>
+                                       href={`?page-${number}`}
+                                       onClick={(e) => {
+                                           e.preventDefault();
+                                           this.handlePageChange(number);
+                                       }}>{number}</a>
                                 </li>
                             ))}
                         </ul>
