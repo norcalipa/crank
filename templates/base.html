@@ -11,6 +11,8 @@
     <title>{% block head_title %}{% endblock %}</title>
     <link href="{% static 'images/favicon.png' %}" rel="shortcut icon" type="image/png">
     <meta name="viewport" content="width=device-width">
+    <meta name="description"
+          content="CRank.fyi - ranking of best companies to work for based on pay and other key factors. Author: Isaac Adams">
     <script src="{% manifest 'main.js' %}"></script>
 </head>
 <body>
@@ -25,7 +27,7 @@
                 {% if user.is_staff %}
                     <a class="btn btn-primary btn-sm" href="/admin">Admin</a>
                 {% endif %}
-                <a class="btn btn-secondary btn-sm" href="/logout">Logout {{user.username}}</a>
+                <a class="btn btn-secondary btn-sm" href="/logout">Logout {{ user.username }}</a>
             {% else %}
                 <a class="btn btn-light btn-sm" href="{% provider_login_url 'google' %}">
                     <i class="fab fa-google"></i>
@@ -38,6 +40,8 @@
 <div>
     {% block content %} {% endblock %}
 </div>
-<!-- Cloudflare Web Analytics --><script defer src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "47ad721970f040feb8b977942546247c"}'></script><!-- End Cloudflare Web Analytics -->
+<!-- Cloudflare Web Analytics -->
+<script defer src='https://static.cloudflareinsights.com/beacon.min.js'
+        data-cf-beacon='{"token": "47ad721970f040feb8b977942546247c"}'></script><!-- End Cloudflare Web Analytics -->
 </body>
 </html>
