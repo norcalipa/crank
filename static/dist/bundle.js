@@ -516,12 +516,14 @@ var OrganizationList = /*#__PURE__*/function (_React$Component) {
         }
         return {
           acceleratedVesting: newAcceleratedVesting,
+          filteredOrganizations: filteredOrganizations,
           currentPage: newPage
         };
       });
     });
     _this.state = {
       organizations: props.organizations,
+      filteredOrganizations: props.organizations,
       fundingRoundChoices: {},
       rtoPolicyChoices: {},
       currentPage: 1,
@@ -559,26 +561,17 @@ var OrganizationList = /*#__PURE__*/function (_React$Component) {
     value: function render() {
       var _this3 = this;
       var _this$state = this.state,
-        organizations = _this$state.organizations,
+        filteredOrganizations = _this$state.filteredOrganizations,
         fundingRoundChoices = _this$state.fundingRoundChoices,
         rtoPolicyChoices = _this$state.rtoPolicyChoices,
         currentPage = _this$state.currentPage,
         itemsPerPage = _this$state.itemsPerPage,
         acceleratedVesting = _this$state.acceleratedVesting;
-
-      // Filter organizations based on accelerated vesting
-      var filteredOrganizations = acceleratedVesting ? organizations.filter(function (org) {
-        return org.accelerated_vesting;
-      }) : organizations;
-
-      // Calculate the current items to display
       var indexOfLastItem = currentPage * itemsPerPage;
       var indexOfFirstItem = indexOfLastItem - itemsPerPage;
       var currentOrganizations = filteredOrganizations.slice(indexOfFirstItem, indexOfLastItem);
-
-      // Calculate page numbers
       var pageNumbers = [];
-      for (var i = 1; i <= Math.ceil(organizations.length / itemsPerPage); i++) {
+      for (var i = 1; i <= Math.ceil(filteredOrganizations.length / itemsPerPage); i++) {
         pageNumbers.push(i);
       }
       return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("div", null, filteredOrganizations.length === 0 ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("p", null, "No organizations are available or the Score Algorithm you specified doesn't exist.") : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement(react__WEBPACK_IMPORTED_MODULE_0__.Fragment, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("div", {
@@ -587,10 +580,10 @@ var OrganizationList = /*#__PURE__*/function (_React$Component) {
         className: "pagination"
       }, pageNumbers.map(function (number) {
         return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("li", {
-          className: "page-item ".concat(currentPage === number ? 'active' : '')
+          className: "page-item ".concat(currentPage === number ? 'active' : ''),
+          key: number
         }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0__.createElement("a", {
           className: "page-link",
-          key: number,
           onClick: function onClick() {
             return _this3.handlePageChange(number);
           }
