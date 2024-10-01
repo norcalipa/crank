@@ -31,7 +31,7 @@ module.exports = {
     plugins: [
         new CleanWebpackPlugin(options),
         new WebpackManifestPlugin({
-            publicPath: 'dist'
+            publicPath: ''
         }),
     ]
 };
