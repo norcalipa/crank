@@ -12,8 +12,11 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 import os
 from pathlib import Path
 
+from django.conf.global_settings import STATICFILES_DIRS
+from django.contrib.staticfiles.storage import ManifestStaticFilesStorage
 from dotenv import load_dotenv
 from opentelemetry.instrumentation.django import DjangoInstrumentor
+from tests.test_settings import MANIFEST_LOADER
 
 load_dotenv()
 DjangoInstrumentor().instrument(is_sql_commentor_enabled=True)
@@ -76,6 +79,7 @@ INSTALLED_APPS = [
     'allauth.socialaccount',
     'allauth.socialaccount.providers.google',
     'whitenoise',
+    'manifest_loader'
 ]
 
 if DEBUG:
@@ -214,6 +218,13 @@ STORAGES = {
     "staticfiles": {
         "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
     },
+}
+STATICFILES_DIRS = [
+    os.path.join(BASE_DIR, "static/dist"),
+]
+MANIFEST_LOADER = {
+    "BACKEND": "manifest_loader.loader.ManifestLoader",
+    "MANIFEST_PATH": os.path.join(BASE_DIR, "static/dist/manifest.json"),
 }
 
 # Default primary key field type
