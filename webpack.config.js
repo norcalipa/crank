@@ -1,10 +1,14 @@
 const path = require('path');
+const {CleanWebpackPlugin} = require('clean-webpack-plugin');
+const {WebpackManifestPlugin} = require('webpack-manifest-plugin');
+const options = {};
+
 
 module.exports = {
     entry: './static/js/OrganizationList.js',
     output: {
         path: path.resolve(__dirname, 'static/dist'),
-        filename: 'bundle.js',
+        filename: '[name].[contenthash].js',
     },
     module: {
         rules: [
@@ -24,4 +28,10 @@ module.exports = {
     optimization: {
         minimize: false
     },
+    plugins: [
+        new CleanWebpackPlugin(options),
+        new WebpackManifestPlugin({
+            publicPath: 'dist'
+        }),
+    ]
 };
