@@ -2,8 +2,8 @@
 FROM python:3.13.0rc1-alpine3.19
 
 # create a non-root user to run the app as
-RUN addgroup -S appgroup -g 1000
-RUN adduser -S appuser -u 1000 -G appgroup
+RUN addgroup -S appgroup -g 10000
+RUN adduser -S appuser -u 10000 -G appgroup
 
 # Set the working directory in the container to /app
 WORKDIR /app
