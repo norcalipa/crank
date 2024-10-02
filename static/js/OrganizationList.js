@@ -39,7 +39,7 @@ class OrganizationList extends React.Component {
     }
 
     handlePageChange = (pageNumber) => {
-        this.setState({ currentPage: pageNumber });
+        this.setState({currentPage: pageNumber});
         const params = new URLSearchParams(window.location.search);
         params.set('page', pageNumber);
         window.history.pushState({}, '', `${window.location.pathname}?${params.toString()}`);
@@ -56,20 +56,19 @@ class OrganizationList extends React.Component {
 
     handleSearchChange = (event) => {
         const searchTerm = event.target.value.toLowerCase();
-        this.setState({ searchTerm: searchTerm }, this.applyFilters);
+        this.setState({searchTerm: searchTerm}, this.applyFilters);
     }
 
     applyFilters = () => {
         this.setState(prevState => {
-            const { organizations, acceleratedVesting, searchTerm } = prevState;
+            const {organizations, acceleratedVesting, searchTerm} = prevState;
             const filteredOrganizations = organizations.filter(org => {
                 const matchesSearch = org.name.toLowerCase().includes(searchTerm);
                 const matchesFilter = !acceleratedVesting || org.accelerated_vesting;
                 return matchesSearch && matchesFilter;
             });
             return {
-                filteredOrganizations: filteredOrganizations,
-                currentPage: 1
+                filteredOrganizations: filteredOrganizations, currentPage: 1
             };
         });
     }
@@ -94,20 +93,19 @@ class OrganizationList extends React.Component {
             pageNumbers.push(i);
         }
 
-        return (
-            <div>
-                <>
-                    <div className="input-group mb-3">
-                        <input
-                            type="text"
-                            className="form-control"
-                            aria-label="Search"
-                            placeholder="Search organizations"
-                            value={searchTerm}
-                            aria-describedby="inputGroup-sizing-default"
-                            onChange={this.handleSearchChange}
-                        />
-                        <div className="input-group-append">
+        return (<div>
+            <>
+                <div className="input-group mb-3">
+                    <input
+                        type="text"
+                        className="form-control"
+                        aria-label="Search"
+                        placeholder="Search organizations"
+                        value={searchTerm}
+                        aria-describedby="inputGroup-sizing-default"
+                        onChange={this.handleSearchChange}
+                    />
+                    <div className="input-group-append">
                             <span class="input-group-text">
                             <input
                                 type="checkbox"
@@ -116,60 +114,54 @@ class OrganizationList extends React.Component {
                                 checked={acceleratedVesting}
                                 onChange={this.handleFilterChange}
                             />
-                                &nbsp; Show only companies with first vesting in &lt; 1 year
+                            <label
+                                className="form-check-label"
+                                htmlFor="acceleratedVesting">&nbsp;Show only companies with first vesting in &lt; 1 year</label>
                             </span>
-                        </div>
                     </div>
-                    <div className="pagination">
-                        <ul className="pagination">
-                            {pageNumbers.map(number => (
-                                <li className={`page-item ${currentPage === number ? 'active' : ''}`} key={number}>
-                                    <a className="page-link"
-                                       href={`?page-${number}`}
-                                       onClick={(e) => {
-                                           e.preventDefault();
-                                           this.handlePageChange(number);
-                                       }}>{number}</a>
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
+                </div>
+                <div className="pagination">
+                    <ul className="pagination">
+                        {pageNumbers.map(number => (
+                            <li className={`page-item ${currentPage === number ? 'active' : ''}`} key={number}>
+                                <a className="page-link"
+                                   href={`?page-${number}`}
+                                   onClick={(e) => {
+                                       e.preventDefault();
+                                       this.handlePageChange(number);
+                                   }}>{number}</a>
+                            </li>))}
+                    </ul>
+                </div>
 
-                    {filteredOrganizations.length === 0 ? (
-                        <div class="alert alert-secondary" role="alert">
-                            There are no organizations that match the selected filters.
-                        </div>
-                    ) : (
-                        <div>
-                            <table className="table">
-                                <thead>
-                                <tr>
-                                    <th>Rank</th>
-                                    <th>Name</th>
-                                    <th>Overall Score</th>
-                                    <th>Funding Round</th>
-                                    <th>RTO Policy</th>
-                                    <th>Profile Completeness</th>
-                                </tr>
-                                </thead>
-                                <tbody>
-                                {currentOrganizations.map(org => (
-                                    <tr key={org.id}>
-                                        <td>{org.ranking}</td>
-                                        <td><a href={`/organization/${org.id}`}>{org.name}</a></td>
-                                        <td>{org.avg_score.toFixed(2)}</td>
-                                        <td>{fundingRoundChoices[org.funding_round]}</td>
-                                        <td>{rtoPolicyChoices[org.rto_policy]}</td>
-                                        <td>{org.profile_completeness.toFixed(0)}%</td>
-                                    </tr>
-                                ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-                </>
-            </div>
-        );
+                {filteredOrganizations.length === 0 ? (<div class="alert alert-secondary" role="alert">
+                    There are no organizations that match the selected filters.
+                </div>) : (<div>
+                    <table className="table">
+                        <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Name</th>
+                            <th>Overall Score</th>
+                            <th>Funding Round</th>
+                            <th>RTO Policy</th>
+                            <th>Profile Completeness</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        {currentOrganizations.map(org => (<tr key={org.id}>
+                            <td>{org.ranking}</td>
+                            <td><a href={`/organization/${org.id}`}>{org.name}</a></td>
+                            <td>{org.avg_score.toFixed(2)}</td>
+                            <td>{fundingRoundChoices[org.funding_round]}</td>
+                            <td>{rtoPolicyChoices[org.rto_policy]}</td>
+                            <td>{org.profile_completeness.toFixed(0)}%</td>
+                        </tr>))}
+                        </tbody>
+                    </table>
+                </div>)}
+            </>
+        </div>);
     }
 }
 
