@@ -106,7 +106,7 @@ class OrganizationList extends React.Component {
                         onChange={this.handleSearchChange}
                     />
                     <div className="input-group-append">
-                            <span class="input-group-text">
+                            <span className="input-group-text">
                             <input
                                 type="checkbox"
                                 className="form-check-input"
@@ -134,7 +134,7 @@ class OrganizationList extends React.Component {
                     </ul>
                 </div>
 
-                {filteredOrganizations.length === 0 ? (<div class="alert alert-secondary" role="alert">
+                {filteredOrganizations.length === 0 ? (<div className="alert alert-secondary" role="alert">
                     There are no organizations that match the selected filters.
                 </div>) : (<div>
                     <table className="table">
