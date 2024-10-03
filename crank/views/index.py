@@ -59,14 +59,11 @@ class IndexView(generic.ListView):
         self.accelerated_vesting = self.request.session.get('accelerated_vesting', False)
 
         # if no algorithm_id in the session, use the default
-        try:
-            self._check_algorithm_id()
-            if not self.algorithm:
-                # this should generally not happen since there should *always* be a default algorithm
-                self.object_list = []
-                return self.object_list
-        except ValueError:
-            return redirect('/')
+        self._check_algorithm_id()
+        if not self.algorithm:
+            # this should generally not happen since there should *always* be a default algorithm
+            self.object_list = []
+            return self.object_list
 
         """Return all active organizations with scores in descending order."""
         try:
@@ -156,14 +153,11 @@ class IndexView(generic.ListView):
             return None
         self.algorithm_id = self.request.session.get("algorithm_id")
 
-        try:
-            self._check_algorithm_id()
-            if not hasattr(self.algorithm, 'html_description_content'):
-                file_path = os.path.join(CONTENT_DIR, self.algorithm.description_content)
-                with open(file_path, 'r') as file:
-                    md_content = file.read()
-                html_content = markdown.markdown(md_content)
-                self.algorithm.html_description_content = html_content
-            return self.algorithm
-        except ValueError:
-            return redirect(reverse('index'))
+        self._check_algorithm_id()
+        if not hasattr(self.algorithm, 'html_description_content'):
+            file_path = os.path.join(CONTENT_DIR, self.algorithm.description_content)
+            with open(file_path, 'r') as file:
+                md_content = file.read()
+            html_content = markdown.markdown(md_content)
+            self.algorithm.html_description_content = html_content
+        return self.algorithm
