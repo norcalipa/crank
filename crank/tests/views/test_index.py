@@ -194,7 +194,6 @@ class IndexViewTests(TestCase):
         # Note that accelerated_vesting is a toggle, so it should be set to the opposite of the current value after a post request
         form_data = {
             'accelerated_vesting': 'invalid_value',  # Invalid data
-            # Add other form fields as necessary
         }
         request = self.factory.post(self.index_url, data=form_data)
         self.add_session_to_request(request)  # Ensure the request has a session
