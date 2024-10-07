@@ -10,7 +10,7 @@ class OrganizationList extends React.Component {
             fundingRoundChoices: {},
             rtoPolicyChoices: {},
             currentPage: this.getCurrentPageFromQueryString(),
-            itemsPerPage: 15,
+            itemsPerPage: props.itemsPerPage || 15,
             acceleratedVesting: false,
             searchTerm: ''
         };
@@ -125,6 +125,7 @@ class OrganizationList extends React.Component {
                         {pageNumbers.map(number => (
                             <li className={`page-item ${currentPage === number ? 'active' : ''}`} key={number}>
                                 <a className="page-link"
+                                   data-testid={`page-link-${number}`}
                                    href={`?page-${number}`}
                                    onClick={(e) => {
                                        e.preventDefault();

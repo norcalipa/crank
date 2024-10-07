@@ -1,5 +1,5 @@
 import React from 'react';
-import {render, screen, fireEvent, act} from '@testing-library/react';
+import {render, screen, fireEvent, act, getByTestId} from '@testing-library/react';
 import '@testing-library/jest-dom';
 import OrganizationList from './OrganizationList';
 
@@ -56,7 +56,7 @@ describe('OrganizationList', () => {
         render(<OrganizationList organizations={mockOrganizations}/>);
 
         act(() => {
-            fireEvent.click(screen.getByRole('checkbox', { name: /Show only companies with first vesting in < 1 year/i }));
+            fireEvent.click(screen.getByRole('checkbox', {name: /Show only companies with first vesting in < 1 year/i}));
         });
         expect(await screen.findByText('Org 1')).toBeInTheDocument();
         expect(screen.queryByText('Org 2')).not.toBeInTheDocument();
@@ -78,4 +78,43 @@ describe('OrganizationList', () => {
 
         expect(window.location.search).toBe('?page=2');
     });
+
+    test('handlePageChange updates state and URL', async () => {
+        delete window.location;
+        window.location = new URL('http://localhost');
+
+        await act(async () => {
+            render(<OrganizationList organizations={mockOrganizations} itemsPerPage={1}/>);
+        });
+
+        await act(async () => {
+            fireEvent.click(screen.getByText('2'));
+            window.location.search = '?page=2';
+        });
+
+        expect(window.location.search).toBe('?page=2');
+        expect(screen.getByTestId('page-link-2').closest('li')).toHaveClass('active');
+
+    });
+
+    test('handleFilterChange updates state and applies filters', async () => {
+        render(<OrganizationList organizations={mockOrganizations} />);
+
+        act(() => {
+            fireEvent.click(screen.getByRole('checkbox', { name: /Show only companies with first vesting in < 1 year/i }));
+        });
+
+        expect(await screen.findByText('Org 1')).toBeInTheDocument();
+        expect(screen.queryByText('Org 2')).not.toBeInTheDocument();
+    });
+
+    test('handleSearchChange updates state and applies filters', async () => {
+        render(<OrganizationList organizations={mockOrganizations} />);
+
+        fireEvent.change(screen.getByPlaceholderText('Search organizations'), { target: { value: 'Org 1' } });
+
+        expect(await screen.findByText('Org 1')).toBeInTheDocument();
+        expect(screen.queryByText('Org 2')).not.toBeInTheDocument();
+    });
+
 });
