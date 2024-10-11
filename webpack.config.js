@@ -5,7 +5,7 @@ const options = {};
 
 
 module.exports = {
-    entry: './static/js/OrganizationList.js',
+    entry: './static/js/OrganizationList.tsx',
     output: {
         path: path.resolve(__dirname, 'static/dist'),
         filename: '[name].[contenthash].js',
@@ -13,16 +13,14 @@ module.exports = {
     module: {
         rules: [
             {
-                test: /\.js$/,
+                test: /\.tsx?$/,
                 exclude: /node_modules/,
-                use: {
-                    loader: 'babel-loader',
-                    options: {
-                        presets: ['@babel/preset-env', '@babel/preset-react'],
-                    },
-                },
+                use: 'ts-loader',
             },
         ],
+    },
+    resolve: {
+        extensions: ['.tsx', '.ts', '.js'],
     },
     mode: 'production',
     optimization: {
