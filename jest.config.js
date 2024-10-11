@@ -1,7 +1,10 @@
 module.exports = {
     transform: {
-        "^.+\\.jsx?$": "babel-jest"
+        '^.+\\.tsx?$': 'ts-jest',
     },
-    testEnvironment: 'jsdom',
     setupFiles: ['./jest.setup.js'],
+    preset: 'ts-jest',
+    testEnvironment: 'jsdom',
+    moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node'],
+    testMatch: ['**/?(*.)+(spec|test).ts?(x)'],
 };

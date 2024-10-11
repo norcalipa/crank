@@ -1,5 +1,4 @@
 {
-  "watch": ["static/js/**/*.js"],
-  "ext": "js",
-  "exec": "npx webpack"
-}
+  "watch": ["static/js/**/*.tsx"],
+  "ext": "tsx",
+  "exec": "webpack --config webpack.config.js"}

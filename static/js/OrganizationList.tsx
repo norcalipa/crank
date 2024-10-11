@@ -1,8 +1,35 @@
-import React from 'react';
-import ReactDOM from 'react-dom';
+import * as React from 'react';
+import {createRoot} from "react-dom/client";
 
-class OrganizationList extends React.Component {
-    constructor(props) {
+interface Organization {
+    id: number;
+    name: string;
+    ranking: number;
+    avg_score: number;
+    funding_round: string;
+    rto_policy: string;
+    profile_completeness: number;
+    accelerated_vesting: boolean;
+}
+
+interface OrganizationListProps {
+    organizations: Organization[];
+    itemsPerPage?: number;
+}
+
+interface OrganizationListState {
+    organizations: Organization[];
+    filteredOrganizations: Organization[];
+    fundingRoundChoices: Record<string, string>;
+    rtoPolicyChoices: Record<string, string>;
+    currentPage: number;
+    itemsPerPage: number;
+    acceleratedVesting: boolean;
+    searchTerm: string;
+}
+
+class OrganizationList extends React.Component<OrganizationListProps, OrganizationListState> {
+    constructor(props: OrganizationListProps) {
         super(props);
         this.state = {
             organizations: props.organizations,
@@ -22,56 +49,58 @@ class OrganizationList extends React.Component {
             .then(data => {
                 this.setState({fundingRoundChoices: data});
             })
-            .catch(error => console.error('Error fetching funding round choices:', error));
+            .catch((error) => {
+                console.error('Error fetching funding round choices:', error);
+            });
 
         fetch('/api/rto-policy-choices/')
             .then(response => response.json())
             .then(data => {
                 this.setState({rtoPolicyChoices: data});
             })
-            .catch(error => console.error('Error fetching RTO policy choices:', error));
+            .catch((error) => {
+                console.error('Error fetching RTO policy choices:', error)
+            });
     }
 
     getCurrentPageFromQueryString() {
         const params = new URLSearchParams(window.location.search);
-        const page = params.get('page');
-        return page ? parseInt(page, 10) : 1;
+        return parseInt(params.get('page') || '1', 10);
     }
 
-    handlePageChange = (pageNumber) => {
+    handlePageChange = (pageNumber: number) => {
         this.setState({currentPage: pageNumber});
-        const params = new URLSearchParams(window.location.search);
-        params.set('page', pageNumber);
-        window.history.pushState({}, '', `${window.location.pathname}?${params.toString()}`);
-    }
+        const url = new URL(window.location.href);
+        url.searchParams.set('page', pageNumber.toString());
+        window.history.pushState({}, '', url.toString());
+    };
 
-    handleFilterChange = () => {
-        this.setState(prevState => {
-            const newAcceleratedVesting = !prevState.acceleratedVesting;
-            return {
-                acceleratedVesting: newAcceleratedVesting
-            };
-        }, this.applyFilters);
-    }
+    handleFilterChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const {checked} = event.target;
+        this.setState({acceleratedVesting: checked}, this.applyFilters);
+    };
 
-    handleSearchChange = (event) => {
-        const searchTerm = event.target.value.toLowerCase();
-        this.setState({searchTerm: searchTerm}, this.applyFilters);
-    }
+    handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const {value} = event.target;
+        this.setState({searchTerm: value}, this.applyFilters);
+    };
 
     applyFilters = () => {
-        this.setState(prevState => {
-            const {organizations, acceleratedVesting, searchTerm} = prevState;
-            const filteredOrganizations = organizations.filter(org => {
-                const matchesSearch = org.name.toLowerCase().includes(searchTerm);
-                const matchesFilter = !acceleratedVesting || org.accelerated_vesting;
-                return matchesSearch && matchesFilter;
-            });
-            return {
-                filteredOrganizations: filteredOrganizations, currentPage: 1
-            };
-        });
-    }
+        const {organizations, acceleratedVesting, searchTerm} = this.state;
+        let filteredOrganizations = organizations;
+
+        if (acceleratedVesting) {
+            filteredOrganizations = filteredOrganizations.filter(org => org.accelerated_vesting);
+        }
+
+        if (searchTerm) {
+            filteredOrganizations = filteredOrganizations.filter(org =>
+                org.name.toLowerCase().includes(searchTerm.toLowerCase())
+            );
+        }
+
+        this.setState({filteredOrganizations});
+    };
 
     render() {
         const {
@@ -111,6 +140,7 @@ class OrganizationList extends React.Component {
                                 type="checkbox"
                                 className="form-check-input"
                                 id="acceleratedVesting"
+                                data-testid="accelerated-vesting-checkbox"
                                 checked={acceleratedVesting}
                                 onChange={this.handleFilterChange}
                             />
@@ -170,11 +200,14 @@ export default OrganizationList;
 
 document.addEventListener('DOMContentLoaded', () => {
     const organizationDataElement = document.getElementById('organization-data');
-    if (organizationDataElement) {
+    if (organizationDataElement && organizationDataElement.textContent) {
         try {
             const organizationsData = JSON.parse(organizationDataElement.textContent);
-            ReactDOM.render(<OrganizationList
-                organizations={organizationsData}/>, document.getElementById('organization-list'));
+            const container = document.getElementById('organization-list');
+            if (container) {
+                const root = createRoot(container);
+                root.render(<OrganizationList organizations={organizationsData}/>);
+            }
         } catch (error) {
             console.error('Error parsing organization data:', error);
         }
