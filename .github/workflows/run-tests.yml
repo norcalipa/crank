@@ -42,5 +42,8 @@ jobs:
       - name: Install Node.js dependencies
         run: npm install
 
+      - name: Run webpack
+        run: npx webpack
+
       - name: Run Jest tests
         run: npx jest

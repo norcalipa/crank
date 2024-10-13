@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "jsx": "react",
+    "module": "commonjs",
+    "target": "es6",
+    "outDir": "./dist",
+    "rootDir": "./static",
+    "strict": true,
+    "lib": [
+      "dom",
+      "es6"
+    ],
+    "skipLibCheck": true
+  },
+  "include": [
+    "static/js",
+  ]
+}
