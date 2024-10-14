@@ -1,3 +1,5 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
 #!/usr/bin/env python
 """Django's command-line utility for administrative tasks."""
 import os
