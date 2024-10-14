@@ -1,3 +1,5 @@
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
 The culture-focused algorithm gives greater weight to **Culture** and **Lifecycle and Financials** score types.  
 
 Weights are as follows:
