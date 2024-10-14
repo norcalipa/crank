@@ -1,3 +1,5 @@
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
 The comp-focused algorithm gives greater weight to **Compensation**, **Vesting Schedule**, and **Lifecycle 
 and Financials** score types.  
 
