@@ -1,3 +1,5 @@
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
 This algorithm places a much higher weight on **Compensation**, **Vesting Schedule**, 
 **Interview Difficulty / Probability of Hire**, and **Lifecycle and Financials** 
 score types, with slightly higher weights on **Leadership**, **Culture**, and **Layoffs**.

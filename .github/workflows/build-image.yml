@@ -1,13 +1,13 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
 name: Build Image
 
 on:
-  pull_request:
-    types:
-      - closed
+  push:
     branches:
       - main
   workflow_run:
-    workflows: [ "Run Tests" ]
+    workflows: [ "Run Tests", "Check License Headers", "Test Coverage" ]
     types:
       - completed
 
