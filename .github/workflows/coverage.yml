@@ -17,6 +17,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install Node.js dependencies
+        run: npm install
+
+      - name: Run webpack
+        run: npx webpack
+
+      - name: Run Jest tests with coverage
+        run: npx jest --coverage
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: unittests
+          name: crank-jest
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
