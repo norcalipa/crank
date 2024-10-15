@@ -2,6 +2,9 @@
 <!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
 # Crank.fyi
 
+[![codecov](https://codecov.io/gh/norcalipa/crank/graph/badge.svg?token=5CR414ORFK)](https://codecov.io/gh/norcalipa/crank)
+[![Known Vulnerabilities](https://snyk.io/test/github/norcalipa/crank/badge.svg)](https://snyk.io/test/github/norcalipa/crank)
+
 ## Overview
 
 This project is a web application built with Python using the Django framework, React, and TypeScript. It includes a backend API, frontend UI, and various automated tests.
