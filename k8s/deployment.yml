@@ -76,7 +76,7 @@ spec:
               protocol: TCP
           env:
             - name: DB_HOST
-              value: "10.2.2.10"
+              value: "fats"
             - name: DB_NAME
               value: "crank"
             - name: DB_USER
