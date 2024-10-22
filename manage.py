@@ -6,6 +6,8 @@ import os
 import sys
 from dotenv import load_dotenv
 
+import newrelic.agent
+newrelic.agent.initialize('newrelic.ini')
 
 def main():
     load_dotenv()
