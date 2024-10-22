@@ -18,6 +18,7 @@ env:
   SERVICE: crank
   REGION: us-west1
   ARTIFACT_REPO: crank-repository
+  NEW_RELIC_LICENSE_KEY: ${{ secrets.NEW_RELIC_LICENSE_KEY }}
 
 jobs:
   build-image:
