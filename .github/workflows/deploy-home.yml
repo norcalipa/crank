@@ -12,7 +12,7 @@ on:
 
 jobs:
   deploy-home-k3s:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
           echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared jammy main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
 
           # install cloudflared
-          sudo apt-get update && sudo apt-get install cloudflared
+          sudo apt-get update && sudo apt-get install cloudflared=2024.10.0
 
       - name: Deploy to Kubernetes
         run: |
