@@ -38,7 +38,7 @@ jobs:
           cd /tmp
           curl -OL https://github.com/cloudflare/cloudflared/releases/download/2024.10.0/cloudflared-linux-amd64.deb
           cd -
-          sudo apt install /tmp/cloudflared-linux-arm.deb
+          sudo apt install /tmp/cloudflared-linux-amd64.deb
 
           # install cloudflared
           sudo apt-get update && sudo apt-get install cloudflared=2024.10.0
