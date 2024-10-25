@@ -12,7 +12,7 @@ on:
 
 jobs:
   deploy-home-k3s:
-    runs-on: ubuntu-jammy
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
