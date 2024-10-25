@@ -1,0 +1,24 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+name: Change Tracking Marker
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  newrelic:
+    runs-on: ubuntu-latest
+    name: New Relic
+    steps:
+      # This step builds a var with the release tag value to use later
+      - name: Set Release Version from SHA
+        run: echo "RELEASE_VERSION=${{ github.sha }}" >> $GITHUB_ENV
+      # This step creates a new Change Tracking Marker
+      - name: New Relic Application Deployment Marker
+        uses: newrelic/deployment-marker-action@v2.3.0
+        with:
+          apiKey: ${{ secrets.NEW_RELIC_API_KEY }}
+          guid: ${{ secrets.NEW_RELIC_DEPLOYMENT_ENTITY_GUID }}
+          version: "${{ env.RELEASE_VERSION }}"
+          user: "${{ github.actor }}"
