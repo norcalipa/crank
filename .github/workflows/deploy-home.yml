@@ -35,8 +35,8 @@ jobs:
           # Add this repo to your apt repositories
           # echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared jammy main' | sudo tee /etc/apt/sources.list.d/cloudflared.list
           # this workaround is necessary because cloudflared 2024.10.1 is broken
-          curl -OL https://github.com/cloudflare/cloudflared/releases/download/2024.10.0/cloudflared-linux-arm.deb
-          sudo apt install ./cloudflared-linux-arm.deb
+          curl -L https://github.com/cloudflare/cloudflared/releases/download/2024.10.0/cloudflared-linux-amd64.deb /tmp/cloudflared-linux-amd64.deb
+          sudo apt install /tmp/cloudflared-linux-arm.deb
 
           # install cloudflared
           sudo apt-get update && sudo apt-get install cloudflared=2024.10.0
