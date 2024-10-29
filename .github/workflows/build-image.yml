@@ -4,12 +4,6 @@ name: Build Image
 
 on:
   push:
-    branches:
-      - main
-  workflow_run:
-    workflows: [ "Run Tests", "Check License Headers", "Test Coverage" ]
-    types:
-      - completed
 
 env:
   PROJECT_ID: crank-404520

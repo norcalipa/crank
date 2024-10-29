@@ -4,10 +4,6 @@ name: Test Coverage
 
 on:
   push:
-  workflow_run:
-    workflows: [ "Run Tests", "Check License Headers" ]
-    types:
-      - completed
 
 env:
   PROJECT_ID: crank-404520
