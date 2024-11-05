@@ -67,71 +67,40 @@ class IndexView(generic.ListView):
             self.object_list = []
             return self.object_list
 
-        """Return all active organizations with scores in descending order."""
-        try:
-            with connection.cursor() as cursor:
-                cursor.execute('''
-                SELECT id,
-                       name,
-                       type,
-                       rto_policy,
-                       funding_round,           
-                       accelerated_vesting,
-                       avg_score,
-                       profile_completeness,
-                       RANK() OVER (ORDER BY avg_score desc) as ranking
-                FROM 
-                    (SELECT orgs.id,
-                           orgs.name,
-                           orgs.type,
-                           orgs.rto_policy,
-                           orgs.funding_round,
-                           orgs.accelerated_vesting,
-                           SUM(orgs.avg_type_score * orgs.weight) / SUM(orgs.weight) AS avg_score,
-                           (CAST(score_types.score_type_count AS REAL) /
-                           /* Admittedly long calculation dividing total score types by the number present for each org */
-                           (SELECT COUNT(*) FROM crank_scoretype ct WHERE ct.status = 1) * 100) AS profile_completeness
-                    FROM
-                        /* Subquery that gives core org details and avg score by type */
-                        (SELECT co.id,
-                                co.name,
-                                co.type,
-                                co.rto_policy,
-                                co.funding_round,
-                                co.accelerated_vesting,
-                                AVG(cs.score) AS avg_type_score,
-                                cw.weight,
-                                ct.name AS score_type
-                         FROM crank_organization AS co,
-                              crank_score AS cs,
-                              crank_scoretype AS ct,
-                              crank_scorealgorithmweight AS cw
-                         WHERE co.status = 1 AND
-                         co.id = cs.target_id AND
-                         cs.type_id = cw.type_id AND
-                         cw.algorithm_id = %s AND
-                         cs.type_id = ct.id
-                         GROUP BY co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting, cw.weight, ct.name) orgs,
-                        /* Subquery that gives the number of score types present for an org */
-                        (SELECT target_id, count(*) AS score_type_count FROM
-                            (SELECT target_id,
-                                    type_id,
-                                    COUNT(type_id)
-                             FROM crank_score cs
-                             WHERE status = 1
-                             GROUP BY target_id, type_id) score_counts
-                         GROUP BY score_counts.target_id) score_types
-                    WHERE score_types.target_id = orgs.id
-                    GROUP BY id, name, type) scored_results
-                ''', [self.algorithm_id])
-                columns = [col[0] for col in cursor.description]
-                self.object_list = [dict(zip(columns, row)) for row in cursor.fetchall()]
-            if self.accelerated_vesting:
-                self.object_list = [org for org in self.object_list if org.accelerated_vesting]
-            return self.object_list
+        query = '''
+        SELECT id, name, type, rto_policy, funding_round, accelerated_vesting, avg_score, profile_completeness, RANK() OVER (ORDER BY avg_score desc) as ranking
+        FROM (
+            SELECT orgs.id, orgs.name, orgs.type, orgs.rto_policy, orgs.funding_round, orgs.accelerated_vesting, 
+                   SUM(orgs.avg_type_score * orgs.weight) / SUM(orgs.weight) AS avg_score,
+                   (CAST(score_types.score_type_count AS REAL) / (SELECT COUNT(*) FROM crank_scoretype ct WHERE ct.status = 1) * 100) AS profile_completeness
+            FROM (
+                SELECT co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting, 
+                       AVG(cs.score) AS avg_type_score, cw.weight, ct.name AS score_type
+                FROM crank_organization AS co
+                JOIN crank_score AS cs ON co.id = cs.target_id
+                JOIN crank_scoretype AS ct ON cs.type_id = ct.id
+                JOIN crank_scorealgorithmweight AS cw ON cs.type_id = cw.type_id
+                WHERE co.status = 1 AND cw.algorithm_id = %s
+                GROUP BY co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting, cw.weight, ct.name
+            ) orgs
+            JOIN (
+                SELECT target_id, count(*) AS score_type_count
+                FROM (
+                    SELECT target_id, type_id, COUNT(type_id)
+                    FROM crank_score
+                    WHERE status = 1
+                    GROUP BY target_id, type_id
+                ) score_counts
+                GROUP BY score_counts.target_id
+            ) score_types ON score_types.target_id = orgs.id
+            GROUP BY id, name, type, rto_policy, funding_round, accelerated_vesting
+        ) scored_results
+        '''
 
-        except Organization.DoesNotExist:
-            self.object_list = []
+        with connection.cursor() as cursor:
+            cursor.execute(query, [self.algorithm_id])
+            columns = [col[0] for col in cursor.description]
+            self.object_list = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
         return self.object_list
 
