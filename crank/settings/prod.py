@@ -20,8 +20,12 @@ DATABASES = {
         'HOST': os.environ.get('DB_HOST'),
         'PORT': os.environ.get('DB_PORT'),
         'USER': os.environ.get('DB_USER'),
-        'PASSWORD': os.environ.get('DB_PASS')
-#        'OPTIONS': {'ssl': {'ca': os.environ.get('MYSQL_ATTR_SSL_CA')}}
+        'PASSWORD': os.environ.get('DB_PASS'),
+        'CONN_MAX_AGE': 0,  # Use 0 for connection pooling
+        'OPTIONS': {
+            'MAX_CONNS': 8,  # Maximum number of connections in the pool
+            'REUSE_CONNS': 4,  # Number of connections to reuse
+        },
     }
 }
 ALLOWED_HOSTS = ['*']
