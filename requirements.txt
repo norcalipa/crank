@@ -4,7 +4,7 @@ cffi==1.17.0rc1
 charset-normalizer==3.3.2
 click==8.1.7
 coverage==7.3.2
-cryptography==43.0.1
+cryptography==43.0.3
 defusedxml==0.7.1
 Deprecated==1.2.14
 distlib==0.3.8
