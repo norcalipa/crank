@@ -1,5 +1,3 @@
-# Copyright (c) 2024 Isaac Adams
-# Licensed under the MIT License. See LICENSE file in the project root for full license information.
 ---
 apiVersion: v1
 kind: Namespace
@@ -15,7 +13,6 @@ metadata:
     app.kubernetes.io/name: crank
     app.kubernetes.io/instance: crank
     app.kubernetes.io/version: ${GITHUB_SHA}
-
 spec:
   replicas: 2
   strategy:
@@ -114,7 +111,7 @@ spec:
     app.kubernetes.io/name: crank
     app.kubernetes.io/instance: crank
 ---
-apiVersion: autoscaling/v2beta2
+apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: crank-hpa
