@@ -1,3 +1,5 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
 ---
 apiVersion: v1
 kind: Namespace
@@ -62,11 +64,11 @@ spec:
             failureThreshold: 3
           resources:
             requests:
-              memory: "160Mi"
-              cpu: "250m"
+              memory: "512Mi"
+              cpu: "1"
             limits:
               memory: "512Mi"
-              cpu: "2"
+              cpu: "1"
           ports:
             - name: http
               containerPort: 8080
