@@ -3,6 +3,8 @@
 import os
 import pymysql
 import multiprocessing
+import dj_db_conn_pool
+from django.db import connection
 from pathlib import Path
 
 pymysql.install_as_MySQLdb()
@@ -18,16 +20,16 @@ CPU_COUNT = multiprocessing.cpu_count()
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.mysql',
+        'ENGINE': 'dj_db_conn_pool.backends.mysql',
         'NAME': os.environ.get('DB_NAME'),
         'HOST': os.environ.get('DB_HOST'),
         'PORT': os.environ.get('DB_PORT'),
         'USER': os.environ.get('DB_USER'),
         'PASSWORD': os.environ.get('DB_PASS'),
         'CONN_MAX_AGE': 0,  # Use 0 for connection pooling
-        'OPTIONS': {
-            'MAX_CONNS': CPU_COUNT * 4,  # Maximum number of connections in the pool
-            'REUSE_CONNS': CPU_COUNT * 2,  # Number of connections to reuse
+        'POOL_OPTIONS': {
+            'POOL_SIZE': CPU_COUNT * 4,  # Maximum number of connections in the pool
+            'POOL_RECYCLE': 3600,  # recycle connections after this many seconds
         },
     }
 }
