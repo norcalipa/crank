@@ -20,7 +20,6 @@ DATABASES = {
         'PORT': os.environ.get('DB_PORT'),
         'USER': os.environ.get('DB_USER'),
         'PASSWORD': os.environ.get('DB_PASS'),
-        'CONN_MAX_AGE': 0,  # Use 0 for connection pooling
         'POOL_OPTIONS': {
             'POOL_SIZE': CPU_COUNT * 4,  # Maximum number of connections in the pool
             'POOL_RECYCLE': 3600,  # recycle connections after this many seconds
