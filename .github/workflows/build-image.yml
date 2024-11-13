@@ -4,6 +4,12 @@ name: Build Image
 
 on:
   push:
+    paths-ignore:
+      - '.github/**'
+      - 'seeds/**'
+      - 'dump/**'
+      - 'k8s/**'
+      - '!.github/workflows/build-image.yml'
 
 env:
   PROJECT_ID: crank-404520
@@ -36,7 +42,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: 20
 
       - name: Install dependencies
         run: |
