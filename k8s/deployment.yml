@@ -17,7 +17,7 @@ metadata:
     app.kubernetes.io/version: ${GITHUB_SHA}
 
 spec:
-  replicas: 1
+  replicas: 2
   strategy:
     type: RollingUpdate
   selector:
@@ -113,3 +113,23 @@ spec:
   selector:
     app.kubernetes.io/name: crank
     app.kubernetes.io/instance: crank
+---
+apiVersion: autoscaling/v2beta2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: crank-hpa
+  namespace: crank
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: crank
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
