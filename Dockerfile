@@ -1,5 +1,5 @@
 # Use an official Python runtime as a parent image
-FROM nogil/python
+FROM python:3.13.0-alpine3.20
 
 # create a non-root user to run the app as
 RUN addgroup -S appgroup -g 10000
