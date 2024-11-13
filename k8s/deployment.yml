@@ -65,11 +65,11 @@ spec:
             failureThreshold: 3
           resources:
             requests:
-              memory: "256Mi"
-              cpu: "1"
+              memory: "160Mi"
+              cpu: "250m"
             limits:
               memory: "512Mi"
-              cpu: "2"
+              cpu: "1"
           ports:
             - name: http
               containerPort: 8080
@@ -87,8 +87,6 @@ spec:
               value: "prod"
             - name: PYTHONUNBUFFERED
               value: "1"
-            - name: PYTHON_GIL
-              value: "0"
           envFrom:
             - secretRef:
                 name: db-connect-credentials
