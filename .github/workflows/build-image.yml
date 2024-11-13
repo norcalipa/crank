@@ -10,6 +10,7 @@ on:
       - 'dump/**'
       - 'k8s/**'
       - '!.github/workflows/build-image.yml'
+      - '.gitignore'
 
 env:
   PROJECT_ID: crank-404520

@@ -8,6 +8,7 @@ on:
       - 'crank/migrations/**'
       - 'seeds/**'
       - 'dump/**'
+      - '.gitignore'
 
 jobs:
   check-license:

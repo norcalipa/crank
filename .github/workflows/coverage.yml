@@ -12,6 +12,7 @@ on:
       - 'seeds/**'
       - 'dump/**'
       - 'k8s/**'
+      - '.gitignore'
 
 env:
   PROJECT_ID: crank-404520

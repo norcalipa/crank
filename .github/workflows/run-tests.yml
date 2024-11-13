@@ -12,6 +12,7 @@ on:
       - 'seeds/**'
       - 'dump/**'
       - 'k8s/**'
+      - '.gitignore'
 
 jobs:
   run-tests:
