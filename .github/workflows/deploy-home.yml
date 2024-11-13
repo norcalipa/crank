@@ -11,6 +11,7 @@ on:
       - 'dump/**'
       - '!.github/workflows/build-image.yml'
       - '!.github/workflows/deploy-home.yml'
+      - '.gitignore'
 
 jobs:
   deploy-home-k3s:
