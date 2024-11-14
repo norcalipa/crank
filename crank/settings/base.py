@@ -91,10 +91,10 @@ if DEBUG:
     )
 
 MIDDLEWARE = [
+    'django.middleware.security.SecurityMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.security.SecurityMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -150,7 +150,9 @@ WSGI_APPLICATION = 'crank.wsgi.application'
 
 EXTENSIONS_MAX_UNIQUE_QUERY_ATTEMPTS = 1000
 
-SESSION_ENGINE = "django.contrib.sessions.backends.cached_db"
+SESSION_ENGINE = "django.contrib.sessions.backends.cache"
+SESSION_CACHE_ALIAS = 'default'
+SESSION_SAVE_EVERY_REQUEST = False
 SESSION_COOKIE_DOMAIN = ".crank.fyi"
 SESSION_COOKIE_SECURE = False
 
