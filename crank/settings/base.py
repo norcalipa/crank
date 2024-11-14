@@ -15,7 +15,7 @@ import multiprocessing
 import os
 from pathlib import Path
 
-from django.conf.global_settings import STATICFILES_DIRS
+from django.conf.global_settings import STATICFILES_DIRS, CACHE_MIDDLEWARE_SECONDS
 from django.contrib.staticfiles.storage import ManifestStaticFilesStorage
 from dotenv import load_dotenv
 from opentelemetry.instrumentation.django import DjangoInstrumentor
@@ -155,19 +155,27 @@ SESSION_CACHE_ALIAS = 'default'
 SESSION_SAVE_EVERY_REQUEST = False
 SESSION_COOKIE_DOMAIN = ".crank.fyi"
 SESSION_COOKIE_SECURE = False
+# Set session timeout to 30 minutes
+SESSION_COOKIE_AGE = 1800  # 30 minutes in seconds
 
-CACHE_TIMEOUT = 20  # Timeout for Redis cached items in seconds
+CACHE_MIDDLEWARE_SECONDS = 60  # Timeout for cached items in seconds
 REDIS_URL = os.environ["REDIS_URL"]
 # Optional: To use Redis for session storage
-SESSION_CACHE_ALIAS = 'default'
 CACHES = {
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache',
         'LOCATION': REDIS_URL,
         'OPTIONS': {
             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            'SOCKET_CONNECT_TIMEOUT': 5,  # in seconds
+            'SOCKET_TIMEOUT': 5,  # in seconds
         }
     }
+}
+
+# Set the TTL for session entries in Redis
+SESSION_REDIS = {
+    'ttl': 1800,  # 30 minutes in seconds
 }
 
 # Password validation

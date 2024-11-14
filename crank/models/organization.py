@@ -56,7 +56,7 @@ class Organization(TimeStampedModel, ActivatorModel):
     def avg_scores(self):
         cache_key = f'organization_{self.pk}_avg_scores'
         return cache.get_or_set(cache_key, lambda: self.scores.values("type__name").annotate(avg_score=Avg('score')),
-                            timeout=settings.CACHE_TIMEOUT)
+                            timeout=settings.CACHE_MIDDLEWARE_SECONDS)
 
     @staticmethod
     def get_funding_round_choices():

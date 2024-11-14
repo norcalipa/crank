@@ -20,4 +20,4 @@ class OrganizationView(generic.DetailView):
         obj_id = self.kwargs.get('pk')
         cache_key = f'organization_{obj_id}'
         return cache.get_or_set(cache_key, lambda: super(OrganizationView, self).get_object(queryset),
-                                timeout=settings.CACHE_TIMEOUT)
+                                timeout=settings.CACHE_MIDDLEWARE_SECONDS)
