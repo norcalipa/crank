@@ -29,7 +29,10 @@
                 {% if user.is_staff %}
                     <a class="btn btn-primary btn-sm" href="/admin">Admin</a>
                 {% endif %}
-                <a class="btn btn-secondary btn-sm" href="/logout">Logout {{ user.username }}</a>
+                <form method="post" action="{% url 'account_logout' %}" style="display:inline;">
+                    {% csrf_token %}
+                    <button class="btn btn-secondary btn-sm" type="submit">Logout {{ user.username }}</button>
+                </form>
             {% else %}
                 <a class="btn btn-light btn-sm" href="{% provider_login_url 'google' %}">
                     <i class="fab fa-google"></i>
