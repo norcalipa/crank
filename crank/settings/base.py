@@ -158,7 +158,7 @@ SESSION_COOKIE_SECURE = False
 # Set session timeout to 30 minutes
 SESSION_COOKIE_AGE = 1800  # 30 minutes in seconds
 
-CACHE_MIDDLEWARE_SECONDS = 60  # Timeout for cached items in seconds
+CACHE_MIDDLEWARE_SECONDS = int(os.environ["CACHE_TTL"])  # Timeout for cached items in seconds
 REDIS_URL = os.environ["REDIS_URL"]
 # Optional: To use Redis for session storage
 CACHES = {

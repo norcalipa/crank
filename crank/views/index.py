@@ -4,15 +4,9 @@ import os
 
 import markdown
 from django.db import connection
-from django.http import JsonResponse
-from django.shortcuts import redirect
-from django.urls import reverse
 from django.views import generic
 from django.core.cache import cache
 from django.conf import settings
-
-
-from crank.models.organization import Organization
 from crank.models.score import ScoreAlgorithm
 from crank.settings.base import CONTENT_DIR, DEFAULT_ALGORITHM_ID
 from crank.forms.organization_filter import OrganizationFilterForm
@@ -32,23 +26,23 @@ class IndexView(generic.ListView):
         self.algorithm = None
         self.error = None
         self.accelerated_vesting = None
+        cache_key = 'algorithm_object_list'
+        self.algorithms = cache.get(cache_key)
+        if not self.algorithms:
+            self.algorithms = ScoreAlgorithm.objects.filter(status=1)
+            cache.set(cache_key, self.algorithms, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
 
     def _check_algorithm_id(self):
         if not self.algorithm:
             if 'algorithm_id' in self.kwargs:
                 self.algorithm_id = self.kwargs['algorithm_id']
-            if self.algorithm_id in IndexView.algorithm_cache.keys():
-                self.algorithm = IndexView.algorithm_cache[self.algorithm_id]
+
+            self.algorithm = self.algorithms.filter(id=self.algorithm_id).first()
+            if self.algorithm:
                 return
-            if not ScoreAlgorithm.objects.filter(id=self.algorithm_id).exists():
+            else:
                 self.algorithm_id = DEFAULT_ALGORITHM_ID
                 self.request.session["algorithm_id"] = self.algorithm_id
-            try:
-                if not self.algorithm:
-                    self.algorithm = ScoreAlgorithm.objects.get(id=self.algorithm_id)
-                    self.algorithm_cache[self.algorithm_id] = self.algorithm
-            except ScoreAlgorithm.DoesNotExist:
-                pass  # we will handle empty algorithms by returning an empty object list
 
     def post(self, request, *args, **kwargs):
         self.kwargs = kwargs
@@ -118,11 +112,10 @@ class IndexView(generic.ListView):
             kwargs = {}
         context = super().get_context_data(**kwargs)
         context['algorithm'] = self.get_algorithm_details()
-        context['all_algorithms'] = ScoreAlgorithm.objects.filter(status=1)
+        context['all_algorithms'] = self.algorithms.filter(status=1)
         context['form'] = OrganizationFilterForm(
             initial={'accelerated_vesting': self.request.session.get('accelerated_vesting')}, request=self.request)
 
-        # Serialize the organization data using JsonResponse
         context['top_organization_list'] = list(self.object_list)
 
         return context
