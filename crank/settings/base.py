@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/4.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
+import multiprocessing
 import os
 from pathlib import Path
 
@@ -54,10 +55,11 @@ LOGGING = {
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-# SECRET_KEY = os.environ["SECRET_KEY"]
+SECRET_KEY = os.environ["SECRET_KEY"]
 
 # SECURITY WARNING: don't run with debug turned on in production!
 
+CPU_COUNT = multiprocessing.cpu_count()
 
 # Application definition
 
@@ -155,6 +157,20 @@ SESSION_CACHE_ALIAS = 'default'
 SESSION_SAVE_EVERY_REQUEST = False
 SESSION_COOKIE_DOMAIN = ".crank.fyi"
 SESSION_COOKIE_SECURE = False
+
+CACHE_TIMEOUT = 20  # Timeout for Redis cached items in seconds
+REDIS_URL = os.environ["REDIS_URL"]
+# Optional: To use Redis for session storage
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': REDIS_URL,
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        }
+    }
+}
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators

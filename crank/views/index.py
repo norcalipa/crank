@@ -8,6 +8,9 @@ from django.http import JsonResponse
 from django.shortcuts import redirect
 from django.urls import reverse
 from django.views import generic
+from django.core.cache import cache
+from django.conf import settings
+
 
 from crank.models.organization import Organization
 from crank.models.score import ScoreAlgorithm
@@ -67,41 +70,46 @@ class IndexView(generic.ListView):
             self.object_list = []
             return self.object_list
 
-        query = '''
-        SELECT id, name, type, rto_policy, funding_round, accelerated_vesting, avg_score, profile_completeness, RANK() OVER (ORDER BY avg_score desc) as ranking
-        FROM (
-            SELECT orgs.id, orgs.name, orgs.type, orgs.rto_policy, orgs.funding_round, orgs.accelerated_vesting, 
-                   SUM(orgs.avg_type_score * orgs.weight) / SUM(orgs.weight) AS avg_score,
-                   (CAST(score_types.score_type_count AS REAL) / (SELECT COUNT(*) FROM crank_scoretype ct WHERE ct.status = 1) * 100) AS profile_completeness
+        def fetch_results():
+            query = '''
+            SELECT id, name, type, rto_policy, funding_round, accelerated_vesting, avg_score, profile_completeness, RANK() OVER (ORDER BY avg_score desc) as ranking
             FROM (
-                SELECT co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting, 
-                       AVG(cs.score) AS avg_type_score, cw.weight, ct.name AS score_type
-                FROM crank_organization AS co
-                JOIN crank_score AS cs ON co.id = cs.target_id
-                JOIN crank_scoretype AS ct ON cs.type_id = ct.id
-                JOIN crank_scorealgorithmweight AS cw ON cs.type_id = cw.type_id
-                WHERE co.status = 1 AND cw.algorithm_id = %s
-                GROUP BY co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting, cw.weight, ct.name
-            ) orgs
-            JOIN (
-                SELECT target_id, count(*) AS score_type_count
+                SELECT orgs.id, orgs.name, orgs.type, orgs.rto_policy, orgs.funding_round, orgs.accelerated_vesting, 
+                       SUM(orgs.avg_type_score * orgs.weight) / SUM(orgs.weight) AS avg_score,
+                       (CAST(score_types.score_type_count AS REAL) / (SELECT COUNT(*) FROM crank_scoretype ct WHERE ct.status = 1) * 100) AS profile_completeness
                 FROM (
-                    SELECT target_id, type_id, COUNT(type_id)
-                    FROM crank_score
-                    WHERE status = 1
-                    GROUP BY target_id, type_id
-                ) score_counts
-                GROUP BY score_counts.target_id
-            ) score_types ON score_types.target_id = orgs.id
-            GROUP BY id, name, type, rto_policy, funding_round, accelerated_vesting
-        ) scored_results
-        '''
+                    SELECT co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting, 
+                           AVG(cs.score) AS avg_type_score, cw.weight, ct.name AS score_type
+                    FROM crank_organization AS co
+                    JOIN crank_score AS cs ON co.id = cs.target_id
+                    JOIN crank_scoretype AS ct ON cs.type_id = ct.id
+                    JOIN crank_scorealgorithmweight AS cw ON cs.type_id = cw.type_id
+                    WHERE co.status = 1 AND cw.algorithm_id = %s
+                    GROUP BY co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting, cw.weight, ct.name
+                ) orgs
+                JOIN (
+                    SELECT target_id, count(*) AS score_type_count
+                    FROM (
+                        SELECT target_id, type_id, COUNT(type_id)
+                        FROM crank_score
+                        WHERE status = 1
+                        GROUP BY target_id, type_id
+                    ) score_counts
+                    GROUP BY score_counts.target_id
+                ) score_types ON score_types.target_id = orgs.id
+                GROUP BY id, name, type, rto_policy, funding_round, accelerated_vesting
+            ) scored_results
+            '''
 
-        with connection.cursor() as cursor:
-            cursor.execute(query, [self.algorithm_id])
-            columns = [col[0] for col in cursor.description]
-            self.object_list = [dict(zip(columns, row)) for row in cursor.fetchall()]
+            with connection.cursor() as cursor:
+                cursor.execute(query, [self.algorithm_id])
+                columns = [col[0] for col in cursor.description]
+                object_list = [dict(zip(columns, row)) for row in cursor.fetchall()]
 
+            return object_list
+
+        cache_key = f'algorithm_{self.algorithm_id}_results'
+        self.object_list = cache.get_or_set(cache_key, fetch_results, timeout=settings.CACHE_TIMEOUT)
         return self.object_list
 
 

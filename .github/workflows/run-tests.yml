@@ -52,11 +52,6 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-dev.txt
 
-      - name: Start Redis
-        uses: supercharge/redis-github-action@1.7.0
-        with:
-          redis-version: 7.0.5
-
       - name: Run tests
         env:
           ENV: dev
