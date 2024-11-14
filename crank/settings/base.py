@@ -55,11 +55,10 @@ LOGGING = {
 # See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ["SECRET_KEY"]
+# SECRET_KEY = os.environ["SECRET_KEY"]
 
 # SECURITY WARNING: don't run with debug turned on in production!
 
-CPU_COUNT = multiprocessing.cpu_count()
 
 # Application definition
 
@@ -149,7 +148,6 @@ WSGI_APPLICATION = 'crank.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
-
 EXTENSIONS_MAX_UNIQUE_QUERY_ATTEMPTS = 1000
 
 SESSION_ENGINE = "django.contrib.sessions.backends.cache"
@@ -161,7 +159,7 @@ SESSION_COOKIE_SECURE = False
 CACHE_TIMEOUT = 20  # Timeout for Redis cached items in seconds
 REDIS_URL = os.environ["REDIS_URL"]
 # Optional: To use Redis for session storage
-
+SESSION_CACHE_ALIAS = 'default'
 CACHES = {
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache',

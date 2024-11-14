@@ -1,5 +1,6 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
+import multiprocessing
 from pathlib import Path
 from django.core.cache.backends.redis import RedisCache
 import os
@@ -7,6 +8,9 @@ import os
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEBUG = True
+SECRET_KEY = os.environ["SECRET_KEY"]
+CPU_COUNT = multiprocessing.cpu_count()
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
