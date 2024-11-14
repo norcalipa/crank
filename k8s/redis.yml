@@ -50,7 +50,7 @@ spec:
     spec:
       containers:
         - name: redis
-          image: redis:6.2
+          image: redis:7.0.5-alpine
           ports:
             - containerPort: 6379
           resources:

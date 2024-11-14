@@ -1,7 +1,9 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 from pathlib import Path
+from django.core.cache.backends.redis import RedisCache
 import os
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEBUG = True
@@ -15,6 +17,21 @@ DATABASES = {
         },
     }
 }
+
+REDIS_URL = os.environ["REDIS_URL"]
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': REDIS_URL,
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        }
+    }
+}
+
+# Optional: To use Redis for session storage
+SESSION_CACHE_ALIAS = 'default'
+
 CORS_ORIGIN_ALLOW_ALL = True
 ALLOWED_HOSTS = ['*']
 LOGGING = {
