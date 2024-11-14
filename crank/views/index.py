@@ -109,7 +109,7 @@ class IndexView(generic.ListView):
             return object_list
 
         cache_key = f'algorithm_{self.algorithm_id}_results'
-        self.object_list = cache.get_or_set(cache_key, fetch_results, timeout=settings.CACHE_TIMEOUT)
+        self.object_list = cache.get_or_set(cache_key, fetch_results, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
         return self.object_list
 
 

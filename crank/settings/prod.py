@@ -21,7 +21,7 @@ CSRF_COOKIE_SECURE = True
 
 DATABASES = {
     'default': {
-        'ENGINE': 'dj_db_conn_pool.backends.mysql',
+        'ENGINE': 'django.db.backends.mysql',
         'NAME': os.environ.get('DB_NAME'),
         'HOST': os.environ.get('DB_HOST'),
         'PORT': os.environ.get('DB_PORT'),

@@ -19,6 +19,8 @@ Including another URLconf
 from allauth.account.views import LogoutView
 from django.contrib import admin
 from django.urls import path, include
+from django.views.decorators.cache import cache_page
+from django.conf import settings
 
 from crank.views.fundinground import FundingRoundChoicesView
 from crank.views.rtopolicy import RTOPolicyChoicesView
@@ -30,10 +32,10 @@ app_name = "crank"
 urlpatterns = [
     path("", IndexView.as_view(), name="index"),
     path("admin/", admin.site.urls),
-    path("algo/<int:algorithm_id>/", IndexView.as_view(), name="index"),
-    path("organization/<int:pk>/", OrganizationView.as_view(), name="organization"),
-    path('api/funding-round-choices/', FundingRoundChoicesView.as_view(), name='funding_round_choices'),
-    path('api/rto-policy-choices/', RTOPolicyChoicesView.as_view(), name='rto_policy_choices'),
+    path("algo/<int:algorithm_id>/", cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(IndexView.as_view()), name="index"),
+    path("organization/<int:pk>/", cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(OrganizationView.as_view()), name="organization"),
+    path('api/funding-round-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(FundingRoundChoicesView.as_view()), name='funding_round_choices'),
+    path('api/rto-policy-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(RTOPolicyChoicesView.as_view()), name='rto_policy_choices'),
     path('api-auth/', include('rest_framework.urls')),
     path('accounts/', include('allauth.urls')),
     path('logout', LogoutView.as_view())
