@@ -1,5 +1,7 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
+from django.conf import settings
+from django.core.cache import cache
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django_extensions.db.models import TimeStampedModel, ActivatorModel
@@ -52,8 +54,9 @@ class Organization(TimeStampedModel, ActivatorModel):
     accelerated_vesting = models.BooleanField(default=False)
 
     def avg_scores(self):
-        results = self.scores.values("type__name").annotate(avg_score=Avg('score'))
-        return results
+        cache_key = f'organization_{self.pk}_avg_scores'
+        return cache.get_or_set(cache_key, lambda: self.scores.values("type__name").annotate(avg_score=Avg('score')),
+                            timeout=settings.CACHE_TIMEOUT)
 
     @staticmethod
     def get_funding_round_choices():

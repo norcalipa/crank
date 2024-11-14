@@ -13,10 +13,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEBUG = False
 # SECURE_SSL_REDIRECT = True
 SECRET_KEY = os.environ.get('SECRET_KEY')
+CPU_COUNT = multiprocessing.cpu_count()
+
 SESSION_COOKIE_SECURE = True
 SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_SECURE = True
-CPU_COUNT = multiprocessing.cpu_count()
 
 DATABASES = {
     'default': {

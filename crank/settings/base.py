@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/4.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/4.2/ref/settings/
 """
+import multiprocessing
 import os
 from pathlib import Path
 
@@ -147,7 +148,6 @@ WSGI_APPLICATION = 'crank.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
-
 EXTENSIONS_MAX_UNIQUE_QUERY_ATTEMPTS = 1000
 
 SESSION_ENGINE = "django.contrib.sessions.backends.cache"
@@ -155,6 +155,20 @@ SESSION_CACHE_ALIAS = 'default'
 SESSION_SAVE_EVERY_REQUEST = False
 SESSION_COOKIE_DOMAIN = ".crank.fyi"
 SESSION_COOKIE_SECURE = False
+
+CACHE_TIMEOUT = 20  # Timeout for Redis cached items in seconds
+REDIS_URL = os.environ["REDIS_URL"]
+# Optional: To use Redis for session storage
+SESSION_CACHE_ALIAS = 'default'
+CACHES = {
+    'default': {
+        'BACKEND': 'django_redis.cache.RedisCache',
+        'LOCATION': REDIS_URL,
+        'OPTIONS': {
+            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+        }
+    }
+}
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators

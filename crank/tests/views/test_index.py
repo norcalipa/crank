@@ -6,7 +6,7 @@ from datetime import datetime
 from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.serializers import serialize
 from django.http import HttpResponseRedirect
-from django.test import TestCase, Client, RequestFactory
+from django.test import TestCase, Client, RequestFactory, override_settings
 from django.urls import reverse
 from django.utils.html import escape
 from unittest.mock import patch
@@ -20,6 +20,7 @@ from crank.views.index import IndexView
 from crank.settings import DEFAULT_ALGORITHM_ID
 
 
+@override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.dummy.DummyCache'}})
 class IndexViewTests(TestCase):
 
     def setUp(self):
