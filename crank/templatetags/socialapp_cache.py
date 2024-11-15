@@ -12,6 +12,6 @@ def get_cached_social_app(provider):
     cache_key = f'social_app_{provider}'
     social_app = cache.get(cache_key)
     if not social_app:
-        social_app = SocialApp.objects.filter(provider=provider).first()
+        social_app = SocialApp.objects.filter(provider=provider).prefetch_related('sites').first()
         cache.set(cache_key, social_app, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
     return social_app

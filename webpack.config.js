@@ -1,6 +1,7 @@
 const path = require('path');
 const {CleanWebpackPlugin} = require('clean-webpack-plugin');
 const {WebpackManifestPlugin} = require('webpack-manifest-plugin');
+const TerserPlugin = require('terser-webpack-plugin');
 const options = {};
 
 
@@ -24,7 +25,8 @@ module.exports = {
     },
     mode: 'production',
     optimization: {
-        minimize: false
+        minimize: true,
+        minimizer: [new TerserPlugin()],
     },
     plugins: [
         new CleanWebpackPlugin(options),

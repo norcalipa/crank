@@ -2,6 +2,7 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 from allauth.socialaccount.models import SocialApp
 from django.contrib.sites.models import Site
+from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
 from crank.models.organization import Organization
@@ -9,6 +10,7 @@ from crank.models.organization import Organization
 
 class OrganizationViewTest(TestCase):
     def setUp(self):
+        cache.clear()
         self.active_org = Organization.objects.create(name="Active Org", status=1)
         self.inactive_org = Organization.objects.create(name="Inactive Org", status=0)
         self.social_app = SocialApp.objects.create(
