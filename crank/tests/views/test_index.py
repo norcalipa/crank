@@ -5,7 +5,6 @@ from datetime import datetime
 
 from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.serializers import serialize
-from django.http import HttpResponseRedirect
 from django.test import TestCase, Client, RequestFactory, override_settings
 from django.urls import reverse
 from django.utils.html import escape
@@ -18,27 +17,31 @@ from django.contrib.sites.models import Site
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 from crank.views.index import IndexView
 from crank.settings import DEFAULT_ALGORITHM_ID
+from django.core.cache import cache
 
 
-@override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.dummy.DummyCache'}})
+@override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
 class IndexViewTests(TestCase):
 
     def setUp(self):
+        cache.clear()
         self.factory = RequestFactory()
         self.client = Client()
         self.view = IndexView.as_view()
         self.index_url = reverse('index')  # replace 'index' with the actual name of the IndexView in your urls.py
+        ScoreAlgorithm.objects.create(id=DEFAULT_ALGORITHM_ID, name='Test Algorithm',
+                                                          description_content='test.md', status=1)
+        self.algorithms = ScoreAlgorithm.objects.filter(status=1)
+        cache.set('algorithm_object_list', self.algorithms)  # Set the cache
 
-        # Create a SocialApp object for testing
-        self.social_app = SocialApp.objects.create(
+        social_app = SocialApp.objects.create(
             provider='google',
             name='Google',
             client_id='test',
             secret='test',
         )
-        self.score_algorithm = ScoreAlgorithm.objects.create(id=DEFAULT_ALGORITHM_ID, name='Test Algorithm',
-                                                             description_content='test.md')
-        self.social_app.sites.add(Site.objects.get_current())
+        social_app.sites.add(Site.objects.get_current())
+        cache.set('social_app_google', social_app)  # Set the cache
 
     def setup_scores(self):
         # Create some test data
@@ -52,7 +55,7 @@ class IndexViewTests(TestCase):
         )
 
         score_type = ScoreType.objects.create(id=1, name='Test Score Type')
-        ScoreAlgorithmWeight.objects.create(algorithm_id=self.score_algorithm.id,
+        ScoreAlgorithmWeight.objects.create(algorithm_id=DEFAULT_ALGORITHM_ID,
                                             type_id=score_type.id, weight=1.0)
         Score.objects.create(source_id=self.organization1.id, target_id=self.organization1.id, score=5.0,
                              type_id=score_type.id)
@@ -165,7 +168,7 @@ class IndexViewTests(TestCase):
         serialized_org = json.loads(serialize('json', [self.organization1]))[0]['fields']
         self.assertOrgValues(serialized_org, queryset[0], True)
 
-    @patch('crank.views.index.Organization.objects.filter')
+    @patch('crank.models.organization.Organization.objects.filter')
     def test_index_view_organization_does_not_exist(self, mock_filter):
         # Mock the filter method to raise Organization.DoesNotExist
         mock_filter.side_effect = Organization.DoesNotExist

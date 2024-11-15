@@ -4,22 +4,15 @@ import os
 
 import markdown
 from django.db import connection
-from django.http import JsonResponse
-from django.shortcuts import redirect
-from django.urls import reverse
 from django.views import generic
 from django.core.cache import cache
 from django.conf import settings
-
-
-from crank.models.organization import Organization
 from crank.models.score import ScoreAlgorithm
 from crank.settings.base import CONTENT_DIR, DEFAULT_ALGORITHM_ID
 from crank.forms.organization_filter import OrganizationFilterForm
 
 
 class IndexView(generic.ListView):
-    algorithm_cache = {}
     template_name = "crank/index.html"
     context_object_name = "top_organization_list"
     paginate_by = 15
@@ -32,21 +25,27 @@ class IndexView(generic.ListView):
         self.algorithm = None
         self.error = None
         self.accelerated_vesting = None
+        cache_key = 'algorithm_object_list'
+        self.algorithms = cache.get(cache_key)
+        if not self.algorithms:
+            self.algorithms = ScoreAlgorithm.objects.filter(status=1)
+            cache.set(cache_key, self.algorithms, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
 
     def _check_algorithm_id(self):
         if not self.algorithm:
             if 'algorithm_id' in self.kwargs:
-                self.algorithm_id = self.kwargs['algorithm_id']
-            if self.algorithm_id in IndexView.algorithm_cache.keys():
-                self.algorithm = IndexView.algorithm_cache[self.algorithm_id]
-                return
-            if not ScoreAlgorithm.objects.filter(id=self.algorithm_id).exists():
-                self.algorithm_id = DEFAULT_ALGORITHM_ID
-                self.request.session["algorithm_id"] = self.algorithm_id
+                self.algorithm_id = int(self.kwargs['algorithm_id'])
+
+            if self.algorithm_id:
+                self.algorithm = self.algorithms.filter(id=int(self.algorithm_id)).first()
+                if self.algorithm:
+                    return
+
+            self.algorithm_id = DEFAULT_ALGORITHM_ID
+            self.request.session["algorithm_id"] = self.algorithm_id
             try:
                 if not self.algorithm:
-                    self.algorithm = ScoreAlgorithm.objects.get(id=self.algorithm_id)
-                    self.algorithm_cache[self.algorithm_id] = self.algorithm
+                    self.algorithm = self.algorithms.filter(id=self.algorithm_id).first()
             except ScoreAlgorithm.DoesNotExist:
                 pass  # we will handle empty algorithms by returning an empty object list
 
@@ -59,7 +58,8 @@ class IndexView(generic.ListView):
     def get_queryset(self):
         # if no algorithm_id in the URL, check for one in the session
         if not self.algorithm_id:
-            self.algorithm_id = self.request.session.get("algorithm_id")
+            self.algorithm_id = int(self.request.session.get(
+                "algorithm_id")) if "algorithm_id" in self.request.session else DEFAULT_ALGORITHM_ID
 
         self.accelerated_vesting = self.request.session.get('accelerated_vesting', False)
 
@@ -112,17 +112,15 @@ class IndexView(generic.ListView):
         self.object_list = cache.get_or_set(cache_key, fetch_results, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
         return self.object_list
 
-
     def get_context_data(self, **kwargs):
         if kwargs is None:
             kwargs = {}
         context = super().get_context_data(**kwargs)
         context['algorithm'] = self.get_algorithm_details()
-        context['all_algorithms'] = ScoreAlgorithm.objects.filter(status=1)
+        context['all_algorithms'] = self.algorithms.filter(status=1)
         context['form'] = OrganizationFilterForm(
             initial={'accelerated_vesting': self.request.session.get('accelerated_vesting')}, request=self.request)
 
-        # Serialize the organization data using JsonResponse
         context['top_organization_list'] = list(self.object_list)
 
         return context
@@ -130,13 +128,15 @@ class IndexView(generic.ListView):
     def get_algorithm_details(self):
         if self.error:
             return None
-        self.algorithm_id = self.request.session.get("algorithm_id")
 
         self._check_algorithm_id()
-        if not hasattr(self.algorithm, 'html_description_content'):
-            file_path = os.path.join(CONTENT_DIR, self.algorithm.description_content)
-            with open(file_path, 'r') as file:
-                md_content = file.read()
-            html_content = markdown.markdown(md_content)
-            self.algorithm.html_description_content = html_content
+        if self.algorithm and not hasattr(self.algorithm, 'html_description_content'):
+            def get_html_content():
+                file_path = os.path.join(CONTENT_DIR, self.algorithm.description_content)
+                with open(file_path, 'r') as file:
+                    md_content = file.read()
+                return markdown.markdown(md_content)
+
+            self.algorithm.html_description_content = cache.get_or_set(
+                f'algorithm_{self.algorithm_id}_description', get_html_content(), timeout=settings.CACHE_MIDDLEWARE_SECONDS)
         return self.algorithm

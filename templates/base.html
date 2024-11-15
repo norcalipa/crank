@@ -3,6 +3,7 @@
 {% load static %}
 {% load socialaccount %}
 {% load manifest %}
+{% load socialapp_cache %}
 <!DOCTYPE html>
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -34,10 +35,13 @@
                     <button class="btn btn-secondary btn-sm" type="submit">Logout {{ user.username }}</button>
                 </form>
             {% else %}
-                <a class="btn btn-light btn-sm" href="{% provider_login_url 'google' %}">
-                    <i class="fab fa-google"></i>
-                    Login with Google
-                </a>
+                {% get_cached_social_app 'google' as social_app %}
+                {% if social_app %}
+                    <a class="btn btn-light btn-sm" href="{% provider_login_url 'google' %}">
+                        <i class="fab fa-google"></i>
+                        Login with Google
+                    </a>
+                {% endif %}
             {% endif %}
         </div>
     </nav>

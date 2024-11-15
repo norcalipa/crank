@@ -67,6 +67,7 @@ jobs:
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           DJANGO_SETTINGS_MODULE: 'crank.settings'
           REDIS_URL: 'redis://localhost:6379/0'
+          CACHE_TTL: 60
           PYTHON_UNBUFFERED: 1
         run: |
           coverage run -m pytest
