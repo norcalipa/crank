@@ -7,29 +7,36 @@ metadata:
   name: crank
 ---
 apiVersion: v1
-kind: PersistentVolume
+kind: Service
 metadata:
-  name: redis-pv
+  name: redis
   namespace: crank
+  labels:
+    app: redis
 spec:
-  capacity:
-    storage: 1Gi
-  accessModes:
-    - ReadWriteOnce
-  hostPath:
-    path: /mnt/data/redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+  clusterIP: None  # Headless service
+  selector:
+    app: redis
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
+apiVersion: apps/v1
+kind: ConfigMap
 metadata:
-  name: redis-pvc
+  name: redis-config
   namespace: crank
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
+data:
+  redis.conf: |
+    # Redis configuration
+    bind 0.0.0.0
+    port 6379
+    dir /data
+    appendonly yes
+    # Conditional replication configuration
+    {{- if eq .Env.REDIS_ROLE "slave" }}
+    slaveof redis-master 6379
+    {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -39,7 +46,7 @@ metadata:
   labels:
     app: redis
 spec:
-  replicas: 1
+  replicas: 2
   selector:
     matchLabels:
       app: redis
@@ -60,25 +67,25 @@ spec:
             limits:
               memory: "512Mi"
               cpu: "500m"
+          env:
+            - name: REDIS_ROLE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['role']
+          command: [ "redis-server", "/etc/redis/redis.conf" ]
           volumeMounts:
-            - mountPath: /data
-              name: redis-storage
+            - name: redis-storage
+              mountPath: /data
+            - name: redis-config-storage
+              mountPath: /etc/redis
+              subPath: redis.conf
       volumes:
         - name: redis-storage
           persistentVolumeClaim:
             claimName: redis-pvc
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis
-  namespace: crank
-  labels:
-    app: redis
-spec:
-  ports:
-    - port: 6379
-      targetPort: 6379
-  selector:
-    app: redis
-  type: ClusterIP
+        - name: redis-config-volume
+          configMap:
+            name: redis-config
+            items:
+              - key: redis.conf
+                path: redis.conf
