@@ -1,5 +1,6 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
+from django.core.cache import cache
 from django.test import TestCase, RequestFactory
 from django.contrib.admin.sites import AdminSite
 from crank.admin import ScoreInline, ScoreAlgorithmWeightInline
@@ -16,6 +17,7 @@ class MockRequest:
 
 class ScoreInlineTest(TestCase):
     def setUp(self):
+        cache.clear()
         self.factory = RequestFactory()
         self.site = AdminSite()
         self.inline = ScoreInline(Organization, self.site)

@@ -15,11 +15,8 @@ import multiprocessing
 import os
 from pathlib import Path
 
-from django.conf.global_settings import STATICFILES_DIRS, CACHE_MIDDLEWARE_SECONDS
-from django.contrib.staticfiles.storage import ManifestStaticFilesStorage
 from dotenv import load_dotenv
 from opentelemetry.instrumentation.django import DjangoInstrumentor
-from tests.test_settings import MANIFEST_LOADER
 
 load_dotenv()
 DjangoInstrumentor().instrument(is_sql_commentor_enabled=True)
@@ -92,6 +89,7 @@ if DEBUG:
     )
 
 MIDDLEWARE = [
+    'django.middleware.gzip.GZipMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
