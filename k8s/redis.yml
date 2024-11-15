@@ -1,6 +1,5 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
----
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -9,83 +8,102 @@ metadata:
 apiVersion: v1
 kind: Service
 metadata:
-  name: redis
+  name: redis-master
   namespace: crank
   labels:
     app: redis
+    role: master
 spec:
   ports:
-    - port: 6379
-      targetPort: 6379
-  clusterIP: None  # Headless service
+  - port: 6379
+    targetPort: 6379
   selector:
     app: redis
+    role: master
 ---
-apiVersion: apps/v1
-kind: ConfigMap
+apiVersion: v1
+kind: Service
 metadata:
-  name: redis-config
+  name: redis-slave
   namespace: crank
-data:
-  redis.conf: |
-    # Redis configuration
-    bind 0.0.0.0
-    port 6379
-    dir /data
-    appendonly yes
-    # Conditional replication configuration
-    {{- if eq .Env.REDIS_ROLE "slave" }}
-    slaveof redis-master 6379
-    {{- end }}
+  labels:
+    app: redis
+    role: slave
+spec:
+  ports:
+  - port: 6379
+    targetPort: 6379
+  selector:
+    app: redis
+    role: slave
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: redis
+  name: redis-master
   namespace: crank
   labels:
     app: redis
+    role: master
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: redis
+      role: master
   template:
     metadata:
       labels:
         app: redis
+        role: master
     spec:
       containers:
-        - name: redis
-          image: redis:7.0.5-alpine
-          ports:
-            - containerPort: 6379
-          resources:
-            requests:
-              memory: "256Mi"
-              cpu: "250m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
-          env:
-            - name: REDIS_ROLE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.labels['role']
-          command: [ "redis-server", "/etc/redis/redis.conf" ]
-          volumeMounts:
-            - name: redis-storage
-              mountPath: /data
-            - name: redis-config-storage
-              mountPath: /etc/redis
-              subPath: redis.conf
-      volumes:
-        - name: redis-storage
-          persistentVolumeClaim:
-            claimName: redis-pvc
-        - name: redis-config-volume
-          configMap:
-            name: redis-config
-            items:
-              - key: redis.conf
-                path: redis.conf
+      - name: redis
+        image: redis:latest
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-slave
+  namespace: crank
+  labels:
+    app: redis
+    role: slave
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+      role: slave
+  template:
+    metadata:
+      labels:
+        app: redis
+        role: slave
+    spec:
+      containers:
+      - name: redis
+        image: redis:latest
+        ports:
+        - containerPort: 6379
+        env:
+        - name: REDIS_MASTER_SERVICE_HOST
+          value: "redis-master"
+        - name: REDIS_REPLICATION_MODE
+          value: "slave"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"

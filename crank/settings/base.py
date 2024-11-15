@@ -157,12 +157,13 @@ SESSION_COOKIE_SECURE = False
 SESSION_COOKIE_AGE = 1800  # 30 minutes in seconds
 
 CACHE_MIDDLEWARE_SECONDS = int(os.environ["CACHE_TTL"])  # Timeout for cached items in seconds
-REDIS_URL = os.environ["REDIS_URL"]
+REDIS_MASTER_URL = os.environ.get("REDIS_MASTER_URL", "redis://redis-master:6379/0")
+
 # Optional: To use Redis for session storage
 CACHES = {
     'default': {
         'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': REDIS_URL,
+        'LOCATION': REDIS_MASTER_URL,
         'OPTIONS': {
             'CLIENT_CLASS': 'django_redis.client.DefaultClient',
             'SOCKET_CONNECT_TIMEOUT': 5,  # in seconds
@@ -174,6 +175,7 @@ CACHES = {
 # Set the TTL for session entries in Redis
 SESSION_REDIS = {
     'ttl': 1800,  # 30 minutes in seconds
+    'master': REDIS_MASTER_URL,
 }
 
 # Password validation
