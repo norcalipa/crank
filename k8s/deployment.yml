@@ -84,8 +84,10 @@ spec:
               value: "3306"
             - name: ENV
               value: "prod"
-            - name: REDIS_URL
-              value: "redis://redis:6379/0"
+            - name: REDIS_MASTER_URL
+              value: "redis://redis-master:6379/0"
+            - name: REDIS_SLAVE_URLS
+              value: "redis://redis-slave:6379/0"
             - name: CACHE_TTL
               value: "60"
             - name: PYTHONUNBUFFERED

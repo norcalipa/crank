@@ -7,6 +7,8 @@ import dj_db_conn_pool
 from django.db import connection
 from pathlib import Path
 
+from crank.settings import REDIS_MASTER_URL
+
 pymysql.install_as_MySQLdb()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -18,6 +20,14 @@ CPU_COUNT = multiprocessing.cpu_count()
 SESSION_COOKIE_SECURE = True
 SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_SECURE = True
+
+REDIS_SLAVE_URLS = os.environ.get("REDIS_SLAVE_URLS", "redis://redis-slave:6379/0").split(",")
+
+SESSION_REDIS = {
+    'ttl': 1800,  # 30 minutes in seconds
+    'master': REDIS_MASTER_URL,
+    'slaves': REDIS_SLAVE_URLS,
+}
 
 DATABASES = {
     'default': {

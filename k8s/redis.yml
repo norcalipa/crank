@@ -1,84 +1,109 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
----
 apiVersion: v1
 kind: Namespace
 metadata:
   name: crank
 ---
 apiVersion: v1
-kind: PersistentVolume
+kind: Service
 metadata:
-  name: redis-pv
+  name: redis-master
   namespace: crank
+  labels:
+    app: redis
+    role: master
 spec:
-  capacity:
-    storage: 1Gi
-  accessModes:
-    - ReadWriteOnce
-  hostPath:
-    path: /mnt/data/redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+  selector:
+    app: redis
+    role: master
 ---
 apiVersion: v1
-kind: PersistentVolumeClaim
+kind: Service
 metadata:
-  name: redis-pvc
+  name: redis-slave
   namespace: crank
+  labels:
+    app: redis
+    role: slave
 spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
+  ports:
+  - port: 6379
+    targetPort: 6379
+  selector:
+    app: redis
+    role: slave
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: redis
+  name: redis-master
   namespace: crank
   labels:
     app: redis
+    role: master
 spec:
   replicas: 1
   selector:
     matchLabels:
       app: redis
+      role: master
   template:
     metadata:
       labels:
         app: redis
+        role: master
     spec:
       containers:
-        - name: redis
-          image: redis:7.0.5-alpine
-          ports:
-            - containerPort: 6379
-          resources:
-            requests:
-              memory: "256Mi"
-              cpu: "250m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
-          volumeMounts:
-            - mountPath: /data
-              name: redis-storage
-      volumes:
-        - name: redis-storage
-          persistentVolumeClaim:
-            claimName: redis-pvc
+      - name: redis
+        image: redis:latest
+        ports:
+        - containerPort: 6379
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
 ---
-apiVersion: v1
-kind: Service
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: redis
+  name: redis-slave
   namespace: crank
   labels:
     app: redis
+    role: slave
 spec:
-  ports:
-    - port: 6379
-      targetPort: 6379
+  replicas: 1
   selector:
-    app: redis
-  type: ClusterIP
+    matchLabels:
+      app: redis
+      role: slave
+  template:
+    metadata:
+      labels:
+        app: redis
+        role: slave
+    spec:
+      containers:
+      - name: redis
+        image: redis:latest
+        ports:
+        - containerPort: 6379
+        env:
+        - name: REDIS_MASTER_SERVICE_HOST
+          value: "redis-master"
+        - name: REDIS_REPLICATION_MODE
+          value: "slave"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
