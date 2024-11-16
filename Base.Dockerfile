@@ -1,10 +1,6 @@
 # Use an official Python runtime as a parent image
 FROM python:3.13.0-alpine3.20
 
-# create a non-root user to run the app as
-RUN addgroup -S appgroup -g 10000
-RUN adduser -S appuser -u 10000 -G appgroup
-
 # Set the working directory in the container to /app
 WORKDIR /app
 
