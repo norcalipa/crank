@@ -6,7 +6,7 @@ on:
   workflow_run:
     workflows: ["Build Image"]
     types:
-      - success
+      - completed
     branches:
       - main
 
