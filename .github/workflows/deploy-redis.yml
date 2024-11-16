@@ -45,7 +45,7 @@ jobs:
           # Copy redis.yml to the remote system
           scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/redis.yml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/redis.yml
 
-          # Apply the copied deployment.yml
+          # Apply the copied redis.yml
           ssh -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} <<EOF
           envsubst < /tmp/redis.yml | k3s kubectl apply -f -
           EOF
