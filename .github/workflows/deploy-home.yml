@@ -4,10 +4,9 @@ name: Deploy to Kubernetes (prod)
 
 on:
   workflow_run:
-    workflows: [ "Build Image" ]
+    workflows: ["Build Image"]
     types:
-      - completed
-  push:
+      - success
     branches:
       - main
 
