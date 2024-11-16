@@ -1,9 +1,5 @@
 # Use an official Python runtime as a parent image
-FROM ghcr.io/norcalipa/crank/crank-base:latest
-
-# create a non-root user to run the app as
-RUN addgroup -S appgroup -g 10000
-RUN adduser -S appuser -u 10000 -G appgroup
+FROM python:3.13.0-alpine3.20
 
 # Set the working directory in the container to /app
 WORKDIR /app
@@ -28,18 +24,3 @@ RUN apk add nodejs npm
 
 # Install npm dependencies
 RUN npm install
-
-# Run Webpack to build the assets
-RUN npx webpack
-
-RUN python manage.py collectstatic --noinput
-
-RUN chown -R appuser:appgroup /app
-
-USER appuser
-
-# Make port 8080 available to the world outside this container
-EXPOSE 8080
-
-# Run the application when the container launches
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8080"]
