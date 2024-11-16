@@ -1,15 +1,18 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
-name: Deploy to Kubernetes (prod)
-
+name: Update Deployment (prod)
 on:
-  workflow_run:
-    workflows: [ "Build Image" ]
-    types:
-      - completed
   push:
     branches:
       - main
+    paths-ignore:
+      - '**'
+      - '!.github/workflows/update-home-deployment.yml'
+      - '!k8s/deployment.yml'
+
+concurrency:
+  group: deployment
+  cancel-in-progress: true
 
 jobs:
   deploy-home-k3s:
@@ -44,11 +47,6 @@ jobs:
 
           # install cloudflared
           sudo apt-get update && sudo apt-get install cloudflared
-
-      - name: Tag and Push Image as Latest
-        run: |
-          docker tag ghcr.io/${{ github.repository }}/crank:${{ github.sha }} ghcr.io/${{ github.repository }}/crank:latest
-          docker push ghcr.io/${{ github.repository }}/crank:latest
 
       - name: Deploy to Kubernetes
         run: |

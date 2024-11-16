@@ -12,6 +12,9 @@ on:
       - '!.github/workflows/build-image.yml'
       - '.gitignore'
 
+concurrency:
+  group: deployment
+
 env:
   PROJECT_ID: crank-404520
   SERVICE: crank
