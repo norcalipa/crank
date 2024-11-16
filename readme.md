@@ -2,10 +2,9 @@
 <!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
 # Crank.fyi
 
-[![codecov](https://codecov.io/gh/norcalipa/crank/graph/badge.svg?token=5CR414ORFK)](https://codecov.io/gh/norcalipa/crank)
+[![Tests with codecov](https://codecov.io/gh/norcalipa/crank/graph/badge.svg?token=5CR414ORFK)](https://codecov.io/gh/norcalipa/crank)
 [![Known Vulnerabilities](https://snyk.io/test/github/norcalipa/crank/badge.svg)](https://snyk.io/test/github/norcalipa/crank)
 [![Build Image](https://github.com/norcalipa/crank/actions/workflows/build-image.yml/badge.svg)](https://github.com/norcalipa/crank/actions/workflows/build-image.yml)
-[![Run Tests](https://github.com/norcalipa/crank/actions/workflows/run-tests.yml/badge.svg)](https://github.com/norcalipa/crank/actions/workflows/run-tests.yml)
 [![Deploy to Kubernetes (prod)](https://github.com/norcalipa/crank/actions/workflows/deploy-home.yml/badge.svg)](https://github.com/norcalipa/crank/actions/workflows/deploy-home.yml)
 [![Change Tracking Marker](https://github.com/norcalipa/crank/actions/workflows/new-relic-change-tracking.yml/badge.svg)](https://github.com/norcalipa/crank/actions/workflows/new-relic-change-tracking.yml)
 
