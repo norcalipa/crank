@@ -73,26 +73,9 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
-          env:
-            - name: DB_HOST
-              value: "fats"
-            - name: DB_NAME
-              value: "crank"
-            - name: DB_USER
-              value: "crank"
-            - name: DB_PORT
-              value: "3306"
-            - name: ENV
-              value: "prod"
-            - name: REDIS_MASTER_URL
-              value: "redis://redis-master:6379/0"
-            - name: REDIS_SLAVE_URLS
-              value: ""
-            - name: CACHE_TTL
-              value: "60"
-            - name: PYTHONUNBUFFERED
-              value: "1"
           envFrom:
+            - configMapRef:
+                  name: crank-config
             - secretRef:
                 name: db-connect-credentials
       imagePullSecrets:

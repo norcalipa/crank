@@ -1,0 +1,18 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crank-config
+  namespace: crank
+data:
+  DB_HOST: "fats"
+  DB_NAME: "crank"
+  DB_USER: "crank"
+  DB_PORT: "3306"
+  ENV: "prod"
+  REDIS_MASTER_URL: "redis://redis-master:6379/0"
+  REDIS_SLAVE_URLS: ""
+  CACHE_TTL: "60"
+  PYTHONUNBUFFERED: "1"
