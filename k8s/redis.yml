@@ -67,7 +67,7 @@ spec:
             memory: "256Mi"
             cpu: "250m"
           limits:
-            memory: "512Mi"
+            memory: "256Mi"
             cpu: "500m"
 ---
 apiVersion: apps/v1
@@ -105,5 +105,5 @@ spec:
             memory: "256Mi"
             cpu: "250m"
           limits:
-            memory: "512Mi"
+            memory: "256Mi"
             cpu: "500m"
