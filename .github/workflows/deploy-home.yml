@@ -42,6 +42,7 @@ jobs:
 
       - name: Tag and Push Image as Latest
         run: |
+          docker pull ghcr.io/${{ github.repository }}/crank:${{ github.sha }}
           docker tag ghcr.io/${{ github.repository }}/crank:${{ github.sha }} ghcr.io/${{ github.repository }}/crank:latest
           docker push ghcr.io/${{ github.repository }}/crank:latest
 
