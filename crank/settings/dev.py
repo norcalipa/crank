@@ -8,7 +8,7 @@ import os
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEBUG = True
-SECRET_KEY = os.environ["SECRET_KEY"]
+SECRET_KEY = os.environ.get("SECRET_KEY")
 CPU_COUNT = multiprocessing.cpu_count()
 
 DATABASES = {

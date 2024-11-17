@@ -5,10 +5,11 @@ name: Build Base Image
 on:
   push:
     paths:
-      - 'Dockerfile.base'
+      - 'Base.Dockerfile'
       - 'requirements.txt'
       - 'package.json'
       - 'package-lock.json'
+      - '.github/workflows/build-base-image.yml'
 
 concurrency:
   group: deployment

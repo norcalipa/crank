@@ -9,8 +9,6 @@ on:
       - completed
 
   push:
-    paths:
-      - '.github/workflows/build-image.yml'
     paths-ignore:
       - '.github/**'
       - 'seeds/**'
@@ -50,6 +48,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set environment variables from .env-prod
+        id: env-vars
+        run: |
+          set -a
+          source .env-prod
+          set +a
+          echo "::set-output name=env_vars::$(cat .env-prod | grep -v '^#' | xargs)"
+
       - name: Authenticate with GitHub Container Registry
         uses: docker/login-action@v2
         with:
@@ -63,3 +69,4 @@ jobs:
           context: .
           push: true
           tags: ghcr.io/${{ github.repository }}/${{ env.SERVICE }}:${{ github.sha }}
+          build-args: ${{ steps.env-vars.outputs.env_vars }}
