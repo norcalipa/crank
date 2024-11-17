@@ -8,7 +8,6 @@
 [![Deploy to Kubernetes (prod)](https://github.com/norcalipa/crank/actions/workflows/deploy-home.yml/badge.svg)](https://github.com/norcalipa/crank/actions/workflows/deploy-home.yml)
 [![Change Tracking Marker](https://github.com/norcalipa/crank/actions/workflows/new-relic-change-tracking.yml/badge.svg)](https://github.com/norcalipa/crank/actions/workflows/new-relic-change-tracking.yml)
 
-
 ## Overview
 
 This project is a web application built with Python using the Django framework, React, and TypeScript. It includes a backend API, frontend UI, and various automated tests.

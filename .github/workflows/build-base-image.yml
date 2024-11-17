@@ -5,14 +5,10 @@ name: Build Base Image
 on:
   push:
     paths-ignore:
-      - '.github/**'
-      - 'seeds/**'
-      - 'dump/**'
-      - 'k8s/**'
+      - '**'
       - '!Base.Dockerfile'
       - '!requirements.txt'
       - '!package-lock.json'
-      - '.gitignore'
 
 concurrency:
   group: deployment
