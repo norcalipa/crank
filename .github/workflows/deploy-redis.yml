@@ -5,10 +5,9 @@ on:
   push:
     branches:
       - main
-    paths-ignore:
-      - '**'
-      - '!.github/workflows/deploy-redis.yml'
-      - '!k8s/redis.yml'
+    paths:
+      - '.github/workflows/deploy-redis.yml'
+      - 'k8s/redis.yml'
 
 jobs:
   deploy-home-k3s:

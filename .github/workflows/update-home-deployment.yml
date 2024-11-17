@@ -5,11 +5,10 @@ on:
   push:
     branches:
       - main
-    paths-ignore:
-      - '**'
-      - '!.github/workflows/update-home-deployment.yml'
-      - '!k8s/crank.yml'
-      - '!k8s/crank-configmap.yml'
+    paths:
+      - '.github/workflows/update-home-deployment.yml'
+      - 'k8s/crank.yml'
+      - 'k8s/crank-configmap.yml'
 
 concurrency:
   group: deployment

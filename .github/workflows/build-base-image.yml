@@ -4,11 +4,11 @@ name: Build Base Image
 
 on:
   push:
-    paths-ignore:
-      - '**'
-      - '!Base.Dockerfile'
-      - '!requirements.txt'
-      - '!package-lock.json'
+    paths:
+      - 'Dockerfile.base'
+      - 'requirements.txt'
+      - 'package.json'
+      - 'package-lock.json'
 
 concurrency:
   group: deployment
@@ -40,19 +40,6 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Install Node.js dependencies
-        run: npm install
-
       - name: Authenticate with GitHub Container Registry
         uses: docker/login-action@v2
         with:
@@ -60,14 +47,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Copy Base.Dockerfile to Dockerfile
-        run: |
-          cp Base.Dockerfile Dockerfile
-
       - name: Build and Push Container to GitHub Container Registry
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: Base.Dockerfile
           push: true
           tags: ghcr.io/${{ github.repository }}/crank-base:${{ github.sha }}
 
