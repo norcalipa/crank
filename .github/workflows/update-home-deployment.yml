@@ -9,6 +9,7 @@ on:
       - '**'
       - '!.github/workflows/update-home-deployment.yml'
       - '!k8s/crank.yml'
+      - '!k8s/crank-configmap.yml'
 
 concurrency:
   group: deployment
@@ -22,10 +23,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
-
-      - name: Get latest commit SHA from main branch
-        id: get-sha
-        run: echo "GITHUB_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -56,7 +53,7 @@ jobs:
 
           # Apply the copied crank.yml
           ssh -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} <<EOF
-          export GITHUB_SHA=${{ env.GITHUB_SHA }}
+          export GITHUB_SHA=latest
           envsubst < /tmp/crank.yml | k3s kubectl apply -f -
           envsubst < /tmp/crank-configmap.yml | k3s kubectl apply -f -
           EOF
