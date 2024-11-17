@@ -7,20 +7,24 @@ WORKDIR /app
 # Add current directory code to /app in container
 ADD . /app
 
-COPY .env-prod .env
-
-# fixing busybox vulnerabilities identified by synk
+# Fixing busybox vulnerabilities identified by Snyk
 RUN apk add --no-cache --upgrade busybox
 RUN apk add --no-cache busybox-extras
 
+# Install build dependencies
 RUN apk add --no-cache --virtual build-deps gcc musl-dev libffi-dev pkgconf mariadb-dev
+
+# Install runtime dependencies
 RUN apk add --no-cache mariadb-connector-c-dev
+
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Remove build dependencies
 RUN apk del build-deps
 
 # Install Node.js and npm
-RUN apk update
-RUN apk add nodejs npm
+RUN apk update && apk add --no-cache nodejs npm
 
 # Install npm dependencies
 RUN npm install
