@@ -12,6 +12,10 @@ on:
 
 jobs:
   deploy-home-k3s:
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+      packages: 'write'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -39,6 +43,13 @@ jobs:
 
           # install cloudflared
           sudo apt-get update && sudo apt-get install cloudflared
+
+      - name: Authenticate with GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Tag and Push Image as Latest
         run: |
