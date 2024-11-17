@@ -59,7 +59,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:latest
+        image: redis:7.0.5-alpine
         ports:
         - containerPort: 6379
         resources:
@@ -92,7 +92,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:latest
+        image: redis:7.0.5-alpine
         ports:
         - containerPort: 6379
         env:
