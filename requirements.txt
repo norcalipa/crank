@@ -8,7 +8,7 @@ charset-normalizer==3.3.2
 click==8.1.7
 ConfigArgParse==1.7
 coverage==7.3.2
-cryptography==43.0.3
+cryptography==44.0.1
 defusedxml==0.7.1
 Deprecated==1.2.14
 distlib==0.3.8
