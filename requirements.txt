@@ -12,7 +12,7 @@ cryptography==44.0.1
 defusedxml==0.7.1
 Deprecated==1.2.14
 distlib==0.3.8
-Django==4.2.17
+Django==4.2.20
 django-allauth==0.63.6
 django-bootstrap5==23.3
 django-cache-headers==0.4
@@ -42,7 +42,7 @@ idna==3.7
 importlib-metadata==6.11.0
 iniconfig==2.0.0
 itsdangerous==2.2.0
-Jinja2==3.1.5
+Jinja2==3.1.6
 jwcrypto==1.5.6
 locust==2.32.2
 Markdown==3.5.1
