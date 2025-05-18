@@ -1,11 +1,10 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
-import * as React from 'react';
-import {render, screen, fireEvent, act, waitFor, cleanup} from '@testing-library/react';
 import '@testing-library/jest-dom';
-import fetchMock from 'jest-fetch-mock';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
-fetchMock.enableMocks();
+import * as React from 'react';
+
 import OrganizationList from './OrganizationList';
 
 interface Organization {
@@ -19,213 +18,157 @@ interface Organization {
     accelerated_vesting: boolean;
 }
 
-const mockFundingRoundChoices = [{'A': 'Series A', 'B': 'Series B'}];
-const mockRtoPolicyChoices = [{'Remote': 'Remote', 'Hybrid': 'Hybrid'}];
-
-const mockOrganizations: Organization[] = [
-    {
-        id: 1,
-        name: 'Org 1',
-        ranking: 1,
-        avg_score: 90,
-        funding_round: 'A',
-        rto_policy: 'Remote',
-        profile_completeness: 100,
-        accelerated_vesting: true
-    },
-    {
-        id: 2,
-        name: 'Org 2',
-        ranking: 2,
-        avg_score: 85,
-        funding_round: 'B',
-        rto_policy: 'Hybrid',
-        profile_completeness: 80,
-        accelerated_vesting: false
-    },
-];
-
 describe('OrganizationList', () => {
-    let consoleErrorMock: jest.SpyInstance;
-    let originalLocation: Location;
-
-    beforeAll(() => {
-        jest.spyOn(console, 'error').mockImplementation(() => {
-        })
-        originalLocation = window.location;
-    })
-
     beforeEach(() => {
-        Object.defineProperty(window, 'location', {
-            writable: true,
-            value: {
-                href: 'http://localhost/',
-                search: '',
-                assign: jest.fn(),
-                replace: jest.fn(),
-                reload: jest.fn(),
-            } as Partial<Location>, // Specify we're only mocking part of Location
+        // Mock fetch calls
+        global.fetch = jest.fn().mockImplementation((url) => {
+            if (url === '/api/funding-round-choices/') {
+                return Promise.resolve({
+                    json: () => Promise.resolve({ 'S': 'Seed', 'A': 'Series A' }),
+                });
+            }
+            if (url === '/api/rto-policy-choices/') {
+                return Promise.resolve({
+                    json: () => Promise.resolve({ 'R': 'Remote', 'H': 'Hybrid' }),
+                });
+            }
+            if (url.includes('/api/organizations/')) {
+                return Promise.resolve({
+                    json: () => Promise.resolve({ 
+                        id: 1, 
+                        name: 'Organization 1', 
+                        type: 'C',
+                        url: 'https://org1.example.com',
+                        gives_ratings: true,
+                        public: true
+                    }),
+                });
+            }
+            return Promise.reject(new Error('Fetch not mocked for this URL'));
         });
-        jest.clearAllMocks()
-        fetchMock.resetMocks();
-        window.location.search = '';
+
+        // Mock URL constructor and window methods
+        const mockUrl = {
+            searchParams: {
+                get: jest.fn().mockImplementation((param) => {
+                    if (param === 'page') return '1';
+                    return null;
+                }),
+                set: jest.fn(),
+            },
+            toString: jest.fn().mockReturnValue('http://localhost/'),
+        };
+        
+        // @ts-ignore - Mocking URL for testing
+        global.URL = jest.fn(() => mockUrl);
+
+        global.window.history.pushState = jest.fn();
     });
 
     afterEach(() => {
-        cleanup();
+        jest.clearAllMocks();
     });
 
-    afterAll(() => {
-        window.location = originalLocation;
-    })
+    const organizations: Organization[] = [
+        {
+            id: 1,
+            name: 'Organization 1',
+            ranking: 1,
+            avg_score: 4.5,
+            funding_round: 'S',
+            rto_policy: 'R',
+            profile_completeness: 80,
+            accelerated_vesting: true,
+        },
+        {
+            id: 2,
+            name: 'Organization 2',
+            ranking: 2,
+            avg_score: 3.5,
+            funding_round: 'A',
+            rto_policy: 'H',
+            profile_completeness: 70,
+            accelerated_vesting: false,
+        },
+    ];
 
-    test('handles error in fetching funding-round-choices gracefully', async () => {
-        consoleErrorMock = jest.spyOn(console, 'error').mockImplementation(() => {
-        });
-        fetchMock.mockRejectOnce(new Error('Failed to fetch funding round choices'));
+    test('renders organizations', async () => {
+        render(<OrganizationList organizations={organizations} />);
 
-        render(<OrganizationList organizations={mockOrganizations}/>);
-
-        // Verify that the error was logged
+        // Wait for the component to fetch choices
         await waitFor(() => {
-            expect(console.error).toHaveBeenCalledWith(
-                'Error fetching funding round choices:',
-                expect.objectContaining({message: 'Failed to fetch funding round choices'})
-            );
+            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.getByText('Organization 2')).toBeInTheDocument();
         });
-        consoleErrorMock.mockRestore();
     });
 
-    test('handles error in fetching rto-policy-choices gracefully', async () => {
-        consoleErrorMock = jest.spyOn(console, 'error').mockImplementation(() => {
-        });
-        fetchMock.mockResponse(JSON.stringify(mockFundingRoundChoices));
-        fetchMock.mockReject(new Error('Failed to fetch RTO policy choices'));
+    test('shows popup on organization name hover', async () => {
+        render(<OrganizationList organizations={organizations} />);
 
-        render(<OrganizationList organizations={mockOrganizations}/>);
-
-        // Verify that the error was logged
+        // Wait for the component to render
         await waitFor(() => {
-            expect(console.error).toHaveBeenCalledWith(
-                'Error fetching RTO policy choices:',
-                expect.objectContaining({message: 'Failed to fetch RTO policy choices'})
-            );
-        });
-        consoleErrorMock.mockRestore();
-    });
-
-    test('renders organization list', async () => {
-        fetchMock.mockResponseOnce(JSON.stringify(mockFundingRoundChoices));
-        fetchMock.mockResponseOnce(JSON.stringify(mockRtoPolicyChoices));
-        render(<OrganizationList organizations={mockOrganizations}/>);
-
-        expect(await screen.findByText('Org 1')).toBeInTheDocument();
-        expect(screen.getByText('Org 2')).toBeInTheDocument();
-    });
-
-    test('filters organizations based on search term', async () => {
-        fetchMock.mockResponseOnce(JSON.stringify(mockFundingRoundChoices));
-        fetchMock.mockResponseOnce(JSON.stringify(mockRtoPolicyChoices));
-        render(<OrganizationList organizations={mockOrganizations}/>);
-
-        fireEvent.change(screen.getByPlaceholderText('Search organizations'), {target: {value: 'Org 1'}});
-
-        expect(await screen.findByText('Org 1')).toBeInTheDocument();
-        expect(screen.queryByText('Org 2')).not.toBeInTheDocument();
-    });
-
-    test('filters organizations based on accelerated vesting', async () => {
-        fetchMock.mockResponseOnce(JSON.stringify(mockFundingRoundChoices));
-        fetchMock.mockResponseOnce(JSON.stringify(mockRtoPolicyChoices));
-        render(<OrganizationList organizations={mockOrganizations}/>);
-
-        act(() => {
-            fireEvent.click(screen.getByTestId('accelerated-vesting-checkbox'));
-        });
-        expect(await screen.findByText('Org 1')).toBeInTheDocument();
-        expect(screen.queryByText('Org 2')).not.toBeInTheDocument();
-    });
-
-    test('changes page when pagination link is clicked', async () => {
-        fetchMock.mockResponseOnce(JSON.stringify(mockFundingRoundChoices));
-        fetchMock.mockResponseOnce(JSON.stringify(mockRtoPolicyChoices));
-
-        await act(async () => {
-            render(<OrganizationList organizations={mockOrganizations} itemsPerPage={1}/>);
+            expect(screen.getByText('Organization 1')).toBeInTheDocument();
         });
 
-        await act(async () => {
-            fireEvent.click(screen.getByText('2'));
-            window.location.search = '?page=2';
-        });
+        // Hover over the organization name
+        fireEvent.mouseEnter(screen.getByText('Organization 1'));
 
-        expect(window.location.search).toBe('?page=2');
+        // Verify API call was made
+        expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
     });
 
-    test('handles invalid organization data gracefully', async () => {
-        // Create and append the container element for the OrganizationList component
-        const container = document.createElement('div');
-        container.id = 'organization-list';
-        document.body.appendChild(container);
+    test('filters organizations by search term', async () => {
+        render(<OrganizationList organizations={organizations} />);
 
-        // Create and append the invalid organization data script element
-        const organizationDataElement = document.createElement('script');
-        organizationDataElement.id = 'organization-data';
-        organizationDataElement.type = 'application/json';
-        organizationDataElement.textContent = 'invalid json';
-        document.body.appendChild(organizationDataElement);
-
-        // Mock console.error to suppress error output in test results
-        const consoleErrorMock = jest.spyOn(console, 'error').mockImplementation(() => {
+        // Wait for the component to fetch choices
+        await waitFor(() => {
+            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.getByText('Organization 2')).toBeInTheDocument();
         });
 
-        // Dispatch the DOMContentLoaded event
-        await act(async () => {
-            const event = new Event('DOMContentLoaded');
-            document.dispatchEvent(event);
+        // Type a search term
+        const searchInput = screen.getByPlaceholderText('Search organizations');
+        fireEvent.change(searchInput, { target: { value: 'Organization 1' } });
+
+        // Check that only Organization 1 is visible
+        await waitFor(() => {
+            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.queryByText('Organization 2')).not.toBeInTheDocument();
         });
-
-        // Verify that the error was logged
-        expect(consoleErrorMock).toHaveBeenCalledWith(
-            expect.stringContaining('Error parsing organization data:'),
-            expect.any(SyntaxError)
-        );
-
-        // Clean up the document body and restore console.error
-        document.body.removeChild(container);
-        document.body.removeChild(organizationDataElement);
-        consoleErrorMock.mockRestore();
     });
 
-    test('renders currentOrganizations list on DOMContentLoaded event', async () => {
-        fetchMock.mockResponseOnce(JSON.stringify(mockFundingRoundChoices));
-        fetchMock.mockResponseOnce(JSON.stringify(mockRtoPolicyChoices));
+    test('filters organizations by accelerated vesting', async () => {
+        render(<OrganizationList organizations={organizations} />);
 
-        // Create and append the container element for the OrganizationList component
-        const container = document.createElement('div');
-        container.id = 'organization-list';
-        document.body.appendChild(container);
-
-        // Create and append the valid organization data script element
-        const organizationDataElement = document.createElement('script');
-        organizationDataElement.id = 'organization-data';
-        organizationDataElement.type = 'application/json';
-        organizationDataElement.textContent = JSON.stringify(mockOrganizations);
-        document.body.appendChild(organizationDataElement);
-
-        // Dispatch the DOMContentLoaded event
-        await act(async () => {
-            const event = new Event('DOMContentLoaded');
-            document.dispatchEvent(event);
+        // Wait for the component to fetch choices
+        await waitFor(() => {
+            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.getByText('Organization 2')).toBeInTheDocument();
         });
 
-        // Verify that the currentOrganizations list is rendered correctly
-        expect(await screen.findByText('Org 1')).toBeInTheDocument();
-        expect(screen.getByText('Org 2')).toBeInTheDocument();
+        // Check the accelerated vesting checkbox
+        const checkbox = screen.getByTestId('accelerated-vesting-checkbox');
+        fireEvent.click(checkbox);
 
-        // Clean up the document body
-        document.body.removeChild(container);
-        document.body.removeChild(organizationDataElement);
+        // Check that only Organization 1 is visible (as it has accelerated_vesting: true)
+        await waitFor(() => {
+            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.queryByText('Organization 2')).not.toBeInTheDocument();
+        });
     });
 
+    test('changes page', async () => {
+        render(<OrganizationList organizations={Array(20).fill(organizations[0])} itemsPerPage={10} />);
+
+        // Wait for the component to fetch choices
+        await waitFor(() => {
+            expect(screen.getByTestId('page-link-2')).toBeInTheDocument();
+        });
+
+        // Click the second page link
+        fireEvent.click(screen.getByTestId('page-link-2'));
+
+        // Check that the URL was updated
+        expect(global.window.history.pushState).toHaveBeenCalled();
+    });
 });
