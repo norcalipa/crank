@@ -7,26 +7,6 @@ from django.shortcuts import get_object_or_404
 from crank.models.organization import Organization
 
 
-def funding_round_choices(request):
-    """Returns all funding round choices as a JSON dict."""
-    cache_key = 'funding_round_choices'
-    choices = cache.get(cache_key)
-    if not choices:
-        choices = {key: value for key, value in Organization.FundingRound.choices}
-        cache.set(cache_key, choices, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
-    return JsonResponse(choices)
-
-
-def rto_policy_choices(request):
-    """Returns all RTO policy choices as a JSON dict."""
-    cache_key = 'rto_policy_choices'
-    choices = cache.get(cache_key)
-    if not choices:
-        choices = {key: value for key, value in Organization.RTOPolicy.choices}
-        cache.set(cache_key, choices, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
-    return JsonResponse(choices)
-
-
 def organization_detail(request, pk):
     """Returns organization details as JSON."""
     cache_key = f'organization_api_{pk}'

@@ -69,4 +69,40 @@
 
 .organization-name:hover {
     background-color: rgba(0, 123, 255, 0.1);
+}
+
+/* Add hover effect for entire organization row */
+table.organization-table tr.organization-row:hover {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+    transition: background-color 0.2s ease;
+}
+
+/* Make sure all table cells in the row also get the hover effect */
+table.organization-table tr.organization-row:hover td {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* Override any Bootstrap table hover styles */
+.table-hover tbody tr:hover td,
+.table tbody tr:hover td {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* Prevent blinking cursor and unwanted focus effects */
+.organization-table,
+.organization-table *,
+.organization-row,
+.organization-row * {
+    outline: none !important;
+    caret-color: transparent !important;
+}
+
+/* Ensure the entire document doesn't show unwanted focus indicators */
+body:focus, 
+div:focus,
+table:focus,
+tr:focus,
+td:focus {
+    outline: none !important;
+    caret-color: transparent !important;
 } 

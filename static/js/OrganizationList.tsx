@@ -120,6 +120,11 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     };
 
     handleOrganizationClick = (organization: Organization) => {
+        // Remove focus from any element to prevent blinking cursor
+        if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+        }
+        
         // Get organization details if not already fetched
         if (!organization.url || !organization.type) {
             fetch(`/api/organizations/${organization.id}/`)
@@ -155,6 +160,10 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     };
     
     handleClosePopup = () => {
+        // Remove focus from any element to prevent blinking cursor
+        if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+        }
         this.setState({ showPopup: false });
     };
 
@@ -226,7 +235,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 {filteredOrganizations.length === 0 ? (<div className="alert alert-secondary" role="alert">
                     There are no organizations that match the selected filters.
                 </div>) : (<div>
-                    <table className="table">
+                    <table className="table organization-table">
                         <thead>
                         <tr>
                             <th>Rank</th>
@@ -238,14 +247,18 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         </tr>
                         </thead>
                         <tbody>
-                        {currentOrganizations.map(org => (<tr key={org.id}>
+                        {currentOrganizations.map(org => (<tr 
+                            key={org.id}
+                            onClick={() => this.handleOrganizationClick(org)}
+                            style={{ 
+                                cursor: 'pointer',
+                                transition: 'background-color 0.2s ease'
+                            }}
+                            className="organization-row"
+                        >
                             <td>{org.ranking}</td>
                             <td>
-                                <span 
-                                    className="organization-name" 
-                                    style={{ cursor: 'pointer' }}
-                                    onClick={() => this.handleOrganizationClick(org)}
-                                >
+                                <span className="organization-name">
                                     {org.name}
                                 </span>
                             </td>

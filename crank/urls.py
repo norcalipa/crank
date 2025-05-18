@@ -25,9 +25,8 @@ from django.conf import settings
 from crank.views.fundinground import FundingRoundChoicesView
 from crank.views.rtopolicy import RTOPolicyChoicesView
 from crank.views.index import IndexView
-from crank.views.organization import OrganizationView
 from crank.views.logout import CustomLogoutView
-from crank.views.api import funding_round_choices, rto_policy_choices, organization_detail, organization_scores
+from crank.views.api import organization_detail, organization_scores
 
 app_name = "crank"
 
@@ -35,7 +34,6 @@ urlpatterns = [
     path("", IndexView.as_view(), name="index"),
     path("admin/", admin.site.urls),
     path("algo/<int:algorithm_id>/", cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(IndexView.as_view()), name="index"),
-    path("organization/<int:pk>/", cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(OrganizationView.as_view()), name="organization"),
     path('api/funding-round-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(FundingRoundChoicesView.as_view()), name='funding_round_choices'),
     path('api/rto-policy-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(RTOPolicyChoicesView.as_view()), name='rto_policy_choices'),
     path('api/organizations/<int:pk>/', organization_detail, name='organization-detail'),

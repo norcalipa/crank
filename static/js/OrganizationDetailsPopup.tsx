@@ -57,6 +57,10 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     React.useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             if (visible && event.key === 'Escape') {
+                // Remove focus from any element to prevent blinking cursor
+                if (document.activeElement instanceof HTMLElement) {
+                    document.activeElement.blur();
+                }
                 onClose();
             }
         };
@@ -103,11 +107,26 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
 
     const handleCloseClick = (e: React.MouseEvent) => {
         e.stopPropagation();
+        // Remove focus from any element to prevent blinking cursor
+        if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+        }
         onClose();
+    };
+    
+    const handleOverlayClick = (e: React.MouseEvent) => {
+        // Only close if clicking directly on the overlay, not its children
+        if (e.target === e.currentTarget) {
+            // Remove focus from any element to prevent blinking cursor
+            if (document.activeElement instanceof HTMLElement) {
+                document.activeElement.blur();
+            }
+            onClose();
+        }
     };
 
     return (
-        <div className="popup-overlay">
+        <div className="popup-overlay" data-testid="popup-overlay" onClick={handleOverlayClick}>
             <div className="popup-details card bg-dark">
                 <div className="card-header bg-dark d-flex justify-content-between align-items-center">
                     <h2>{organization.name}</h2>
