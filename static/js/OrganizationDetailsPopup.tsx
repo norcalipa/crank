@@ -25,18 +25,14 @@ interface Organization {
 
 interface OrganizationDetailsPopupProps {
     organization: Organization | null;
-    position: { top: number; left: number } | null;
     visible: boolean;
-    onMouseEnter: () => void;
-    onMouseLeave: () => void;
+    onClose: () => void;
 }
 
 const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({ 
     organization, 
-    position, 
     visible,
-    onMouseEnter,
-    onMouseLeave
+    onClose
 }) => {
     const [scores, setScores] = React.useState<ScoreDetail[]>([]);
     const [loading, setLoading] = React.useState(false);
@@ -56,8 +52,23 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                 });
         }
     }, [organization, visible]);
+    
+    // Add keyboard event listener for Escape key
+    React.useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (visible && event.key === 'Escape') {
+                onClose();
+            }
+        };
+        
+        document.addEventListener('keydown', handleKeyDown);
+        
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [visible, onClose]);
 
-    if (!organization || !visible || !position) {
+    if (!organization || !visible) {
         return null;
     }
 
@@ -90,84 +101,88 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
 
     const displayScores = organization.avg_scores || scores;
 
+    const handleCloseClick = (e: React.MouseEvent) => {
+        e.stopPropagation();
+        onClose();
+    };
+
     return (
-        <div 
-            className="popup-details card bg-dark"
-            style={{
-                top: `${position.top}px`,
-                left: `${position.left}px`,
-                width: '600px',
-            }}
-            onMouseEnter={onMouseEnter}
-            onMouseLeave={onMouseLeave}
-        >
-            <div className="card-header bg-dark">
-                <h2>{organization.name}</h2>
-            </div>
-            <div className="card-body">
-                <div className="row">
-                    <div className="col-md-5">
-                        <div className="row mb-3">
-                            <div className="col-4 text-end">URL:</div>
-                            <div className="col-8">
-                                {organization.url && <a href={organization.url} target="_blank" rel="noopener noreferrer">{organization.url}</a>}
-                            </div>
-                        </div>
-                        <div className="row mb-3">
-                            <div className="col-4 text-end">Type:</div>
-                            <div className="col-8">{organization.type && typeMap[organization.type]}</div>
-                        </div>
-                        <div className="row mb-3">
-                            <div className="col-4 text-end">Funding Round:</div>
-                            <div className="col-8">{fundingRoundMap[organization.funding_round]}</div>
-                        </div>
-                        <div className="row mb-3">
-                            <div className="col-4 text-end">RTO Policy:</div>
-                            <div className="col-8">{rtoPolicyMap[organization.rto_policy]}</div>
-                        </div>
-                        {organization.gives_ratings !== undefined && (
+        <div className="popup-overlay">
+            <div className="popup-details card bg-dark">
+                <div className="card-header bg-dark d-flex justify-content-between align-items-center">
+                    <h2>{organization.name}</h2>
+                    <button 
+                        type="button" 
+                        className="btn-close btn-close-white" 
+                        aria-label="Close"
+                        onClick={handleCloseClick}
+                    ></button>
+                </div>
+                <div className="card-body">
+                    <div className="row">
+                        <div className="col-md-7">
                             <div className="row mb-3">
-                                <div className="col-4 text-end">Gives Ratings:</div>
-                                <div className="col-8">{organization.gives_ratings ? 'Yes' : 'No'}</div>
+                                <div className="col-5 text-end fw-bold">URL:</div>
+                                <div className="col-7">
+                                    {organization.url && <a href={organization.url} target="_blank" rel="noopener noreferrer">{organization.url}</a>}
+                                </div>
                             </div>
-                        )}
-                        {organization.accelerated_vesting !== undefined && (
                             <div className="row mb-3">
-                                <div className="col-4 text-end">Accelerated Vesting:</div>
-                                <div className="col-8">{organization.accelerated_vesting ? 'Yes' : 'No'}</div>
+                                <div className="col-5 text-end fw-bold">Type:</div>
+                                <div className="col-7">{organization.type && typeMap[organization.type]}</div>
                             </div>
-                        )}
-                        <div className="row mb-3">
-                            <div className="col-4 text-end">Rank:</div>
-                            <div className="col-8">{organization.ranking}</div>
+                            <div className="row mb-3">
+                                <div className="col-5 text-end fw-bold">Funding Round:</div>
+                                <div className="col-7">{fundingRoundMap[organization.funding_round]}</div>
+                            </div>
+                            <div className="row mb-3">
+                                <div className="col-5 text-end fw-bold">RTO Policy:</div>
+                                <div className="col-7">{rtoPolicyMap[organization.rto_policy]}</div>
+                            </div>
+                            {organization.gives_ratings !== undefined && (
+                                <div className="row mb-3">
+                                    <div className="col-5 text-end fw-bold">Gives Ratings:</div>
+                                    <div className="col-7">{organization.gives_ratings ? 'Yes' : 'No'}</div>
+                                </div>
+                            )}
+                            {organization.accelerated_vesting !== undefined && (
+                                <div className="row mb-3">
+                                    <div className="col-5 text-end fw-bold">Accelerated Vesting:</div>
+                                    <div className="col-7">{organization.accelerated_vesting ? 'Yes' : 'No'}</div>
+                                </div>
+                            )}
+                            <div className="row mb-3">
+                                <div className="col-5 text-end fw-bold">Rank:</div>
+                                <div className="col-7">{organization.ranking}</div>
+                            </div>
+                            <div className="row mb-3">
+                                <div className="col-5 text-end fw-bold">Profile Completeness:</div>
+                                <div className="col-7">{organization.profile_completeness.toFixed(0)}%</div>
+                            </div>
                         </div>
-                        <div className="row mb-3">
-                            <div className="col-4 text-end">Profile Completeness:</div>
-                            <div className="col-8">{organization.profile_completeness.toFixed(0)}%</div>
-                        </div>
-                    </div>
-                    <div className="col-md-7">
-                        {loading ? (
-                            <p>Loading scores...</p>
-                        ) : (
-                            <table className="table table-dark">
-                                <tbody>
-                                    {displayScores && displayScores.length > 0 ? (
-                                        displayScores.map((score, index) => (
-                                            <tr key={index}>
-                                                <td>{score.type__name}</td>
-                                                <td className="text-end">{score.avg_score.toFixed(2)}</td>
+                        <div className="col-md-5">
+                            {loading ? (
+                                <p>Loading scores...</p>
+                            ) : (
+                                <table className="table table-dark">
+                                    <tbody>
+                                        {displayScores && displayScores.length > 0 ? (
+                                            displayScores.map((score, index) => (
+                                                <tr key={index}>
+                                                    <td className="w-75">{score.type__name}</td>
+                                                    <td className="text-end w-25">{score.avg_score.toFixed(2)}</td>
+                                                </tr>
+                                            ))
+                                        ) : (
+                                            <tr>
+                                                <td className="w-75">Overall Score</td>
+                                                <td className="text-end w-25">{organization.avg_score.toFixed(2)}</td>
                                             </tr>
-                                        ))
-                                    ) : (
-                                        <tr>
-                                            <td>Overall Score</td>
-                                            <td className="text-end">{organization.avg_score.toFixed(2)}</td>
-                                        </tr>
-                                    )}
-                                </tbody>
-                            </table>
-                        )}
+                                        )}
+                                    </tbody>
+                                </table>
+                            )}
+                        </div>
                     </div>
                 </div>
             </div>

@@ -102,7 +102,7 @@ describe('OrganizationList', () => {
         });
     });
 
-    test('shows popup on organization name hover', async () => {
+    test('shows popup on organization name click', async () => {
         render(<OrganizationList organizations={organizations} />);
 
         // Wait for the component to render
@@ -110,8 +110,8 @@ describe('OrganizationList', () => {
             expect(screen.getByText('Organization 1')).toBeInTheDocument();
         });
 
-        // Hover over the organization name
-        fireEvent.mouseEnter(screen.getByText('Organization 1'));
+        // Click on the organization name
+        fireEvent.click(screen.getByText('Organization 1'));
 
         // Verify API call was made
         expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');

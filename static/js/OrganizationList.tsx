@@ -39,8 +39,7 @@ interface OrganizationListState {
     itemsPerPage: number;
     acceleratedVesting: boolean;
     searchTerm: string;
-    hoveredOrganization: Organization | null;
-    popupPosition: { top: number; left: number } | null;
+    selectedOrganization: Organization | null;
     showPopup: boolean;
 }
 
@@ -56,8 +55,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             itemsPerPage: props.itemsPerPage || 15,
             acceleratedVesting: false,
             searchTerm: '',
-            hoveredOrganization: null,
-            popupPosition: null,
+            selectedOrganization: null,
             showPopup: false
         };
     }
@@ -121,11 +119,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         this.setState({filteredOrganizations});
     };
 
-    handleOrganizationHover = (organization: Organization, event: React.MouseEvent) => {
-        // Calculate popup position to appear at the right side of the Name column
-        const target = event.currentTarget as HTMLElement;
-        const rect = target.getBoundingClientRect();
-        
+    handleOrganizationClick = (organization: Organization) => {
         // Get organization details if not already fetched
         if (!organization.url || !organization.type) {
             fetch(`/api/organizations/${organization.id}/`)
@@ -141,77 +135,26 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     
                     this.setState({ 
                         organizations: updatedOrganizations,
-                        hoveredOrganization: updatedOrg,
-                        popupPosition: { 
-                            top: rect.top + window.scrollY,
-                            left: rect.right + window.scrollX + 5
-                        },
+                        selectedOrganization: updatedOrg,
                         showPopup: true
                     });
                 })
                 .catch(error => {
                     console.error('Error fetching organization details:', error);
                     this.setState({ 
-                        hoveredOrganization: organization,
-                        popupPosition: { 
-                            top: rect.top + window.scrollY,
-                            left: rect.right + window.scrollX + 5
-                        },
+                        selectedOrganization: organization,
                         showPopup: true
                     });
                 });
         } else {
             this.setState({ 
-                hoveredOrganization: organization,
-                popupPosition: { 
-                    top: rect.top + window.scrollY,
-                    left: rect.right + window.scrollX + 5
-                },
+                selectedOrganization: organization,
                 showPopup: true
             });
         }
     };
-
-    handleOrganizationLeave = () => {
-        // Delay hiding to allow the popup to be hovered
-        setTimeout(() => {
-            if (!this.state.showPopup) return;
-            
-            // Check if the cursor is over the popup
-            const popupElement = document.querySelector('.popup-details');
-            if (popupElement) {
-                const popupRect = popupElement.getBoundingClientRect();
-                const e = window.event as MouseEvent | undefined;
-                const mouseX = e?.clientX || 0;
-                const mouseY = e?.clientY || 0;
-                
-                // Add a small buffer area between the organization name and popup
-                const buffer = 20;
-                
-                if (
-                    // Check if mouse is over popup
-                    (mouseX >= popupRect.left && mouseX <= popupRect.right && 
-                     mouseY >= popupRect.top && mouseY <= popupRect.bottom) ||
-                    // Check if mouse is in the buffer area between name and popup
-                    (mouseX >= popupRect.left - buffer && mouseX <= popupRect.left)
-                ) {
-                    return; // Cursor is over the popup or in buffer area, don't hide it
-                }
-            }
-            
-            this.hidePopup();
-        }, 150); // Slightly longer delay to give more time to move to the popup
-    };
     
-    handlePopupEnter = () => {
-        // Do nothing, just keep the popup visible
-    };
-    
-    handlePopupLeave = () => {
-        this.hidePopup();
-    };
-    
-    hidePopup = () => {
+    handleClosePopup = () => {
         this.setState({ showPopup: false });
     };
 
@@ -224,8 +167,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             itemsPerPage,
             acceleratedVesting,
             searchTerm,
-            hoveredOrganization,
-            popupPosition,
+            selectedOrganization,
             showPopup
         } = this.state;
 
@@ -302,8 +244,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                                 <span 
                                     className="organization-name" 
                                     style={{ cursor: 'pointer' }}
-                                    onMouseEnter={(e) => this.handleOrganizationHover(org, e)}
-                                    onMouseLeave={this.handleOrganizationLeave}
+                                    onClick={() => this.handleOrganizationClick(org)}
                                 >
                                     {org.name}
                                 </span>
@@ -318,11 +259,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 </div>)}
                 
                 <OrganizationDetailsPopup 
-                    organization={hoveredOrganization} 
-                    position={popupPosition}
+                    organization={selectedOrganization} 
                     visible={showPopup}
-                    onMouseEnter={this.handlePopupEnter}
-                    onMouseLeave={this.handlePopupLeave}
+                    onClose={this.handleClosePopup}
                 />
             </>
         </div>);

@@ -1,14 +1,26 @@
-.popup-details {
-    position: absolute;
+.popup-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.7);
     z-index: 1000;
-    min-width: 600px;
-    max-width: 800px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.popup-details {
+    width: 80%;
+    max-width: 900px;
+    max-height: 90vh;
+    overflow-y: auto;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
     border-radius: 4px;
     background-color: #212529;
     border: 1px solid rgba(255, 255, 255, 0.1);
     color: #fff;
-    margin-top: -10px; /* Shift up slightly to align better */
 }
 
 .popup-details .card-header {
@@ -34,6 +46,17 @@
 .popup-details .table td {
     padding: 0.5rem 0.75rem;
     border-top: 1px solid rgba(255, 255, 255, 0.1);
+    vertical-align: middle;
+}
+
+/* Prevent text wrapping in labels */
+.popup-details .text-end {
+    white-space: nowrap;
+}
+
+/* Enable text wrapping in value cells */
+.popup-details .col-7 {
+    word-break: break-word;
 }
 
 .organization-name {
@@ -42,7 +65,6 @@
     cursor: pointer;
     padding: 2px 4px;
     border-radius: 3px;
-    position: relative; /* Add this to establish positioning context */
 }
 
 .organization-name:hover {
