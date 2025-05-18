@@ -7,8 +7,12 @@ on:
     workflows: [ "Build Base Image" ]
     types:
       - completed
+    branches:
+      - main
 
   push:
+    branches:
+      - main
     paths-ignore:
       - '.github/**'
       - 'seeds/**'
@@ -18,7 +22,8 @@ on:
       - '.gitignore'
 
 concurrency:
-  group: deployment
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   PROJECT_ID: crank-404520
@@ -37,16 +42,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check if last commit was a merge commit
-        id: check
-        run: |
-          if [[ "$(git log --merges -1 --pretty=%H)" != "$(git log -1 --pretty=%H)" ]]; then
-            echo "This was not a merge commit. Exiting..."
-            exit 1
-          fi
-
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if triggered by workflow_run and workflow was successful
+        if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' }}
+        run: |
+          echo "The triggering workflow did not succeed. Skipping build."
+          exit 1
 
       - name: Set environment variables from .env-prod
         id: env-vars
@@ -54,7 +59,7 @@ jobs:
           set -a
           source .env-prod
           set +a
-          echo "::set-output name=env_vars::$(cat .env-prod | grep -v '^#' | xargs)"
+          echo "env_vars=$(cat .env-prod | grep -v '^#' | xargs)" >> $GITHUB_OUTPUT
 
       - name: Authenticate with GitHub Container Registry
         uses: docker/login-action@v2
@@ -70,3 +75,8 @@ jobs:
           push: true
           tags: ghcr.io/${{ github.repository }}/${{ env.SERVICE }}:${{ github.sha }}
           build-args: ${{ steps.env-vars.outputs.env_vars }}
+          
+      - name: Create deployment marker
+        run: |
+          echo "Image build completed successfully" > /tmp/build_complete
+          echo ${{ github.sha }} >> /tmp/build_complete
