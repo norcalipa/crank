@@ -32,6 +32,7 @@
   },
   "scripts": {
     "watch": "nodemon --watch static/js/**/*.js --ext js --exec npx webpack",
-    "test": "jest"
+    "test": "jest",
+    "test-exit": "jest --runInBand"
   }
 }

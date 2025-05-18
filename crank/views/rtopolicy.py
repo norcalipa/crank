@@ -7,7 +7,7 @@ from crank.models.organization import Organization
 
 class RTOPolicyChoicesView(View):
     def get(self, request, *args, **kwargs):
-        cache_key = 'policy_choices'
+        cache_key = 'rto_policy_choices'
 
         def fetch_results():
             choices = Organization.get_rto_policy_choices()
