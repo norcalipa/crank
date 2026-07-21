@@ -213,6 +213,10 @@ SOCIALACCOUNT_LOGIN_ON_GET = True
 LOGIN_REDIRECT_URL = '/'
 LOGOUT_REDIRECT_URL = '/'
 
+# Log the underlying exception behind allauth's stock "Third-Party Login
+# Failure" page instead of swallowing it.
+SOCIALACCOUNT_ADAPTER = 'crank.adapters.SocialAccountAdapter'
+
 SOCIALACCOUNT_PROVIDERS = {
     'google': {
         'SCOPE': [
