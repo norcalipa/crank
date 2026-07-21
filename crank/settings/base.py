@@ -97,7 +97,6 @@ MIDDLEWARE = [
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
@@ -151,8 +150,13 @@ WSGI_APPLICATION = 'crank.wsgi.application'
 
 EXTENSIONS_MAX_UNIQUE_QUERY_ATTEMPTS = 1000
 
-SESSION_ENGINE = "django.contrib.sessions.backends.cache"
-SESSION_CACHE_ALIAS = 'default'
+# Use the database (not Redis) for sessions. django-allauth stashes the OAuth
+# state into the session between /accounts/google/login/ and the callback at
+# /accounts/google/login/callback/; if Redis evicts that key under memory
+# pressure, allauth can't verify state and renders "Third-Party Login Failure".
+# The shared Redis master is a single 256Mi replica with no persistence, so
+# keep sessions on the durable MySQL store instead.
+SESSION_ENGINE = "django.contrib.sessions.backends.db"
 SESSION_SAVE_EVERY_REQUEST = False
 SESSION_COOKIE_DOMAIN = ".crank.fyi"
 SESSION_COOKIE_SECURE = False

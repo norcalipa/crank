@@ -45,6 +45,11 @@ DATABASES = {
 }
 ALLOWED_HOSTS = ['*']
 ACCOUNT_DEFAULT_HTTP_PROTOCOL = 'https'
+# Cloudflare terminates TLS and forwards to the k8s NodePort over plain HTTP,
+# so Django sees request.scheme == 'http'. Trust the proxy's forwarded header
+# so is_secure() / build_absolute_uri() report https and the OAuth redirect_uri
+# stays consistent between login initiation and the token-exchange callback.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
