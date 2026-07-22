@@ -13,14 +13,12 @@ pymysql.install_as_MySQLdb()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEBUG = False
-# Force HTTP -> HTTPS. Without this, a request to http://crank.fyi/accounts/google/login/
-# reaches Django over plain HTTP and sets a Secure session cookie that the browser drops,
-# so the OAuth state stashed at login is gone by the time the HTTPS callback arrives and
-# allauth renders "Third-Party Login Failure". Cloudflare should also "Always Use HTTPS",
-# but enforce it at the origin too so the flow can't start on the wrong scheme.
-SECURE_SSL_REDIRECT = True
-SECURE_HSTS_SECONDS = 31536000
-SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+# NOTE: SECURE_SSL_REDIRECT must stay disabled. Production runs Django's dev
+# server (`manage.py runserver`, HTTP-only) on port 8080 behind Cloudflare.
+# Enabling SSL redirect here makes Django return 301 -> https for every
+# request; Cloudflare then opens a TLS connection to the HTTP-only origin,
+# the dev server cannot speak TLS, and the liveness probe fails -> crashloop.
+# Enforce HTTPS at the Cloudflare edge ("Always Use HTTPS") instead.
 SECRET_KEY = os.environ.get('SECRET_KEY')
 CPU_COUNT = multiprocessing.cpu_count()
 
