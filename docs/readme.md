@@ -1,3 +1,6 @@
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
+
 # Plan for Agentic Capabilities on crank.fyi
 
 This document outlines a plan to integrate agentic capabilities into the crank.fyi platform. crank.fyi is a Django-based application that tracks organizational scores (ratings) from various sources against companies and organizations.
