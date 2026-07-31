@@ -11,5 +11,3 @@ dump
 node_modules
 static/dist
 coverage/
-._*
-.obsidian/
