@@ -178,3 +178,263 @@ describe('JobSearchChat', () => {
         });
     });
 });
+describe('additional JobSearchChat coverage', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+        document.cookie = '';
+    });
+
+    describe('resume / init failure paths', () => {
+        test('shows an init error and the start button when resume fails (non-404)', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({detail: 'boom'}, 500));
+            render(<JobSearchChat/>);
+            expect(await screen.findByText(/could not load your conversation/i)).toBeInTheDocument();
+            expect(screen.getByRole('button', {name: 'Start a conversation'})).toBeInTheDocument();
+        });
+
+        test('treats a resume 404 as a brand-new conversation', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 404));
+            render(<JobSearchChat/>);
+            await screen.findByLabelText('Message');
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            expect(screen.queryByText(/could not load/i)).not.toBeInTheDocument();
+        });
+
+        test('starting a new conversation from the error state works', async () => {
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(jsonResponse({detail: 'down'}, 503))
+                .mockResolvedValueOnce(jsonResponse(emptyConversation(11), 201));
+            render(<JobSearchChat/>);
+            await screen.findByText(/could not load your conversation/i, {}, {timeout: 5000});
+            const startBtn = screen.getByRole('button', {name: 'Start a conversation'});
+            fireEvent.click(startBtn);
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled(), {timeout: 3000});
+            expect(screen.queryByText(/could not load/i)).not.toBeInTheDocument();
+            const posts = mock.mock.calls
+                .map(([, init]) => (init as RequestInit).body)
+                .filter((body): body is string => typeof body === 'string')
+                .map((body) => JSON.parse(body));
+            expect(posts.some((b) => b.create_new === true)).toBe(true);
+        });
+    });
+
+    describe('security & runtime branches', () => {
+        test('includes the CSRF token header on state-changing requests', async () => {
+            document.cookie = 'csrftoken=abc123token';
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+            render(<JobSearchChat/>);
+            await screen.findByLabelText('Message');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse({message: assistantMessage(8, 'ok'), preferences_changed: false}, 201),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hi'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('ok');
+            const sendCall = (global.fetch as jest.Mock).mock.calls.find(([url]) =>
+                String(url).includes('/api/agent/conversations/42/'),
+            );
+            const headers = (sendCall[1] as RequestInit).headers as Record<string, string>;
+            expect(headers['X-CSRFToken']).toBe('abc123token');
+            expect(headers['Content-Type']).toBe('application/json');
+        });
+
+        test('uses the idempotency-key fallback when crypto.randomUUID is unavailable', async () => {
+            const original = Object.getOwnPropertyDescriptor(global.crypto, 'randomUUID');
+            Object.defineProperty(global.crypto, 'randomUUID', {value: undefined, configurable: true});
+            try {
+                (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+                render(<JobSearchChat/>);
+                await screen.findByLabelText('Message');
+                (global.fetch as jest.Mock).mockResolvedValueOnce(
+                    jsonResponse({message: assistantMessage(9, 'fallback'), preferences_changed: false}, 201),
+                );
+                fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'r'}});
+                fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+                await screen.findByText('fallback');
+                const body = postBodies(global.fetch as jest.Mock, messageUrl())[0];
+                expect(body.idempotency_key).toMatch(/^[0-9a-fA-F-]{36}$/);
+            } finally {
+                if (original) {
+                    Object.defineProperty(global.crypto, 'randomUUID', original);
+                } else {
+                    // @ts-expect-error restoring absence
+                    delete global.crypto.randomUUID;
+                }
+            }
+        });
+
+        test('marks the last rendered message as an aria-live region', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse(emptyConversation(42, [userMessage('first'), assistantMessage(2, 'second')])),
+            );
+            render(<JobSearchChat/>);
+            await screen.findByText('second');
+            const history = screen.getByLabelText('Message history');
+            const last = history.lastElementChild as HTMLElement;
+            expect(last).toHaveAttribute('aria-live', 'polite');
+        });
+    });
+
+    describe('optimistic rollback & preference disclosure', () => {
+        test('rolls back the optimistic user turn on a non-JSON error', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse(emptyConversation(42, [assistantMessage(0, 'ready')])),
+            );
+            render(<JobSearchChat/>);
+            await screen.findByText('ready');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(new Response('plain text error', {status: 500}));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'boom'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText(/request failed \(500\)/i);
+            expect(screen.queryByText('boom')).not.toBeInTheDocument();
+            expect(screen.getByTestId('retry-button')).toBeInTheDocument();
+        });
+
+        test('dismisses the preference-update notice', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+            render(<JobSearchChat/>);
+            await screen.findByLabelText('Message');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse({message: assistantMessage(3, 'noted'), preferences_changed: true}, 201),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'prefs'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const notice = await screen.findByText(/preferences were updated/i);
+            fireEvent.click(screen.getByLabelText('Dismiss preference notice'));
+            await waitFor(() => expect(notice).not.toBeInTheDocument());
+        });
+    });
+
+    describe('export', () => {
+        test('downloads the conversation as a JSON file', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse(emptyConversation(42, [userMessage('exportable')])),
+            );
+            render(<JobSearchChat/>);
+            await screen.findByText('exportable');
+            const createUrl = jest.fn().mockReturnValue('blob:mock');
+            const revoke = jest.fn();
+            Object.defineProperty(URL, 'createObjectURL', {value: createUrl, configurable: true});
+            Object.defineProperty(URL, 'revokeObjectURL', {value: revoke, configurable: true});
+            const click = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(new Response(new Blob(['{}'], {type: 'application/json'})));
+
+            fireEvent.click(screen.getByRole('button', {name: 'Export conversation'}));
+            await waitFor(() => expect(click).toHaveBeenCalled());
+            expect(createUrl).toHaveBeenCalled();
+            expect(revoke).toHaveBeenCalled();
+            expect(screen.queryByText(/could not export/i)).not.toBeInTheDocument();
+        });
+
+        test('surfaces an error when export fails', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse(emptyConversation(42, [userMessage('x')])),
+            );
+            render(<JobSearchChat/>);
+            await screen.findByText('x');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
+            fireEvent.click(screen.getByRole('button', {name: 'Export conversation'}));
+            expect(await screen.findByText(/could not export your conversation/i)).toBeInTheDocument();
+        });
+    });
+
+    describe('DOM bootstrap', () => {
+        test('mounts itself onto a #job-search-chat element on DOMContentLoaded', async () => {
+            const div = document.createElement('div');
+            div.id = 'job-search-chat';
+            document.body.appendChild(div);
+            try {
+                document.dispatchEvent(new Event('DOMContentLoaded', {bubbles: true}));
+                await waitFor(() => expect(div.querySelector('.card.bg-dark')).toBeTruthy());
+            } finally {
+                document.body.removeChild(div);
+            }
+        });
+    });
+});
+
+describe('additional JobSearchChat coverage -- control/error paths', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    test('uses crypto.randomUUID for the idempotency key when available', async () => {
+        const original = Object.getOwnPropertyDescriptor(global.crypto, 'randomUUID');
+        Object.defineProperty(global.crypto, 'randomUUID', {value: () => 'fixed-uuid-1234', configurable: true});
+        try {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+            render(<JobSearchChat/>);
+            await screen.findByLabelText('Message');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse({message: assistantMessage(7, 'sure'), preferences_changed: false}, 201),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'ok'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('sure');
+            const body = postBodies(global.fetch as jest.Mock, messageUrl())[0];
+            expect(body.idempotency_key).toBe('fixed-uuid-1234');
+        } finally {
+            if (original) {
+                Object.defineProperty(global.crypto, 'randomUUID', original);
+            } else {
+                delete (global.crypto as unknown as {randomUUID?: unknown}).randomUUID;
+            }
+        }
+    });
+
+    test('surfaces an error when starting a new conversation fails', async () => {
+        const mock = global.fetch as jest.Mock;
+        mock.mockResolvedValueOnce(jsonResponse({detail: 'down'}, 503))
+            .mockResolvedValueOnce(jsonResponse({}, 500));
+        render(<JobSearchChat/>);
+        await screen.findByText(/could not load your conversation/i);
+        fireEvent.click(screen.getByRole('button', {name: 'Start a conversation'}));
+        await screen.findByText(/could not start a conversation/i);
+    });
+
+    test('reset succeeds when confirmed', async () => {
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [userMessage('old')])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('old');
+        window.confirm = jest.fn().mockReturnValue(true);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(7)));
+        fireEvent.click(screen.getByLabelText('Reset conversation'));
+        await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+        expect(screen.queryByText('old')).not.toBeInTheDocument();
+    });
+
+    test('reset surfaces an error when it fails', async () => {
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [userMessage('keep')])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('keep');
+        window.confirm = jest.fn().mockReturnValue(true);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
+        fireEvent.click(screen.getByLabelText('Reset conversation'));
+        await screen.findByText(/could not reset the conversation/i);
+        expect(screen.getByText('keep')).toBeInTheDocument();
+    });
+
+    test('delete surfaces an error when it fails', async () => {
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [userMessage('del')])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('del');
+        window.confirm = jest.fn().mockReturnValue(true);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
+        fireEvent.click(screen.getByLabelText('Delete conversation'));
+        await screen.findByText(/could not delete the conversation/i);
+    });
+});
