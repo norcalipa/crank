@@ -58,6 +58,11 @@ class UserPreferenceModelTests(TestCase):
         user.delete()
         self.assertFalse(UserPreference.objects.filter(id=pref_id).exists())
 
+    def test_non_default_schema_version_round_trips(self):
+        user = User.objects.create_user(username="pref-schema", password="pw")
+        pref = UserPreference.objects.create(user=user, schema_version=7)
+        self.assertEqual(UserPreference.objects.get(pk=pref.pk).schema_version, 7)
+
 
 class ConversationModelTests(TestCase):
     def setUp(self):
@@ -114,6 +119,31 @@ class ConversationModelTests(TestCase):
         conv = Conversation.objects.create(user=self.user)
         msg = Message.objects.create(conversation=conv, role=Message.Role.USER, content="hi", order=1)
         self.assertEqual(msg.status, Message.Status.SENT)
+
+    def test_archived_status_and_retention_until_round_trip(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        conv = Conversation.objects.create(
+            user=self.user,
+            status=Conversation.Status.ARCHIVED,
+            retention_until=timezone.now() + timedelta(days=1),
+        )
+        conv.refresh_from_db()
+        self.assertEqual(conv.status, Conversation.Status.ARCHIVED)
+        self.assertIsNotNone(conv.retention_until)
+
+    def test_message_error_status_round_trips(self):
+        conv = Conversation.objects.create(user=self.user)
+        msg = Message.objects.create(
+            conversation=conv,
+            role=Message.Role.USER,
+            content="boom",
+            status=Message.Status.ERROR,
+        )
+        msg.refresh_from_db()
+        self.assertEqual(msg.status, Message.Status.ERROR)
 
     def test_str_does_not_expose_content(self):
         conv = Conversation.objects.create(user=self.user)
