@@ -38,6 +38,7 @@ spec:
             app.kubernetes.io/component: agent-noop
         spec:
           restartPolicy: OnFailure
+          serviceAccountName: crank-agent
           # Least privilege: non-root, read-only root filesystem, no privilege
           # escalation, matching the app Deployment.
           securityContext:
@@ -74,6 +75,10 @@ spec:
                 capabilities:
                   drop:
                     - ALL
+              # readOnlyRootFilesystem needs a writable tmp to run Python/pip.
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
               resources:
                 requests:
                   memory: "128Mi"
@@ -90,3 +95,17 @@ spec:
                     name: db-connect-credentials
           imagePullSecrets:
             - name: ghcr-credentials
+          volumes:
+            - name: tmp
+              emptyDir: {}
+---
+# Dedicated least-privilege service account for scheduled agent runs.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: crank-agent
+  namespace: crank
+  labels:
+    app.kubernetes.io/name: crank
+    app.kubernetes.io/instance: crank
+    app.kubernetes.io/component: agent-noop

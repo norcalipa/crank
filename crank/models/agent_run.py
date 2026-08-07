@@ -67,7 +67,32 @@ class AgentRun(TimeStampedModel):
         return f"{self.run_type} [{self.status}]"
 
     def finalize(self, status, *, counts=None, error_summary=""):
-        """Transition the run to its terminal status with timestamps/counters."""
+        """Transition the run to its terminal status with timestamps/counters.
+
+        Only allowed transitions are accepted (e.g. running -> succeeded/failed,
+        pending -> running); invalid jumps (e.g. a terminal run back to running)
+        raise ``ValueError``.
+        """
+        _ALLOWED_TRANSITIONS = {
+            AgentRun.Status.PENDING: {
+                AgentRun.Status.RUNNING,
+                AgentRun.Status.SUCCEEDED,
+                AgentRun.Status.FAILED,
+                AgentRun.Status.SKIPPED,
+            },
+            AgentRun.Status.RUNNING: {
+                AgentRun.Status.SUCCEEDED,
+                AgentRun.Status.FAILED,
+            },
+            AgentRun.Status.SUCCEEDED: set(),
+            AgentRun.Status.FAILED: set(),
+            AgentRun.Status.SKIPPED: set(),
+        }
+        allowed = _ALLOWED_TRANSITIONS.get(self.status, set())
+        if status not in allowed:
+            raise ValueError(
+                f"Invalid AgentRun transition {self.status} -> {status}"
+            )
         self.status = status
         self.finished_at = timezone.now()
         if counts is not None:

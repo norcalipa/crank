@@ -1,9 +1,11 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from crank.models.agent_run import AgentRun
 from crank.services import agent_runs
@@ -22,6 +24,22 @@ class AgentRunService(TestCase):
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 agent_runs.claim_run(AgentRun.RunType.NOOP)
+
+    @override_settings(AGENT_RUN_STALE_AFTER_SECONDS=60)
+    def test_stale_running_run_is_reclaimed(self):
+        # A claim that was never finalized (crash) must not block the run type
+        # forever: it is reclaimed as failed and a fresh claim is allowed.
+        stale = AgentRun.objects.create(
+            run_type=AgentRun.RunType.NOOP,
+            status=AgentRun.Status.RUNNING,
+            started_at=timezone.now() - timedelta(hours=2),
+        )
+        run = agent_runs.claim_run(AgentRun.RunType.NOOP)
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, AgentRun.Status.FAILED)
+        self.assertIn("Stale", stale.error_summary)
+        self.assertEqual(run.status, AgentRun.Status.RUNNING)
+        self.assertNotEqual(run.pk, stale.pk)
 
     def test_record_skipped_marks_terminal_skipped(self):
         run = agent_runs.record_skipped(AgentRun.RunType.NOOP)

@@ -16,7 +16,7 @@ orchestrates the shared lifecycle:
 import logging
 
 from django.conf import settings
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import IntegrityError, transaction
 
 from crank.services import agent_runs
@@ -34,7 +34,13 @@ class AgentRunCommand(BaseCommand):
     enabled_setting = "AGENT_RUN_ENABLED"
 
     def get_enabled(self):
-        """Whether this command may perform work for the current environment."""
+        """Whether this command may perform work for the current environment.
+
+        The master ``AGENT_RUN_ENABLED`` switch gates everything; the
+        per-command setting (e.g. ``AGENT_NOOP_ENABLED``) must also be on.
+        """
+        if not getattr(settings, "AGENT_RUN_ENABLED", False):
+            return False
         return bool(getattr(settings, self.enabled_setting, False))
 
     def run_payload(self, run, **options):  # pragma: no cover - overridden
@@ -82,12 +88,11 @@ class AgentRunCommand(BaseCommand):
         except Exception as exc:  # noqa: BLE001 - finalize as failed and exit 1
             logger.exception("agent run failed with exception")
             agent_runs.finalize_failure(run, exc)
-            self.stderr.write(
-                self.style.ERROR(
-                    f"{self.run_type}: failed - {agent_runs.sanitize_error(exc)}"
-                )
+            # CommandError gives the process a non-zero exit code on failure,
+            # which Kubernetes needs to detect/rety the CronJob pod.
+            raise CommandError(
+                f"{self.run_type}: failed - {agent_runs.sanitize_error(exc)}"
             )
-            return 1
 
         self.stdout.write(
             self.style.SUCCESS(
