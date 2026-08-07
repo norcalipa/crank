@@ -13,3 +13,8 @@ static/dist
 coverage/
 .venv-test/
 .venv*/
+
+# pytest/coverage data
+.coverage
+.coverage.*
+htmlcov/
