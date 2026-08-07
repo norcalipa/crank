@@ -275,3 +275,149 @@ class JobSearchApiTestCase(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertFalse(JobSearchConversation.objects.filter(pk=conversation_id).exists())
         self.assertFalse(JobSearchMessage.objects.filter(conversation_id=conversation_id).exists())
+
+@override_settings(CACHES=LOCMEM)
+class JobSearchCoverageEdges(TestCase):
+    """Direct unit coverage for service/model/serializer/ratelimit edges."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user("edge", "edge@example.com", "pw")
+
+    def tearDown(self):
+        cache.clear()
+
+    @override_settings(JOB_SEARCH_PROVIDER="bogus")
+    def test_unknown_provider_raises_stable_error(self):
+        from crank.agents.job_search.service import _build_provider
+        with self.assertRaises(JobSearchServiceError):
+            _build_provider()
+
+    def test_service_run_turn_success_and_truncation(self):
+        from crank.agents.job_search.service import DemoJobSearchProvider
+        conv = JobSearchConversation.objects.create(owner=self.user)
+        svc = JobSearchService(DemoJobSearchProvider())
+        reply, changed = svc.run_turn(conversation=conv, user_message="salary")
+        self.assertTrue(reply)
+        self.assertTrue(changed)
+        JobSearchMessage.objects.create(
+            conversation=conv, role="user", content="salary"
+        )
+        JobSearchMessage.objects.create(
+            conversation=conv, role="user", content="culture"
+        )
+        reply2, _ = svc.run_turn(conversation=conv, user_message="more")
+        self.assertIn("more", reply2)
+        with override_settings(JOB_SEARCH_RESPONSE_MAX_LEN=10):
+            reply3, _ = svc.run_turn(conversation=conv, user_message="again")
+            self.assertLessEqual(len(reply3), 10)
+
+    def test_provider_failure_is_stable_service_error(self):
+        class BoomProvider:
+            def generate_reply(self, **kwargs):
+                raise RuntimeError("provider exploded")
+        conv = JobSearchConversation.objects.create(owner=self.user)
+        svc = JobSearchService(BoomProvider())
+        with self.assertRaises(JobSearchServiceError):
+            svc.run_turn(conversation=conv, user_message="hi")
+
+    def test_models_str_do_not_leak(self):
+        conv = JobSearchConversation.objects.create(owner=self.user)
+        msg = JobSearchMessage.objects.create(
+            conversation=conv, role="user", content="secret"
+        )
+        self.assertIn("JobSearchConversation", str(conv))
+        self.assertIn("JobSearchMessage", str(msg))
+        self.assertNotIn("secret", str(msg))
+
+    def test_message_serializer_rejects_blank_content(self):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        from crank.serializers import job_search as jser
+        with self.assertRaises(DRFValidationError):
+            jser.MessageSubmitSerializer().validate_content("")
+
+    def test_rate_limit_allows_anonymous(self):
+        from crank.views.job_search import _check_rate_limit
+        from django.test import RequestFactory
+        anon = Client()
+        req = RequestFactory().post("/")
+        req.user = type("Anonymous", (), {"is_authenticated": False})()
+        self.assertFalse(_check_rate_limit(req))
+
+
+class JobSearchViewEdgeCases(TestCase):
+    """Additional view branches for the 99.25% patch target."""
+
+    @override_settings(CACHES=LOCMEM)
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user("edge2", "edge2@example.com", "pw")
+        self.client = Client()
+        self.client.force_login(self.user)
+
+    @override_settings(CACHES=LOCMEM)
+    def tearDown(self):
+        cache.clear()
+
+    def test_list_get_no_active_conversation_404(self):
+        resp = self.client.get(reverse("agent-conversation-list"))
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["error"]["type"], "no_conversation")
+
+    def test_list_post_nonobject_body_400(self):
+        resp = self.client.post(
+            reverse("agent-conversation-list"),
+            data="[1,2,3]",
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_list_post_invalid_create_new_400(self):
+        resp = self.client.post(
+            reverse("agent-conversation-list"),
+            data='{"create_new": "maybe"}',
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["type"], "invalid_request")
+
+    def test_list_post_resume_existing_returns_200(self):
+        first = self.client.post(
+            reverse("agent-conversation-list"),
+            data='{"create_new": true}',
+            content_type="application/json",
+        )
+        self.assertEqual(first.status_code, 201)
+        resumed = self.client.post(
+            reverse("agent-conversation-list"),
+            data='{"create_new": false}',
+            content_type="application/json",
+        )
+        self.assertEqual(resumed.status_code, 200)
+        self.assertEqual(resumed.json()["id"], first.json()["id"])
+
+    def test_detail_get_existing_200(self):
+        cid = self.client.post(
+            reverse("agent-conversation-list"), data="{}", content_type="application/json"
+        ).json()["id"]
+        resp = self.client.get(reverse("agent-conversation-detail", args=[cid]))
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["id"], cid)
+
+    def test_reset_nonexistent_404(self):
+        resp = self.client.post(reverse("agent-conversation-reset", args=[999999]))
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["error"]["type"], "not_found")
+
+    def test_delete_nonexistent_404(self):
+        resp = self.client.post(reverse("agent-conversation-delete", args=[999999]))
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["error"]["type"], "not_found")
+
+    def test_rate_limit_anon_short_circuit(self):
+        from crank.views.job_search import _check_rate_limit
+        from django.contrib.auth.models import AnonymousUser
+        from django.test import RequestFactory
+        req = RequestFactory().get("/")
+        req.user = AnonymousUser()
+        self.assertFalse(_check_rate_limit(req))
