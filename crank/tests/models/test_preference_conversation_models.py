@@ -225,6 +225,21 @@ class AdminAuthorizationTests(TestCase):
             self.assertTrue(admin.has_module_permission(MockStaffRequest(self.staff)))
             self.assertFalse(admin.has_module_permission(MockStaffRequest(self.non_staff)))
 
+    def test_add_change_delete_permissions_are_staff_only(self):
+        """add/change/delete permissions are explicit staff-only too."""
+        admins = [
+            UserPreferenceAdmin(UserPreference, self.site),
+            ConversationAdmin(Conversation, self.site),
+            MessageAdmin(Message, self.site),
+        ]
+        for admin in admins:
+            self.assertTrue(admin.has_add_permission(MockStaffRequest(self.staff)))
+            self.assertTrue(admin.has_change_permission(MockStaffRequest(self.staff)))
+            self.assertTrue(admin.has_delete_permission(MockStaffRequest(self.staff)))
+            self.assertFalse(admin.has_add_permission(MockStaffRequest(self.non_staff)))
+            self.assertFalse(admin.has_change_permission(MockStaffRequest(self.non_staff)))
+            self.assertFalse(admin.has_delete_permission(MockStaffRequest(self.non_staff)))
+
     def test_readonly_timestamps(self):
         pref_admin = UserPreferenceAdmin(UserPreference, self.site)
         self.assertIn("created", pref_admin.readonly_fields)
