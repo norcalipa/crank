@@ -92,6 +92,48 @@ def normalize_organization_rows(rows: List[Any]) -> List[Dict[str, Any]]:
     return output
 
 
+def normalize_score_summary_rows(rows: Optional[List[Any]]) -> List[Dict[str, Any]]:
+    """Project/validate score-summary rows to the canonical dict renderers expect.
+
+    Score rows are injectable (``score_datasource`` may be faked in tests), so
+    this validates shape up front: each row must be a dict with an integer
+    ``organization_id``, a non-empty string ``score_type``, and a numeric
+    ``avg_score``. A malformed row raises :class:`InvalidScoreSummaryRowError`
+    rather than surfacing later as a bare ``KeyError`` during rendering.
+    """
+    from crank.agents.job_search.errors import InvalidScoreSummaryRowError
+
+    output: List[Dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            raise InvalidScoreSummaryRowError(
+                "score summary rows must be dicts, got %s" % type(row).__name__
+            )
+        org_id = row.get("organization_id")
+        score_type = row.get("score_type")
+        avg_score = row.get("avg_score")
+        if (
+            isinstance(org_id, bool)
+            or not isinstance(org_id, int)
+            or not isinstance(score_type, str)
+            or not score_type.strip()
+            or isinstance(avg_score, bool)
+            or not isinstance(avg_score, (int, float))
+        ):
+            raise InvalidScoreSummaryRowError(
+                "score summary row must have integer organization_id, "
+                "non-empty string score_type, and numeric avg_score; "
+                "got organization_id=%r score_type=%r avg_score=%r"
+                % (org_id, score_type, avg_score)
+            )
+        output.append({
+            "organization_id": int(org_id),
+            "score_type": score_type.strip(),
+            "avg_score": float(avg_score),
+        })
+    return output
+
+
 def default_organization_datasource(
     filters: Mapping[str, Any], limit: int
 ) -> List[Any]:

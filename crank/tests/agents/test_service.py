@@ -243,3 +243,71 @@ class TestInjectionSafety:
         system = gw.requests[0].messages[0]["content"]
         assert "Never generate SQL" in system
         assert "untrusted" in system.lower()
+
+
+class TestScoreRowNormalization:
+    def test_malformed_score_row_raises_typed_not_keyerror(self):
+        """MAJOR-4: an untyped score row surfaces as a clear typed error."""
+        from crank.agents.job_search.errors import InvalidScoreSummaryRowError
+
+        gw = FakeGateway({
+            "message": "Globex is a good fit.",
+            "cited_organization_ids": [2],
+            "preference_patch": None,
+        })
+        pref = FakePreferenceService()
+        orch = JobSearchOrchestrator(
+            gateway=gw, preference_service=pref,
+            org_datasource=lambda filters, limit: [ORG_ACME, ORG_GLOBEX],
+            # Row missing score_type/avg_score -> untyped data shape.
+            score_datasource=lambda ids, types, limit: [{"organization_id": 2}],
+        )
+        try:
+            orch.run(user_prompt="q", conversation=[], preference_markdown="")
+        except InvalidScoreSummaryRowError:
+            return
+        raise AssertionError(
+            "expected InvalidScoreSummaryRowError, not a bare KeyError"
+        )
+
+class TestMiscCoverage:
+    def test_gateway_jobsearch_error_propagates(self):
+        """Non-provider JobSearchError from the gateway passes through (line 227)."""
+        from crank.agents.job_search.errors import InvalidPreferencePatchError
+
+        gw = FakeGateway(exc=InvalidPreferencePatchError("bad patch output"))
+        orch = JobSearchOrchestrator(
+            gateway=gw, preference_service=FakePreferenceService(),
+            org_datasource=lambda filters, limit: [ORG_ACME, ORG_GLOBEX],
+            score_datasource=lambda ids, types, limit: [],
+        )
+        try:
+            orch.run(user_prompt="q", conversation=[], preference_markdown="")
+        except InvalidPreferencePatchError:
+            return
+        raise AssertionError("expected JobSearchError to propagate")
+
+    def test_preference_service_untyped_error_wrapped(self):
+        """A non-typed preference-service error is wrapped as InvalidPreferencePatchError."""
+        class NaughtyPreferenceService:
+            def validate_patch(self, patch):
+                raise RuntimeError("boom")
+
+            def apply_patch(self, patch):
+                return False
+
+        gw = FakeGateway({
+            "message": "Acme looks like a match.",
+            "cited_organization_ids": [1],
+            "preference_patch": {"region": "bay"},
+        })
+        orch = JobSearchOrchestrator(
+            gateway=gw, preference_service=NaughtyPreferenceService(),
+            org_datasource=lambda filters, limit: [ORG_ACME, ORG_GLOBEX],
+            score_datasource=lambda ids, types, limit: [],
+        )
+        try:
+            orch.run(user_prompt="q", conversation=[], preference_markdown="")
+        except InvalidPreferencePatchError:
+            return
+        raise AssertionError("expected non-typed preference error to be wrapped")

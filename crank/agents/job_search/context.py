@@ -63,7 +63,11 @@ class ModelContext:
             parts.append(
                 "SCORE SUMMARIES (server-controlled; informational):\n"
                 + "\n".join(
-                    "organization_id={organization_id} {score_type}={avg_score}".format(**row)
+                    "organization_id={organization_id} {score_type}={avg_score}".format(
+                        organization_id=row.get("organization_id"),
+                        score_type=row.get("score_type", ""),
+                        avg_score=row.get("avg_score", ""),
+                    )
                     for row in self.score_summaries
                 )
             )
@@ -85,8 +89,22 @@ def truncate_conversation(
     """
     if not messages:
         return []
+    if max_characters is None:
+        # No character budget: bound only by max_messages (if given).
+        ordered = list(messages)
+        if (
+            isinstance(max_messages, int)
+            and max_messages > 0
+            and len(ordered) > max_messages
+        ):
+            ordered = ordered[-max_messages:]
+        return ordered
     if not isinstance(max_characters, int) or max_characters <= 0:
-        return []
+        # A misconfigured budget must not silently erase all context; surface
+        # it as a config error so the operator sees the signal (MINOR-1).
+        raise ValueError(
+            "max_characters must be a positive integer or None"
+        )
     ordered = list(messages)
 
     if isinstance(max_messages, int) and max_messages > 0 and len(ordered) > max_messages:
@@ -129,13 +147,27 @@ def build_model_context(
     All event/user-derived inputs are truncated to the supplied budgets before
     they reach the provider, deterministically.
     """
+    # Bound history AND the latest user turn to ONE shared character budget so
+    # a single long prompt cannot double max_conversation_characters (MAJOR-3).
+    # The latest user turn is the actual request and is always kept intact;
+    # history is truncated against the remaining budget.
+    user_turn = (
+        {"role": "user", "content": user_prompt}
+        if isinstance(user_prompt, str)
+        else None
+    )
+    if user_turn is not None and isinstance(max_conversation_characters, int):
+        history_budget = max(0, max_conversation_characters - len(user_turn["content"]))
+    else:
+        history_budget = max_conversation_characters
     bounded_conversation = truncate_conversation(
         conversation,
-        max_characters=max_conversation_characters,
+        max_characters=history_budget,
         max_messages=max_conversation_messages,
     )
-    # Always include the latest user turn; it is the actual request.
-    bounded_conversation = _append_user_turn(bounded_conversation, user_prompt, max_conversation_characters)
+    if user_turn is not None:
+        # Preserve the latest user turn verbatim (it is the request).
+        bounded_conversation = bounded_conversation + [user_turn]
 
     if isinstance(max_preference_characters, int) and max_preference_characters > 0:
         preference_markdown = preference_markdown[:max_preference_characters]
@@ -151,17 +183,6 @@ def build_model_context(
         organization_catalog=catalog,
         score_summaries=summaries,
     )
-
-
-def _append_user_turn(conversation, user_prompt, max_chars) -> List[Dict[str, str]]:
-    messages = list(conversation)
-    if not isinstance(user_prompt, str):
-        return messages
-    content = user_prompt
-    if isinstance(max_chars, int) and max_chars > 0 and len(content) > max_chars:
-        content = content[: max_chars - 1] + _ELISION_MARK
-    messages.append({"role": "user", "content": content})
-    return messages
 
 
 def _bounded_catalog(rows, limit) -> List[Dict[str, object]]:
