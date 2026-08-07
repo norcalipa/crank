@@ -11,27 +11,11 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('crank', '0006_alter_organization_options_and_more'),
+        ('crank', '0007_conversation_message_userpreference_and_more'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
-        migrations.CreateModel(
-            name='UserPreference',
-            fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('created', django_extensions.db.fields.CreationDateTimeField(auto_now_add=True, verbose_name='created')),
-                ('modified', django_extensions.db.fields.ModificationDateTimeField(auto_now=True, verbose_name='modified')),
-                ('preferences', models.JSONField(blank=True, default=dict)),
-                ('preferences_markdown', models.TextField(blank=True, default='')),
-                ('schema_version', models.PositiveIntegerField(default=1)),
-                ('user', models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, related_name='preference', to=settings.AUTH_USER_MODEL)),
-            ],
-            options={
-                'ordering': ['-modified'],
-                'get_latest_by': 'modified',
-            },
-        ),
         migrations.CreateModel(
             name='UserPreferenceAudit',
             fields=[
