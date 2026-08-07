@@ -2,6 +2,7 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 from django.db.models import Avg, Index, Q, UniqueConstraint
 
+from crank.models.agent_run import AgentRun
 from crank.models.organization import Organization
 from django.db import models
 from django_extensions.db.models import TimeStampedModel, ActivatorModel
@@ -56,6 +57,20 @@ class Score(TimeStampedModel, ActivatorModel):
     score = models.FloatField(default=0.0)
     low_threshold = models.FloatField(default=0.0)
     high_threshold = models.FloatField(default=5.0)
+    # Optional link to the run that produced this observation (run provenance).
+    # SET_NULL preserves score history even if a run record is pruned.
+    run = models.ForeignKey(
+        AgentRun,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="scores",
+        help_text="Run that produced this observation, if any.",
+    )
+    # Sanitized provenance metadata for the observation (external id, source url,
+    # adapter version, observed/fetched timestamps, raw + normalized values).
+    # Raw external payloads and secrets are never stored here.
+    provenance = models.JSONField(default=dict, blank=True)
 
     class Meta:
         app_label = 'crank'
