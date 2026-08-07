@@ -1,0 +1,158 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+"""Schema-validated result types for the job-search orchestration service.
+
+Model output is validated against a strict schema before it is allowed to
+reach the preference service or persistence. Only :class:`AssistantCompletion`
+instances created through :meth:`AssistantCompletion.from_json` may be passed
+forward.
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+
+from crank.agents.job_search.errors import InvalidModelOutputError
+
+#: Top-level keys that must all be present in the model's result object.
+_REQUIRED_KEYS = frozenset({"message", "cited_organization_ids", "preference_patch"})
+#: Absolute ceiling on how many cited organization IDs are accepted.
+_MAX_CITED_ORGANIZATIONS = 200
+#: Ceiling on preference-patch nesting depth (guards against pathological JSON).
+_MAX_PATCH_DEPTH = 8
+
+
+@dataclass(frozen=True)
+class AssistantCompletion:
+    """A schema-validated assistant turn.
+
+    Attributes
+    ----------
+    message:
+        The human-readable assistant reply.
+    cited_organization_ids:
+        Unique, ordered organization IDs the recommendation relies on. These are
+        validated downstream against the server-controlled catalog.
+    preference_patch:
+        Optional typed preference update forwarded to the preference service.
+    """
+
+    message: str
+    cited_organization_ids: Tuple[int, ...] = ()
+    preference_patch: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def from_json(cls, raw: Any) -> "AssistantCompletion":
+        """Validate ``raw`` and return an :class:`AssistantCompletion`.
+
+        Accepts a parsed dict or a JSON string. Raises
+        :class:`InvalidModelOutputError` when the shape is wrong, non-serializable,
+        or otherwise fails the schema gate.
+        """
+        if isinstance(raw, str):
+            try:
+                payload = json.loads(raw)
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise InvalidModelOutputError(
+                    "model output is not valid JSON"
+                ) from exc
+        else:
+            payload = raw
+
+        if not isinstance(payload, dict):
+            raise InvalidModelOutputError(
+                "model output must be a JSON object"
+            )
+
+        missing = _REQUIRED_KEYS - set(payload.keys())
+        if missing:
+            raise InvalidModelOutputError(
+                "model output is missing required keys: %s"
+                % ", ".join(sorted(missing))
+            )
+
+        message = payload.get("message")
+        if not isinstance(message, str) or not message.strip():
+            raise InvalidModelOutputError(
+                "model output 'message' must be a non-empty string"
+            )
+
+        raw_ids = payload.get("cited_organization_ids")
+        if not isinstance(raw_ids, (list, tuple)):
+            raise InvalidModelOutputError(
+                "model output 'cited_organization_ids' must be a list"
+            )
+        if len(raw_ids) > _MAX_CITED_ORGANIZATIONS:
+            raise InvalidModelOutputError(
+                "model output cites more than %d organization IDs"
+                % _MAX_CITED_ORGANIZATIONS
+            )
+        org_ids: List[int] = []
+        for value in raw_ids:
+            # bool is a subclass of int; exclude it so "true" cannot smuggle in.
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise InvalidModelOutputError(
+                    "model output cited_organization_ids must be integers"
+                )
+            org_ids.append(value)
+        if len(set(org_ids)) != len(org_ids):
+            raise InvalidModelOutputError(
+                "model output cited_organization_ids must be unique"
+            )
+
+        patch = payload.get("preference_patch")
+        if patch is not None:
+            if not isinstance(patch, dict):
+                raise InvalidModelOutputError(
+                    "model output preference_patch must be an object or null"
+                )
+            _assert_bounded_patch(patch)
+
+        return cls(
+            message=message.strip(),
+            cited_organization_ids=tuple(sorted(org_ids)),
+            preference_patch=_freeze_patch(patch) if patch is not None else None,
+        )
+
+    @property
+    def has_preference_patch(self) -> bool:
+        return self.preference_patch is not None
+
+
+def _assert_bounded_patch(patch: Dict[str, Any], _depth: int = 0) -> None:
+    """Recursively enforce the patch is JSON-serializable and bounded."""
+    if _depth > _MAX_PATCH_DEPTH:
+        raise InvalidModelOutputError("preference_patch is nested too deeply")
+    for key, value in patch.items():
+        if not isinstance(key, str):
+            raise InvalidModelOutputError(
+                "preference_patch keys must be strings"
+            )
+        if isinstance(value, dict):
+            _assert_bounded_patch(value, _depth + 1)
+        elif isinstance(value, (list, tuple)):
+            _assert_bounded_sequence(value, _depth + 1)
+
+
+def _assert_bounded_sequence(seq: List[Any], _depth: int) -> None:
+    if _depth > _MAX_PATCH_DEPTH:
+        raise InvalidModelOutputError("preference_patch is nested too deeply")
+    for value in seq:
+        if isinstance(value, dict):
+            _assert_bounded_patch(value, _depth + 1)
+        elif isinstance(value, (list, tuple)):
+            _assert_bounded_sequence(value, _depth + 1)
+        elif isinstance(value, bool):
+            raise InvalidModelOutputError(
+                "preference_patch must contain only JSON-serializable values"
+            )
+        elif value is not None and not isinstance(value, (str, int, float)):
+            raise InvalidModelOutputError(
+                "preference_patch must contain only JSON-serializable values"
+            )
+
+
+def _freeze_patch(patch: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the patch as plain JSON-serializable data (no Dataclass/etc.)."""
+    return json.loads(json.dumps(patch))
