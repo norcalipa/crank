@@ -25,6 +25,7 @@ from crank.models.preference import (
     SCHEMA_VERSION,
     UserPreference,
     UserPreferenceAudit,
+    default_preferences,
 )
 
 # Field-size and collection caps. Values at or beyond these limits are rejected.
@@ -101,29 +102,6 @@ _FIELD_SPEC = {
     "notes": "str",
 }
 
-
-def default_preferences():
-    """Return a fresh, schema-valid empty preferences document."""
-    return {
-        "compensation": {
-            "minimum_salary": None,
-            "currency": "USD",
-            "equity_minimum_percent": None,
-        },
-        "culture": [],
-        "work_location": {"modes": [], "countries": [], "require_onsite": None},
-        "geography": {"regions": [], "remote_friendly": None},
-        "industry": [],
-        "funding_stage": [],
-        "vesting": {
-            "max_cliff_months": None,
-            "max_vesting_months": None,
-            "prefer_accelerated": None,
-        },
-        "exclusions": {"companies": [], "titles": [], "industries": [], "locations": []},
-        "priorities": {},
-        "notes": "",
-    }
 
 
 # ---------------------------------------------------------------------------

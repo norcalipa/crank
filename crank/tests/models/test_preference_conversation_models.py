@@ -28,8 +28,8 @@ class UserPreferenceModelTests(TestCase):
         self.assertEqual(pref.schema_version, 1)
         # Defaults must be valid schema-v1 documents.
         self.assertEqual(pref.preferences, default_preferences())
-        self.assertIn("required", pref.preferences)
-        self.assertIn("optional", pref.preferences)
+        self.assertIn("compensation", pref.preferences)
+        self.assertIn("priorities", pref.preferences)
         self.assertIn("exclusions", pref.preferences)
         self.assertIn("notes", pref.preferences)
         self.assertEqual(pref.preferences_markdown, "")
@@ -202,8 +202,8 @@ class MigrationStateTests(TestCase):
         from django.db.migrations.executor import MigrationExecutor
 
         executor = MigrationExecutor(connection)
-        plan = executor.migration_plan([("crank", "0007_conversation_message_userpreference_and_more")])
-        self.assertFalse(plan, "Expected migration 0007 to already be applied")
+        plan = executor.migration_plan([("crank", "0008_userpreference_audit")])
+        self.assertFalse(plan, "Expected migration 0008 to already be applied")
 
 
 class AdminAuthorizationTests(TestCase):

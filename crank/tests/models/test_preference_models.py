@@ -58,7 +58,7 @@ class TestUserPreferenceModel:
 
     def test_reverse_relation(self, user):
         UserPreference.objects.create(user=user, preferences=default_preferences())
-        assert user.preference.schema_version == SCHEMA_VERSION
+        assert user.preferences.schema_version == SCHEMA_VERSION
 
 
 class TestUserPreferenceAuditModel:
