@@ -75,6 +75,7 @@ class TestSchema:
             ("notes", 42),
             ("notes", "x" * 5000),
             ("priorities", {"culture": 2.0}),
+            ("work_location", {}),      # dict-spec subtree -> _validate_node_value missing-keys
             ("priorities", {"culture": "high"}),
         ],
     )
@@ -441,3 +442,180 @@ class TestReviewFixes:
         result = prefs.delete_user_preference(user)
         assert result == {"deleted": True, "existed": True}
         assert not UserPreference.objects.filter(user=user).exists()
+
+
+class TestCoverageEdges:
+    """Edge branches to meet the 99.25% Codecov patch target."""
+
+    def test_split_path_rejects_empty_and_non_str(self):
+        with pytest.raises(prefs.UnknownFieldError):
+            prefs._resolve_spec("")
+        with pytest.raises(prefs.UnknownFieldError):
+            prefs._resolve_spec(5)
+
+    def test_validate_value_unknown_leaf(self):
+        with pytest.raises(prefs.InvalidValueError):
+            prefs.validate_value("x", "bogus_leaf", 1)
+
+    def test_str_list_too_long(self):
+        doc = prefs.default_preferences()
+        doc["culture"] = ["c"] * (prefs.MAX_LIST_LENGTH + 1)
+        with pytest.raises(prefs.InvalidValueError):
+            prefs.validate_document(doc)
+
+    def test_float_map_not_a_mapping(self):
+        doc = prefs.default_preferences()
+        doc["priorities"] = "x"
+        with pytest.raises(prefs.InvalidValueError):
+            prefs.validate_document(doc)
+
+    def test_float_map_too_many_keys(self):
+        doc = prefs.default_preferences()
+        doc["priorities"] = {f"k{i}": 0.5 for i in range(prefs.MAX_PRIORITIES + 1)}
+        with pytest.raises(prefs.InvalidValueError):
+            prefs.validate_document(doc)
+
+    def test_validate_document_non_mapping(self):
+        with pytest.raises(prefs.InvalidValueError):
+            prefs.validate_document(None)
+
+    def test_validate_document_nested_node_not_object(self):
+        # All root keys present but a dict-spec node is not an object.
+        doc = prefs.default_preferences()
+        doc["compensation"] = "x"
+        with pytest.raises(prefs.InvalidValueError):
+            prefs.validate_document(doc)
+
+    def test_validate_patch_not_object(self):
+        with pytest.raises(prefs.AmbiguousPatchError):
+            prefs.validate_patch("x")
+
+    def test_validate_patch_unknown_top_key(self):
+        with pytest.raises(prefs.AmbiguousPatchError):
+            prefs.validate_patch({"set": {}, "bogus": 1})
+
+    def test_validate_patch_set_not_object(self):
+        with pytest.raises(prefs.AmbiguousPatchError):
+            prefs.validate_patch({"set": "x"})
+
+    def test_validate_patch_remove_not_object(self):
+        with pytest.raises(prefs.AmbiguousPatchError):
+            prefs.validate_patch({"remove": "x"})
+
+    def test_remove_map_must_list_keys(self):
+        with pytest.raises(prefs.AmbiguousPatchError):
+            prefs.apply_patch(prefs.default_preferences(), {"remove": {"priorities": "x"}})
+
+    def test_remove_subtree_must_use_null(self):
+        with pytest.raises(prefs.AmbiguousPatchError):
+            prefs.apply_patch(
+                prefs.default_preferences(),
+                {"remove": {"compensation": {"minimum_salary": 1}}},
+            )
+
+    def test_set_dynamic_inner_key_rejected(self):
+        with pytest.raises(prefs.AmbiguousPatchError):
+            prefs.apply_patch(
+                prefs.default_preferences(), {"set": {"priorities.growth": 0.5}}
+            )
+
+    def test_remove_dynamic_entry(self):
+        doc = prefs.apply_patch(
+            prefs.default_preferences(), {"set": {"priorities": {"growth": 0.5}}}
+        )[0]
+        new, changes = prefs.apply_patch(doc, {"remove": {"priorities.growth": None}})
+        assert changes == 1
+        assert new["priorities"] == {}
+
+    def test_subtree_set_missing_required_key(self):
+        with pytest.raises(prefs.InvalidValueError):
+            prefs.apply_patch(
+                prefs.default_preferences(),
+                {"set": {"work_location": {"modes": []}}},
+            )
+
+    def test_subtree_set_unknown_key(self):
+        with pytest.raises(prefs.UnknownFieldError):
+            prefs.apply_patch(
+                prefs.default_preferences(),
+                {"set": {"work_location": {"modes": [], "countries": [], "require_onsite": None, "bogus": 1}}},
+            )
+
+    def test_subtree_set_non_object_value(self):
+        with pytest.raises(prefs.InvalidValueError):
+            prefs.apply_patch(prefs.default_preferences(), {"set": {"compensation": "x"}})
+
+    def test_is_value_equal_one_side_none(self):
+        doc = prefs.apply_patch(
+            prefs.default_preferences(), {"set": {"compensation.minimum_salary": 150000}}
+        )[0]
+        new, changes = prefs.apply_patch(
+            doc, {"set": {"compensation.minimum_salary": None}}
+        )
+        assert new["compensation"]["minimum_salary"] is None
+
+    def test_is_value_equal_float_compare(self):
+        doc = prefs.apply_patch(
+            prefs.default_preferences(), {"set": {"compensation.minimum_salary": 100000}}
+        )[0]
+        new, changes = prefs.apply_patch(
+            doc, {"set": {"compensation.minimum_salary": 123456}}
+        )
+        assert changes == 1
+        assert new["compensation"]["minimum_salary"] == 123456
+
+    def test_markdown_equity_and_priorities(self):
+        doc = prefs.apply_patch(
+            prefs.default_preferences(),
+            {"set": {"compensation.equity_minimum_percent": 0.05,
+                     "priorities": {"growth": 0.6, "remote": 0.4}}},
+        )[0]
+        md = prefs.to_markdown(doc)
+        assert "Minimum equity target: 0.1%" in md
+        assert "## Priorities" in md
+        assert "- growth: 0.60" in md
+        assert "- remote: 0.40" in md
+
+    def test_normalize_ts_none(self):
+        assert prefs._normalize_ts(None) is None
+        # Not a string and no tzinfo -> None.
+        assert prefs._normalize_ts(123) is None
+
+    def test_remove_float_map_key_list_form(self):
+        doc = prefs.apply_patch(
+            prefs.default_preferences(), {"set": {"priorities": {"a": 0.5, "b": 0.4}}}
+        )[0]
+        new, changes = prefs.apply_patch(doc, {"remove": {"priorities": ["a"]}})
+        assert changes == 1
+        assert new["priorities"] == {"b": 0.4}
+
+    def test_is_value_equal_single_none(self):
+        assert prefs._is_value_equal("int", None, 5) is False
+        assert prefs._is_value_equal("int", 5, None) is False
+        assert prefs._is_value_equal("int", None, None) is True
+
+    def test_remove_str_list_depth1(self):
+        doc = prefs.default_preferences()
+        doc = prefs.apply_patch(doc, {"set": {"culture": ["a", "b"]}})[0]
+        new, changes = prefs.apply_patch(doc, {"remove": {"culture": ["a"]}})
+        assert changes == 1
+        assert new["culture"] == ["b"]
+
+    @pytest.mark.django_db
+    def test_stale_check_iso_string_naive_and_tzaware(self):
+        from django.utils import timezone as tz
+        u = get_user_model().objects.create_user(username="edge-ts", password="x")
+        row = prefs.apply_patch_to_user(u, {"set": {"notes": "first"}})
+        # naive ISO string (parses -> made aware) -> mismatch
+        with pytest.raises(prefs.StalePreferenceError):
+            prefs.apply_patch_to_user(u, {"set": {"notes": "s"}}, expected_modified="2026-01-01T00:00:00")
+        # tz-aware datetime object -> tzinfo path
+        with pytest.raises(prefs.StalePreferenceError):
+            prefs.apply_patch_to_user(u, {"set": {"notes": "s"}}, expected_modified=tz.now())
+
+    @pytest.mark.django_db
+    def test_stale_check_invalid_iso_string(self):
+        u = get_user_model().objects.create_user(username="edge-ts2", password="x")
+        prefs.apply_patch_to_user(u, {"set": {"notes": "first"}})
+        with pytest.raises(prefs.StalePreferenceError):
+            prefs.apply_patch_to_user(u, {"set": {"notes": "s"}}, expected_modified="not-a-date")

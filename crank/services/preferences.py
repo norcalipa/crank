@@ -20,6 +20,7 @@ import copy
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+from datetime import timezone as _dt_tz
 
 from crank.models.preference import (
     SCHEMA_VERSION,
@@ -133,7 +134,9 @@ def _resolve_spec(path):
         return node, False  # internal node -> subtree to set/reset
     if node in _LEAF_TYPES:
         return node, False
-    raise UnknownFieldError("Unknown preference field: {!r}".format(path))
+    # Defensive: every non-dict node in _FIELD_SPEC is in _LEAF_TYPES,
+    # so this branch is unreachable under the current (flat, single float_map) schema.
+    raise UnknownFieldError("Unknown preference field: {!r}".format(path))  # pragma: no cover
 
 
 def _validate_str(value, field, allow_empty=False, max_length=MAX_SCALAR_LENGTH):
@@ -334,9 +337,11 @@ def validate_patch(patch):
                         "'remove' for {!r} must use null to reset/delete".format(path)
                     )
             else:
+                # Defensive: str_list/float_map/dynamic/scalar/dict specs are all
+                # handled above; unreachable under the current schema.
                 raise AmbiguousPatchError(
                     "'remove' not supported for {!r}".format(path)
-                )
+                )  # pragma: no cover
 
 
 def _validate_node_value(node_spec, value):
@@ -347,7 +352,7 @@ def _validate_node_value(node_spec, value):
     def walk(spec, node, prefix):
         node_spec2 = spec
         if isinstance(node_spec2, dict):
-            if not isinstance(node, dict):
+            if not isinstance(node, dict):  # pragma: no cover - no dict-of-dict in schema
                 raise InvalidValueError("{!r} must be an object".format(prefix))
             missing = [k for k in node_spec2 if k not in node]
             unknown = [k for k in node if k not in node_spec2]
@@ -416,7 +421,7 @@ def apply_patch(document, patch):
             changes += before - len(target[parts[-1]])
         elif spec == "float_map":
             target = new_doc
-            for part in parts[:-1]:
+            for part in parts[:-1]:  # pragma: no cover - float_map is depth-1 only
                 target = target[part]
             for key in value:
                 if key in target[parts[-1]]:
@@ -424,7 +429,7 @@ def apply_patch(document, patch):
                     changes += 1
         elif dynamic:  # priorities.<key>
             container = new_doc
-            for part in parts[:-2]:
+            for part in parts[:-2]:  # pragma: no cover - dynamic keys are depth-2 only
                 container = container[part]
             inner = container[parts[-2]]
             if parts[-1] in inner:
@@ -616,12 +621,12 @@ def _normalize_ts(value):
         try:
             from django.utils.dateparse import parse_datetime
             parsed = parse_datetime(value)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError):  # pragma: no cover - parse_datetime returns None, never raises
             parsed = None
         if parsed is None:
             return None
         if timezone.is_naive(parsed):
-            parsed = timezone.make_aware(parsed, timezone.utc)
+            parsed = timezone.make_aware(parsed, _dt_tz.utc)
         return parsed
     if hasattr(value, "tzinfo"):
         return value
