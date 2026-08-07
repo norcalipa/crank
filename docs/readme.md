@@ -131,8 +131,39 @@ Resolve employers against active `Organization` rows using normalized names, dom
 
 Persist user-specific matches separately from listings, including rank, rationale, criteria version, first/last matched timestamps, and seen/dismissed state. Matching uses structured preferences; an LLM may explain a result but must not be the only filter or ranking mechanism.
 
-## 6. Source Access and Safety Policy
+### 5.7. LLM provider gateway (`crank/agents/llm.py`)
 
+The gateway is a small, provider-neutral interface for schema-capable LLM
+completions with a single concrete provider selected through settings. It is
+
+the only agent layer in this deliverable; there is no agent framework.
+
+- **Protocol, not framework.** Call sites depend on the `LLMProvider` protocol
+  and `LLMResult`/`LLMUsage` data types. Provider SDK calls live only inside
+  adapter implementations, so no provider SDK is imported at a call site and
+  no network I/O happens at module import.
+- **Environment-backed, fail-closed settings.** `LLM_PROVIDER`, `LLM_MODEL`,
+  `LLM_TIMEOUT_SECONDS`, `LLM_MAX_TOKENS`, `LLM_PER_USER_COST_LIMIT_USD`,
+  `LLM_PRICE_PER_1K_TOKENS_USD`, and `INTERACTIVE_AGENT_ENABLED` are read from
+  the environment in `crank/settings/base.py`. `LLM_API_KEY` is the only
+  secret, read solely from an environment secret with no checked-in default.
+  Missing or invalid provider configuration raises `LLMConfigurationError`
+  before any request is sent.
+- **Offline default.** `crank.agents.llm:FakeLLMProvider` is the selected
+  implementation and makes no network calls, so a live provider is never
+  contacted until a real adapter plus key are deployed.
+- **Ceilings and usage.** Timeout, token, and cost ceilings are enforced before
+  a request is sent; usage is returned provider-neutrally as `LLMUsage`
+  (`prompt/completion/total_tokens`, `cost_estimate_usd`) with latency.
+- **Independent feature flag.** `INTERACTIVE_AGENT_ENABLED` gates interactive
+  agent execution independently of scheduled ingestion, which has its own
+  lifecycle controls.
+- **Local test config (FAKE credentials only).** For local runs set
+  `LLM_PROVIDER=crank.agents.llm:FakeLLMProvider` and leave `LLM_API_KEY`
+  empty; the fake requires no key and makes no network calls. Never commit a
+  real API key.
+
+## 6. Source Access and Safety Policy
 - Complete a source review before implementation: API availability, license/terms, robots policy, authentication, rate limits, retention limits, and allowed use.
 - Prefer official APIs and feeds. Use direct HTTP only where access is permitted.
 - Use Playwright as an application library only for approved sources that require browser rendering.

@@ -268,3 +268,35 @@ MANIFEST_LOADER = {
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# ---------------------------------------------------------------------------
+# LLM provider gateway
+# ---------------------------------------------------------------------------
+# Environment-backed, FAIL-CLOSED settings for the typed LLM gateway in
+# crank/agents/llm.py. Reading an API key is the ONLY secret here; it is read
+# exclusively from the environment (never from checked-in code) and defaults
+# to empty so any provider that requires one refuses to start when unset.
+#
+# LLM_PROVIDER selects the single provider implementation; the offline
+# FakeLLMProvider is a safe default that makes no network calls. Deploying a
+# live provider requires opting in via env with its key/model configured.
+
+# Which provider class to use. Empty => build the gateway fails closed.
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "").strip()
+# Model identifier. Required (and validated) only by providers that need it.
+LLM_MODEL = os.environ.get("LLM_MODEL", "").strip()
+# API key for provider SDK calls. SECRET: environment-linked, no default.
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "").strip()
+# Request timeout in seconds, forwarded to provider adapters.
+LLM_TIMEOUT_SECONDS = float(os.environ.get("LLM_TIMEOUT_SECONDS", "30"))
+# Per-request token ceiling, enforced before any request is sent.
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "2048"))
+# Per-user spend ceiling in USD (0 disables the guard).
+LLM_PER_USER_COST_LIMIT_USD = float(os.environ.get("LLM_PER_USER_COST_LIMIT_USD", "0"))
+# Optional price (USD per 1k total tokens) used to estimate cost.
+LLM_PRICE_PER_1K_TOKENS_USD = float(os.environ.get("LLM_PRICE_PER_1K_TOKENS_USD", "0"))
+# Independent feature flag for the interactive job-search agent. Disabling this
+# does NOT affect scheduled ingestion, which has its own lifecycle controls.
+INTERACTIVE_AGENT_ENABLED = os.environ.get("INTERACTIVE_AGENT_ENABLED", "false").lower() in (
+    "1", "true", "yes", "on"
+)
