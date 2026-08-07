@@ -18,7 +18,9 @@ Including another URLconf
 """
 from allauth.account.views import LogoutView
 from django.contrib import admin
+from django.contrib.auth.decorators import login_required
 from django.urls import path, include
+from django.views.generic import TemplateView
 from django.views.decorators.cache import cache_page
 from django.conf import settings
 
@@ -27,6 +29,13 @@ from crank.views.rtopolicy import RTOPolicyChoicesView
 from crank.views.index import IndexView
 from crank.views.logout import CustomLogoutView
 from crank.views.api import organization_detail, organization_scores
+from crank.views.job_search import (
+    agent_conversation_list,
+    agent_conversation_detail,
+    agent_conversation_export,
+    agent_conversation_reset,
+    agent_conversation_delete,
+)
 
 app_name = "crank"
 
@@ -38,6 +47,12 @@ urlpatterns = [
     path('api/rto-policy-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(RTOPolicyChoicesView.as_view()), name='rto_policy_choices'),
     path('api/organizations/<int:pk>/', organization_detail, name='organization-detail'),
     path('api/organizations/<int:pk>/scores/', organization_scores, name='organization-scores'),
+    path('chat/', login_required(TemplateView.as_view(template_name='crank/job_search.html')), name='job_search'),
+    path('api/agent/conversations/', agent_conversation_list, name='agent-conversation-list'),
+    path('api/agent/conversations/<int:conversation_id>/', agent_conversation_detail, name='agent-conversation-detail'),
+    path('api/agent/conversations/<int:conversation_id>/export/', agent_conversation_export, name='agent-conversation-export'),
+    path('api/agent/conversations/<int:conversation_id>/reset/', agent_conversation_reset, name='agent-conversation-reset'),
+    path('api/agent/conversations/<int:conversation_id>/delete/', agent_conversation_delete, name='agent-conversation-delete'),
     path('api-auth/', include('rest_framework.urls')),
     path('accounts/logout/', CustomLogoutView.as_view(), name='account_logout'),
     path('accounts/', include('allauth.urls')),
