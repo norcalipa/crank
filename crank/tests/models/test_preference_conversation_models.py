@@ -199,11 +199,22 @@ class ConversationModelTests(TestCase):
 
 class MigrationStateTests(TestCase):
     def test_latest_migration_applies_and_models_match(self):
+        # Assert the migration graph is fully applied without hardcoding a
+        # specific tip: each leaf (tip) migration for the crank app must be
+        # applied. This stays correct as new migrations are introduced across
+        # PRs (e.g. an additional leaf from a parallel feature branch).
         from django.db.migrations.executor import MigrationExecutor
 
         executor = MigrationExecutor(connection)
-        plan = executor.migration_plan([("crank", "0008_userpreference_audit")])
-        self.assertFalse(plan, "Expected migration 0008 to already be applied")
+        applied = executor.loader.applied_migrations
+        leaves = executor.loader.graph.leaf_nodes(("crank",))
+        self.assertTrue(leaves, "No crank migrations found")
+        for node in leaves:
+            self.assertIn(
+                ("crank", node),
+                applied,
+                f"Leaf migration {node} should be applied",
+            )
 
 
 class AdminAuthorizationTests(TestCase):
