@@ -8,6 +8,8 @@ only offline providers — never a real provider SDK, and never network I/O.
 
 import time
 
+import pytest
+
 from django.test import SimpleTestCase, override_settings
 
 from crank.agents import llm
@@ -500,3 +502,131 @@ class ImportSideEffectTests(SimpleTestCase):
         for value in raw.values():
             if isinstance(value, str):
                 self.assertEqual(value, "")
+
+# -- Additional coverage edges (99.25% Codecov patch target) ----------------
+
+class _AsyncTimeoutProvider(BaseLLMProvider):
+    """Offline provider whose SDK call raises the builtin TimeoutError."""
+
+    provider_name = "async-timeout"
+    requires_api_key = False
+
+    def _call(self, request):
+        raise TimeoutError("slow sdk call")
+
+    def _parse_response(self, raw, request):
+        return "", None
+
+
+class ConfigValidationEdges(SimpleTestCase):
+    """Direct _validate_config branches not reachable via get_llm_provider."""
+
+    def test_direct_construction_without_provider_fails_closed(self):
+        import pytest
+        with pytest.raises(Exception, match="LLM provider is not configured"):
+            FakeLLMProvider(LLMConfig(provider="", enabled=True))
+
+    def test_requires_model_without_model_fails_closed(self):
+        import pytest
+
+        class ModelRequiringProvider(FakeLLMProvider):
+            requires_model = True
+            provider_name = "model-requiring"
+
+        with pytest.raises(Exception, match="requires a model"):
+            ModelRequiringProvider(
+                LLMConfig(provider="crank.tests.test_llm:ModelRequiringProvider", enabled=True)
+            )
+
+    def test_zero_timeout_calls_directly(self):
+        provider = get_llm_provider(
+            LLMConfig(
+                provider=BASE_PROVIDER,
+                timeout_seconds=0,
+                max_tokens=64,
+                enabled=True,
+            )
+        )
+        result = provider.complete(
+            LLMRequest(messages=[LLMMessage(role="user", content="hi")], correlation_id="no-timeout")
+        )
+        self.assertIsInstance(result.content, str)
+
+
+class PlaceholderTypeEdges(SimpleTestCase):
+    """_build_placeholder / _placeholder_for type branches."""
+
+    def _placeholder(self, schema):
+        provider = get_llm_provider(LLMConfig(provider=BASE_PROVIDER, max_tokens=64, enabled=True))
+        return provider._build_placeholder(schema)
+
+    def test_top_level_string_schema_returns_summary(self):
+        self.assertEqual(self._placeholder({"type": "string"}), {"message": "ok"})
+
+    def test_all_property_types_placeholder(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "num": {"type": "integer"},
+                "flt": {"type": "number"},
+                "flag": {"type": "boolean"},
+                "obj": {"type": "object"},
+                "arr": {"type": "array"},
+                "none": {"type": "null"},
+            },
+        }
+        payload = self._placeholder(schema)
+        self.assertEqual(payload["num"], 0)
+        self.assertEqual(payload["flt"], 0)
+        self.assertEqual(payload["flag"], False)
+        self.assertEqual(payload["obj"], {})
+        self.assertEqual(payload["arr"], [])
+        self.assertIsNone(payload["none"])
+
+
+class ProviderSpecEdges(SimpleTestCase):
+    """Provider spec parsing (dotted path without colon)."""
+
+    def test_dotted_provider_spec_without_colon(self):
+        provider = get_llm_provider(
+            LLMConfig(provider="crank.agents.llm.FakeLLMProvider", enabled=True)
+        )
+        self.assertEqual(provider.__class__.__name__, "FakeLLMProvider")
+        self.assertEqual(provider.config.provider, "crank.agents.llm.FakeLLMProvider")
+
+
+class ExecutorTimeoutEdges(SimpleTestCase):
+    """complete() translates a timeout raised inside the executor thread."""
+
+    def test_timeout_raised_inside_executor_is_translated(self):
+        # The executor path: concurrent.futures.TimeoutError aliases the
+        # builtin, so _call_with_timeout translates it (line "did not respond
+        # within"); complete() must still surface LLMTimeoutError.
+        provider = _AsyncTimeoutProvider(
+            LLMConfig(
+                provider="crank.tests.test_llm:_AsyncTimeoutProvider",
+                timeout_seconds=5,
+                enabled=True,
+            )
+        )
+        with pytest.raises(Exception) as ei:
+            provider.complete(
+                LLMRequest(messages=[LLMMessage(role="user", content="hi")], correlation_id="exec-timeout")
+            )
+        assert type(ei.value).__name__ == "LLMTimeoutError"
+
+    def test_timeout_translated_on_direct_call_path(self):
+        # timeout_seconds=0 => direct _call: the builtin TimeoutError bubbles
+        # out of _call_with_timeout and is translated by complete() itself.
+        provider = _AsyncTimeoutProvider(
+            LLMConfig(
+                provider="crank.tests.test_llm:_AsyncTimeoutProvider",
+                timeout_seconds=0,
+                enabled=True,
+            )
+        )
+        with pytest.raises(Exception) as ei:
+            provider.complete(
+                LLMRequest(messages=[LLMMessage(role="user", content="hi")], correlation_id="direct-timeout")
+            )
+        assert type(ei.value).__name__ == "LLMTimeoutError"
