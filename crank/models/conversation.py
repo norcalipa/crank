@@ -60,7 +60,7 @@ class Conversation(TimeStampedModel):
 
     class Meta:
         app_label = "crank"
-        ordering = ["-modified"]
+        ordering = ["-modified", "-id"]
         verbose_name = _("conversation")
         verbose_name_plural = _("conversations")
         indexes = [
@@ -73,9 +73,11 @@ class Message(TimeStampedModel):
     """An ordered message within a conversation.
 
     `order` provides a stable, server-controlled sequence key within a
-    conversation; a unique `(conversation, order)` constraint prevents
-    accidental reordering/duplicates. Roles are limited to the known set so a
-    client can never inject an arbitrary role.
+    conversation. It is auto-assigned on save to the next value for the
+    conversation, so callers never have to compute ``max(order) + 1``; a
+    unique `(conversation, order)` constraint guards against collisions.
+    Roles are limited to the known set so a client can never inject an
+    arbitrary role.
     """
 
     class Role(models.TextChoices):
@@ -98,13 +100,38 @@ class Message(TimeStampedModel):
         verbose_name=_("role"),
     )
     content = models.TextField(verbose_name=_("content"))
-    order = models.PositiveIntegerField(verbose_name=_("order"))
+    order = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        verbose_name=_("order"),
+        help_text=_(
+            "Stable per-conversation sequence; auto-assigned on save when omitted."
+        ),
+    )
     status = models.CharField(
         max_length=1,
         choices=Status.choices,
         default=Status.SENT,
         verbose_name=_("status"),
     )
+
+    @classmethod
+    def next_order(cls, conversation_id):
+        """Return the next deterministic sequence value within a conversation."""
+        return (
+            cls.objects.filter(conversation_id=conversation_id).aggregate(
+                m=models.Max("order")
+            )["m"]
+            or 0
+        ) + 1
+
+    def save(self, *args, **kwargs):
+        # Auto-assign the next per-conversation order when the caller omits it,
+        # so "server-controlled" ordering is a real mechanism rather than a
+        # reliance on callers computing racy max(order)+1 themselves.
+        if self.order is None:
+            self.order = self.next_order(self.conversation_id)
+        super().save(*args, **kwargs)
 
     def __str__(self):
         # Never expose message content in the model representation.
@@ -115,7 +142,7 @@ class Message(TimeStampedModel):
 
     class Meta:
         app_label = "crank"
-        ordering = ["order", "id"]
+        ordering = ["conversation_id", "order"]
         verbose_name = _("message")
         verbose_name_plural = _("messages")
         constraints = [

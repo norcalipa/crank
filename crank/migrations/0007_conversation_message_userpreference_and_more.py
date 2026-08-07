@@ -31,7 +31,7 @@ class Migration(migrations.Migration):
             options={
                 'verbose_name': 'conversation',
                 'verbose_name_plural': 'conversations',
-                'ordering': ['-modified'],
+                'ordering': ['-modified', '-id'],
             },
         ),
         migrations.CreateModel(
@@ -42,14 +42,14 @@ class Migration(migrations.Migration):
                 ('modified', django_extensions.db.fields.ModificationDateTimeField(auto_now=True, verbose_name='modified')),
                 ('role', models.CharField(choices=[('U', 'User'), ('A', 'Assistant')], max_length=1, verbose_name='role')),
                 ('content', models.TextField(verbose_name='content')),
-                ('order', models.PositiveIntegerField(verbose_name='order')),
+                ('order', models.PositiveIntegerField(blank=True, help_text='Stable per-conversation sequence; auto-assigned on save when omitted.', null=True, verbose_name='order')),
                 ('status', models.CharField(choices=[('S', 'Sent'), ('E', 'Error')], default='S', max_length=1, verbose_name='status')),
                 ('conversation', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='messages', to='crank.conversation', verbose_name='conversation')),
             ],
             options={
                 'verbose_name': 'message',
                 'verbose_name_plural': 'messages',
-                'ordering': ['order', 'id'],
+                'ordering': ['conversation_id', 'order'],
             },
         ),
         migrations.CreateModel(

@@ -80,6 +80,30 @@ class ConversationModelTests(TestCase):
         self.assertEqual([m.order for m in msgs], [0, 1, 2])
         self.assertEqual(msgs[0].id, m3.id)
 
+    def test_order_auto_assigned_deterministically_per_conversation(self):
+        """order is auto-assigned on save and is deterministic without a PK tiebreak."""
+        conv = Conversation.objects.create(user=self.user)
+        other = Conversation.objects.create(user=self.user)
+        m1 = Message.objects.create(conversation=conv, role=Message.Role.USER, content="a")
+        m2 = Message.objects.create(conversation=conv, role=Message.Role.USER, content="b")
+        self.assertEqual((m1.order, m2.order), (1, 2))
+        # next_order() agrees with what save() assigned.
+        self.assertEqual(Message.next_order(conv.id), 3)
+        # A separate conversation restarts its own sequence at 1.
+        o1 = Message.objects.create(conversation=other, role=Message.Role.USER, content="x")
+        self.assertEqual(o1.order, 1)
+        # Deterministic default ordering sorts by (conversation, order) only.
+        self.assertEqual(list(conv.messages.values_list("order", flat=True)), [1, 2])
+        self.assertEqual(list(conv.messages.values_list("id", flat=True)), [m1.id, m2.id])
+
+    def test_explicit_order_overrides_auto_assignment(self):
+        conv = Conversation.objects.create(user=self.user)
+        Message.objects.create(conversation=conv, role=Message.Role.USER, content="a", order=10)
+        auto = Message.objects.create(conversation=conv, role=Message.Role.USER, content="b")
+        # Explicit ordering is respected; auto-assignment continues past it.
+        self.assertEqual(auto.order, 11)
+        self.assertEqual(Message.next_order(conv.id), 12)
+
     def test_duplicate_order_in_same_conversation_rejected(self):
         conv = Conversation.objects.create(user=self.user)
         Message.objects.create(conversation=conv, role=Message.Role.USER, content="a", order=1)
@@ -179,6 +203,18 @@ class AdminAuthorizationTests(TestCase):
         conv_admin = ConversationAdmin(Conversation, self.site)
         self.assertIn("created", conv_admin.readonly_fields)
         self.assertIn("modified", conv_admin.readonly_fields)
+
+    def test_non_staff_get_queryset_returns_empty_not_raises(self):
+        """Non-staff get_queryset returns an empty queryset instead of PermissionDenied."""
+        admins = [
+            UserPreferenceAdmin(UserPreference, self.site),
+            ConversationAdmin(Conversation, self.site),
+            MessageAdmin(Message, self.site),
+        ]
+        for admin in admins:
+            self.assertEqual(admin.get_queryset(MockStaffRequest(self.non_staff)).count(), 0)
+            # Staff path still returns a normal queryset (empty DB is fine).
+            self.assertEqual(admin.get_queryset(MockStaffRequest(self.staff)).count(), 0)
 
     def test_message_content_not_in_list_display(self):
         msg_admin = MessageAdmin(Message, self.site)

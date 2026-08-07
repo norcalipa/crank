@@ -1,7 +1,6 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 from django.contrib import admin
-from django.core.exceptions import PermissionDenied
 from crank.models.conversation import Conversation, Message
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference
@@ -12,8 +11,10 @@ class StaffOnlyAdminMixin:
     """Restrict admin access to staff users.
 
     Django's admin site already requires ``is_staff`` to reach these views;
-    this mixin makes the authorization explicit and forwards non-staff users
-    to a 403 so that sensitive profile/preference data stays staff-only.
+    this mixin makes the authorization explicit and, for non-staff users,
+    returns an empty queryset so that sensitive profile/preference data stays
+    staff-only without raising in code paths that call ``get_queryset``
+    outside of a permission check (e.g. admin actions, bulk operations).
     """
 
     def has_module_permission(self, request):
@@ -33,7 +34,11 @@ class StaffOnlyAdminMixin:
 
     def get_queryset(self, request):
         if not request.user.is_staff:
-            raise PermissionDenied
+            # Django admin convention: return an empty queryset rather than
+            # raising PermissionDenied, so any code path (admin actions,
+            # custom views) that reaches get_queryset without a permission
+            # gate gets an empty result set instead of a 500.
+            return super().get_queryset(request).none()
         return super().get_queryset(request)
 
 
