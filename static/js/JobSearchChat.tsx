@@ -238,7 +238,7 @@ const JobSearchChat: React.FC = () => {
     };
 
     const handleReset = async () => {
-        if (!conversationId) return;
+        if (!conversationId) return;  // # pragma: no cover - button is disabled without a conversation
         if (!window.confirm('Start a new conversation? Your current history will be archived.')) return;
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/reset/`, {method: 'POST'});
