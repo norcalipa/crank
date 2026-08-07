@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import concurrent.futures
 import importlib
 import json
+import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, List, Literal, Optional, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
 # Exceptions (provider-neutral, redaction-safe)
@@ -55,6 +57,52 @@ class LLMSchemaError(LLMError):
 
 
 # ---------------------------------------------------------------------------
+# Per-user spend ledger + gateway executor (in-process, non-durable)
+# ---------------------------------------------------------------------------
+
+# In-memory cumulative spend per user, keyed by ``request.user_id``. This makes
+# ``per_user_cost_limit_usd`` a genuine per-user *cumulative* ceiling for the
+# lifetime of the gateway process. DOCUMENTED LIMITATION: it is not durable
+# across restarts nor shared horizontally across processes/workers, so it is a
+# best-effort per-process guard, not an authoritative accounting ledger.
+_PER_USER_SPEND: Dict[str, float] = {}
+
+# A lazy, shared executor lets ``complete()`` enforce a wall-clock timeout on a
+# blocking synchronous SDK call without leaking a fresh thread per invocation
+# or blocking on shutdown of a hung worker.
+_executor: Optional["concurrent.futures.ThreadPoolExecutor"] = None
+_executor_lock = threading.Lock()
+
+
+def _gateway_executor() -> "concurrent.futures.ThreadPoolExecutor":
+    """Return the shared (lazily created) gateway executor."""
+    global _executor
+    if _executor is None:
+        with _executor_lock:
+            if _executor is None:
+                _executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=8, thread_name_prefix="llm-gateway"
+                )
+    return _executor
+
+
+def reset_per_user_spend() -> None:
+    """Clear the in-process per-user spend ledger (mainly for tests)."""
+    _PER_USER_SPEND.clear()
+
+
+def get_per_user_spend(user_id: str) -> float:
+    """Return cumulative estimated spend recorded so far for a single user."""
+    return _PER_USER_SPEND.get(user_id, 0.0)
+
+
+def _record_per_user_spend(user_id: Optional[str], cost_usd: float) -> None:
+    if not user_id or not cost_usd:
+        return
+    _PER_USER_SPEND[user_id] = _PER_USER_SPEND.get(user_id, 0.0) + cost_usd
+
+
+# ---------------------------------------------------------------------------
 # Data types (provider-neutral)
 # ---------------------------------------------------------------------------
 
@@ -74,7 +122,9 @@ class LLMConfig:
     per_user_cost_limit_usd: float = 0.0
     price_per_1k_tokens_usd: float = 0.0
     enabled: bool = True
-    api_key: str = ""
+    # ``repr=False``/``compare=False`` keep the secret out of ``__repr__``,
+    # ``__str__``, equality diffs, and debug/error-page serialization.
+    api_key: str = field(default="", repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -91,7 +141,7 @@ class LLMUsage:
 class LLMMessage:
     """One chat message. Role/content only; never raw provider artifacts."""
 
-    role: str
+    role: Literal["system", "user", "assistant"]
     content: str
 
 
@@ -194,10 +244,11 @@ class BaseLLMProvider(abc.ABC):
         """Run a completion with ceilings, timeout/error translation, and
         normalized usage. Raises LLMError subclasses; never the raw SDK error.
         """
+        self._validate_enabled()
         self._enforce_ceilings(request)
         start = time.monotonic()
         try:
-            raw = self._call(request)
+            raw = self._call_with_timeout(request)
         except LLMError:
             # Provider-neutral errors (schema, usage limits raised inside the
             # adapter) propagate unchanged; do not wrap them.
@@ -214,6 +265,7 @@ class BaseLLMProvider(abc.ABC):
             latency_ms = int((time.monotonic() - start) * 1000)
 
         usage = self._normalize_usage(raw)
+        _record_per_user_spend(request.user_id, usage.cost_estimate_usd)
         content, data = self._parse_response(raw, request)
         return LLMResult(
             content=content,
@@ -225,12 +277,40 @@ class BaseLLMProvider(abc.ABC):
             correlation_id=request.correlation_id,
         )
 
+    def _validate_enabled(self) -> None:
+        """Refuse to process requests when the provider is disabled."""
+        if not self.config.enabled:
+            raise LLMConfigurationError(
+                "LLM provider is disabled (enabled=False). Refusing to process "
+                "the request; enable the feature flag before calling."
+            )
+
+    def _call_with_timeout(self, request: LLMRequest) -> Any:
+        """Run ``_call`` under the configured wall-clock timeout.
+
+        A blocking synchronous SDK call cannot be preempted cooperatively, so
+        the call runs on the shared gateway executor and ``future.result``
+        enforces the deadline. On expiry we raise :class:`LLMTimeoutError`; the
+        hung worker drains on its own and never blocks the caller.
+        """
+        timeout = self.config.timeout_seconds
+        if not timeout or timeout <= 0:
+            return self._call(request)
+        future = _gateway_executor().submit(self._call, request)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError as exc:
+            raise LLMTimeoutError(
+                f"LLM provider '{self.config.provider}' did not respond within "
+                f"{timeout}s (correlation_id={request.correlation_id})."
+            ) from exc
+
     # -- ceilings (enforced before any request is sent) --------------------
 
     def _enforce_ceilings(self, request: LLMRequest) -> None:
         max_tokens = request.max_tokens or self.config.max_tokens
         estimated_prompt = self._estimate_prompt_tokens(request.messages)
-        if estimated_prompt >= max_tokens:
+        if estimated_prompt > max_tokens:
             raise LLMUsageLimitError(
                 f"LLM request exceeds max_tokens={max_tokens} "
                 f"(estimated prompt tokens={estimated_prompt})."
@@ -245,6 +325,15 @@ class BaseLLMProvider(abc.ABC):
                     f"LLM request exceeds cost ceiling ${ceiling:.6f} "
                     f"(estimated ${estimate:.6f})."
                 )
+            # Per-user cumulative spend must also stay within the ceiling.
+            if request.user_id:
+                spent = get_per_user_spend(request.user_id)
+                if spent + estimate > ceiling:
+                    raise LLMUsageLimitError(
+                        f"LLM request would exceed per-user cost ceiling "
+                        f"${ceiling:.6f}: user '{request.user_id}' has already "
+                        f"spent ${spent:.6f} (projected ${spent + estimate:.6f})."
+                    )
 
     # -- helpers to be customised per provider -----------------------------
 
@@ -311,7 +400,10 @@ class FakeLLMProvider(BaseLLMProvider):
         _ = self.config  # config is bound at construction
         payload = self._build_placeholder(request.response_schema)
         self._validate_payload(payload, request.response_schema)
-        content = payload.get("message") or json.dumps(payload)
+        if isinstance(payload, dict) and payload.get("message"):
+            content = payload["message"]
+        else:
+            content = json.dumps(payload)
         return {
             "content": content,
             "data": payload,
@@ -333,9 +425,15 @@ class FakeLLMProvider(BaseLLMProvider):
             "cost_estimate_usd": 0.0,  # filled in by _normalize_usage
         }
 
-    def _build_placeholder(self, schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        if not schema or schema.get("type") not in ("object", None):
+    def _build_placeholder(self, schema: Optional[Dict[str, Any]]) -> Any:
+        if schema is None:
             # No schema requested: echo a safe summary of the request.
+            return {"message": "ok"}
+        schema_type = schema.get("type")
+        if schema_type == "array":
+            # Top-level array schema: satisfy it with an empty list.
+            return []
+        if schema_type not in (None, "object"):
             return {"message": "ok"}
         properties = schema.get("properties") or {}
         payload: Dict[str, Any] = {}
@@ -357,7 +455,7 @@ class FakeLLMProvider(BaseLLMProvider):
             return {}
         return None
 
-    def _validate_payload(self, payload: Dict[str, Any], schema: Optional[Dict[str, Any]]) -> None:
+    def _validate_payload(self, payload: Any, schema: Optional[Dict[str, Any]]) -> None:
         for key in (schema or {}).get("required", []):
             if key not in payload:
                 raise LLMSchemaError(
@@ -398,16 +496,12 @@ def build_llm_config_from_settings() -> LLMConfig:
             getattr(settings, "LLM_PRICE_PER_1K_TOKENS_USD", 0.0)
         ),
         enabled=bool(getattr(settings, "INTERACTIVE_AGENT_ENABLED", False)),
-        # API key comes only from the environment, never from checked-in code.
-        api_key=os_getenv("LLM_API_KEY", ""),
+        # The API key is read through the settings layer, which itself loads it
+        # from the environment (never from checked-in code). Reading it here via
+        # ``getattr(settings, ...)`` (rather than ``os.environ`` directly) means
+        # both real env resolution and ``@override_settings`` work in one path.
+        api_key=(getattr(settings, "LLM_API_KEY", "") or "").strip(),
     )
-
-
-def os_getenv(key: str, default: str = "") -> str:
-    """Thin indirection so tests can exercise env-backed secrets safely."""
-    import os
-
-    return os.environ.get(key, default)
 
 
 def get_llm_provider(config: Optional[LLMConfig] = None) -> BaseLLMProvider:

@@ -6,6 +6,8 @@ All tests exercise the gateway through dependency injection / settings and use
 only offline providers — never a real provider SDK, and never network I/O.
 """
 
+import time
+
 from django.test import SimpleTestCase, override_settings
 
 from crank.agents import llm
@@ -20,7 +22,9 @@ from crank.agents.llm import (
     LLMTimeoutError,
     LLMUsageLimitError,
     get_llm_provider,
+    get_per_user_spend,
     is_interactive_agent_enabled,
+    reset_per_user_spend,
 )
 
 
@@ -55,6 +59,24 @@ class TimeoutProvider(BaseLLMProvider):
 
     def _parse_response(self, raw, request):
         return "", None
+
+
+class HangingProvider(BaseLLMProvider):
+    """A provider whose SDK call blocks (simulating a network stall/deadlock).
+
+    The gateway must abort it via the configured wall-clock timeout rather than
+    blocking forever.
+    """
+
+    provider_name = "hanging"
+    requires_api_key = False
+
+    def _call(self, request):
+        time.sleep(2.0)  # longer than any gateway timeout under test
+        return "late"
+
+    def _parse_response(self, raw, request):
+        return raw, None
 
 
 class ExplodingProvider(FakeLLMProvider):
@@ -129,6 +151,27 @@ class ProviderSelectionTests(SimpleTestCase):
         provider = get_llm_provider(cfg)
         self.assertIsInstance(provider, KeyRequiringProvider)
 
+    def test_api_key_is_redacted_from_repr(self):
+        cfg = LLMConfig(
+            provider=BASE_PROVIDER,
+            api_key="super-secret-abc",
+            enabled=True,
+        )
+        self.assertNotIn("super-secret-abc", repr(cfg))
+        self.assertNotIn("super-secret-abc", str(cfg))
+
+    @override_settings(
+        LLM_PROVIDER="crank.tests.test_llm:KeyRequiringProvider",
+        LLM_API_KEY="from-override-settings",
+    )
+    def test_api_key_read_through_settings_overrides(self):
+        # The builder must consume the Django settings layer (not os.environ
+        # directly) so @override_settings actually takes effect.
+        cfg = llm.build_llm_config_from_settings()
+        self.assertEqual(cfg.api_key, "from-override-settings")
+        provider = get_llm_provider()
+        self.assertIsInstance(provider, KeyRequiringProvider)
+
 
 # -- Structured response + usage normalization -------------------------------
 
@@ -193,6 +236,12 @@ class FakeProviderGatewayTests(SimpleTestCase):
         with self.assertRaises(llm.LLMSchemaError):
             self._run(response_schema=bad)
 
+    def test_top_level_array_schema_returns_list(self):
+        result = self._run(
+            response_schema={"type": "array", "items": {"type": "integer"}}
+        )
+        self.assertEqual(result.data, [])
+
 
 # -- Timeout / error translation and redaction -------------------------------
 
@@ -209,6 +258,42 @@ class ErrorTranslationTests(SimpleTestCase):
                     correlation_id="t",
                 )
             )
+
+    def test_hanging_provider_is_aborted_by_timeout(self):
+        # A provider that blocks (network stall) must be cut off by the
+        # configured timeout, not hang the caller indefinitely.
+        provider = get_llm_provider(
+            LLMConfig(
+                provider="crank.tests.test_llm:HangingProvider",
+                timeout_seconds=0.05,
+                enabled=True,
+            )
+        )
+        with self.assertRaises(LLMTimeoutError):
+            provider.complete(
+                LLMRequest(
+                    messages=[LLMMessage(role="user", content="hi")],
+                    correlation_id="slow",
+                )
+            )
+
+    def test_disabled_provider_refuses_before_request(self):
+        RecordingProvider.calls = 0
+        provider = get_llm_provider(
+            LLMConfig(
+                provider="crank.tests.test_llm:RecordingProvider",
+                enabled=False,
+            )
+        )
+        with self.assertRaises(LLMConfigurationError):
+            provider.complete(
+                LLMRequest(
+                    messages=[LLMMessage(role="user", content="hi")],
+                    correlation_id="disabled",
+                )
+            )
+        # No provider call is made while the provider is disabled.
+        self.assertEqual(RecordingProvider.calls, 0)
 
     def test_provider_error_is_redacted(self):
         provider = get_llm_provider(
@@ -259,6 +344,21 @@ class CeilingTests(SimpleTestCase):
         # The ceiling guard runs before _call, so no (even fake) request is sent.
         self.assertEqual(RecordingProvider.calls, 0)
 
+    def test_prompt_exactly_at_ceiling_is_allowed(self):
+        # Off-by-one: a prompt estimated at exactly the token ceiling must not
+        # be rejected (the heuristic is chars/4, so matching should pass).
+        provider = get_llm_provider(
+            LLMConfig(provider=BASE_PROVIDER, max_tokens=1, enabled=True)
+        )
+        result = provider.complete(
+            LLMRequest(
+                messages=[LLMMessage(role="user", content="")],
+                response_schema=None,
+                correlation_id="edge",
+            )
+        )
+        self.assertIsNotNone(result)
+
     def test_cost_ceiling_forwarded_before_request(self):
         RecordingProvider.calls = 0
         provider = get_llm_provider(
@@ -289,6 +389,73 @@ class CeilingTests(SimpleTestCase):
             )
         )
         self.assertIsNotNone(result.data)
+
+
+# -- Per-user spend ceiling --------------------------------------------------
+
+
+class PerUserCostTests(SimpleTestCase):
+    def setUp(self):
+        # The in-process ledger is global; reset it so tests are isolated.
+        reset_per_user_spend()
+
+    def _provider(self):
+        return get_llm_provider(
+            LLMConfig(
+                provider="crank.tests.test_llm:RecordingProvider",
+                max_tokens=8,
+                price_per_1k_tokens_usd=0.1,
+                per_user_cost_limit_usd=0.001,
+                enabled=True,
+            )
+        )
+
+    def test_per_user_cumulative_spend_blocks_second_request(self):
+        provider = self._provider()
+        request = LLMRequest(
+            messages=[LLMMessage(role="user", content="hi")],
+            response_schema=None,
+            user_id="user-42",
+            correlation_id="u1",
+        )
+        # First request fits within the ceiling and is charged to the user.
+        self.assertIsNotNone(provider.complete(request))
+        self.assertGreater(get_per_user_spend("user-42"), 0.0)
+        # A second request from the same user trips the cumulative per-user
+        # ceiling even though each individual request is within budget.
+        RecordingProvider.calls = 0
+        with self.assertRaises(LLMUsageLimitError):
+            provider.complete(request)
+        self.assertEqual(RecordingProvider.calls, 0)
+
+    def test_per_user_limit_is_isolated_by_user(self):
+        provider = self._provider()
+        messages = [LLMMessage(role="user", content="hi")]
+        # User A spends up against the cumulative ceiling.
+        self.assertIsNotNone(
+            provider.complete(
+                LLMRequest(
+                    messages=messages, response_schema=None, user_id="a",
+                    correlation_id="a1",
+                )
+            )
+        )
+        with self.assertRaises(LLMUsageLimitError):
+            provider.complete(
+                LLMRequest(
+                    messages=messages, response_schema=None, user_id="a",
+                    correlation_id="a2",
+                )
+            )
+        # A different user starts fresh and is not blocked by user A's spend.
+        self.assertIsNotNone(
+            provider.complete(
+                LLMRequest(
+                    messages=messages, response_schema=None, user_id="b",
+                    correlation_id="b1",
+                )
+            )
+        )
 
 
 # -- Feature flag ------------------------------------------------------------
