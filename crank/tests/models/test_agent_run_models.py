@@ -57,3 +57,10 @@ class AgentRunModelTests(TestCase):
             run_type=AgentRun.RunType.NOOP, status=AgentRun.Status.RUNNING
         )
         self.assertEqual(second.status, AgentRun.Status.RUNNING)
+
+    def test_finalize_rejects_invalid_transition(self):
+        run = AgentRun.objects.create(
+            run_type=AgentRun.RunType.NOOP, status=AgentRun.Status.SUCCEEDED
+        )
+        with self.assertRaises(ValueError):
+            run.finalize(AgentRun.Status.RUNNING)
