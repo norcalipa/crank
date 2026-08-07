@@ -396,3 +396,48 @@ class TestAuditNoContents:
         prefs.apply_patch_to_user(user, {"set": {"notes": "hidden-value"}})
         row = UserPreference.objects.get(user=user)
         assert "hidden-value" not in str(row)
+
+class TestReviewFixes:
+    def test_notes_over_100_chars_allowed(self, user):
+        """M1: notes are capped at MAX_NOTES_LENGTH (2000), not the 100-char scalar cap."""
+        long_notes = "n" * 500
+        result = prefs.apply_patch_to_user(user, {"set": {"notes": long_notes}})
+        assert result["preferences"]["notes"] == long_notes
+
+    def test_notes_over_2000_chars_rejected(self, user):
+        with pytest.raises(InvalidValueError):
+            prefs.apply_patch_to_user(user, {"set": {"notes": "n" * 2001}})
+
+    def test_currency_escaped_in_markdown(self, user):
+        patch = {"set": {"compensation.currency": "US`D",
+                         "compensation.minimum_salary": 100000}}
+        result = prefs.apply_patch_to_user(user, patch)
+        assert "US`D" not in result["markdown"]
+        assert "US\\`D" in result["markdown"]
+
+    def test_double_read_creates_single_row(self, user):
+        """M2/M3: re-reading an existing row never duplicates it or double-audits create."""
+        prefs.read(user)
+        prefs.read(user)
+        assert UserPreference.objects.filter(user=user).count() == 1
+        assert (
+            UserPreferenceAudit.objects.filter(
+                user=user, action=UserPreferenceAudit.Action.CREATED
+            ).count()
+            == 1
+        )
+
+    def test_delete_stale_expected_modified_rejected(self, user):
+        read = prefs.read(user)
+        modified = read["modified"]
+        prefs.apply_patch_to_user(user, {"set": {"notes": "x"}})
+        with pytest.raises(StalePreferenceError):
+            prefs.delete_user_preference(user, expected_modified=modified)
+        # The delete was rejected; the row survives.
+        assert UserPreference.objects.filter(user=user).exists()
+
+    def test_delete_no_stale_arg_is_noop(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "x"}})
+        result = prefs.delete_user_preference(user)
+        assert result == {"deleted": True, "existed": True}
+        assert not UserPreference.objects.filter(user=user).exists()
