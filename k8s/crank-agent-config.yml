@@ -1,0 +1,15 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crank-agent-config
+  namespace: crank
+data:
+  # Scheduled agent runs are disabled by default. Flip a flag to "true" only
+  # after the run contract, secrets, and policies are ready
+  # (roadmap: docs/readme.md section 8.1). The command itself also enforces
+  # these settings, so the CronJob does no work until a flag is enabled.
+  AGENT_RUN_ENABLED: "false"
+  AGENT_NOOP_ENABLED: "false"

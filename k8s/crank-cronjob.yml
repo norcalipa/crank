@@ -1,0 +1,92 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+# CronJob foundation for scheduled agent runs (roadmap: docs/readme.md
+# section 8.1). It runs the reference `agent_noop` command on a schedule.
+#
+# The command is disabled by default: `crank-agent-config` sets
+# AGENT_RUN_ENABLED/AGENT_NOOP_ENABLED to "false" (and the command reads those
+# settings as well), so the CronJob launches a pod that exits 0 without doing
+# work until operators flip a flag. It reuses the app's image, secret, and
+# configmap patterns and mirrors the Deployment's least-privilege security
+# context. `concurrencyPolicy: Forbid` prevents overlapping job instances, but
+# the database locking on AgentRun remains the final overlap guard.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: crank-agent-noop
+  namespace: crank
+  labels:
+    app.kubernetes.io/name: crank
+    app.kubernetes.io/instance: crank
+    app.kubernetes.io/component: agent-noop
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: crank
+            app.kubernetes.io/instance: crank
+            app.kubernetes.io/component: agent-noop
+        spec:
+          restartPolicy: OnFailure
+          # Least privilege: non-root, read-only root filesystem, no privilege
+          # escalation, matching the app Deployment.
+          securityContext:
+            runAsUser: 10000
+            runAsGroup: 10000
+            fsGroup: 10000
+          # `fats` is the k3s host (10.0.0.10) that runs MySQL on :3306; it is
+          # not a Kubernetes Service, so inject it into /etc/hosts (same as the
+          # Deployment). Public resolvers are appended because in-cluster
+          # CoreDNS cannot resolve external names from pods.
+          hostAliases:
+            - ip: "10.0.0.10"
+              hostnames:
+                - "fats"
+          dnsPolicy: ClusterFirst
+          dnsConfig:
+            nameservers:
+              - 8.8.8.8
+              - 1.1.1.1
+            options:
+              - name: timeout
+                value: "2"
+              - name: attempts
+                value: "3"
+          containers:
+            - name: crank-agent
+              image: ghcr.io/norcalipa/crank/crank:${GITHUB_SHA}
+              imagePullPolicy: Always
+              command: ["python", "manage.py", "agent_noop"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                privileged: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              resources:
+                requests:
+                  memory: "128Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "256Mi"
+                  cpu: "250m"
+              envFrom:
+                - configMapRef:
+                    name: crank-config
+                - configMapRef:
+                    name: crank-agent-config
+                - secretRef:
+                    name: db-connect-credentials
+          imagePullSecrets:
+            - name: ghcr-credentials
