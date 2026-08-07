@@ -4,6 +4,7 @@ from io import StringIO
 
 from django.conf import settings
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
 
 from crank.models.agent_run import AgentRun
@@ -33,7 +34,7 @@ class AgentNoopCommandTests(TestCase):
         self.assertEqual(AgentRun.objects.count(), 0)
         self.assertIn("disabled", stdout.getvalue())
 
-    @override_settings(AGENT_NOOP_ENABLED=True)
+    @override_settings(AGENT_RUN_ENABLED=True, AGENT_NOOP_ENABLED=True)
     def test_enabled_records_succeeded_run(self):
         code, stdout, _ = self._call()
         self.assertEqual(code, 0)
@@ -43,7 +44,7 @@ class AgentNoopCommandTests(TestCase):
         self.assertEqual(run.counts, {"items_seen": 0, "items_created": 0, "items_updated": 0, "items_failed": 0})
         self.assertIn("succeeded", stdout.getvalue())
 
-    @override_settings(AGENT_NOOP_ENABLED=True)
+    @override_settings(AGENT_RUN_ENABLED=True, AGENT_NOOP_ENABLED=True)
     def test_overlap_records_one_run_and_one_skipped(self):
         # Simulate an invocation that already claimed the slot.
         agent_runs.claim_run(AgentRun.RunType.NOOP)
@@ -54,7 +55,7 @@ class AgentNoopCommandTests(TestCase):
         self.assertEqual(statuses, {AgentRun.Status.RUNNING, AgentRun.Status.SKIPPED})
         self.assertIn("skipped", stdout.getvalue())
 
-    @override_settings(AGENT_NOOP_ENABLED=True)
+    @override_settings(AGENT_RUN_ENABLED=True, AGENT_NOOP_ENABLED=True)
     def test_exit_code(self):
         class FailingCommand(AgentRunCommand):
             run_type = "noop"
@@ -64,6 +65,7 @@ class AgentNoopCommandTests(TestCase):
                 raise RuntimeError("boom")
 
         cmd = FailingCommand(stdout=StringIO(), stderr=StringIO())
-        self.assertEqual(cmd.handle(), 1)
+        with self.assertRaises(CommandError):
+            cmd.handle()
         run = AgentRun.objects.get(status=AgentRun.Status.FAILED)
         self.assertIn("boom", run.error_summary)
