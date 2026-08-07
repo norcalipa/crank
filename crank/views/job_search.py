@@ -90,18 +90,26 @@ def _body(request, request_id):
 
 
 def _check_rate_limit(request):
-    """Return True when the user/IP has exceeded the per-hour message budget."""
+    """Return True when the user/IP has exceeded the per-hour message budget.
+
+    Uses ``cache.add`` + ``cache.incr`` for atomic counting to avoid the
+    TOCTOU race inherent in ``cache.get`` → check → ``cache.set``.
+    """
     if not request.user.is_authenticated:
         return False
     bucket_key = "job_search_rl:{}:{}:{}".format(
         request.user.pk, request.META.get("REMOTE_ADDR", "?"), _hour_key()
     )
-    used = cache.get(bucket_key, 0)
     limit = getattr(settings, "JOB_SEARCH_RATE_LIMIT_PER_HOUR", 120)
-    if used >= limit:
-        return True
-    cache.set(bucket_key, used + 1, timeout=3600)
-    return False
+    # Initialise the key atomically if it doesn't exist yet.
+    cache.add(bucket_key, 0, timeout=3600)
+    try:
+        used = cache.incr(bucket_key)
+    except ValueError:
+        # The key expired between add and incr; safe to treat as fresh.
+        cache.add(bucket_key, 0, timeout=3600)
+        used = cache.incr(bucket_key)
+    return used > limit
 
 
 def _hour_key():
@@ -209,14 +217,9 @@ def agent_conversation_detail(request, conversation_id):
     message_text = serializer.validated_data["content"]
     idempotency_key = serializer.validated_data["idempotency_key"]
 
-    if _check_rate_limit(request):
-        return _error(
-            request, 429, "rate_limited",
-            "Too many messages. Try again shortly.", request_id,
-        )
-
     # Idempotent retry: if we already answered this key, replay that answer so
-    # a network retry cannot persist a duplicate assistant turn.
+    # a network retry cannot persist a duplicate assistant turn. Rate limit is
+    # checked *after* this replay so retries never consume the budget.
     existing_assistant = conversation.messages.filter(
         idempotency_key=idempotency_key, role=JobSearchMessage.Role.ASSISTANT
     ).first()
@@ -229,18 +232,30 @@ def agent_conversation_detail(request, conversation_id):
             headers={"X-Request-ID": request_id},
         )
 
-    # Persist the user turn once (even across failed provider calls).
+    # Peek at whether the user message already exists for this key before
+    # checking the rate limit, so a retry after a transient 500 never
+    # exhausts the user's hourly budget.
     existing_user = conversation.messages.filter(
         idempotency_key=idempotency_key, role=JobSearchMessage.Role.USER
     ).first()
+
+    if not existing_user and _check_rate_limit(request):
+        return _error(
+            request, 429, "rate_limited",
+            "Too many messages. Try again shortly.", request_id,
+        )
+
+    # Persist the user turn once (even across failed provider calls).
+    # ``get_or_create`` is used with a DB-level ``UniqueConstraint`` so
+    # concurrent requests with the same key cannot create duplicates.
     if existing_user:
-        user_message = existing_user  # retry after a transient provider failure
+        user_message = existing_user
     else:
-        user_message = JobSearchMessage.objects.create(
+        user_message, _user_created = JobSearchMessage.objects.get_or_create(
             conversation=conversation,
-            role=JobSearchMessage.Role.USER,
-            content=message_text,
             idempotency_key=idempotency_key,
+            role=JobSearchMessage.Role.USER,
+            defaults={"content": message_text},
         )
 
     service = JobSearchService()
@@ -255,12 +270,14 @@ def agent_conversation_detail(request, conversation_id):
             "We couldn't respond right now. Please retry.", request_id,
         )
 
-    assistant_message = JobSearchMessage.objects.create(
+    assistant_message, _created = JobSearchMessage.objects.get_or_create(
         conversation=conversation,
-        role=JobSearchMessage.Role.ASSISTANT,
-        content=reply_text,
-        preferences_changed=changed,
         idempotency_key=idempotency_key,
+        role=JobSearchMessage.Role.ASSISTANT,
+        defaults={
+            "content": reply_text,
+            "preferences_changed": changed,
+        },
     )
     return JsonResponse(
         {
