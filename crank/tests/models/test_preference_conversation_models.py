@@ -207,14 +207,10 @@ class MigrationStateTests(TestCase):
 
         executor = MigrationExecutor(connection)
         applied = executor.loader.applied_migrations
-        leaves = executor.loader.graph.leaf_nodes(("crank",))
+        leaves = executor.loader.graph.leaf_nodes("crank")
         self.assertTrue(leaves, "No crank migrations found")
         for node in leaves:
-            self.assertIn(
-                ("crank", node),
-                applied,
-                f"Leaf migration {node} should be applied",
-            )
+            self.assertIn(node, applied, f"Leaf migration {node} should be applied")
 
 
 class AdminAuthorizationTests(TestCase):
