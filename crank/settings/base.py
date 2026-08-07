@@ -164,6 +164,14 @@ SESSION_COOKIE_SECURE = False
 SESSION_COOKIE_AGE = 1800  # 30 minutes in seconds
 
 CACHE_MIDDLEWARE_SECONDS = int(os.environ.get("CACHE_TTL", "60"))  # Timeout for cached items in seconds
+
+# Job-search chat transport limits (Phase 1). Tokens/settings only; no secrets.
+JOB_SEARCH_MESSAGE_MAX_LEN = int(os.environ.get("JOB_SEARCH_MESSAGE_MAX_LEN", "4000"))
+JOB_SEARCH_RESPONSE_MAX_LEN = int(os.environ.get("JOB_SEARCH_RESPONSE_MAX_LEN", "8000"))
+JOB_SEARCH_REQUEST_MAX_BYTES = int(os.environ.get("JOB_SEARCH_REQUEST_MAX_BYTES", "65536"))
+JOB_SEARCH_MESSAGES_RETENTION = int(os.environ.get("JOB_SEARCH_MESSAGES_RETENTION", "50"))
+JOB_SEARCH_RATE_LIMIT_PER_HOUR = int(os.environ.get("JOB_SEARCH_RATE_LIMIT_PER_HOUR", "120"))
+JOB_SEARCH_PROVIDER = os.environ.get("JOB_SEARCH_PROVIDER", "demo")
 REDIS_MASTER_URL = os.environ.get("REDIS_MASTER_URL", "redis://redis-master:6379/0")
 
 # Optional: To use Redis for session storage
