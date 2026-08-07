@@ -3,7 +3,7 @@
 from django.contrib import admin
 from crank.models.conversation import Conversation, Message
 from crank.models.organization import Organization
-from crank.models.preference import UserPreference
+from crank.models.preference import UserPreference, UserPreferenceAudit
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 
 
@@ -121,6 +121,15 @@ class UserPreferenceAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     ]
 
 
+class UserPreferenceAuditAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+    model = UserPreferenceAudit
+    list_display = ['user', 'action', 'schema_version', 'change_count', 'created']
+    list_select_related = ['user']
+    list_filter = ['action', 'schema_version']
+    search_fields = ['user__username']
+    readonly_fields = ['user', 'action', 'schema_version', 'change_count', 'created']
+
+
 class MessageInline(admin.TabularInline):
     model = Message
     fk_name = "conversation"
@@ -156,5 +165,6 @@ admin.site.register(ScoreAlgorithm, ScoreAlgorithmAdmin)
 admin.site.register(ScoreAlgorithmWeight)
 admin.site.register(Score, ScoreAdmin)
 admin.site.register(UserPreference, UserPreferenceAdmin)
+admin.site.register(UserPreferenceAudit, UserPreferenceAuditAdmin)
 admin.site.register(Conversation, ConversationAdmin)
 admin.site.register(Message, MessageAdmin)
