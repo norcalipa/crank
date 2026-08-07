@@ -5,20 +5,40 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django_extensions.db.models import TimeStampedModel
 
+# The canonical schema version used by the preference lifecycle services in
+# ``crank.services.preferences``. Bump this (and add a forward migration that
+# maps old documents to the new shape) whenever the JSON schema changes.
+SCHEMA_VERSION = 1
+
 
 def default_preferences():
-    """Return the canonical, schema-versioned default preference document.
+    """Return a fresh, schema-valid empty preferences document.
 
-    The JSON object is the source of truth for deterministic matching. It
-    intentionally distinguishes the `required` criteria, `optional` criteria,
-    `exclusions`, and free-form `notes` so that typed filtering never has to
-    parse an unchecked markdown blob. `preferences_markdown` is only a
-    server-generated, human-readable projection of this document.
+    This is the canonical version-1 document shape defined by the preference
+    lifecycle services (issue #306): typed sections for compensation, culture,
+    work location, geography, industry, funding stage, vesting, exclusions,
+    priorities, and notes. The JSON object is the source of truth for
+    deterministic matching; ``preferences_markdown`` is only a server-generated,
+    human-readable projection of this document.
     """
     return {
-        "required": {},
-        "optional": {},
-        "exclusions": [],
+        "compensation": {
+            "minimum_salary": None,
+            "currency": "USD",
+            "equity_minimum_percent": None,
+        },
+        "culture": [],
+        "work_location": {"modes": [], "countries": [], "require_onsite": None},
+        "geography": {"regions": [], "remote_friendly": None},
+        "industry": [],
+        "funding_stage": [],
+        "vesting": {
+            "max_cliff_months": None,
+            "max_vesting_months": None,
+            "prefer_accelerated": None,
+        },
+        "exclusions": {"companies": [], "titles": [], "industries": [], "locations": []},
+        "priorities": {},
         "notes": "",
     }
 
@@ -77,3 +97,32 @@ class UserPreference(TimeStampedModel):
         indexes = [
             models.Index(fields=["user"], name="crank_userpref_user_idx"),
         ]
+
+
+class UserPreferenceAudit(TimeStampedModel):
+    """Minimal, contents-free audit trail for preference lifecycle actions.
+
+    Stores only metadata about a change -- who, when, which action, and how many
+    fields changed -- and never duplicates sensitive preference values.
+    """
+
+    class Action(models.TextChoices):
+        CREATED = "created", "Created"
+        PATCHED = "patched", "Patched"
+        RESET = "reset", "Reset"
+        EXPORTED = "exported", "Exported"
+        DELETED = "deleted", "Deleted"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="preference_audits",
+    )
+    action = models.CharField(max_length=16, choices=Action.choices)
+    schema_version = models.PositiveIntegerField(default=SCHEMA_VERSION)
+    change_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        app_label = "crank"
+        get_latest_by = "created"
+        ordering = ["-created"]
