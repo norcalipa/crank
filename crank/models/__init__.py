@@ -6,9 +6,21 @@ from crank.models.job_search import JobSearchConversation, JobSearchMessage
 from crank.models.organization import Organization
 from crank.models.preference import SCHEMA_VERSION, UserPreference, UserPreferenceAudit
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
+from crank.models.source import (
+    ApprovalState,
+    SourceCadence,
+    SourceCatalog,
+    SourceRun,
+    SourceCatalogAudit,
+)
 
 __all__ = [
     "AgentRun",
+    "ApprovalState",
+    "SourceCadence",
+    "SourceCatalog",
+    "SourceRun",
+    "SourceCatalogAudit",
     "Conversation",
     "Message",
     "JobSearchConversation",
