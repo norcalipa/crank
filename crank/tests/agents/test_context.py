@@ -11,6 +11,20 @@ class TestTruncateConversation:
     def test_empty_input_returns_empty(self):
         assert truncate_conversation([], max_characters=100) == []
 
+    def test_invalid_budget_raises(self):
+        import pytest
+
+        for bad in (0, -5, 3.5, "10"):
+            with pytest.raises(ValueError):
+                truncate_conversation([_msg("user", "hello")], max_characters=bad)
+
+    def test_none_budget_is_unbounded_by_characters(self):
+        history = [_msg("user", "a" * 500), _msg("assistant", "b" * 500)]
+        result = truncate_conversation(
+            history, max_characters=None, max_messages=1
+        )
+        assert len(result) == 1
+
     def test_keeps_newest_under_character_budget(self):
         history = [
             _msg("user", "first question"),
@@ -85,7 +99,45 @@ class TestBuildModelContext:
             max_conversation_messages=2,
         )
         total = sum(len(m["content"]) for m in context.to_messages())
-        assert total <= 100 + 100  # 2 * budget-ish due to two message allowances
+        # MAJOR-3: history + user turn share ONE budget; the total must not
+        # approach 2x max_conversation_characters.
+        assert total <= 100
+
+    def test_long_user_prompt_does_not_double_budget(self):
+        history = [_msg("user", "a" * 700)] * 10
+        context = build_model_context(
+            prompt_id="p",
+            system="s",
+            conversation=history,
+            user_prompt="b" * 600,
+            preference_markdown="",
+            organization_catalog=[],
+            score_summaries=[],
+            max_preference_characters=100,
+            max_conversation_characters=1000,
+        )
+        contents = [m["content"] for m in context.to_messages()]
+        total = sum(len(c) for c in contents)
+        assert total <= 1000
+        # The latest user turn (the request) is preserved intact.
+        assert contents[-1] == "b" * 600
+
+    def test_score_summary_missing_keys_renders_without_keyerror(self):
+        context = build_model_context(
+            prompt_id="p",
+            system="s",
+            conversation=[],
+            user_prompt="q",
+            preference_markdown="",
+            organization_catalog=[],
+            score_summaries=[{"organization_id": 7, "score_type": "culture"}],
+            max_preference_characters=100,
+            max_conversation_characters=1000,
+        )
+        # NIT-2/MAJOR-4: rendering must not raise a bare KeyError on a
+        # row missing avg_score.
+        block = " ".join(m["content"] for m in context.to_messages())
+        assert "organization_id=7" in block
 
     def test_preference_markdown_bounded(self):
         context = build_model_context(
@@ -118,3 +170,25 @@ class TestBuildModelContext:
         )
         assert len(context.organization_catalog) == 5
         assert len(context.score_summaries) == 2
+
+class TestBuildModelContextEdge:
+    def test_non_string_user_prompt_uses_full_history_budget(self):
+        context = build_model_context(
+            prompt_id="p", system="s",
+            conversation=[{"role": "user", "content": "hi"}],
+            user_prompt=123,  # not a string; user turn is skipped
+            preference_markdown="", organization_catalog=[], score_summaries=[],
+            max_preference_characters=100, max_conversation_characters=50,
+        )
+        contents = [m["content"] for m in context.to_messages()]
+        assert "hi" in contents
+
+    def test_none_catalog_rows_yield_empty(self):
+        context = build_model_context(
+            prompt_id="p", system="s",
+            conversation=[], user_prompt="q",
+            preference_markdown="", organization_catalog=None, score_summaries=None,
+            max_preference_characters=100, max_conversation_characters=100,
+        )
+        assert context.organization_catalog == []
+        assert context.score_summaries == []

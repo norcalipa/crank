@@ -46,10 +46,10 @@ class PreferenceService(Protocol):
     """
 
     def validate_patch(self, patch: Dict[str, Any]) -> None:
-        ...
+        ...  # pragma: no cover - structural Protocol stub, never called directly
 
     def apply_patch(self, patch: Dict[str, Any]) -> bool:
-        ...
+        ...  # pragma: no cover - structural Protocol stub, never called directly
 
 
 @dataclass(frozen=True)
@@ -177,7 +177,11 @@ class JobSearchOrchestrator:
         capped = tools.clamp_result_limit(
             self._max_score_summary_results, maximum=tools.MAX_SCORE_SUMMARY_RESULTS
         )
-        return self._score_datasource(known_ids, None, capped)
+        rows = self._score_datasource(known_ids, None, capped)
+        # Normalize in the service layer so a mis-shapen/injected datasource
+        # surfaces as InvalidScoreSummaryRowError instead of a bare KeyError
+        # when the context renderer formats the rows.
+        return tools.normalize_score_summary_rows(rows)
 
     def _build_model_context(self, **kwargs: Any) -> ctx.ModelContext:
         version = self._system_prompt_version

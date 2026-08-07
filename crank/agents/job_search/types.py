@@ -120,8 +120,26 @@ class AssistantCompletion:
         return self.preference_patch is not None
 
 
+def _assert_bounded_scalar(value: Any) -> None:
+    """Reject leaf values that are not plain JSON-serializable scalars.
+
+    Booleans are deliberately rejected even though they are JSON-serializable,
+    because patch leaves are typed configuration values (numbers/strings) and
+    bools are excluded here consistently (as in ``cited_organization_ids``).
+    Dicts/lists are handled by the recursive walkers, so this is only called
+    for scalar leaves.
+    """
+    if isinstance(value, bool) or (
+        value is not None and not isinstance(value, (str, int, float))
+    ):
+        raise InvalidModelOutputError(
+            "preference_patch values must be strings, numbers, or nested "
+            "objects/lists; booleans and other types are not allowed"
+        )
+
+
 def _assert_bounded_patch(patch: Dict[str, Any], _depth: int = 0) -> None:
-    """Recursively enforce the patch is JSON-serializable and bounded."""
+    """Recursively enforce the patch is JSON-serializable, typed, and bounded."""
     if _depth > _MAX_PATCH_DEPTH:
         raise InvalidModelOutputError("preference_patch is nested too deeply")
     for key, value in patch.items():
@@ -133,6 +151,11 @@ def _assert_bounded_patch(patch: Dict[str, Any], _depth: int = 0) -> None:
             _assert_bounded_patch(value, _depth + 1)
         elif isinstance(value, (list, tuple)):
             _assert_bounded_sequence(value, _depth + 1)
+        else:
+            # MAJOR-1: scalar leaves must be type-checked too (mirrors the
+            # sequence path) so an un-serializable or boolean leaf cannot
+            # smuggle through the patch object.
+            _assert_bounded_scalar(value)
 
 
 def _assert_bounded_sequence(seq: List[Any], _depth: int) -> None:
@@ -143,14 +166,10 @@ def _assert_bounded_sequence(seq: List[Any], _depth: int) -> None:
             _assert_bounded_patch(value, _depth + 1)
         elif isinstance(value, (list, tuple)):
             _assert_bounded_sequence(value, _depth + 1)
-        elif isinstance(value, bool):
-            raise InvalidModelOutputError(
-                "preference_patch must contain only JSON-serializable values"
-            )
-        elif value is not None and not isinstance(value, (str, int, float)):
-            raise InvalidModelOutputError(
-                "preference_patch must contain only JSON-serializable values"
-            )
+        else:
+            # MAJOR-2: booleans are rejected in sequences; now rejected in
+            # dicts identically (consistent policy) with a correct message.
+            _assert_bounded_scalar(value)
 
 
 def _freeze_patch(patch: Dict[str, Any]) -> Dict[str, Any]:

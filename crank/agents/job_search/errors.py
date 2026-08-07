@@ -40,3 +40,13 @@ class InvalidOrganizationReferenceError(InvalidModelOutputError):
 
 class InvalidPreferencePatchError(InvalidModelOutputError):
     """The model's preference patch is malformed or violates the preference schema."""
+
+
+class InvalidScoreSummaryRowError(JobSearchError):
+    """A score-summary datasource returned a malformed/untyped row.
+
+    Score rows are server-controlled but injectable (and may be faked in
+    tests), so a row missing or mistyping ``organization_id``, ``score_type``
+    or ``avg_score`` is surfaced as this typed error instead of a bare
+    ``KeyError`` during rendering.
+    """
