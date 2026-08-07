@@ -24,7 +24,7 @@ class TestProviderGatewayBase:
         except NotImplementedError:
             pass
         else:
-            raise AssertionError("expected NotImplementedError")
+            raise AssertionError("expected NotImplementedError")  # pragma: no cover
 
     def test_context_manager(self):
         class NoopGateway(ProviderGateway):

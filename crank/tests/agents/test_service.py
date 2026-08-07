@@ -127,7 +127,7 @@ class TestRejections:
         except InvalidModelOutputError as exc:
             assert "cited_organization_ids" in str(exc)
         else:
-            raise AssertionError("expected InvalidModelOutputError")
+            raise AssertionError("expected InvalidModelOutputError")  # pragma: no cover
         assert pref.apply_calls == 0
 
     def test_hallucinated_organization_id_rejected_without_persistence(self):
@@ -145,7 +145,7 @@ class TestRejections:
         except InvalidOrganizationReferenceError as exc:
             assert "999" in str(exc)
         else:
-            raise AssertionError("expected InvalidOrganizationReferenceError")
+            raise AssertionError("expected InvalidOrganizationReferenceError")  # pragma: no cover
         # Nothing persisted: preference patch must not be applied.
         assert pref.apply_calls == 0
 
@@ -163,7 +163,7 @@ class TestRejections:
         except InvalidPreferencePatchError:
             pass
         else:
-            raise AssertionError("expected InvalidPreferencePatchError")
+            raise AssertionError("expected InvalidPreferencePatchError")  # pragma: no cover
         assert pref.apply_calls == 0
 
 
@@ -177,7 +177,7 @@ class TestProviderFailures:
         except ProviderTimeoutError:
             pass
         else:
-            raise AssertionError("expected ProviderTimeoutError")
+            raise AssertionError("expected ProviderTimeoutError")  # pragma: no cover
 
     def test_cost_limit_propagates(self):
         gw = FakeGateway(exc=CostLimitError("budget exceeded"))
@@ -188,7 +188,7 @@ class TestProviderFailures:
         except CostLimitError:
             pass
         else:
-            raise AssertionError("expected CostLimitError")
+            raise AssertionError("expected CostLimitError")  # pragma: no cover
 
     def test_provider_failure_wrapped(self):
         gw = FakeGateway(exc=ConnectionError("5xx"))
@@ -199,7 +199,7 @@ class TestProviderFailures:
         except ProviderError:
             pass
         else:
-            raise AssertionError("expected ProviderError")
+            raise AssertionError("expected ProviderError")  # pragma: no cover
 
 
 class TestInjectionSafety:
@@ -237,7 +237,7 @@ class TestInjectionSafety:
         except InvalidOrganizationReferenceError as exc:
             assert "999" in str(exc)
         else:
-            raise AssertionError("expected injection attempt to be rejected")
+            raise AssertionError("expected injection attempt to be rejected")  # pragma: no cover
 
         # The system prompt in the assembled request still contains the guardrails.
         system = gw.requests[0].messages[0]["content"]
@@ -266,7 +266,7 @@ class TestScoreRowNormalization:
             orch.run(user_prompt="q", conversation=[], preference_markdown="")
         except InvalidScoreSummaryRowError:
             return
-        raise AssertionError(
+        raise AssertionError(  # pragma: no cover
             "expected InvalidScoreSummaryRowError, not a bare KeyError"
         )
 
@@ -285,7 +285,7 @@ class TestMiscCoverage:
             orch.run(user_prompt="q", conversation=[], preference_markdown="")
         except InvalidPreferencePatchError:
             return
-        raise AssertionError("expected JobSearchError to propagate")
+        raise AssertionError("expected JobSearchError to propagate")  # pragma: no cover
 
     def test_preference_service_untyped_error_wrapped(self):
         """A non-typed preference-service error is wrapped as InvalidPreferencePatchError."""
@@ -294,7 +294,7 @@ class TestMiscCoverage:
                 raise RuntimeError("boom")
 
             def apply_patch(self, patch):
-                return False
+                return False  # pragma: no cover
 
         gw = FakeGateway({
             "message": "Acme looks like a match.",
@@ -310,4 +310,4 @@ class TestMiscCoverage:
             orch.run(user_prompt="q", conversation=[], preference_markdown="")
         except InvalidPreferencePatchError:
             return
-        raise AssertionError("expected non-typed preference error to be wrapped")
+        raise AssertionError("expected non-typed preference error to be wrapped")  # pragma: no cover

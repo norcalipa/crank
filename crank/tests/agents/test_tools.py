@@ -40,7 +40,7 @@ class TestValidateOrganizationFilters:
         except InvalidToolInputError as exc:
             assert "unknown organization filter" in str(exc)
         else:
-            raise AssertionError("expected InvalidToolInputError")
+            raise AssertionError("expected InvalidToolInputError")  # pragma: no cover
 
     def test_non_string_filter_rejected(self):
         try:
@@ -48,7 +48,7 @@ class TestValidateOrganizationFilters:
         except InvalidToolInputError:
             pass
         else:
-            raise AssertionError("expected InvalidToolInputError")
+            raise AssertionError("expected InvalidToolInputError")  # pragma: no cover
 
     def test_overlong_query_rejected(self):
         try:
@@ -56,7 +56,7 @@ class TestValidateOrganizationFilters:
         except InvalidToolInputError:
             pass
         else:
-            raise AssertionError("expected InvalidToolInputError")
+            raise AssertionError("expected InvalidToolInputError")  # pragma: no cover
 
     def test_bad_enum_rejected(self):
         for key, bad in (("funding_round", "ZZZ"), ("rto_policy", "Q")):
@@ -65,7 +65,7 @@ class TestValidateOrganizationFilters:
             except InvalidToolInputError:
                 pass
             else:
-                raise AssertionError(f"expected InvalidToolInputError for {key}")
+                raise AssertionError(f"expected InvalidToolInputError for {key}")  # pragma: no cover
 
 
 class TestResultLimits:
@@ -105,7 +105,7 @@ class TestScoreSummaryTool:
                 query_score_summaries(bad, datasource=lambda ids, types, limit: [])
             except InvalidToolInputError:
                 continue
-            raise AssertionError(f"expected rejection for {bad!r}")
+            raise AssertionError(f"expected rejection for {bad!r}")  # pragma: no cover
 
     def test_caps_result_limit(self):
         calls = []
@@ -152,7 +152,7 @@ class TestNormalizeScoreSummaryRows:
                 normalize_score_summary_rows([row])
             except InvalidScoreSummaryRowError:
                 continue
-            raise AssertionError(f"expected rejection for {row!r}")
+            raise AssertionError(f"expected rejection for {row!r}")  # pragma: no cover
 
 class TestOrganizationFilters:
     def test_non_mapping_filters_rejected(self):
@@ -161,7 +161,7 @@ class TestOrganizationFilters:
         except InvalidToolInputError:
             pass
         else:
-            raise AssertionError("expected non-mapping filters to be rejected")
+            raise AssertionError("expected non-mapping filters to be rejected")  # pragma: no cover
 
     def test_blank_filter_value_skipped(self):
         normalized = validate_organization_filters({"query": "   "})
@@ -175,7 +175,7 @@ class TestScoreSummaryDupIds:
         except InvalidToolInputError:
             pass
         else:
-            raise AssertionError("expected duplicate organization_ids to be rejected")
+            raise AssertionError("expected duplicate organization_ids to be rejected")  # pragma: no cover
 
 
 class TestDefaultDatasources(TestCase):
