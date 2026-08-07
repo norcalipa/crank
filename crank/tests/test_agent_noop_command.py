@@ -69,3 +69,41 @@ class AgentNoopCommandTests(TestCase):
             cmd.handle()
         run = AgentRun.objects.get(status=AgentRun.Status.FAILED)
         self.assertIn("boom", run.error_summary)
+
+class SettingsHelperTests(TestCase):
+    """These helper functions are evaluated at import time for the module-level
+    AGENT_* settings; the invalid-input fallback branch is otherwise
+    unreachable, so exercise it directly."""
+
+    def test_env_int_falls_back_to_default_on_invalid(self):
+        from unittest.mock import patch
+        from crank.settings import base as settings_base
+
+        with patch.dict("os.environ", {"AGENT_RUN_STALE_AFTER_SECONDS": "not-an-int"}, clear=False):
+            self.assertEqual(
+                settings_base._env_int("AGENT_RUN_STALE_AFTER_SECONDS", 3600),
+                3600,
+            )
+
+    def test_env_int_parses_valid_value(self):
+        from unittest.mock import patch
+        from crank.settings import base as settings_base
+
+        with patch.dict("os.environ", {"AGENT_RUN_STALE_AFTER_SECONDS": "90"}, clear=False):
+            self.assertEqual(
+                settings_base._env_int("AGENT_RUN_STALE_AFTER_SECONDS", 3600),
+                90,
+            )
+
+    def test_env_bool_parses_true_and_false_flavors(self):
+        from unittest.mock import patch
+        from crank.settings import base as settings_base
+
+        with patch.dict("os.environ", {"AGENT_HELPER_FLAG": "1"}, clear=False):
+            self.assertTrue(settings_base._env_bool("AGENT_HELPER_FLAG"))
+        with patch.dict("os.environ", {"AGENT_HELPER_FLAG": "true"}, clear=False):
+            self.assertTrue(settings_base._env_bool("AGENT_HELPER_FLAG"))
+        with patch.dict("os.environ", {"AGENT_HELPER_FLAG": "0"}, clear=False):
+            self.assertFalse(settings_base._env_bool("AGENT_HELPER_FLAG"))
+        with patch.dict("os.environ", {"AGENT_HELPER_FLAG": "no"}, clear=False):
+            self.assertFalse(settings_base._env_bool("AGENT_HELPER_FLAG"))
