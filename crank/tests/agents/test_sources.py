@@ -256,3 +256,60 @@ class ObservationAgainstSourceTests(TestCase):
         obs = RawScoreObservation(**observation(source_url="https://evil.example.com/x"))
         with pytest.raises(ObservationValidationError):
             validate_observation_for_source(obs, src)
+
+    def test_validate_source_base_url_malformed(self):
+        from crank.agents.sources.base import validate_source_base_url, UnapprovedBaseUrl
+
+        class BadURL(str):
+            def strip(self, chars=None):
+                return self
+            def __getitem__(self, item):
+                return self
+            def split(self, *args, **kwargs):
+                raise RuntimeError("split error")
+
+        bad_url = BadURL("https://example.com/test")
+        with pytest.raises(UnapprovedBaseUrl, match="Malformed source base URL"):
+            validate_source_base_url(bad_url)
+
+    def test_env_float_invalid(self):
+        from unittest.mock import patch
+        from crank.settings.base import _env_float
+        with patch.dict("os.environ", {"TEST_FLOAT_ENV": "invalid_number"}):
+            assert _env_float("TEST_FLOAT_ENV", 3.14) == 3.14
+
+    def test_as_observation_helper(self):
+        from crank.agents.sources.observation import as_observation
+        obs = as_observation(observation())
+        assert obs.external_id == "e-1"
+
+    def test_observation_non_datetime_timestamp(self):
+        with pytest.raises(ObservationValidationError):
+            RawScoreObservation(**observation(observed_at=12345))
+
+    def test_observation_nonfinite_numeric(self):
+        with pytest.raises(ObservationValidationError):
+            RawScoreObservation(**observation(value=float("inf")))
+
+    def test_is_domain_allowed_empty(self):
+        from crank.agents.sources.allowlist import is_domain_allowed
+        assert not is_domain_allowed("")
+
+    def test_registry_len(self):
+        from crank.agents.sources.registry import REGISTRY
+        assert isinstance(len(REGISTRY), int)
+
+    def test_validate_source_base_url_userinfo(self):
+        from crank.agents.sources.base import validate_source_base_url, UnapprovedBaseUrl
+        with pytest.raises(UnapprovedBaseUrl, match="must not embed credentials"):
+            validate_source_base_url("https://user:***@api.yelp.com/v3")
+
+    def test_observation_nan_min_value(self):
+        from crank.agents.sources.observation import RawScoreObservation, ObservationValidationError
+        with pytest.raises(ObservationValidationError, match="must be a finite number"):
+            RawScoreObservation(**observation(min_value=float("nan")))
+
+    def test_observation_bool_numeric(self):
+        from crank.agents.sources.observation import RawScoreObservation, ObservationValidationError
+        with pytest.raises(ObservationValidationError, match="must be a finite number"):
+            RawScoreObservation(**observation(value=True))

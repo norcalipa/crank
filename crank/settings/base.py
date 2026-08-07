@@ -327,6 +327,14 @@ def _env_int(name, default):
         return default
 
 
+def _env_float(name, default):
+    """Parse a float environment variable, defaulting when unset/invalid."""
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 # Scheduled agent runs (roadmap: docs/readme.md section 8.1). Disabled by
 # default until secrets and policies are ready; operators enable them per
 # environment. These flags gate whether the management commands may claim a run.
@@ -336,3 +344,15 @@ AGENT_NOOP_ENABLED = _env_bool("AGENT_NOOP_ENABLED")
 # Staleness TTL (seconds): a RUNNING claim older than this is treated as a
 # crashed/stale lock and reclaimed by the next claim for the same run type.
 AGENT_RUN_STALE_AFTER_SECONDS = _env_int("AGENT_RUN_STALE_AFTER_SECONDS", 3600)
+
+# Yelp Fusion source adapter (roadmap: docs/readme.md 8.2, phase 2). The name
+# ``YELP_API_KEY`` is read as a secret from the environment only; it is never
+# committed and never logged. The other knobs tune the hardened transport.
+# Leave the key unset in dev/CI so the adapter fails closed.
+YELP_API_KEY = os.environ.get("YELP_API_KEY", "").strip()
+YELP_BASE_URL = os.environ.get("YELP_BASE_URL", "https://api.yelp.com/v3").strip()
+YELP_CONNECT_TIMEOUT = _env_float("YELP_CONNECT_TIMEOUT", 3.05)
+YELP_READ_TIMEOUT = _env_float("YELP_READ_TIMEOUT", 30)
+YELP_MAX_REDIRECTS = _env_int("YELP_MAX_REDIRECTS", 5)
+YELP_MAX_BYTES = _env_int("YELP_MAX_BYTES", 2 * 1024 * 1024)
+YELP_MAX_TRANSIENT_ATTEMPTS = _env_int("YELP_MAX_TRANSIENT_ATTEMPTS", 4)
