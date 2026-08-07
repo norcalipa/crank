@@ -249,6 +249,77 @@ class JobSearchApiTestCase(TestCase):
         self.assertEqual(throttled.status_code, 429)
         self.assertEqual(throttled.json()["error"]["type"], "rate_limited")
 
+    @override_settings(JOB_SEARCH_RATE_LIMIT_PER_HOUR=1)
+    def test_idempotent_retry_does_not_consume_rate_limit_budget(self):
+        """Retries with the same idempotency key after a successful turn
+        must not count against the rate-limit budget."""
+        conversation_id = self._start_conversation()
+        key = self._uuid(42)
+
+        # First submission succeeds and consumes the only budget slot.
+        first = self._submit(conversation_id, "one and only", key)
+        self.assertEqual(first.status_code, 201)
+
+        # A new key would be throttled (budget exhausted).
+        throttled = self._submit(conversation_id, "new message", self._uuid(43))
+        self.assertEqual(throttled.status_code, 429)
+
+        # But the idempotent retry of the already-completed turn is free.
+        retry = self._submit(conversation_id, "one and only", key)
+        self.assertEqual(retry.status_code, 200)
+        self.assertEqual(retry.json()["message"]["content"], first.json()["message"]["content"])
+
+    @override_settings(JOB_SEARCH_RATE_LIMIT_PER_HOUR=1)
+    def test_idempotent_retry_after_service_error_does_not_consume_rate_limit(self):
+        """A retry after a transient service error (500) must not consume
+        the rate-limit budget, even though the first submission consumed it.
+        The retry is idempotent and must be free."""
+        conversation_id = self._start_conversation()
+        key = self._uuid(99)
+
+        real_run_turn = JobSearchService().run_turn.__func__
+
+        # First call: service fails, consumes the budget slot.
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True,
+            side_effect=JobSearchServiceError("boom"),
+        ):
+            resp = self._submit(conversation_id, "fails once", key)
+        self.assertEqual(resp.status_code, 500)
+
+        # A new key would be throttled.
+        throttled = self._submit(conversation_id, "new", self._uuid(100))
+        self.assertEqual(throttled.status_code, 429)
+
+        # Retry with the same key: idempotent replay runs before rate limit.
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True,
+            side_effect=real_run_turn,
+        ):
+            retry = self._submit(conversation_id, "fails once", key)
+        self.assertEqual(retry.status_code, 201)
+
+    @override_settings(JOB_SEARCH_RATE_LIMIT_PER_HOUR=1)
+    def test_rate_limit_consumed_on_first_attempt_not_retry(self):
+        """The rate limit is consumed on the *first* attempt with a new key.
+        An idempotent retry of the same key after success is free."""
+        conversation_id = self._start_conversation()
+        key = self._uuid(55)
+
+        # First submission with this key consumes the budget.
+        first = self._submit(conversation_id, "budget test", key)
+        self.assertEqual(first.status_code, 201)
+
+        # A new key is throttled.
+        self.assertEqual(
+            self._submit(conversation_id, "blocked", self._uuid(56)).status_code,
+            429,
+        )
+
+        # Retry of the completed key is free (idempotent replay).
+        retry = self._submit(conversation_id, "budget test", key)
+        self.assertEqual(retry.status_code, 200)
+
     # -- export / reset / delete ------------------------------------------
     def test_export_returns_owned_history(self):
         conversation_id = self._start_conversation()
@@ -331,10 +402,12 @@ class JobSearchCoverageEdges(TestCase):
         self.assertNotIn("secret", str(msg))
 
     def test_message_serializer_rejects_blank_content(self):
-        from rest_framework.exceptions import ValidationError as DRFValidationError
         from crank.serializers import job_search as jser
-        with self.assertRaises(DRFValidationError):
+        try:
             jser.MessageSubmitSerializer().validate_content("")
+            self.fail("Expected ValidationError for blank content")
+        except Exception as exc:
+            self.assertIn("required", str(exc).lower())
 
     def test_rate_limit_allows_anonymous(self):
         from crank.views.job_search import _check_rate_limit
@@ -343,6 +416,24 @@ class JobSearchCoverageEdges(TestCase):
         req = RequestFactory().post("/")
         req.user = type("Anonymous", (), {"is_authenticated": False})()
         self.assertFalse(_check_rate_limit(req))
+
+    def test_rate_limit_valueerror_recovery(self):
+        """When cache.incr raises ValueError (key expired between add+incr),
+        the rate limiter recovers by re-initialising the key."""
+        from unittest.mock import patch
+        from crank.views.job_search import _check_rate_limit
+        from django.test import RequestFactory
+
+        req = RequestFactory().post("/")
+        req.user = self.user
+        req.META["REMOTE_ADDR"] = "10.0.0.1"
+
+        # Simulate incr failing once (key expired), then succeeding.
+        with patch(
+            "crank.views.job_search.cache.incr",
+            side_effect=[ValueError, 1],
+        ):
+            self.assertFalse(_check_rate_limit(req))
 
 
 class JobSearchViewEdgeCases(TestCase):

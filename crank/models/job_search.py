@@ -15,6 +15,7 @@ queries so a user can never see another user's conversation.
 """
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
 from django_extensions.db.models import TimeStampedModel
 
@@ -66,6 +67,13 @@ class JobSearchMessage(TimeStampedModel):
     class Meta:
         app_label = "crank"
         ordering = ["created", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["conversation", "idempotency_key", "role"],
+                condition=~Q(idempotency_key=""),
+                name="unique_jobsearch_message_idempotency",
+            ),
+        ]
 
     def __str__(self):  # noqa: D105
         return "JobSearchMessage({}) role={} conversation={}".format(
