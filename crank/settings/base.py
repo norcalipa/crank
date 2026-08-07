@@ -174,6 +174,27 @@ JOB_SEARCH_RATE_LIMIT_PER_HOUR = int(os.environ.get("JOB_SEARCH_RATE_LIMIT_PER_H
 JOB_SEARCH_PROVIDER = os.environ.get("JOB_SEARCH_PROVIDER", "demo")
 REDIS_MASTER_URL = os.environ.get("REDIS_MASTER_URL", "redis://redis-master:6379/0")
 
+# Phase 2 score normalization/resolution pipeline (issue #313).
+# Curated policy only; never read from untrusted external payloads. Empty by
+# default so production is inert until an operator declares a rating source.
+# All numeric/string limits are implemented as reject-not-clamp and bound
+# untrusted text. No secrets live here.
+SCORE_RESOLUTION_VERSION = os.environ.get("SCORE_RESOLUTION_VERSION", "1")
+SCORE_RESOLUTION_SOURCE_KEY = os.environ.get("SCORE_RESOLUTION_SOURCE_KEY", "default")
+# Organization.name (verbatim) of the rating source organization.
+RATING_SOURCE_ORGANIZATION_NAME = os.environ.get("RATING_SOURCE_ORGANIZATION_NAME", "")
+# Curated external score-type mappings: list of
+# {"source": key, "external": external token, "score_type": ScoreType.name}.
+SCORE_TYPE_MAPPINGS = []  # declared in deploy config, not in source defaults
+# Curated target aliases: list of
+# {"kind": "external_id"|"domain"|"name", "alias": token, "organization": Organization.name}.
+SCORE_TARGET_ALIASES = []
+SCORE_MAX_VALUE_MAGNITUDE = os.environ.get("SCORE_MAX_VALUE_MAGNITUDE", "1e15")
+SCORE_MAX_DECIMAL_SIGNIFICANT_DIGITS = int(
+    os.environ.get("SCORE_MAX_DECIMAL_SIGNIFICANT_DIGITS", "30"))
+SCORE_MAX_STRING_LENGTH = int(os.environ.get("SCORE_MAX_STRING_LENGTH", "512"))
+SCORE_MAX_OBSERVATIONS = int(os.environ.get("SCORE_MAX_OBSERVATIONS", "100000"))
+
 # Optional: To use Redis for session storage
 CACHES = {
     'default': {

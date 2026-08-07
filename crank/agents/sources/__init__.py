@@ -1,6 +1,6 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
-"""Phase 2: source catalog and adapters for gathering raw external rating observations."""
+"""Phase 2: source catalog, adapters, and score normalization pipeline."""
 
 from crank.agents.sources.base import (
     ObservationValidationError,
@@ -20,12 +20,28 @@ from crank.agents.sources.contract import (
     SourceQuery,
     SourceResult,
 )
+from crank.agents.sources.normalize import (
+    ScoreNormalizer,
+    normalize_observations,
+)
 from crank.agents.sources.registry import (
     REGISTRY,
     SourceRegistry,
     build_adapter,
     register_source_adapter,
     validate_observation_for_source,
+)
+from crank.agents.sources.types import (
+    NormalizedScoreObservation,
+    ObservationOutcome,
+    ResolutionConfig,
+    ResolutionReason,
+    ResolutionReport,
+    ResolutionStatus,
+    ScoreTypeMapping,
+    TargetAlias,
+    TargetAliasKind,
+    build_resolution_config,
 )
 from crank.agents.sources.yelp import YelpSourceAdapter
 
@@ -50,4 +66,16 @@ __all__ = [
     "SourceQuery",
     "SourceResult",
     "YelpSourceAdapter",
+    "NormalizedScoreObservation",
+    "ObservationOutcome",
+    "ResolutionConfig",
+    "ResolutionReason",
+    "ResolutionReport",
+    "ResolutionStatus",
+    "ScoreNormalizer",
+    "ScoreTypeMapping",
+    "TargetAlias",
+    "TargetAliasKind",
+    "build_resolution_config",
+    "normalize_observations",
 ]
