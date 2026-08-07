@@ -1,0 +1,450 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+#
+# External rating source catalog for Phase 2 ("Score Gathering").
+# Governance deliverable for #310. Human-readable narrative: docs/source-catalog.md.
+#
+# Approval states:
+#   approved  - intended use and access path accepted; adapter may be built
+#               against the documented official API/feed. `live_enabled` is
+#               separately false until an operator provisions access keys,
+#               because secrets must never be committed.
+#   pending   - access path exists but is not yet lawful/admissible without
+#               further review or an explicit data/budget decision.
+#   blocked   - no acceptable lawful access path for this slice (no public
+#               API, scraping prohibited, paid/commercial-only, decommissioned).
+#   excluded  - not an external rating source (internal/self, or not attributable).
+#
+# Every source with seed `gives_ratings: true` is listed below (validated against
+# seeds/crank.organization.yaml by crank/tests/test_source_catalog.py).
+# Facts were verified by an autonomous agent on the review_date below using the
+# cited pages plus DNS/endpoint checks. Terms change; re-verify before enabling.
+review:
+  document: docs/source-catalog.yaml
+  review_date: 2026-08-07
+  reviewed_by: autonomous agent (implementation of #310)
+  decision_owner: maintainer (crank.fyi)
+  methodology: >
+    For each seeded rating organization we recorded official API/feed existence,
+    authentication, license/terms, robots stance, allowed use, retention, rate
+    limits, cadence, geographic scope, and sample data shape. Public DNS and
+    documented pages were checked on the review date; no credentials or licensed
+    content were obtained or stored.
+
+mvp:
+  source: Google
+  score_type: Reputation
+  rationale: >
+    Only seeded rating organization with a currently-documented official API
+    (Google Maps Platform Places API) and a usable free usage tier. Yelp is
+    now paid-only, Levels.fyi/Salary.com/Simply Wall St are commercial, and
+    StackShare's API no longer resolves.
+  access: >
+    Official Google Maps Platform Places web-service API (Place Details).
+    Self-service sign-up, authentication via a Google Cloud API key supplied
+    as an environment secret (never committed). A Google Cloud billing account
+    is required to enable the API; usage is bounded by the per-SKU free tier
+    (Google restructured pricing in March 2025 - verify the exact free cap at
+    implementation and do not configure paid overage).
+  score_types:
+    - Reputation
+    - Culture
+  fields:
+    - rating            # 0.0-5.0 aggregate float
+    - user_ratings_total # integer count
+    - types             # category labels (informational)
+    - price_level       # optional, 0-4
+  retention: >
+    Google Maps Platform Terms permit caching Places content for up to 30 days.
+    Crank stores only the normalized numeric aggregate (Score.value) and the
+    observation timestamp; it does not persist raw API payloads or review text
+    beyond the normalization step. Raw responses are discarded after use.
+  rate_limits: >
+    Per-project QPS and per-SKU free monthly usage caps; defaults are
+    documented by Google. Recorded in the source contract at adapter build;
+    stays within the free tier and never enables paid overage.
+  cadence: daily
+  geographic: global
+  fixture_plan: >
+    Operator provisions a Places API key in the staging environment via env
+    (never committed), fetches Place Details for a handful of seeded
+    organizations that have a Google Business Profile, and commits a sanitized,
+    aggregate-only fixture (rating + user_ratings_total + types; NO review text,
+    NO addresses, NO contact data) for offline adapter/tests. Live scheduled
+    ingestion remains disabled until the key is provisioned and the Terms are
+    accepted by the maintainer.
+  live_enabled: false
+  ssrf_allowlist:
+    - places.googleapis.com
+    - maps.googleapis.com
+  data_classification: >
+    Public business metadata (aggregate star rating and review count). Not
+    confidential, not personal data. We ingest numeric aggregates only and never
+    store free-text reviews (avoiding copyrighted reviewer content and PII).
+
+sources:
+  - name: Google
+    pk: 3
+    url: https://www.google.com/
+    kind: external
+    seed_gives_ratings: true
+    score_types_candidates: [Reputation, Culture]
+    api:
+      available: official
+      endpoint: https://places.googleapis.com/v1/places/:id
+      docs: https://developers.google.com/maps/documentation/places/web-service/overview
+      authentication: api_key
+      cost: free_tier
+      terms_url: https://cloud.google.com/maps-platform/terms
+      robots: n/a (API access; no web scraping of google.com)
+    allowed_use: aggregate rating/review-count scoring; no redistribution of listings or review text
+    retention: up to 30 days caching per ToS; store normalized aggregates only
+    rate_limits: per-project QPS + per-SKU free monthly cap (verify at implementation)
+    cadence: daily
+    geographic: global
+    sample_data_shape: '{"rating":4.3,"user_ratings_total":1234,"types":["software_company"]}'
+    approval:
+      state: approved
+      owner: maintainer
+      review_date: 2026-08-07
+      evidence:
+        - https://developers.google.com/maps/documentation/places/web-service/usage-and-billing
+        - https://developers.google.com/maps/billing-and-pricing/overview
+        - https://cloud.google.com/maps-platform/terms
+      notes: >
+        Adapter may be built against Place Details. Live_enabled=false until a
+        staging Places API key is provisioned via env and the maintainer accepts
+        the Google Maps Platform Terms (30-day caching, free-tier attribution).
+
+  - name: Glassdoor
+    pk: 1
+    url: https://www.glassdoor.com/
+    kind: external
+    seed_gives_ratings: true
+    score_types_candidates: [Culture, Total Compensation, Leadership, Reputation, RTO and Work Hours]
+    api:
+      available: none_public
+      endpoint: null
+      docs: null
+      authentication: n/a
+      cost: n/a
+      terms_url: https://www.glassdoor.com/about/terms-2020-07-08/
+      robots: scraping prohibited by ToS; no generally available public API
+    allowed_use: none automated (enterprise/partner access only)
+    retention: n/a
+    rate_limits: n/a
+    cadence: n/a
+    geographic: n/a (US/global employer reviews)
+    sample_data_shape: null
+    approval:
+      state: blocked
+      owner: maintainer
+      review_date: 2026-08-07
+      evidence:
+        - https://www.glassdoor.com/about/terms-2020-07-08/
+        - https://www.glassdoor.com/developer/register_input.htm
+      notes: >
+        Historically-gated "public" developer API is not open access (partner/
+        enterprise, undisclosed pricing). Automated access unauthorised. Excluded.
+
+  - name: Blind
+    pk: 2
+    url: https://www.teamblind.com/
+    kind: external
+    seed_gives_ratings: true
+    score_types_candidates: [Culture, Total Compensation, RTO and Work Hours]
+    api:
+      available: none
+      endpoint: null
+      docs: null
+      authentication: n/a
+      cost: n/a
+      terms_url: https://us.teamblind.com/setting/term_and_privacy
+      robots: no public API; automated access prohibited by ToS
+    allowed_use: none automated
+    retention: n/a
+    rate_limits: n/a
+    cadence: n/a
+    geographic: n/a
+    sample_data_shape: null
+    approval:
+      state: blocked
+      owner: maintainer
+      review_date: 2026-08-07
+      evidence:
+        - https://us.teamblind.com/setting/term_and_privacy
+      notes: No public developer API; Terms prohibit scraping/automation. Excluded.
+
+  - name: Yelp
+    pk: 4
+    url: https://www.yelp.com/
+    kind: external
+    seed_gives_ratings: true
+    score_types_candidates: [Reputation, Culture]
+    api:
+      available: official_paid
+      endpoint: https://api.yelp.com/v3/businesses/search
+      docs: https://docs.developer.yelp.com/docs/places-intro
+      authentication: api_key
+      cost: paid
+      terms_url: https://business.yelp.com/data/resources/pricing/
+      robots: API is the sanctioned channel; web scraping prohibited by ToS
+    allowed_use: paid API; display/attribution requirements apply
+    retention: Yelp restricts storage/caching of Yelp content; not admissible for a free slice
+    rate_limits: paid plans (e.g. 300 calls/24h starter trial; 5k/day caps on paid tiers)
+    cadence: n/a
+    geographic: global
+    sample_data_shape: '{"businesses":[{"id":"...","rating":4.5,"review_count":987}]}'
+    approval:
+      state: blocked
+      owner: maintainer
+      review_date: 2026-08-07
+      evidence:
+        - https://docs.developer.yelp.com/docs/places-rate-limiting
+        - https://business.yelp.com/data/resources/pricing/
+      notes: >
+        Yelp Places API became paid-only (no longer a free tier). Would require a
+        budget decision; re-evaluate for a future slice if spend is approved.
+
+  - name: Comparably
+    pk: 5
+    url: https://www.comparably.com/
+    kind: external
+    seed_gives_ratings: true
+    score_types_candidates: [Culture, Total Compensation, Leadership, Reputation, Product and Mission]
+    api:
+      available: none
+      endpoint: null
+      docs: null
+      authentication: n/a
+      cost: n/a
+      terms_url: https://www.comparably.com/
+      robots: no public API; site actively blocks automated access
+    allowed_use: none automated
+    retention: n/a
+    rate_limits: n/a
+    cadence: n/a
+    geographic: n/a
+    sample_data_shape: null
+    approval:
+      state: blocked
+      owner: maintainer
+      review_date: 2026-08-07
+      evidence:
+        - https://www.comparably.com/
+      notes: >
+        No public developer API found on review date. Automated access is bot-
+        gated and not admissible. Re-evaluate only via a future data partnership.
+
+  - name: Indeed
+    pk: 6
+    url: https://www.indeed.com/
+    kind: external
+    seed_gives_ratings: true
+    score_types_candidates: [Total Compensation, Reputation]
+    api:
+      available: partner_only
+      endpoint: null
+      docs: https://docs.indeed.com/legal-terms/developer-agreement
+      authentication: partner_agreement
+      cost: n/a
+      terms_url: https://www.indeed.com/legal
+      robots: public publisher API for ratings retired; current APIs are employer/recruiter products
+    allowed_use: none for ratings without an Indeed partnership agreement
+    retention: n/a
+    rate_limits: n/a
+    cadence: n/a
+    geographic: n/a
+    sample_data_shape: null
+    approval:
+      state: blocked
+      owner: maintainer
+      review_date: 2026-08-07
+      evidence:
+        - https://docs.indeed.com/legal-terms/developer-agreement
+        - https://www.indeed.com/legal
+      notes: No general ratings data API; access requires an Indeed partnership. Excluded.
+
+  - name: Levels.fyi
+    pk: 7
+    url: https://www.levels.fyi/
+    kind: external
+    seed_gives_ratings: true
+    score_types_candidates: [Total Compensation, Lifecycle and Financials]
+    api:
+      available: official_commercial
+      endpoint: https://www.levels.fyi/api-access/
+      docs: https://www.levels.fyi/api-access/
+      authentication: commercial_contract
+      cost: paid
+      terms_url: https://www.levels.fyi/about/terms.html
+      robots: Salary Data is proprietary per ToS; API is a commercial benchmark product
+    allowed_use: commercial subscription/licence only
+    retention: licence-dependent
+    rate_limits: commercial plan / contract
+    cadence: n/a
+    geographic: global
+    sample_data_shape: null
+    approval:
+      state: blocked
+      owner: maintainer
+      review_date: 2026-08-07
+      evidence:
+        - https://www.levels.fyi/api-access/
+        - https://www.levels.fyi/about/terms.html
+      notes: >
+        An official API now exists but is a paid benchmark product for recruiters/
+        teams. Not admissible without a budget/licence decision. Best-fit candidate
+        for a future Total Compensation slice if spend is approved.
+
+  - name: Salary.com
+    pk: 8
+    url: https://www.salary.com/
+    kind: external
+    seed_gives_ratings: true
+    score_types_candidates: [Total Compensation, Lifecycle and Financials]
+    api:
+      available: official_commercial
+      endpoint: null
+      docs: null
+      authentication: commercial_contract
+      cost: paid
+      terms_url: https://www.salary.com/
+      robots: compensation data APIs are licensed/commercial
+    allowed_use: commercial licence only
+    retention: licence-dependent
+    rate_limits: contract
+    cadence: n/a
+    geographic: n/a
+    sample_data_shape: null
+    approval:
+      state: blocked
+      owner: maintainer
+      review_date: 2026-08-07
+      evidence:
+        - https://www.salary.com/
+      notes: Licensed compensation dataset; no free public API. Excluded.
+
+  - name: Better Business Bureau
+    pk: 9
+    url: https://www.bbb.org/
+    kind: external
+    seed_gives_ratings: true
+    score_types_candidates: [Reputation]
+    api:
+      available: none_public
+      endpoint: null
+      docs: null
+      authentication: n/a
+      cost: n/a
+      terms_url: https://www.bbb.org/
+      robots: no official public developer API found on review date
+    allowed_use: none verified
+    retention: n/a
+    rate_limits: n/a
+    cadence: n/a
+    geographic: n/a
+    sample_data_shape: null
+    approval:
+      state: pending
+      owner: maintainer
+      review_date: 2026-08-07
+      evidence:
+        - https://www.bbb.org/
+      notes: >
+        Only unofficial third-party scrapers surfaced (not approved). An official
+        BBB data channel may exist by licensee agreement; verify before any use.
+
+  - name: Crank.fyi
+    pk: 11
+    url: https://crank.fyi/
+    kind: internal
+    seed_gives_ratings: true
+    score_types_candidates: []
+    api:
+      available: internal
+      endpoint: null
+      docs: null
+      authentication: internal
+      cost: n/a
+      terms_url: null
+      robots: n/a
+    allowed_use: self-aggregator of the project's own scores; not an external source
+    retention: n/a
+    rate_limits: n/a
+    cadence: n/a
+    geographic: n/a
+    sample_data_shape: null
+    approval:
+      state: excluded
+      owner: maintainer
+      review_date: 2026-08-07
+      evidence: []
+      notes: Internal/self record; excluded from the external rating-source catalog.
+
+  - name: Simply Wall Street
+    pk: 23
+    url: https://simplywall.st/
+    kind: external
+    seed_gives_ratings: true
+    score_types_candidates: [Lifecycle and Financials, Reputation]
+    api:
+      available: official_commercial
+      endpoint: null
+      docs: null
+      authentication: commercial_contract
+      cost: paid
+      terms_url: https://simplywall.st/
+      robots: proprietary financial data; offered via licensed/partner products
+    allowed_use: commercial licence only
+    retention: licence-dependent
+    rate_limits: contract
+    cadence: n/a
+    geographic: n/a
+    sample_data_shape: null
+    approval:
+      state: blocked
+      owner: maintainer
+      review_date: 2026-08-07
+      evidence:
+        - https://simplywall.st/
+      notes: No public API; licensed financial dataset. Excluded.
+
+  - name: Stackshare.io
+    pk: 24
+    url: https://stackshare.io/
+    kind: external
+    seed_gives_ratings: true
+    score_types_candidates: [Tech Stack]
+    api:
+      available: decommissioned
+      endpoint: null
+      docs: null
+      authentication: n/a
+      cost: n/a
+      terms_url: https://stackshare.io/
+      robots: historical api.stackshare.io host no longer resolves
+    allowed_use: none
+    retention: n/a
+    rate_limits: n/a
+    cadence: n/a
+    geographic: n/a
+    sample_data_shape: null
+    approval:
+      state: blocked
+      owner: maintainer
+      review_date: 2026-08-07
+      evidence:
+        - https://stackshare.io/
+      notes: >
+        api.stackshare.io returned DNS NXDOMAIN on the review date; product
+        absorbed into FOSSA. Formerly best fit for the "Tech Stack" score type;
+        no confirmed public API remains.
+
+follow_up_gaps:
+  - Provision a Google Cloud Places API key in staging via env secret (never committed) and keep usage inside the per-SKU free tier (no paid overage).
+  - Maintainer to explicitly accept the Google Maps Platform Terms (30-day caching; free-tier attribution/display obligations) before enabling live runs.
+  - Confirm at adapter build whether to target Places API (New) host `places.googleapis.com` or legacy `maps.googleapis.com`; keep both domains on the SSRF allowlist until then.
+  - Re-verify Google per-SKU free caps and rate limits at implementation time (pricing was restructured March 2025).
+  - Levels.fyi remains the preferred follow-up for the "Total Compensation" slice if a budget/commercial licence is approved.
+  - Re-check BBB for an official licensee data channel if reputation accreditation data is desired.

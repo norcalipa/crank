@@ -209,7 +209,10 @@ Issues are the executable specification. The phase checklists below describe sco
 
 **Implementation scope**
 
-- [ ] Catalog and approve candidate rating sources before writing adapters.
+- [x] Catalog and approve candidate rating sources before writing adapters
+  ([docs/source-catalog.md](./source-catalog.md)), which selects Google (Google Maps
+  Platform Places API) as the fixture-backed MVP source with all other seeded
+  rating sources blocked/pending/excluded.
 - [ ] Implement source/run/provenance models and typed adapter contracts.
 - [ ] Build one API/direct-HTTP source adapter as a vertical slice using recorded fixtures.
 - [ ] Normalize score types, values, ranges, source identities, and target organizations.
