@@ -289,12 +289,12 @@ class JobSearchCoverageEdges(TestCase):
 
     @override_settings(JOB_SEARCH_PROVIDER="bogus")
     def test_unknown_provider_raises_stable_error(self):
-        from crank.agents.job_search.service import _build_provider
+        from crank.agents.job_search.demo import _build_provider
         with self.assertRaises(JobSearchServiceError):
             _build_provider()
 
     def test_service_run_turn_success_and_truncation(self):
-        from crank.agents.job_search.service import DemoJobSearchProvider
+        from crank.agents.job_search.demo import DemoJobSearchProvider
         conv = JobSearchConversation.objects.create(owner=self.user)
         svc = JobSearchService(DemoJobSearchProvider())
         reply, changed = svc.run_turn(conversation=conv, user_message="salary")

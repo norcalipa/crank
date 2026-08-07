@@ -11,7 +11,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('crank', '0008_userpreference_audit'),
+        ('crank', '0009_agentrun'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
