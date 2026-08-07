@@ -1,0 +1,12 @@
+{
+  "businesses": [
+    {
+      "id": "sanitized-fixture-drift-9",
+      "name": "Drift Retail",
+      "rating": "high",
+      "url": "https://www.yelp.com/biz/drift-retail-sanfrancisco"
+    }
+  ],
+  "total": 1,
+  "region": {}
+}

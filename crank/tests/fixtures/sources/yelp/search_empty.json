@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "BUSINESS_NOT_FOUND",
+    "description": "No matching business found (sanitized fixture)"
+  }
+}

@@ -1,34 +1,37 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
-"""Score adapter contracts for Phase 2 (issue #311).
+"""Phase 2: source catalog and adapters for gathering raw external rating observations."""
 
-Code-owned adapter registry/factory plus the typed observation boundary between
-external payloads and normalized application data. Concrete network adapters
-are out of scope (issue #311); this package is the contract layer they build on.
-"""
-
-from crank.agents.sources.base import (  # noqa: F401
-    RawScoreObservation,
+from crank.agents.sources.base import (
     ObservationValidationError,
-    SourceCatalogError,
-    UnknownSourceAdapter,
-    SourceNotApproved,
+    RawScoreObservation as BaseRawScoreObservation,
+    SourceAdapter as BaseSourceAdapter,
     SourceBlocked,
+    SourceCatalogError,
     SourceDisabled,
+    SourceNotApproved,
     UnapprovedBaseUrl,
-    SourceAdapter,
+    UnknownSourceAdapter,
     validate_source_base_url,
 )
-from crank.agents.sources.registry import (  # noqa: F401
-    SourceRegistry,
+from crank.agents.sources.contract import (
+    RawScoreObservation,
+    SourceAdapter,
+    SourceQuery,
+    SourceResult,
+)
+from crank.agents.sources.registry import (
     REGISTRY,
-    register_source_adapter,
+    SourceRegistry,
     build_adapter,
+    register_source_adapter,
     validate_observation_for_source,
 )
+from crank.agents.sources.yelp import YelpSourceAdapter
 
 __all__ = [
     "RawScoreObservation",
+    "BaseRawScoreObservation",
     "ObservationValidationError",
     "SourceCatalogError",
     "UnknownSourceAdapter",
@@ -37,10 +40,14 @@ __all__ = [
     "SourceDisabled",
     "UnapprovedBaseUrl",
     "SourceAdapter",
+    "BaseSourceAdapter",
     "validate_source_base_url",
     "SourceRegistry",
     "REGISTRY",
     "register_source_adapter",
     "build_adapter",
     "validate_observation_for_source",
+    "SourceQuery",
+    "SourceResult",
+    "YelpSourceAdapter",
 ]

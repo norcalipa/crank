@@ -1,0 +1,27 @@
+{
+  "businesses": [
+    {
+      "id": "sanitized-fixture-acme-1",
+      "name": "Fixture Corp",
+      "rating": 4.1,
+      "review_count": 312,
+      "url": "https://www.yelp.com/biz/fixture-corp-sanfrancisco",
+      "is_closed": false
+    },
+    {
+      "id": "sanitized-fixture-globex-2",
+      "name": "Globex Labs",
+      "rating": 3.7,
+      "review_count": 88,
+      "url": "https://www.yelp.com/biz/globex-labs-sanfrancisco",
+      "is_closed": false
+    }
+  ],
+  "total": 2,
+  "region": {
+    "center": {
+      "latitude": 37.789,
+      "longitude": -122.394
+    }
+  }
+}
