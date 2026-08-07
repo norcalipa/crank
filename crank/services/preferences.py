@@ -18,7 +18,7 @@ Design rules from the issue:
 """
 import copy
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from crank.models.preference import (
@@ -158,14 +158,14 @@ def _resolve_spec(path):
     raise UnknownFieldError("Unknown preference field: {!r}".format(path))
 
 
-def _validate_str(value, field, allow_empty=False):
+def _validate_str(value, field, allow_empty=False, max_length=MAX_SCALAR_LENGTH):
     if not isinstance(value, str) or (not allow_empty and not value.strip()):
         raise InvalidValueError(
             "{!r} must be a non-empty string".format(field)
         )
-    if len(value) > MAX_SCALAR_LENGTH:
+    if len(value) > max_length:
         raise InvalidValueError(
-            "Field {!r} exceeds maximum length of {}".format(field, MAX_SCALAR_LENGTH)
+            "Field {!r} exceeds maximum length of {}".format(field, max_length)
         )
     return value
 
@@ -197,8 +197,11 @@ def validate_value(field, leaf_type, value):
             )
         return float(value)
     if leaf_type == "str":
-        # "notes" is free-form and may legitimately be empty.
-        return _validate_str(value, field, allow_empty=(field == "notes"))
+        # "notes" is free-form (up to MAX_NOTES_LENGTH and may be empty);
+        # other string fields are capped at MAX_SCALAR_LENGTH (M1).
+        allow_empty = field == "notes"
+        max_length = MAX_NOTES_LENGTH if field == "notes" else MAX_SCALAR_LENGTH
+        return _validate_str(value, field, allow_empty=allow_empty, max_length=max_length)
     if leaf_type == "str_list":
         if not isinstance(value, list):
             raise InvalidValueError("Field {!r} must be a list".format(field))
@@ -268,16 +271,6 @@ def validate_document(document):
         validate_value(prefix, node_spec, node)
 
     walk(_FIELD_SPEC, document, "")
-    _validate_notes(document.get("notes", ""))
-
-def _validate_notes(notes):
-    if notes is not None:
-        if not isinstance(notes, str):
-            raise InvalidValueError("notes must be a string")
-        if len(notes) > MAX_NOTES_LENGTH:
-            raise InvalidValueError(
-                "notes exceeds maximum length of {}".format(MAX_NOTES_LENGTH)
-            )
 
 
 def _get(doc, path):
@@ -488,7 +481,9 @@ def _escape_md(value):
 def _money(value, currency):
     if value is None:
         return "Not specified"
-    return "{} {:,}".format(currency.upper(), int(value))
+    # Currency is user-supplied; escape markdown control characters before
+    # embedding (n1).
+    return "{} {:,}".format(_escape_md(currency).upper(), int(value))
 
 
 def to_markdown(document):
@@ -571,20 +566,48 @@ def _fetch_or_create(user):
     """Fetch the user's preference row, creating it on first interaction.
 
     No-row behavior is documented: reads/patches/resets implicitly create the
-    row with valid defaults on first agent interaction.
+    row with valid defaults on first agent interaction. Creation is
+    transaction-safe: creation is wrapped in ``transaction.atomic()`` and a
+    concurrent first-interaction create is reconciled via the unique
+    ``OneToOneField`` (M2) instead of raising an unhandled ``IntegrityError``.
     """
+    with transaction.atomic():
+        return _create_or_fetch(user)
+
+
+def _create_or_fetch(user):
+    """Return the row, creating it if absent, racing safely (M3).
+
+    Must be called inside an active transaction. If a concurrent request
+    created the row between our check and create, the ``IntegrityError`` from
+    the unique ``user`` constraint is swallowed and the winner's row is
+    returned.
+    """
+    doc = default_preferences()
     try:
-        return UserPreference.objects.get(user=user)
-    except UserPreference.DoesNotExist:
-        doc = default_preferences()
-        pref = UserPreference.objects.create(
-            user=user,
-            preferences=doc,
-            preferences_markdown=to_markdown(doc),
-            schema_version=SCHEMA_VERSION,
-        )
+        # Inner atomic() = savepoint so an IntegrityError from a concurrent
+        # create rolls back cleanly and the recovery get() below can still run
+        # in the caller's surrounding transaction (M3).
+        with transaction.atomic():
+            pref = UserPreference.objects.create(
+                user=user,
+                preferences=doc,
+                preferences_markdown=to_markdown(doc),
+                schema_version=SCHEMA_VERSION,
+            )
+        created = True
+    except IntegrityError:
+        # Lost the race to a concurrent first-interaction create.
+        pref = UserPreference.objects.get(user=user)
+        created = False
+    if created:
         _audit(user, UserPreferenceAudit.Action.CREATED)
-        return pref
+    return pref
+
+
+def _fetch_or_create_pending(user):
+    """Race-safe create (inside the caller's transaction) from a lock miss."""
+    return _create_or_fetch(user)
 
 
 def _lock(user):
@@ -669,19 +692,6 @@ def apply_patch_to_user(user, patch, expected_modified=None):
         return result
 
 
-def _fetch_or_create_pending(user):
-    """Create (inside the caller's transaction) from a lock miss."""
-    doc = default_preferences()
-    pref = UserPreference.objects.create(
-        user=user,
-        preferences=doc,
-        preferences_markdown=to_markdown(doc),
-        schema_version=SCHEMA_VERSION,
-    )
-    _audit(user, UserPreferenceAudit.Action.CREATED)
-    return pref
-
-
 def reset(user, expected_modified=None):
     """Owner-scoped reset to valid empty defaults.
 
@@ -711,21 +721,24 @@ def reset(user, expected_modified=None):
         return result
 
 
-def reset_defaults(user, expected_modified=None):
-    """Deprecated alias kept for backward clarity; use :func:`reset`."""
-    return reset(user, expected_modified=expected_modified)
-
-
-def delete_user_preference(user):
+def delete_user_preference(user, expected_modified=None):
     """Owner-scoped delete of the preference row.
 
     Returns ``{"deleted": bool, "existed": bool}``. Deleting a non-existent
     preference is a documented no-op (no row is created).
+
+    ``expected_modified`` (optional) enforces optimistic concurrency: the
+    delete is rejected with :class:`StalePreferenceError` if the row changed
+    since the caller read it (m2). The row is locked with
+    ``select_for_update`` to serialize with concurrent patches (m3).
     """
     with transaction.atomic():
-        pref = UserPreference.objects.filter(user=user).first()
+        pref = (
+            UserPreference.objects.select_for_update().filter(user=user).first()
+        )
         if pref is None:
             return {"deleted": False, "existed": False}
+        _check_stale(pref, expected_modified)
         pref.delete()
         _audit(user, UserPreferenceAudit.Action.DELETED)
         return {"deleted": True, "existed": True}
