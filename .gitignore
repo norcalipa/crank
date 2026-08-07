@@ -11,3 +11,4 @@ dump
 node_modules
 static/dist
 coverage/
+.venv-test/
