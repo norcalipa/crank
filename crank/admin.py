@@ -1,6 +1,7 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 from django.contrib import admin
+from crank.models.agent_run import AgentRun
 from crank.models.conversation import Conversation, Message
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference, UserPreferenceAudit
@@ -157,6 +158,14 @@ class MessageAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     list_select_related = ["conversation__user"]
     search_fields = ["conversation__user__username", "conversation__user__email"]
     readonly_fields = ["conversation", "role", "content", "order", "created", "modified"]
+
+
+class AgentRunAdmin(admin.ModelAdmin):
+    model = AgentRun
+    list_display = ['run_type', 'status', 'started_at', 'finished_at', 'correlation_id']
+    list_filter = ['status', 'run_type']
+    search_fields = ['correlation_id', 'error_summary']
+    readonly_fields = ['correlation_id', 'created', 'modified']
 
 
 admin.site.register(Organization, OrganizationAdmin)

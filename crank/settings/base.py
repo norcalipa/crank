@@ -300,3 +300,31 @@ LLM_PRICE_PER_1K_TOKENS_USD = float(os.environ.get("LLM_PRICE_PER_1K_TOKENS_USD"
 INTERACTIVE_AGENT_ENABLED = os.environ.get("INTERACTIVE_AGENT_ENABLED", "false").lower() in (
     "1", "true", "yes", "on"
 )
+
+def _env_bool(name, default=False):
+    """Parse a boolean environment variable, defaulting when unset."""
+    return os.environ.get(name, "1" if default else "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _env_int(name, default):
+    """Parse an integer environment variable, defaulting when unset/invalid."""
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+# Scheduled agent runs (roadmap: docs/readme.md section 8.1). Disabled by
+# default until secrets and policies are ready; operators enable them per
+# environment. These flags gate whether the management commands may claim a run.
+AGENT_RUN_ENABLED = _env_bool("AGENT_RUN_ENABLED")
+# Per-command flag for the reference no-op run.
+AGENT_NOOP_ENABLED = _env_bool("AGENT_NOOP_ENABLED")
+# Staleness TTL (seconds): a RUNNING claim older than this is treated as a
+# crashed/stale lock and reclaimed by the next claim for the same run type.
+AGENT_RUN_STALE_AFTER_SECONDS = _env_int("AGENT_RUN_STALE_AFTER_SECONDS", 3600)
