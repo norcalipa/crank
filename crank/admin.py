@@ -6,6 +6,7 @@ from crank.models.conversation import Conversation, Message
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference, UserPreferenceAudit
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
+from crank.models.source import ApprovalState, SourceCatalog, SourceRun, SourceCatalogAudit
 
 
 class StaffOnlyAdminMixin:
@@ -177,3 +178,125 @@ admin.site.register(UserPreference, UserPreferenceAdmin)
 admin.site.register(UserPreferenceAudit, UserPreferenceAuditAdmin)
 admin.site.register(Conversation, ConversationAdmin)
 admin.site.register(Message, MessageAdmin)
+
+
+class SourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+    """Source-catalog admin that records auditable, credentials-safe changes."""
+
+    model = SourceCatalog
+    list_display = [
+        "name",
+        "organization",
+        "adapter_key",
+        "approval_state",
+        "enabled",
+        "cadence",
+        "last_success_at",
+        "last_failure_at",
+    ]
+    list_filter = ["approval_state", "enabled", "cadence"]
+    list_editable = ["enabled"]
+    list_select_related = ["organization"]
+    search_fields = ["name", "organization__name", "adapter_key"]
+    readonly_fields = ["approved_at", "created", "modified"]
+    filter_horizontal = ["supported_score_types"]
+    actions = ["approve_sources", "block_sources", "enable_sources", "disable_sources"]
+
+    def save_model(self, request, obj, form, change):
+        """Persist the row and record an audit (created/changed deltas)."""
+        old = None
+        if change:
+            try:
+                old = SourceCatalog.objects.get(pk=obj.pk)
+            except SourceCatalog.DoesNotExist:
+                old = None
+        super().save_model(request, obj, form, change)
+        if not change:
+            SourceCatalogAudit.record(
+                source=obj, user=request.user, action=SourceCatalogAudit.Action.CREATED,
+                note=f"Source catalog created via admin.",
+            )
+            return
+        changes = {}
+        if old is not None:
+            for field_name in ("name", "adapter_key", "base_url", "approval_state",
+                               "enabled", "cadence", "timeout_seconds",
+                               "rate_limit_per_minute", "max_response_bytes"):
+                new_v = getattr(obj, field_name)
+                old_v = getattr(old, field_name)
+                if new_v != old_v:
+                    changes[field_name] = (old_v, new_v)
+        if changes:
+            SourceCatalogAudit.record(
+                source=obj, user=request.user, action=SourceCatalogAudit.Action.CHANGED,
+                changes=changes, note=f"Source catalog updated via admin.",
+            )
+
+    def _record_state_action(self, request, queryset, action):
+        from django.utils import timezone as dj_tz
+        updated = 0
+        for src in queryset:
+            if action == "approve":
+                src.approval_state = ApprovalState.APPROVED
+                src.approved_at = dj_tz.now()
+            elif action == "block":
+                src.approval_state = ApprovalState.BLOCKED
+            if action in ("enable",):
+                src.enabled = True
+            if action in ("disable",):
+                src.enabled = False
+            src.save(update_fields=["approval_state", "approved_at", "enabled"])
+            audit_action = {
+                "approve": SourceCatalogAudit.Action.APPROVED,
+                "block": SourceCatalogAudit.Action.BLOCKED,
+                "enable": SourceCatalogAudit.Action.ENABLED,
+                "disable": SourceCatalogAudit.Action.DISABLED,
+            }[action]
+            SourceCatalogAudit.record(
+                source=src, user=request.user, action=audit_action,
+                note=f"Source {action}d via admin action.",
+            )
+            updated += 1
+        self.message_user(request, f"{updated} source(s) {action}d and audited.")
+
+    @admin.action(description="Approve selected sources")
+    def approve_sources(self, request, queryset):
+        self._record_state_action(request, queryset, "approve")
+
+    @admin.action(description="Block selected sources")
+    def block_sources(self, request, queryset):
+        self._record_state_action(request, queryset, "block")
+
+    @admin.action(description="Enable selected sources")
+    def enable_sources(self, request, queryset):
+        self._record_state_action(request, queryset, "enable")
+
+    @admin.action(description="Disable selected sources")
+    def disable_sources(self, request, queryset):
+        self._record_state_action(request, queryset, "disable")
+
+
+class SourceRunAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+    model = SourceRun
+    list_display = [
+        "source", "status", "adapter_version", "started_at", "finished_at",
+    ]
+    list_filter = ["status"]
+    list_select_related = ["source"]
+    search_fields = ["source__name", "error_summary"]
+    readonly_fields = ["source", "agent_run", "status", "adapter_version",
+                       "counts", "error_summary", "created", "modified"]
+
+
+class SourceCatalogAuditAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+    model = SourceCatalogAudit
+    list_display = ["source", "user", "action", "created"]
+    list_filter = ["action"]
+    list_select_related = ["source", "user"]
+    search_fields = ["source__name"]
+    readonly_fields = ["source", "user", "action", "changed_fields", "note", "created"]
+
+
+admin.site.register(SourceCatalog, SourceCatalogAdmin)
+admin.site.register(SourceRun, SourceRunAdmin)
+admin.site.register(SourceCatalogAudit, SourceCatalogAuditAdmin)
