@@ -33,6 +33,33 @@ spec:
         runAsUser: 10000
         runAsGroup: 10000
         fsGroup: 10000
+      # `fats` is the k3s host (10.0.0.10) that runs the MySQL database on
+      # :3306. It is not a Kubernetes Service and does not resolve via in-cluster
+      # DNS, so DB_HOST=fats fails with EAI_AGAIN inside containers. Inject the
+      # mapping into each pod's /etc/hosts so the hostname resolves without
+      # depending on DNS or hardcoding the IP in the ConfigMap.
+      hostAliases:
+        - ip: "10.0.0.10"
+          hostnames:
+            - "fats"
+      # In-cluster DNS (CoreDNS) cannot resolve external names in this cluster
+      # (the node's upstream resolver is unreachable from pods), so the OAuth
+      # token exchange fails: `Failed to resolve 'oauth2.googleapis.com'
+      # ([Errno -3] Try again)`. With dnsPolicy: ClusterFirst the cluster DNS is
+      # prepended (so in-cluster names like `redis-master` still resolve) and
+      # these public nameservers are appended as fallbacks for external names.
+      # The resolver tries the next server on a temporary failure (EAI_AGAIN),
+      # so external queries succeed via 8.8.8.8 / 1.1.1.1.
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        nameservers:
+          - 8.8.8.8
+          - 1.1.1.1
+        options:
+          - name: timeout
+            value: "2"
+          - name: attempts
+            value: "3"
       containers:
         - name: crank-container
           image: ghcr.io/norcalipa/crank/crank:${GITHUB_SHA}

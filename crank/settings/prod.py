@@ -13,7 +13,12 @@ pymysql.install_as_MySQLdb()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEBUG = False
-# SECURE_SSL_REDIRECT = True
+# NOTE: SECURE_SSL_REDIRECT must stay disabled. Production runs Django's dev
+# server (`manage.py runserver`, HTTP-only) on port 8080 behind Cloudflare.
+# Enabling SSL redirect here makes Django return 301 -> https for every
+# request; Cloudflare then opens a TLS connection to the HTTP-only origin,
+# the dev server cannot speak TLS, and the liveness probe fails -> crashloop.
+# Enforce HTTPS at the Cloudflare edge ("Always Use HTTPS") instead.
 SECRET_KEY = os.environ.get('SECRET_KEY')
 CPU_COUNT = multiprocessing.cpu_count()
 
@@ -45,6 +50,11 @@ DATABASES = {
 }
 ALLOWED_HOSTS = ['*']
 ACCOUNT_DEFAULT_HTTP_PROTOCOL = 'https'
+# Cloudflare terminates TLS and forwards to the k8s NodePort over plain HTTP,
+# so Django sees request.scheme == 'http'. Trust the proxy's forwarded header
+# so is_secure() / build_absolute_uri() report https and the OAuth redirect_uri
+# stays consistent between login initiation and the token-exchange callback.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,

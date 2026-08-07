@@ -6,7 +6,10 @@ const options = {};
 
 
 module.exports = {
-    entry: './static/js/OrganizationList.tsx',
+    entry: {
+        main: './static/js/OrganizationList.tsx',
+        jobsearch: './static/js/JobSearchChat.tsx',
+    },
     output: {
         path: path.resolve(__dirname, 'static/dist'),
         filename: '[name].[contenthash].js',
