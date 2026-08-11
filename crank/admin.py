@@ -3,6 +3,7 @@
 from django.contrib import admin
 from crank.models.agent_run import AgentRun
 from crank.models.conversation import Conversation, Message
+from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference, UserPreferenceAudit
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
@@ -300,3 +301,33 @@ class SourceCatalogAuditAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 admin.site.register(SourceCatalog, SourceCatalogAdmin)
 admin.site.register(SourceRun, SourceRunAdmin)
 admin.site.register(SourceCatalogAudit, SourceCatalogAuditAdmin)
+
+
+class JobSourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+    """Staff-only policy diagnosis without credentials or raw responses."""
+
+    model = JobSourceCatalog
+    list_display = ["name", "adapter_key", "approval_state", "enabled", "base_url", "created", "modified"]
+    list_filter = ["approval_state", "enabled"]
+    search_fields = ["name", "adapter_key", "base_url"]
+    readonly_fields = ["created", "modified"]
+
+
+class JobListingAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+    """Staff-only listing diagnosis; avoid exposing description excerpts in lists."""
+
+    model = JobListing
+    list_display = ["title", "employer_name", "source", "status", "is_remote", "last_seen_at"]
+    list_filter = ["status", "is_remote", "source"]
+    list_select_related = ["source"]
+    search_fields = ["title", "employer_name", "employer_domain", "external_id"]
+    readonly_fields = [
+        "source", "external_id", "canonical_url", "employer_name", "employer_domain",
+        "title", "location_text", "is_remote", "compensation_min", "compensation_max",
+        "compensation_currency", "compensation_interval", "description_excerpt",
+        "first_seen_at", "last_seen_at", "status", "source_metadata", "created", "modified",
+    ]
+
+
+admin.site.register(JobSourceCatalog, JobSourceCatalogAdmin)
+admin.site.register(JobListing, JobListingAdmin)
