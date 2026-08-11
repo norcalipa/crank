@@ -11,7 +11,15 @@ from django.test import TestCase
 from django.utils import timezone
 
 from crank.admin import JobListingAdmin, JobSourceCatalogAdmin
-from crank.agents.jobs.base import RawJobListing
+from crank.agents.jobs.base import (
+    JobSourceAdapter,
+    JobSourceQuery,
+    RawJobListing,
+    _validate_domain,
+    validate_job_url,
+    validate_source_metadata,
+)
+from crank.agents.jobs.errors import JobSchemaError
 from crank.models.job import JobListing, JobSourceCatalog
 
 
@@ -62,15 +70,101 @@ class RawJobListingTests(TestCase):
                     raw(**values)
 
     def test_query_bounds(self):
-        from crank.agents.jobs.base import JobSourceQuery
-
         with self.assertRaises(Exception):
             JobSourceQuery(max_listings=0)
         with self.assertRaises(Exception):
             JobSourceQuery(max_pages=1001)
 
+    def test_rejects_invalid_types_and_url_forms(self):
+        invalid_values = [
+            {"external_id": 42},
+            {"employer_name": ""},
+            {"title": ""},
+            {"employer_domain": "not-a-hostname"},
+            {"is_remote": "yes"},
+            {"status": "draft"},
+            {"compensation_min": True},
+            {"compensation_min": float("inf")},
+            {"compensation_min": Decimal("NaN")},
+            {"first_seen_at": timezone.now(), "last_seen_at": timezone.now() - timedelta(days=1)},
+        ]
+        for values in invalid_values:
+            with self.subTest(values=values):
+                with self.assertRaises(JobSchemaError):
+                    raw(**values)
+
+        with self.assertRaises(JobSchemaError):
+            validate_job_url(None)
+        with self.assertRaises(JobSchemaError):
+            validate_job_url("x" * 1025)
+        with self.assertRaises(JobSchemaError):
+            validate_job_url("https://jobs.example.test:443/job/1")
+        with self.assertRaises(JobSchemaError):
+            validate_job_url("https://[::1")
+
+    def test_optional_dates_are_filled_from_each_other_or_now(self):
+        only_last = timezone.now()
+        listing = raw(first_seen_at=None, last_seen_at=only_last)
+        self.assertEqual(listing.first_seen_at, only_last)
+        only_first = timezone.now()
+        listing = raw(first_seen_at=only_first, last_seen_at=None)
+        self.assertEqual(listing.last_seen_at, only_first)
+        listing = raw(first_seen_at=None, last_seen_at=None)
+        self.assertIsNotNone(listing.first_seen_at)
+        self.assertEqual(listing.first_seen_at, listing.last_seen_at)
+
+    def test_domain_and_metadata_validation(self):
+        self.assertEqual(_validate_domain(" Example.COM. "), "example.com")
+        for value in ("", "example", "example/path", "example:443", "user@example.com"):
+            with self.subTest(value=value):
+                with self.assertRaises(JobSchemaError):
+                    _validate_domain(value)
+
+        with self.assertRaises(JobSchemaError):
+            validate_source_metadata(1)
+        with self.assertRaises(JobSchemaError):
+            validate_source_metadata({"api_token": "secret"})
+        with self.assertRaises(JobSchemaError):
+            validate_source_metadata({"nested": [{"response_body": "raw"}]})
+        with self.assertRaises(JobSchemaError):
+            validate_source_metadata({"value": float("nan")})
+        with self.assertRaises(JobSchemaError):
+            validate_source_metadata({"value": object()})
+        with self.assertRaises(JobSchemaError):
+            validate_source_metadata({"value": "x" * 9000})
+        with self.assertRaises(JobSchemaError):
+            validate_source_metadata({("not", "json"): "value"})
+        copied = validate_source_metadata({"nested": [{"ok": True}, ("value",)]})
+        self.assertEqual(copied["nested"][0]["ok"], True)
+
+    def test_query_text_validation_and_abstract_contract(self):
+        with self.assertRaises(JobSchemaError):
+            JobSourceQuery(keyword=object())
+        with self.assertRaises(JobSchemaError):
+            JobSourceQuery(location=object())
+
+        class CallsBaseFetch(JobSourceAdapter):
+            key = "calls-base"
+            version = "1"
+
+            def fetch(self, query):
+                return super().fetch(query)
+
+        with self.assertRaises(NotImplementedError):
+            CallsBaseFetch(object()).fetch(JobSourceQuery())
+
 
 class JobListingModelTests(TestCase):
+    def test_model_strings_manager_and_presence(self):
+        source = make_source()
+        self.assertEqual(str(source), "Synthetic jobs")
+        listing = JobListing.ingest(source, raw())
+        self.assertEqual(str(listing), "Senior Python Developer (Acme Labs)")
+        self.assertEqual(JobListing.all_objects.active().get(), listing)
+        self.assertTrue(listing.is_presentable)
+        listing.status = JobListing.Status.CLOSED
+        self.assertFalse(listing.is_presentable)
+
     def test_ingest_updates_mutable_state_and_retains_provenance(self):
         source = make_source()
         first = raw()
@@ -121,6 +215,39 @@ class JobListingModelTests(TestCase):
         )
         with self.assertRaises(ValidationError):
             item.full_clean()
+
+    def test_model_clean_validates_url_and_each_compensation_boundary(self):
+        source = make_source()
+        base = dict(
+            source=source,
+            external_id="x",
+            canonical_url="https://jobs.example.test/x",
+            employer_name="Acme",
+            title="Role",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+        )
+        item = JobListing(**{**base, "canonical_url": "https://evil.example/x"})
+        with self.assertRaises(ValidationError):
+            item.clean()
+        for values in (
+            {"compensation_min": -1},
+            {"compensation_max": -1},
+            {"compensation_min": 10, "compensation_max": 2},
+        ):
+            with self.subTest(values=values):
+                with self.assertRaises(ValidationError):
+                    JobListing(**{**base, **values}).clean()
+
+
+class JobSourceCatalogModelTests(TestCase):
+    def test_clean_and_allowed_hosts(self):
+        source = make_source()
+        self.assertIn("jobs.example.test", source.allowed_hosts())
+        source.clean()
+        source.base_url = "https://evil.example/jobs"
+        with self.assertRaises(ValidationError):
+            source.clean()
 
 
 class JobAdminAuthorizationTests(TestCase):
