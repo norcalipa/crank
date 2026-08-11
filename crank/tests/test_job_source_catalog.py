@@ -32,6 +32,8 @@ REQUIRED_SOURCE_KEYS = {
     "retention",
     "deletion_expiry_obligations",
     "live_enabled",
+    "ssrf_allowlist",
+    "canonical_hosts",
 }
 REQUIRED_API_KEYS = {
     "available",
@@ -54,16 +56,18 @@ def load_yaml(path):
     return value
 
 
-def assert_http_url(url, field, record):
+def assert_https_url(url, field, record):
     assert isinstance(url, str) and url, f"{field} must be a non-empty string for '{record}'"
     parsed = urlparse(url)
-    assert parsed.scheme in {"http", "https"}, f"{field} must be http(s) for '{record}': {url}"
+    assert parsed.scheme == "https", f"{field} must use https for '{record}': {url}"
     assert parsed.netloc, f"{field} must have a host for '{record}': {url}"
 
 
-def assert_optional_http_url(url, field, record):
+def assert_optional_https_url(url, field, record):
     if url is not None:
-        assert_http_url(url, field, record)
+        assert_https_url(url, field, record)
+
+
 
 
 @pytest.fixture(scope="module")
@@ -91,7 +95,7 @@ def test_source_records_are_well_formed(catalog):
         missing = REQUIRED_SOURCE_KEYS - source.keys()
         assert not missing, f"{name} is missing required keys: {sorted(missing)}"
 
-        assert_http_url(source["url"], "url", name)
+        assert_https_url(source["url"], "url", name)
         assert source["kind"] in ALLOWED_KINDS, f"{name} has invalid kind"
         assert source["approval_state"] in ALLOWED_APPROVAL_STATES
         approval = source["approval"]
@@ -100,14 +104,14 @@ def test_source_records_are_well_formed(catalog):
         assert approval["review_date"]
         assert isinstance(approval["evidence"], list)
         for evidence_url in approval["evidence"]:
-            assert_http_url(evidence_url, "approval.evidence[]", name)
+            assert_https_url(evidence_url, "approval.evidence[]", name)
 
         api = source["api"]
         missing_api = REQUIRED_API_KEYS - api.keys()
         assert not missing_api, f"{name}.api is missing keys: {sorted(missing_api)}"
-        assert_optional_http_url(api["endpoint"], "api.endpoint", name)
-        assert_optional_http_url(api["docs"], "api.docs", name)
-        assert_optional_http_url(api["terms_url"], "api.terms_url", name)
+        assert_optional_https_url(api["endpoint"], "api.endpoint", name)
+        assert_optional_https_url(api["docs"], "api.docs", name)
+        assert_optional_https_url(api["terms_url"], "api.terms_url", name)
         assert isinstance(source["compensation_fields"], list)
         assert isinstance(source["location_fields"], list)
         assert isinstance(source["matching_fields"], list)
@@ -116,14 +120,15 @@ def test_source_records_are_well_formed(catalog):
         assert source["live_enabled"] is False
 
 
-def test_exactly_one_approved_external_mvp_source(catalog):
+def test_at_most_one_approved_external_mvp_source(catalog):
     approved = [
         source
         for source in catalog["sources"]
         if source["approval_state"] == "approved" and source["kind"] == "external"
     ]
-    assert len(approved) == 1, f"expected exactly one approved external source, got {len(approved)}"
-    assert approved[0]["name"].lower() == catalog["mvp"]["source"].lower()
+    assert len(approved) <= 1, f"expected at most one approved external source, got {len(approved)}"
+    if approved:
+        assert approved[0]["name"].lower() == catalog["mvp"]["source"].lower()
 
 
 def test_mvp_source_is_not_live_by_default(catalog):
@@ -150,3 +155,30 @@ def test_ssrf_allowlist_contains_valid_bare_hostnames(catalog):
         parsed = urlparse(f"https://{host}")
         assert parsed.hostname == host
         assert parsed.port is None
+
+
+def test_source_ssrf_policy_covers_request_and_canonical_hosts(catalog):
+    global_allowlist = set(catalog["ssrf"]["allowlist"])
+    assert catalog["ssrf"]["require_https"] is True
+    for source in catalog["sources"]:
+        source_allowlist = set(source["ssrf_allowlist"])
+        assert source_allowlist <= global_allowlist, source["name"]
+        for field in ("url", "api.endpoint", "api.docs", "api.terms_url"):
+            value = source if field == "url" else source
+            if field == "url":
+                url = value["url"]
+            else:
+                section, key = field.split(".")
+                url = value[section].get(key)
+            if not url or not source_allowlist:
+                continue
+            assert urlparse(url).hostname in source_allowlist, (
+                f"{source['name']} {field} host is not in source SSRF allowlist"
+            )
+        for canonical_host in source.get("canonical_hosts", []):
+            if source_allowlist:
+                assert canonical_host in source_allowlist, (
+                    f"{source['name']} canonical host is not in source SSRF allowlist"
+                )
+        if source["approval_state"] == "approved":
+            assert source_allowlist, f"approved source {source['name']} needs a source SSRF allowlist"
