@@ -29,6 +29,7 @@ class AgentRun(TimeStampedModel):
 
     class RunType(models.TextChoices):
         NOOP = "noop", _("No-op reference run")
+        GATHER_SCORES = "gather_scores", _("Score gathering run")
 
     class Status(models.TextChoices):
         PENDING = "pending", _("Pending")

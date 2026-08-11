@@ -362,6 +362,13 @@ def _env_float(name, default):
 AGENT_RUN_ENABLED = _env_bool("AGENT_RUN_ENABLED")
 # Per-command flag for the reference no-op run.
 AGENT_NOOP_ENABLED = _env_bool("AGENT_NOOP_ENABLED")
+# Score gathering is independently disabled by default until source policy and
+# credentials are configured by an operator.
+GATHER_SCORES_ENABLED = _env_bool("GATHER_SCORES_ENABLED")
+GATHER_SCORES_DEADLINE_SECONDS = _env_int("GATHER_SCORES_DEADLINE_SECONDS", 300)
+GATHER_SCORES_SOURCE_TIMEOUT_SECONDS = _env_int(
+    "GATHER_SCORES_SOURCE_TIMEOUT_SECONDS", 120
+)
 # Staleness TTL (seconds): a RUNNING claim older than this is treated as a
 # crashed/stale lock and reclaimed by the next claim for the same run type.
 AGENT_RUN_STALE_AFTER_SECONDS = _env_int("AGENT_RUN_STALE_AFTER_SECONDS", 3600)

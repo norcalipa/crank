@@ -87,7 +87,9 @@ class AgentRunCommand(BaseCommand):
             agent_runs.finalize_success(run, counts=counts)
         except Exception as exc:  # noqa: BLE001 - finalize as failed and exit 1
             logger.exception("agent run failed with exception")
-            agent_runs.finalize_failure(run, exc)
+            agent_runs.finalize_failure(
+                run, exc, counts=getattr(exc, "counts", None)
+            )
             # CommandError gives the process a non-zero exit code on failure,
             # which Kubernetes needs to detect/rety the CronJob pod.
             raise CommandError(

@@ -18,34 +18,31 @@ class SourceMigrationTests(TransactionTestCase):
     def test_source_models_have_a_migration(self):
         loader = MigrationLoader(connection, ignore_no_migrations=True)
         loader.build_graph()
-        # All crank models are covered by migrations: no pending changes.
-        from django.core.management.commands.makemigrations import Command
-
-        # Heavy check avoided; instead verify the declared models are in a migration.
+        # The crank migration graph must have a single leaf.
         app_leaf = loader.graph.leaf_nodes("crank")
         self.assertEqual(len(app_leaf), 1, "crank graph must have a single leaf")
-        leaf = app_leaf[0]
-        self.assertEqual(leaf[0], "crank")
-        # The newest crank migration must create the source models.
-        migration = loader.disk_migrations[leaf]
-        created = [
-            op.name
-            for op in migration.operations
-            if op.__class__.__name__ == "CreateModel"
-        ]
-        self.assertIn("SourceCatalog", created)
-        self.assertIn("SourceRun", created)
-        self.assertIn("SourceCatalogAudit", created)
+        # The source models must be created by some migration in the chain.
+        all_created = set()
+        for (app, name), migration in loader.disk_migrations.items():
+            if app != "crank":
+                continue
+            for op in migration.operations:
+                if op.__class__.__name__ == "CreateModel":
+                    all_created.add(op.name)
+        self.assertIn("SourceCatalog", all_created)
+        self.assertIn("SourceRun", all_created)
+        self.assertIn("SourceCatalogAudit", all_created)
 
     def test_migration_depends_on_previous_leaf(self):
         loader = MigrationLoader(connection, ignore_no_migrations=True)
         loader.build_graph()
         leaf = loader.graph.leaf_nodes("crank")[0]
         migration = loader.disk_migrations[leaf]
-        # The migration continues the chain from 0011 (single-leaf history).
+        # The leaf migration must depend on the previous crank migration in the chain.
+        deps = [dep[1] for dep in migration.dependencies if dep[0] == "crank"]
         self.assertTrue(
-            any(dep[1].startswith("0011") for dep in migration.dependencies),
-            "source migration must depend on the previous crank migration",
+            len(deps) == 1,
+            "crank leaf migration must have exactly one crank dependency",
         )
 
     def test_no_pending_model_changes(self):
