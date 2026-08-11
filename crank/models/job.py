@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from django.core.exceptions import ValidationError
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
 from django_extensions.db.models import TimeStampedModel

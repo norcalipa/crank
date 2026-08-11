@@ -1,5 +1,7 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
+from types import SimpleNamespace
+
 from django.test import TestCase
 
 from crank.agents.jobs.base import JobSourceAdapter, JobSourceQuery, JobSourceResult, RawJobListing
@@ -80,6 +82,27 @@ class JobAdapterContractTests(TestCase):
             build_job_adapter(
                 self.source(name="malformed", approval_state="approved", enabled=True, base_url="http://jobs.example.test/jobs")
             )
+        with self.assertRaises(Exception):
+            build_job_adapter(
+                self.source(name="port", approval_state="approved", enabled=True, base_url="https://jobs.example.test:443/jobs")
+            )
+
+        def unsaved_source(**kwargs):
+            values = {
+                "name": "Unsaved source",
+                "adapter_key": FakeAdapter.key,
+                "base_url": "https://jobs.example.test",
+                "approval_state": "approved",
+                "enabled": True,
+                "allowed_hosts": lambda: {"jobs.example.test"},
+            }
+            values.update(kwargs)
+            return SimpleNamespace(**values)
+
+        with self.assertRaises(Exception):
+            build_job_adapter(unsaved_source(base_url="https://evil.example/jobs"))
+        with self.assertRaises(Exception):
+            build_job_adapter(unsaved_source(base_url="http://jobs.example.test/jobs"))
 
     def test_fetch_contract(self):
         adapter = build_job_adapter(

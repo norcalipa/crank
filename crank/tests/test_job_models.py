@@ -2,6 +2,7 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 from datetime import timedelta
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth.models import User
@@ -15,7 +16,9 @@ from crank.agents.jobs.base import (
     JobSourceAdapter,
     JobSourceQuery,
     RawJobListing,
+    _validate_compensation,
     _validate_domain,
+    validate_catalog_metadata,
     validate_job_url,
     validate_source_metadata,
 )
@@ -137,6 +140,36 @@ class RawJobListingTests(TestCase):
         copied = validate_source_metadata({"nested": [{"ok": True}, ("value",)]})
         self.assertEqual(copied["nested"][0]["ok"], True)
 
+    def test_compensation_field_boundaries(self):
+        with self.assertRaises(JobSchemaError):
+            _validate_compensation(Decimal("1e100"), "compensation_min")
+        with self.assertRaises(JobSchemaError):
+            _validate_compensation(Decimal("1.001"), "compensation_min")
+        with self.assertRaises(JobSchemaError):
+            _validate_compensation(Decimal("1000000000000"), "compensation_min")
+
+    def test_catalog_metadata_is_sanitized_and_bounded(self):
+        metadata = validate_catalog_metadata(
+            {
+                "nested": {"items": ["ok", (True, None)]},
+                "api_key": "removed",
+                "Authorization": "removed",
+            }
+        )
+        self.assertEqual(metadata, {"nested": {"items": ["ok", [True, None]]}})
+
+        with self.assertRaises(JobSchemaError):
+            validate_catalog_metadata({1: "non-string key"})
+        with self.assertRaises(JobSchemaError):
+            validate_catalog_metadata({"value": float("inf")})
+        with self.assertRaises(JobSchemaError):
+            validate_catalog_metadata({"value": object()})
+        with self.assertRaises(JobSchemaError):
+            validate_catalog_metadata({"value": "x" * 9000})
+        with patch("crank.agents.jobs.base.json.dumps", side_effect=TypeError("not JSON")):
+            with self.assertRaises(JobSchemaError):
+                validate_catalog_metadata({"value": "ok"})
+
     def test_query_text_validation_and_abstract_contract(self):
         with self.assertRaises(JobSchemaError):
             JobSourceQuery(keyword=object())
@@ -186,6 +219,47 @@ class JobListingModelTests(TestCase):
         self.assertEqual(changed.compensation_min, Decimal("100.00"))
         self.assertEqual(JobListing.objects.count(), 0)
         self.assertEqual(JobListing.all_objects.count(), 1)
+
+    def test_ingest_does_not_resurrect_terminal_listing(self):
+        source = make_source()
+        closed = JobListing.ingest(source, raw(status=JobListing.Status.CLOSED))
+        observed = raw(
+            status=JobListing.Status.ACTIVE,
+            title="Updated active title",
+            first_seen_at=closed.first_seen_at,
+            last_seen_at=closed.last_seen_at + timedelta(hours=1),
+        )
+        listing = JobListing.ingest(source, observed)
+        self.assertEqual(listing.status, JobListing.Status.CLOSED)
+
+    def test_ingest_keeps_state_for_stale_observation(self):
+        source = make_source()
+        current = raw(status=JobListing.Status.ACTIVE)
+        listing = JobListing.ingest(source, current)
+        stale = raw(
+            status=JobListing.Status.CLOSED,
+            title="Stale title",
+            first_seen_at=current.first_seen_at - timedelta(hours=1),
+            last_seen_at=current.last_seen_at - timedelta(hours=1),
+        )
+        changed = JobListing.ingest(source, stale)
+        self.assertEqual(changed.status, JobListing.Status.ACTIVE)
+
+    def test_ingest_reconciles_concurrent_insert(self):
+        source = make_source()
+        listing = JobListing.ingest(source, raw())
+        incoming = raw(title="Concurrent update", last_seen_at=listing.last_seen_at + timedelta(hours=1))
+        with patch.object(JobListing.all_objects, "create", side_effect=IntegrityError):
+            changed = JobListing.ingest(source, incoming)
+        self.assertEqual(changed.pk, listing.pk)
+        self.assertEqual(changed.title, "Concurrent update")
+
+    def test_ingest_reraises_unreconciled_integrity_error(self):
+        source = make_source()
+        incoming = raw()
+        with patch.object(JobListing.all_objects, "create", side_effect=IntegrityError):
+            with self.assertRaises(IntegrityError):
+                JobListing.ingest(source, incoming)
 
     def test_canonical_url_fallback_deduplicates_without_external_id(self):
         source = make_source()
@@ -246,6 +320,11 @@ class JobSourceCatalogModelTests(TestCase):
         self.assertIn("jobs.example.test", source.allowed_hosts())
         source.clean()
         source.base_url = "https://evil.example/jobs"
+        with self.assertRaises(ValidationError):
+            source.clean()
+
+        source.base_url = "https://jobs.example.test"
+        source.catalog_metadata = {"nested": object()}
         with self.assertRaises(ValidationError):
             source.clean()
 
