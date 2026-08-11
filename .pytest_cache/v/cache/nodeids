@@ -1,0 +1,13 @@
+[
+  "crank/tests/test_job_source_catalog.py::test_approved_source_branches_with_mock",
+  "crank/tests/test_job_source_catalog.py::test_at_most_one_approved_external_mvp_source",
+  "crank/tests/test_job_source_catalog.py::test_catalog_parseable_and_shaped",
+  "crank/tests/test_job_source_catalog.py::test_fetch_url_guardrail_rejects_unsafe_forms",
+  "crank/tests/test_job_source_catalog.py::test_governance_fields_have_semantic_types",
+  "crank/tests/test_job_source_catalog.py::test_mvp_source_is_not_live_by_default",
+  "crank/tests/test_job_source_catalog.py::test_only_approved_sources_can_have_effective_permissions",
+  "crank/tests/test_job_source_catalog.py::test_operational_controls_are_source_specific",
+  "crank/tests/test_job_source_catalog.py::test_source_records_are_well_formed",
+  "crank/tests/test_job_source_catalog.py::test_source_ssrf_policy_covers_request_evidence_and_presentation_hosts",
+  "crank/tests/test_job_source_catalog.py::test_ssrf_allowlist_contains_valid_typed_bare_hostnames"
+]

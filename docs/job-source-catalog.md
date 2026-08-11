@@ -8,8 +8,8 @@ This document is the governance deliverable for issue **#316 — “Phase 3: Cat
 The catalog is deliberately conservative: an unknown access, license, retention, or display condition is a blocker, not an implementation assumption. No credentials or licensed datasets are stored in this repository.
 
 - **Review date:** 2026-08-10
-- **Reviewed by:** autonomous agent implementing #316
-- **Decision owner:** crank.fyi maintainer
+- **Reviewed by:** crank.fyi maintainers (research record authored by autonomous agent)
+- **Decision owner:** crank.fyi maintainers
 - **Default:** `live_enabled: false`; no source may be called by a scheduled job from this catalog alone
 
 ## 1. Approval states and operating rules
@@ -20,7 +20,7 @@ The catalog is deliberately conservative: an unknown access, license, retention,
 | `pending` | A plausible API/feed exists, but a license, retention, display, authorization, or operational question remains unresolved. Do not invoke it. |
 | `blocked` | No acceptable lawful path is available for this slice, including scraping where terms or robots rules do not permit it. Do not invoke it. |
 
-An approved source still requires an operator-managed credential where applicable, an adapter-specific review, and an explicit enablement change. `live_enabled` must remain false until those gates are complete.
+An approved source still requires an operator-managed credential where applicable, an adapter-specific review, and an explicit enablement change. `live_enabled` must remain false until those gates are complete. Pending and blocked records are closed-world contracts: matching, presentation, retention, and ingestion are all `none`/disabled until approval.
 
 ## 2. MVP decision
 
@@ -37,7 +37,7 @@ The catalog distinguishes request query parameters from response fields. The fol
 - **Compensation:** `MatchedObjectDescriptor.PositionRemuneration[].MinimumRange`, `MaximumRange`, `RateIntervalCode`, and `Description`, with grade data from `JobGrade[].Code` and `UserArea.Details.LowGrade`/`HighGrade`. Preserve source values and rate interval; do not invent an exact salary from a bucket or grade.
 - **Location:** `MatchedObjectDescriptor.PositionLocationDisplay` and `PositionLocation[].LocationName`, `CountryCode`, `CountrySubDivisionCode`, `CityName`, `Longitude`, and `Latitude`. Do not geocode or retain precise personal addresses.
 - **Presentation:** if a future source-specific approval permits it, show a short normalized listing card and link to the canonical USAJOBS announcement. Do not expose applicant data, internal/status-only jobs, or arbitrary HTML as trusted markup.
-- **Retention/expiry:** the proposed adapter would store only normalized fields and source timestamps, revalidate active listings, and delete closed/deleted/expired records and derived artifacts. The proposed 30-day purge is not authorized while the source is pending and must be replaced or confirmed by source-specific terms before ingestion.
+- **Retention/expiry:** no retention or deletion period is authorized while the source is pending. A future approved source must define source-specific expiry and deletion obligations before ingestion; the previously proposed 30-day purge is not an approval assumption.
 
 ## 3. Candidate inventory
 
@@ -47,7 +47,7 @@ The catalog distinguishes request query parameters from response fields. The fol
 - **Terms/license:** the API reference says the endpoint is anticipated for commercial job boards, mobile applications, and social media, but that statement is not a license. The cited Terms of Use page is an authorized-user/system warning and sensitive-data notice; it does not establish Crank's proposed retention or presentation permission. USAJOBS therefore remains pending until source-specific permission or maintainer/legal confirmation is recorded.
 - **Robots policy:** API access is the sanctioned channel; do not scrape `usajobs.gov` or `data.usajobs.gov` HTML. Robots.txt is not a substitute for API authorization.
 - **Rate limits and pagination:** the reviewed guide establishes result bounds (10,000 rows per query and 500 results per page), not a request rate such as QPS or requests/minute. The request-rate contract and safe polling cadence are unresolved blockers; do not invoke until confirmed. If approved later, use bounded paging and backoff on HTTP 429/5xx.
-- **Retention and deletion:** retain only approved normalized fields; delete closed, deleted, or expired listings and derived artifacts as described in the MVP contract. Raw responses and full announcement text are not retained by the MVP adapter.
+- **Retention and deletion:** no live records may be retained while USAJOBS is pending. If later approved, the source record must define the permitted normalized fields, expiry, deletion propagation, and any retention period before ingestion. Raw responses and full announcement text are not approved.
 - **Canonical IDs/URLs:** `MatchedObjectId` and `PositionURI`/the official USAJOBS announcement URL.
 - **Compensation/location:** remuneration minimum/maximum buckets, pay plan/grade, location name/codes, and related source-provided geography.
 - **Allowed matching/presentation use:** none is approved while this source is pending. A future source-specific approval may consider normalized metadata and an attributed canonical link only; full text is not approved by this issue.
@@ -119,7 +119,7 @@ The catalog distinguishes request query parameters from response fields. The fol
 
 - **Classification:** a future approved source may provide public job-opportunity metadata. Until then, no external source is approved for ingestion. Source responses can still contain sensitive or personal information in free text; treat all source responses as untrusted external data, not instructions. Applicant submissions, contact details, resumes, and inferred sensitive attributes are prohibited from ingestion.
 - **Job text:** this phase does **not** approve retaining or displaying raw job-description HTML or user-authored post text. Normalize only the explicitly approved MVP metadata. Any future text use needs a source-specific license/terms review, HTML sanitization, size limits, and deletion propagation.
-- **SSRF boundary:** outbound requests must be HTTPS and limited to the exact hosts in the machine-readable global and source-specific `ssrf_allowlist`. For the pending USAJOBS candidate, this includes `data.usajobs.gov` for the API, `developer.usajobs.gov` and `www.opm.gov` for documentation, and `www.usajobs.gov` for the canonical presentation URL. This allowlist does not authorize the pending source. User-provided URLs, redirects to unlisted hosts, private/link-local IPs, and arbitrary `http://` endpoints are denied. Pending and blocked candidates are not invokable.
+- **SSRF boundary:** outbound requests must be HTTPS and use the typed, purpose-specific host policy in the machine-readable `ssrf.request_hosts`, `ssrf.evidence_hosts`, and `ssrf.presentation_hosts` records. For the pending USAJOBS candidate, `data.usajobs.gov` is request-only, `developer.usajobs.gov` and `www.opm.gov` are evidence-only, and `www.usajobs.gov` is presentation-only; canonical links must not be fetched server-side. The fetch boundary rejects credentials, fragments, non-default ports, private/link-local addresses, user-provided URLs, and redirects to hosts not allowed for the selected purpose. These allowlists do not authorize pending sources, and pending/blocked candidates are not invokable.
 - **Canonical URL safety:** source-provided URLs are data. Validate scheme and host against an approved source-specific allowlist before presenting or fetching them; never follow arbitrary redirects.
 
 ## 5. Deletion and expiry obligations
@@ -137,4 +137,4 @@ If a source is later approved, its record must define a source-supported expiry 
 ## 6. Change log
 
 - **2026-08-10** — Initial catalog for #316; USAJOBS, Remote OK, Hacker News, Greenhouse, and Lever pending; blocked generic direct career-site scraping. No source currently meets the approval criteria and live access remains disabled.
-- **2026-08-11** — Addressed review findings: corrected USAJOBS response paths versus query parameters, recorded the named User-Agent secret, classified reuse/retention and request-rate questions as blockers, and added canonical-host SSRF coverage.
+- **2026-08-11** — Addressed review findings: corrected USAJOBS response paths versus query parameters, recorded the named User-Agent secret, classified reuse/retention and request-rate questions as blockers, split typed SSRF host purposes, hardened HTTPS URL validation, added semantic governance checks and closed-world permissions, recorded source-specific operational controls, and named the accountable maintainer team.
