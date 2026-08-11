@@ -2,6 +2,7 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 """Guardrails for the Phase 3 external job-source catalog."""
 
+import copy
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -68,6 +69,41 @@ def assert_optional_https_url(url, field, record):
         assert_https_url(url, field, record)
 
 
+def _check_at_most_one_approved(catalog):
+    approved = [
+        source
+        for source in catalog["sources"]
+        if source["approval_state"] == "approved" and source["kind"] == "external"
+    ]
+    assert len(approved) <= 1, f"expected at most one approved external source, got {len(approved)}"
+    if approved:
+        assert approved[0]["name"].lower() == catalog["mvp"]["source"].lower()
+
+
+def _check_source_ssrf_policy(catalog):
+    global_allowlist = set(catalog["ssrf"]["allowlist"])
+    assert catalog["ssrf"]["require_https"] is True
+    for source in catalog["sources"]:
+        source_allowlist = set(source["ssrf_allowlist"])
+        assert source_allowlist <= global_allowlist, source["name"]
+        for field in ("url", "api.endpoint", "api.docs", "api.terms_url"):
+            if field == "url":
+                url = source["url"]
+            else:
+                section, key = field.split(".")
+                url = source[section].get(key)
+            if not url or not source_allowlist:
+                continue
+            assert urlparse(url).hostname in source_allowlist, (
+                f"{source['name']} {field} host is not in source SSRF allowlist"
+            )
+        for canonical_host in source.get("canonical_hosts", []):
+            if source_allowlist:
+                assert canonical_host in source_allowlist, (
+                    f"{source['name']} canonical host is not in source SSRF allowlist"
+                )
+        if source["approval_state"] == "approved":
+            assert source_allowlist, f"approved source {source['name']} needs a source SSRF allowlist"
 
 
 @pytest.fixture(scope="module")
@@ -121,14 +157,7 @@ def test_source_records_are_well_formed(catalog):
 
 
 def test_at_most_one_approved_external_mvp_source(catalog):
-    approved = [
-        source
-        for source in catalog["sources"]
-        if source["approval_state"] == "approved" and source["kind"] == "external"
-    ]
-    assert len(approved) <= 1, f"expected at most one approved external source, got {len(approved)}"
-    if approved:
-        assert approved[0]["name"].lower() == catalog["mvp"]["source"].lower()
+    _check_at_most_one_approved(catalog)
 
 
 def test_mvp_source_is_not_live_by_default(catalog):
@@ -158,27 +187,25 @@ def test_ssrf_allowlist_contains_valid_bare_hostnames(catalog):
 
 
 def test_source_ssrf_policy_covers_request_and_canonical_hosts(catalog):
-    global_allowlist = set(catalog["ssrf"]["allowlist"])
-    assert catalog["ssrf"]["require_https"] is True
-    for source in catalog["sources"]:
-        source_allowlist = set(source["ssrf_allowlist"])
-        assert source_allowlist <= global_allowlist, source["name"]
-        for field in ("url", "api.endpoint", "api.docs", "api.terms_url"):
-            value = source if field == "url" else source
-            if field == "url":
-                url = value["url"]
-            else:
-                section, key = field.split(".")
-                url = value[section].get(key)
-            if not url or not source_allowlist:
-                continue
-            assert urlparse(url).hostname in source_allowlist, (
-                f"{source['name']} {field} host is not in source SSRF allowlist"
-            )
-        for canonical_host in source.get("canonical_hosts", []):
-            if source_allowlist:
-                assert canonical_host in source_allowlist, (
-                    f"{source['name']} canonical host is not in source SSRF allowlist"
-                )
-        if source["approval_state"] == "approved":
-            assert source_allowlist, f"approved source {source['name']} needs a source SSRF allowlist"
+    _check_source_ssrf_policy(catalog)
+
+
+def test_approved_source_branches_with_mock(catalog):
+    """Exercise the approved-source conditional branches that are unreachable
+    when no real source is approved."""
+    mock = copy.deepcopy(catalog)
+    first = mock["sources"][0]
+    first["approval_state"] = "approved"
+    first["approval"]["state"] = "approved"
+    first["url"] = "https://example.com/"
+    first["api"]["endpoint"] = "https://example.com/api"
+    first["api"]["docs"] = "https://example.com/docs"
+    first["api"]["terms_url"] = "https://example.com/terms"
+    first["ssrf_allowlist"] = ["example.com"]
+    first["canonical_hosts"] = ["example.com"]
+    mock["mvp"]["source"] = first["name"]
+    mock["ssrf"]["allowlist"] = ["example.com"]
+    mock["mvp"]["ssrf_allowlist"] = ["example.com"]
+
+    _check_at_most_one_approved(mock)
+    _check_source_ssrf_policy(mock)
