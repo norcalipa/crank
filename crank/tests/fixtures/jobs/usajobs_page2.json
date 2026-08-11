@@ -1,0 +1,20 @@
+{
+  "SearchResult": {
+    "SearchResultCount": 3,
+    "SearchResultItems": [
+      {
+        "MatchedObjectId": "fixture-1002",
+        "MatchedObjectDescriptor": {
+          "PositionTitle": "Data Platform Engineer",
+          "OrganizationName": "Example Agency",
+          "PositionURI": "https://www.usajobs.gov/job/fixture-1002",
+          "PositionLocationDisplay": "Oakland, CA",
+          "RemoteIndicator": false,
+          "PositionRemuneration": [{"MinimumRange": "85000", "MaximumRange": "95000", "RateIntervalCode": "PA", "CurrencyCode": "USD"}],
+          "PositionFormattedDescription": "Maintain data pipelines.",
+          "PositionEndDate": "2099-12-31"
+        }
+      }
+    ]
+  }
+}

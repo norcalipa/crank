@@ -1,0 +1,28 @@
+{
+  "SearchResult": {
+    "SearchResultCount": 3,
+    "SearchResultItems": [
+      {
+        "MatchedObjectId": "fixture-1001",
+        "MatchedObjectDescriptor": {
+          "PositionTitle": "Senior API Engineer",
+          "OrganizationName": "Fixture Labs",
+          "PositionURI": "https://www.usajobs.gov/job/fixture-1001",
+          "PositionLocationDisplay": "Remote",
+          "RemoteIndicator": true,
+          "PositionRemuneration": [
+            {
+              "MinimumRange": "100000",
+              "MaximumRange": "125000",
+              "RateIntervalCode": "PA",
+              "CurrencyCode": "USD"
+            }
+          ],
+          "PositionFormattedDescription": "Build <b>safe</b> APIs.",
+          "PositionStartDate": "2026-08-01",
+          "PositionEndDate": "2099-12-31"
+        }
+      }
+    ]
+  }
+}

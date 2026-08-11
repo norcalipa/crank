@@ -384,3 +384,10 @@ YELP_READ_TIMEOUT = _env_float("YELP_READ_TIMEOUT", 30)
 YELP_MAX_REDIRECTS = _env_int("YELP_MAX_REDIRECTS", 5)
 YELP_MAX_BYTES = _env_int("YELP_MAX_BYTES", 2 * 1024 * 1024)
 YELP_MAX_TRANSIENT_ATTEMPTS = _env_int("YELP_MAX_TRANSIENT_ATTEMPTS", 4)
+
+# USAJOBS adapter. Credentials are environment-backed secrets and remain
+# empty by default so the adapter fails closed in development and CI.
+USAJOBS_AUTH_KEY = os.environ.get("USAJOBS_AUTH_KEY", "").strip()
+USAJOBS_USER_AGENT_EMAIL = os.environ.get("USAJOBS_USER_AGENT_EMAIL", "").strip()
+JOBS_ADAPTER_TIMEOUT = _env_float("JOBS_ADAPTER_TIMEOUT", 30.0)
+JOBS_ADAPTER_MAX_BYTES = _env_int("JOBS_ADAPTER_MAX_BYTES", 2 * 1024 * 1024)
