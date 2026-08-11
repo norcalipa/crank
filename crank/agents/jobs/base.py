@@ -7,7 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import json
 from math import isfinite
 from typing import Any, Mapping, Sequence
@@ -46,6 +46,9 @@ MAX_CURRENCY = 3
 MAX_INTERVAL = 32
 MAX_DESCRIPTION_EXCERPT = 2000
 MAX_METADATA_BYTES = 8192
+MAX_CATALOG_METADATA_BYTES = 8192
+COMPENSATION_MAX_DIGITS = 14
+COMPENSATION_DECIMAL_PLACES = 2
 
 
 def _clean_text(value: str, field: str, maximum: int) -> str:
@@ -77,7 +80,7 @@ def validate_job_url(value: str, *, allow_hosts: set[str] | frozenset[str] | Non
     if parsed.scheme.lower() != "https" or not host or parsed.username or parsed.password:
         raise JobSchemaError("canonical_url must be an HTTPS URL without credentials")
     host = host.lower().rstrip(".")
-    hosts = allow_hosts or APPROVED_JOB_SOURCE_DOMAINS
+    hosts = allow_hosts if allow_hosts is not None else APPROVED_JOB_SOURCE_DOMAINS
     if not any(host == allowed or host.endswith("." + allowed) for allowed in hosts):
         raise UnapprovedJobSource(f"job URL host {host!r} is not allowlisted")
     if port is not None:
@@ -142,6 +145,8 @@ class RawJobListing:
                 or value < 0
             ):
                 raise JobSchemaError(f"{field} must be a finite non-negative number")
+            if value is not None:
+                object.__setattr__(self, field, _validate_compensation(value, field))
         if self.compensation_min is not None and self.compensation_max is not None and self.compensation_min > self.compensation_max:
             raise JobSchemaError("compensation_min must not exceed compensation_max")
         object.__setattr__(self, "compensation_currency", _clean_text(self.compensation_currency, "compensation_currency", MAX_CURRENCY).upper())
@@ -176,6 +181,27 @@ def _is_finite_number(value: int | float | Decimal) -> bool:
     return isfinite(value)
 
 
+def _validate_compensation(value: int | float | Decimal, field: str) -> Decimal:
+    """Normalize compensation to the persistence field's exact range."""
+    try:
+        amount = Decimal(str(value))
+        quantum = Decimal(1).scaleb(-COMPENSATION_DECIMAL_PLACES)
+        normalized = amount.quantize(quantum)
+    except (InvalidOperation, ValueError) as exc:
+        raise JobSchemaError(f"{field} does not fit the compensation field") from exc
+    if normalized != amount:
+        raise JobSchemaError(
+            f"{field} must have no more than {COMPENSATION_DECIMAL_PLACES} decimal places"
+        )
+    if abs(normalized) >= Decimal(10) ** (
+        COMPENSATION_MAX_DIGITS - COMPENSATION_DECIMAL_PLACES
+    ):
+        raise JobSchemaError(
+            f"{field} exceeds the {COMPENSATION_MAX_DIGITS}-digit compensation range"
+        )
+    return normalized
+
+
 def validate_source_metadata(value: Mapping[str, Any] | None) -> dict[str, Any]:
     """Validate and copy metadata without secrets or raw response bodies."""
     try:
@@ -189,6 +215,54 @@ def validate_source_metadata(value: Mapping[str, Any] | None) -> dict[str, Any]:
     except (TypeError, ValueError) as exc:
         raise JobSchemaError("source_metadata must be JSON serializable") from exc
     return metadata
+
+
+_CATALOG_SENSITIVE_FIELDS = (
+    "authorization",
+    "api_key",
+    "password",
+    "token",
+    "secret",
+    "credential",
+    "raw_body",
+    "response_body",
+)
+
+
+def validate_catalog_metadata(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Sanitize bounded catalog provenance; never store credentials/raw bodies."""
+    try:
+        metadata = _sanitize_catalog_metadata(dict(value or {}), "catalog_metadata")
+        encoded = json.dumps(metadata, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise JobSchemaError("catalog_metadata must be JSON serializable") from exc
+    if len(encoded.encode("utf-8")) > MAX_CATALOG_METADATA_BYTES:
+        raise JobSchemaError(
+            f"catalog_metadata exceeds {MAX_CATALOG_METADATA_BYTES} bytes"
+        )
+    return metadata
+
+
+def _sanitize_catalog_metadata(value: Any, path: str) -> Any:
+    if isinstance(value, Mapping):
+        result = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise JobSchemaError(f"{path} contains a non-string key")
+            if any(field in key.lower() for field in _CATALOG_SENSITIVE_FIELDS):
+                continue
+            result[key] = _sanitize_catalog_metadata(item, f"{path}.{key}")
+        return result
+    if isinstance(value, (list, tuple)):
+        return [
+            _sanitize_catalog_metadata(item, f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, float) and not isfinite(value):
+        raise JobSchemaError(f"{path} contains a non-finite number")
+    if value is not None and not isinstance(value, (str, int, float, bool)):
+        raise JobSchemaError(f"{path} contains unsupported metadata")
+    return value
 
 
 def _validate_metadata(value: Any, path: str = "source_metadata") -> None:
@@ -255,4 +329,5 @@ __all__ = [
     "JobSourceAdapter",
     "validate_job_url",
     "validate_source_metadata",
+    "validate_catalog_metadata",
 ]
