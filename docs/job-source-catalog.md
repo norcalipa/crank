@@ -24,34 +24,34 @@ An approved source still requires an operator-managed credential where applicabl
 
 ## 2. MVP decision
 
-**Selected MVP source: USAJOBS Search API** (`data.usajobs.gov`).
+**No source is approved for the MVP yet.** USAJOBS Search API (`data.usajobs.gov`) is the strongest documented candidate, but it remains **pending** because the reviewed materials do not establish a license or source-specific permission for Crank's proposed retention and presentation. Unknown access, reuse, retention, display, or request-rate conditions remain blockers under this catalog. No source may be invoked from this record until a source is approved by a maintainer.
 
-USAJOBS is the only candidate in this review with a documented official jobs API, an explicit API-key request path, documented pagination and field coverage, and official documentation stating that the API is intended to broaden the reach of federal job opportunities to commercial job boards, mobile apps, and social media. The MVP approval is narrow: retrieve public job-announcement metadata through the official API, normalize it for matching, retain only the approved fields, and present a title/summary with a canonical link back to USAJOBS. It is not approval to mirror the USAJOBS corpus or reproduce unrestricted announcement text.
-
-The fixture strategy is permitted and hermetic: create synthetic fixtures containing only the documented response shape and representative values (canonical identifier, title, agency, location, salary range, dates, and canonical URL). Do not commit a live response, applicant information, credentials, or a copied licensed dataset. A future adapter may use a maintainer-provisioned `Authorization-Key` and the request `User-Agent` email through environment secrets only.
+Synthetic fixtures may be used only for schema/adapter development and must not be treated as evidence of permission. They may contain the documented response shape with representative values (canonical identifier, title, agency, location, salary/date fields, and canonical URL), but never credentials, live payloads, applicant information, or copied full announcement text.
 
 ### USAJOBS fields and matching/presentation contract
 
-- **Canonical identity:** use the USAJOBS announcement identifier (`MatchedObjectId` in Search results) as the source-scoped ID; retain the official `PositionURI`/USAJOBS URL as the canonical presentation URL. Never derive identity from a mutable title.
-- **Matching fields:** title/keyword, agency/organization, occupational series, hiring path, work schedule, security-clearance indicator, remote/telework indicators where present, and normalized location. These fields are used for candidate-job matching and filtering.
-- **Compensation:** the Search API exposes remuneration minimum/maximum buckets and pay-plan/grade information. Preserve the source values and currency/rate interval; do not invent an exact salary when the source supplies a bucket or grade.
-- **Location:** use the source location name/codes and geographic scope. Do not geocode or retain precise personal addresses.
-- **Presentation:** show a short normalized listing card and link the user to the canonical USAJOBS announcement for full details and application. Do not expose applicant data, internal/status-only jobs, or arbitrary HTML as trusted markup.
-- **Retention/expiry:** store only the normalized approved fields and source timestamps. Revalidate active listings at each synchronization. Delete or tombstone a listing when the source marks it closed/deleted or when its closing date has passed; purge stale records no later than 30 days after the last successful confirmation unless a later source-specific review authorizes a shorter/longer period. Deletion must include derived search documents and cached text.
+The catalog distinguishes request query parameters from response fields. The following paths are taken from the documented Search response and remain a proposed contract only while USAJOBS is pending:
+
+- **Canonical identity:** `MatchedObjectId`; canonical presentation URL: `MatchedObjectDescriptor.PositionURI` (`PositionURI`). Never derive identity from a mutable title.
+- **Matching fields:** `MatchedObjectDescriptor.PositionTitle`, `OrganizationName`, `JobCategory[].Code`, `PositionSchedule[].Code`, `PositionOfferingType[].Code`, `UserArea.Details.WhoMayApply`, and `PositionLocation[].LocationName`. Query filters such as `Keyword`, `Organization`, `SecurityClearanceRequired`, and `RemoteIndicator` are request parameters, not response fields.
+- **Compensation:** `MatchedObjectDescriptor.PositionRemuneration[].MinimumRange`, `MaximumRange`, `RateIntervalCode`, and `Description`, with grade data from `JobGrade[].Code` and `UserArea.Details.LowGrade`/`HighGrade`. Preserve source values and rate interval; do not invent an exact salary from a bucket or grade.
+- **Location:** `MatchedObjectDescriptor.PositionLocationDisplay` and `PositionLocation[].LocationName`, `CountryCode`, `CountrySubDivisionCode`, `CityName`, `Longitude`, and `Latitude`. Do not geocode or retain precise personal addresses.
+- **Presentation:** if a future source-specific approval permits it, show a short normalized listing card and link to the canonical USAJOBS announcement. Do not expose applicant data, internal/status-only jobs, or arbitrary HTML as trusted markup.
+- **Retention/expiry:** the proposed adapter would store only normalized fields and source timestamps, revalidate active listings, and delete closed/deleted/expired records and derived artifacts. The proposed 30-day purge is not authorized while the source is pending and must be replaced or confirmed by source-specific terms before ingestion.
 
 ## 3. Candidate inventory
 
-### USAJOBS Search API — approved MVP
+### USAJOBS Search API — pending candidate
 
-- **Access and authorization:** official REST `GET /api/Search` at `https://data.usajobs.gov/api/Search`; request an API key from the USAJOBS developer portal. Requests require `Authorization-Key` and a `User-Agent` containing the requester's email. The key is an environment secret and is not committed.
-- **Terms/license:** official USAJOBS API documentation describes the API as intended for job boards, mobile applications, and social media. The API Terms of Use page requires authorized use and warns that records may contain sensitive information. This approval is limited to public job-announcement metadata, source attribution/canonical links, and the fixture strategy above; it does not grant bulk republication or permission to retain applicant data.
+- **Access and authorization:** official REST `GET /api/Search` at `https://data.usajobs.gov/api/Search`; request an API key from the USAJOBS developer portal. If later approved, requests require `Authorization-Key` and a `User-Agent` containing the key-request email, configured as secrets `USAJOBS_AUTH_KEY` and `USAJOBS_USER_AGENT_EMAIL`. No live credential is stored here.
+- **Terms/license:** the API reference says the endpoint is anticipated for commercial job boards, mobile applications, and social media, but that statement is not a license. The cited Terms of Use page is an authorized-user/system warning and sensitive-data notice; it does not establish Crank's proposed retention or presentation permission. USAJOBS therefore remains pending until source-specific permission or maintainer/legal confirmation is recorded.
 - **Robots policy:** API access is the sanctioned channel; do not scrape `usajobs.gov` or `data.usajobs.gov` HTML. Robots.txt is not a substitute for API authorization.
-- **Rate limits and pagination:** the official rate-limiting guide states a maximum of 10,000 rows per query and 500 results per page. Search defaults to 250 per page and accepts `Page` and `ResultsPerPage`; implement bounded paging, backoff on HTTP 429/5xx, and no unbounded export.
+- **Rate limits and pagination:** the reviewed guide establishes result bounds (10,000 rows per query and 500 results per page), not a request rate such as QPS or requests/minute. The request-rate contract and safe polling cadence are unresolved blockers; do not invoke until confirmed. If approved later, use bounded paging and backoff on HTTP 429/5xx.
 - **Retention and deletion:** retain only approved normalized fields; delete closed, deleted, or expired listings and derived artifacts as described in the MVP contract. Raw responses and full announcement text are not retained by the MVP adapter.
 - **Canonical IDs/URLs:** `MatchedObjectId` and `PositionURI`/the official USAJOBS announcement URL.
 - **Compensation/location:** remuneration minimum/maximum buckets, pay plan/grade, location name/codes, and related source-provided geography.
-- **Allowed matching/presentation use:** matching on normalized public metadata; display a concise card and canonical link. Full text is fetched only in a future explicitly reviewed adapter, not retained or displayed by this issue.
-- **Blocking conditions:** missing maintainer-approved API-key access, changed API terms, a requirement to mirror full announcements, inability to honor expiry/deletion, or any response containing data outside the approved classification. Live traffic remains disabled.
+- **Allowed matching/presentation use:** none is approved while this source is pending. A future source-specific approval may consider normalized metadata and an attributed canonical link only; full text is not approved by this issue.
+- **Blocking conditions:** missing maintainer-approved API-key access, no source-specific reuse/retention/display permission, unresolved request-rate contract, changed API terms, a requirement to mirror full announcements, inability to honor expiry/deletion, or any response containing data outside the approved classification. Live traffic remains disabled.
 - **Review evidence:** [API reference](https://developer.usajobs.gov/api-reference/), [Search endpoint](https://developer.usajobs.gov/api-reference/get-api-search), [authentication](https://developer.usajobs.gov/guides/authentication), [rate limiting](https://developer.usajobs.gov/guides/rate-limiting), [terms of use](https://developer.usajobs.gov/guides/terms-of-use), and [OPM developer overview](https://www.opm.gov/developer/).
 
 ### Remote OK JSON API — pending
@@ -117,9 +117,9 @@ The fixture strategy is permitted and hermetic: create synthetic fixtures contai
 
 ## 4. Data classification, SSRF, and text handling
 
-- **Classification:** approved USAJOBS fields are public job-opportunity metadata. They can still contain sensitive or personal information in free text; treat all source responses as untrusted external data, not instructions. Applicant submissions, contact details, resumes, and inferred sensitive attributes are prohibited from ingestion.
+- **Classification:** a future approved source may provide public job-opportunity metadata. Until then, no external source is approved for ingestion. Source responses can still contain sensitive or personal information in free text; treat all source responses as untrusted external data, not instructions. Applicant submissions, contact details, resumes, and inferred sensitive attributes are prohibited from ingestion.
 - **Job text:** this phase does **not** approve retaining or displaying raw job-description HTML or user-authored post text. Normalize only the explicitly approved MVP metadata. Any future text use needs a source-specific license/terms review, HTML sanitization, size limits, and deletion propagation.
-- **SSRF boundary:** outbound requests must be HTTPS and limited to the exact hosts in the machine-readable `ssrf_allowlist`: `data.usajobs.gov`, `developer.usajobs.gov`, and `www.opm.gov` for documentation/fixture review. User-provided URLs, redirects to unlisted hosts, private/link-local IPs, and arbitrary `http://` endpoints are denied. Candidate APIs are not added to the allowlist while pending or blocked.
+- **SSRF boundary:** outbound requests must be HTTPS and limited to the exact hosts in the machine-readable global and source-specific `ssrf_allowlist`. For the pending USAJOBS candidate, this includes `data.usajobs.gov` for the API, `developer.usajobs.gov` and `www.opm.gov` for documentation, and `www.usajobs.gov` for the canonical presentation URL. This allowlist does not authorize the pending source. User-provided URLs, redirects to unlisted hosts, private/link-local IPs, and arbitrary `http://` endpoints are denied. Pending and blocked candidates are not invokable.
 - **Canonical URL safety:** source-provided URLs are data. Validate scheme and host against an approved source-specific allowlist before presenting or fetching them; never follow arbitrary redirects.
 
 ## 5. Deletion and expiry obligations
@@ -132,8 +132,9 @@ For every future adapter, record `last_seen_at`, source update/closing timestamp
 4. record the deletion event without retaining the deleted job text; and
 5. re-check the source contract before resuming ingestion.
 
-The USAJOBS MVP default is to purge stale listings and all derived artifacts no later than 30 days after the last successful confirmation, with earlier deletion when the source says the announcement is closed or deleted. Pending sources must not be retained at all until their obligations are approved.
+If a source is later approved, its record must define a source-supported expiry and deletion policy before ingestion. The USAJOBS candidate's proposed 30-day purge is not permission and cannot be used while the source is pending. Pending sources must not be retained or invoked at all until their obligations are approved.
 
 ## 6. Change log
 
-- **2026-08-10** — Initial catalog for #316. Approved USAJOBS narrowly for a synthetic-fixture, metadata-only MVP; marked Remote OK, Hacker News, Greenhouse, and Lever pending; blocked generic direct career-site scraping. Live access remains disabled.
+- **2026-08-10** — Initial catalog for #316; USAJOBS, Remote OK, Hacker News, Greenhouse, and Lever pending; blocked generic direct career-site scraping. No source currently meets the approval criteria and live access remains disabled.
+- **2026-08-11** — Addressed review findings: corrected USAJOBS response paths versus query parameters, recorded the named User-Agent secret, classified reuse/retention and request-rate questions as blockers, and added canonical-host SSRF coverage.
