@@ -13,3 +13,6 @@ data:
   # these settings, so the CronJob does no work until a flag is enabled.
   AGENT_RUN_ENABLED: "false"
   AGENT_NOOP_ENABLED: "false"
+  GATHER_SCORES_ENABLED: "false"
+  GATHER_SCORES_DEADLINE_SECONDS: "300"
+  GATHER_SCORES_SOURCE_TIMEOUT_SECONDS: "120"
