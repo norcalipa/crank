@@ -1,0 +1,30 @@
+{
+  "SearchResult": {
+    "SearchResultCount": 2,
+    "SearchResultItems": [
+      {
+        "MatchedObjectId": "fixture-closed",
+        "MatchedObjectDescriptor": {
+          "PositionTitle": "Closed Fixture Role",
+          "OrganizationName": "Fixture Labs",
+          "PositionURI": "https://www.usajobs.gov/job/fixture-closed",
+          "PositionLocationDisplay": "Sacramento, CA",
+          "RemoteIndicator": false,
+          "PositionStatus": "Closed",
+          "PositionEndDate": "2099-12-31"
+        }
+      },
+      {
+        "MatchedObjectId": "fixture-expired",
+        "MatchedObjectDescriptor": {
+          "PositionTitle": "Expired Fixture Role",
+          "OrganizationName": "Fixture Labs",
+          "PositionURI": "https://www.usajobs.gov/job/fixture-expired",
+          "PositionLocationDisplay": "Remote",
+          "RemoteIndicator": true,
+          "PositionEndDate": "2020-01-01"
+        }
+      }
+    ]
+  }
+}

@@ -4,6 +4,7 @@
 
 from crank.agents.jobs.base import JobSourceAdapter, JobSourceQuery, JobSourceResult, RawJobListing
 from crank.agents.jobs.registry import build_job_adapter, register_job_adapter
+from crank.agents.jobs.usajobs import USAJobsAdapter, USAJobsSourceAdapter, USAJOBSAdapter
 
 __all__ = [
     "JobSourceAdapter",
@@ -12,4 +13,7 @@ __all__ = [
     "RawJobListing",
     "build_job_adapter",
     "register_job_adapter",
+    "USAJobsAdapter",
+    "USAJobsSourceAdapter",
+    "USAJOBSAdapter",
 ]
