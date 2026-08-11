@@ -9,7 +9,7 @@ from crank.agents.jobs.errors import (
     JobSourceNotApproved,
     UnknownJobAdapter,
 )
-from crank.agents.jobs.registry import REGISTRY, build_job_adapter, register_job_adapter
+from crank.agents.jobs.registry import JobAdapterRegistry, REGISTRY, build_job_adapter, register_job_adapter
 from crank.models.job import JobSourceCatalog
 
 
@@ -58,9 +58,28 @@ class JobAdapterContractTests(TestCase):
                 self.source(name="unknown", adapter_key="missing", approval_state="approved", enabled=True)
             )
 
-    def test_registry_rejects_duplicate_keys(self):
+    def test_registry_rejects_duplicate_keys_and_invalid_keys(self):
         with self.assertRaises(ValueError):
             register_job_adapter(FakeAdapter)
+        registry = JobAdapterRegistry()
+        with self.assertRaises(ValueError):
+            registry.register(type("NoKey", (), {}))
+        with self.assertRaises(ValueError):
+            registry.register(type("BlankKey", (), {"key": "  "}))
+        self.assertEqual(registry.keys(), [])
+        registry.register(FakeAdapter)
+        self.assertEqual(registry.keys(), [FakeAdapter.key])
+        self.assertIs(registry.get(FakeAdapter.key.upper()), FakeAdapter)
+
+    def test_rejects_unapproved_and_malformed_base_urls(self):
+        with self.assertRaises(Exception):
+            build_job_adapter(
+                self.source(name="evil", approval_state="approved", enabled=True, base_url="https://evil.example/jobs")
+            )
+        with self.assertRaises(Exception):
+            build_job_adapter(
+                self.source(name="malformed", approval_state="approved", enabled=True, base_url="http://jobs.example.test/jobs")
+            )
 
     def test_fetch_contract(self):
         adapter = build_job_adapter(
