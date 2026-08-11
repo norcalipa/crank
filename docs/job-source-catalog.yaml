@@ -1,0 +1,369 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+#
+# Machine-readable external job source catalog for Phase 3 (#316).
+# Human-readable governance record: docs/job-source-catalog.md.
+# Unknown access, license, retention, or display conditions are blockers.
+
+review:
+  document: docs/job-source-catalog.yaml
+  issue: 316
+  review_date: 2026-08-10
+  reviewed_by: autonomous agent (implementation of #316)
+  decision_owner: maintainer (crank.fyi)
+  methodology: >
+    Reviewed official API/feed documentation for each candidate and recorded
+    access, authorization, terms/license, robots policy, rate limits, pagination,
+    retention, identity, fields, matching/presentation use, and blockers. No
+    credentials, live responses, applicant data, or licensed datasets were
+    stored. Terms must be re-verified before live enablement.
+
+live_enabled: false
+mvp:
+  source: USAJOBS
+  rationale: >
+    The only candidate with a documented official jobs API, an explicit API-key
+    request path, documented pagination and field coverage, and official
+    documentation describing distribution to job boards, mobile apps, and
+    social media. Approval is limited to public metadata and synthetic fixtures.
+  live_enabled: false
+  fixture_strategy: >
+    Use synthetic fixtures matching the documented Search response shape. Include
+    only source-scoped ID, title, agency, location, salary/date fields, and a
+    canonical URL; never commit credentials, live payloads, applicant data, or
+    copied full announcement text.
+  data_classification: public_job_opportunity_metadata
+  job_text_retained: false
+  job_text_displayed: false
+  deletion_policy: >
+    Delete or tombstone closed, deleted, and expired listings and all derived
+    search documents, caches, embeddings, and fixture copies. Purge stale
+    records no later than 30 days after last successful confirmation unless a
+    later source-specific review sets a shorter period.
+  ssrf_allowlist:
+    - data.usajobs.gov
+    - developer.usajobs.gov
+    - www.opm.gov
+
+ssrf:
+  allowlist:
+    - data.usajobs.gov
+    - developer.usajobs.gov
+    - www.opm.gov
+  require_https: true
+  deny_private_and_link_local_addresses: true
+  deny_unlisted_redirects: true
+  user_supplied_urls: denied
+
+data_classification:
+  approved_mvp: public_job_opportunity_metadata
+  source_responses: untrusted_external_data
+  prohibited: applicant_data_resumes_contact_details_inferred_sensitive_attributes
+  raw_payload_retention: none
+  job_text_retained: false
+  job_text_displayed: false
+
+sources:
+  - name: USAJOBS
+    url: https://data.usajobs.gov/
+    kind: external
+    approval_state: approved
+    approval:
+      state: approved
+      owner: maintainer
+      review_date: 2026-08-10
+      evidence:
+        - https://developer.usajobs.gov/api-reference/
+        - https://developer.usajobs.gov/api-reference/get-api-search
+        - https://developer.usajobs.gov/guides/authentication
+        - https://developer.usajobs.gov/guides/rate-limiting
+        - https://developer.usajobs.gov/guides/terms-of-use
+        - https://www.opm.gov/developer/
+      notes: >
+        Approved only for an adapter-backed, fixture-first metadata slice. Live
+        access requires a maintainer-provisioned environment secret and a fresh
+        terms review; live_enabled remains false.
+    api:
+      available: official
+      endpoint: https://data.usajobs.gov/api/Search
+      docs: https://developer.usajobs.gov/api-reference/get-api-search
+      authentication: api_key
+      credential_secret: USAJOBS_AUTH_KEY
+      required_headers:
+        - Authorization-Key
+        - User-Agent
+      cost: no_api_fee_documented
+      terms_url: https://developer.usajobs.gov/guides/terms-of-use
+      robots: api_only_no_html_scraping
+      rate_limits: >
+        Official guide documents a maximum of 10000 rows per query and 500 rows
+        per page. No unbounded export; use bounded polling and backoff for 429/5xx.
+      pagination: >
+        Search uses Page and ResultsPerPage; default is 250 results per page and
+        ResultsPerPage accepts up to 500.
+    canonical_id: MatchedObjectId
+    canonical_url: PositionURI
+    compensation_fields:
+      - RemunerationMinimumAmount
+      - RemunerationMaximumAmount
+      - PayGradeLow
+      - PayGradeHigh
+      - JobGradeCode
+    location_fields:
+      - LocationName
+      - LocationCode
+      - GeoLocation
+    matching_fields:
+      - PositionTitle
+      - Keyword
+      - Organization
+      - JobCategoryCode
+      - WhoMayApply
+      - PositionScheduleTypeCode
+      - PositionOfferingTypeCode
+      - LocationName
+      - SecurityClearanceRequired
+      - RemoteIndicator
+    allowed_matching_use: normalized_public_metadata_matching_and_filtering
+    allowed_presentation_use: concise_listing_card_with_attributed_canonical_link
+    job_text:
+      retain: false
+      display: false
+      reason: full_announcement_text_is_outside_this_phase
+    retention: >
+      Store only approved normalized metadata and source timestamps. Delete or
+      tombstone closed/deleted/expired listings and derived artifacts; purge no
+      later than 30 days after the last successful confirmation.
+    deletion_expiry_obligations:
+      - stop_presenting_when_closed_deleted_or_expired
+      - delete_normalized_record_or_tombstone
+      - purge_search_indexes_caches_embeddings_and_fixture_copies
+      - record_deletion_event_without_deleted_text
+    geographic_scope: United States federal public jobs
+    live_enabled: false
+    ssrf_allowlist:
+      - data.usajobs.gov
+      - developer.usajobs.gov
+      - www.opm.gov
+
+  - name: Remote OK
+    url: https://remoteok.com/
+    kind: external
+    approval_state: pending
+    approval:
+      state: pending
+      owner: maintainer
+      review_date: 2026-08-10
+      evidence:
+        - https://remoteok.com/api
+      notes: >
+        API response requires a follow link and attribution but does not itself
+        establish a general license, retention period, deletion policy, or
+        numeric rate limit. Do not invoke until those questions are resolved.
+    api:
+      available: public_unkeyed
+      endpoint: https://remoteok.com/api
+      docs: https://remoteok.com/api
+      authentication: none_documented
+      cost: not_stated
+      terms_url: https://remoteok.com/api
+      robots: api_only_no_html_scraping
+      rate_limits: unknown_blocker
+      pagination: not_documented
+    canonical_id: id
+    canonical_url: url
+    compensation_fields:
+      - salary_min
+      - salary_max
+    location_fields:
+      - location
+    matching_fields:
+      - position
+      - tags
+      - location
+    allowed_matching_use: none_pending_terms_review
+    allowed_presentation_use: none_pending_attribution_and_license_review
+    job_text:
+      retain: false
+      display: false
+    retention: unknown_blocker
+    deletion_expiry_obligations: unresolved_source_policy
+    geographic_scope: remote_jobs_global
+    live_enabled: false
+    ssrf_allowlist: []
+
+  - name: Hacker News Who Is Hiring
+    url: https://news.ycombinator.com/
+    kind: external
+    approval_state: pending
+    approval:
+      state: pending
+      owner: maintainer
+      review_date: 2026-08-10
+      evidence:
+        - https://github.com/HackerNews/API
+      notes: >
+        Official API documents the public data shape and says there is currently
+        no rate limit, but it does not grant a license for user-authored text or
+        establish retention/deletion terms for an aggregator.
+    api:
+      available: official_public
+      endpoint: https://hacker-news.firebaseio.com/v0/item/{id}.json
+      docs: https://github.com/HackerNews/API
+      authentication: none
+      cost: free_public_api
+      terms_url: https://github.com/HackerNews/API
+      robots: api_only_no_page_crawling
+      rate_limits: no_limit_documented_but_polling_budget_required
+      pagination: item_ids_and_tree_traversal_not_page_tokens
+    canonical_id: id
+    canonical_url: https://news.ycombinator.com/item?id={id}
+    compensation_fields: []
+    location_fields: []
+    matching_fields:
+      - title
+      - time
+    allowed_matching_use: none_pending_user_text_license_review
+    allowed_presentation_use: none_pending_user_text_license_review
+    job_text:
+      retain: false
+      display: false
+    retention: unresolved_user_authored_text_policy
+    deletion_expiry_obligations: delete_or_stop_presenting_deleted_and_dead_items
+    geographic_scope: global_unspecified
+    live_enabled: false
+    ssrf_allowlist: []
+
+  - name: Greenhouse Job Board API
+    url: https://boards-api.greenhouse.io/
+    kind: external
+    approval_state: pending
+    approval:
+      state: pending
+      owner: maintainer
+      review_date: 2026-08-10
+      evidence:
+        - https://developers.greenhouse.io/job-board.html
+      notes: >
+        Public employer-board API is documented, but this review did not verify
+        a blanket right to aggregate every employer board or retain/display full
+        descriptions. Employer-specific authorization and retention terms are
+        required.
+    api:
+      available: public_employer_scoped
+      endpoint: https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs
+      docs: https://developers.greenhouse.io/job-board.html
+      authentication: none_for_published_jobs
+      cost: not_stated
+      terms_url: https://developers.greenhouse.io/job-board.html
+      robots: api_only_for_authorized_board_no_scraping
+      rate_limits: not_documented_in_review_blocker
+      pagination: not_documented_in_review_blocker
+    canonical_id: id
+    canonical_url: absolute_url
+    compensation_fields:
+      - pay_input_ranges
+    location_fields:
+      - location.name
+      - offices
+    matching_fields:
+      - title
+      - departments
+      - offices
+      - location
+    allowed_matching_use: employer_authorized_board_only
+    allowed_presentation_use: employer_approved_fields_and_canonical_link_only
+    job_text:
+      retain: false
+      display: false
+    retention: employer_policy_required
+    deletion_expiry_obligations: delete_when_posting_disappears_or_closes
+    geographic_scope: employer_defined
+    live_enabled: false
+    ssrf_allowlist: []
+
+  - name: Lever Postings API
+    url: https://api.lever.co/
+    kind: external
+    approval_state: pending
+    approval:
+      state: pending
+      owner: maintainer
+      review_date: 2026-08-10
+      evidence:
+        - https://github.com/lever/postings-api
+      notes: >
+        Documentation supports building a job site for published postings, but
+        cross-employer aggregation, retention, and full-text republication still
+        require source/employer confirmation.
+    api:
+      available: public_employer_scoped
+      endpoint: https://api.lever.co/v0/postings/{site}
+      docs: https://github.com/lever/postings-api
+      authentication: none_for_published_jobs
+      cost: not_stated
+      terms_url: https://github.com/lever/postings-api
+      robots: api_only_for_authorized_site_no_scraping
+      rate_limits: not_documented_in_review_blocker
+      pagination: documented_but_contract_requires_reverification
+    canonical_id: id
+    canonical_url: hostedUrl
+    compensation_fields:
+      - salaryRange
+    location_fields:
+      - categories.location
+      - workplaceType
+    matching_fields:
+      - text
+      - categories
+      - tags
+      - team
+    allowed_matching_use: employer_authorized_postings_only
+    allowed_presentation_use: employer_approved_metadata_and_canonical_link_only
+    job_text:
+      retain: false
+      display: false
+    retention: employer_policy_required
+    deletion_expiry_obligations: delete_when_posting_leaves_published_api
+    geographic_scope: employer_defined
+    live_enabled: false
+    ssrf_allowlist: []
+
+  - name: Direct company career sites
+    url: https://example.com/
+    kind: external
+    approval_state: blocked
+    approval:
+      state: blocked
+      owner: maintainer
+      review_date: 2026-08-10
+      evidence: []
+      notes: >
+        There is no uniform lawful access method or license. Site-specific APIs,
+        feeds, terms, robots policies, limits, and permissions must be reviewed
+        before any company is added as a source.
+    api:
+      available: site_specific_unknown
+      endpoint: null
+      docs: null
+      authentication: site_specific_unknown
+      cost: site_specific_unknown
+      terms_url: null
+      robots: site_specific_unknown_no_scraping_approved
+      rate_limits: unknown_blocker
+      pagination: unknown_blocker
+    canonical_id: site_specific_unknown
+    canonical_url: site_specific_unknown
+    compensation_fields: []
+    location_fields: []
+    matching_fields: []
+    allowed_matching_use: none
+    allowed_presentation_use: none
+    job_text:
+      retain: false
+      display: false
+    retention: none
+    deletion_expiry_obligations: not_applicable_until_approved
+    geographic_scope: site_specific
+    live_enabled: false
+    ssrf_allowlist: []
