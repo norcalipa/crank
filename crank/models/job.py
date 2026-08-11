@@ -21,6 +21,7 @@ from crank.agents.jobs.base import (
     MAX_LOCATION,
     MAX_TITLE,
     RawJobListing,
+    validate_catalog_metadata,
     validate_job_url,
 )
 
@@ -48,7 +49,11 @@ class JobSourceCatalog(TimeStampedModel):
         db_index=True,
     )
     enabled = models.BooleanField(default=False, db_index=True)
-    catalog_metadata = models.JSONField(default=dict, blank=True)
+    catalog_metadata = models.JSONField(
+        default=dict,
+        blank=True,
+        validators=[validate_catalog_metadata],
+    )
 
     class Meta:
         app_label = "crank"
@@ -72,6 +77,18 @@ class JobSourceCatalog(TimeStampedModel):
                 validate_job_url(self.base_url)
             except Exception as exc:
                 raise ValidationError({"base_url": str(exc)}) from exc
+        try:
+            # Sanitize at the model boundary so direct saves and admin writes
+            # cannot persist credentials or raw response bodies.
+            self.catalog_metadata = validate_catalog_metadata(self.catalog_metadata)
+        except Exception as exc:
+            raise ValidationError({"catalog_metadata": str(exc)}) from exc
+
+    def save(self, *args, **kwargs):
+        # Django does not call full_clean() from save(); enforce the catalog
+        # metadata contract for direct model saves as well as admin writes.
+        self.full_clean()
+        return super().save(*args, **kwargs)
 
     def allowed_hosts(self):
         """Return only code-owned hosts, never an operator-supplied allowlist."""
@@ -90,54 +107,98 @@ class JobListingQuerySet(models.QuerySet):
         return self.filter(status=JobListing.Status.ACTIVE)
 
     def upsert_from_raw(self, source, raw: RawJobListing):
-        """Create/update a listing while preserving its original provenance."""
-        now = raw.last_seen_at or raw.first_seen_at
-        defaults = {
-            "canonical_url": raw.canonical_url,
-            "employer_name": raw.employer_name,
-            "employer_domain": raw.employer_domain,
-            "title": raw.title,
-            "location_text": raw.location_text,
-            "is_remote": raw.is_remote,
-            "compensation_min": raw.compensation_min,
-            "compensation_max": raw.compensation_max,
-            "compensation_currency": raw.compensation_currency,
-            "compensation_interval": raw.compensation_interval,
-            "description_excerpt": raw.description_excerpt,
-            "last_seen_at": now,
-            "status": raw.status,
-            "source_metadata": dict(raw.source_metadata or {}),
-        }
+        """Create/update a listing safely under concurrent ingestion.
+
+        Freshness is monotonic. Terminal states are never resurrected by an
+        active observation; only an explicit terminal observation can change
+        an active listing's status.
+        """
+        observed_at = raw.last_seen_at or raw.first_seen_at
         lookup = {"source": source, "external_id": raw.external_id}
-        listing = (
-            self.model.all_objects.filter(**lookup).first()
-            if raw.external_id
-            else None
-        )
-        if listing is None:
-            listing = self.model.all_objects.filter(
-                source=source, canonical_url=raw.canonical_url
-            ).first()
-        with transaction.atomic():
+
+        def find_existing():
+            listing = None
+            if raw.external_id:
+                listing = self.model.all_objects.filter(**lookup).first()
             if listing is None:
-                listing = self.model.all_objects.create(
-                    source=source,
-                    external_id=raw.external_id,
-                    first_seen_at=raw.first_seen_at or now,
-                    **defaults,
-                )
+                listing = self.model.all_objects.filter(
+                    source=source, canonical_url=raw.canonical_url
+                ).first()
+            return listing
+
+        with transaction.atomic():
+            listing = find_existing()
+            if listing is None:
+                try:
+                    # The savepoint lets us reconcile a concurrent insert while
+                    # keeping the surrounding ingestion transaction usable.
+                    with transaction.atomic():
+                        return self.model.all_objects.create(
+                            source=source,
+                            external_id=raw.external_id,
+                            first_seen_at=raw.first_seen_at or observed_at,
+                            canonical_url=raw.canonical_url,
+                            employer_name=raw.employer_name,
+                            employer_domain=raw.employer_domain,
+                            title=raw.title,
+                            location_text=raw.location_text,
+                            is_remote=raw.is_remote,
+                            compensation_min=raw.compensation_min,
+                            compensation_max=raw.compensation_max,
+                            compensation_currency=raw.compensation_currency,
+                            compensation_interval=raw.compensation_interval,
+                            description_excerpt=raw.description_excerpt,
+                            last_seen_at=observed_at,
+                            status=raw.status,
+                            source_metadata=dict(raw.source_metadata or {}),
+                        )
+                except IntegrityError:
+                    # Another worker won the unique-key race. It is now safe
+                    # to read and reconcile the committed row.
+                    listing = find_existing()
+                    if listing is None:
+                        raise
+
+            incoming_is_newer = observed_at >= listing.last_seen_at
+            if listing.status in {
+                self.model.Status.CLOSED,
+                self.model.Status.EXPIRED,
+            } and raw.status == self.model.Status.ACTIVE:
+                # Terminal states are explicit and ingestion must never
+                # resurrect them, even if a source reports a newer active row.
+                status = listing.status
+            elif incoming_is_newer:
+                status = raw.status
             else:
-                # first_seen_at is immutable provenance. A canonical-URL
-                # fallback may fill a previously unavailable source ID, but an
-                # existing source ID is never replaced by a mutable value.
-                for field, value in defaults.items():
-                    setattr(listing, field, value)
-                update_fields = [*defaults, "modified"]
-                if not listing.external_id and raw.external_id:
-                    listing.external_id = raw.external_id
-                    update_fields.append("external_id")
-                listing.save(update_fields=update_fields)
-        return listing
+                status = listing.status
+
+            values = {
+                "canonical_url": raw.canonical_url,
+                "employer_name": raw.employer_name,
+                "employer_domain": raw.employer_domain,
+                "title": raw.title,
+                "location_text": raw.location_text,
+                "is_remote": raw.is_remote,
+                "compensation_min": raw.compensation_min,
+                "compensation_max": raw.compensation_max,
+                "compensation_currency": raw.compensation_currency,
+                "compensation_interval": raw.compensation_interval,
+                "description_excerpt": raw.description_excerpt,
+                "last_seen_at": max(listing.last_seen_at, observed_at),
+                "status": status,
+                "source_metadata": dict(raw.source_metadata or {}),
+            }
+            # first_seen_at is immutable provenance. A canonical-URL fallback
+            # may fill a previously unavailable source ID.
+            for field, value in values.items():
+                setattr(listing, field, value)
+            update_fields = [*values, "modified"]
+            if not listing.external_id and raw.external_id:
+                listing.external_id = raw.external_id
+                update_fields.append("external_id")
+            listing.save(update_fields=update_fields)
+            return listing
+
 
 
 class JobListing(TimeStampedModel):
