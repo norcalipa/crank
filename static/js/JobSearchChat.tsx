@@ -290,9 +290,9 @@ const JobSearchChat: React.FC = () => {
     const revealingPrefs = preferencesChanged && !prefDismissed;
 
     return (
-        <div className="card bg-dark" data-testid="job-search-chat">
+        <section className="card bg-dark" data-testid="job-search-chat" aria-labelledby="job-search-chat-title">
             <div className="card-header d-flex justify-content-between align-items-center">
-                <span className="h6 mb-0">Conversation</span>
+                <h2 id="job-search-chat-title" className="h6 mb-0">Conversation</h2>
                 <div className="btn-group btn-group-sm" role="group" aria-label="Conversation controls">
                     <button type="button" className="btn btn-outline-light" onClick={handleExport}
                             disabled={!conversationId || !messages.length} aria-label="Export conversation">Export</button>
@@ -304,12 +304,20 @@ const JobSearchChat: React.FC = () => {
             </div>
 
             <div className="card-body">
+                <div id="job-search-data-note" className="alert alert-info" role="note">
+                    The assistant is automated and can be wrong. Check important details yourself. Your messages
+                    and preference updates are saved to your account; use Export, Reset, or Delete above to manage them.
+                </div>
+
                 {revealingPrefs && (
                     <div className="alert alert-success d-flex justify-content-between align-items-center"
-                         role="status" aria-label="Preference update">
+                         role="status" aria-label="Preference update" aria-describedby="preference-update-help">
                         <span>
                             <i className="fa-solid fa-circle-check me-1"></i>
-                            Your preferences were updated based on this conversation.
+                            Your saved preferences were updated based on this conversation.
+                        </span>
+                        <span id="preference-update-help" className="visually-hidden">
+                            You can correct or remove a preference by telling the assistant what to change.
                         </span>
                         <button type="button" className="btn-close" aria-label="Dismiss preference notice"
                                 onClick={() => setPrefDismissed(true)}></button>
@@ -328,20 +336,20 @@ const JobSearchChat: React.FC = () => {
                 )}
 
                 <div className="bg-dark border rounded p-3 mb-3" style={{maxHeight: '55vh', overflowY: 'auto'}}
-                     ref={historyRef} role="log" aria-live="polite" aria-label="Message history">
+                     ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
                     {messages.length === 0 && !loading && (
                         <p className="text-muted mb-0" data-testid="empty-history">
                             Ask about compensation, work location, funding, or culture to get started.
                         </p>
                     )}
                     {messages.map((m) => (
-                        <div key={m.id}
+                        <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
                              className={`d-flex ${m.role === 'user' ? 'justify-content-end' : 'justify-content-start'} mb-2`}>
                             <div className={`rounded p-2 ${m.role === 'user' ? 'bg-primary' : 'bg-secondary'}`}
                                  style={{maxWidth: '80%', whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>
                                 {m.content}
                             </div>
-                        </div>
+                        </article>
                     ))}
                     {pending && (
                         <div className="text-muted" role="status" aria-live="polite" data-testid="pending-status">
@@ -389,7 +397,7 @@ const JobSearchChat: React.FC = () => {
                     {!pending && error ? 'Your message could not be sent.' : ''}
                 </div>
             </div>
-        </div>
+        </section>
     );
 };
 

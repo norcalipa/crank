@@ -36,6 +36,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
 }) => {
     const [scores, setScores] = React.useState<ScoreDetail[]>([]);
     const [loading, setLoading] = React.useState(false);
+    const closeButtonRef = React.useRef<HTMLButtonElement>(null);
 
     React.useEffect(() => {
         if (organization && visible && !organization.avg_scores) {
@@ -54,6 +55,12 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     }, [organization, visible]);
     
     // Add keyboard event listener for Escape key
+    React.useEffect(() => {
+        if (visible) {
+            closeButtonRef.current?.focus();
+        }
+    }, [visible]);
+
     React.useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             if (visible && event.key === 'Escape') {
@@ -127,10 +134,12 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
 
     return (
         <div className="popup-overlay" data-testid="popup-overlay" onClick={handleOverlayClick}>
-            <div className="popup-details card bg-dark">
+            <div className="popup-details card bg-dark" role="dialog" aria-modal="true"
+                 aria-labelledby="organization-details-title">
                 <div className="card-header bg-dark d-flex justify-content-between align-items-center">
-                    <h2>{organization.name}</h2>
+                    <h2 id="organization-details-title">{organization.name}</h2>
                     <button 
+                        ref={closeButtonRef}
                         type="button" 
                         className="btn-close btn-close-white" 
                         aria-label="Close"
@@ -209,4 +218,4 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     );
 };
 
-export default OrganizationDetailsPopup; 
+export default OrganizationDetailsPopup;

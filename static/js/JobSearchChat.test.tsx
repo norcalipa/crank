@@ -68,7 +68,11 @@ describe('JobSearchChat', () => {
             const input = screen.getByLabelText('Message');
             expect(input).toBeInTheDocument();
             expect(screen.getByRole('button', {name: 'Send message'})).toBeInTheDocument();
+            expect(screen.getByRole('region', {name: 'Conversation'})).toBeInTheDocument();
+            expect(screen.getByRole('note')).toHaveTextContent(/automated and can be wrong/i);
+            expect(screen.getByRole('note')).toHaveTextContent(/saved to your account/i);
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-live', 'polite');
+            expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-busy', 'false');
             expect(screen.getByTestId('empty-history')).toBeInTheDocument();
         });
 
@@ -76,6 +80,8 @@ describe('JobSearchChat', () => {
             await renderChat([userMessage('hello'), assistantMessage(2, 'hi there')]);
             expect(screen.getByText('hello')).toBeInTheDocument();
             expect(screen.getByText('hi there')).toBeInTheDocument();
+            expect(screen.getByRole('article', {name: 'Your message'})).toHaveTextContent('hello');
+            expect(screen.getByRole('article', {name: 'Assistant message'})).toHaveTextContent('hi there');
             expect(screen.queryByTestId('empty-history')).not.toBeInTheDocument();
         });
 
@@ -103,11 +109,14 @@ describe('JobSearchChat', () => {
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'I need remote'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
 
+            expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-busy', 'true');
             await screen.findByText('Consider remote-friendly companies.');
             expect(screen.getByText('I need remote')).toBeInTheDocument();
 
             // Preference-change disclosure is announced.
             expect(await screen.findByText(/preferences were updated/i)).toBeInTheDocument();
+            expect(screen.getByRole('status', {name: 'Preference update'})).toHaveAttribute('aria-describedby', 'preference-update-help');
+            expect(screen.getByText(/correct or remove a preference/i)).toBeInTheDocument();
 
             // Input is cleared and refocused; the form is no longer busy.
             expect(screen.getByLabelText('Message')).toHaveValue('');

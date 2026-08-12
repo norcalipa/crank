@@ -105,6 +105,8 @@ describe('OrganizationDetailsPopup', () => {
         expect(screen.getAllByText('Yes').length).toBe(2); // For gives_ratings and accelerated_vesting
         expect(screen.getByText('5')).toBeInTheDocument(); // For ranking
         expect(screen.getByText('85%')).toBeInTheDocument(); // For profile_completeness
+        expect(screen.getByRole('dialog', {name: 'Test Organization'})).toHaveAttribute('aria-modal', 'true');
+        expect(screen.getByRole('button', {name: 'Close'})).toHaveFocus();
     });
 
     test('fetches and displays scores when organization has no avg_scores', async () => {
@@ -362,10 +364,7 @@ describe('OrganizationDetailsPopup', () => {
         // Verify the element is focused
         expect(document.activeElement).toBe(focusableDiv);
         
-        // Mock blur to verify it gets called
-        const blurSpy = jest.spyOn(focusableDiv, 'blur');
-        
-        // Render component
+        // Render component; the accessible dialog moves focus to its Close button.
         render(
             <OrganizationDetailsPopup
                 organization={mockOrganization}
@@ -376,6 +375,9 @@ describe('OrganizationDetailsPopup', () => {
         
         // Get the overlay
         const overlay = screen.getByTestId('popup-overlay');
+        const closeButton = screen.getByRole('button', {name: 'Close'});
+        expect(closeButton).toHaveFocus();
+        const blurSpy = jest.spyOn(closeButton, 'blur');
         
         // Simulate click on the overlay (not its children)
         // Using fireEvent directly instead of the mock approach
@@ -386,14 +388,9 @@ describe('OrganizationDetailsPopup', () => {
             currentTarget: overlay
         });
         
-        // Check that onClose was called
+        // Check that onClose was called and the active control was blurred.
         expect(onCloseMock).toHaveBeenCalledTimes(1);
-        
-        // Explicitly verify blur was called on the active element
         expect(blurSpy).toHaveBeenCalled();
-        
-        // Check that the active element was blurred
-        expect(document.activeElement).not.toBe(focusableDiv);
         
         // Clean up
         document.body.removeChild(focusableDiv);
@@ -468,4 +465,4 @@ describe('OrganizationDetailsPopup', () => {
             configurable: true
         });
     });
-}); 
+});

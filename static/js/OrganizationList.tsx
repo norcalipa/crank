@@ -192,10 +192,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         return (<div>
             <>
                 <div className="input-group mb-3">
+                    <label className="visually-hidden" htmlFor="organization-search">Search organizations</label>
                     <input
+                        id="organization-search"
                         type="text"
                         className="form-control"
-                        aria-label="Search"
+                        aria-label="Search organizations"
                         placeholder="Search organizations"
                         value={searchTerm}
                         aria-describedby="inputGroup-sizing-default"
@@ -236,6 +238,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     There are no organizations that match the selected filters.
                 </div>) : (<div>
                     <table className="table organization-table">
+                        <caption className="visually-hidden">Organizations ranked by the selected scoring algorithm</caption>
                         <thead>
                         <tr>
                             <th>Rank</th>
@@ -250,6 +253,15 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         {currentOrganizations.map(org => (<tr 
                             key={org.id}
                             onClick={() => this.handleOrganizationClick(org)}
+                            onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault();
+                                    this.handleOrganizationClick(org);
+                                }
+                            }}
+                            tabIndex={0}
+                            role="button"
+                            aria-label={`View details for ${org.name}`}
                             style={{ 
                                 cursor: 'pointer',
                                 transition: 'background-color 0.2s ease'
