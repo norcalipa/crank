@@ -70,6 +70,32 @@ class AgentNoopCommandTests(TestCase):
         run = AgentRun.objects.get(status=AgentRun.Status.FAILED)
         self.assertIn("boom", run.error_summary)
 
+class AgentRunCommandTests(TestCase):
+    """Direct unit tests for AgentRunCommand.get_enabled() branches."""
+
+    def test_get_enabled_returns_false_when_agent_run_disabled(self):
+        from crank.management.base import AgentRunCommand
+
+        class TestCmd(AgentRunCommand):
+            run_type = "noop"
+            enabled_setting = "AGENT_NOOP_ENABLED"
+
+        cmd = TestCmd(stdout=StringIO(), stderr=StringIO())
+        # AGENT_RUN_ENABLED defaults to False in test settings
+        self.assertFalse(cmd.get_enabled())
+
+    @override_settings(AGENT_RUN_ENABLED=True, AGENT_NOOP_ENABLED=False)
+    def test_get_enabled_returns_false_when_per_command_disabled(self):
+        from crank.management.base import AgentRunCommand
+
+        class TestCmd(AgentRunCommand):
+            run_type = "noop"
+            enabled_setting = "AGENT_NOOP_ENABLED"
+
+        cmd = TestCmd(stdout=StringIO(), stderr=StringIO())
+        self.assertFalse(cmd.get_enabled())
+
+
 class SettingsHelperTests(TestCase):
     """These helper functions are evaluated at import time for the module-level
     AGENT_* settings; the invalid-input fallback branch is otherwise
