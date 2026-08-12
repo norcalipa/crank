@@ -5,6 +5,7 @@
 from crank.agents.jobs.base import JobSourceAdapter, JobSourceQuery, JobSourceResult, RawJobListing
 from crank.agents.jobs.registry import build_job_adapter, register_job_adapter
 from crank.agents.jobs.usajobs import USAJobsAdapter, USAJobsSourceAdapter, USAJOBSAdapter
+from crank.agents.jobs.firecrawl import FirecrawlCareersAdapter, FirecrawlClient
 
 __all__ = [
     "JobSourceAdapter",
@@ -16,4 +17,6 @@ __all__ = [
     "USAJobsAdapter",
     "USAJobsSourceAdapter",
     "USAJOBSAdapter",
+    "FirecrawlCareersAdapter",
+    "FirecrawlClient",
 ]

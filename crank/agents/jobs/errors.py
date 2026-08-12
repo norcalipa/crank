@@ -27,5 +27,9 @@ class JobSourceDisabled(JobAdapterError):
     """The source is approved but not enabled by an operator."""
 
 
+class SourceBudgetExceededError(JobAdapterError):
+    """A source adapter refused work because its configured budget is spent."""
+
+
 class UnapprovedJobSource(JobAdapterError):
     """A source or listing URL is outside the code-owned host allowlist."""
