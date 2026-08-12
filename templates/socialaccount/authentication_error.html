@@ -1,0 +1,18 @@
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
+{% extends "base.html" %}
+
+{% block head_title %}Sign-In Error | CRank{% endblock %}
+
+{% block content %}
+    <main class="container py-4" style="max-width: 42rem;">
+        <div class="card">
+            <div class="card-body">
+                <h1 class="card-title">We couldn't sign you in</h1>
+                <p>Something went wrong while signing you in. Please try again or return home.</p>
+                <a class="btn btn-primary me-2" href="{% url 'account_login' %}">Try signing in again</a>
+                <a class="btn btn-secondary" href="{% url 'index' %}">Return home</a>
+            </div>
+        </div>
+    </main>
+{% endblock %}
