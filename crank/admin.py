@@ -7,6 +7,7 @@ from crank.models.employer import EmployerAlias, UnresolvedEmployer
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
+from crank.models.company_profile import CompanyProfileObservation
 from crank.models.preference import UserPreference, UserPreferenceAudit
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 from crank.models.source import ApprovalState, SourceCatalog, SourceRun, SourceCatalogAudit
@@ -177,7 +178,46 @@ class AgentRunAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     ]
 
 
+class CompanyProfileObservationAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+    model = CompanyProfileObservation
+    list_display = [
+        "observed_name", "observed_domain", "organization", "status",
+        "observed_at", "extraction_version",
+    ]
+    list_filter = ["status", "extraction_version"]
+    list_select_related = ["organization", "reviewed_by"]
+    search_fields = ["observed_name", "observed_domain", "source_url"]
+    readonly_fields = [
+        "organization", "source_url", "observed_domain", "observed_name",
+        "description", "locations", "rto_evidence", "funding_evidence",
+        "public_status_evidence", "logo_url", "brand_metadata", "observed_at",
+        "extraction_version", "conflict_fields", "fingerprint", "created",
+        "modified", "reviewed_by", "reviewed_at",
+    ]
+    actions = ["accept_observations", "reject_observations", "conflict_observations"]
+
+    def _review(self, request, queryset, status):
+        count = 0
+        for observation in queryset:
+            observation.mark_reviewed(status=status, user=request.user)
+            count += 1
+        self.message_user(request, f"{count} company profile observation(s) marked {status}.")
+
+    @admin.action(description="Accept selected company profile observations")
+    def accept_observations(self, request, queryset):
+        self._review(request, queryset, CompanyProfileObservation.Status.ACCEPTED)
+
+    @admin.action(description="Reject selected company profile observations")
+    def reject_observations(self, request, queryset):
+        self._review(request, queryset, CompanyProfileObservation.Status.REJECTED)
+
+    @admin.action(description="Mark selected observations conflicted")
+    def conflict_observations(self, request, queryset):
+        self._review(request, queryset, CompanyProfileObservation.Status.CONFLICTED)
+
+
 admin.site.register(Organization, OrganizationAdmin)
+admin.site.register(CompanyProfileObservation, CompanyProfileObservationAdmin)
 admin.site.register(ScoreType, ScoreTypeAdmin)
 admin.site.register(ScoreAlgorithm, ScoreAlgorithmAdmin)
 admin.site.register(ScoreAlgorithmWeight)
