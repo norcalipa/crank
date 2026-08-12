@@ -305,6 +305,11 @@ html, body {
         display: none;
     }
 
+    /* Override the UA rule that hides closed details content on desktop. */
+    .scoring-panel > .scoring-panel-content {
+        display: block;
+    }
+
     .scoring-panel {
         border: 0;
         background: transparent;
