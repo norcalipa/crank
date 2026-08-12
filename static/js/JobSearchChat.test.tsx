@@ -63,6 +63,18 @@ describe('JobSearchChat', () => {
     });
 
     describe('rendering & accessibility semantics', () => {
+        test('uses a viewport-aware flex layout with a pinned composer', async () => {
+            await renderChat();
+            const chat = screen.getByTestId('job-search-chat');
+            const history = screen.getByLabelText('Message history');
+            const composer = document.querySelector('form')!.parentElement!;
+            expect(chat).toHaveClass('d-flex', 'flex-column');
+            expect(chat).toHaveStyle({height: 'calc(100dvh - 7rem)'});
+            expect(history).toHaveClass('flex-grow-1');
+            expect(history).toHaveStyle({overflowY: 'auto'});
+            expect(composer).toHaveClass('flex-shrink-0');
+        });
+
         test('renders an accessible input and live message history region', async () => {
             await renderChat();
             const input = screen.getByLabelText('Message');
@@ -93,6 +105,103 @@ describe('JobSearchChat', () => {
             expect(send).toBeDisabled();
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'remote work'}});
             expect(send).toBeEnabled();
+        });
+    });
+
+    describe('scroll behavior', () => {
+        let scrollTo: jest.Mock;
+
+        beforeEach(() => {
+            scrollTo = jest.fn();
+            Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+                configurable: true,
+                value: scrollTo,
+            });
+        });
+
+        afterEach(() => {
+            delete (HTMLElement.prototype as unknown as {scrollTo?: unknown}).scrollTo;
+        });
+
+        function setScrollMetrics(element: HTMLElement, values: {scrollHeight: number; scrollTop: number; clientHeight: number}) {
+            Object.defineProperties(element, {
+                scrollHeight: {configurable: true, value: values.scrollHeight},
+                scrollTop: {configurable: true, value: values.scrollTop, writable: true},
+                clientHeight: {configurable: true, value: values.clientHeight},
+            });
+        }
+
+        test('scrolls initial history to the latest message with motion preference', async () => {
+            window.matchMedia = jest.fn().mockReturnValue({matches: false} as MediaQueryList);
+            await renderChat([assistantMessage(1, 'latest')]);
+            const history = screen.getByLabelText('Message history');
+            expect(scrollTo).toHaveBeenCalledWith({top: history.scrollHeight, behavior: 'smooth'});
+            delete (window as unknown as {matchMedia?: unknown}).matchMedia;
+        });
+
+        test('uses instant scrolling when reduced motion is preferred', async () => {
+            window.matchMedia = jest.fn().mockReturnValue({matches: true} as MediaQueryList);
+            await renderChat([assistantMessage(1, 'latest')]);
+            const history = screen.getByLabelText('Message history');
+            expect(scrollTo).toHaveBeenCalledWith({top: history.scrollHeight, behavior: 'auto'});
+            delete (window as unknown as {matchMedia?: unknown}).matchMedia;
+        });
+
+        test('shows jump-to-latest and preserves position when the reader scrolls up', async () => {
+            await renderChat([assistantMessage(1, 'older'), assistantMessage(2, 'latest')]);
+            const history = screen.getByLabelText('Message history');
+            setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
+            fireEvent.scroll(history);
+            expect(await screen.findByTestId('jump-to-latest')).toHaveTextContent('New messages');
+
+            scrollTo.mockClear();
+            fireEvent.click(screen.getByTestId('jump-to-latest'));
+            expect(scrollTo).toHaveBeenCalledWith({top: 1000, behavior: 'auto'});
+            expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+        });
+
+        test('auto-scrolls new pending content only when already near the bottom', async () => {
+            await renderChat([assistantMessage(1, 'ready')]);
+            const history = screen.getByLabelText('Message history');
+            setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 752, clientHeight: 200});
+            fireEvent.scroll(history);
+            scrollTo.mockClear();
+
+            const response = jsonResponse({message: assistantMessage(3, 'reply'), preferences_changed: false}, 201);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(response);
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('reply');
+            expect(scrollTo).toHaveBeenCalled();
+            expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+        });
+
+        test('does not auto-scroll newly appended content while reading older messages', async () => {
+            await renderChat([assistantMessage(1, 'ready')]);
+            const history = screen.getByLabelText('Message history');
+            setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
+            fireEvent.scroll(history);
+            scrollTo.mockClear();
+
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse({message: assistantMessage(3, 'reply'), preferences_changed: false}, 201),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('reply');
+            expect(scrollTo).not.toHaveBeenCalled();
+            expect(screen.getByTestId('jump-to-latest')).toBeInTheDocument();
+        });
+
+        test('rechecks the bottom after viewport resize without moving older history', async () => {
+            await renderChat([assistantMessage(1, 'ready')]);
+            const history = screen.getByLabelText('Message history');
+            setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
+            fireEvent.scroll(history);
+            scrollTo.mockClear();
+            fireEvent(window, new Event('resize'));
+            expect(scrollTo).not.toHaveBeenCalled();
+            expect(screen.getByTestId('jump-to-latest')).toBeInTheDocument();
         });
     });
 

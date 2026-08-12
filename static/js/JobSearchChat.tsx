@@ -77,6 +77,70 @@ const JobSearchChat: React.FC = () => {
     const inputRef = React.useRef<HTMLInputElement>(null);
     const statusRef = React.useRef<HTMLDivElement>(null);
     const historyRef = React.useRef<HTMLDivElement>(null);
+    const nearBottomRef = React.useRef(true);
+    const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
+
+    const prefersReducedMotion = (): boolean => (
+        typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    );
+
+    const isNearBottom = (element: HTMLDivElement): boolean => (
+        element.scrollHeight - element.scrollTop - element.clientHeight <= 48
+    );
+
+    const scrollToLatest = (behavior: ScrollBehavior = prefersReducedMotion() ? 'auto' : 'smooth') => {
+        const history = historyRef.current;
+        if (!history) return;
+        if (typeof history.scrollTo === 'function') {
+            history.scrollTo({top: history.scrollHeight, behavior});
+        } else {
+            history.scrollTop = history.scrollHeight;
+        }
+        nearBottomRef.current = true;
+        setShowJumpToLatest(false);
+    };
+
+    // Keep the latest content visible only while the reader is already at the bottom.
+    React.useEffect(() => {
+        const history = historyRef.current;
+        if (!history) return;
+        const handleScroll = () => {
+            const nearBottom = isNearBottom(history);
+            nearBottomRef.current = nearBottom;
+            setShowJumpToLatest(!nearBottom);
+        };
+        history.addEventListener('scroll', handleScroll, {passive: true});
+        return () => history.removeEventListener('scroll', handleScroll);
+    }, []);
+
+    // Initial history, optimistic turns, replies, and the pending indicator all append
+    // content to the same viewport. Do not interrupt someone reading older messages.
+    React.useEffect(() => {
+        if (loading || !nearBottomRef.current) {
+            if (!nearBottomRef.current) setShowJumpToLatest(true);
+            return;
+        }
+        scrollToLatest();
+    }, [messages.length, pending, loading]);
+
+    // Visual viewport changes cover mobile keyboards and orientation changes. Preserve
+    // the reader's position when they are browsing older messages.
+    React.useEffect(() => {
+        const handleViewportResize = () => {
+            const history = historyRef.current;
+            if (!history) return;
+            const nearBottom = isNearBottom(history);
+            nearBottomRef.current = nearBottom;
+            setShowJumpToLatest(!nearBottom);
+            if (nearBottom) scrollToLatest('auto');
+        };
+        window.addEventListener('resize', handleViewportResize);
+        window.visualViewport?.addEventListener('resize', handleViewportResize);
+        return () => {
+            window.removeEventListener('resize', handleViewportResize);
+            window.visualViewport?.removeEventListener('resize', handleViewportResize);
+        };
+    }, []);
 
     // Resume the user's most recent conversation on load.
     React.useEffect(() => {
@@ -290,10 +354,12 @@ const JobSearchChat: React.FC = () => {
     const revealingPrefs = preferencesChanged && !prefDismissed;
 
     return (
-        <section className="card bg-dark" data-testid="job-search-chat" aria-labelledby="job-search-chat-title">
+        <section className="card bg-dark d-flex flex-column" data-testid="job-search-chat"
+                 aria-labelledby="job-search-chat-title"
+                 style={{height: 'calc(100dvh - 7rem)', minHeight: '20rem'}}>
             <div className="card-header d-flex justify-content-between align-items-center">
                 <h2 id="job-search-chat-title" className="h6 mb-0">Conversation</h2>
-                <div className="btn-group btn-group-sm" role="group" aria-label="Conversation controls">
+                <div className="btn-group btn-group-sm flex-wrap" role="group" aria-label="Conversation controls">
                     <button type="button" className="btn btn-outline-light" onClick={handleExport}
                             disabled={!conversationId || !messages.length} aria-label="Export conversation">Export</button>
                     <button type="button" className="btn btn-outline-light" onClick={handleReset}
@@ -303,7 +369,7 @@ const JobSearchChat: React.FC = () => {
                 </div>
             </div>
 
-            <div className="card-body">
+            <div className="card-body d-flex flex-column" style={{minHeight: 0}}>
                 <div id="job-search-data-note" className="alert alert-info" role="note">
                     The assistant is automated and can be wrong. Check important details yourself. Your messages
                     and preference updates are saved to your account; use Export, Reset, or Delete above to manage them.
@@ -335,61 +401,72 @@ const JobSearchChat: React.FC = () => {
                     </div>
                 )}
 
-                <div className="bg-dark border rounded p-3 mb-3" style={{maxHeight: '55vh', overflowY: 'auto'}}
-                     ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
-                    {messages.length === 0 && !loading && (
-                        <p className="text-muted mb-0" data-testid="empty-history">
-                            Ask about compensation, work location, funding, or culture to get started.
-                        </p>
-                    )}
-                    {messages.map((m) => (
-                        <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
-                             className={`d-flex ${m.role === 'user' ? 'justify-content-end' : 'justify-content-start'} mb-2`}>
-                            <div className={`rounded p-2 ${m.role === 'user' ? 'bg-primary' : 'bg-secondary'}`}
-                                 style={{maxWidth: '80%', whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>
-                                {m.content}
+                <div className="position-relative d-flex flex-column flex-grow-1" style={{minHeight: 0}}>
+                    <div className="bg-dark border rounded p-3 mb-3 flex-grow-1" style={{minHeight: 0, overflowY: 'auto'}}
+                         ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
+                        {messages.length === 0 && !loading && (
+                            <p className="text-muted mb-0" data-testid="empty-history">
+                                Ask about compensation, work location, funding, or culture to get started.
+                            </p>
+                        )}
+                        {messages.map((m) => (
+                            <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
+                                     className={`d-flex ${m.role === 'user' ? 'justify-content-end' : 'justify-content-start'} mb-2`}>
+                                <div className={`rounded p-2 ${m.role === 'user' ? 'bg-primary' : 'bg-secondary'}`}
+                                     style={{maxWidth: '80%', whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>
+                                    {m.content}
+                                </div>
+                            </article>
+                        ))}
+                        {pending && (
+                            <div className="text-muted" role="status" aria-live="polite" data-testid="pending-status">
+                                <i className="fa-solid fa-spinner fa-spin me-1"></i>Assistant is typing…
                             </div>
-                        </article>
-                    ))}
-                    {pending && (
-                        <div className="text-muted" role="status" aria-live="polite" data-testid="pending-status">
-                            <i className="fa-solid fa-spinner fa-spin me-1"></i>Assistant is typing…
-                        </div>
+                        )}
+                    </div>
+                    {showJumpToLatest && (
+                        <button type="button" className="btn btn-sm btn-primary position-absolute bottom-0 end-0 mb-4 me-2"
+                                onClick={() => scrollToLatest('auto')} aria-label="Jump to latest message"
+                                data-testid="jump-to-latest">
+                            New messages · Jump to latest
+                        </button>
                     )}
                 </div>
 
-                {error && (
-                    <div className="alert alert-danger d-flex justify-content-between align-items-center"
-                         role="alert" data-testid="chat-error">
-                        <span>{error}</span>
-                        {retrying && (
-                            <button type="button" className="btn btn-sm btn-outline-danger ms-2"
-                                    onClick={handleRetry} data-testid="retry-button">
-                                Retry
-                            </button>
-                        )}
-                    </div>
-                )}
+                <div className="flex-shrink-0" style={{paddingBottom: 'calc(0.25rem + env(safe-area-inset-bottom))'}}>
+                    {error && (
+                        <div className="alert alert-danger d-flex justify-content-between align-items-center"
+                             role="alert" data-testid="chat-error">
+                            <span>{error}</span>
+                            {retrying && (
+                                <button type="button" className="btn btn-sm btn-outline-danger ms-2"
+                                        onClick={handleRetry} data-testid="retry-button">
+                                    Retry
+                                </button>
+                            )}
+                        </div>
+                    )}
 
-                <form onSubmit={handleSubmit} aria-busy={pending}>
-                    <div className="input-group">
-                        <input
-                            ref={inputRef}
-                            type="text"
-                            className="form-control"
-                            placeholder="Type your message…"
-                            aria-label="Message"
-                            value={input}
-                            onChange={(e) => setInput(e.target.value)}
-                            disabled={!conversationId || pending}
-                            autoComplete="off"
-                        />
-                        <button type="submit" className="btn btn-primary" disabled={!conversationId || pending || !input.trim()}
-                                aria-label="Send message">
-                            <i className="fa-solid fa-paper-plane"></i>
-                        </button>
-                    </div>
-                </form>
+                    <form onSubmit={handleSubmit} aria-busy={pending}>
+                        <div className="input-group">
+                            <input
+                                ref={inputRef}
+                                type="text"
+                                className="form-control"
+                                placeholder="Type your message…"
+                                aria-label="Message"
+                                value={input}
+                                onChange={(e) => setInput(e.target.value)}
+                                disabled={!conversationId || pending}
+                                autoComplete="off"
+                            />
+                            <button type="submit" className="btn btn-primary" disabled={!conversationId || pending || !input.trim()}
+                                    aria-label="Send message">
+                                <i className="fa-solid fa-paper-plane"></i>
+                            </button>
+                        </div>
+                    </form>
+                </div>
 
                 {/* Screen-reader-only live region for pending/error transitions. */}
                 <div ref={statusRef} className="visually-hidden" role="status" aria-live="assertive">
