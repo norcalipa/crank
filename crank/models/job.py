@@ -136,6 +136,7 @@ class JobListingQuerySet(models.QuerySet):
                         return self.model.all_objects.create(
                             source=source,
                             external_id=raw.external_id,
+                            employer_external_id=raw.employer_external_id,
                             first_seen_at=raw.first_seen_at or observed_at,
                             canonical_url=raw.canonical_url,
                             employer_name=raw.employer_name,
@@ -174,6 +175,7 @@ class JobListingQuerySet(models.QuerySet):
 
             values = {
                 "canonical_url": raw.canonical_url,
+                "employer_external_id": raw.employer_external_id,
                 "employer_name": raw.employer_name,
                 "employer_domain": raw.employer_domain,
                 "title": raw.title,
@@ -215,6 +217,7 @@ class JobListing(TimeStampedModel):
         related_name="listings",
     )
     external_id = models.CharField(max_length=MAX_EXTERNAL_ID, blank=True, default="")
+    employer_external_id = models.CharField(max_length=MAX_EXTERNAL_ID, blank=True, default="")
     canonical_url = models.URLField(max_length=1024)
     employer_name = models.CharField(max_length=MAX_EMPLOYER_NAME)
     employer_domain = models.CharField(
@@ -236,6 +239,13 @@ class JobListing(TimeStampedModel):
     last_seen_at = models.DateTimeField()
     status = models.CharField(max_length=8, choices=Status.choices, default=Status.ACTIVE, db_index=True)
     source_metadata = models.JSONField(default=dict, blank=True)
+    organization = models.ForeignKey(
+        "crank.Organization",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="job_listings",
+    )
 
     all_objects = JobListingQuerySet.as_manager()
     objects = ActiveJobListingManager.from_queryset(JobListingQuerySet)()

@@ -123,6 +123,7 @@ class RawJobListing:
     last_seen_at: datetime | None = None
     status: str = "active"
     source_metadata: Mapping[str, Any] | None = None
+    employer_external_id: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "external_id", _clean_text(self.external_id, "external_id", MAX_EXTERNAL_ID))
@@ -132,6 +133,9 @@ class RawJobListing:
             object.__setattr__(self, field, _clean_text(getattr(self, field), field, maximum))
         if not self.employer_name or not self.title:
             raise JobSchemaError("employer_name and title must be non-empty")
+        object.__setattr__(self, "employer_external_id", _clean_text(
+            self.employer_external_id, "employer_external_id", MAX_EXTERNAL_ID
+        ))
         if self.employer_domain:
             object.__setattr__(self, "employer_domain", _validate_domain(self.employer_domain))
         if not isinstance(self.is_remote, bool):

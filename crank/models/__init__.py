@@ -5,6 +5,7 @@ from crank.models.conversation import Conversation, Message
 from crank.models.job_search import JobSearchConversation, JobSearchMessage
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.organization import Organization
+from crank.models.employer import EmployerAlias, UnresolvedEmployer
 from crank.models.preference import SCHEMA_VERSION, UserPreference, UserPreferenceAudit
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 from crank.models.source import (
@@ -29,6 +30,8 @@ __all__ = [
     "JobSourceCatalog",
     "JobListing",
     "Organization",
+    "EmployerAlias",
+    "UnresolvedEmployer",
     "UserPreference",
     "Score",
     "ScoreType",
