@@ -61,12 +61,6 @@ spec:
                 limits:
                   memory: "1Gi"
                   cpu: "1"
-              env:
-                - name: SECRET_KEY
-                  valueFrom:
-                    secretKeyRef:
-                      name: crank-secrets
-                      key: SECRET_KEY
               envFrom:
                 - configMapRef:
                     name: crank-config
