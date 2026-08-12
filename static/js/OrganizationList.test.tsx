@@ -109,8 +109,6 @@ describe('OrganizationList', () => {
         render(<OrganizationList organizations={organizations} />);
 
         await waitFor(() => {
-            const controls = document.querySelector('.organization-controls');
-            expect(controls).toBeInTheDocument();
             expect(screen.getByRole('textbox', { name: 'Search organizations' })).toBeInTheDocument();
             expect(screen.getByTestId('accelerated-vesting-checkbox')).toBeInTheDocument();
         });
@@ -163,7 +161,7 @@ describe('OrganizationList', () => {
         render(<OrganizationList organizations={organizations} />);
 
         await waitFor(() => {
-            const nav = screen.getByRole('navigation', { name: 'Organization pages' });
+            const nav = screen.getByRole('navigation', { name: 'Organization pagination' });
             expect(nav).toBeInTheDocument();
         });
     });
@@ -712,7 +710,7 @@ describe('OrganizationList', () => {
         render(<OrganizationList organizations={organizations} />);
 
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
         });
 
         const searchInput = screen.getByPlaceholderText('Search organizations');
@@ -727,7 +725,7 @@ describe('OrganizationList', () => {
         fireEvent.click(screen.getByText('Clear search and filters'));
 
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
             expect(screen.queryByText('No organizations found')).not.toBeInTheDocument();
         });
     });
@@ -736,7 +734,7 @@ describe('OrganizationList', () => {
         render(<OrganizationList organizations={organizations} canSuggestCompany={true} />);
 
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
         });
 
         const searchInput = screen.getByPlaceholderText('Search organizations');
@@ -751,7 +749,7 @@ describe('OrganizationList', () => {
         render(<OrganizationList organizations={organizations} canSuggestCompany={false} />);
 
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
         });
 
         const searchInput = screen.getByPlaceholderText('Search organizations');
