@@ -312,4 +312,14 @@ def test_job_pipeline_manifest_has_disabled_safe_schedule():
     assert container["command"][-1] == "run_job_pipeline"
     assert container["resources"]["limits"]
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
-    assert any(item["name"] == "SECRET_KEY" for item in container["env"])
+    # SECRET_KEY is injected via envFrom from db-connect-credentials (the
+    # Secret that actually exists in the cluster). There must be no explicit
+    # env block pointing at a nonexistent "crank-secrets" Secret.
+    assert "env" not in container
+    secret_refs = [
+        item["secretRef"]["name"]
+        for item in container.get("envFrom", [])
+        if "secretRef" in item
+    ]
+    assert "db-connect-credentials" in secret_refs
+    assert "crank-secrets" not in secret_refs
