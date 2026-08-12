@@ -16,9 +16,7 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
-from allauth.account.views import LogoutView
 from django.contrib import admin
-from django.contrib.auth.decorators import login_required
 from django.urls import path, include
 from django.views.generic import TemplateView
 from django.views.decorators.cache import cache_page
@@ -43,6 +41,7 @@ from crank.views.job_matches import (
     job_match_dismiss,
 )
 from crank.views.health import readiness
+from crank.auth import login_required_with_expiry
 
 app_name = "crank"
 
@@ -55,7 +54,7 @@ urlpatterns = [
     path('api/rto-policy-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(RTOPolicyChoicesView.as_view()), name='rto_policy_choices'),
     path('api/organizations/<int:pk>/', organization_detail, name='organization-detail'),
     path('api/organizations/<int:pk>/scores/', organization_scores, name='organization-scores'),
-    path('chat/', login_required(TemplateView.as_view(template_name='crank/job_search.html')), name='job_search'),
+    path('chat/', login_required_with_expiry(TemplateView.as_view(template_name='crank/job_search.html')), name='job_search'),
     path('api/agent/conversations/', agent_conversation_list, name='agent-conversation-list'),
     path('api/agent/conversations/<int:conversation_id>/', agent_conversation_detail, name='agent-conversation-detail'),
     path('api/agent/conversations/<int:conversation_id>/export/', agent_conversation_export, name='agent-conversation-export'),

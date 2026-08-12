@@ -1,0 +1,30 @@
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
+{% extends "base.html" %}
+{% load i18n socialaccount %}
+
+{% block head_title %}Sign In | CRank{% endblock %}
+
+{% block content %}
+    <main class="container py-4" style="max-width: 42rem;">
+        <div class="card">
+            <div class="card-body">
+                <h1 class="card-title">Sign In</h1>
+                <p>Sign in to continue using CRank.</p>
+                <form method="post" action="{% url 'account_login' %}">
+                    {% csrf_token %}
+                    {{ form.as_p }}
+                    {{ redirect_field }}
+                    <button class="btn btn-primary" type="submit">Sign In</button>
+                </form>
+                {% get_providers as socialaccount_providers %}
+                {% for provider in socialaccount_providers %}
+                    {% provider_login_url provider process="login" as provider_login_url %}
+                    <a class="btn btn-light mt-3" href="{{ provider_login_url }}">
+                        Continue with {{ provider.name }}
+                    </a>
+                {% endfor %}
+            </div>
+        </div>
+    </main>
+{% endblock %}

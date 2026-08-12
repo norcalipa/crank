@@ -37,6 +37,7 @@
                     <button class="btn btn-secondary btn-sm" type="submit">Logout {{ user.username }}</button>
                 </form>
             {% else %}
+                <a class="btn btn-outline-light btn-sm me-1" href="{% url 'account_login' %}">Sign In</a>
                 {% get_cached_social_app 'google' as social_app %}
                 {% if social_app %}
                     <a class="btn btn-light btn-sm" href="{% provider_login_url 'google' %}">
@@ -48,6 +49,13 @@
         </div>
     </nav>
 </div>
+{% if messages %}
+    <div class="container mt-3" role="status" aria-live="polite">
+        {% for message in messages %}
+            <div class="alert alert-{{ message.tags|default:'info' }}" role="alert">{{ message }}</div>
+        {% endfor %}
+    </div>
+{% endif %}
 <div>
     {% block content %} {% endblock %}
 </div>
