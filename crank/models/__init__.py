@@ -1,6 +1,7 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 from crank.models.agent_run import AgentRun
+from crank.models.crawl_run import CrawlRun
 from crank.models.conversation import Conversation, Message
 from crank.models.job_search import JobSearchConversation, JobSearchMessage
 from crank.models.job import JobListing, JobSourceCatalog
@@ -31,6 +32,7 @@ from crank.models.monitoring import (
 
 __all__ = [
     "AgentRun",
+    "CrawlRun",
     "ApprovalState",
     "SourceCadence",
     "SourceCatalog",

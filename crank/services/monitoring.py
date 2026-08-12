@@ -24,6 +24,9 @@ EVENT_NAMES = frozenset(
         "matching_batch",
         "operational_change",
         "crawl_planning",
+        "crawl_run_started",
+        "crawl_run_completed",
+        "crawl_run_failed",
     }
 )
 

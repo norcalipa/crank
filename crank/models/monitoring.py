@@ -16,6 +16,7 @@ ALLOWED_CAPABILITY_KEYS = frozenset(
         "gather_scores",
         "agent_noop",
         "crawl_schedule",
+        "crawl",
     }
 )
 
