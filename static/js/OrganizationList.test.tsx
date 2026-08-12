@@ -791,6 +791,20 @@ describe('OrganizationList', () => {
         });
     });
 
+    test('opens and closes suggest company modal for authenticated users', async () => {
+        render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+        fireEvent.click(await screen.findByTestId('suggest-company-btn'));
+        expect(screen.getByTestId('suggest-company-modal')).toBeInTheDocument();
+        fireEvent.click(screen.getByTestId('suggest-close-btn'));
+        expect(screen.queryByTestId('suggest-company-modal')).not.toBeInTheDocument();
+    });
+
+    test('opens suggest company modal from empty results', async () => {
+        render(<OrganizationList organizations={[]} isAuthenticated={true} />);
+        fireEvent.click(await screen.findByTestId('suggest-company-btn'));
+        expect(screen.getByTestId('suggest-company-modal')).toBeInTheDocument();
+    });
+
     test('handles popstate event to restore URL state', async () => {
         render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
 
