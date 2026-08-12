@@ -218,7 +218,7 @@ class JobListing(TimeStampedModel):
     )
     external_id = models.CharField(max_length=MAX_EXTERNAL_ID, blank=True, default="")
     employer_external_id = models.CharField(max_length=MAX_EXTERNAL_ID, blank=True, default="")
-    canonical_url = models.URLField(max_length=1024)
+    canonical_url = models.URLField(max_length=750)
     employer_name = models.CharField(max_length=MAX_EMPLOYER_NAME)
     employer_domain = models.CharField(
         max_length=MAX_EMPLOYER_DOMAIN, blank=True, default=""

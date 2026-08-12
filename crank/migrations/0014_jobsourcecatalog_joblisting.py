@@ -41,7 +41,7 @@ class Migration(migrations.Migration):
                 ('created', django_extensions.db.fields.CreationDateTimeField(auto_now_add=True, verbose_name='created')),
                 ('modified', django_extensions.db.fields.ModificationDateTimeField(auto_now=True, verbose_name='modified')),
                 ('external_id', models.CharField(blank=True, default='', max_length=256)),
-                ('canonical_url', models.URLField(max_length=1024)),
+                ('canonical_url', models.URLField(max_length=750)),
                 ('employer_name', models.CharField(max_length=200)),
                 ('employer_domain', models.CharField(blank=True, default='', max_length=253)),
                 ('title', models.CharField(max_length=300)),

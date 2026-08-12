@@ -52,6 +52,13 @@ def raw(**kwargs):
 
 
 class RawJobListingTests(TestCase):
+    def test_canonical_url_index_length_fits_mysql_utf8mb4_limit(self):
+        field = JobListing._meta.get_field("canonical_url")
+        # MySQL permits 3072 bytes per InnoDB index key. The unique index
+        # includes source_id (8 bytes) alongside this utf8mb4 field.
+        self.assertEqual(field.max_length, 750)
+        self.assertLessEqual(field.max_length * 4 + 8, 3072)
+
     def test_validation_and_text_sanitization(self):
         listing = raw(description_excerpt="<script>alert(1)</script> Build APIs")
         self.assertEqual(listing.employer_name, "Acme Labs")
