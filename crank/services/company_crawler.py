@@ -21,7 +21,7 @@ from crank.agents.jobs.errors import JobSourceDisabled, JobSourceNotApproved
 from crank.agents.jobs.firecrawl import FirecrawlClient
 from crank.agents.sources.errors import BlockedRedirectError, SchemaDriftError
 from crank.models.company_profile import CompanyProfileObservation
-from crank.models.employer import normalize_employer_domain, normalize_employer_name
+from crank.models.employer import EmployerAlias, normalize_employer_domain, normalize_employer_name
 from crank.models.job import JobSourceCatalog
 from crank.models.organization import Organization
 from crank.services import monitoring
@@ -149,23 +149,38 @@ def _source_host(source: Any) -> str:
 
 
 def _organization_for(domain: str, name: str) -> tuple[Organization | None, list[str]]:
-    domain_match = None
-    name_match = None
-    if domain:
-        for organization in Organization.objects.all().only("id", "name", "url"):
-            if normalize_employer_domain(urlsplit(organization.url).hostname or "") == domain:
-                domain_match = organization
-                break
-    if name:
-        name_key = normalize_employer_name(name)
-        name_match = next(
-            (organization for organization in Organization.objects.all().only("id", "name", "url")
-             if normalize_employer_name(organization.name) == name_key),
-            None,
-        )
-    if domain_match and name_match and domain_match.pk != name_match.pk:
+    """Resolve only deterministic identities, including reviewed aliases."""
+    domain_matches = set()
+    name_matches = set()
+    organizations = Organization.objects.all().only("id", "name", "url")
+    domain_key = normalize_employer_domain(domain)
+    name_key = normalize_employer_name(name)
+    for organization in organizations:
+        if normalize_employer_domain(urlsplit(organization.url).hostname or "") == domain_key:
+            domain_matches.add(organization.pk)
+        if normalize_employer_name(organization.name) == name_key:
+            name_matches.add(organization.pk)
+    domain_matches.update(
+        EmployerAlias.objects.filter(
+            kind=EmployerAlias.AliasKind.DOMAIN,
+            value=domain_key,
+            status=EmployerAlias.Status.APPROVED,
+        ).values_list("organization_id", flat=True)
+    )
+    name_matches.update(
+        EmployerAlias.objects.filter(
+            kind=EmployerAlias.AliasKind.NAME,
+            value=name_key,
+            status=EmployerAlias.Status.APPROVED,
+        ).values_list("organization_id", flat=True)
+    )
+    if len(domain_matches) > 1 or len(name_matches) > 1:
         return None, ["organization_identity"]
-    return domain_match or name_match, []
+    if domain_matches and name_matches and domain_matches != name_matches:
+        return None, ["organization_identity"]
+    organization_id = next(iter(domain_matches or name_matches), None)
+    organization = Organization.objects.filter(pk=organization_id).first() if organization_id else None
+    return organization, []
 
 
 def _fingerprint(data: Mapping[str, Any]) -> str:
