@@ -99,7 +99,20 @@ describe('OrganizationList', () => {
         await waitFor(() => {
             expect(screen.getByText('Organization 1')).toBeInTheDocument();
             expect(screen.getByText('Organization 2')).toBeInTheDocument();
+            expect(screen.getByRole('textbox', {name: 'Search organizations'})).toBeInTheDocument();
+            expect(screen.getByRole('table')).toBeInTheDocument();
+            expect(screen.getByText('Organizations ranked by the selected scoring algorithm')).toBeInTheDocument();
         });
+    });
+
+    test('opens organization details from the keyboard-accessible row control', async () => {
+        render(<OrganizationList organizations={organizations} />);
+
+        const row = await screen.findByRole('button', {name: 'View details for Organization 1'});
+        expect(row).toHaveAttribute('tabindex', '0');
+
+        fireEvent.keyDown(row, {key: 'Enter'});
+        expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
     });
 
     test('shows popup on organization name click', async () => {
