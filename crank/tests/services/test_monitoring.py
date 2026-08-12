@@ -77,9 +77,9 @@ class MonitoringContractTests(TestCase):
             started_at="not a dimension",
         )
         payload = record.call_args.args[1]
-        self.assertEqual(payload["items_seen"], 2)
-        self.assertNotIn("raw_body", payload)
-        self.assertNotIn("unknown", payload)
+        self.assertEqual(payload["counts"], {"items_seen": 2})
+        self.assertNotIn("raw_body", payload["counts"])
+        self.assertNotIn("unknown", payload["counts"])
         self.assertNotIn("started_at", payload)
         operation_event.assert_not_called()
 
