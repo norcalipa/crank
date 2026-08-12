@@ -23,6 +23,17 @@ logger = logging.getLogger("agent_runs")
 # Keep summaries bounded and free of raw external/user data.
 ERROR_SUMMARY_MAX_LENGTH = 1000
 
+# Event fields are an observability contract, not an arbitrary metadata sink.
+# Keeping this allowlist here prevents a future caller from accidentally
+# emitting prompts, message bodies, source payloads, or credentials.
+_EVENT_FIELDS = frozenset({"started_at", "completed_at", "counts", "error_summary"})
+_COUNT_FIELDS = frozenset({
+    "sources_total", "sources_succeeded", "sources_failed", "listings_ingested",
+    "listings_updated", "employers_resolved", "employers_unresolved", "users_total",
+    "users_succeeded", "users_failed", "matches_persisted", "deadline_reached",
+    "items_seen", "items_created", "items_updated", "items_failed",
+})
+
 # Redact anything that looks like a credential/secret before it reaches logs or
 # New Relic events.
 _SECRET_PATTERNS = [
@@ -54,6 +65,22 @@ def record_agent_event(run, event_type, **fields):
     best-effort: observability must never break the run itself.
     """
     try:
+        safe_fields = {}
+        for key, value in fields.items():
+            if key not in _EVENT_FIELDS:
+                continue
+            if key == "error_summary":
+                safe_fields[key] = sanitize_error(value)
+            elif key == "counts":
+                if isinstance(value, dict):
+                    safe_fields[key] = {
+                        str(count_key): count_value
+                        for count_key, count_value in value.items()
+                        if count_key in _COUNT_FIELDS
+                        and isinstance(count_value, (bool, int))
+                    }
+            elif isinstance(value, (str, int, float, bool)) or value is None:
+                safe_fields[key] = value
         newrelic.agent.record_custom_event(
             "AgentRun",
             {
@@ -62,7 +89,7 @@ def record_agent_event(run, event_type, **fields):
                 "status": run.status,
                 "correlation_id": str(run.correlation_id),
                 "run_id": run.pk,
-                **fields,
+                **safe_fields,
             },
         )
     except Exception:  # pragma: no cover - defensive
