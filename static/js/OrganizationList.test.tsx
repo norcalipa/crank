@@ -683,6 +683,37 @@ describe('OrganizationList', () => {
         });
     });
 
+    test('normalizes an out-of-range page in the URL', async () => {
+        window.history.replaceState({}, '', '/?page=99');
+
+        render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+
+        await waitFor(() => {
+            expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+        });
+        expect(window.location.search).toBe('?page=2');
+
+        window.history.replaceState({}, '', '/');
+    });
+
+    test('navigates with Previous and Next links', async () => {
+        render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+
+        await waitFor(() => {
+            expect(screen.getByRole('link', {name: 'Next page'})).toBeInTheDocument();
+        });
+
+        fireEvent.click(screen.getByRole('link', {name: 'Next page'}));
+        await waitFor(() => {
+            expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+        });
+
+        fireEvent.click(screen.getByRole('link', {name: 'Previous page'}));
+        await waitFor(() => {
+            expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+        });
+    });
+
     test('does not change page when clicking the current page link', async () => {
         render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
 
