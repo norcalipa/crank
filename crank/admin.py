@@ -3,6 +3,7 @@
 from django.contrib import admin
 from crank.models.agent_run import AgentRun
 from crank.models.conversation import Conversation, Message
+from crank.models.employer import EmployerAlias, UnresolvedEmployer
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference, UserPreferenceAudit
@@ -331,3 +332,52 @@ class JobListingAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 
 admin.site.register(JobSourceCatalog, JobSourceCatalogAdmin)
 admin.site.register(JobListing, JobListingAdmin)
+
+
+class EmployerAliasAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+    model = EmployerAlias
+    list_display = ["kind", "value", "organization", "status", "reviewed_by", "reviewed_at"]
+    list_filter = ["kind", "status"]
+    list_select_related = ["organization", "reviewed_by"]
+    search_fields = ["value", "organization__name"]
+    readonly_fields = ["created", "modified"]
+    actions = ["approve_aliases", "reject_aliases"]
+
+    def _set_status(self, request, queryset, status):
+        from django.utils import timezone as dj_tz
+        from crank.agents.jobs.employer import reprocess_employer_alias
+
+        count = 0
+        for alias in queryset:
+            alias.status = status
+            alias.reviewed_by = request.user
+            alias.reviewed_at = dj_tz.now()
+            alias.save(update_fields=["status", "reviewed_by", "reviewed_at", "modified"])
+            if status == EmployerAlias.Status.APPROVED:
+                reprocess_employer_alias(alias)
+            count += 1
+        self.message_user(request, f"{count} employer alias(es) updated.")
+
+    @admin.action(description="Approve selected employer aliases")
+    def approve_aliases(self, request, queryset):
+        self._set_status(request, queryset, EmployerAlias.Status.APPROVED)
+
+    @admin.action(description="Reject selected employer aliases")
+    def reject_aliases(self, request, queryset):
+        self._set_status(request, queryset, EmployerAlias.Status.REJECTED)
+
+
+class UnresolvedEmployerAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+    model = UnresolvedEmployer
+    list_display = ["listing", "employer_name", "employer_domain", "reason", "resolved", "resolved_at"]
+    list_filter = ["reason", "resolved"]
+    list_select_related = ["listing"]
+    search_fields = ["employer_name", "employer_domain"]
+    readonly_fields = [
+        "listing", "employer_name", "employer_domain", "reason", "candidates",
+        "resolved", "resolved_at", "created", "modified",
+    ]
+
+
+admin.site.register(EmployerAlias, EmployerAliasAdmin)
+admin.site.register(UnresolvedEmployer, UnresolvedEmployerAdmin)
