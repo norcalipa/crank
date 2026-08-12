@@ -37,7 +37,10 @@ APPROVED_JOB_SOURCE_DOMAINS = frozenset(
     }
 )
 MAX_EXTERNAL_ID = 256
-MAX_URL = 1024
+# MySQL utf8mb4 indexes allow at most 3072 bytes. canonical_url is part
+# of a unique index with source_id, so keep its four-byte characters within
+# that limit: 750 * 4 + 8 = 3008 bytes.
+MAX_URL = 750
 MAX_EMPLOYER_NAME = 200
 MAX_EMPLOYER_DOMAIN = 253
 MAX_TITLE = 300
