@@ -3,12 +3,13 @@
 {% extends "base.html" %}
 {% block head_title %}Privacy Notice — CRank{% endblock %}
 {% block content %}
-<div class="container mt-4" style="max-width: 800px;">
+<div class="container mt-4 readable-page-container">
     <h1>Privacy Notice</h1>
     <p class="lead">This notice explains what CRank stores, how long it is kept, and how you can control or delete your data.</p>
 
     <h2>Data We Store</h2>
-    <table class="table table-striped">
+    <div class="table-responsive" tabindex="0" aria-label="Data retention table; scroll horizontally for all columns">
+    <table class="table table-striped privacy-table">
         <thead>
             <tr><th>Data</th><th>Purpose</th><th>Retention</th></tr>
         </thead>
@@ -40,6 +41,7 @@
             </tr>
         </tbody>
     </table>
+    </div>
 
     <h2>Data We Do Not Store</h2>
     <ul>

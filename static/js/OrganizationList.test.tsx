@@ -34,9 +34,9 @@ describe('OrganizationList', () => {
             }
             if (url.includes('/api/organizations/')) {
                 return Promise.resolve({
-                    json: () => Promise.resolve({ 
-                        id: 1, 
-                        name: 'Organization 1', 
+                    json: () => Promise.resolve({
+                        id: 1,
+                        name: 'Organization 1',
                         type: 'C',
                         url: 'https://org1.example.com',
                         gives_ratings: true,
@@ -58,7 +58,7 @@ describe('OrganizationList', () => {
             },
             toString: jest.fn().mockReturnValue('http://localhost/'),
         };
-        
+
         // @ts-ignore - Mocking URL for testing
         global.URL = jest.fn(() => mockUrl);
 
@@ -70,48 +70,132 @@ describe('OrganizationList', () => {
     });
 
     const organizations: Organization[] = [
-    {
-        id: 1,
+        {
+            id: 1,
             name: 'Organization 1',
-        ranking: 1,
+            ranking: 1,
             avg_score: 4.5,
             funding_round: 'S',
             rto_policy: 'R',
             profile_completeness: 80,
             accelerated_vesting: true,
-    },
-    {
-        id: 2,
+        },
+        {
+            id: 2,
             name: 'Organization 2',
-        ranking: 2,
+            ranking: 2,
             avg_score: 3.5,
             funding_round: 'A',
             rto_policy: 'H',
             profile_completeness: 70,
             accelerated_vesting: false,
-    },
-];
+        },
+    ];
 
     test('renders organizations', async () => {
         render(<OrganizationList organizations={organizations} />);
 
         // Wait for the component to fetch choices
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
-            expect(screen.getByText('Organization 2')).toBeInTheDocument();
-            expect(screen.getByRole('textbox', {name: 'Search organizations'})).toBeInTheDocument();
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+            expect(screen.getAllByText('Organization 2').length).toBeGreaterThan(0);
+            expect(screen.getByRole('textbox', { name: 'Search organizations' })).toBeInTheDocument();
             expect(screen.getByRole('table')).toBeInTheDocument();
             expect(screen.getByText('Organizations ranked by the selected scoring algorithm')).toBeInTheDocument();
+        });
+    });
+
+    test('renders responsive controls container with search and filter', async () => {
+        render(<OrganizationList organizations={organizations} />);
+
+        await waitFor(() => {
+            const controls = document.querySelector('.organization-controls');
+            expect(controls).toBeInTheDocument();
+            expect(screen.getByRole('textbox', { name: 'Search organizations' })).toBeInTheDocument();
+            expect(screen.getByTestId('accelerated-vesting-checkbox')).toBeInTheDocument();
+        });
+    });
+
+    test('renders mobile card view alongside desktop table', async () => {
+        render(<OrganizationList organizations={organizations} />);
+
+        await waitFor(() => {
+            // Table view (desktop)
+            expect(screen.getByRole('table')).toBeInTheDocument();
+            expect(document.querySelector('.organization-table-wrap')).toBeInTheDocument();
+
+            // Card view (mobile)
+            const cards = document.querySelectorAll('.organization-card');
+            expect(cards.length).toBe(2);
+            expect(screen.getAllByText('Rank / score').length).toBe(2);
+            expect(screen.getAllByText('RTO policy').length).toBe(2);
+            expect(screen.getAllByText('Funding round').length).toBe(2);
+            expect(screen.getAllByText('Profile completeness').length).toBe(2);
+        });
+    });
+
+    test('card view shows organization score and ranking', async () => {
+        render(<OrganizationList organizations={organizations} />);
+
+        await waitFor(() => {
+            expect(screen.getByText('#1 · 4.50')).toBeInTheDocument();
+            expect(screen.getByText('#2 · 3.50')).toBeInTheDocument();
+        });
+    });
+
+    test('card view labels are present for all organizations', async () => {
+        render(<OrganizationList organizations={organizations} />);
+
+        await waitFor(() => {
+            // Each card has labels for rank/score, RTO policy, funding round, profile completeness
+            const labels = screen.getAllByText('Rank / score');
+            expect(labels.length).toBe(2);
+            const rtoLabels = screen.getAllByText('RTO policy');
+            expect(rtoLabels.length).toBe(2);
+            const fundingLabels = screen.getAllByText('Funding round');
+            expect(fundingLabels.length).toBe(2);
+            const completenessLabels = screen.getAllByText('Profile completeness');
+            expect(completenessLabels.length).toBe(2);
+        });
+    });
+
+    test('pagination nav has accessible label', async () => {
+        render(<OrganizationList organizations={organizations} />);
+
+        await waitFor(() => {
+            const nav = screen.getByRole('navigation', { name: 'Organization pages' });
+            expect(nav).toBeInTheDocument();
+        });
+    });
+
+    test('table wrapper has region role and aria-label', async () => {
+        render(<OrganizationList organizations={organizations} />);
+
+        await waitFor(() => {
+            const region = screen.getByRole('region', { name: 'Organization rankings' });
+            expect(region).toBeInTheDocument();
+        });
+    });
+
+    test('card view has aria-label for the container', async () => {
+        render(<OrganizationList organizations={organizations} />);
+
+        await waitFor(() => {
+            const cardContainer = document.querySelector('.organization-cards');
+            expect(cardContainer?.getAttribute('aria-label')).toBe('Organization ranking cards');
         });
     });
 
     test('opens organization details from the keyboard-accessible row control', async () => {
         render(<OrganizationList organizations={organizations} />);
 
-        const row = await screen.findByRole('button', {name: 'View details for Organization 1'});
-        expect(row).toHaveAttribute('tabindex', '0');
+        // Both table rows and cards have role=button with the same aria-label.
+        // Verify the table row specifically is keyboard accessible.
+        const rows = await screen.findAllByRole('button', { name: 'View details for Organization 1' });
+        expect(rows.length).toBe(2);
+        expect(rows[0]).toHaveAttribute('tabindex', '0');
 
-        fireEvent.keyDown(row, {key: 'Enter'});
+        fireEvent.keyDown(rows[0], { key: 'Enter' });
         expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
     });
 
@@ -120,14 +204,67 @@ describe('OrganizationList', () => {
 
         // Wait for the component to render
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
         });
 
-        // Click on the organization name
-        fireEvent.click(screen.getByText('Organization 1'));
+        // Click on the first occurrence (table row) of the organization name
+        fireEvent.click(screen.getAllByText('Organization 1')[0]);
 
         // Verify API call was made
         expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
+    });
+
+    test('opens popup when clicking a mobile card', async () => {
+        render(<OrganizationList organizations={organizations} />);
+
+        await waitFor(() => {
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+        });
+
+        const cards = document.querySelectorAll('.organization-card');
+        fireEvent.click(cards[0]);
+
+        expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
+    });
+
+    test('card keyboard navigation opens popup on Enter', async () => {
+        render(<OrganizationList organizations={organizations} />);
+
+        await waitFor(() => {
+            const cards = document.querySelectorAll('.organization-card');
+            expect(cards.length).toBe(2);
+        });
+
+        const card = document.querySelector('.organization-card') as HTMLElement;
+        fireEvent.keyDown(card, { key: 'Enter' });
+
+        expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
+    });
+
+    test('card keyboard navigation opens popup on Space', async () => {
+        render(<OrganizationList organizations={organizations} />);
+
+        await waitFor(() => {
+            const cards = document.querySelectorAll('.organization-card');
+            expect(cards.length).toBe(2);
+        });
+
+        const card = document.querySelector('.organization-card') as HTMLElement;
+        fireEvent.keyDown(card, { key: ' ' });
+
+        expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
+    });
+
+    test('card has role button and tabindex', async () => {
+        render(<OrganizationList organizations={organizations} />);
+
+        await waitFor(() => {
+            const cards = document.querySelectorAll('.organization-card');
+            expect(cards.length).toBe(2);
+            expect(cards[0].getAttribute('role')).toBe('button');
+            expect(cards[0].getAttribute('tabindex')).toBe('0');
+            expect(cards[0].getAttribute('aria-label')).toBe('View details for Organization 1');
+        });
     });
 
     test('filters organizations by search term', async () => {
@@ -135,8 +272,8 @@ describe('OrganizationList', () => {
 
         // Wait for the component to fetch choices
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
-            expect(screen.getByText('Organization 2')).toBeInTheDocument();
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+            expect(screen.getAllByText('Organization 2').length).toBeGreaterThan(0);
         });
 
         // Type a search term
@@ -145,9 +282,9 @@ describe('OrganizationList', () => {
 
         // Check that only Organization 1 is visible
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
-            expect(screen.queryByText('Organization 2')).not.toBeInTheDocument();
-    });
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+            expect(screen.queryAllByText('Organization 2')).toHaveLength(0);
+        });
     });
 
     test('filters organizations by accelerated vesting', async () => {
@@ -155,8 +292,8 @@ describe('OrganizationList', () => {
 
         // Wait for the component to fetch choices
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
-            expect(screen.getByText('Organization 2')).toBeInTheDocument();
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+            expect(screen.getAllByText('Organization 2').length).toBeGreaterThan(0);
         });
 
         // Check the accelerated vesting checkbox
@@ -165,8 +302,8 @@ describe('OrganizationList', () => {
 
         // Check that only Organization 1 is visible (as it has accelerated_vesting: true)
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
-            expect(screen.queryByText('Organization 2')).not.toBeInTheDocument();
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+            expect(screen.queryAllByText('Organization 2')).toHaveLength(0);
         });
     });
 
@@ -187,21 +324,21 @@ describe('OrganizationList', () => {
 
     test('opens and closes popup', async () => {
         render(<OrganizationList organizations={organizations} />);
-        
+
         // Wait for the component to render
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
         });
-        
+
         // Check that the popup is not visible initially
         expect(screen.queryByText('Company (for profit)')).not.toBeInTheDocument();
-        
-        // Click on the organization name to open the popup
-        fireEvent.click(screen.getByText('Organization 1'));
-        
+
+        // Click on the first occurrence (table row) of the organization name
+        fireEvent.click(screen.getAllByText('Organization 1')[0]);
+
         // Verify API call was made
         expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
-        
+
         // Wait for the popup to appear
         await waitFor(() => {
             expect(screen.getByText('Company (for profit)')).toBeInTheDocument();
@@ -210,7 +347,7 @@ describe('OrganizationList', () => {
         // Click the close button
         const closeButton = screen.getByRole('button', { name: 'Close' });
         fireEvent.click(closeButton);
-        
+
         // Check that the popup is closed
         await waitFor(() => {
             expect(screen.queryByText('Company (for profit)')).not.toBeInTheDocument();
@@ -226,20 +363,20 @@ describe('OrganizationList', () => {
             gives_ratings: true,
             public: true
         }];
-        
+
         render(<OrganizationList organizations={organizationsWithDetails} />);
 
         // Wait for the component to render
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
         });
-        
-        // Click on the organization name
-        fireEvent.click(screen.getByText('Organization 1'));
-        
+
+        // Click on the first occurrence of the organization name
+        fireEvent.click(screen.getAllByText('Organization 1')[0]);
+
         // It should not fetch details since they are already available
         expect(global.fetch).not.toHaveBeenCalledWith('/api/organizations/1/');
-        
+
         // The popup should appear immediately with the cached data
         expect(screen.getByText('https://org1.example.com')).toBeInTheDocument();
     });
@@ -262,28 +399,28 @@ describe('OrganizationList', () => {
             }
             return Promise.reject(new Error('Fetch not mocked for this URL'));
         });
-        
+
         // Spy on console.error
         const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        
+
         render(<OrganizationList organizations={organizations} />);
-        
+
         // Wait for the component to render
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
         });
-        
-        // Click on the organization name
-        fireEvent.click(screen.getByText('Organization 1'));
-        
+
+        // Click on the first occurrence of the organization name
+        fireEvent.click(screen.getAllByText('Organization 1')[0]);
+
         // Check if error was logged
         await waitFor(() => {
             expect(consoleSpy).toHaveBeenCalledWith('Error fetching organization details:', expect.any(Error));
         });
-        
+
         // The popup should still be shown with available data - use a more specific selector
         expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
-        
+
         // Restore console.error
         consoleSpy.mockRestore();
     });
@@ -300,14 +437,14 @@ describe('OrganizationList', () => {
             },
             toString: jest.fn().mockReturnValue('http://localhost/?page=2'),
         };
-        
+
         // @ts-ignore - Mocking URL for testing
         global.URL = jest.fn(() => mockUrl);
-        
+
         // Since we're testing URL initialization, we need to modify the component's initial state
         // Create a modified version of organizations with the correct initial active page
         const { rerender } = render(<OrganizationList organizations={Array(40).fill(organizations[0])} itemsPerPage={10} />);
-        
+
         // This test verifies that the URL query parameter is used, but we can't directly test
         // the effect in this environment since the mock doesn't fully integrate with React state.
         // Instead, let's verify that our page link exists and that the pagination is rendered
@@ -319,43 +456,43 @@ describe('OrganizationList', () => {
 
     test('resets to page 1 when filtering changes the results', async () => {
         render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
-        
+
         // Wait for the component to fetch choices
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
         });
-        
+
         // Navigate to page 2
         fireEvent.click(screen.getByTestId('page-link-2'));
-        
+
         // Verify page change
         await waitFor(() => {
-            expect(screen.getByText('Organization 2')).toBeInTheDocument();
-            expect(screen.queryByText('Organization 1')).not.toBeInTheDocument();
-    });
+            expect(screen.getAllByText('Organization 2').length).toBeGreaterThan(0);
+            expect(screen.queryAllByText('Organization 1')).toHaveLength(0);
+        });
 
         // Apply filter that will reduce results to just one item
         const searchInput = screen.getByPlaceholderText('Search organizations') as HTMLInputElement;
         fireEvent.change(searchInput, { target: { value: 'Organization 1' } });
-        
-        // The search results in zero organizations being displayed because 
+
+        // The search results in zero organizations being displayed because
         // we're on page 2 but searching for an organization on page 1
         // In our current implementation, we don't automatically reset to page 1
         // So we'll check that the search value has been applied
         expect(searchInput.value).toBe('Organization 1');
-        
+
         // Check that the results are filtered
-        expect(screen.queryByText('Organization 2')).not.toBeInTheDocument();
+        expect(screen.queryAllByText('Organization 2')).toHaveLength(0);
     });
 
     test('shows popup when clicking anywhere on organization row', async () => {
         render(<OrganizationList organizations={organizations} />);
-        
+
         // Wait for the component to render
         await waitFor(() => {
-            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
         });
-        
+
         // Get the first organization row and click on it
         const rows = document.querySelectorAll('.organization-row');
         const firstRow = rows[0];
@@ -381,14 +518,14 @@ describe('OrganizationList', () => {
 
         // Spy on console.error
         const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        
+
         render(<OrganizationList organizations={organizations} />);
 
         // Wait to allow the component to attempt fetching
         await waitFor(() => {
             expect(consoleSpy).toHaveBeenCalledWith('Error fetching funding round choices:', expect.any(Error));
         });
-        
+
         // Restore console.error
         consoleSpy.mockRestore();
     });
@@ -406,12 +543,12 @@ describe('OrganizationList', () => {
             }
             return Promise.reject(new Error('Fetch not mocked for this URL'));
         });
-        
+
         // Spy on console.error
         const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        
+
         render(<OrganizationList organizations={organizations} />);
-        
+
         // Wait to allow the component to attempt fetching
         await waitFor(() => {
             expect(consoleSpy).toHaveBeenCalledWith('Error fetching RTO policy choices:', expect.any(Error));
@@ -420,12 +557,12 @@ describe('OrganizationList', () => {
         // Restore console.error
         consoleSpy.mockRestore();
     });
-    
+
     test('DOMContentLoaded event handler initializes component successfully', () => {
         // Instead of creating actual DOM elements, mock getElementById
         const originalGetElementById = document.getElementById;
         const containerDiv = document.createElement('div');
-        
+
         // Mock the organization data element to have valid JSON
         document.getElementById = jest.fn().mockImplementation((id) => {
             if (id === 'organization-data') {
@@ -442,24 +579,24 @@ describe('OrganizationList', () => {
         const mockRender = jest.fn();
         const mockRoot = { render: mockRender };
         const createRootSpy = jest.spyOn(require('react-dom/client'), 'createRoot').mockImplementation(() => mockRoot);
-        
+
         // Trigger DOMContentLoaded event
-            const event = new Event('DOMContentLoaded');
-            document.dispatchEvent(event);
-        
+        const event = new Event('DOMContentLoaded');
+        document.dispatchEvent(event);
+
         // Verify that createRoot and render were called
         expect(createRootSpy).toHaveBeenCalledWith(containerDiv);
         expect(mockRender).toHaveBeenCalled();
-        
+
         // Clean up
         document.getElementById = originalGetElementById;
         createRootSpy.mockRestore();
     });
-    
+
     test('DOMContentLoaded event handler handles JSON parse error', () => {
         // Instead of creating actual DOM elements, mock getElementById
         const originalGetElementById = document.getElementById;
-        
+
         // Mock the organization data element to have invalid JSON
         document.getElementById = jest.fn().mockImplementation((id) => {
             if (id === 'organization-data') {
@@ -471,48 +608,48 @@ describe('OrganizationList', () => {
             }
             return null;
         });
-        
+
         // Spy on console.error
         const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
-        
+
         // Spy on createRoot
         const createRootSpy = jest.spyOn(require('react-dom/client'), 'createRoot');
-        
+
         // Trigger DOMContentLoaded event
         const event = new Event('DOMContentLoaded');
         document.dispatchEvent(event);
-        
+
         // Verify error was logged
         expect(consoleSpy).toHaveBeenCalledWith('Error parsing organization data:', expect.any(Error));
-        
+
         // Clean up
         document.getElementById = originalGetElementById;
         consoleSpy.mockRestore();
         createRootSpy.mockRestore();
     });
-    
+
     test('DOMContentLoaded handler does nothing if elements not found', () => {
         // Ensure no elements exist
         const existingDataElement = document.getElementById('organization-data');
         if (existingDataElement) {
             document.body.removeChild(existingDataElement);
         }
-        
+
         const existingContainerElement = document.getElementById('organization-list');
         if (existingContainerElement) {
             document.body.removeChild(existingContainerElement);
         }
-        
+
         // Spy on createRoot
         const createRootSpy = jest.spyOn(require('react-dom/client'), 'createRoot');
-        
+
         // Trigger DOMContentLoaded event
         const event = new Event('DOMContentLoaded');
         document.dispatchEvent(event);
-        
+
         // Verify createRoot was not called
         expect(createRootSpy).not.toHaveBeenCalled();
-        
+
         // Clean up
         createRootSpy.mockRestore();
     });
