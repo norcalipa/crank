@@ -306,7 +306,7 @@ class AgenticEndToEndSecurityTests(TestCase):
 
     def test_event_allowlist_never_emits_sensitive_fields(self):
         run = AgentRun.objects.create(run_type=AgentRun.RunType.NOOP, status=AgentRun.Status.RUNNING)
-        with patch("crank.services.agent_runs.newrelic.agent.record_custom_event") as event:
+        with patch("crank.services.agent_runs.monitoring.record_event"), patch("crank.services.agent_runs.newrelic.agent.record_custom_event") as event:
             agent_runs.record_agent_event(
                 run,
                 "hostile",
