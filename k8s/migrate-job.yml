@@ -1,0 +1,85 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: crank-migrate-${GITHUB_SHA}
+  namespace: crank
+  labels:
+    app.kubernetes.io/name: crank
+    app.kubernetes.io/instance: crank
+    app.kubernetes.io/component: migration
+    app.kubernetes.io/version: ${GITHUB_SHA}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: crank
+        app.kubernetes.io/instance: crank
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        runAsGroup: 10000
+        fsGroup: 10000
+        seccompProfile:
+          type: RuntimeDefault
+      hostAliases:
+        - ip: "10.0.0.10"
+          hostnames:
+            - "fats"
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        nameservers:
+          - 8.8.8.8
+          - 1.1.1.1
+        options:
+          - name: timeout
+            value: "2"
+          - name: attempts
+            value: "3"
+      containers:
+        - name: crank-migrate
+          image: ghcr.io/norcalipa/crank/crank:${GITHUB_SHA}
+          imagePullPolicy: Always
+          command: ["python", "manage.py", "migrate", "--noinput"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          env:
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: crank-secrets
+                  key: SECRET_KEY
+          envFrom:
+            - configMapRef:
+                name: crank-config
+            - secretRef:
+                name: db-connect-credentials
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "1Gi"
+              cpu: "1"
+      imagePullSecrets:
+        - name: ghcr-credentials
+      volumes:
+        - name: tmp
+          emptyDir: {}
