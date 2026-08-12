@@ -377,6 +377,17 @@ JOB_PIPELINE_MAX_LISTINGS_PER_USER = _env_int(
     "JOB_PIPELINE_MAX_LISTINGS_PER_USER", 500
 )
 JOB_PIPELINE_DEADLINE_SECONDS = _env_int("JOB_PIPELINE_DEADLINE_SECONDS", 300)
+# Bounded freshness planner. Both schedules are intentionally inert until
+# operators enable the command and unsuspend the matching CronJobs.
+ORGANIZATION_FRESHNESS_HOURS = _env_int("ORGANIZATION_FRESHNESS_HOURS", 168)
+JOB_FRESHNESS_HOURS = _env_int("JOB_FRESHNESS_HOURS", 24)
+CRAWL_CRON_ENABLED = _env_bool("CRAWL_CRON_ENABLED", False)
+ORGANIZATION_CRAWL_CRON = os.environ.get("ORGANIZATION_CRAWL_CRON", "0 */6 * * *")
+JOB_CRAWL_CRON = os.environ.get("JOB_CRAWL_CRON", "*/15 * * * *")
+CRAWL_MAX_SOURCES = _env_int("CRAWL_MAX_SOURCES", 10)
+CRAWL_MAX_JOB_LISTINGS = _env_int("CRAWL_MAX_JOB_LISTINGS", 100)
+CRAWL_MAX_PAGES = _env_int("CRAWL_MAX_PAGES", 10)
+CRAWL_DEADLINE_SECONDS = _env_int("CRAWL_DEADLINE_SECONDS", 300)
 # Staleness TTL (seconds): a RUNNING claim older than this is treated as a
 # crashed/stale lock and reclaimed by the next claim for the same run type.
 AGENT_RUN_STALE_AFTER_SECONDS = _env_int("AGENT_RUN_STALE_AFTER_SECONDS", 3600)

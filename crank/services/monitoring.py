@@ -23,6 +23,7 @@ EVENT_NAMES = frozenset(
         "source_stage",
         "matching_batch",
         "operational_change",
+        "crawl_planning",
     }
 )
 
@@ -65,6 +66,12 @@ _SAFE_KEYS = frozenset(
         "listings_rejected",
         "correlation_id",
         "run_id",
+        "scheduled",
+        "stale",
+        "skipped",
+        "errors",
+        "organizations_total",
+        "jobs_total",
         "provider",
         "model",
     }

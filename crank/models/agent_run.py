@@ -31,6 +31,7 @@ class AgentRun(TimeStampedModel):
         NOOP = "noop", _("No-op reference run")
         GATHER_SCORES = "gather_scores", _("Score gathering run")
         JOB_PIPELINE = "job_pipeline", _("Job pipeline run")
+        CRAWL_SCHEDULE = "crawl_schedule", _("Crawl scheduling run")
 
     class Status(models.TextChoices):
         PENDING = "pending", _("Pending")
