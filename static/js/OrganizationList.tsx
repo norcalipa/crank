@@ -3,6 +3,7 @@
 import * as React from 'react';
 import {createRoot} from "react-dom/client";
 import OrganizationDetailsPopup from './OrganizationDetailsPopup';
+import SuggestCompanyModal from './SuggestCompanyModal';
 
 interface ScoreDetail {
     type__name: string;
@@ -29,6 +30,7 @@ interface OrganizationListProps {
     organizations: Organization[];
     itemsPerPage?: number;
     canSuggestCompany?: boolean;
+    isAuthenticated?: boolean;
 }
 
 interface OrganizationListState {
@@ -42,6 +44,7 @@ interface OrganizationListState {
     searchTerm: string;
     selectedOrganization: Organization | null;
     showPopup: boolean;
+    showSuggestModal: boolean;
 }
 
 class OrganizationList extends React.Component<OrganizationListProps, OrganizationListState> {
@@ -58,7 +61,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             acceleratedVesting: urlState.acceleratedVesting,
             searchTerm: urlState.searchTerm,
             selectedOrganization: null,
-            showPopup: false
+            showPopup: false,
+            showSuggestModal: false
         };
     }
 
@@ -234,6 +238,14 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         }
     };
 
+    handleOpenSuggestModal = () => {
+        this.setState({showSuggestModal: true});
+    };
+
+    handleCloseSuggestModal = () => {
+        this.setState({showSuggestModal: false});
+    };
+
     handleClosePopup = () => {
         // Remove focus from any element to prevent blinking cursor
         if (document.activeElement instanceof HTMLElement) {
@@ -289,6 +301,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         <label className="form-check-label" htmlFor="acceleratedVesting">&nbsp;Show only companies with first vesting in &lt; 1 year</label>
                     </span>
                 </div>
+                {(this.props.canSuggestCompany || this.props.isAuthenticated) && (
+                    <button type="button" className="btn btn-outline-primary btn-sm mt-2"
+                            data-testid="suggest-company-btn" onClick={this.handleOpenSuggestModal}>
+                        Suggest a company
+                    </button>
+                )}
             </div>
             <div className="mb-2" role="status" aria-live="polite">
                 {`Showing ${firstResult}-${lastResult} of ${filteredOrganizations.length} organizations`}
@@ -327,7 +345,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 <h2 className="h5">No organizations found</h2>
                 <p>There are no organizations that match your search or filters.</p>
                 {(searchTerm || acceleratedVesting) && <button type="button" className="btn btn-secondary" onClick={this.handleClearFilters}>Clear search and filters</button>}
-                {this.props.canSuggestCompany && <p className="mt-2 mb-0"><a href="https://github.com/norcalipa/crank/issues/369">Suggest a company</a> for evaluation.</p>}
+                {(this.props.canSuggestCompany || this.props.isAuthenticated) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0" onClick={this.handleOpenSuggestModal}>Suggest a company</button> for evaluation.</p>}
             </div>) : (<>
                 <div className="organization-table-wrap" role="region" aria-label="Organization rankings" tabIndex={0}>
                     <table className="table organization-table">
@@ -412,6 +430,10 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 visible={showPopup}
                 onClose={this.handleClosePopup}
             />
+            <SuggestCompanyModal
+                visible={this.state.showSuggestModal}
+                onClose={this.handleCloseSuggestModal}
+            />
         </div>);
     }
 }
@@ -428,7 +450,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const configElement = document.getElementById('organization-list-config');
                 const root = createRoot(container);
                 root.render(<OrganizationList organizations={organizationsData}
-                    canSuggestCompany={configElement?.getAttribute('data-can-suggest-company') === 'true'}/>);
+                    canSuggestCompany={configElement?.getAttribute('data-can-suggest-company') === 'true'}
+                    isAuthenticated={container.dataset.authenticated === 'true'}/>);
             }
         } catch (error) {
             console.error('Error parsing organization data:', error);

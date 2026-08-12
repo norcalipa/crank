@@ -8,6 +8,7 @@ from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
 from crank.models.company_profile import CompanyProfileObservation
+from crank.models.company_request import CompanyRequest
 from crank.models.preference import UserPreference, UserPreferenceAudit
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 from crank.models.source import ApprovalState, SourceCatalog, SourceRun, SourceCatalogAudit
@@ -218,6 +219,92 @@ class CompanyProfileObservationAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 
 admin.site.register(Organization, OrganizationAdmin)
 admin.site.register(CompanyProfileObservation, CompanyProfileObservationAdmin)
+class CompanyRequestAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+    model = CompanyRequest
+    list_display = ["company_name", "website_url", "requester", "status", "created", "crawl_source_approved", "refresh_queued"]
+    list_filter = ["status", "crawl_source_approved", "refresh_queued"]
+    search_fields = ["company_name", "normalized_domain", "requester__username", "requester__email"]
+    list_select_related = ["requester", "duplicate_of", "approved_organization"]
+    readonly_fields = ["requester", "company_name", "normalized_name", "website_url", "normalized_domain", "careers_url", "reason", "status", "duplicate_of", "approved_organization", "created", "modified", "crawl_source_approved", "refresh_queued"]
+    actions = ["approve_requests", "reject_requests", "mark_duplicate", "approve_crawl_sources", "queue_refresh"]
+
+    def _confirmed(self, request):
+        if request.POST.get("confirm") != "yes":
+            self.message_user(request, "No changes made. Repeat the action with confirm=yes.", level="warning")
+            return False
+        return True
+
+    def _audit(self, request, item, action, old, new):
+        OperationalChangeAudit.record(actor=request.user, target_type="company_request", target_id=item.pk, action=action, old_value=old, new_value=new, confirmed=True)
+
+    @admin.action(description="Approve and create pending organizations (confirm=yes)")
+    def approve_requests(self, request, queryset):
+        if not self._confirmed(request):
+            return
+        updated = 0
+        for item in queryset.filter(status=CompanyRequest.Status.PENDING):
+            organization = Organization.objects.create(name=item.company_name, url=item.website_url, status=0, public=True)
+            old = {"status": item.status, "approved_organization": None}
+            item.status = CompanyRequest.Status.APPROVED
+            item.approved_organization = organization
+            item.save(update_fields=["status", "approved_organization", "modified"])
+            self._audit(request, item, "approve", old, {"status": item.status, "approved_organization": organization.pk})
+            updated += 1
+        self.message_user(request, f"{updated} suggestion(s) approved as pending organizations.")
+
+    @admin.action(description="Reject selected suggestions (confirm=yes)")
+    def reject_requests(self, request, queryset):
+        if not self._confirmed(request):
+            return
+        updated = 0
+        for item in queryset.filter(status=CompanyRequest.Status.PENDING):
+            old = {"status": item.status}
+            item.status = CompanyRequest.Status.REJECTED
+            item.save(update_fields=["status", "modified"])
+            self._audit(request, item, "reject", old, {"status": item.status})
+            updated += 1
+        self.message_user(request, f"{updated} suggestion(s) rejected and audited.")
+
+    @admin.action(description="Mark selected suggestions as duplicates (confirm=yes)")
+    def mark_duplicate(self, request, queryset):
+        if not self._confirmed(request):
+            return
+        updated = 0
+        for item in queryset.filter(status=CompanyRequest.Status.PENDING).exclude(duplicate_of=None):
+            old = {"status": item.status, "duplicate_of": None}
+            item.status = CompanyRequest.Status.DUPLICATE
+            item.save(update_fields=["status", "modified"])
+            self._audit(request, item, "duplicate", old, {"status": item.status, "duplicate_of": item.duplicate_of_id})
+            updated += 1
+        self.message_user(request, f"{updated} suggestion(s) marked as duplicates and audited.")
+
+    @admin.action(description="Approve crawl source workflow (confirm=yes)")
+    def approve_crawl_sources(self, request, queryset):
+        if not self._confirmed(request):
+            return
+        updated = 0
+        for item in queryset.filter(status=CompanyRequest.Status.APPROVED, crawl_source_approved=False):
+            item.crawl_source_approved = True
+            item.save(update_fields=["crawl_source_approved", "modified"])
+            self._audit(request, item, "approve_source", {"crawl_source_approved": False}, {"crawl_source_approved": True})
+            updated += 1
+        self.message_user(request, f"{updated} crawl source workflow(s) approved; no external calls were made.")
+
+    @admin.action(description="Queue refresh after source approval (confirm=yes)")
+    def queue_refresh(self, request, queryset):
+        if not self._confirmed(request):
+            return
+        updated = 0
+        for item in queryset.filter(status=CompanyRequest.Status.APPROVED, crawl_source_approved=True, refresh_queued=False):
+            item.refresh_queued = True
+            item.save(update_fields=["refresh_queued", "modified"])
+            self._audit(request, item, "queue_refresh", {"refresh_queued": False}, {"refresh_queued": True})
+            updated += 1
+        self.message_user(request, f"{updated} refresh request(s) queued for the approved workflow.")
+
+
+admin.site.register(CompanyRequest, CompanyRequestAdmin)
+
 admin.site.register(ScoreType, ScoreTypeAdmin)
 admin.site.register(ScoreAlgorithm, ScoreAlgorithmAdmin)
 admin.site.register(ScoreAlgorithmWeight)
