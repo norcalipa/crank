@@ -369,6 +369,14 @@ GATHER_SCORES_DEADLINE_SECONDS = _env_int("GATHER_SCORES_DEADLINE_SECONDS", 300)
 GATHER_SCORES_SOURCE_TIMEOUT_SECONDS = _env_int(
     "GATHER_SCORES_SOURCE_TIMEOUT_SECONDS", 120
 )
+# Periodic job ingestion and matching is independently disabled by default.
+JOB_PIPELINE_ENABLED = _env_bool("JOB_PIPELINE_ENABLED", False)
+JOB_PIPELINE_MAX_SOURCES = _env_int("JOB_PIPELINE_MAX_SOURCES", 10)
+JOB_PIPELINE_MAX_USERS = _env_int("JOB_PIPELINE_MAX_USERS", 100)
+JOB_PIPELINE_MAX_LISTINGS_PER_USER = _env_int(
+    "JOB_PIPELINE_MAX_LISTINGS_PER_USER", 500
+)
+JOB_PIPELINE_DEADLINE_SECONDS = _env_int("JOB_PIPELINE_DEADLINE_SECONDS", 300)
 # Staleness TTL (seconds): a RUNNING claim older than this is treated as a
 # crashed/stale lock and reclaimed by the next claim for the same run type.
 AGENT_RUN_STALE_AFTER_SECONDS = _env_int("AGENT_RUN_STALE_AFTER_SECONDS", 3600)
