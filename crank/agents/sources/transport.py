@@ -300,6 +300,14 @@ class SafeHTTPClient:
             raise errors.BlockedRedirectError(
                 f"non-HTTPS or missing scheme {scheme!r} for {url!r}"
             )
+        if parsed.username is not None or parsed.password is not None:
+            raise errors.BlockedRedirectError(
+                f"URL credentials are not allowed for {url!r}"
+            )
+        if parsed.port not in (None, 443):
+            raise errors.BlockedRedirectError(
+                f"non-standard HTTPS port is not allowed for {url!r}"
+            )
         host = (parsed.hostname or "").lower()
         if host not in self.allowed_hosts:
             raise errors.BlockedRedirectError(
@@ -309,8 +317,13 @@ class SafeHTTPClient:
     def _assert_resolved_addresses(self, url: str) -> None:
         parsed = urlparse(url)
         host = (parsed.hostname or "").lower()
+        resolved = list(self._resolver(host))
+        if not resolved:
+            raise errors.BlockedAddressError(
+                f"host {host!r} did not resolve to a globally routable address"
+            )
         blocked: List[str] = []
-        for addr in self._resolver(host):
+        for addr in resolved:
             if address_is_blocked(addr):
                 blocked.append(addr)
         if blocked:

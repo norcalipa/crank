@@ -226,8 +226,14 @@ class JobSearchOrchestrator:
         except JobSearchError:
             raise
         except Exception as exc:  # pragma: no cover - defensive boundary
-            logger.exception("job_search provider failure")
-            raise ProviderError(str(exc)) from exc
+            # Provider exceptions may contain request bodies, credentials, or
+            # response text. Keep both the log and the public error generic;
+            # callers can still classify the typed boundary error.
+            logger.error(
+                "job_search provider failure error_type=%s",
+                type(exc).__name__,
+            )
+            raise ProviderError("provider failed to produce a response") from exc
 
     @staticmethod
     def _validate_citations(

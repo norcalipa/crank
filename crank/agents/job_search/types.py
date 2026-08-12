@@ -17,10 +17,18 @@ from crank.agents.job_search.errors import InvalidModelOutputError
 
 #: Top-level keys that must all be present in the model's result object.
 _REQUIRED_KEYS = frozenset({"message", "cited_organization_ids", "preference_patch"})
+_ALLOWED_KEYS = _REQUIRED_KEYS
 #: Absolute ceiling on how many cited organization IDs are accepted.
 _MAX_CITED_ORGANIZATIONS = 200
 #: Ceiling on preference-patch nesting depth (guards against pathological JSON).
 _MAX_PATCH_DEPTH = 8
+# Keep a hostile provider response from becoming an unbounded in-memory object
+# before the preference service gets a chance to validate it.
+_MAX_MESSAGE_LENGTH = 8000
+_MAX_PATCH_KEYS = 200
+_MAX_PATCH_SEQUENCE_LENGTH = 200
+_MAX_PATCH_STRING_LENGTH = 2000
+_MAX_PATCH_JSON_BYTES = 16 * 1024
 
 
 @dataclass(frozen=True)
@@ -71,11 +79,22 @@ class AssistantCompletion:
                 "model output is missing required keys: %s"
                 % ", ".join(sorted(missing))
             )
+        unknown = set(payload.keys()) - _ALLOWED_KEYS
+        if unknown:
+            raise InvalidModelOutputError(
+                "model output contains unknown keys: %s"
+                % ", ".join(sorted(str(key) for key in unknown))
+            )
 
         message = payload.get("message")
         if not isinstance(message, str) or not message.strip():
             raise InvalidModelOutputError(
                 "model output 'message' must be a non-empty string"
+            )
+        if len(message) > _MAX_MESSAGE_LENGTH:
+            raise InvalidModelOutputError(
+                "model output 'message' exceeds %d characters"
+                % _MAX_MESSAGE_LENGTH
             )
 
         raw_ids = payload.get("cited_organization_ids")
@@ -108,6 +127,11 @@ class AssistantCompletion:
                     "model output preference_patch must be an object or null"
                 )
             _assert_bounded_patch(patch)
+            patch_bytes = len(json.dumps(patch, separators=(",", ":")).encode("utf-8"))
+            if patch_bytes > _MAX_PATCH_JSON_BYTES:
+                raise InvalidModelOutputError(
+                    "preference_patch exceeds %d bytes" % _MAX_PATCH_JSON_BYTES
+                )
 
         return cls(
             message=message.strip(),
@@ -136,12 +160,21 @@ def _assert_bounded_scalar(value: Any) -> None:
             "preference_patch values must be strings, numbers, or nested "
             "objects/lists; booleans and other types are not allowed"
         )
+    if isinstance(value, str) and len(value) > _MAX_PATCH_STRING_LENGTH:
+        raise InvalidModelOutputError(
+            "preference_patch strings exceed %d characters"
+            % _MAX_PATCH_STRING_LENGTH
+        )
 
 
 def _assert_bounded_patch(patch: Dict[str, Any], _depth: int = 0) -> None:
     """Recursively enforce the patch is JSON-serializable, typed, and bounded."""
     if _depth > _MAX_PATCH_DEPTH:
         raise InvalidModelOutputError("preference_patch is nested too deeply")
+    if len(patch) > _MAX_PATCH_KEYS:
+        raise InvalidModelOutputError(
+            "preference_patch contains more than %d keys" % _MAX_PATCH_KEYS
+        )
     for key, value in patch.items():
         if not isinstance(key, str):
             raise InvalidModelOutputError(
@@ -161,6 +194,11 @@ def _assert_bounded_patch(patch: Dict[str, Any], _depth: int = 0) -> None:
 def _assert_bounded_sequence(seq: List[Any], _depth: int) -> None:
     if _depth > _MAX_PATCH_DEPTH:
         raise InvalidModelOutputError("preference_patch is nested too deeply")
+    if len(seq) > _MAX_PATCH_SEQUENCE_LENGTH:
+        raise InvalidModelOutputError(
+            "preference_patch sequences contain more than %d items"
+            % _MAX_PATCH_SEQUENCE_LENGTH
+        )
     for value in seq:
         if isinstance(value, dict):
             _assert_bounded_patch(value, _depth + 1)

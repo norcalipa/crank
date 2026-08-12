@@ -113,12 +113,12 @@ class JobSearchService:
             )
         except Exception as exc:  # provider failure -> stable service error
             logger.error(
-                "job_search service error conversation=%s provider=%s err=%r",
+                "job_search service error conversation=%s provider=%s error_type=%s",
                 conversation.pk,
                 type(self.provider).__name__,
-                exc,
+                type(exc).__name__,
             )
-            raise JobSearchServiceError(str(exc)) from exc
+            raise JobSearchServiceError("provider failed to produce a response") from exc
 
         # Bound the reply deterministically; never trust unbounded output.
         max_len = getattr(settings, "JOB_SEARCH_RESPONSE_MAX_LEN", 8000)
