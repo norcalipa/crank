@@ -399,3 +399,15 @@ USAJOBS_AUTH_KEY = os.environ.get("USAJOBS_AUTH_KEY", "").strip()
 USAJOBS_USER_AGENT_EMAIL = os.environ.get("USAJOBS_USER_AGENT_EMAIL", "").strip()
 JOBS_ADAPTER_TIMEOUT = _env_float("JOBS_ADAPTER_TIMEOUT", 30.0)
 JOBS_ADAPTER_MAX_BYTES = _env_int("JOBS_ADAPTER_MAX_BYTES", 2 * 1024 * 1024)
+
+# Firecrawl careers adapter. Disabled by default; enabling it requires an
+# operator-approved, enabled JobSourceCatalog and a secret environment key.
+FIRECRAWL_ENABLED = _env_bool("FIRECRAWL_ENABLED", False)
+FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY", "").strip()
+FIRECRAWL_BASE_URL = os.environ.get(
+    "FIRECRAWL_BASE_URL", "https://api.firecrawl.dev"
+).strip()
+FIRECRAWL_TIMEOUT = _env_float("FIRECRAWL_TIMEOUT", 30.0)
+FIRECRAWL_MAX_PAGES = _env_int("FIRECRAWL_MAX_PAGES", 10)
+FIRECRAWL_MAX_LISTINGS = _env_int("FIRECRAWL_MAX_LISTINGS", 100)
+FIRECRAWL_CREDIT_BUDGET = _env_int("FIRECRAWL_CREDIT_BUDGET", 10)

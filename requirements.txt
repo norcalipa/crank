@@ -97,3 +97,4 @@ wrapt==1.15.0
 zipp==3.19.1
 zope.event==5.0
 zope.interface==7.1.1
+firecrawl-py==1.14.1
