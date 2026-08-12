@@ -20,6 +20,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import IntegrityError, transaction
 
 from crank.services import agent_runs
+from crank.services import monitoring
 
 logger = logging.getLogger("agent_runs")
 
@@ -41,7 +42,9 @@ class AgentRunCommand(BaseCommand):
         """
         if not getattr(settings, "AGENT_RUN_ENABLED", False):
             return False
-        return bool(getattr(settings, self.enabled_setting, False))
+        if not bool(getattr(settings, self.enabled_setting, False)):
+            return False
+        return monitoring.capability_enabled(self.run_type, default=True)
 
     def run_payload(self, run, **options):  # pragma: no cover - overridden
         """Execute the command's actual work.

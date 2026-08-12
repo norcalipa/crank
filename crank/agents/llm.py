@@ -545,4 +545,8 @@ def is_interactive_agent_enabled() -> bool:
     """
     from django.conf import settings
 
-    return bool(getattr(settings, "INTERACTIVE_AGENT_ENABLED", False))
+    if not bool(getattr(settings, "INTERACTIVE_AGENT_ENABLED", False)):
+        return False
+    from crank.services.monitoring import capability_enabled
+
+    return capability_enabled("interactive_agent", default=True)

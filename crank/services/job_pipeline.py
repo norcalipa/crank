@@ -234,11 +234,38 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
             counts["employers_unresolved"] += unresolved
             if int(result.errors):
                 counts["sources_failed"] += 1
+                agent_runs.monitoring.record_event(
+                    "source_stage",
+                    {
+                        "stage": "job_ingest",
+                        "source_key": source.adapter_key,
+                        "status": "failed",
+                        "reason_code": "rejected",
+                    },
+                )
             else:
                 counts["sources_succeeded"] += 1
                 successful_sources += 1
+                agent_runs.monitoring.record_event(
+                    "source_stage",
+                    {
+                        "stage": "job_ingest",
+                        "source_key": source.adapter_key,
+                        "status": "succeeded",
+                        "items_succeeded": int(result.ingested) + int(result.updated),
+                    },
+                )
         except Exception as exc:  # noqa: BLE001 - isolate source failures
             counts["sources_failed"] += 1
+            agent_runs.monitoring.record_event(
+                "source_stage",
+                {
+                    "stage": "job_ingest",
+                    "source_key": source.adapter_key,
+                    "status": "failed",
+                    "reason_code": agent_runs.monitoring.failure_reason(exc),
+                },
+            )
             logger.warning(
                 "job source failed: source_id=%s error=%s",
                 source.pk,
@@ -272,6 +299,15 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
         "job_pipeline_completed",
         counts=counts,
         completed_at=timezone.now().isoformat(),
+    )
+    agent_runs.monitoring.record_event(
+        "matching_batch",
+        {
+            **counts,
+            "stage": "job_pipeline_matching",
+            "status": "deadline" if counts["deadline_reached"] else "completed",
+            "reason_code": "deadline" if counts["deadline_reached"] else "none",
+        },
     )
     if not counts["deadline_reached"]:
         if counts["sources_total"] and not successful_sources:

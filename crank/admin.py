@@ -10,6 +10,8 @@ from crank.models.organization import Organization
 from crank.models.preference import UserPreference, UserPreferenceAudit
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 from crank.models.source import ApprovalState, SourceCatalog, SourceRun, SourceCatalogAudit
+from crank.models.monitoring import CapabilitySwitch, OperationalChangeAudit
+from crank.services import monitoring
 
 
 class StaffOnlyAdminMixin:
@@ -164,12 +166,15 @@ class MessageAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     readonly_fields = ["conversation", "role", "content", "order", "created", "modified"]
 
 
-class AgentRunAdmin(admin.ModelAdmin):
+class AgentRunAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     model = AgentRun
     list_display = ['run_type', 'status', 'started_at', 'finished_at', 'correlation_id']
     list_filter = ['status', 'run_type']
     search_fields = ['correlation_id', 'error_summary']
-    readonly_fields = ['correlation_id', 'created', 'modified']
+    readonly_fields = [
+        'correlation_id', 'created', 'modified', 'started_at', 'finished_at',
+        'counts', 'error_summary',
+    ]
 
 
 admin.site.register(Organization, OrganizationAdmin)
@@ -181,6 +186,7 @@ admin.site.register(UserPreference, UserPreferenceAdmin)
 admin.site.register(UserPreferenceAudit, UserPreferenceAuditAdmin)
 admin.site.register(Conversation, ConversationAdmin)
 admin.site.register(Message, MessageAdmin)
+admin.site.register(AgentRun, AgentRunAdmin)
 
 
 class SourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
@@ -234,11 +240,29 @@ class SourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
                 source=obj, user=request.user, action=SourceCatalogAudit.Action.CHANGED,
                 changes=changes, note=f"Source catalog updated via admin.",
             )
+            OperationalChangeAudit.record(
+                actor=request.user,
+                target_type="rating_source",
+                target_id=obj.pk,
+                action="changed",
+                old_value={field: old for field, (old, _new) in changes.items()},
+                new_value={field: new for field, (_old, new) in changes.items()},
+                confirmed=True,
+            )
 
     def _record_state_action(self, request, queryset, action):
         from django.utils import timezone as dj_tz
+        post = getattr(request, "POST", None)
+        if post is not None and post.get("confirm") != "yes":
+            self.message_user(
+                request,
+                "No changes made. Repeat the action with confirm=yes.",
+                level="warning",
+            )
+            return
         updated = 0
         for src in queryset:
+            old = {"approval_state": src.approval_state, "enabled": src.enabled}
             if action == "approve":
                 src.approval_state = ApprovalState.APPROVED
                 src.approved_at = dj_tz.now()
@@ -257,7 +281,20 @@ class SourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
             }[action]
             SourceCatalogAudit.record(
                 source=src, user=request.user, action=audit_action,
-                note=f"Source {action}d via admin action.",
+                changes={
+                    "approval_state": (old["approval_state"], src.approval_state),
+                    "enabled": (old["enabled"], src.enabled),
+                },
+                note=f"Source {action}d via admin action; confirmed=yes.",
+            )
+            OperationalChangeAudit.record(
+                actor=request.user,
+                target_type="rating_source",
+                target_id=src.pk,
+                action=action,
+                old_value=old,
+                new_value={"approval_state": src.approval_state, "enabled": src.enabled},
+                confirmed=True,
             )
             updated += 1
         self.message_user(request, f"{updated} source(s) {action}d and audited.")
@@ -313,6 +350,67 @@ class JobSourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     list_filter = ["approval_state", "enabled"]
     search_fields = ["name", "adapter_key", "base_url"]
     readonly_fields = ["created", "modified"]
+    actions = ["enable_sources", "disable_sources", "approve_sources", "block_sources"]
+
+    def _state_action(self, request, queryset, action):
+        """Apply an operational state change only after explicit confirmation."""
+        post = getattr(request, "POST", None)
+        if post is not None and post.get("confirm") != "yes":
+            self.message_user(
+                request,
+                "No changes made. Repeat the action with confirm=yes.",
+                level="warning",
+            )
+            return
+        for source in queryset:
+            old = {
+                "approval_state": source.approval_state,
+                "enabled": source.enabled,
+            }
+            if action == "approve":
+                source.approval_state = JobSourceCatalog.ApprovalState.APPROVED
+            elif action == "block":
+                source.approval_state = JobSourceCatalog.ApprovalState.BLOCKED
+            elif action == "enable":
+                source.enabled = True
+            else:
+                source.enabled = False
+            source.save(update_fields=["approval_state", "enabled", "modified"])
+            new = {"approval_state": source.approval_state, "enabled": source.enabled}
+            OperationalChangeAudit.record(
+                actor=request.user,
+                target_type="job_source",
+                target_id=source.pk,
+                action=action,
+                old_value=old,
+                new_value=new,
+                confirmed=True,
+            )
+            monitoring.record_event(
+                "operational_change",
+                {
+                    "action": action,
+                    "capability": "job_source",
+                    "confirmed": True,
+                },
+            )
+        self.message_user(request, f"{queryset.count()} job source(s) updated and audited.")
+
+    @admin.action(description="Enable selected job sources (confirm=yes)")
+    def enable_sources(self, request, queryset):
+        self._state_action(request, queryset, "enable")
+
+    @admin.action(description="Disable selected job sources (confirm=yes)")
+    def disable_sources(self, request, queryset):
+        self._state_action(request, queryset, "disable")
+
+    @admin.action(description="Approve selected job sources (confirm=yes)")
+    def approve_sources(self, request, queryset):
+        self._state_action(request, queryset, "approve")
+
+    @admin.action(description="Block selected job sources (confirm=yes)")
+    def block_sources(self, request, queryset):
+        self._state_action(request, queryset, "block")
 
 
 class JobListingAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
@@ -333,6 +431,73 @@ class JobListingAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 
 admin.site.register(JobSourceCatalog, JobSourceCatalogAdmin)
 admin.site.register(JobListing, JobListingAdmin)
+
+
+class CapabilitySwitchAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+    """Staff-only kill switches; every toggle requires explicit confirmation."""
+
+    model = CapabilitySwitch
+    list_display = ["key", "enabled", "note", "modified"]
+    list_filter = ["enabled"]
+    search_fields = ["key", "note"]
+    readonly_fields = ["created", "modified"]
+    actions = ["enable_capabilities", "disable_capabilities"]
+
+    def _toggle(self, request, queryset, enabled):
+        post = getattr(request, "POST", None)
+        if post is not None and post.get("confirm") != "yes":
+            self.message_user(
+                request,
+                "No changes made. Repeat the action with confirm=yes.",
+                level="warning",
+            )
+            return
+        action = "enable" if enabled else "disable"
+        for switch in queryset:
+            old = {"enabled": switch.enabled}
+            switch.enabled = enabled
+            switch.save(update_fields=["enabled", "modified"])
+            OperationalChangeAudit.record(
+                actor=request.user,
+                target_type="capability",
+                target_id=switch.key,
+                action=action,
+                old_value=old,
+                new_value={"enabled": enabled},
+                confirmed=True,
+            )
+            monitoring.record_event(
+                "operational_change",
+                {
+                    "action": action,
+                    "capability": switch.key,
+                    "confirmed": True,
+                },
+            )
+        self.message_user(request, f"{queryset.count()} capability switch(es) updated and audited.")
+
+    @admin.action(description="Enable selected capabilities (confirm=yes)")
+    def enable_capabilities(self, request, queryset):
+        self._toggle(request, queryset, True)
+
+    @admin.action(description="Disable selected capabilities (confirm=yes)")
+    def disable_capabilities(self, request, queryset):
+        self._toggle(request, queryset, False)
+
+
+class OperationalChangeAuditAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+    model = OperationalChangeAudit
+    list_display = ["actor", "action", "target_type", "target_id", "confirmed", "created"]
+    list_filter = ["action", "target_type", "confirmed"]
+    search_fields = ["target_id", "actor__username"]
+    readonly_fields = [
+        "actor", "target_type", "target_id", "action", "old_value", "new_value",
+        "confirmed", "created", "modified",
+    ]
+
+
+admin.site.register(CapabilitySwitch, CapabilitySwitchAdmin)
+admin.site.register(OperationalChangeAudit, OperationalChangeAuditAdmin)
 
 
 class JobMatchAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):

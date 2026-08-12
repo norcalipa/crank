@@ -24,6 +24,7 @@ from crank.agents.sources.registry import build_adapter
 from crank.models.agent_run import AgentRun
 from crank.models.source import ApprovalState, SourceCatalog, SourceRun
 from crank.services import agent_runs
+from crank.services import monitoring
 from crank.services.scores import NOOP, persist_score_observation
 
 logger = logging.getLogger("score_gathering")
@@ -243,6 +244,12 @@ def gather_scores(run, **options):
             break
 
         source_started = timezone.now()
+        previous_success = source.last_success_at
+        freshness_seconds = (
+            max(0, int((source_started - previous_success).total_seconds()))
+            if previous_success
+            else 0
+        )
         source_run = SourceRun.objects.create(
             source=source,
             agent_run=run,
@@ -319,6 +326,17 @@ def gather_scores(run, **options):
             _add_counts(counts, source_counts)
             counts["sources_succeeded"] += 1
             successful_sources += 1
+            monitoring.record_event(
+                "source_stage",
+                {
+                    "status": "succeeded",
+                    "stage": "score_gathering",
+                    "source_key": source.adapter_key,
+                    "freshness_seconds": freshness_seconds,
+                    "items_succeeded": source_counts["observations_persisted"],
+                    "items_failed": source_counts["observations_rejected"],
+                },
+            )
             logger.info(
                 "score source succeeded: run_correlation_id=%s source_run_id=%s "
                 "source_id=%s counts=%s",
@@ -335,6 +353,17 @@ def gather_scores(run, **options):
                 error_summary=agent_runs.sanitize_error(exc),
             )
             counts["sources_failed"] += 1
+            monitoring.record_event(
+                "source_stage",
+                {
+                    "status": "failed",
+                    "stage": "score_gathering",
+                    "source_key": source.adapter_key,
+                    "freshness_seconds": freshness_seconds,
+                    "reason_code": monitoring.failure_reason(exc),
+                    "items_failed": source_counts["observations_rejected"],
+                },
+            )
             logger.warning(
                 "score source failed: run_correlation_id=%s source_run_id=%s "
                 "source_id=%s error_summary=%s counts=%s",
