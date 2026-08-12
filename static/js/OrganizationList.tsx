@@ -191,100 +191,131 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
         return (<div>
             <>
-                <div className="input-group mb-3">
-                    <label className="visually-hidden" htmlFor="organization-search">Search organizations</label>
-                    <input
-                        id="organization-search"
-                        type="text"
-                        className="form-control"
-                        aria-label="Search organizations"
-                        placeholder="Search organizations"
-                        value={searchTerm}
-                        aria-describedby="inputGroup-sizing-default"
-                        onChange={this.handleSearchChange}
-                    />
-                    <div className="input-group-append">
-                            <span className="input-group-text">
-                            <input
-                                type="checkbox"
-                                className="form-check-input"
-                                id="acceleratedVesting"
-                                data-testid="accelerated-vesting-checkbox"
-                                checked={acceleratedVesting}
-                                onChange={this.handleFilterChange}
-                            />
-                            <label
-                                className="form-check-label"
-                                htmlFor="acceleratedVesting">&nbsp;Show only companies with first vesting in &lt; 1 year</label>
-                            </span>
+                <div className="organization-controls mb-3">
+                    <div className="organization-search">
+                        <label className="visually-hidden" htmlFor="organization-search">Search organizations</label>
+                        <input
+                            id="organization-search"
+                            type="text"
+                            className="form-control"
+                            aria-label="Search organizations"
+                            placeholder="Search organizations"
+                            value={searchTerm}
+                            onChange={this.handleSearchChange}
+                        />
+                    </div>
+                    <div className="organization-filter">
+                        <input
+                            type="checkbox"
+                            className="form-check-input"
+                            id="acceleratedVesting"
+                            data-testid="accelerated-vesting-checkbox"
+                            checked={acceleratedVesting}
+                            onChange={this.handleFilterChange}
+                        />
+                        <label className="form-check-label" htmlFor="acceleratedVesting">
+                            Show only companies with first vesting in &lt; 1 year
+                        </label>
                     </div>
                 </div>
-                <div className="pagination">
-                    <ul className="pagination">
+                <nav aria-label="Organization pages">
+                    <ul className="pagination flex-wrap">
                         {pageNumbers.map(number => (
                             <li className={`page-item ${currentPage === number ? 'active' : ''}`} key={number}>
                                 <a className="page-link"
                                    data-testid={`page-link-${number}`}
-                                   href={`?page-${number}`}
+                                   href={`?page=${number}`}
                                    onClick={(e) => {
                                        e.preventDefault();
                                        this.handlePageChange(number);
                                    }}>{number}</a>
                             </li>))}
                     </ul>
-                </div>
+                </nav>
 
                 {filteredOrganizations.length === 0 ? (<div className="alert alert-secondary" role="alert">
                     There are no organizations that match the selected filters.
-                </div>) : (<div>
-                    <table className="table organization-table">
-                        <caption className="visually-hidden">Organizations ranked by the selected scoring algorithm</caption>
-                        <thead>
-                        <tr>
-                            <th>Rank</th>
-                            <th>Name</th>
-                            <th>Overall Score</th>
-                            <th>Funding Round</th>
-                            <th>RTO Policy</th>
-                            <th>Profile Completeness</th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        {currentOrganizations.map(org => (<tr 
-                            key={org.id}
-                            onClick={() => this.handleOrganizationClick(org)}
-                            onKeyDown={(event) => {
-                                if (event.key === 'Enter' || event.key === ' ') {
-                                    event.preventDefault();
-                                    this.handleOrganizationClick(org);
-                                }
-                            }}
-                            tabIndex={0}
-                            role="button"
-                            aria-label={`View details for ${org.name}`}
-                            style={{ 
-                                cursor: 'pointer',
-                                transition: 'background-color 0.2s ease'
-                            }}
-                            className="organization-row"
-                        >
-                            <td>{org.ranking}</td>
-                            <td>
-                                <span className="organization-name">
-                                    {org.name}
-                                </span>
-                            </td>
-                            <td>{org.avg_score.toFixed(2)}</td>
-                            <td>{fundingRoundChoices[org.funding_round]}</td>
-                            <td>{rtoPolicyChoices[org.rto_policy]}</td>
-                            <td>{org.profile_completeness.toFixed(0)}%</td>
-                        </tr>))}
-                        </tbody>
-                    </table>
-                </div>)}
-                
-                <OrganizationDetailsPopup 
-                    organization={selectedOrganization} 
+                </div>) : (<>
+                    <div className="organization-table-wrap" role="region" aria-label="Organization rankings" tabIndex={0}>
+                        <table className="table organization-table">
+                            <caption className="visually-hidden">Organizations ranked by the selected scoring algorithm</caption>
+                            <thead>
+                            <tr>
+                                <th>Rank</th>
+                                <th>Name</th>
+                                <th>Overall Score</th>
+                                <th>Funding Round</th>
+                                <th>RTO Policy</th>
+                                <th>Profile Completeness</th>
+                            </tr>
+                            </thead>
+                            <tbody>
+                            {currentOrganizations.map(org => (<tr
+                                key={org.id}
+                                onClick={() => this.handleOrganizationClick(org)}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault();
+                                        this.handleOrganizationClick(org);
+                                    }
+                                }}
+                                tabIndex={0}
+                                role="button"
+                                aria-label={`View details for ${org.name}`}
+                                className="organization-row"
+                            >
+                                <td>{org.ranking}</td>
+                                <td><span className="organization-name">{org.name}</span></td>
+                                <td>{org.avg_score.toFixed(2)}</td>
+                                <td>{fundingRoundChoices[org.funding_round]}</td>
+                                <td>{rtoPolicyChoices[org.rto_policy]}</td>
+                                <td>{org.profile_completeness.toFixed(0)}%</td>
+                            </tr>))}
+                            </tbody>
+                        </table>
+                    </div>
+                    <div className="organization-cards" aria-label="Organization ranking cards">
+                        {currentOrganizations.map(org => (
+                            <article
+                                key={`card-${org.id}`}
+                                className="card organization-card"
+                                onClick={() => this.handleOrganizationClick(org)}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter' || event.key === ' ') {
+                                        event.preventDefault();
+                                        this.handleOrganizationClick(org);
+                                    }
+                                }}
+                                tabIndex={0}
+                                role="button"
+                                aria-label={`View details for ${org.name}`}
+                            >
+                                <div className="card-body">
+                                    <h2 className="h5 organization-card-name">{org.name}</h2>
+                                    <div className="organization-card-score">
+                                        <span className="organization-card-label">Rank / score</span>
+                                        #{org.ranking} · {org.avg_score.toFixed(2)}
+                                    </div>
+                                    <div>
+                                        <span className="organization-card-label">RTO policy</span>
+                                        {rtoPolicyChoices[org.rto_policy]}
+                                    </div>
+                                    <div>
+                                        <span className="organization-card-label">Funding round</span>
+                                        {fundingRoundChoices[org.funding_round]}
+                                    </div>
+                                    <div>
+                                        <span className="organization-card-label">Profile completeness</span>
+                                        {org.profile_completeness.toFixed(0)}%
+                                    </div>
+                                </div>
+                            </article>
+                        ))}
+                    </div>
+                </>)}
+
+                <OrganizationDetailsPopup
+                    organization={selectedOrganization}
                     visible={showPopup}
                     onClose={this.handleClosePopup}
                 />

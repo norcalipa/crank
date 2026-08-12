@@ -6,14 +6,19 @@
 
 {% block content %}
     {% if top_organization_list %}
-        <div class="container">
-            <div class="row">
-                <div class="col-4">
-                    <div class="card">
-                        <div class="card-body">
-                            <h3 class="card-title"><label for="algorithm_id">Scoring Algorithm:</label></h3>
+        <div class="container homepage-container">
+            <div class="row g-4 align-items-start">
+                <div class="col-12 col-md-4">
+                    <details class="card scoring-panel">
+                        <summary class="card-header scoring-summary">
+                            <span class="h3 mb-0">Scoring Algorithm</span>
+                            <span class="scoring-summary-hint">Show explanation</span>
+                        </summary>
+                        <div class="card-body scoring-panel-content">
+                            <h3 class="card-title scoring-desktop-title"><label for="algorithm_id">Scoring Algorithm:</label></h3>
                             <form method="get">
-                                <select class="form-select form-select-lg mb3 border-primary" id="algorithm_id"
+                                <label class="visually-hidden" for="algorithm_id">Scoring Algorithm</label>
+                                <select class="form-select form-select-lg mb-3 border-primary" id="algorithm_id"
                                         onchange="submitForm()">
                                     {% for algo in all_algorithms %}
                                         <option value="{{ algo.id }}"
@@ -22,14 +27,14 @@
                                         </option>
                                     {% endfor %}
                                 </select>
-                                <div class="card-text">
+                                <div class="card-text scoring-description">
                                     {{ algorithm.html_description_content |safe }}
                                 </div>
                             </form>
                         </div>
-                    </div>
+                    </details>
                 </div>
-                <div class="col-8">
+                <div class="col-12 col-md-8">
                     <div class="align-content-end">
                         <div id="organization-list"></div>
                         {{ top_organization_list|json_script:"organization-data" }}
@@ -38,7 +43,7 @@
             </div>
         </div>
     {% else %}
-        <p>No organizations are available or the Score Algorithm you specified doesn't exist.</p>
+        <p class="container">No organizations are available or the Score Algorithm you specified doesn't exist.</p>
     {% endif %}
 
     <script>

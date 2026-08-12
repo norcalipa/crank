@@ -106,3 +106,345 @@ td:focus {
     outline: none !important;
     caret-color: transparent !important;
 } 
+/* Shared responsive layout primitives. Keep content inside the viewport on phones. */
+html, body {
+    max-width: 100%;
+    overflow-x: hidden;
+}
+
+.crank-navbar {
+    gap: 1rem;
+    padding: .75rem 1rem;
+}
+
+.navbar-brand-list {
+    margin: 0;
+}
+
+.navbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+.navbar-actions .btn,
+.navbar-actions form {
+    margin: 0 !important;
+}
+
+.homepage-container,
+.page-container {
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+}
+
+.scoring-panel {
+    height: auto;
+}
+
+.scoring-summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: .75rem;
+}
+
+.scoring-summary::-webkit-details-marker {
+    display: none;
+}
+
+.scoring-summary::before {
+    content: '+';
+    order: 2;
+    font-size: 1.5rem;
+    line-height: 1;
+}
+
+.scoring-panel[open] .scoring-summary::before {
+    content: '−';
+}
+
+.scoring-summary-hint {
+    margin-left: auto;
+    font-size: .875rem;
+    font-weight: 400;
+    opacity: .75;
+}
+
+.scoring-desktop-title {
+    display: none;
+}
+
+.organization-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .75rem;
+    align-items: stretch;
+}
+
+.organization-search {
+    flex: 1 1 14rem;
+    min-width: 0;
+}
+
+.organization-filter {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    flex: 1 1 18rem;
+    min-width: 0;
+    padding: .5rem .75rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--bs-border-radius);
+}
+
+.organization-filter label {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.organization-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--bs-border-radius);
+}
+
+.organization-table {
+    min-width: 40rem;
+    margin-bottom: 0;
+}
+
+.organization-table-wrap::before {
+    content: 'Swipe horizontally to view all organization details';
+    display: none;
+    padding: .5rem .75rem;
+    font-size: .875rem;
+    color: var(--bs-secondary-color);
+    background: var(--bs-tertiary-bg);
+}
+
+.organization-cards {
+    display: none;
+}
+
+.organization-card {
+    cursor: pointer;
+}
+
+.organization-card:focus-visible,
+.organization-row:focus-visible,
+.scoring-summary:focus-visible,
+.navbar-actions .btn:focus-visible,
+.navbar-brand:focus-visible {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
+}
+
+.readable-page-container {
+    max-width: 800px;
+}
+
+.auth-container {
+    max-width: 42rem;
+}
+
+.privacy-table {
+    min-width: 42rem;
+}
+
+.popup-overlay {
+    padding: .75rem;
+}
+
+.popup-details {
+    width: min(900px, 100%);
+}
+
+.popup-details .card-header h2 {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.popup-details .card-body,
+.popup-details .card-header {
+    padding: 1rem;
+}
+
+#job-search-chat,
+#job-search-chat > section {
+    min-width: 0;
+    max-width: 100%;
+}
+
+#job-search-chat .card-header,
+#job-search-chat .card-body {
+    min-width: 0;
+}
+
+#job-search-chat .card-header {
+    gap: .75rem;
+    flex-wrap: wrap;
+}
+
+#job-search-chat .btn-group {
+    max-width: 100%;
+    flex-wrap: wrap;
+}
+
+#job-search-chat .alert {
+    overflow-wrap: anywhere;
+}
+
+@media (min-width: 768px) {
+    .scoring-panel > .scoring-summary {
+        display: none;
+    }
+
+    .scoring-panel {
+        border: 0;
+        background: transparent;
+    }
+
+    .scoring-panel-content {
+        padding: 0;
+    }
+
+    .scoring-desktop-title {
+        display: block;
+    }
+
+    .scoring-description {
+        max-width: 100%;
+        overflow-wrap: anywhere;
+    }
+}
+
+@media (max-width: 767.98px) {
+    .container {
+        --bs-gutter-x: 1.5rem;
+    }
+
+    .crank-navbar {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .navbar-brand-list,
+    .navbar-actions {
+        width: 100%;
+    }
+
+    .navbar-actions {
+        justify-content: flex-start;
+    }
+
+    .navbar-actions .btn,
+    .navbar-actions form,
+    .navbar-actions form .btn {
+        flex: 1 1 auto;
+    }
+
+    .scoring-summary {
+        min-height: 3.25rem;
+    }
+
+    .organization-table-wrap::before {
+        display: block;
+    }
+
+    .organization-table-wrap {
+        display: none;
+    }
+
+    .organization-cards {
+        display: grid;
+        gap: .75rem;
+    }
+
+    .organization-card .card-body {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: .5rem 1rem;
+    }
+
+    .organization-card .organization-card-name {
+        grid-column: 1 / -1;
+        overflow-wrap: anywhere;
+    }
+
+    .organization-card .organization-card-score {
+        font-size: 1.25rem;
+        font-weight: 700;
+    }
+
+    .organization-card .organization-card-label {
+        display: block;
+        color: var(--bs-secondary-color);
+        font-size: .8rem;
+    }
+
+    .popup-details {
+        max-height: calc(100vh - 1.5rem);
+    }
+
+    .popup-details .card-header h2 {
+        font-size: 1.25rem;
+    }
+
+    .popup-details .card-body .row > [class*='col-'] {
+        width: 100%;
+    }
+
+    .popup-details .card-body .row.mb-3 {
+        margin-bottom: .75rem !important;
+    }
+
+    .popup-details .text-end {
+        text-align: left !important;
+        white-space: normal;
+    }
+
+    #job-search-chat .card-header {
+        align-items: flex-start !important;
+    }
+
+    #job-search-chat .btn-group {
+        width: 100%;
+    }
+
+    #job-search-chat .btn-group .btn {
+        flex: 1 1 auto;
+    }
+
+    #job-search-chat .card-body {
+        padding: .75rem;
+    }
+
+    #job-search-chat .input-group {
+        align-items: stretch;
+    }
+}
+
+@media (max-width: 390px) {
+    .homepage-container,
+    .page-container,
+    .readable-page-container,
+    .auth-container {
+        padding-left: .75rem;
+        padding-right: .75rem;
+    }
+
+    .organization-card .card-body {
+        grid-template-columns: 1fr;
+    }
+
+    .organization-card .organization-card-name,
+    .organization-card .organization-card-score {
+        grid-column: auto;
+    }
+}

@@ -14,19 +14,19 @@
     <link href="{% static 'css/popup.css' %}" rel="stylesheet" type="text/css">
     <title>{% block head_title %}{% endblock %}</title>
     <link href="{% static 'images/favicon.png' %}" rel="shortcut icon" type="image/png">
-    <meta name="viewport" content="width=device-width">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description"
           content="CRank is an application created to rank companies using multiple attributes and ranking algorithms.">
     <script src="{% manifest 'main.js' %}"></script>
 </head>
 <body>
 <div class="container">
-    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-        <ul class="nav col-12 col-lg-auto me-lg-auto mb-3 justify-content-center">
+    <nav class="navbar navbar-expand-md navbar-dark bg-dark crank-navbar">
+        <ul class="nav navbar-brand-list">
             <li><a href="/" class="navbar-brand"><i class="fa-solid fa-ranking-star"></i> CRank</a></li>
         </ul>
 
-        <div class="text-end">
+        <div class="text-end navbar-actions">
             {% if user.is_authenticated %}
                 <a class="btn btn-outline-light btn-sm me-1" href="{% url 'job_search' %}">Job&nbsp;Search</a>
                 <a class="btn btn-outline-light btn-sm me-1" href="{% url 'help' %}">Help</a>

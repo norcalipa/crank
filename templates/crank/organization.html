@@ -5,7 +5,7 @@
 {% block head_title %}Crank - Details: {{ organization.name }}{% endblock %}
 
 {% block content %}
-    <div class="container">
+    <div class="container page-container organization-detail-page">
     {% csrf_token %}
     {% if error_message %}<p><strong>{{ error_message }}</strong></p>{% endif %}
     <legend><h1>{{ organization.name }}</h1></legend>
