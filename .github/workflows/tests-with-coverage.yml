@@ -102,6 +102,14 @@ jobs:
           coverage run -m pytest
           coverage xml
 
+      - name: Run offline job-pipeline benchmark gate
+        env:
+          ENV: dev
+          SECRET_KEY: test
+          DJANGO_SETTINGS_MODULE: 'crank.settings'
+        run: |
+          python manage.py benchmark_job_pipeline --profile ci --seed 324 --assert-budgets
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
