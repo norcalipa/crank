@@ -1,4 +1,4 @@
-<!-- Copyright (c) 2026 Isaac Adams -->
+<!-- Copyright (c) 2024 Isaac Adams -->
 <!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
 
 # Phase 4 UAT and accessibility record (#326)
