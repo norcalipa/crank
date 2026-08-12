@@ -12,6 +12,7 @@ import pytest
 
 from crank.admin import CompanyProfileObservationAdmin
 from crank.models.company_profile import CompanyProfileObservation
+from crank.models.employer import EmployerAlias
 from crank.models.job import JobSourceCatalog
 from crank.models.organization import Organization
 from crank.models.score import Score, ScoreType
@@ -211,6 +212,32 @@ class CompanyCrawlerTests(TestCase):
             _brand([])
         with pytest.raises(SchemaDriftError):
             _brand({"nested": {"value": 1}})
+
+    def test_approved_alias_deduplicates_company_identity(self):
+        organization = Organization.objects.create(name="Canonical Labs", url="https://canonical.test")
+        EmployerAlias.objects.create(
+            organization=organization,
+            kind=EmployerAlias.AliasKind.DOMAIN,
+            value="alias.example.test",
+            status=EmployerAlias.Status.APPROVED,
+        )
+        result = crawl_company_profile(
+            self.source,
+            client=FakeClient([profile(company_domain="alias.example.test", company_name="Alias Labs")]),
+        )
+        observation = CompanyProfileObservation.objects.get()
+        self.assertEqual(result.auto_applied, 1)
+        self.assertEqual(observation.organization, organization)
+        self.assertEqual(observation.status, CompanyProfileObservation.Status.AUTO_APPLIED)
+
+    def test_multiple_domain_matches_enter_review_queue(self):
+        Organization.objects.create(name="First Labs", url="https://example.test")
+        Organization.objects.create(name="Second Labs", url="https://example.test")
+        result = crawl_company_profile(self.source, client=FakeClient([profile(company_name="First Labs")]))
+        observation = CompanyProfileObservation.objects.get()
+        self.assertEqual(result.conflicted, 1)
+        self.assertEqual(observation.organization, None)
+        self.assertIn("organization_identity", observation.conflict_fields)
 
     def test_identity_conflict_and_malformed_provider_response_are_safe(self):
         first = Organization.objects.create(name="Example Labs", url="https://example.test")
