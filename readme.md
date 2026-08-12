@@ -111,6 +111,20 @@ This project uses GitHub Actions for CI/CD. The workflows are defined in the `.g
 4. **Push to the branch** (`git push origin feature-branch`).
 5. **Create a Pull Request**.
 
+## Documentation
+
+### User Help & Privacy
+
+- [Help & Privacy page](https://crank.fyi/help/) — what the agent stores, capabilities, limitations, export/reset/delete, and support paths.
+- [Full privacy notice](https://crank.fyi/privacy/) — detailed data retention, security, and user control information.
+
+### Operator Runbooks
+
+- [Provider & Source Configuration](docs/runbook-provider-source-configuration.md) — LLM provider settings, source catalog, feature flags, and scheduled commands.
+- [Secret Rotation](docs/runbook-secret-rotation.md) — rotating LLM API keys and source credentials without downtime.
+- [Diagnosis, Recovery & Rollback](docs/runbook-diagnosis-recovery.md) — run diagnosis, stale locks, retries, alerts, cost controls, source approval, data deletion, rollback, and versioning.
+- [Production Migration & Recovery](docs/runbook-production-migration-recovery.md) — existing migration and recovery procedures.
+
 ## License
 
 This project is licensed under the MIT License.
