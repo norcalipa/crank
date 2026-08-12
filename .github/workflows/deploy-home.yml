@@ -10,6 +10,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: deployment
+  cancel-in-progress: true
+
 jobs:
   deploy-home-k3s:
     # Only run if the build workflow succeeded
@@ -75,10 +79,59 @@ jobs:
           # Copy crank.yml to the remote system
           scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/crank.yml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/crank.yml
           scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/crank-configmap.yml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/crank-configmap.yml
+          scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/migrate-job.yml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/migrate-job.yml
 
           # Apply the copied crank.yml
           ssh -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} <<EOF
+          set -euo pipefail
           export GITHUB_SHA=${{ github.event.workflow_run.head_sha }}
-          envsubst < /tmp/crank.yml | k3s kubectl apply -f -
+          k3s kubectl create namespace crank --dry-run=client -o yaml | k3s kubectl apply -f -
           envsubst < /tmp/crank-configmap.yml | k3s kubectl apply -f -
+          JOB_NAME="crank-migrate-\${GITHUB_SHA}"
+          k3s kubectl delete job "\${JOB_NAME}" --namespace crank --ignore-not-found
+          envsubst < /tmp/migrate-job.yml | k3s kubectl apply -f -
+
+          # Keep the explicit complete wait, but watch Failed as well so a
+          # failed Job stops this deployment immediately instead of waiting
+          # for the complete condition to time out.
+          k3s kubectl wait --for=condition=complete "job/\${JOB_NAME}" --namespace crank --timeout=900s &
+          WAIT_PID=\$!
+          for _ in \$(seq 1 90); do
+            COMPLETE=\$(k3s kubectl get job "\${JOB_NAME}" --namespace crank -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' 2>/dev/null || true)
+            FAILED=\$(k3s kubectl get job "\${JOB_NAME}" --namespace crank -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' 2>/dev/null || true)
+            if [ "\${FAILED}" = "True" ]; then
+              kill "\${WAIT_PID}" 2>/dev/null || true
+              wait "\${WAIT_PID}" 2>/dev/null || true
+              k3s kubectl logs "job/\${JOB_NAME}" --namespace crank --all-containers=true || true
+              k3s kubectl describe job "\${JOB_NAME}" --namespace crank || true
+              exit 1
+            fi
+            if [ "\${COMPLETE}" = "True" ]; then
+              if ! wait "\${WAIT_PID}"; then
+                k3s kubectl logs "job/\${JOB_NAME}" --namespace crank --all-containers=true || true
+                k3s kubectl describe job "\${JOB_NAME}" --namespace crank || true
+                exit 1
+              fi
+              break
+            fi
+            if ! kill -0 "\${WAIT_PID}" 2>/dev/null; then
+              if ! wait "\${WAIT_PID}"; then
+                k3s kubectl logs "job/\${JOB_NAME}" --namespace crank --all-containers=true || true
+                k3s kubectl describe job "\${JOB_NAME}" --namespace crank || true
+                exit 1
+              fi
+              break
+            fi
+            sleep 10
+          done
+          if kill -0 "\${WAIT_PID}" 2>/dev/null; then
+            kill "\${WAIT_PID}" 2>/dev/null || true
+            wait "\${WAIT_PID}" 2>/dev/null || true
+            k3s kubectl logs "job/\${JOB_NAME}" --namespace crank --all-containers=true || true
+            k3s kubectl describe job "\${JOB_NAME}" --namespace crank || true
+            echo "Migration Job timed out after 900 seconds" >&2
+            exit 1
+          fi
+
+          envsubst < /tmp/crank.yml | k3s kubectl apply -f -
           EOF

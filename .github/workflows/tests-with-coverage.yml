@@ -8,7 +8,6 @@ on:
       - '/*'
       - '.github/**'
       - 'crank/content/**'
-      - 'crank/migrations/**'
       - 'seeds/**'
       - 'dump/**'
       - 'k8s/**'
@@ -61,6 +60,36 @@ jobs:
           pip install -r requirements.txt
           pip install coverage
 
+      - name: Check migrations are current
+        env:
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          DJANGO_SETTINGS_MODULE: 'crank.settings'
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Migrate from an empty database
+        env:
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          DJANGO_SETTINGS_MODULE: 'crank.settings'
+          MIGRATION_TEST_DB: ${{ runner.temp }}/crank-empty.sqlite3
+        run: |
+          python - <<'PY'
+          import os
+
+          import django
+          from django.conf import settings
+          from django.core.management import call_command
+
+          django.setup()
+          settings.DATABASES["default"]["NAME"] = os.environ["MIGRATION_TEST_DB"]
+          call_command("migrate", interactive=False, verbosity=1)
+
+          from django.db import connection
+          from django.db.migrations.executor import MigrationExecutor
+
+          executor = MigrationExecutor(connection)
+          assert not executor.migration_plan(executor.loader.graph.leaf_nodes())
+          PY
+
       - name: Run tests with coverage
         env:
           ENV: dev
@@ -98,4 +127,3 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           flags: unittests
           name: crank-jest
-

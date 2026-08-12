@@ -42,10 +42,12 @@ from crank.views.job_matches import (
     job_match_seen,
     job_match_dismiss,
 )
+from crank.views.health import readiness
 
 app_name = "crank"
 
 urlpatterns = [
+    path("healthz/ready/", readiness, name="readiness"),
     path("", IndexView.as_view(), name="index"),
     path("admin/", admin.site.urls),
     path("algo/<int:algorithm_id>/", cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(IndexView.as_view()), name="index"),
