@@ -216,6 +216,17 @@ describe('additional JobSearchChat coverage', () => {
             expect(body.create_new).toBe(true);
         });
 
+        test('shows init error when auto-create after 404 also fails', async () => {
+            const mock = global.fetch as jest.Mock;
+            // First call: GET resume → 404 (no existing conversation).
+            mock.mockResolvedValueOnce(jsonResponse({}, 404));
+            // Second call: POST create → 500 (server error).
+            mock.mockResolvedValueOnce(jsonResponse({}, 500));
+            render(<JobSearchChat/>);
+            expect(await screen.findByText(/could not start a conversation/i)).toBeInTheDocument();
+            expect(screen.queryByLabelText('Message')).toBeDisabled();
+        });
+
         test('starting a new conversation from the error state works', async () => {
             const mock = global.fetch as jest.Mock;
             mock.mockResolvedValueOnce(jsonResponse({detail: 'down'}, 503))
