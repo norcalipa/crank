@@ -102,3 +102,21 @@ class MonitoringContractTests(TestCase):
         )
         self.assertEqual(audit.old_value["prompt"], "<redacted>")
         self.assertEqual(audit.old_value["nested"], ["x"])
+
+    def test_safe_value_returns_none_for_none(self):
+        # The _coerce/_safe_value path must return None when value is None
+        # (covers the value is None branch).
+        self.assertIsNone(monitoring._safe_value("status", None))
+
+    def test_safe_value_truncates_strings(self):
+        result = monitoring._safe_value("stage", "a" * 200)
+        self.assertEqual(len(result), 64)
+
+    def test_audit_str_representation(self):
+        audit = OperationalChangeAudit.record(
+            actor=None,
+            target_type="capability",
+            target_id="job_pipeline",
+            action="changed",
+        )
+        self.assertEqual(str(audit), "changed:capability:job_pipeline")
