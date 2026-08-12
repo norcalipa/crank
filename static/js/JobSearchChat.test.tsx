@@ -196,12 +196,24 @@ describe('additional JobSearchChat coverage', () => {
             expect(screen.getByRole('button', {name: 'Start a conversation'})).toBeInTheDocument();
         });
 
-        test('treats a resume 404 as a brand-new conversation', async () => {
-            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 404));
+        test('auto-creates a conversation on resume 404 so the input is usable', async () => {
+            const mock = global.fetch as jest.Mock;
+            // First call: GET resume → 404 (no existing conversation).
+            mock.mockResolvedValueOnce(jsonResponse({}, 404));
+            // Second call: POST create → new conversation.
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(7), 201));
             render(<JobSearchChat/>);
             await screen.findByLabelText('Message');
-            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+            expect(screen.getByTestId('empty-history')).toBeInTheDocument();
             expect(screen.queryByText(/could not load/i)).not.toBeInTheDocument();
+            // Verify a POST with create_new was made.
+            const posts = mock.mock.calls
+                .map(([url, init]) => ({url: String(url), init: init as RequestInit}))
+                .filter((c) => c.init?.method === 'POST');
+            expect(posts.length).toBeGreaterThanOrEqual(1);
+            const body = JSON.parse(posts[0].init.body as string);
+            expect(body.create_new).toBe(true);
         });
 
         test('starting a new conversation from the error state works', async () => {

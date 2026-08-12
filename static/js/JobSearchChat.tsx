@@ -85,10 +85,25 @@ const JobSearchChat: React.FC = () => {
             .then(async (res) => {
                 if (cancelled) return;
                 if (res.status === 404) {
-                    setConversationId(null);
-                    setMessages([]);
-                    setLoading(false);
-                    inputRef.current?.focus();
+                    // No existing conversation — create one so the user can start chatting.
+                    try {
+                        const createRes = await csrfFetch('/api/agent/conversations/', {
+                            method: 'POST',
+                            body: JSON.stringify({create_new: true}),
+                        });
+                        if (cancelled) return;
+                        if (!createRes.ok) throw new Error('create-failed');
+                        const createData = (await createRes.json()) as Conversation;
+                        if (cancelled) return;
+                        setConversationId(createData.id);
+                        setMessages(createData.messages);
+                        setLoading(false);
+                        inputRef.current?.focus();
+                    } catch {
+                        if (cancelled) return;
+                        setInitError('Could not start a conversation. Please try again.');
+                        setLoading(false);
+                    }
                     return;
                 }
                 if (!res.ok) {
