@@ -49,6 +49,7 @@ class JobSourceCatalog(TimeStampedModel):
         db_index=True,
     )
     enabled = models.BooleanField(default=False, db_index=True)
+    last_crawl_at = models.DateTimeField(null=True, blank=True, db_index=True)
     catalog_metadata = models.JSONField(
         default=dict,
         blank=True,

@@ -15,6 +15,7 @@ ALLOWED_CAPABILITY_KEYS = frozenset(
         "job_pipeline",
         "gather_scores",
         "agent_noop",
+        "crawl_schedule",
     }
 )
 

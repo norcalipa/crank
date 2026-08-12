@@ -77,6 +77,7 @@ class SourceCatalog(TimeStampedModel):
         verbose_name=_("approval state"),
     )
     enabled = models.BooleanField(default=False, verbose_name=_("enabled"))
+    last_crawl_at = models.DateTimeField(null=True, blank=True, db_index=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     cadence = models.CharField(
         max_length=16,
