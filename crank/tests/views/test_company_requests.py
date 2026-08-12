@@ -1,11 +1,13 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import json
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth.models import User
 from django.contrib.messages.storage.fallback import FallbackStorage
 from django.contrib.sessions.backends.db import SessionStore
 from django.core.cache import cache
+from django.db import IntegrityError
 from django.test import TestCase, Client, RequestFactory, override_settings
 from django.urls import reverse
 
@@ -13,6 +15,7 @@ from crank.admin import CompanyRequestAdmin
 from crank.models.company_request import CompanyRequest
 from crank.models.monitoring import OperationalChangeAudit
 from crank.models.organization import Organization
+from crank.views.company_requests import _rate_limited
 from django.contrib.admin.sites import AdminSite
 
 
@@ -191,6 +194,14 @@ class CompanyRequestsViewTest(TestCase):
         )
         self.assertEqual(response.status_code, 409)
 
+    def test_rate_limit_recovers_from_cache_value_error(self):
+        request = RequestFactory().get("/api/company-requests/")
+        request.user = self.user
+        cache.set(f"company-request-rate:{self.user.pk}", 1)
+        with patch.object(cache, "incr", side_effect=ValueError):
+            self.assertFalse(_rate_limited(request))
+        self.assertEqual(cache.get(f"company-request-rate:{self.user.pk}"), 1)
+
     def test_post_rate_limited(self):
         self.client.force_login(self.user)
         for _ in range(5):
@@ -208,6 +219,27 @@ class CompanyRequestsViewTest(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 429)
+
+    def test_post_re_raises_unmatched_integrity_error(self):
+        self.client.force_login(self.user)
+        empty_chain = MagicMock()
+        empty_chain.filter.return_value = empty_chain
+        empty_chain.first.return_value = None
+        with patch("crank.views.company_requests.CompanyRequest.objects.filter", side_effect=[empty_chain, empty_chain, empty_chain, empty_chain]), \
+             patch("crank.views.company_requests.CompanyRequest.save", side_effect=IntegrityError):
+            with self.assertRaises(IntegrityError):
+                self.client.post("/api/company-requests/", data=json.dumps({"company_name": "Unmatched", "website_url": "https://unmatched.example.com"}), content_type="application/json")
+
+    def test_post_handles_concurrent_duplicate(self):
+        self.client.force_login(self.user)
+        concurrent_request = CompanyRequest.objects.create(requester=self.other_user, company_name="Concurrent", website_url="https://concurrent.example.com")
+        empty_chain = MagicMock(); empty_chain.filter.return_value = empty_chain; empty_chain.first.return_value = None
+        existing_chain = MagicMock(); existing_chain.filter.return_value = existing_chain; existing_chain.first.return_value = concurrent_request
+        with patch("crank.views.company_requests.CompanyRequest.objects.filter", side_effect=[empty_chain, empty_chain, existing_chain]), \
+             patch("crank.views.company_requests.CompanyRequest.save", side_effect=IntegrityError):
+            response = self.client.post("/api/company-requests/", data=json.dumps({"company_name": "New Concurrent", "website_url": "https://new.example.com"}), content_type="application/json")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("duplicate_request", json.loads(response.content))
 
     def test_post_with_pk_returns_405(self):
         self.client.force_login(self.user)

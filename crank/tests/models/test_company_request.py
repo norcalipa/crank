@@ -113,6 +113,10 @@ class NormalizePublicUrlTest(TestCase):
         with self.assertRaises(ValidationError):
             normalize_public_url("https://example.com:abc")
 
+    def test_rejects_out_of_range_port(self):
+        with self.assertRaises(ValidationError):
+            normalize_public_url("https://example.com:99999")
+
     def test_rejects_localhost_domain(self):
         with self.assertRaises(ValidationError):
             normalize_public_url("https://sub.localhost")
@@ -157,6 +161,15 @@ class UnsafeHostnameTest(TestCase):
 
     def test_localhost_subdomain(self):
         self.assertTrue(_unsafe_hostname("sub.localhost"))
+
+
+class CompanyRequestFormTest(TestCase):
+    def test_blank_company_name_validation_message(self):
+        from crank.forms.company_request import CompanyRequestForm
+        form = CompanyRequestForm()
+        form.cleaned_data = {"company_name": "   "}
+        with self.assertRaises(ValidationError):
+            form.clean_company_name()
 
 
 class CompanyRequestModelTest(TestCase):

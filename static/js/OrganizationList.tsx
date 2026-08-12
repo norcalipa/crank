@@ -301,7 +301,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         <label className="form-check-label" htmlFor="acceleratedVesting">&nbsp;Show only companies with first vesting in &lt; 1 year</label>
                     </span>
                 </div>
-                {(this.props.canSuggestCompany || this.props.isAuthenticated) && (
+                {this.props.isAuthenticated && (
                     <button type="button" className="btn btn-outline-primary btn-sm mt-2"
                             data-testid="suggest-company-btn" onClick={this.handleOpenSuggestModal}>
                         Suggest a company
