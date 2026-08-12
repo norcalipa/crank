@@ -653,4 +653,149 @@ describe('OrganizationList', () => {
         // Clean up
         createRootSpy.mockRestore();
     });
+
+    test('renders accessible Previous and Next pagination links', async () => {
+        render(<OrganizationList organizations={Array(20).fill(organizations[0])} itemsPerPage={10} />);
+
+        await waitFor(() => {
+            expect(screen.getByRole('link', {name: 'Previous page'})).toBeInTheDocument();
+            expect(screen.getByRole('link', {name: 'Next page'})).toBeInTheDocument();
+            expect(screen.getByRole('link', {name: 'Page 1'})).toHaveAttribute('aria-current', 'page');
+        });
+
+        // Previous is disabled on page 1
+        const prevLink = screen.getByRole('link', {name: 'Previous page'});
+        expect(prevLink).toHaveAttribute('aria-disabled', 'true');
+        expect(prevLink).toHaveAttribute('tabindex', '-1');
+    });
+
+    test('disables Next link on last page', async () => {
+        render(<OrganizationList organizations={Array(20).fill(organizations[0])} itemsPerPage={10} />);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('page-link-2')).toBeInTheDocument();
+        });
+
+        fireEvent.click(screen.getByTestId('page-link-2'));
+
+        await waitFor(() => {
+            const nextLink = screen.getByRole('link', {name: 'Next page'});
+            expect(nextLink).toHaveAttribute('aria-disabled', 'true');
+            expect(nextLink).toHaveAttribute('tabindex', '-1');
+        });
+    });
+
+    test('does not change page when clicking the current page link', async () => {
+        render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('page-link-1')).toBeInTheDocument();
+        });
+
+        // Click current page (page 1) - should be a no-op
+        (global.window.history.pushState as jest.Mock).mockClear();
+        fireEvent.click(screen.getByTestId('page-link-1'));
+
+        expect(global.window.history.pushState).not.toHaveBeenCalled();
+    });
+
+    test('displays result count and page summary', async () => {
+        render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+
+        await waitFor(() => {
+            expect(screen.getByText('Showing 1-1 of 2 organizations')).toBeInTheDocument();
+            expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+        });
+    });
+
+    test('shows no-results panel with clear button when filters yield no matches', async () => {
+        render(<OrganizationList organizations={organizations} />);
+
+        await waitFor(() => {
+            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+        });
+
+        const searchInput = screen.getByPlaceholderText('Search organizations');
+        fireEvent.change(searchInput, {target: {value: 'NonExistentCompany'}});
+
+        await waitFor(() => {
+            expect(screen.getByText('No organizations found')).toBeInTheDocument();
+            expect(screen.getByText('Clear search and filters')).toBeInTheDocument();
+        });
+
+        // Click clear button
+        fireEvent.click(screen.getByText('Clear search and filters'));
+
+        await waitFor(() => {
+            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+            expect(screen.queryByText('No organizations found')).not.toBeInTheDocument();
+        });
+    });
+
+    test('shows suggest company link when canSuggestCompany is true', async () => {
+        render(<OrganizationList organizations={organizations} canSuggestCompany={true} />);
+
+        await waitFor(() => {
+            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+        });
+
+        const searchInput = screen.getByPlaceholderText('Search organizations');
+        fireEvent.change(searchInput, {target: {value: 'NonExistent'}});
+
+        await waitFor(() => {
+            expect(screen.getByText('Suggest a company')).toBeInTheDocument();
+        });
+    });
+
+    test('does not show suggest company link when canSuggestCompany is false', async () => {
+        render(<OrganizationList organizations={organizations} canSuggestCompany={false} />);
+
+        await waitFor(() => {
+            expect(screen.getByText('Organization 1')).toBeInTheDocument();
+        });
+
+        const searchInput = screen.getByPlaceholderText('Search organizations');
+        fireEvent.change(searchInput, {target: {value: 'NonExistent'}});
+
+        await waitFor(() => {
+            expect(screen.queryByText('Suggest a company')).not.toBeInTheDocument();
+        });
+    });
+
+    test('handles popstate event to restore URL state', async () => {
+        render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+
+        await waitFor(() => {
+            expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+        });
+
+        // Navigate to page 2
+        fireEvent.click(screen.getByTestId('page-link-2'));
+
+        await waitFor(() => {
+            expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+        });
+
+        // Simulate browser back button (popstate)
+        window.dispatchEvent(new PopStateEvent('popstate'));
+
+        // State should be re-read from URL (which hasn't changed due to pushState mock)
+        await waitFor(() => {
+            expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+        });
+    });
+
+    test('removes popstate listener on unmount', () => {
+        const addSpy = jest.spyOn(window, 'addEventListener');
+        const removeSpy = jest.spyOn(window, 'removeEventListener');
+
+        const { unmount } = render(<OrganizationList organizations={organizations} />);
+        expect(addSpy).toHaveBeenCalledWith('popstate', expect.any(Function));
+
+        unmount();
+        expect(removeSpy).toHaveBeenCalledWith('popstate', expect.any(Function));
+
+        addSpy.mockRestore();
+        removeSpy.mockRestore();
+    });
 });
