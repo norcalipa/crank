@@ -7,6 +7,12 @@ from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
 from crank.models.company_profile import CompanyProfileObservation
+from crank.models.company_request import (
+    CompanyRequest,
+    normalize_company_name,
+    normalize_domain,
+    normalize_public_url,
+)
 from crank.models.employer import EmployerAlias, UnresolvedEmployer
 from crank.models.preference import SCHEMA_VERSION, UserPreference, UserPreferenceAudit
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
@@ -39,6 +45,10 @@ __all__ = [
     "JobMatch",
     "Organization",
     "CompanyProfileObservation",
+    "CompanyRequest",
+    "normalize_company_name",
+    "normalize_domain",
+    "normalize_public_url",
     "EmployerAlias",
     "UnresolvedEmployer",
     "UserPreference",

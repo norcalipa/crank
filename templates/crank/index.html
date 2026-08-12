@@ -36,7 +36,7 @@
                 </div>
                 <div class="col-12 col-md-8">
                     <div class="align-content-end">
-                        <div id="organization-list"></div>
+                        <div id="organization-list" data-authenticated="{{ user.is_authenticated|yesno:'true,false' }}"></div>
                         {{ top_organization_list|json_script:"organization-data" }}
                         <span id="organization-list-config"
                               data-can-suggest-company="{{ user.is_authenticated|yesno:'true,false' }}"></span>
