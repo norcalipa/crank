@@ -1,0 +1,67 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+version: 1
+event_type: CrankOperation
+allowed_event_names:
+  - interactive_call
+  - scheduled_run
+  - source_stage
+  - matching_batch
+  - operational_change
+facets:
+  - run_type
+  - stage
+  - source_key
+  - reason_code
+widgets:
+  - name: Last successful scheduled run
+    nrql: >-
+      SELECT latest(timestamp) FROM CrankOperation WHERE event_name = 'scheduled_run'
+      AND status = 'succeeded' SINCE 7 days ago
+  - name: Run duration and throughput
+    nrql: >-
+      SELECT average(duration_ms), count(*) FROM CrankOperation
+      WHERE event_name = 'scheduled_run' FACET run_type TIMESERIES SINCE 24 hours ago
+  - name: Failures by reason and source stage
+    nrql: >-
+      SELECT count(*) FROM CrankOperation WHERE status = 'failed'
+      FACET event_name, stage, source_key, reason_code SINCE 24 hours ago
+  - name: Source freshness
+    nrql: >-
+      SELECT latest(freshness_seconds) FROM CrankOperation
+      WHERE event_name = 'source_stage' FACET source_key SINCE 24 hours ago
+  - name: Estimated cost and token throughput
+    nrql: >-
+      SELECT sum(estimated_cost_usd), sum(total_tokens), count(*)
+      FROM CrankOperation WHERE event_name = 'interactive_call' SINCE 24 hours ago
+  - name: Deadline, rejection, and backlog pressure
+    nrql: >-
+      SELECT sum(deadline_reached), sum(items_failed), sum(users_failed),
+      sum(matches_persisted) FROM CrankOperation WHERE event_name = 'matching_batch'
+      SINCE 24 hours ago
+alerts:
+  - name: repeated-failure
+    nrql: "SELECT count(*) FROM CrankOperation WHERE status = 'failed' SINCE 15 minutes ago"
+    threshold: 3
+    recovery: "Inspect sanitized AgentRun/SourceRun, then disable the affected source or capability."
+  - name: no-recent-success
+    nrql: "SELECT count(*) FROM CrankOperation WHERE event_name = 'scheduled_run' AND status = 'succeeded' SINCE 6 hours ago"
+    threshold: 1
+    operator: below
+    recovery: "Check scheduler, overlap/stale-run state, and run the bounded recovery procedure."
+  - name: deadline-resource-pressure
+    nrql: "SELECT sum(deadline_reached) FROM CrankOperation WHERE event_name = 'matching_batch' SINCE 30 minutes ago"
+    threshold: 1
+    recovery: "Reduce configured bounded work or raise the approved deadline after review."
+  - name: cost-limit
+    nrql: "SELECT sum(estimated_cost_usd) FROM CrankOperation WHERE event_name = 'interactive_call' SINCE 1 day ago"
+    threshold: 10
+    recovery: "Disable interactive_agent and inspect token/cost settings before re-enabling."
+  - name: rejection-spike
+    nrql: "SELECT sum(items_failed) FROM CrankOperation WHERE event_name = 'source_stage' SINCE 30 minutes ago"
+    threshold: 20
+    recovery: "Inspect reason-coded source failures and isolate the source; no raw response is retained."
+  - name: matching-backlog
+    nrql: "SELECT sum(users_failed) FROM CrankOperation WHERE event_name = 'matching_batch' SINCE 30 minutes ago"
+    threshold: 10
+    recovery: "Inspect deadline/resource pressure and keep the job_pipeline capability disabled until safe."

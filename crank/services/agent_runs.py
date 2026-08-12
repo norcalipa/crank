@@ -17,22 +17,12 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from crank.models.agent_run import AgentRun
+from crank.services import monitoring
 
 logger = logging.getLogger("agent_runs")
 
 # Keep summaries bounded and free of raw external/user data.
 ERROR_SUMMARY_MAX_LENGTH = 1000
-
-# Event fields are an observability contract, not an arbitrary metadata sink.
-# Keeping this allowlist here prevents a future caller from accidentally
-# emitting prompts, message bodies, source payloads, or credentials.
-_EVENT_FIELDS = frozenset({"started_at", "completed_at", "counts", "error_summary"})
-_COUNT_FIELDS = frozenset({
-    "sources_total", "sources_succeeded", "sources_failed", "listings_ingested",
-    "listings_updated", "employers_resolved", "employers_unresolved", "users_total",
-    "users_succeeded", "users_failed", "matches_persisted", "deadline_reached",
-    "items_seen", "items_created", "items_updated", "items_failed",
-})
 
 # Redact anything that looks like a credential/secret before it reaches logs or
 # New Relic events.
@@ -64,36 +54,54 @@ def record_agent_event(run, event_type, **fields):
     Never includes raw credentials or untrusted external/user data. The call is
     best-effort: observability must never break the run itself.
     """
-    try:
-        safe_fields = {}
-        for key, value in fields.items():
-            if key not in _EVENT_FIELDS:
-                continue
-            if key == "error_summary":
-                safe_fields[key] = sanitize_error(value)
-            elif key == "counts":
-                if isinstance(value, dict):
-                    safe_fields[key] = {
-                        str(count_key): count_value
-                        for count_key, count_value in value.items()
-                        if count_key in _COUNT_FIELDS
-                        and isinstance(count_value, (bool, int))
-                    }
-            elif isinstance(value, (str, int, float, bool)) or value is None:
-                safe_fields[key] = value
-        newrelic.agent.record_custom_event(
-            "AgentRun",
-            {
-                "eventType": event_type,
-                "run_type": run.run_type,
-                "status": run.status,
-                "correlation_id": str(run.correlation_id),
-                "run_id": run.pk,
-                **safe_fields,
-            },
+    attributes = {
+        "eventType": event_type,
+        "run_type": run.run_type,
+        "status": run.status,
+        "correlation_id": str(run.correlation_id),
+        "run_id": run.pk,
+    }
+    if run.started_at and run.finished_at:
+        attributes["duration_ms"] = int(
+            (run.finished_at - run.started_at).total_seconds() * 1000
         )
+    # Only stable scalar counters are allowed into telemetry.  The legacy
+    # New Relic event remains for compatibility with existing dashboards.
+    for key, value in fields.items():
+        if key == "counts" and isinstance(value, dict):
+            attributes.update(
+                {
+                    k: v
+                    for k, v in value.items()
+                    if k in monitoring._SAFE_KEYS
+                    and isinstance(v, (int, float, bool))
+                }
+            )
+        elif key in {"started_at", "completed_at"}:
+            continue
+        elif key in monitoring._SAFE_KEYS:
+            attributes[key] = value
+    try:
+        newrelic.agent.record_custom_event("AgentRun", attributes)
     except Exception:  # pragma: no cover - defensive
         logger.exception("failed to record New Relic AgentRun event")
+    operation_status = {
+        "run_started": "running",
+        "run_succeeded": "succeeded",
+        "run_failed": "failed",
+        "run_skipped": "skipped",
+    }.get(event_type, run.status)
+    operation = {
+        key: value
+        for key, value in attributes.items()
+        if key not in {"eventType", "status"}
+    }
+    operation.update({"run_type": run.run_type, "status": operation_status})
+    # Keep the existing run_started event as the low-volume claim marker;
+    # terminal events carry the scheduled-run operation telemetry. This avoids
+    # duplicating the same New Relic call while preserving legacy consumers.
+    if event_type != "run_started":
+        monitoring.record_event("scheduled_run", operation)
 
 
 def claim_run(run_type):
@@ -187,6 +195,12 @@ def record_skipped(run_type):
 def finalize_success(run, counts=None):
     """Mark a run as succeeded with its outcome counters."""
     run.finalize(AgentRun.Status.SUCCEEDED, counts=counts or {})
+    if run.started_at and run.finished_at:
+        monitoring.record_metric(
+            "Crank/AgentRun/DurationMs",
+            (run.finished_at - run.started_at).total_seconds() * 1000,
+            {"run_type": run.run_type, "status": run.status},
+        )
     logger.info(
         "agent run succeeded: run_type=%s correlation_id=%s counts=%s",
         run.run_type,
@@ -201,6 +215,14 @@ def finalize_failure(run, error, counts=None):
     """Mark a run as failed with a sanitized error summary and propagate."""
     summary = sanitize_error(error)
     run.finalize(AgentRun.Status.FAILED, counts=counts, error_summary=summary)
+    monitoring.record_event(
+        "scheduled_run",
+        {
+            "run_type": run.run_type,
+            "status": run.status,
+            "reason_code": monitoring.failure_reason(error),
+        },
+    )
     logger.error(
         "agent run failed: run_type=%s correlation_id=%s error_summary=%s",
         run.run_type,

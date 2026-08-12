@@ -16,6 +16,11 @@ from crank.models.source import (
     SourceRun,
     SourceCatalogAudit,
 )
+from crank.models.monitoring import (
+    ALLOWED_CAPABILITY_KEYS,
+    CapabilitySwitch,
+    OperationalChangeAudit,
+)
 
 __all__ = [
     "AgentRun",
@@ -39,4 +44,7 @@ __all__ = [
     "ScoreType",
     "ScoreAlgorithm",
     "ScoreAlgorithmWeight",
+    "CapabilitySwitch",
+    "OperationalChangeAudit",
+    "ALLOWED_CAPABILITY_KEYS",
 ]

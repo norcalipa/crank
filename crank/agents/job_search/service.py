@@ -13,6 +13,7 @@ The service never talks to a provider directly; it always goes through a
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Protocol
 
@@ -30,6 +31,7 @@ from crank.agents.job_search.errors import (
 )
 from crank.agents.job_search.gateway import GatewayResponse, ModelRequest, ProviderGateway
 from crank.agents.job_search.types import AssistantCompletion
+from crank.services import monitoring
 
 logger = logging.getLogger("crank.agents.job_search")
 
@@ -104,6 +106,44 @@ class JobSearchOrchestrator:
         self._system_prompt_version = system_prompt_version
 
     def run(
+        self,
+        *,
+        user_prompt: str,
+        conversation: List[Dict[str, str]],
+        preference_markdown: str,
+        token_budget: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+    ) -> OrchestratorResult:
+        """Run one turn and emit only bounded interactive-call telemetry."""
+        started = time.monotonic()
+        try:
+            result = self._run(
+                user_prompt=user_prompt,
+                conversation=conversation,
+                preference_markdown=preference_markdown,
+                token_budget=token_budget,
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:
+            monitoring.record_event(
+                "interactive_call",
+                {
+                    "status": "failed",
+                    "reason_code": monitoring.failure_reason(exc),
+                    "latency_ms": int((time.monotonic() - started) * 1000),
+                },
+            )
+            raise
+        monitoring.record_event(
+            "interactive_call",
+            {
+                "status": "succeeded",
+                "latency_ms": int((time.monotonic() - started) * 1000),
+            },
+        )
+        return result
+
+    def _run(
         self,
         *,
         user_prompt: str,
@@ -217,9 +257,25 @@ class JobSearchOrchestrator:
             token_budget=token_budget,
         )
         try:
-            return self._gateway.complete(request)
+            response = self._gateway.complete(request)
+            usage = response.usage or {}
+            monitoring.record_event(
+                "interactive_call",
+                {
+                    "status": "provider_succeeded",
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", usage.get("output_tokens", 0)),
+                    "total_tokens": usage.get("total_tokens", 0),
+                    "estimated_cost_usd": usage.get("estimated_cost_usd", 0),
+                },
+            )
+            return response
         except (ProviderTimeoutError, CostLimitError, ProviderError) as exc:
             # Already typed; propagate so callers can distinguish outcomes.
+            monitoring.record_event(
+                "interactive_call",
+                {"status": "provider_failed", "reason_code": monitoring.failure_reason(exc)},
+            )
             raise
         except TimeoutError as exc:
             raise ProviderTimeoutError(str(exc)) from exc
