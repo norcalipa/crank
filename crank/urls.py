@@ -36,6 +36,12 @@ from crank.views.job_search import (
     agent_conversation_reset,
     agent_conversation_delete,
 )
+from crank.views.job_matches import (
+    job_match_list,
+    job_match_detail,
+    job_match_seen,
+    job_match_dismiss,
+)
 
 app_name = "crank"
 
@@ -53,6 +59,10 @@ urlpatterns = [
     path('api/agent/conversations/<int:conversation_id>/export/', agent_conversation_export, name='agent-conversation-export'),
     path('api/agent/conversations/<int:conversation_id>/reset/', agent_conversation_reset, name='agent-conversation-reset'),
     path('api/agent/conversations/<int:conversation_id>/delete/', agent_conversation_delete, name='agent-conversation-delete'),
+    path('api/job-matches/', job_match_list, name='job-match-list'),
+    path('api/job-matches/<int:match_id>/', job_match_detail, name='job-match-detail'),
+    path('api/job-matches/<int:match_id>/seen/', job_match_seen, name='job-match-seen'),
+    path('api/job-matches/<int:match_id>/dismiss/', job_match_dismiss, name='job-match-dismiss'),
     path('api-auth/', include('rest_framework.urls')),
     path('accounts/logout/', CustomLogoutView.as_view(), name='account_logout'),
     path('accounts/', include('allauth.urls')),

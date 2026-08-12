@@ -5,6 +5,7 @@ from crank.models.agent_run import AgentRun
 from crank.models.conversation import Conversation, Message
 from crank.models.employer import EmployerAlias, UnresolvedEmployer
 from crank.models.job import JobListing, JobSourceCatalog
+from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference, UserPreferenceAudit
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
@@ -332,6 +333,25 @@ class JobListingAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 
 admin.site.register(JobSourceCatalog, JobSourceCatalogAdmin)
 admin.site.register(JobListing, JobListingAdmin)
+
+
+class JobMatchAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+    model = JobMatch
+    list_display = [
+        "user", "listing", "organization", "preference_version", "ranker_version",
+        "score", "seen_at", "dismissed", "last_matched_at",
+    ]
+    list_filter = ["dismissed", "ranker_version", "preference_version"]
+    list_select_related = ["user", "listing", "organization"]
+    search_fields = ["user__username", "user__email", "listing__title", "listing__employer_name"]
+    readonly_fields = [
+        "user", "listing", "organization", "preference_version", "ranker_version", "score",
+        "factors", "first_matched_at", "last_matched_at", "seen_at", "dismissed",
+        "created", "modified",
+    ]
+
+
+admin.site.register(JobMatch, JobMatchAdmin)
 
 
 class EmployerAliasAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):

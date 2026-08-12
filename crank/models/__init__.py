@@ -4,6 +4,7 @@ from crank.models.agent_run import AgentRun
 from crank.models.conversation import Conversation, Message
 from crank.models.job_search import JobSearchConversation, JobSearchMessage
 from crank.models.job import JobListing, JobSourceCatalog
+from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
 from crank.models.employer import EmployerAlias, UnresolvedEmployer
 from crank.models.preference import SCHEMA_VERSION, UserPreference, UserPreferenceAudit
@@ -29,6 +30,7 @@ __all__ = [
     "JobSearchMessage",
     "JobSourceCatalog",
     "JobListing",
+    "JobMatch",
     "Organization",
     "EmployerAlias",
     "UnresolvedEmployer",
