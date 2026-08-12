@@ -140,7 +140,9 @@ class IndexViewTests(TestCase):
         self.assertOrgValues(response.context_data["top_organization_list"][0], serialized_org)
 
     def test_empty_index_view(self):
-        # we aren't adding data, so there should be no results
+        # Algorithm exists but no score data – the React component renders
+        # the no-results panel client-side, so the server template shows
+        # the algorithm card with an empty organization list.
         request = self.factory.get(self.index_url)
         self.add_session_to_request(request)
         request.session['algorithm_id'] = '1'  # Set algorithm_id in session
@@ -149,8 +151,8 @@ class IndexViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'CRank')
-        self.assertContains(response,
-                            "No organizations are available or the Score Algorithm you specified doesn't exist.")
+        self.assertContains(response, 'organization-list')
+        self.assertContains(response, 'organization-list-config')
         self.assertEqual(response.context_data["top_organization_list"], [])
 
     def test_index_get_queryset(self):
@@ -178,8 +180,7 @@ class IndexViewTests(TestCase):
         response = self.view(request)
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response,
-                            'No organizations are available or the Score Algorithm you specified doesn\'t exist.')
+        self.assertContains(response, 'organization-list')
         self.assertEqual(response.context_data["top_organization_list"], [])
 
     def test_post_method_valid_data(self):
@@ -209,3 +210,28 @@ class IndexViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(request.session.get('accelerated_vesting'))
+
+    def test_template_renders_config_span_unauthenticated(self):
+        self.setup_scores()
+        response = self.client.get(self.index_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'organization-list-config')
+        self.assertContains(response, 'data-can-suggest-company="false"')
+
+    def test_template_else_branch_shows_message_when_no_algorithm(self):
+        ScoreAlgorithm.objects.all().delete()
+        request = self.factory.get(self.index_url)
+        self.add_session_to_request(request)
+        request.session['algorithm_id'] = '1'
+        response = self.view(request)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response,
+                            "No organizations are available or the Score Algorithm you specified doesn't exist.")
+        self.assertNotContains(response, 'organization-list-config')
+
+    def test_template_submitform_preserves_query_params(self):
+        self.setup_scores()
+        response = self.client.get(self.index_url)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'window.location.search')
+        self.assertContains(response, 'algorithmUrl + window.location.search')

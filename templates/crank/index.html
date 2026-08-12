@@ -38,6 +38,8 @@
                     <div class="align-content-end">
                         <div id="organization-list"></div>
                         {{ top_organization_list|json_script:"organization-data" }}
+                        <span id="organization-list-config"
+                              data-can-suggest-company="{{ user.is_authenticated|yesno:'true,false' }}"></span>
                     </div>
                 </div>
             </div>
@@ -49,7 +51,8 @@
     <script>
         function submitForm() {
             var algorithmId = document.getElementById('algorithm_id').value;
-            window.location.href = "{% url 'index' 0 %}".replace('0', algorithmId);
+            var algorithmUrl = "{% url 'index' 0 %}".replace('0', algorithmId);
+            window.location.href = algorithmUrl + window.location.search;
         }
     </script>
 {% endblock %}
