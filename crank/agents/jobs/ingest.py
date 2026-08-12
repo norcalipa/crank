@@ -46,7 +46,7 @@ def _changed(existing: Any, raw: Any) -> bool:
     if existing is None:
         return False
     fields = (
-        "canonical_url", "employer_name", "employer_domain", "title",
+        "canonical_url", "employer_external_id", "employer_name", "employer_domain", "title",
         "location_text", "is_remote", "compensation_min", "compensation_max",
         "compensation_currency", "compensation_interval", "description_excerpt",
         "source_metadata",
@@ -87,6 +87,11 @@ def ingest_jobs(source: Any, query: JobSourceQuery, *, adapter=None) -> JobInges
             existing = _existing_listing(source, raw)
             changed = _changed(existing, raw)
             listing = JobListing.ingest(source, raw)
+            # Employer resolution is deliberately separate from listing
+            # identity/upsert: a corrected reviewed alias can reprocess the
+            # same listing without creating another row.
+            from crank.agents.jobs.employer import resolve_employer
+            resolve_employer(listing)
             if existing is None:
                 ingested += 1
             elif changed:
