@@ -32,6 +32,7 @@ class AgentRun(TimeStampedModel):
         GATHER_SCORES = "gather_scores", _("Score gathering run")
         JOB_PIPELINE = "job_pipeline", _("Job pipeline run")
         CRAWL_SCHEDULE = "crawl_schedule", _("Crawl scheduling run")
+        CRAWL = "crawl", _("On-demand crawl run")
 
     class Status(models.TextChoices):
         PENDING = "pending", _("Pending")

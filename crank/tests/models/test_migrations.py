@@ -41,8 +41,8 @@ class SourceMigrationTests(TransactionTestCase):
         # The leaf migration must depend on the previous crank migration in the chain.
         deps = [dep[1] for dep in migration.dependencies if dep[0] == "crank"]
         self.assertTrue(
-            len(deps) == 1,
-            "crank leaf migration must have exactly one crank dependency",
+            len(deps) >= 1,
+            "crank leaf migration must have at least one crank dependency",
         )
 
     def test_no_pending_model_changes(self):

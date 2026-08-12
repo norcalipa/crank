@@ -21,6 +21,7 @@ from crank.models import (
     SourceCatalog,
 )
 from crank.models.source import ApprovalState
+from crank.services.crawl_runs import CrawlRequestError
 
 
 class MonitoringAdminTests(TestCase):
@@ -80,6 +81,83 @@ class MonitoringAdminTests(TestCase):
         self.assertEqual(audit.new_value, {"enabled": False})
         self.assertTrue(audit.confirmed)
         event.assert_called_once()
+
+    @patch("crank.admin.trigger_crawl")
+    def test_job_crawl_action_requires_confirmation_and_triggers(self, trigger):
+        source = JobSourceCatalog.objects.create(
+            name="Crawl jobs",
+            adapter_key="crawl-fixture",
+            base_url="https://jobs.example.test",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+        )
+        source_admin = JobSourceCatalogAdmin(JobSourceCatalog, self.site)
+        with patch.object(source_admin, "message_user") as message:
+            source_admin.trigger_crawls(
+                self.request(confirmed=False),
+                JobSourceCatalog.objects.filter(pk=source.pk),
+            )
+        trigger.assert_not_called()
+        message.assert_called_once()
+        with patch.object(source_admin, "message_user"):
+            source_admin.trigger_crawls(
+                self.request(confirmed=True),
+                JobSourceCatalog.objects.filter(pk=source.pk),
+            )
+        trigger.assert_called_once_with(
+            source_key="crawl-fixture", source_type="job", requested_by=self.staff,
+        )
+
+    @patch("crank.admin.trigger_crawl")
+    def test_rating_source_crawl_action_requires_confirmation_and_triggers(self, trigger):
+        from crank.models.organization import Organization
+
+        organization = Organization.objects.create(
+            name="Crawl ratings", gives_ratings=True, status=1,
+        )
+        source = SourceCatalog.objects.create(
+            organization=organization,
+            name="Crawl ratings source",
+            adapter_key="rating-crawl",
+            base_url="https://ratings.example.test",
+            approval_state=ApprovalState.APPROVED,
+            enabled=True,
+        )
+        source_admin = SourceCatalogAdmin(SourceCatalog, self.site)
+        with patch.object(source_admin, "message_user") as message:
+            source_admin.trigger_crawls(
+                self.request(confirmed=False),
+                SourceCatalog.objects.filter(pk=source.pk),
+            )
+        trigger.assert_not_called()
+        message.assert_called_once()
+        with patch.object(source_admin, "message_user"):
+            source_admin.trigger_crawls(
+                self.request(confirmed=True),
+                SourceCatalog.objects.filter(pk=source.pk),
+            )
+        trigger.assert_called_once_with(
+            source_key="rating-crawl", source_type="organization", requested_by=self.staff,
+        )
+
+    @patch("crank.admin.trigger_crawl", side_effect=CrawlRequestError("blocked"))
+    def test_job_crawl_action_reports_trigger_errors(self, trigger):
+        source = JobSourceCatalog.objects.create(
+            name="Error jobs",
+            adapter_key="error-fixture",
+            base_url="https://jobs.example.test",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+        )
+        source_admin = JobSourceCatalogAdmin(JobSourceCatalog, self.site)
+        request = self.request(confirmed=True)
+        with patch.object(source_admin, "message_user") as message:
+            source_admin.trigger_crawls(
+                request,
+                JobSourceCatalog.objects.filter(pk=source.pk),
+            )
+        trigger.assert_called_once()
+        message.assert_any_call(request, "Error jobs: blocked", level="error")
 
     def test_job_source_admin_is_staff_only_and_confirmed_action_audits(self):
         source = JobSourceCatalog.objects.create(

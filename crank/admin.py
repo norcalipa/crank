@@ -2,6 +2,7 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 from django.contrib import admin
 from crank.models.agent_run import AgentRun
+from crank.models.crawl_run import CrawlRun
 from crank.models.conversation import Conversation, Message
 from crank.models.employer import EmployerAlias, UnresolvedEmployer
 from crank.models.job import JobListing, JobSourceCatalog
@@ -14,6 +15,7 @@ from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmW
 from crank.models.source import ApprovalState, SourceCatalog, SourceRun, SourceCatalogAudit
 from crank.models.monitoring import CapabilitySwitch, OperationalChangeAudit
 from crank.services import monitoring
+from crank.services.crawl_runs import CrawlRequestError, trigger_crawl
 
 
 class StaffOnlyAdminMixin:
@@ -316,10 +318,31 @@ admin.site.register(Message, MessageAdmin)
 admin.site.register(AgentRun, AgentRunAdmin)
 
 
+class CrawlRunSourceInline(admin.TabularInline):
+    model = CrawlRun
+    fk_name = "source"
+    extra = 0
+    can_delete = False
+    fields = ["source_key", "outcome", "requested_by", "started_at", "finished_at", "counts", "error_summary"]
+    readonly_fields = fields
+    ordering = ["-started_at", "-id"]
+
+
+class CrawlRunJobSourceInline(admin.TabularInline):
+    model = CrawlRun
+    fk_name = "job_source"
+    extra = 0
+    can_delete = False
+    fields = ["source_key", "outcome", "requested_by", "started_at", "finished_at", "counts", "error_summary"]
+    readonly_fields = fields
+    ordering = ["-started_at", "-id"]
+
+
 class SourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     """Source-catalog admin that records auditable, credentials-safe changes."""
 
     model = SourceCatalog
+    inlines = [CrawlRunSourceInline]
     list_display = [
         "name",
         "organization",
@@ -336,7 +359,7 @@ class SourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     search_fields = ["name", "organization__name", "adapter_key"]
     readonly_fields = ["approved_at", "created", "modified"]
     filter_horizontal = ["supported_score_types"]
-    actions = ["approve_sources", "block_sources", "enable_sources", "disable_sources"]
+    actions = ["approve_sources", "block_sources", "enable_sources", "disable_sources", "trigger_crawls"]
 
     def save_model(self, request, obj, form, change):
         """Persist the row and record an audit (created/changed deltas)."""
@@ -442,6 +465,20 @@ class SourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     def disable_sources(self, request, queryset):
         self._record_state_action(request, queryset, "disable")
 
+    @admin.action(description="Trigger crawl for selected sources (confirm=yes)")
+    def trigger_crawls(self, request, queryset):
+        if getattr(request, "POST", {}).get("confirm") != "yes":
+            self.message_user(request, "No crawls started. Repeat the action with confirm=yes.", level="warning")
+            return
+        started = 0
+        for source in queryset:
+            try:
+                trigger_crawl(source_key=source.adapter_key, source_type="organization", requested_by=request.user)
+                started += 1
+            except CrawlRequestError as exc:
+                self.message_user(request, f"{source.name}: {exc}", level="error")
+        self.message_user(request, f"{started} crawl(s) triggered and audited.")
+
 
 class SourceRunAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     model = SourceRun
@@ -473,11 +510,12 @@ class JobSourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     """Staff-only policy diagnosis without credentials or raw responses."""
 
     model = JobSourceCatalog
+    inlines = [CrawlRunJobSourceInline]
     list_display = ["name", "adapter_key", "approval_state", "enabled", "base_url", "created", "modified"]
     list_filter = ["approval_state", "enabled"]
     search_fields = ["name", "adapter_key", "base_url"]
     readonly_fields = ["created", "modified"]
-    actions = ["enable_sources", "disable_sources", "approve_sources", "block_sources"]
+    actions = ["enable_sources", "disable_sources", "approve_sources", "block_sources", "trigger_crawls"]
 
     def _state_action(self, request, queryset, action):
         """Apply an operational state change only after explicit confirmation."""
@@ -539,6 +577,20 @@ class JobSourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     def block_sources(self, request, queryset):
         self._state_action(request, queryset, "block")
 
+    @admin.action(description="Trigger crawl for selected job sources (confirm=yes)")
+    def trigger_crawls(self, request, queryset):
+        if getattr(request, "POST", {}).get("confirm") != "yes":
+            self.message_user(request, "No crawls started. Repeat the action with confirm=yes.", level="warning")
+            return
+        started = 0
+        for source in queryset:
+            try:
+                trigger_crawl(source_key=source.adapter_key, source_type="job", requested_by=request.user)
+                started += 1
+            except CrawlRequestError as exc:
+                self.message_user(request, f"{source.name}: {exc}", level="error")
+        self.message_user(request, f"{started} crawl(s) triggered and audited.")
+
 
 class JobListingAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     """Staff-only listing diagnosis; avoid exposing description excerpts in lists."""
@@ -558,6 +610,17 @@ class JobListingAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 
 admin.site.register(JobSourceCatalog, JobSourceCatalogAdmin)
 admin.site.register(JobListing, JobListingAdmin)
+
+
+class CrawlRunAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+    model = CrawlRun
+    list_display = ["source_type", "source_key", "outcome", "requested_by", "started_at", "finished_at"]
+    list_filter = ["source_type", "outcome"]
+    search_fields = ["source_key", "error_summary"]
+    readonly_fields = ["source_type", "source_key", "source", "job_source", "requested_by", "agent_run", "started_at", "finished_at", "outcome", "counts", "error_summary", "created", "modified"]
+
+
+admin.site.register(CrawlRun, CrawlRunAdmin)
 
 
 class CapabilitySwitchAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
