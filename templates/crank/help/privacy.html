@@ -1,0 +1,94 @@
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
+{% extends "base.html" %}
+{% block head_title %}Privacy Notice — CRank{% endblock %}
+{% block content %}
+<div class="container mt-4" style="max-width: 800px;">
+    <h1>Privacy Notice</h1>
+    <p class="lead">This notice explains what CRank stores, how long it is kept, and how you can control or delete your data.</p>
+
+    <h2>Data We Store</h2>
+    <table class="table table-striped">
+        <thead>
+            <tr><th>Data</th><th>Purpose</th><th>Retention</th></tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>Account identity (email, name from Google)</td>
+                <td>Authentication</td>
+                <td>Until account deletion</td>
+            </tr>
+            <tr>
+                <td>Structured preferences (JSON)</td>
+                <td>Deterministic job matching</td>
+                <td>Until reset or account deletion</td>
+            </tr>
+            <tr>
+                <td>Conversation messages (your role + text)</td>
+                <td>Multi-turn agent interaction</td>
+                <td>Until archived, deleted, or account deletion</td>
+            </tr>
+            <tr>
+                <td>Job matches (rank, rationale, state)</td>
+                <td>Presenting recommendations</td>
+                <td>Until dismissed or account deletion</td>
+            </tr>
+            <tr>
+                <td>Agent run summaries (counts, status)</td>
+                <td>Operational observability</td>
+                <td>Per operational retention policy</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <h2>Data We Do Not Store</h2>
+    <ul>
+        <li>Raw LLM system prompts or hidden instructions.</li>
+        <li>API keys or provider credentials.</li>
+        <li>Complete external API responses beyond normalized scores and listings.</li>
+        <li>Provider reasoning or chain-of-thought data.</li>
+        <li>Profile data from sources you have not interacted with.</li>
+    </ul>
+
+    <h2>How Preferences Work</h2>
+    <p>Preferences are stored as a versioned JSON document — the canonical source of truth. A server-generated markdown projection is used for prompts and your review, but is never trusted as input. Preferences are created on first agent interaction, not at OAuth login.</p>
+
+    <h2>Recommendation Rationale</h2>
+    <p>Recommendations use deterministic filtering of your structured preferences against organization scores and job listings. The LLM may explain why a result matches, but it is never the sole filter or ranking mechanism. Recommendations always reference organization IDs returned by server-side queries.</p>
+
+    <h2>Export Your Data</h2>
+    <p>Use the conversation export API to download your conversation data:</p>
+    <pre><code>GET /api/agent/conversations/&lt;conversation_id&gt;/export/</code></pre>
+    <p>This returns your conversation messages in a structured format. You must be authenticated and own the conversation.</p>
+
+    <h2>Reset Preferences</h2>
+    <p>Reset your preferences to defaults through the conversation reset API:</p>
+    <pre><code>POST /api/agent/conversations/&lt;conversation_id&gt;/reset/</code></pre>
+    <p>This clears your stored preferences back to the default empty document.</p>
+
+    <h2>Delete Your Data</h2>
+    <ul>
+        <li><strong>Delete a conversation:</strong> <code>DELETE /api/agent/conversations/&lt;conversation_id&gt;/delete/</code></li>
+        <li><strong>Delete all data:</strong> Account deletion cascades to all preferences, conversations, and matches.</li>
+    </ul>
+
+    <h2>Security Controls</h2>
+    <ul>
+        <li>All preference, conversation, and match APIs require authentication and enforce ownership.</li>
+        <li>Admin access is auditable.</li>
+        <li>Secrets are supplied through environment-backed configuration, never checked into source control.</li>
+        <li>External content is treated as untrusted data and cannot modify prompts, tool policy, or source configuration.</li>
+    </ul>
+
+    <h2>Reporting a Privacy Concern</h2>
+    <p>Open an issue on the <a href="https://github.com/norcalipa/crank/issues">GitHub issue tracker</a> or contact the project maintainers directly.</p>
+
+    <hr>
+    <p class="text-muted small">
+        Owner: CRank maintainers ·
+        Last reviewed: 2026-08-12 ·
+        <a href="/help/">Help home</a> ·
+        Version/change process: <a href="https://github.com/norcalipa/crank/blob/main/docs/readme.md">architecture documentation</a>
+    </p>
+</div>
+{% endblock %}

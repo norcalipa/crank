@@ -41,6 +41,7 @@ from crank.views.job_matches import (
     job_match_dismiss,
 )
 from crank.views.health import readiness
+from crank.views.help import HelpView, PrivacyView
 from crank.auth import login_required_with_expiry
 
 app_name = "crank"
@@ -64,6 +65,8 @@ urlpatterns = [
     path('api/job-matches/<int:match_id>/', job_match_detail, name='job-match-detail'),
     path('api/job-matches/<int:match_id>/seen/', job_match_seen, name='job-match-seen'),
     path('api/job-matches/<int:match_id>/dismiss/', job_match_dismiss, name='job-match-dismiss'),
+    path('help/', HelpView.as_view(), name='help'),
+    path('privacy/', PrivacyView.as_view(), name='privacy'),
     path('api-auth/', include('rest_framework.urls')),
     path('accounts/logout/', CustomLogoutView.as_view(), name='account_logout'),
     path('accounts/', include('allauth.urls')),

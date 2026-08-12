@@ -1,0 +1,64 @@
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
+{% extends "base.html" %}
+{% block head_title %}Help &amp; Privacy — CRank{% endblock %}
+{% block content %}
+<div class="container mt-4" style="max-width: 800px;">
+    <h1>Help &amp; Privacy</h1>
+    <p class="lead">CRank is a job search agent that learns your preferences and recommends organizations.</p>
+
+    <h2>What CRank Stores</h2>
+    <ul>
+        <li><strong>Account:</strong> Your Google sign-in identity (email, name).</li>
+        <li><strong>Preferences:</strong> Structured criteria you share during chat (compensation, culture, location, industry, funding stage, vesting, exclusions, notes). Stored as a versioned JSON document.</li>
+        <li><strong>Conversations:</strong> Your role and message text in agent chat sessions. Provider reasoning, hidden prompts, and API credentials are never stored.</li>
+        <li><strong>Job Matches:</strong> Ranked organization matches with rationale, seen/dismissed state.</li>
+    </ul>
+
+    <h2>What CRank Does Not Store</h2>
+    <ul>
+        <li>Raw LLM prompts or hidden system instructions.</li>
+        <li>API keys or provider credentials.</li>
+        <li>Complete external API responses.</li>
+        <li>Data from sources you have not interacted with.</li>
+    </ul>
+
+    <h2>Capabilities &amp; Limitations</h2>
+    <p>CRank recommends organizations based on your stated preferences and available score/listing data. It does not:</p>
+    <ul>
+        <li>Apply to jobs or contact employers on your behalf.</li>
+        <li>Send email, SMS, or push notifications.</li>
+        <li>Automatically create organizations from external data.</li>
+        <li>Access sources outside an approved allowlist.</li>
+    </ul>
+    <p>The interactive agent is behind a feature flag and may be disabled in some environments.</p>
+
+    <h2>Preference &amp; Conversation Storage</h2>
+    <p>Preferences are created on your first agent interaction — not at login. They are the canonical source of truth for matching. A human-readable markdown projection is generated server-side and is never trusted as input.</p>
+    <p>Conversations are retained while active. You can archive or delete them at any time (see below).</p>
+
+    <h2>Recommendation Rationale</h2>
+    <p>When CRank recommends an organization, the match is based on deterministic filtering of your structured preferences against organization scores and job listings. The LLM may explain <em>why</em> a result matches, but it is never the only filter or ranking mechanism.</p>
+
+    <h2>Retention</h2>
+    <p>Preferences and conversations are retained while your account is active. Deleting your account cascades to all preference, conversation, and match records.</p>
+
+    <h2>Export, Reset, and Delete</h2>
+    <ul>
+        <li><strong>Export:</strong> Use the conversation export API endpoint to download your conversation data.</li>
+        <li><strong>Reset:</strong> Reset your preferences to defaults through the agent conversation reset API.</li>
+        <li><strong>Delete:</strong> Delete individual conversations through the conversation delete API. Account deletion removes all associated data.</li>
+    </ul>
+
+    <h2>Reporting Problems</h2>
+    <p>If you encounter a problem or have a privacy concern, please open an issue on the <a href="https://github.com/norcalipa/crank/issues">GitHub issue tracker</a> or contact the project maintainers.</p>
+
+    <hr>
+    <p class="text-muted small">
+        Owner: CRank maintainers ·
+        Last reviewed: 2026-08-12 ·
+        <a href="/privacy/">Full privacy notice</a> ·
+        <a href="https://github.com/norcalipa/crank/blob/main/docs/readme.md">Architecture documentation</a>
+    </p>
+</div>
+{% endblock %}
