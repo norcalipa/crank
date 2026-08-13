@@ -705,3 +705,376 @@ class JobSearchResultsTestCase(TestCase):
         # Should parse fine since it's valid JSON
         self.assertIsNotNone(serialized["results"])
         self.assertEqual(len(serialized["results"]["jobs"]), 50)
+
+
+@override_settings(CACHES=LOCMEM)
+class OrchestratorE2ESmokeTests(TestCase):
+    """Authenticated end-to-end smoke tests using a fake provider transport.
+
+    Proves the full flow through the Django view layer:
+
+    1. Preference-grounded conversation start
+    2. Tools (org catalog, score summaries, job listings) are loaded
+    3. Ranked/cited results are returned in the assistant reply
+    4. Results are persisted and survive a history reload
+    5. No live network calls — all via fake provider transport
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user("smokeuser", "smoke@example.com", "pw")
+        self.client = Client()
+        self.client.force_login(self.user)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _start_conversation(self):
+        resp = self.client.post(
+            reverse("agent-conversation-list"),
+            data=json.dumps({"create_new": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        return resp.json()["id"]
+
+    def _submit(self, conversation_id, content, key):
+        return self.client.post(
+            reverse("agent-conversation-detail", args=[conversation_id]),
+            data=json.dumps({"content": content, "idempotency_key": key}),
+            content_type="application/json",
+        )
+
+    def _build_fake_orchestrator_provider(self, gateway_result=None, orgs=None, listings=None):
+        """Build an OrchestratorJobSearchProvider wired to a fake gateway.
+
+        All datasources are fully programmable — no database queries, no network.
+        """
+        from types import SimpleNamespace
+        from crank.agents.job_search.gateway import GatewayResponse
+        from crank.agents.job_search.service import JobSearchOrchestrator
+        from crank.agents.job_search.providers import OrchestratorJobSearchProvider
+
+        class FakeGateway:
+            def __init__(self, result):
+                self.result = result
+                self.requests = []
+
+            def complete(self, request):
+                self.requests.append(request)
+                return GatewayResponse(
+                    text=json.dumps(self.result),
+                    usage={"output_tokens": 42},
+                )
+
+        class FakePrefService:
+            def validate_patch(self, patch):
+                pass
+
+            def apply_patch(self, patch):
+                return True
+
+        default_orgs = orgs or [
+            SimpleNamespace(id=1, name="Acme Inc", url="https://acme.example",
+                            funding_round="A", rto_policy="R"),
+            SimpleNamespace(id=2, name="Globex Corp", url="https://globex.example",
+                            funding_round="S", rto_policy="H"),
+        ]
+        default_listings = listings or [
+            SimpleNamespace(
+                id=100, title="Senior Engineer",
+                organization=SimpleNamespace(id=1, name="Acme Inc"),
+                location_text="San Francisco, CA", is_remote=True,
+                compensation_min=150000, compensation_max=250000,
+                compensation_currency="USD", compensation_interval="year",
+                canonical_url="https://acme.example/jobs/100",
+                last_seen_at="2024-08-01T00:00:00", modified="2024-08-02T00:00:00",
+            ),
+            SimpleNamespace(
+                id=101, title="ML Engineer",
+                organization=SimpleNamespace(id=2, name="Globex Corp"),
+                location_text="Remote", is_remote=True,
+                compensation_min=180000, compensation_max=300000,
+                compensation_currency="USD", compensation_interval="year",
+                canonical_url="https://globex.example/jobs/101",
+                last_seen_at="2024-08-01T00:00:00", modified="2024-08-02T00:00:00",
+            ),
+        ]
+
+        gw = FakeGateway(
+            gateway_result or {
+                "message": "I recommend Acme Inc and Globex Corp for remote work.",
+                "cited_organization_ids": [1, 2],
+                "cited_job_listing_ids": [100, 101],
+                "preference_patch": {"replace": {"rto_policy": "R"}},
+            }
+        )
+        orchestrator = JobSearchOrchestrator(
+            gateway=gw,
+            preference_service=FakePrefService(),
+            org_datasource=lambda filters, limit: default_orgs,
+            score_datasource=lambda ids, types, limit: [
+                {"organization_id": 1, "score_type": "culture", "avg_score": 4.5},
+                {"organization_id": 2, "score_type": "culture", "avg_score": 4.0},
+            ],
+            job_listing_datasource=lambda filters, limit: default_listings,
+        )
+        return OrchestratorJobSearchProvider(orchestrator=orchestrator), gw
+
+    def test_preference_to_tools_to_ranked_results_to_history_reload(self):
+        """Full smoke test: preference → tools → ranked/cited results → history reload.
+
+        Proves that when a user submits a preference-grounded message through
+        the real view layer, the orchestrator (backed by a fake gateway) loads
+        tools data, produces ranked/cited results, persists them, and the
+        results survive a full history reload.
+        """
+        from unittest.mock import patch
+        from crank.agents.job_search.demo import JobSearchService
+
+        provider, gateway = self._build_fake_orchestrator_provider()
+
+        # Inject the fake provider so the view uses our orchestrator.
+        with patch.object(
+            JobSearchService, "__init__",
+            lambda self, provider=None: setattr(self, "provider", provider),
+        ):
+            svc = JobSearchService.__new__(JobSearchService)
+            svc.provider = provider
+            with patch.object(
+                JobSearchService, "run_turn",
+                autospec=True,
+                side_effect=lambda *a, **kw: svc.provider.generate_reply(
+                    conversation=kw.get("conversation") or a[1],
+                    user_message=kw.get("user_message") or a[2],
+                ),
+            ):
+                # 1. Start a conversation
+                conv_id = self._start_conversation()
+
+                # 2. Submit a preference-grounded message
+                key = str(uuid.uuid4())
+                resp = self._submit(conv_id, "I want remote work at a seed-stage startup", key)
+                self.assertEqual(resp.status_code, 201)
+                body = resp.json()
+
+                # 3. Verify the assistant reply is grounded
+                self.assertEqual(body["message"]["role"], "assistant")
+                self.assertIn("Acme", body["message"]["content"])
+                self.assertIn("Globex", body["message"]["content"])
+                self.assertTrue(body["preferences_changed"])
+
+                # 4. Verify ranked/cited results are present
+                results = body["message"]["results"]
+                self.assertIsNotNone(results)
+                self.assertIn("organizations", results)
+                self.assertIn("jobs", results)
+
+                # Check organizations
+                org_names = [o["name"] for o in results["organizations"]]
+                self.assertIn("Acme Inc", org_names)
+                self.assertIn("Globex Corp", org_names)
+                self.assertEqual(len(results["organizations"]), 2)
+
+                # Check jobs
+                job_titles = [j["title"] for j in results["jobs"]]
+                self.assertIn("Senior Engineer", job_titles)
+                self.assertIn("ML Engineer", job_titles)
+                self.assertEqual(len(results["jobs"]), 2)
+
+                # Verify job details are complete
+                senior = [j for j in results["jobs"] if j["title"] == "Senior Engineer"][0]
+                self.assertEqual(senior["organization_name"], "Acme Inc")
+                self.assertTrue(senior["remote"])
+                self.assertEqual(senior["compensation"]["min"], 150000)
+                self.assertEqual(senior["compensation"]["currency"], "USD")
+                self.assertEqual(senior["canonical_url"], "https://acme.example/jobs/100")
+
+                # 5. Verify tools were called (conversation context includes org data)
+                self.assertGreaterEqual(len(gateway.requests), 1)
+                request = gateway.requests[0]
+                # The system prompt should contain the organization catalog
+                system_content = ""
+                for msg in request.messages:
+                    if msg.get("role") == "system":
+                        system_content = msg.get("content", "")
+                self.assertIn("Acme Inc", system_content)
+                self.assertIn("Globex Corp", system_content)
+
+                # 6. Simulate page reload: fetch conversation history
+                self.client.logout()
+                reloaded = Client()
+                reloaded.force_login(self.user)
+                history_resp = reloaded.get(
+                    reverse("agent-conversation-detail", args=[conv_id])
+                )
+                self.assertEqual(history_resp.status_code, 200)
+                history = history_resp.json()
+                self.assertEqual(len(history["messages"]), 2)  # user + assistant
+
+                # 7. Verify results survive the reload
+                assistant_msg = [m for m in history["messages"] if m["role"] == "assistant"][0]
+                self.assertIsNotNone(assistant_msg["results"])
+                reloaded_orgs = [o["name"] for o in assistant_msg["results"]["organizations"]]
+                self.assertIn("Acme Inc", reloaded_orgs)
+                self.assertIn("Globex Corp", reloaded_orgs)
+
+    def test_fake_provider_returns_no_citations(self):
+        """When the model returns no citations, results are None (not empty lists)."""
+        from unittest.mock import patch
+
+        from crank.agents.job_search.demo import JobSearchService
+
+        provider, _ = self._build_fake_orchestrator_provider(
+            gateway_result={
+                "message": "Tell me more about what you're looking for.",
+                "cited_organization_ids": [],
+                "cited_job_listing_ids": [],
+                "preference_patch": None,
+            }
+        )
+
+        with patch.object(
+            JobSearchService, "__init__",
+            lambda self, provider=None: setattr(self, "provider", provider),
+        ):
+            svc = JobSearchService.__new__(JobSearchService)
+            svc.provider = provider
+            with patch.object(
+                JobSearchService, "run_turn",
+                autospec=True,
+                side_effect=lambda *a, **kw: svc.provider.generate_reply(
+                    conversation=kw.get("conversation") or a[1],
+                    user_message=kw.get("user_message") or a[2],
+                ),
+            ):
+                conv_id = self._start_conversation()
+                resp = self._submit(conv_id, "hello", str(uuid.uuid4()))
+                self.assertEqual(resp.status_code, 201)
+                body = resp.json()
+                self.assertIsNone(body["message"]["results"])
+                self.assertIn("Tell me more", body["message"]["content"])
+
+    def test_orchestrator_selected_via_provider_setting(self):
+        """JOB_SEARCH_PROVIDER=orchestrator with valid LLM config selects the orchestrator."""
+        from crank.agents.job_search.demo import _build_provider
+        from crank.agents.job_search.providers import OrchestratorJobSearchProvider
+
+        with self.settings(
+            JOB_SEARCH_PROVIDER="orchestrator",
+            INTERACTIVE_AGENT_ENABLED=True,
+            LLM_PROVIDER="crank.agents.llm:FakeLLMProvider",
+            LLM_MODEL="",
+        ):
+            provider = _build_provider()
+            self.assertIsInstance(provider, OrchestratorJobSearchProvider)
+
+    def test_orchestrator_fails_closed_when_interactive_agent_disabled(self):
+        """Orchestrator path fails closed when INTERACTIVE_AGENT_ENABLED is False."""
+        from crank.agents.job_search.demo import _build_provider, JobSearchServiceError
+
+        with self.settings(
+            JOB_SEARCH_PROVIDER="orchestrator",
+            INTERACTIVE_AGENT_ENABLED=False,
+        ):
+            with self.assertRaises(JobSearchServiceError):
+                _build_provider()
+
+    def test_orchestrator_fails_closed_when_llm_provider_empty(self):
+        """Orchestrator path fails closed when LLM_PROVIDER is not configured."""
+        from crank.agents.job_search.demo import JobSearchServiceError, _build_provider
+
+        with self.settings(
+            JOB_SEARCH_PROVIDER="orchestrator",
+            INTERACTIVE_AGENT_ENABLED=True,
+            LLM_PROVIDER="",
+        ), self.assertRaises(JobSearchServiceError):
+            _build_provider()
+
+    def test_orchestrator_fails_closed_when_llm_provider_missing_api_key(self):
+        """Orchestrator path fails closed when the selected LLM provider requires an API key."""
+        from crank.agents.job_search.demo import JobSearchServiceError, _build_provider
+
+        with self.settings(
+            JOB_SEARCH_PROVIDER="orchestrator",
+            INTERACTIVE_AGENT_ENABLED=True,
+            LLM_PROVIDER="crank.agents.llm:OpenAIChatAdapter",
+            LLM_API_KEY="",
+            LLM_MODEL="gpt-4",
+        ), self.assertRaises(JobSearchServiceError):
+            _build_provider()
+
+    def test_empty_inventory_still_returns_reply(self):
+        """When the inventory is empty (no orgs, no listings), the chat still works."""
+        from unittest.mock import patch
+
+        from crank.agents.job_search.demo import JobSearchService
+
+        provider, _ = self._build_fake_orchestrator_provider(
+            gateway_result={
+                "message": "No organizations match your criteria yet. Check back soon!",
+                "cited_organization_ids": [],
+                "cited_job_listing_ids": [],
+                "preference_patch": None,
+            },
+            orgs=[],
+            listings=[],
+        )
+
+        with patch.object(
+            JobSearchService, "__init__",
+            lambda self, provider=None: setattr(self, "provider", provider),
+        ):
+            svc = JobSearchService.__new__(JobSearchService)
+            svc.provider = provider
+            with patch.object(
+                JobSearchService, "run_turn",
+                autospec=True,
+                side_effect=lambda *a, **kw: svc.provider.generate_reply(
+                    conversation=kw.get("conversation") or a[1],
+                    user_message=kw.get("user_message") or a[2],
+                ),
+            ):
+                conv_id = self._start_conversation()
+                resp = self._submit(conv_id, "any jobs?", str(uuid.uuid4()))
+                self.assertEqual(resp.status_code, 201)
+                body = resp.json()
+                self.assertIsNone(body["message"]["results"])
+                self.assertIn("No organizations", body["message"]["content"])
+
+    def test_idempotent_retry_with_orchestrator(self):
+        """Idempotent retry works with the orchestrator provider (no duplicate turns)."""
+        from unittest.mock import patch
+
+        from crank.agents.job_search.demo import JobSearchService
+
+        provider, _ = self._build_fake_orchestrator_provider()
+
+        with patch.object(
+            JobSearchService, "__init__",
+            lambda self, provider=None: setattr(self, "provider", provider),
+        ):
+            svc = JobSearchService.__new__(JobSearchService)
+            svc.provider = provider
+            with patch.object(
+                JobSearchService, "run_turn",
+                autospec=True,
+                side_effect=lambda *a, **kw: svc.provider.generate_reply(
+                    conversation=kw.get("conversation") or a[1],
+                    user_message=kw.get("user_message") or a[2],
+                ),
+            ):
+                conv_id = self._start_conversation()
+                key = str(uuid.uuid4())
+
+                first = self._submit(conv_id, "remote work", key)
+                self.assertEqual(first.status_code, 201)
+                first_reply = first.json()["message"]["content"]
+
+                second = self._submit(conv_id, "remote work", key)
+                self.assertEqual(second.status_code, 200)
+                self.assertEqual(second.json()["message"]["content"], first_reply)
+
+                messages = JobSearchConversation.objects.get(pk=conv_id).messages
+                self.assertEqual(messages.filter(role="user").count(), 1)
+                self.assertEqual(messages.filter(role="assistant").count(), 1)

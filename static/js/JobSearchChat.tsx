@@ -564,9 +564,16 @@ const JobSearchChat: React.FC = () => {
                     <div className="bg-dark border rounded p-3 mb-3 flex-grow-1" style={{minHeight: 0, overflowY: 'auto'}}
                          ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
                         {messages.length === 0 && !loading && (
-                            <p className="text-muted mb-0" data-testid="empty-history">
-                                Ask about compensation, work location, funding, or culture to get started.
-                            </p>
+                            <div data-testid="empty-history">
+                                <p className="text-muted mb-2">
+                                    Ask about compensation, work location, funding, or culture to get started.
+                                </p>
+                                <p className="text-muted small mb-0">
+                                    <i className="fa-solid fa-circle-info me-1"></i>
+                                    Your matches are shown in the panel above. The assistant searches
+                                    across real organizations and job listings to find the best fit.
+                                </p>
+                            </div>
                         )}
                             {messages.map((m) => (
                                 <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
