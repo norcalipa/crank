@@ -9,6 +9,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
+from crank.empty_state import derive_state
 from crank.models.job import JobListing
 from crank.models.job_match import JobMatch
 
@@ -146,9 +147,32 @@ def job_match_dismiss(request, match_id):
     return JsonResponse(_match_payload(match, detail=True))
 
 
+@login_required
+@require_GET
+def job_match_status(request):
+    """Return the current inventory/match state for the authenticated user.
+
+    This endpoint powers the empty-state UI. It derives a single canonical
+    ``EmptyState`` so the chat and job-match surfaces use the same wording.
+    Staff-only details (crawl error summaries, internal state names) are
+    included only when the requester is a staff member.
+    """
+    match_count = (
+        JobMatch.objects.filter(
+            user=request.user,
+            dismissed=False,
+            listing__status=JobListing.Status.ACTIVE,
+        ).count()
+    )
+    state = derive_state(user=request.user, match_count=match_count)
+    is_staff = bool(request.user.is_staff)
+    return JsonResponse(state.to_dict(include_staff=is_staff))
+
+
 __all__ = [
     "job_match_list",
     "job_match_detail",
     "job_match_seen",
     "job_match_dismiss",
+    "job_match_status",
 ]
