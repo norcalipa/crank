@@ -7,8 +7,8 @@ Crank emits two best-effort New Relic custom event types:
 
 - `AgentRun` is the compatibility event for scheduled lifecycle transitions.
 - `CrankOperation` is the bounded Phase 4 event. Its `event_name` is one of
-  `interactive_call`, `scheduled_run`, `source_stage`, `matching_batch`, or
-  `operational_change`.
+  `interactive_call`, `scheduled_run`, `source_stage`, `matching_batch`,
+  `operational_change`, or `inventory_health`.
 
 Only stable operational attributes are accepted: run type, status, stage,
 registered adapter key, reason code, bounded counters, latency/duration,
@@ -38,6 +38,30 @@ or resource pressure, estimated cost limit, rejection spikes, and backlog.
 Each alert links to the runbook action: inspect sanitized admin runs, disable
 the affected source/capability, fix the upstream or capacity issue, then
 re-enable only after a confirmed healthy run.
+
+## Job inventory health probe
+
+The read-only `python manage.py crawl_healthcheck` command computes bounded
+inventory signals (sources total, enabled sources, active listings, stale
+sources, repeated crawl failures, collapsed sources, and unregistered
+adapters) and emits a single `inventory_health` `CrankOperation` event. It
+exits non-zero when unhealthy, so a Kubernetes CronJob
+(`k8s/crank-healthcheck-cron.yaml`, suspended by default) can surface the
+failure, and the same event drives the inventory alert policy:
+
+- `zero-enabled-sources`: `enabled_sources = 0` (bootstrap not run or all
+  sources disabled).
+- `zero-active-listings`: `active_listings = 0` with at least one enabled
+  source (crawl has never produced data).
+- `stale-inventory`: `stale_sources > 0` (enabled sources past their
+  `JOB_FRESHNESS_HOURS` freshness target).
+- `repeated-failures`: `repeated_failure_sources > 0` (a source's last
+  `CRAWL_REPEATED_FAILURE_THRESHOLD` crawls all failed or timed out).
+- `listing-collapse`: `collapsed_sources > 0` (a source that previously
+  ingested listings now reports zero active listings).
+
+The probe is safe to run before the crawl is enabled and never requires
+provider credentials.
 
 ## Admin controls and recovery
 

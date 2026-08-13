@@ -127,6 +127,24 @@ kubectl -n crank patch cronjob crank-crawl-jobs -p '{"spec":{"suspend":false}}'
 Leave `crank-crawl-organizations` suspended until organization-profile sources
 are separately seeded and smoke-tested.
 
+## Step 8: enable recurring inventory monitoring
+
+The read-only health probe reports zero enabled sources, zero active listings,
+stale sources, repeated crawl failures, listing collapse, and unregistered
+adapters. It is safe to run at any time and never needs provider credentials:
+
+```sh
+# Local/one-off check (exits 1 when unhealthy)
+python manage.py crawl_healthcheck
+
+# Recurring probe: unsuspend the healthcheck CronJob
+kubectl -n crank patch cronjob crank-healthcheck -p '{"spec":{"suspend":false}}'
+```
+
+The probe emits an `inventory_health` New Relic event; the alert policy in
+`docs/monitoring.yaml` (zero-enabled-sources, zero-active-listings,
+stale-inventory, repeated-failures, listing-collapse) fires from that event.
+
 ## Rollback
 
 If something goes wrong:
@@ -186,4 +204,4 @@ All commands are safe to re-run:
 - `trigger_crawl` rejects a second concurrent crawl for the same source.
 - `schedule_crawls` skips sources that are fresh (within `JOB_FRESHNESS_HOURS`)
   or disabled.
-- `crawl_status` is read-only.
+- `crawl_status` and `crawl_healthcheck` are read-only.
