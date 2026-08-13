@@ -33,6 +33,139 @@ _MAX_PATCH_KEYS = 200
 _MAX_PATCH_SEQUENCE_LENGTH = 200
 _MAX_PATCH_STRING_LENGTH = 2000
 _MAX_PATCH_JSON_BYTES = 16 * 1024
+#: Maximum number of job/org result entries the server will return.
+_MAX_RESULT_ENTRIES = 50
+#: Maximum serialized size (bytes) of the results block.
+_MAX_RESULTS_JSON_BYTES = 64 * 1024
+
+
+@dataclass(frozen=True)
+class JobResult:
+    """A single job-listing result card derived from server-controlled data.
+
+    All fields come from the bounded tool output, never from model-invented
+    content.  The canonical URL is always the server-controlled value.
+    """
+
+    id: int
+    title: str
+    organization_name: str
+    location: str
+    remote: bool
+    compensation: Optional[Dict[str, Any]] = None
+    canonical_url: str = ""
+    observed_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class OrganizationResult:
+    """A single organization result card derived from server-controlled data."""
+
+    id: int
+    name: str
+    url: str = ""
+    funding_round: str = ""
+    rto_policy: str = ""
+
+
+@dataclass(frozen=True)
+class StructuredResults:
+    """Citation-validated structured results attached to an assistant turn.
+
+    ``jobs`` and ``organizations`` contain only entries whose IDs appear in
+    the corresponding cited-id lists and were returned by the server-controlled
+    tools.  Model-invented URLs or data never appear here.
+    """
+
+    jobs: Tuple[JobResult, ...] = ()
+    organizations: Tuple[OrganizationResult, ...] = ()
+
+    def to_json_dict(self) -> Dict[str, Any]:
+        """Return a JSON-serialisable dict suitable for persistence and transport."""
+        return {
+            "jobs": [
+                {
+                    "id": j.id,
+                    "title": j.title,
+                    "organization_name": j.organization_name,
+                    "location": j.location,
+                    "remote": j.remote,
+                    "compensation": j.compensation,
+                    "canonical_url": j.canonical_url,
+                    "observed_at": j.observed_at,
+                    "updated_at": j.updated_at,
+                }
+                for j in self.jobs
+            ],
+            "organizations": [
+                {
+                    "id": o.id,
+                    "name": o.name,
+                    "url": o.url,
+                    "funding_round": o.funding_round,
+                    "rto_policy": o.rto_policy,
+                }
+                for o in self.organizations
+            ],
+        }
+
+    @classmethod
+    def from_json_dict(cls, raw: Any) -> "StructuredResults":
+        """Reconstruct from a persisted/transport JSON dict.
+
+        Raises :class:`InvalidModelOutputError` for malformed shapes so bad
+        persisted data surfaces as a typed error, not a crash.
+        """
+        if raw is None:
+            return cls()
+        if not isinstance(raw, dict):
+            raise InvalidModelOutputError("results block must be a dict or null")
+        jobs_raw = raw.get("jobs", [])
+        orgs_raw = raw.get("organizations", [])
+        if not isinstance(jobs_raw, list):
+            raise InvalidModelOutputError("results.jobs must be a list")
+        if not isinstance(orgs_raw, list):
+            raise InvalidModelOutputError("results.organizations must be a list")
+        if len(jobs_raw) > _MAX_RESULT_ENTRIES:
+            raise InvalidModelOutputError(
+                "results.jobs exceeds %d entries" % _MAX_RESULT_ENTRIES
+            )
+        if len(orgs_raw) > _MAX_RESULT_ENTRIES:
+            raise InvalidModelOutputError(
+                "results.organizations exceeds %d entries" % _MAX_RESULT_ENTRIES
+            )
+        jobs: List[JobResult] = []
+        for entry in jobs_raw:
+            if not isinstance(entry, dict):
+                raise InvalidModelOutputError("each job result must be a dict")
+            jobs.append(
+                JobResult(
+                    id=_req_int(entry, "id", "job"),
+                    title=_req_str(entry, "title", "job"),
+                    organization_name=str(entry.get("organization_name", "")),
+                    location=str(entry.get("location", "")),
+                    remote=bool(entry.get("remote", False)),
+                    compensation=entry.get("compensation"),
+                    canonical_url=str(entry.get("canonical_url", "")),
+                    observed_at=entry.get("observed_at"),
+                    updated_at=entry.get("updated_at"),
+                )
+            )
+        orgs: List[OrganizationResult] = []
+        for entry in orgs_raw:
+            if not isinstance(entry, dict):
+                raise InvalidModelOutputError("each organization result must be a dict")
+            orgs.append(
+                OrganizationResult(
+                    id=_req_int(entry, "id", "organization"),
+                    name=_req_str(entry, "name", "organization"),
+                    url=str(entry.get("url", "")),
+                    funding_round=str(entry.get("funding_round", "")),
+                    rto_policy=str(entry.get("rto_policy", "")),
+                )
+            )
+        return cls(jobs=tuple(jobs), organizations=tuple(orgs))
 
 
 @dataclass(frozen=True)
@@ -237,3 +370,23 @@ def _assert_bounded_sequence(seq: list[Any], _depth: int) -> None:
 def _freeze_patch(patch: dict[str, Any]) -> dict[str, Any]:
     """Return the patch as plain JSON-serializable data (no Dataclass/etc.)."""
     return json.loads(json.dumps(patch))
+
+
+def _req_int(entry: Dict[str, Any], key: str, label: str) -> int:
+    """Extract a required integer from *entry*, raising InvalidModelOutputError."""
+    value = entry.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise InvalidModelOutputError(
+            "results %s entry %r must be an integer" % (label, key)
+        )
+    return value
+
+
+def _req_str(entry: Dict[str, Any], key: str, label: str) -> str:
+    """Extract a required string from *entry*, raising InvalidModelOutputError."""
+    value = entry.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise InvalidModelOutputError(
+            "results %s entry %r must be a non-empty string" % (label, key)
+        )
+    return value

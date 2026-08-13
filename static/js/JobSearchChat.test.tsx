@@ -24,12 +24,12 @@ function emptyConversation(id: number, messages: ChatMessage[] = []) {
     };
 }
 
-function assistantMessage(id: number, content: string, preferences_changed = false): ChatMessage {
-    return {id, role: 'assistant', content, preferences_changed, created: null};
+function assistantMessage(id: number, content: string, preferences_changed = false, results: any = null): ChatMessage {
+    return {id, role: 'assistant', content, preferences_changed, created: null, results};
 }
 
 function userMessage(content: string): ChatMessage {
-    return {id: 1, role: 'user', content, preferences_changed: false, created: null};
+    return {id: 1, role: 'user', content, preferences_changed: false, created: null, results: null};
 }
 
 async function renderChat(existingMessages: ChatMessage[] = []) {
@@ -577,5 +577,223 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
         (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
         fireEvent.click(screen.getByLabelText('Delete conversation'));
         await screen.findByText(/could not delete the conversation/i);
+    });
+});
+
+describe('JobSearchChat result cards (issue #396)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    function makeResults() {
+        return {
+            jobs: [{
+                id: 101,
+                title: 'Senior Engineer',
+                organization_name: 'Acme Inc',
+                location: 'San Francisco',
+                remote: true,
+                compensation: {min: 150000, max: 250000, currency: 'USD', interval: 'year'},
+                canonical_url: 'https://acme.example/jobs/101',
+                observed_at: '2024-08-01T00:00:00',
+                updated_at: '2024-08-02T00:00:00',
+            }],
+            organizations: [{
+                id: 1,
+                name: 'Acme Inc',
+                url: 'https://acme.example',
+                funding_round: 'A',
+                rto_policy: 'R',
+            }],
+        };
+    }
+
+    test('renders job and org cards when results are present', async () => {
+        const results = makeResults();
+        const msg = assistantMessage(5, 'Check these out.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [msg])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('Check these out.');
+        // Job card
+        expect(screen.getByText('Senior Engineer')).toBeInTheDocument();
+        expect(screen.getByText(/Acme Inc.*San Francisco/)).toBeInTheDocument();
+        expect(screen.getByText(/150,000-250,000 USD year/)).toBeInTheDocument();
+        // Org card
+        expect(screen.getByText('Organizations')).toBeInTheDocument();
+        // Links are safe (rel=noopener noreferrer)
+        const jobLink = screen.getByLabelText(/Open listing for Senior Engineer/i);
+        expect(jobLink).toHaveAttribute('href', 'https://acme.example/jobs/101');
+        expect(jobLink).toHaveAttribute('rel', 'noopener noreferrer');
+        expect(jobLink).toHaveAttribute('target', '_blank');
+    });
+
+    test('no result cards when results is null', async () => {
+        const msg = assistantMessage(5, 'Just text, no cards.', false, null);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [msg])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('Just text, no cards.');
+        expect(screen.queryByTestId('result-cards')).not.toBeInTheDocument();
+    });
+
+    test('no result cards when results have empty arrays', async () => {
+        const msg = assistantMessage(5, 'No matches found.', false, {jobs: [], organizations: []});
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [msg])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('No matches found.');
+        expect(screen.queryByTestId('result-cards')).not.toBeInTheDocument();
+    });
+
+    test('job cards are keyboard focusable with screen-reader labels', async () => {
+        const results = makeResults();
+        const msg = assistantMessage(5, 'Here you go.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [msg])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('Here you go.');
+        const jobCard = screen.getByRole('article', {name: /Job: Senior Engineer at Acme Inc/i});
+        expect(jobCard).toHaveAttribute('tabindex', '0');
+        const orgCard = screen.getByRole('article', {name: /Organization: Acme Inc/i});
+        expect(orgCard).toHaveAttribute('tabindex', '0');
+    });
+
+    test('history reload shows the same cards', async () => {
+        const results = makeResults();
+        const msg = assistantMessage(5, 'Reload test.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [msg])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('Reload test.');
+        expect(screen.getByText('Senior Engineer')).toBeInTheDocument();
+        expect(screen.getByText('Acme Inc')).toBeInTheDocument();
+    });
+
+    test('new reply with results renders cards after submit', async () => {
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [userMessage('jobs?')])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('jobs?');
+        const results = makeResults();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse({
+                message: assistantMessage(10, 'Found one!', false, results),
+                preferences_changed: false,
+            }, 201),
+        );
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'show jobs'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await screen.findByText('Found one!');
+        expect(screen.getByText('Senior Engineer')).toBeInTheDocument();
+    });
+
+    test('org card shows funding round and RTO labels', async () => {
+        const results = {
+            jobs: [],
+            organizations: [{
+                id: 2, name: 'Globex', url: 'https://globex.example',
+                funding_round: 'S', rto_policy: 'H',
+            }],
+        };
+        const msg = assistantMessage(5, 'Check Globex.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [msg])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('Check Globex.');
+        expect(screen.getByText('Seed')).toBeInTheDocument();
+        expect(screen.getByText('Hybrid')).toBeInTheDocument();
+    });
+
+    test('job without compensation does not show comp line', async () => {
+        const results = {
+            jobs: [{
+                id: 1, title: 'Dev', organization_name: 'X',
+                location: 'NYC', remote: false, compensation: null,
+                canonical_url: '', observed_at: null, updated_at: null,
+            }],
+            organizations: [],
+        };
+        const msg = assistantMessage(5, 'Simple job.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [msg])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('Simple job.');
+        expect(screen.getByText('Dev')).toBeInTheDocument();
+        // No link since canonical_url is empty
+        expect(screen.queryByLabelText(/Open listing/i)).not.toBeInTheDocument();
+    });
+
+    test('job with only comp.min shows min+ format', async () => {
+        const results = {
+            jobs: [{
+                id: 1, title: 'Dev', organization_name: 'X',
+                location: 'NYC', remote: false,
+                compensation: {min: 120000, max: null, currency: 'USD', interval: 'year'},
+                canonical_url: '', observed_at: null, updated_at: null,
+            }],
+            organizations: [],
+        };
+        const msg = assistantMessage(5, 'Min only.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [msg])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('Min only.');
+        expect(screen.getByText('120,000+ USD year')).toBeInTheDocument();
+    });
+
+    test('job with only comp.max shows up to max format', async () => {
+        const results = {
+            jobs: [{
+                id: 1, title: 'Dev', organization_name: 'X',
+                location: 'NYC', remote: false,
+                compensation: {min: null, max: 180000, currency: 'EUR', interval: 'month'},
+                canonical_url: '', observed_at: null, updated_at: null,
+            }],
+            organizations: [],
+        };
+        const msg = assistantMessage(5, 'Max only.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [msg])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('Max only.');
+        expect(screen.getByText('up to 180,000 EUR month')).toBeInTheDocument();
+    });
+
+    test('result cards do not cause horizontal overflow at 390px', async () => {
+        const results = {
+            jobs: [{
+                id: 1, title: 'A'.repeat(100), organization_name: 'B'.repeat(50),
+                location: 'C'.repeat(50), remote: true, compensation: null,
+                canonical_url: 'https://example.com/' + 'd'.repeat(200),
+                observed_at: null, updated_at: null,
+            }],
+            organizations: [],
+        };
+        const msg = assistantMessage(5, 'Long.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [msg])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('Long.');
+        const cards = screen.getByTestId('result-cards');
+        expect(cards).toBeInTheDocument();
+        // Check that job-card elements have overflow:hidden
+        const jobCard = screen.getByRole('article', {name: /Job:/i});
+        expect(jobCard).toHaveStyle({overflow: 'hidden', maxWidth: '100%'});
     });
 });

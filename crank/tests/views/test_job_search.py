@@ -368,7 +368,7 @@ class JobSearchCoverageEdges(TestCase):
         from crank.agents.job_search.demo import DemoJobSearchProvider
         conv = JobSearchConversation.objects.create(owner=self.user)
         svc = JobSearchService(DemoJobSearchProvider())
-        reply, changed = svc.run_turn(conversation=conv, user_message="salary")
+        reply, changed, results = svc.run_turn(conversation=conv, user_message="salary")
         self.assertTrue(reply)
         self.assertTrue(changed)
         JobSearchMessage.objects.create(
@@ -377,10 +377,10 @@ class JobSearchCoverageEdges(TestCase):
         JobSearchMessage.objects.create(
             conversation=conv, role="user", content="culture"
         )
-        reply2, _ = svc.run_turn(conversation=conv, user_message="more")
+        reply2, _, _ = svc.run_turn(conversation=conv, user_message="more")
         self.assertIn("more", reply2)
         with override_settings(JOB_SEARCH_RESPONSE_MAX_LEN=10):
-            reply3, _ = svc.run_turn(conversation=conv, user_message="again")
+            reply3, _, _ = svc.run_turn(conversation=conv, user_message="again")
             self.assertLessEqual(len(reply3), 10)
 
     def test_provider_failure_is_stable_service_error(self):
@@ -512,3 +512,196 @@ class JobSearchViewEdgeCases(TestCase):
         req = RequestFactory().get("/")
         req.user = AnonymousUser()
         self.assertFalse(_check_rate_limit(req))
+
+
+@override_settings(CACHES=LOCMEM)
+class JobSearchResultsTestCase(TestCase):
+    """Tests for structured results persistence and transport (issue #396)."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user("results", "results@example.com", "pw")
+        self.client = Client()
+        self.client.force_login(self.user)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _start_conversation(self):
+        resp = self.client.post(
+            reverse("agent-conversation-list"),
+            data=json.dumps({"create_new": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        return resp.json()["id"]
+
+    def _submit(self, conversation_id, content, key):
+        return self.client.post(
+            reverse("agent-conversation-detail", args=[conversation_id]),
+            data=json.dumps({"content": content, "idempotency_key": key}),
+            content_type="application/json",
+        )
+
+    def test_message_includes_results_field(self):
+        """The serialize_message helper includes a results field."""
+        from crank.serializers.job_search import serialize_message
+        conv = JobSearchConversation.objects.create(owner=self.user)
+        msg = JobSearchMessage.objects.create(
+            conversation=conv, role="assistant", content="hello",
+            results_json='{"jobs":[],"organizations":[]}',
+        )
+        serialized = serialize_message(msg)
+        self.assertIn("results", serialized)
+        self.assertEqual(serialized["results"], {"jobs": [], "organizations": []})
+
+    def test_message_results_null_when_empty(self):
+        """results is null when results_json is empty."""
+        from crank.serializers.job_search import serialize_message
+        conv = JobSearchConversation.objects.create(owner=self.user)
+        msg = JobSearchMessage.objects.create(
+            conversation=conv, role="assistant", content="hello",
+        )
+        serialized = serialize_message(msg)
+        self.assertIsNone(serialized["results"])
+
+    def test_message_results_malformed_json_returns_none(self):
+        """Malformed results_json returns None, not a crash."""
+        from crank.serializers.job_search import serialize_message
+        conv = JobSearchConversation.objects.create(owner=self.user)
+        msg = JobSearchMessage.objects.create(
+            conversation=conv, role="assistant", content="hello",
+            results_json='{"bad":',
+        )
+        serialized = serialize_message(msg)
+        self.assertIsNone(serialized["results"])
+
+    def test_serialize_results_helper_with_none(self):
+        from crank.serializers.job_search import _serialize_results
+        self.assertIsNone(_serialize_results(None))
+
+    def test_serialize_results_helper_with_valid_object(self):
+        from crank.serializers.job_search import _serialize_results
+        from crank.agents.job_search.types import StructuredResults, OrganizationResult
+        sr = StructuredResults(organizations=(OrganizationResult(id=1, name="Test"),))
+        d = _serialize_results(sr)
+        self.assertEqual(d["organizations"][0]["name"], "Test")
+
+    def test_serialize_results_helper_with_broken_object(self):
+        from crank.serializers.job_search import _serialize_results
+        class Broken:
+            def to_json_dict(self):
+                raise ValueError("boom")
+        self.assertIsNone(_serialize_results(Broken()))
+
+    def test_results_persisted_via_view_with_mock_provider(self):
+        """When the provider returns structured results, the view persists them."""
+        from crank.agents.job_search.types import StructuredResults, JobResult
+        from unittest.mock import patch
+        conv_id = self._start_conversation()
+        results = StructuredResults(jobs=(
+            JobResult(id=1, title="Engineer", organization_name="Acme",
+                      location="SF", remote=True),
+        ))
+        real_run_turn = JobSearchService().run_turn.__func__
+        def mock_run_turn(*args, **kwargs):
+            return "Found a job!", False, results
+        with patch.object(JobSearchService, "run_turn", autospec=True, side_effect=mock_run_turn):
+            resp = self._submit(conv_id, "jobs?", str(uuid.uuid4()))
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()
+        self.assertIsNotNone(body["message"]["results"])
+        self.assertEqual(len(body["message"]["results"]["jobs"]), 1)
+        self.assertEqual(body["message"]["results"]["jobs"][0]["title"], "Engineer")
+        # Verify it persisted
+        conv = JobSearchConversation.objects.get(pk=conv_id)
+        assistant_msgs = conv.messages.filter(role="assistant")
+        self.assertTrue(any(r.results_json for r in assistant_msgs))
+
+    def test_oversized_results_truncated_via_view(self):
+        """When results exceed the byte cap, results_json is truncated to empty."""
+        from crank.agents.job_search.types import StructuredResults, JobResult
+        from unittest.mock import patch
+        conv_id = self._start_conversation()
+        # Create results that exceed 65536 bytes
+        big_title = "x" * 10000
+        results = StructuredResults(jobs=tuple(
+            JobResult(id=i, title=big_title, organization_name="",
+                      location="", remote=False) for i in range(10)
+        ))
+        def mock_run_turn(*args, **kwargs):
+            return "Big results", False, results
+        with patch.object(JobSearchService, "run_turn", autospec=True, side_effect=mock_run_turn):
+            resp = self._submit(conv_id, "big?", str(uuid.uuid4()))
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()
+        # results should be None because results_json was truncated
+        self.assertIsNone(body["message"]["results"])
+
+    def test_results_serialization_exception_handled(self):
+        """When results.to_json_dict raises, results_json falls back to empty."""
+        from unittest.mock import patch, PropertyMock
+        conv_id = self._start_conversation()
+        class BrokenResults:
+            def to_json_dict(self):
+                raise ValueError("serialization failed")
+        def mock_run_turn(*args, **kwargs):
+            return "Reply", False, BrokenResults()
+        with patch.object(JobSearchService, "run_turn", autospec=True, side_effect=mock_run_turn):
+            resp = self._submit(conv_id, "broken?", str(uuid.uuid4()))
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()
+        self.assertIsNone(body["message"]["results"])
+
+    def test_results_persisted_and_reloaded(self):
+        """Structured results persist with the message and reload shows them."""
+        conv = JobSearchConversation.objects.create(owner=self.user)
+        results_json = json.dumps({
+            "jobs": [{
+                "id": 1, "title": "Engineer", "organization_name": "Acme",
+                "location": "SF", "remote": True,
+                "compensation": {"min": 100, "max": 200, "currency": "USD", "interval": "year"},
+                "canonical_url": "https://acme.example/jobs/1",
+                "observed_at": None, "updated_at": None,
+            }],
+            "organizations": [{
+                "id": 1, "name": "Acme", "url": "https://acme.example",
+                "funding_round": "A", "rto_policy": "R",
+            }],
+        })
+        JobSearchMessage.objects.create(
+            conversation=conv, role="user", content="jobs?",
+            idempotency_key="key1",
+        )
+        JobSearchMessage.objects.create(
+            conversation=conv, role="assistant", content="Check these out.",
+            idempotency_key="key1", results_json=results_json,
+        )
+        resp = self.client.get(reverse("agent-conversation-detail", args=[conv.pk]))
+        self.assertEqual(resp.status_code, 200)
+        messages = resp.json()["messages"]
+        assistant_msg = [m for m in messages if m["role"] == "assistant"][0]
+        self.assertIsNotNone(assistant_msg["results"])
+        self.assertEqual(len(assistant_msg["results"]["jobs"]), 1)
+        self.assertEqual(assistant_msg["results"]["jobs"][0]["title"], "Engineer")
+        self.assertEqual(len(assistant_msg["results"]["organizations"]), 1)
+        self.assertEqual(assistant_msg["results"]["organizations"][0]["name"], "Acme")
+
+    def test_results_truncation_on_oversized(self):
+        """Oversized results_json string is handled gracefully."""
+        conv = JobSearchConversation.objects.create(owner=self.user)
+        # Create a valid but large results JSON
+        large_results = json.dumps({
+            "jobs": [{"id": i, "title": "x" * 500, "organization_name": "",
+                       "location": "", "remote": False} for i in range(50)],
+            "organizations": [],
+        })
+        msg = JobSearchMessage.objects.create(
+            conversation=conv, role="assistant", content="big",
+            results_json=large_results,
+        )
+        from crank.serializers.job_search import serialize_message
+        serialized = serialize_message(msg)
+        # Should parse fine since it's valid JSON
+        self.assertIsNotNone(serialized["results"])
+        self.assertEqual(len(serialized["results"]["jobs"]), 50)

@@ -11,10 +11,15 @@ view/DRF plumbing.
 Security note: message/assistant text is always emitted as plain text and the
 UI renders it with ``textContent`` semantics, never as HTML.
 """
+import json
+import logging
+
 from rest_framework import serializers
 
 from django.conf import settings
 from django.utils import timezone
+
+logger = logging.getLogger("crank.serializers.job_search")
 
 
 class MessageSubmitSerializer(serializers.Serializer):
@@ -41,14 +46,41 @@ class ConversationCreateSerializer(serializers.Serializer):
     create_new = serializers.BooleanField(required=False, default=False)
 
 
+def _serialize_results(results_obj):
+    """Return a JSON-serialisable dict for a StructuredResults instance, or None."""
+    if results_obj is None:
+        return None
+    try:
+        return results_obj.to_json_dict()
+    except Exception:
+        logger.error("failed to serialize results block", exc_info=True)
+        return None
+
+
+def _parse_results_json(raw: str):
+    """Parse a persisted results_json string into a dict, or return None."""
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        logger.error("failed to parse results_json", exc_info=True)
+        return None
+    return parsed
+
+
 def serialize_message(message):
     """Return the stable JSON shape for a single message."""
+    results = None
+    if getattr(message, "results_json", ""):
+        results = _parse_results_json(message.results_json)
     return {
         "id": message.pk,
         "role": message.role,
         "content": message.content,
         "preferences_changed": message.preferences_changed,
         "created": message.created.isoformat() if message.created else None,
+        "results": results,
     }
 
 

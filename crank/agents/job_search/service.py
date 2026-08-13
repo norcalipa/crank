@@ -30,12 +30,13 @@ from crank.agents.job_search.errors import (
     ProviderError,
     ProviderTimeoutError,
 )
-from crank.agents.job_search.gateway import (
-    GatewayResponse,
-    ModelRequest,
-    ProviderGateway,
+from crank.agents.job_search.gateway import GatewayResponse, ModelRequest, ProviderGateway
+from crank.agents.job_search.types import (
+    AssistantCompletion,
+    JobResult,
+    OrganizationResult,
+    StructuredResults,
 )
-from crank.agents.job_search.types import AssistantCompletion
 from crank.services import monitoring
 
 logger = logging.getLogger("crank.agents.job_search")
@@ -71,6 +72,7 @@ class OrchestratorResult:
     preference_patch: dict[str, Any] | None = None
     preferences_changed: bool = False
     prompt_id: str = prompt.prompt_id()
+    results: Optional[StructuredResults] = None
 
 
 class JobSearchOrchestrator:
@@ -257,6 +259,14 @@ class JobSearchOrchestrator:
         if completion.has_preference_patch:
             applied_patch, preferences_changed = self._apply_preference_patch(completion.preference_patch)
 
+        # 7. Build citation-validated structured results from server data.
+        structured_results = self._build_results(
+            completion.cited_organization_ids,
+            org_rows,
+            completion.cited_job_listing_ids,
+            listing_rows,
+        )
+
         logger.info(
             "job_search_complete prompt_id=%s cited_orgs=%s cited_listings=%s "
             "preferences_changed=%s",
@@ -271,6 +281,7 @@ class JobSearchOrchestrator:
             cited_job_listing_ids=completion.cited_job_listing_ids,
             preference_patch=applied_patch,
             preferences_changed=preferences_changed,
+            results=structured_results,
         )
 
     # -- internals ------------------------------------------------------------
@@ -402,6 +413,61 @@ class JobSearchOrchestrator:
             raise InvalidJobListingReferenceError(
                 f"model cited job listing IDs not exposed by server tools: {', '.join(str(i) for i in unknown)}"
             )
+
+    @staticmethod
+    def _build_results(
+        cited_org_ids: tuple,
+        org_rows: List[Dict[str, Any]],
+        cited_listing_ids: tuple,
+        listing_rows: List[Dict[str, Any]],
+    ) -> Optional[StructuredResults]:
+        """Build structured results from cited IDs and server-controlled rows.
+
+        Only rows whose IDs appear in the corresponding cited-id lists are
+        included.  This ensures the model cannot inject URLs or data the
+        server did not expose.
+        """
+        cited_org_set = set(cited_org_ids)
+        cited_listing_set = set(cited_listing_ids)
+        if not cited_org_set and not cited_listing_set:
+            return None
+
+        org_results: List[OrganizationResult] = []
+        for row in org_rows:
+            row_id = row.get("id")
+            if row_id in cited_org_set:
+                org_results.append(
+                    OrganizationResult(
+                        id=int(row["id"]),
+                        name=str(row.get("name", "")),
+                        url=str(row.get("url", "")),
+                        funding_round=str(row.get("funding_round", "")),
+                        rto_policy=str(row.get("rto_policy", "")),
+                    )
+                )
+
+        job_results: List[JobResult] = []
+        for row in listing_rows:
+            row_id = row.get("id")
+            if row_id in cited_listing_set:
+                job_results.append(
+                    JobResult(
+                        id=int(row["id"]),
+                        title=str(row.get("title", "")),
+                        organization_name=str(row.get("organization_name", "")),
+                        location=str(row.get("location", "")),
+                        remote=bool(row.get("remote", False)),
+                        compensation=row.get("compensation"),
+                        canonical_url=str(row.get("canonical_url", "")),
+                        observed_at=row.get("observed_at"),
+                        updated_at=row.get("updated_at"),
+                    )
+                )
+
+        return StructuredResults(
+            jobs=tuple(job_results),
+            organizations=tuple(org_results),
+        )
 
     def _apply_preference_patch(
         self, patch: dict[str, Any]

@@ -260,7 +260,7 @@ def agent_conversation_detail(request, conversation_id):
 
     service = JobSearchService()
     try:
-        reply_text, changed = service.run_turn(
+        reply_text, changed, results = service.run_turn(
             conversation=conversation, user_message=user_message.content
         )
     except JobSearchServiceError:
@@ -270,6 +270,24 @@ def agent_conversation_detail(request, conversation_id):
             "We couldn't respond right now. Please retry.", request_id,
         )
 
+    # Serialize structured results for persistence (bounded JSON).
+    results_json_str = ""
+    if results is not None:
+        try:
+            import json as _json
+            results_json_str = _json.dumps(results.to_json_dict(), separators=(",", ":"))
+            # Enforce a size cap to prevent unbounded persistence.
+            max_results_bytes = getattr(settings, "JOB_SEARCH_RESULTS_MAX_BYTES", 65536)
+            if len(results_json_str.encode("utf-8")) > max_results_bytes:
+                logger.warning(
+                    "results_json exceeds %d bytes, truncating",
+                    max_results_bytes,
+                )
+                results_json_str = ""
+        except Exception:
+            logger.error("failed to serialize results for persistence", exc_info=True)
+            results_json_str = ""
+
     assistant_message, _created = JobSearchMessage.objects.get_or_create(
         conversation=conversation,
         idempotency_key=idempotency_key,
@@ -277,6 +295,7 @@ def agent_conversation_detail(request, conversation_id):
         defaults={
             "content": reply_text,
             "preferences_changed": changed,
+            "results_json": results_json_str,
         },
     )
     return JsonResponse(
