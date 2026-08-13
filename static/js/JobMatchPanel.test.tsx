@@ -32,6 +32,33 @@ function matchPayload(count: number) {
     return {count, next: null, previous: null, results: []};
 }
 
+function rankedPayload(jobs: any[] = [], orgs: any[] = []) {
+    return {job_matches: jobs, organization_matches: orgs};
+}
+
+const sampleJobMatch = {
+    listing_id: 42,
+    title: 'Senior Engineer',
+    employer_name: 'Acme Corp',
+    organization_id: 7,
+    organization_name: 'Acme Corp',
+    canonical_url: 'https://jobs.example.test/42',
+    location_text: 'San Francisco, CA',
+    is_remote: true,
+    score: 85.5,
+    reasons: ['Public company', 'Remote', 'Score 4.2'],
+};
+
+const sampleOrgMatch = {
+    organization_id: 7,
+    name: 'Acme Corp',
+    url: 'https://acme.example.test',
+    funding_round: 'P',
+    rto_policy: 'R',
+    score: 72.3,
+    reasons: ['Public company', 'Remote', 'Score 4.2'],
+};
+
 describe('JobMatchPanel', () => {
     beforeEach(() => {
         global.fetch = jest.fn();
@@ -41,12 +68,15 @@ describe('JobMatchPanel', () => {
         jest.restoreAllMocks();
     });
 
-    // Helper: mock both API calls and wait for ready phase
+    // Helper: mock all three API calls and wait for ready phase
     async function renderPanel(
         statusState: string = 'ok',
-        opts: { count?: number; staffDetail?: string; statusOverrides?: Record<string, unknown> } = {},
+        opts: { count?: number; staffDetail?: string; statusOverrides?: Record<string, unknown>; rankedJobs?: any[]; rankedOrgs?: any[]; rankedStatus?: number } = {},
     ) {
         const count = opts.count ?? 0;
+        const rankedJobs = opts.rankedJobs ?? [];
+        const rankedOrgs = opts.rankedOrgs ?? [];
+        const rankedStatus = opts.rankedStatus ?? 200;
         const mock = global.fetch as jest.Mock;
         mock.mockImplementation((url: string) => {
             if (url.includes('/api/job-matches/status/')) {
@@ -56,6 +86,9 @@ describe('JobMatchPanel', () => {
                         ...(opts.statusOverrides || {}),
                     }),
                 ));
+            }
+            if (url.includes('/api/job-matches/ranked/')) {
+                return Promise.resolve(jsonResponse(rankedPayload(rankedJobs, rankedOrgs), rankedStatus));
             }
             if (url.includes('/api/job-matches/')) {
                 return Promise.resolve(jsonResponse(matchPayload(count)));
@@ -78,6 +111,7 @@ describe('JobMatchPanel', () => {
         test('shows an error with retry when the status API fails', async () => {
             (global.fetch as jest.Mock).mockImplementation((url: string) => {
                 if (url.includes('/status/')) return Promise.resolve(jsonResponse({}, 500));
+                if (url.includes('/ranked/')) return Promise.resolve(jsonResponse(rankedPayload()));
                 return Promise.resolve(jsonResponse(matchPayload(0)));
             });
             render(<JobMatchPanel/>);
@@ -101,9 +135,9 @@ describe('JobMatchPanel', () => {
             });
             render(<JobMatchPanel/>);
             await screen.findByTestId('job-match-error');
-            // Next calls succeed
             mock.mockImplementation((url: string) => {
                 if (url.includes('/status/')) return Promise.resolve(jsonResponse(statusPayload('ok')));
+                if (url.includes('/ranked/')) return Promise.resolve(jsonResponse(rankedPayload()));
                 return Promise.resolve(jsonResponse(matchPayload(3)));
             });
             fireEvent.click(screen.getByLabelText('Retry loading match status'));
@@ -111,7 +145,85 @@ describe('JobMatchPanel', () => {
         });
     });
 
-    describe('ok state with matches', () => {
+    describe('ranked matches', () => {
+        test('renders ranked job matches with reasons and links', async () => {
+            await renderPanel('ok', { count: 1, rankedJobs: [sampleJobMatch] });
+            const jobEl = screen.getByTestId('ranked-job-42');
+            expect(jobEl).toBeInTheDocument();
+            expect(jobEl).toHaveTextContent('Senior Engineer');
+            expect(jobEl).toHaveTextContent('Acme Corp');
+            const link = jobEl.querySelector('a[href="https://jobs.example.test/42"]');
+            expect(link).not.toBeNull();
+            const reasons = screen.getByTestId('job-reasons-42');
+            expect(reasons).toHaveTextContent('Public company');
+            expect(reasons).toHaveTextContent('Remote');
+            expect(reasons).toHaveTextContent('Score 4.2');
+        });
+
+        test('renders ranked organization matches with reasons and links', async () => {
+            await renderPanel('ok', { count: 1, rankedOrgs: [sampleOrgMatch] });
+            const orgEl = screen.getByTestId('ranked-org-7');
+            expect(orgEl).toBeInTheDocument();
+            expect(orgEl).toHaveTextContent('Acme Corp');
+            expect(orgEl).toHaveTextContent('Public');
+            const link = orgEl.querySelector('a[href="https://acme.example.test"]');
+            expect(link).not.toBeNull();
+            const reasons = screen.getByTestId('org-reasons-7');
+            expect(reasons).toHaveTextContent('Public company');
+            expect(reasons).toHaveTextContent('Remote');
+        });
+
+        test('shows score badge for ranked job match', async () => {
+            await renderPanel('ok', { count: 1, rankedJobs: [sampleJobMatch] });
+            const scoreBadge = screen.getByTestId('job-score-42');
+            expect(scoreBadge).toHaveTextContent('85.5');
+        });
+
+        test('shows score badge for ranked org match', async () => {
+            await renderPanel('ok', { count: 1, rankedOrgs: [sampleOrgMatch] });
+            const scoreBadge = screen.getByTestId('org-score-7');
+            expect(scoreBadge).toHaveTextContent('72.3');
+        });
+
+        test('shows remote badge for remote job listing', async () => {
+            await renderPanel('ok', { count: 1, rankedJobs: [sampleJobMatch] });
+            const jobEl = screen.getByTestId('ranked-job-42');
+            expect(jobEl).toHaveTextContent('Remote');
+        });
+
+        test('falls back to match count when ranked matches are empty', async () => {
+            await renderPanel('ok', { count: 5, rankedJobs: [], rankedOrgs: [] });
+            const panel = screen.getByTestId('job-match-panel');
+            await waitFor(() => expect(panel).toHaveTextContent('5 job matches ready to review'));
+            expect(screen.queryByTestId(/ranked-job-/)).not.toBeInTheDocument();
+        });
+
+        test('falls back to match count when ranked API fails', async () => {
+            await renderPanel('ok', { count: 3, rankedStatus: 500 });
+            const panel = screen.getByTestId('job-match-panel');
+            await waitFor(() => expect(panel).toHaveTextContent('3 job matches ready to review'));
+        });
+
+        test('refresh button re-fetches ranked matches', async () => {
+            const mock = global.fetch as jest.Mock;
+            let jobScore = 85.5;
+            mock.mockImplementation((url: string) => {
+                if (url.includes('/status/')) return Promise.resolve(jsonResponse(statusPayload('ok')));
+                if (url.includes('/ranked/')) return Promise.resolve(jsonResponse(rankedPayload([
+                    {...sampleJobMatch, score: jobScore},
+                ])));
+                return Promise.resolve(jsonResponse(matchPayload(1)));
+            });
+            render(<JobMatchPanel/>);
+            const scoreBadge = await screen.findByTestId('job-score-42');
+            expect(scoreBadge).toHaveTextContent('85.5');
+            jobScore = 92.0;
+            fireEvent.click(screen.getByTestId('job-match-refresh'));
+            await waitFor(() => expect(screen.getByTestId('job-score-42')).toHaveTextContent('92.0'));
+        });
+    });
+
+    describe('ok state with matches (no ranked data)', () => {
         test('shows match count when matches exist', async () => {
             await renderPanel('ok', { count: 5 });
             const panel = screen.getByTestId('job-match-panel');
@@ -123,21 +235,6 @@ describe('JobMatchPanel', () => {
             await renderPanel('ok', { count: 1 });
             const panel = screen.getByTestId('job-match-panel');
             await waitFor(() => expect(panel).toHaveTextContent('1 job match ready to review'));
-        });
-
-        test('refresh button re-fetches', async () => {
-            const mock = global.fetch as jest.Mock;
-            let count = 2;
-            mock.mockImplementation((url: string) => {
-                if (url.includes('/status/')) return Promise.resolve(jsonResponse(statusPayload('ok')));
-                return Promise.resolve(jsonResponse(matchPayload(count)));
-            });
-            render(<JobMatchPanel/>);
-            const panel = screen.getByTestId('job-match-panel');
-            await waitFor(() => expect(panel).toHaveTextContent('2 job matches ready to review'));
-            count = 7;
-            fireEvent.click(screen.getByTestId('job-match-refresh'));
-            await waitFor(() => expect(panel).toHaveTextContent('7 job matches ready to review'));
         });
     });
 
@@ -275,6 +372,7 @@ describe('JobMatchPanel', () => {
                 if (url.includes('/status/')) return Promise.resolve(jsonResponse(statusPayload('crawl_running', {
                     actions: ['retry'],
                 })));
+                if (url.includes('/ranked/')) return Promise.resolve(jsonResponse(rankedPayload()));
                 return Promise.resolve(jsonResponse(matchPayload(0)));
             });
             render(<JobMatchPanel/>);
@@ -318,7 +416,6 @@ describe('JobMatchPanel', () => {
         test('chat action focuses the message input', async () => {
             const input = document.createElement('input');
             input.setAttribute('aria-label', 'Message');
-            // jsdom does not implement scrollIntoView
             input.scrollIntoView = jest.fn();
             document.body.appendChild(input);
             const focusSpy = jest.spyOn(input, 'focus');
@@ -343,8 +440,26 @@ describe('JobMatchPanel', () => {
                 },
             });
             fireEvent.click(screen.getByTestId('action-unknown_action'));
-            // No error thrown, no crash
             expect(screen.getByTestId('job-match-panel')).toBeInTheDocument();
+        });
+
+        test('complete_profile action focuses message input and scrolls', async () => {
+            const input = document.createElement('input');
+            input.setAttribute('aria-label', 'Message');
+            input.scrollIntoView = jest.fn();
+            document.body.appendChild(input);
+            const focusSpy = jest.spyOn(input, 'focus');
+            await renderPanel('no_preferences', {
+                statusOverrides: {
+                    title: 'Complete profile',
+                    message: 'Tell us your preferences',
+                    actions: ['complete_profile'],
+                },
+            });
+            fireEvent.click(screen.getByTestId('action-complete_profile'));
+            expect(focusSpy).toHaveBeenCalled();
+            expect(input.scrollIntoView).toHaveBeenCalledWith({behavior: 'smooth', block: 'center'});
+            document.body.removeChild(input);
         });
     });
 
@@ -368,6 +483,32 @@ describe('JobMatchPanel', () => {
             expect(screen.getByLabelText('Chat with the assistant')).toBeInTheDocument();
             expect(screen.getByLabelText('Suggest a company')).toBeInTheDocument();
             expect(screen.getByLabelText('View help')).toBeInTheDocument();
+        });
+    });
+
+    describe('DOMContentLoaded bootstrap', () => {
+        test('renders panel into #job-match-panel container on DOMContentLoaded', () => {
+            const container = document.createElement('div');
+            container.id = 'job-match-panel';
+            document.body.appendChild(container);
+
+            const mockRender = jest.fn();
+            const mockCreateRoot = jest.fn(() => ({render: mockRender}));
+            jest.doMock('react-dom/client', () => ({createRoot: mockCreateRoot}));
+
+            jest.isolateModules(() => {
+                require('./JobMatchPanel');
+            });
+
+            // The module-level DOMContentLoaded listener should have been registered.
+            // Fire it to trigger the bootstrap.
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+
+            expect(mockCreateRoot).toHaveBeenCalledWith(container);
+            expect(mockRender).toHaveBeenCalled();
+
+            document.body.removeChild(container);
+            jest.dontMock('react-dom/client');
         });
     });
 });

@@ -4,14 +4,14 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from enum import Enum
-import re
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from crank.agents.jobs.ranking_config import DEFAULT_CONFIG, RankingConfig
-
 
 _WS = re.compile(r"\s+")
 _NON_WORD = re.compile(r"[^\w\s-]+", re.UNICODE)
@@ -97,10 +97,12 @@ class JobCriteria:
     min_salary: Decimal | None = None
     currency: str = "USD"
     equity_minimum: float | None = None
+    require_public_company: bool | None = None
     work_modes: frozenset[str] = frozenset()
     countries: frozenset[str] = frozenset()
     regions: frozenset[str] = frozenset()
     remote_friendly: bool | None = None
+    max_in_office_days: int | None = None
     industries: frozenset[str] = frozenset()
     funding_stages: frozenset[str] = frozenset()
     max_cliff_months: int | None = None
@@ -147,10 +149,12 @@ def project_criteria(prefs: dict, schema_version: int) -> JobCriteria:
         min_salary=_decimal(compensation.get("minimum_salary")),
         currency=(_text(compensation.get("currency")) or "usd").upper(),
         equity_minimum=float(equity) if equity is not None else None,
+        require_public_company=_boolean(compensation.get("require_public_company")),
         work_modes=modes,
         countries=_strings(work_location.get("countries")),
         regions=_strings(geography.get("regions")),
         remote_friendly=_boolean(geography.get("remote_friendly")),
+        max_in_office_days=_integer(work_location.get("max_in_office_days")),
         industries=_strings(prefs.get("industry")),
         funding_stages=_strings(prefs.get("funding_stage")),
         max_cliff_months=_integer(vesting.get("max_cliff_months")),
@@ -169,6 +173,8 @@ class ExclusionReason(str, Enum):
     EXCLUDED_LOCATION = "excluded_location"
     INACTIVE_LISTING = "inactive_listing"
     NO_ORGANIZATION = "no_organization"
+    NOT_PUBLIC_COMPANY = "not_public_company"
+    RTO_EXCEEDS_MAXIMUM = "rto_exceeds_maximum"
 
 
 @dataclass(frozen=True)
@@ -351,16 +357,16 @@ def _score_vesting(listing: Any, criteria: JobCriteria, config: RankingConfig, o
         if isinstance(accelerated, bool):
             checks.append(1.0 if accelerated == criteria.prefer_accelerated else 0.0)
             details.append(f"accelerated={accelerated}")
-    for field, maximum in (
+    for _field, maximum in (
         ("cliff_months", criteria.max_cliff_months),
         ("vesting_months", criteria.max_vesting_months),
     ):
         if maximum is None:
             continue
-        actual = _decimal(_organization_value(listing, organization, field, f"max_{field}"))
+        actual = _decimal(_organization_value(listing, organization, _field, f"max_{_field}"))
         if actual is not None:
             checks.append(1.0 if actual <= maximum else 0.0)
-            details.append(f"{field}={actual}/{maximum}")
+            details.append(f"{_field}={actual}/{maximum}")
     if not checks:
         return _factor("vesting", _missing_value(config), "vesting data unknown", criteria, config)
     return _factor("vesting", sum(checks) / len(checks), "; ".join(details), criteria, config)
@@ -384,6 +390,10 @@ def _score_organization(listing: Any, criteria: JobCriteria, config: RankingConf
     return _factor("organization_scores", average / 5.0, f"average={average:.4g}/5", criteria, config)
 
 
+# RTO policy to assumed in-office days mapping.
+_RTO_DAYS = {"R": 0, "H": 3, "O": 5}
+
+
 def _excluded(listing: Any, criteria: JobCriteria) -> list[ExclusionReason]:
     reasons: list[ExclusionReason] = []
     company = _normalized(getattr(listing, "employer_name", ""))
@@ -403,6 +413,18 @@ def _excluded(listing: Any, criteria: JobCriteria) -> list[ExclusionReason]:
         reasons.append(ExclusionReason.INACTIVE_LISTING)
     if organization is None:
         reasons.append(ExclusionReason.NO_ORGANIZATION)
+    if reasons:
+        return reasons
+    # Hard filters that require an organization.
+    if criteria.require_public_company is True:
+        funding_round = _organization_value(listing, organization, "funding_round")
+        if funding_round and funding_round != "P":
+            reasons.append(ExclusionReason.NOT_PUBLIC_COMPANY)
+    if criteria.max_in_office_days is not None:
+        rto_policy = _organization_value(listing, organization, "rto_policy")
+        assumed_days = _RTO_DAYS.get(rto_policy) if rto_policy else None
+        if assumed_days is not None and assumed_days > criteria.max_in_office_days:
+            reasons.append(ExclusionReason.RTO_EXCEEDS_MAXIMUM)
     return reasons
 
 

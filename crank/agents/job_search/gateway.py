@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
 
 from crank.agents.job_search.errors import (
     CostLimitError,
@@ -36,9 +35,9 @@ class ModelRequest:
 
     prompt_id: str
     system: str
-    messages: List[Dict[str, str]]
-    max_tokens: Optional[int] = None
-    token_budget: Optional[int] = None
+    messages: list[dict[str, str]]
+    max_tokens: int | None = None
+    token_budget: int | None = None
 
 
 @dataclass(frozen=True)
@@ -46,7 +45,7 @@ class GatewayResponse:
     """A provider completion plus minimal usage counters for telemetry."""
 
     text: str
-    usage: Dict[str, int] = field(default_factory=dict)
+    usage: dict[str, int] = field(default_factory=dict)
 
     @property
     def output_tokens(self) -> int:
@@ -70,7 +69,7 @@ class ProviderGateway(ABC):
     def close(self) -> None:
         """Release provider resources. Optional; idempotent."""
 
-    def __enter__(self) -> "ProviderGateway":
+    def __enter__(self) -> ProviderGateway:  # noqa: PYI034
         return self
 
     def __exit__(self, *exc) -> None:

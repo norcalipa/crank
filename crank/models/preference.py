@@ -8,13 +8,13 @@ from django_extensions.db.models import TimeStampedModel
 # The canonical schema version used by the preference lifecycle services in
 # ``crank.services.preferences``. Bump this (and add a forward migration that
 # maps old documents to the new shape) whenever the JSON schema changes.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def default_preferences():
     """Return a fresh, schema-valid empty preferences document.
 
-    This is the canonical version-1 document shape defined by the preference
+    This is the canonical version-2 document shape defined by the preference
     lifecycle services (issue #306): typed sections for compensation, culture,
     work location, geography, industry, funding stage, vesting, exclusions,
     priorities, and notes. The JSON object is the source of truth for
@@ -26,9 +26,10 @@ def default_preferences():
             "minimum_salary": None,
             "currency": "USD",
             "equity_minimum_percent": None,
+            "require_public_company": None,
         },
         "culture": [],
-        "work_location": {"modes": [], "countries": [], "require_onsite": None},
+        "work_location": {"modes": [], "countries": [], "require_onsite": None, "max_in_office_days": None},
         "geography": {"regions": [], "remote_friendly": None},
         "industry": [],
         "funding_stage": [],
@@ -57,7 +58,7 @@ class UserPreference(TimeStampedModel):
     credentials, or provider request payloads are ever stored here.
     """
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
@@ -94,7 +95,7 @@ class UserPreference(TimeStampedModel):
         app_label = "crank"
         verbose_name = _("user preference")
         verbose_name_plural = _("user preferences")
-        indexes = [
+        indexes = [  # noqa: RUF012
             models.Index(fields=["user"], name="crank_userpref_user_idx"),
         ]
 
@@ -125,4 +126,4 @@ class UserPreferenceAudit(TimeStampedModel):
     class Meta:
         app_label = "crank"
         get_latest_by = "created"
-        ordering = ["-created"]
+        ordering = ["-created"]  # noqa: RUF012

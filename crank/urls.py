@@ -16,35 +16,40 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
-from django.contrib import admin
-from django.urls import path, include
-from django.views.generic import TemplateView
-from django.views.decorators.cache import cache_page
 from django.conf import settings
+from django.contrib import admin
+from django.urls import include, path
+from django.views.decorators.cache import cache_page
+from django.views.generic import TemplateView
 
-from crank.views.fundinground import FundingRoundChoicesView
-from crank.views.rtopolicy import RTOPolicyChoicesView
-from crank.views.index import IndexView
-from crank.views.logout import CustomLogoutView
-from crank.views.api import organization_detail, organization_scores, organization_provenance
+from crank.auth import login_required_with_expiry
+from crank.views.api import (
+    organization_detail,
+    organization_provenance,
+    organization_scores,
+)
 from crank.views.company_requests import company_requests
-from crank.views.job_search import (
-    agent_conversation_list,
-    agent_conversation_detail,
-    agent_conversation_export,
-    agent_conversation_reset,
-    agent_conversation_delete,
-)
-from crank.views.job_matches import (
-    job_match_list,
-    job_match_detail,
-    job_match_seen,
-    job_match_dismiss,
-    job_match_status,
-)
+from crank.views.fundinground import FundingRoundChoicesView
 from crank.views.health import readiness
 from crank.views.help import HelpView, PrivacyView
-from crank.auth import login_required_with_expiry
+from crank.views.index import IndexView
+from crank.views.job_matches import (
+    job_match_detail,
+    job_match_dismiss,
+    job_match_list,
+    job_match_ranked,
+    job_match_seen,
+    job_match_status,
+)
+from crank.views.job_search import (
+    agent_conversation_delete,
+    agent_conversation_detail,
+    agent_conversation_export,
+    agent_conversation_list,
+    agent_conversation_reset,
+)
+from crank.views.logout import CustomLogoutView
+from crank.views.rtopolicy import RTOPolicyChoicesView
 
 app_name = "crank"
 
@@ -71,6 +76,7 @@ urlpatterns = [
     path('api/job-matches/<int:match_id>/seen/', job_match_seen, name='job-match-seen'),
     path('api/job-matches/<int:match_id>/dismiss/', job_match_dismiss, name='job-match-dismiss'),
     path('api/job-matches/status/', job_match_status, name='job-match-status'),
+    path('api/job-matches/ranked/', job_match_ranked, name='job-match-ranked'),
     path('help/', HelpView.as_view(), name='help'),
     path('privacy/', PrivacyView.as_view(), name='privacy'),
     path('api-auth/', include('rest_framework.urls')),

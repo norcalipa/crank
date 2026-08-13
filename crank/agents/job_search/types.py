@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from crank.agents.job_search.errors import InvalidModelOutputError
 
@@ -54,12 +54,12 @@ class AssistantCompletion:
     """
 
     message: str
-    cited_organization_ids: Tuple[int, ...] = ()
-    cited_job_listing_ids: Tuple[int, ...] = ()
-    preference_patch: Optional[Dict[str, Any]] = None
+    cited_organization_ids: tuple[int, ...] = ()
+    cited_job_listing_ids: tuple[int, ...] = ()
+    preference_patch: dict[str, Any] | None = None
 
     @classmethod
-    def from_json(cls, raw: Any) -> "AssistantCompletion":
+    def from_json(cls, raw: Any) -> AssistantCompletion:
         """Validate ``raw`` and return an :class:`AssistantCompletion`.
 
         Accepts a parsed dict or a JSON string. Raises
@@ -84,14 +84,12 @@ class AssistantCompletion:
         missing = _REQUIRED_KEYS - set(payload.keys())
         if missing:
             raise InvalidModelOutputError(
-                "model output is missing required keys: %s"
-                % ", ".join(sorted(missing))
+                f"model output is missing required keys: {', '.join(sorted(missing))}"
             )
         unknown = set(payload.keys()) - _ALLOWED_KEYS
         if unknown:
             raise InvalidModelOutputError(
-                "model output contains unknown keys: %s"
-                % ", ".join(sorted(str(key) for key in unknown))
+                f"model output contains unknown keys: {', '.join(sorted(str(key) for key in unknown))}"
             )
 
         message = payload.get("message")
@@ -101,8 +99,7 @@ class AssistantCompletion:
             )
         if len(message) > _MAX_MESSAGE_LENGTH:
             raise InvalidModelOutputError(
-                "model output 'message' exceeds %d characters"
-                % _MAX_MESSAGE_LENGTH
+                f"model output 'message' exceeds {_MAX_MESSAGE_LENGTH} characters"
             )
 
         raw_ids = payload.get("cited_organization_ids")
@@ -112,10 +109,9 @@ class AssistantCompletion:
             )
         if len(raw_ids) > _MAX_CITED_ORGANIZATIONS:
             raise InvalidModelOutputError(
-                "model output cites more than %d organization IDs"
-                % _MAX_CITED_ORGANIZATIONS
+                f"model output cites more than {_MAX_CITED_ORGANIZATIONS} organization IDs"
             )
-        org_ids: List[int] = []
+        org_ids: list[int] = []
         for value in raw_ids:
             # bool is a subclass of int; exclude it so "true" cannot smuggle in.
             if isinstance(value, bool) or not isinstance(value, int):
@@ -135,10 +131,9 @@ class AssistantCompletion:
             )
         if len(raw_listing_ids) > _MAX_CITED_JOB_LISTINGS:
             raise InvalidModelOutputError(
-                "model output cites more than %d job listing IDs"
-                % _MAX_CITED_JOB_LISTINGS
+                f"model output cites more than {_MAX_CITED_JOB_LISTINGS} job listing IDs"
             )
-        listing_ids: List[int] = []
+        listing_ids: list[int] = []
         for value in raw_listing_ids:
             if isinstance(value, bool) or not isinstance(value, int):
                 raise InvalidModelOutputError(
@@ -160,7 +155,7 @@ class AssistantCompletion:
             patch_bytes = len(json.dumps(patch, separators=(",", ":")).encode("utf-8"))
             if patch_bytes > _MAX_PATCH_JSON_BYTES:
                 raise InvalidModelOutputError(
-                    "preference_patch exceeds %d bytes" % _MAX_PATCH_JSON_BYTES
+                    f"preference_patch exceeds {_MAX_PATCH_JSON_BYTES} bytes"
                 )
 
         return cls(
@@ -193,18 +188,17 @@ def _assert_bounded_scalar(value: Any) -> None:
         )
     if isinstance(value, str) and len(value) > _MAX_PATCH_STRING_LENGTH:
         raise InvalidModelOutputError(
-            "preference_patch strings exceed %d characters"
-            % _MAX_PATCH_STRING_LENGTH
+            f"preference_patch strings exceed {_MAX_PATCH_STRING_LENGTH} characters"
         )
 
 
-def _assert_bounded_patch(patch: Dict[str, Any], _depth: int = 0) -> None:
+def _assert_bounded_patch(patch: dict[str, Any], _depth: int = 0) -> None:
     """Recursively enforce the patch is JSON-serializable, typed, and bounded."""
     if _depth > _MAX_PATCH_DEPTH:
         raise InvalidModelOutputError("preference_patch is nested too deeply")
     if len(patch) > _MAX_PATCH_KEYS:
         raise InvalidModelOutputError(
-            "preference_patch contains more than %d keys" % _MAX_PATCH_KEYS
+            f"preference_patch contains more than {_MAX_PATCH_KEYS} keys"
         )
     for key, value in patch.items():
         if not isinstance(key, str):
@@ -222,13 +216,12 @@ def _assert_bounded_patch(patch: Dict[str, Any], _depth: int = 0) -> None:
             _assert_bounded_scalar(value)
 
 
-def _assert_bounded_sequence(seq: List[Any], _depth: int) -> None:
+def _assert_bounded_sequence(seq: list[Any], _depth: int) -> None:
     if _depth > _MAX_PATCH_DEPTH:
         raise InvalidModelOutputError("preference_patch is nested too deeply")
     if len(seq) > _MAX_PATCH_SEQUENCE_LENGTH:
         raise InvalidModelOutputError(
-            "preference_patch sequences contain more than %d items"
-            % _MAX_PATCH_SEQUENCE_LENGTH
+            f"preference_patch sequences contain more than {_MAX_PATCH_SEQUENCE_LENGTH} items"
         )
     for value in seq:
         if isinstance(value, dict):
@@ -241,6 +234,6 @@ def _assert_bounded_sequence(seq: List[Any], _depth: int) -> None:
             _assert_bounded_scalar(value)
 
 
-def _freeze_patch(patch: Dict[str, Any]) -> Dict[str, Any]:
+def _freeze_patch(patch: dict[str, Any]) -> dict[str, Any]:
     """Return the patch as plain JSON-serializable data (no Dataclass/etc.)."""
     return json.loads(json.dumps(patch))
