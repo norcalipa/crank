@@ -60,6 +60,7 @@ class _Gateway:
         self.payload = payload or {
             "message": "safe reply",
             "cited_organization_ids": [],
+            "cited_job_listing_ids": [],
             "preference_patch": None,
         }
         self.error = error
@@ -79,6 +80,7 @@ class ModelOutputBoundaryTests(TestCase):
                 {
                     "message": "safe",
                     "cited_organization_ids": [],
+                    "cited_job_listing_ids": [],
                     "preference_patch": {"notes": "x"},
                     "tools": ["fetch_url"],
                 }
@@ -89,6 +91,7 @@ class ModelOutputBoundaryTests(TestCase):
                 {
                     "message": "safe",
                     "cited_organization_ids": [],
+                    "cited_job_listing_ids": [],
                     "preference_patch": {"notes": "x" * 2001},
                 }
             )
@@ -99,6 +102,7 @@ class ModelOutputBoundaryTests(TestCase):
                 {
                     "message": "x" * 8001,
                     "cited_organization_ids": [],
+                    "cited_job_listing_ids": [],
                     "preference_patch": None,
                 }
             )
@@ -107,6 +111,7 @@ class ModelOutputBoundaryTests(TestCase):
                 {
                     "message": "safe",
                     "cited_organization_ids": [],
+                    "cited_job_listing_ids": [],
                     "preference_patch": {str(i): "x" for i in range(201)},
                 }
             )
@@ -115,6 +120,7 @@ class ModelOutputBoundaryTests(TestCase):
                 {
                     "message": "safe",
                     "cited_organization_ids": [],
+                    "cited_job_listing_ids": [],
                     "preference_patch": {"values": ["x"] * 201},
                 }
             )
@@ -123,6 +129,7 @@ class ModelOutputBoundaryTests(TestCase):
                 {
                     "message": "safe",
                     "cited_organization_ids": [],
+                    "cited_job_listing_ids": [],
                     "preference_patch": {str(i): "x" * 2000 for i in range(9)},
                 }
             )
@@ -135,6 +142,7 @@ class ModelOutputBoundaryTests(TestCase):
             preference_service=pref,
             org_datasource=lambda filters, limit: [],
             score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [],
         )
         with patch("crank.agents.job_search.service.logger.error") as log_error:
             with pytest.raises(ProviderError, match="provider failed"):

@@ -21,13 +21,13 @@ from crank.agents.job_search import context as ctx
 from crank.agents.job_search import system_prompt as prompt
 from crank.agents.job_search import tools
 from crank.agents.job_search.errors import (
-    InvalidModelOutputError,
+    CostLimitError,
+    InvalidJobListingReferenceError,
     InvalidOrganizationReferenceError,
     InvalidPreferencePatchError,
     JobSearchError,
     ProviderError,
     ProviderTimeoutError,
-    CostLimitError,
 )
 from crank.agents.job_search.gateway import GatewayResponse, ModelRequest, ProviderGateway
 from crank.agents.job_search.types import AssistantCompletion
@@ -37,6 +37,8 @@ logger = logging.getLogger("crank.agents.job_search")
 
 OrganizationDatasource = Callable[[Dict[str, Any], int], List[Any]]
 ScoreDatasource = Callable[[List[int], Optional[List[str]], int], List[Any]]
+JobListingDatasource = Callable[[Dict[str, Any], int], List[Any]]
+JobListingDetailDatasource = Callable[[int], Optional[Any]]
 
 
 class PreferenceService(Protocol):
@@ -60,6 +62,7 @@ class OrchestratorResult:
 
     message: str
     cited_organization_ids: tuple = ()
+    cited_job_listing_ids: tuple = ()
     preference_patch: Optional[Dict[str, Any]] = None
     preferences_changed: bool = False
     prompt_id: str = prompt.prompt_id()
@@ -87,8 +90,11 @@ class JobSearchOrchestrator:
         preference_service: PreferenceService,
         org_datasource: Optional[OrganizationDatasource] = None,
         score_datasource: Optional[ScoreDatasource] = None,
+        job_listing_datasource: Optional[JobListingDatasource] = None,
+        job_listing_detail_datasource: Optional[JobListingDetailDatasource] = None,
         max_organization_results: int = tools.MAX_ORGANIZATION_RESULTS,
         max_score_summary_results: int = tools.MAX_SCORE_SUMMARY_RESULTS,
+        max_job_listing_results: int = tools.MAX_JOB_LISTING_RESULTS,
         max_preference_characters: int = 2000,
         max_conversation_characters: int = 8000,
         max_conversation_messages: Optional[int] = None,
@@ -98,8 +104,13 @@ class JobSearchOrchestrator:
         self._preference_service = preference_service
         self._org_datasource = org_datasource or tools.default_organization_datasource
         self._score_datasource = score_datasource or tools.default_score_summary_datasource
+        self._job_listing_datasource = job_listing_datasource or tools.default_job_listing_datasource
+        self._job_listing_detail_datasource = (
+            job_listing_detail_datasource or tools.default_job_listing_detail_datasource
+        )
         self._max_organization_results = max_organization_results
         self._max_score_summary_results = max_score_summary_results
+        self._max_job_listing_results = max_job_listing_results
         self._max_preference_characters = max_preference_characters
         self._max_conversation_characters = max_conversation_characters
         self._max_conversation_messages = max_conversation_messages
@@ -155,9 +166,9 @@ class JobSearchOrchestrator:
         """Execute one orchestrated turn and return its validated result.
 
         Raises typed ``JobSearchError`` subclasses on provider timeout/failure,
-        cost-limit, malformed output, hallucinated organization IDs, and invalid
-        preference patches. Preference patches are applied only after every
-        validation gate passes.
+        cost-limit, malformed output, hallucinated organization or listing IDs,
+        and invalid preference patches. Preference patches are applied only
+        after every validation gate passes.
         """
         # 1. Bounded, server-controlled dataset (active/public only).
         org_rows = self._load_organization_catalog()
@@ -166,6 +177,33 @@ class JobSearchOrchestrator:
         if known_ids:
             score_rows = self._load_score_summaries(known_ids)
 
+        # 1b. Bounded, server-controlled job listings (active/open only).
+        listing_rows = self._load_job_listings()
+        known_listing_ids = tools.union_server_controlled_listing_ids(listing_rows)
+
+        # Telemetry: count tool invocations and result sizes without payloads.
+        monitoring.record_event(
+            "job_search_tool_invocation",
+            {
+                "tool": "query_active_organizations",
+                "result_count": len(org_rows),
+            },
+        )
+        monitoring.record_event(
+            "job_search_tool_invocation",
+            {
+                "tool": "query_score_summaries",
+                "result_count": len(score_rows),
+            },
+        )
+        monitoring.record_event(
+            "job_search_tool_invocation",
+            {
+                "tool": "search_job_listings",
+                "result_count": len(listing_rows),
+            },
+        )
+
         # 2. Deterministic, truncated model context.
         model_context = self._build_model_context(
             user_prompt=user_prompt,
@@ -173,6 +211,7 @@ class JobSearchOrchestrator:
             preference_markdown=preference_markdown,
             organization_catalog=org_rows,
             score_summaries=score_rows,
+            job_listings=listing_rows,
         )
 
         # 3. Provider call (maps provider failures to typed errors).
@@ -181,8 +220,13 @@ class JobSearchOrchestrator:
         # 4. Schema-validate the raw output.
         completion = AssistantCompletion.from_json(response.text)
 
-        # 5. Reject any cited ID the server did not expose.
-        self._validate_citations(completion.cited_organization_ids, frozenset(known_ids))
+        # 5. Reject any cited IDs the server did not expose.
+        self._validate_citations(
+            completion.cited_organization_ids, frozenset(known_ids)
+        )
+        self._validate_listing_citations(
+            completion.cited_job_listing_ids, frozenset(known_listing_ids)
+        )
 
         # 6. Validate + apply the optional preference patch.
         preferences_changed = False
@@ -191,14 +235,17 @@ class JobSearchOrchestrator:
             applied_patch, preferences_changed = self._apply_preference_patch(completion.preference_patch)
 
         logger.info(
-            "job_search_complete prompt_id=%s cited=%s preferences_changed=%s",
+            "job_search_complete prompt_id=%s cited_orgs=%s cited_listings=%s "
+            "preferences_changed=%s",
             model_context.prompt_id,
             completion.cited_organization_ids,
+            completion.cited_job_listing_ids,
             preferences_changed,
         )
         return OrchestratorResult(
             message=completion.message,
             cited_organization_ids=completion.cited_organization_ids,
+            cited_job_listing_ids=completion.cited_job_listing_ids,
             preference_patch=applied_patch,
             preferences_changed=preferences_changed,
         )
@@ -223,12 +270,21 @@ class JobSearchOrchestrator:
         # when the context renderer formats the rows.
         return tools.normalize_score_summary_rows(rows)
 
+    def _load_job_listings(self) -> List[Dict[str, Any]]:
+        capped = tools.clamp_result_limit(
+            self._max_job_listing_results, maximum=tools.MAX_JOB_LISTING_RESULTS
+        )
+        filters = tools.validate_job_listing_filters({})
+        rows = self._job_listing_datasource(filters, capped)
+        return tools.normalize_job_listing_rows(rows)
+
     def _build_model_context(self, **kwargs: Any) -> ctx.ModelContext:
         version = self._system_prompt_version
         system = prompt.build_system_prompt(
             version=version,
             max_organizations=self._max_organization_results,
             max_score_rows=self._max_score_summary_results,
+            max_job_listings=self._max_job_listing_results,
         )
         return ctx.build_model_context(
             prompt_id=prompt.prompt_id(version),
@@ -241,6 +297,8 @@ class JobSearchOrchestrator:
             max_preference_characters=self._max_preference_characters,
             max_conversation_characters=self._max_conversation_characters,
             max_conversation_messages=self._max_conversation_messages,
+            job_listings=kwargs.get("job_listings", []),
+            max_job_listing_rows=self._max_job_listing_results,
         )
 
     def _invoke_gateway(
@@ -299,6 +357,17 @@ class JobSearchOrchestrator:
         if unknown:
             raise InvalidOrganizationReferenceError(
                 "model cited organization IDs not exposed by server tools: %s"
+                % ", ".join(str(i) for i in unknown)
+            )
+
+    @staticmethod
+    def _validate_listing_citations(
+        cited_ids: tuple, known_ids: frozenset
+    ) -> None:
+        unknown = [i for i in cited_ids if i not in known_ids]
+        if unknown:
+            raise InvalidJobListingReferenceError(
+                "model cited job listing IDs not exposed by server tools: %s"
                 % ", ".join(str(i) for i in unknown)
             )
 

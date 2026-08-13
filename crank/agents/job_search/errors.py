@@ -50,3 +50,12 @@ class InvalidScoreSummaryRowError(JobSearchError):
     or ``avg_score`` is surfaced as this typed error instead of a bare
     ``KeyError`` during rendering.
     """
+
+
+class InvalidJobListingReferenceError(InvalidModelOutputError):
+    """The model cited a job-listing ID not returned by server-controlled tools.
+
+    Cited listing IDs must be a strict subset of the IDs the bounded
+    job-listing tools actually returned. Anything else is treated as a
+    hallucinated reference and rejected without persistence.
+    """

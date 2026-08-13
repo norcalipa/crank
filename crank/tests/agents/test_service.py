@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from crank.agents.job_search.errors import (
     CostLimitError,
+    InvalidJobListingReferenceError,
     InvalidModelOutputError,
     InvalidOrganizationReferenceError,
     InvalidPreferencePatchError,
@@ -59,6 +60,7 @@ def make_orchestrator(gateway, preference, **kw):
             {"organization_id": 1, "score_type": "culture", "avg_score": 4.0},
             {"organization_id": 2, "score_type": "culture", "avg_score": 4.5},
         ],
+        job_listing_datasource=lambda filters, limit: [],
         **kw,
     )
 
@@ -69,6 +71,7 @@ class TestHappyPath:
         gw = FakeGateway({
             "message": "Globex is a strong early-stage fit.",
             "cited_organization_ids": [2],
+            "cited_job_listing_ids": [],
             "preference_patch": None,
         })
         result = make_orchestrator(gw, pref).run(
@@ -84,6 +87,7 @@ class TestHappyPath:
         gw = FakeGateway({
             "message": "Let me refine that.",
             "cited_organization_ids": [1],
+            "cited_job_listing_ids": [],
             "preference_patch": {"replace": {"rto_policy": "R"}},
         })
         history = [
@@ -104,6 +108,7 @@ class TestHappyPath:
         gw = FakeGateway({
             "message": "Updated your preferences.",
             "cited_organization_ids": [],
+            "cited_job_listing_ids": [],
             "preference_patch": {"replace": {"funding_round": "S"}},
         })
         result = make_orchestrator(gw, pref).run(
@@ -119,7 +124,7 @@ class TestRejections:
     def test_malformed_output_rejected(self):
         pref = FakePreferenceService()
         # Missing required key / wrong type.
-        gw = FakeGateway({"message": "hi", "cited_organization_ids": "not-a-list", "preference_patch": None})
+        gw = FakeGateway({"message": "hi", "cited_organization_ids": "not-a-list", "cited_job_listing_ids": [], "preference_patch": None})
         try:
             make_orchestrator(gw, pref).run(
                 user_prompt="q", conversation=[], preference_markdown="",
@@ -136,6 +141,7 @@ class TestRejections:
         gw = FakeGateway({
             "message": "Definitely check out org 999.",
             "cited_organization_ids": [999],
+            "cited_job_listing_ids": [],
             "preference_patch": {"replace": {"rto_policy": "H"}},
         })
         try:
@@ -154,6 +160,7 @@ class TestRejections:
         gw = FakeGateway({
             "message": "ok",
             "cited_organization_ids": [1],
+            "cited_job_listing_ids": [],
             "preference_patch": {"blob": "rewrite everything"},
         })
         try:
@@ -226,11 +233,13 @@ class TestInjectionSafety:
         gw = FakeGateway({
             "message": "That org looks great.",
             "cited_organization_ids": [3, 999],
+            "cited_job_listing_ids": [],
             "preference_patch": None,
         })
         orch = JobSearchOrchestrator(
             gateway=gw, preference_service=pref,
             org_datasource=fake_org, score_datasource=fake_score,
+            job_listing_datasource=lambda filters, limit: [],
         )
         try:
             orch.run(user_prompt="q", conversation=[], preference_markdown="")
@@ -253,6 +262,7 @@ class TestScoreRowNormalization:
         gw = FakeGateway({
             "message": "Globex is a good fit.",
             "cited_organization_ids": [2],
+            "cited_job_listing_ids": [],
             "preference_patch": None,
         })
         pref = FakePreferenceService()
@@ -261,6 +271,7 @@ class TestScoreRowNormalization:
             org_datasource=lambda filters, limit: [ORG_ACME, ORG_GLOBEX],
             # Row missing score_type/avg_score -> untyped data shape.
             score_datasource=lambda ids, types, limit: [{"organization_id": 2}],
+            job_listing_datasource=lambda filters, limit: [],
         )
         try:
             orch.run(user_prompt="q", conversation=[], preference_markdown="")
@@ -280,6 +291,7 @@ class TestMiscCoverage:
             gateway=gw, preference_service=FakePreferenceService(),
             org_datasource=lambda filters, limit: [ORG_ACME, ORG_GLOBEX],
             score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [],
         )
         try:
             orch.run(user_prompt="q", conversation=[], preference_markdown="")
@@ -299,15 +311,105 @@ class TestMiscCoverage:
         gw = FakeGateway({
             "message": "Acme looks like a match.",
             "cited_organization_ids": [1],
+            "cited_job_listing_ids": [],
             "preference_patch": {"region": "bay"},
         })
         orch = JobSearchOrchestrator(
             gateway=gw, preference_service=NaughtyPreferenceService(),
             org_datasource=lambda filters, limit: [ORG_ACME, ORG_GLOBEX],
             score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [],
         )
         try:
             orch.run(user_prompt="q", conversation=[], preference_markdown="")
         except InvalidPreferencePatchError:
             return
         raise AssertionError("expected non-typed preference error to be wrapped")  # pragma: no cover
+
+
+JOB_LISTING_ROW = SimpleNamespace(
+    id=42,
+    title="Senior Engineer",
+    location_text="San Francisco, CA",
+    is_remote=True,
+    canonical_url="https://jobs.example.test/42",
+    compensation_min=150000,
+    compensation_max=200000,
+    compensation_currency="USD",
+    compensation_interval="yearly",
+    description_excerpt="A great role.",
+    last_seen_at=None,
+    modified=None,
+    organization=SimpleNamespace(id=1, name="Acme Inc"),
+)
+
+
+class TestJobListingCitations:
+    def test_valid_listing_citation_accepted(self):
+        """Model cites a listing ID the server exposed."""
+        pref = FakePreferenceService()
+        gw = FakeGateway({
+            "message": "Check out listing 42.",
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [42],
+            "preference_patch": None,
+        })
+        orch = JobSearchOrchestrator(
+            gateway=gw, preference_service=pref,
+            org_datasource=lambda filters, limit: [ORG_ACME, ORG_GLOBEX],
+            score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [JOB_LISTING_ROW],
+        )
+        result = orch.run(
+            user_prompt="what jobs are available?",
+            conversation=[], preference_markdown="",
+        )
+        assert result.cited_job_listing_ids == (42,)
+
+    def test_hallucinated_listing_id_rejected(self):
+        """Model cites a listing ID the server never exposed."""
+        pref = FakePreferenceService(apply_result=True)
+        gw = FakeGateway({
+            "message": "Check out listing 999.",
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [999],
+            "preference_patch": {"replace": {"rto_policy": "H"}},
+        })
+        orch = JobSearchOrchestrator(
+            gateway=gw, preference_service=pref,
+            org_datasource=lambda filters, limit: [ORG_ACME, ORG_GLOBEX],
+            score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [JOB_LISTING_ROW],
+        )
+        try:
+            orch.run(
+                user_prompt="q", conversation=[], preference_markdown="",
+            )
+        except InvalidJobListingReferenceError as exc:
+            assert "999" in str(exc)
+        else:
+            raise AssertionError("expected InvalidJobListingReferenceError")  # pragma: no cover
+        # Nothing persisted: preference patch must not be applied.
+        assert pref.apply_calls == 0
+
+    def test_empty_inventory_returns_empty_listings(self):
+        """When datasource returns no listings, the model can still function."""
+        pref = FakePreferenceService()
+        gw = FakeGateway({
+            "message": "No jobs currently match.",
+            "cited_organization_ids": [1],
+            "cited_job_listing_ids": [],
+            "preference_patch": None,
+        })
+        orch = JobSearchOrchestrator(
+            gateway=gw, preference_service=pref,
+            org_datasource=lambda filters, limit: [ORG_ACME, ORG_GLOBEX],
+            score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [],
+        )
+        result = orch.run(
+            user_prompt="any jobs?",
+            conversation=[], preference_markdown="",
+        )
+        assert result.cited_job_listing_ids == ()
+        assert result.message == "No jobs currently match."

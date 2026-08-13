@@ -11,6 +11,7 @@ def _completion(**overrides):
     payload = {
         "message": "Consider Acme.",
         "cited_organization_ids": [1, 2],
+        "cited_job_listing_ids": [],
         "preference_patch": None,
     }
     payload.update(overrides)
@@ -143,4 +144,34 @@ class TestFromJsonTopLevel:
         with pytest.raises(InvalidModelOutputError):
             AssistantCompletion.from_json(
                 _completion(preference_patch="remote_ok")
+            )
+
+    def test_cited_job_listing_ids_must_be_list(self):
+        with pytest.raises(InvalidModelOutputError, match="cited_job_listing_ids"):
+            AssistantCompletion.from_json(
+                _completion(cited_job_listing_ids="not-a-list")
+            )
+
+    def test_cited_job_listing_ids_must_be_integers(self):
+        with pytest.raises(InvalidModelOutputError, match="cited_job_listing_ids must be integers"):
+            AssistantCompletion.from_json(
+                _completion(cited_job_listing_ids=[1, "two"])
+            )
+
+    def test_cited_job_listing_ids_must_be_unique(self):
+        with pytest.raises(InvalidModelOutputError, match="cited_job_listing_ids must be unique"):
+            AssistantCompletion.from_json(
+                _completion(cited_job_listing_ids=[1, 1])
+            )
+
+    def test_too_many_cited_job_listings_rejected(self):
+        with pytest.raises(InvalidModelOutputError, match="cites more than"):
+            AssistantCompletion.from_json(
+                _completion(cited_job_listing_ids=list(range(201)))
+            )
+
+    def test_cited_job_listing_ids_bool_rejected(self):
+        with pytest.raises(InvalidModelOutputError, match="must be integers"):
+            AssistantCompletion.from_json(
+                _completion(cited_job_listing_ids=[True])
             )
