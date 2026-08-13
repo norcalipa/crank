@@ -1,0 +1,165 @@
+{% extends "admin/base_site.html" %}
+{% comment %}
+Copyright (c) 2024 Isaac Adams
+Licensed under the MIT License. See LICENSE file in the project root for full license information.
+{% endcomment %}
+{% load i18n admin_urls %}
+
+{% block title %}Job Retrieval Operations{{ block.super }}{% endblock %}
+
+{% block branding %}
+<h1 id="site-name"><a href="{% url 'admin:index' %}">Crank Admin</a></h1>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+  <h1>Job Retrieval Operations</h1>
+
+  {# ── Aggregate Counts ── #}
+  <div class="module">
+    <h2>Aggregate Counts</h2>
+    <table>
+      <tr><td>Configured job sources</td><td><strong>{{ counts.configured }}</strong></td></tr>
+      <tr><td>Approved job sources</td><td><strong>{{ counts.approved }}</strong></td></tr>
+      <tr><td>Enabled job sources</td><td><strong>{{ counts.enabled }}</strong></td></tr>
+      <tr><td>Active listings</td><td><strong>{{ counts.active_listings }}</strong></td></tr>
+      <tr><td>Stale listings (&gt;7d)</td><td><strong>{{ counts.stale_listings }}</strong></td></tr>
+      <tr><td>Unresolved employers</td><td><strong>{{ counts.unresolved_employers }}</strong></td></tr>
+      <tr><td>Job matches</td><td><strong>{{ counts.matches }}</strong></td></tr>
+      <tr>
+        <td>Latest pipeline run</td>
+        <td>
+          {% if counts.latest_run %}
+            <strong>{{ counts.latest_run.status }}</strong>
+            &mdash; {{ counts.latest_run.created }}
+            ({{ counts.latest_run.correlation_id }})
+          {% else %}
+            <em>None</em>
+          {% endif %}
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  {# ── Readiness Gates ── #}
+  <div class="module">
+    <h2>Readiness Gates</h2>
+    <table>
+      <tr>
+        <td>Adapter registered</td>
+        <td>
+          {% if gates.adapter_registered %}
+            <span style="color: green;">&#x2705; Yes ({{ gates.adapter_count }} registered)</span>
+          {% else %}
+            <span style="color: red;">&#x274C; No</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>Credentials configured</td>
+        <td>
+          {% if gates.credentials_configured %}
+            <span style="color: green;">&#x2705; Yes</span>
+          {% else %}
+            <span style="color: red;">&#x274C; No</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>Pipeline enabled</td>
+        <td>
+          {% if gates.pipeline_enabled %}
+            <span style="color: green;">&#x2705; Yes</span>
+          {% else %}
+            <span style="color: red;">&#x274C; No</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>Scheduler enabled</td>
+        <td>
+          {% if gates.scheduler_enabled %}
+            <span style="color: green;">&#x2705; Yes</span>
+          {% else %}
+            <span style="color: red;">&#x274C; No</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>Active run / overlap</td>
+        <td>
+          {% if gates.active_run %}
+            <span style="color: orange;">&#x26A0; Running ({{ gates.active_run_status }})</span>
+          {% else %}
+            <span style="color: green;">&#x2705; Idle</span>
+          {% endif %}
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  {# ── Admin Links ── #}
+  <div class="module">
+    <h2>Related Admin Sections</h2>
+    <ul>
+      {% for link in admin_links %}
+        <li><a href="{{ link.url }}">{{ link.label }}</a></li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  {# ── Bounded Audited Actions ── #}
+  <div class="module">
+    <h2>Actions</h2>
+
+    <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
+      <h3>Seed Curated Job Sources (dry-run)</h3>
+      <p>Preview seed_job_sources without writing to the database.</p>
+      <form method="post" action="{% url 'admin:crank_jobretrievalops_seed_preview' %}">
+        {% csrf_token %}
+        <input type="submit" value="Preview Seed" class="button" style="background: #79aec8;">
+      </form>
+    </div>
+
+    <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
+      <h3>Seed Curated Job Sources</h3>
+      <p>Create/update approved+enabled curated sources. Only allowlisted domains are seeded.</p>
+      <form method="post" action="{% url 'admin:crank_jobretrievalops_seed_execute' %}">
+        {% csrf_token %}
+        <input type="hidden" name="confirm" value="yes">
+        <input type="submit" value="Execute Seed" class="button" style="background: #ba2121;">
+      </form>
+    </div>
+
+    <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
+      <h3>Queue Retrieval for Approved+Enabled Sources</h3>
+      <p>Creates a pending pipeline run for all approved+enabled job sources. Work is performed asynchronously.</p>
+      <form method="post" action="{% url 'admin:crank_jobretrievalops_queue_retrieval' %}">
+        {% csrf_token %}
+        <input type="hidden" name="confirm" value="yes">
+        <input type="submit" value="Queue Retrieval" class="button" style="background: #ba2121;">
+      </form>
+    </div>
+
+    <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
+      <h3>Queue Job Pipeline Run</h3>
+      <p>Creates a pending pipeline run. Work is performed asynchronously. Skipped if a run is already active.</p>
+      <form method="post" action="{% url 'admin:crank_jobretrievalops_queue_pipeline' %}">
+        {% csrf_token %}
+        <input type="hidden" name="confirm" value="yes">
+        <input type="submit" value="Queue Pipeline Run" class="button" style="background: #ba2121;">
+      </form>
+    </div>
+
+    <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
+      <h3>Retry Eligible Failed Run</h3>
+      <p>Retries the most recent failed pipeline run by creating a new pending run. Skipped if a run is already active.</p>
+      <form method="post" action="{% url 'admin:crank_jobretrievalops_retry_failed' %}">
+        {% csrf_token %}
+        <input type="hidden" name="confirm" value="yes">
+        <input type="submit" value="Retry Failed Run" class="button" style="background: #ba2121;">
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

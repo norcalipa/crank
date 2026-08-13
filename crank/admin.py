@@ -1,6 +1,7 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 from django.contrib import admin
+from django.db import models
 from crank.models.agent_run import AgentRun
 from crank.models.crawl_run import CrawlRun
 from crank.models.conversation import Conversation, Message
@@ -756,3 +757,26 @@ class UnresolvedEmployerAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 
 admin.site.register(EmployerAlias, EmployerAliasAdmin)
 admin.site.register(UnresolvedEmployer, UnresolvedEmployerAdmin)
+
+
+# ---------------------------------------------------------------------------
+# Job Retrieval Operations dashboard (issue #404)
+# ---------------------------------------------------------------------------
+class JobRetrievalOps(models.Model):
+    """Proxy model for the Job Retrieval Operations admin dashboard.
+
+    This model exists solely to register a custom admin view that aggregates
+    job-source readiness, counts, and bounded audited queue actions. It has no
+    database table and never stores data.
+    """
+
+    class Meta:
+        app_label = "crank"
+        managed = False
+        verbose_name = "Job Retrieval Operations"
+        verbose_name_plural = "Job Retrieval Operations"
+
+
+from crank.admin_dashboard import JobRetrievalOperationsAdmin
+
+admin.site.register(JobRetrievalOps, JobRetrievalOperationsAdmin)
