@@ -12,6 +12,11 @@ from django.views.decorators.http import require_GET, require_POST
 from crank.empty_state import derive_state
 from crank.models.job import JobListing
 from crank.models.job_match import JobMatch
+from crank.services.job_matching import (
+    MAX_MATCH_RESULTS,
+    match_jobs,
+    match_organizations,
+)
 
 _DEFAULT_PAGE_SIZE = 20
 _MAX_PAGE_SIZE = 100
@@ -49,6 +54,7 @@ def _match_payload(match, *, detail=False):
         "preference_version": match.preference_version,
         "ranker_version": match.ranker_version,
         "score": match.score,
+        "reasons": _reasons_from_stored_factors(match.factors),
         "first_matched_at": match.first_matched_at,
         "last_matched_at": match.last_matched_at,
         "seen_at": match.seen_at,
@@ -57,6 +63,40 @@ def _match_payload(match, *, detail=False):
     if detail:
         payload["factors"] = match.factors
     return payload
+
+
+def _reasons_from_stored_factors(factors):
+    """Translate stored factor dicts into concise human-readable reasons."""
+    reasons = []
+    if not factors or not isinstance(factors, list):
+        return reasons
+    for factor in factors:
+        if not isinstance(factor, dict):
+            continue
+        name = factor.get("factor", "")
+        score = factor.get("score", 0)
+        detail = factor.get("detail", "")
+        if name == "organization_scores" and score > 0 and "average=" in detail:
+            avg_str = detail.split("average=")[1].split("/")[0]
+            try:
+                reasons.append(f"Score {float(avg_str):.1f}")
+            except (ValueError, TypeError):
+                pass
+        elif name == "compensation" and score > 0:
+            reasons.append("Compensation match")
+        elif name == "work_location" and score > 0:
+            reasons.append("Location match")
+        elif name == "vesting" and score > 0:
+            reasons.append("Vesting aligns")
+        elif name == "culture" and "matched=" in detail:
+            matched = detail.split("matched=")[1]
+            if matched and matched != "none":
+                reasons.append(f"Culture: {matched}")
+        elif name == "industry" and "matched=" in detail:
+            matched = detail.split("matched=")[1]
+            if matched and matched != "none":
+                reasons.append(f"Industry: {matched}")
+    return reasons[:6]
 
 
 def _parse_page(request):
@@ -169,10 +209,61 @@ def job_match_status(request):
     return JsonResponse(state.to_dict(include_staff=is_staff))
 
 
+@login_required
+@require_GET
+def job_match_ranked(request):
+    """Return live preference-grounded ranked matches for the authenticated user.
+
+    This endpoint computes matches on-the-fly from the user's saved preferences,
+    applying hard filters and deterministic scoring. Returns job matches and
+    organization matches with human-readable reason strings.
+    """
+    try:
+        limit = int(request.GET.get("limit", MAX_MATCH_RESULTS))
+    except (TypeError, ValueError):
+        limit = MAX_MATCH_RESULTS
+    limit = max(1, min(limit, MAX_MATCH_RESULTS))
+
+    job_results = match_jobs(request.user, limit=limit)
+    org_results = match_organizations(request.user, limit=limit)
+
+    return JsonResponse({
+        "job_matches": [
+            {
+                "listing_id": r.listing_id,
+                "title": r.title,
+                "employer_name": r.employer_name,
+                "organization_id": r.organization_id,
+                "organization_name": r.organization_name,
+                "canonical_url": r.canonical_url,
+                "location_text": r.location_text,
+                "is_remote": r.is_remote,
+                "score": r.score,
+                "reasons": r.reasons,
+                "factors": r.factors,
+            }
+            for r in job_results
+        ],
+        "organization_matches": [
+            {
+                "organization_id": r.organization_id,
+                "name": r.name,
+                "url": r.url,
+                "funding_round": r.funding_round,
+                "rto_policy": r.rto_policy,
+                "score": r.score,
+                "reasons": r.reasons,
+            }
+            for r in org_results
+        ],
+    })
+
+
 __all__ = [
-    "job_match_list",
     "job_match_detail",
-    "job_match_seen",
     "job_match_dismiss",
+    "job_match_list",
+    "job_match_ranked",
+    "job_match_seen",
     "job_match_status",
 ]

@@ -157,11 +157,15 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
             "type": "array",
             "items": {"type": "integer"},
         },
+        "cited_job_listing_ids": {
+            "type": "array",
+            "items": {"type": "integer"},
+        },
         "preference_patch": {
             "type": ["object", "null"],
         },
     },
-    "required": ["message", "cited_organization_ids", "preference_patch"],
+    "required": ["message", "cited_organization_ids", "cited_job_listing_ids", "preference_patch"],
     "additionalProperties": False,
 }
 

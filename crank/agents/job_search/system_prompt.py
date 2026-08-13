@@ -9,7 +9,7 @@ identity for observability; the prompt text itself is never logged.
 """
 from __future__ import annotations
 
-from typing import List, Mapping
+from collections.abc import Mapping
 
 #: Version of the system-prompt wording. Bump when the wording or tool schema
 #: changes in a way that should invalidate cached model responses.
@@ -21,6 +21,7 @@ ORGANIZATION_TOOL_NAME = "query_active_organizations"
 SCORE_SUMMARY_TOOL_NAME = "query_score_summaries"
 JOB_LISTING_SEARCH_TOOL_NAME = "search_job_listings"
 JOB_LISTING_DETAIL_TOOL_NAME = "get_job_listing_detail"
+MATCH_TOOL_NAME = "get_matches_for_user"
 
 _BASE_INSTRUCTIONS = (
     "You are the career-advisor assistant for crank.fyi. You help an "
@@ -78,6 +79,13 @@ TOOL_DESCRIPTIONS: Mapping[str, str] = {
         "excerpt. Returns the same bounded field set as the search tool plus "
         "the excerpt, or null if the listing does not exist or is not active."
     ),
+    MATCH_TOOL_NAME: (
+        "Get preference-grounded ranked job and organization matches for the "
+        "current user. Returns up to {max_match_results} job matches and up to "
+        "{max_match_results} organization matches, each with a score and "
+        "human-readable reasons (e.g. 'Public company', 'Hybrid (≤3 days)', "
+        "'Score 4.2'). Cite listing and organization IDs from these results."
+    ),
 }
 
 
@@ -85,6 +93,7 @@ def tool_descriptions(
     max_organizations: int,
     max_score_rows: int,
     max_job_listings: int = 25,
+    max_match_results: int = 25,
 ) -> str:
     """Render the fixed tool descriptions with their names and result limits."""
     lines = []
@@ -95,6 +104,7 @@ def tool_descriptions(
                 max_organizations=max_organizations,
                 max_score_rows=max_score_rows,
                 max_job_listings=max_job_listings,
+                max_match_results=max_match_results,
             ),
         ))
     return "\n".join(lines)
@@ -106,7 +116,8 @@ def build_system_prompt(
     max_organizations: int = 25,
     max_score_rows: int = 5,
     max_job_listings: int = 25,
-    custom_rules: List[str] | None = None,
+    max_match_results: int = 25,
+    custom_rules: list[str] | None = None,
 ) -> str:
     """Compile the versioned system prompt.
 
@@ -115,7 +126,7 @@ def build_system_prompt(
     """
     rules = [
         _BASE_INSTRUCTIONS,
-        tool_descriptions(max_organizations, max_score_rows, max_job_listings),
+        tool_descriptions(max_organizations, max_score_rows, max_job_listings, max_match_results),
     ]
     if custom_rules:
         rules.append("\nADDITIONAL RULES\n" + "\n".join("- " + r for r in custom_rules))

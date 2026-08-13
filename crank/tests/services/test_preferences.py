@@ -113,7 +113,7 @@ class TestPatch:
         doc = prefs.default_preferences()
         new, changes = prefs.apply_patch(
             doc,
-            {"set": {"compensation": {"minimum_salary": 200000, "currency": "USD", "equity_minimum_percent": 0.5}}},
+            {"set": {"compensation": {"minimum_salary": 200000, "currency": "USD", "equity_minimum_percent": 0.5, "require_public_company": None}}},
         )
         assert changes == 1
         assert new["compensation"]["minimum_salary"] == 200000
@@ -191,7 +191,7 @@ class TestPatch:
         assert c2 == 0
         assert repeat["culture"] == ["transparent"]
         # Removing an absent item is also a no-op.
-        noop, c3 = prefs.apply_patch(first, {"remove": {"culture": ["missing"]}})
+        _noop, c3 = prefs.apply_patch(first, {"remove": {"culture": ["missing"]}})
         assert c3 == 0
 
     def test_apply_patch_does_not_mutate_input(self):
@@ -538,7 +538,7 @@ class TestCoverageEdges:
         with pytest.raises(prefs.UnknownFieldError):
             prefs.apply_patch(
                 prefs.default_preferences(),
-                {"set": {"work_location": {"modes": [], "countries": [], "require_onsite": None, "bogus": 1}}},
+                {"set": {"work_location": {"modes": [], "countries": [], "require_onsite": None, "max_in_office_days": None, "bogus": 1}}},
             )
 
     def test_subtree_set_non_object_value(self):
@@ -549,7 +549,7 @@ class TestCoverageEdges:
         doc = prefs.apply_patch(
             prefs.default_preferences(), {"set": {"compensation.minimum_salary": 150000}}
         )[0]
-        new, changes = prefs.apply_patch(
+        new, _changes = prefs.apply_patch(
             doc, {"set": {"compensation.minimum_salary": None}}
         )
         assert new["compensation"]["minimum_salary"] is None
@@ -605,7 +605,7 @@ class TestCoverageEdges:
     def test_stale_check_iso_string_naive_and_tzaware(self):
         from django.utils import timezone as tz
         u = get_user_model().objects.create_user(username="edge-ts", password="x")
-        row = prefs.apply_patch_to_user(u, {"set": {"notes": "first"}})
+        prefs.apply_patch_to_user(u, {"set": {"notes": "first"}})
         # naive ISO string (parses -> made aware) -> mismatch
         with pytest.raises(prefs.StalePreferenceError):
             prefs.apply_patch_to_user(u, {"set": {"notes": "s"}}, expected_modified="2026-01-01T00:00:00")

@@ -17,10 +17,10 @@ Design rules from the issue:
 * Preference contents are never written to logs; audit rows store metadata only.
 """
 import copy
+from datetime import timezone as _dt_tz
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
-from datetime import timezone as _dt_tz
 
 from crank.models.preference import (
     SCHEMA_VERSION,
@@ -75,12 +75,14 @@ _FIELD_SPEC = {
         "minimum_salary": "int",
         "currency": "str",
         "equity_minimum_percent": "float",
+        "require_public_company": "bool",
     },
     "culture": "str_list",  # preferred culture attributes
     "work_location": {
         "modes": "str_list",          # e.g. onsite, hybrid, remote
         "countries": "str_list",
         "require_onsite": "bool",
+        "max_in_office_days": "int",  # RTO ceiling (0-7)
     },
     "geography": {
         "regions": "str_list",
@@ -129,24 +131,24 @@ def _resolve_spec(path):
         # float_map leaves accept any number of dynamic keys (e.g. priorities.<criterion>).
         if index == len(parts) - 1 and node == "float_map" and parts[:-1]:
             return "float_map_entry", True
-        raise UnknownFieldError("Unknown preference field: {!r}".format(path))
+        raise UnknownFieldError(f"Unknown preference field: {path!r}")
     if isinstance(node, dict) and node:
         return node, False  # internal node -> subtree to set/reset
     if node in _LEAF_TYPES:
         return node, False
     # Defensive: every non-dict node in _FIELD_SPEC is in _LEAF_TYPES,
     # so this branch is unreachable under the current (flat, single float_map) schema.
-    raise UnknownFieldError("Unknown preference field: {!r}".format(path))  # pragma: no cover
+    raise UnknownFieldError(f"Unknown preference field: {path!r}")  # pragma: no cover
 
 
 def _validate_str(value, field, allow_empty=False, max_length=MAX_SCALAR_LENGTH):
     if not isinstance(value, str) or (not allow_empty and not value.strip()):
         raise InvalidValueError(
-            "{!r} must be a non-empty string".format(field)
+            f"{field!r} must be a non-empty string"
         )
     if len(value) > max_length:
         raise InvalidValueError(
-            "Field {!r} exceeds maximum length of {}".format(field, max_length)
+            f"Field {field!r} exceeds maximum length of {max_length}"
         )
     return value
 
@@ -158,23 +160,27 @@ def validate_value(field, leaf_type, value):
             return None
         if not isinstance(value, bool):
             raise InvalidValueError(
-                "Field {!r} must be a boolean".format(field)
+                f"Field {field!r} must be a boolean"
             )
         return value
     if leaf_type in ("int", "float"):
         if value is None:
             return value
         if isinstance(value, bool):
-            raise InvalidValueError("Field {!r} must not be a boolean".format(field))
+            raise InvalidValueError(f"Field {field!r} must not be a boolean")
         if leaf_type == "int":
             if not isinstance(value, int):
-                raise InvalidValueError("Field {!r} must be an integer".format(field))
+                raise InvalidValueError(f"Field {field!r} must be an integer")
             if value < 0:
-                raise InvalidValueError("Field {!r} must be non-negative".format(field))
+                raise InvalidValueError(f"Field {field!r} must be non-negative")
+            if field == "work_location.max_in_office_days" and value > 7:
+                raise InvalidValueError(
+                    f"Field {field!r} must not exceed 7"
+                )
             return value
         if not isinstance(value, (int, float)):
             raise InvalidValueError(
-                "Field {!r} must be a number".format(field)
+                f"Field {field!r} must be a number"
             )
         return float(value)
     if leaf_type == "str":
@@ -185,10 +191,10 @@ def validate_value(field, leaf_type, value):
         return _validate_str(value, field, allow_empty=allow_empty, max_length=max_length)
     if leaf_type == "str_list":
         if not isinstance(value, list):
-            raise InvalidValueError("Field {!r} must be a list".format(field))
+            raise InvalidValueError(f"Field {field!r} must be a list")
         if len(value) > MAX_LIST_LENGTH:
             raise InvalidValueError(
-                "Field {!r} exceeds {} items".format(field, MAX_LIST_LENGTH)
+                f"Field {field!r} exceeds {MAX_LIST_LENGTH} items"
             )
         out = []
         for item in value:
@@ -196,28 +202,26 @@ def validate_value(field, leaf_type, value):
         return out
     if leaf_type == "float_map":
         if not isinstance(value, dict):
-            raise InvalidValueError("Field {!r} must be an object".format(field))
+            raise InvalidValueError(f"Field {field!r} must be an object")
         if len(value) > MAX_PRIORITIES:
             raise InvalidValueError(
-                "Field {!r} exceeds {} keys".format(field, MAX_PRIORITIES)
+                f"Field {field!r} exceeds {MAX_PRIORITIES} keys"
             )
         out = {}
         for key, weight in value.items():
             _validate_str(key, field)
             if isinstance(weight, bool) or not isinstance(weight, (int, float)):
                 raise InvalidValueError(
-                    "Priority {!r} must be a number".format(key)
+                    f"Priority {key!r} must be a number"
                 )
             weight = float(weight)
             if weight < MIN_PRIORITY or weight > MAX_PRIORITY:
                 raise InvalidValueError(
-                    "Priority {!r} must be within {}-{}".format(
-                        key, MIN_PRIORITY, MAX_PRIORITY
-                    )
+                    f"Priority {key!r} must be within {MIN_PRIORITY}-{MAX_PRIORITY}"
                 )
             out[key] = weight
         return out
-    raise InvalidValueError("Unknown leaf type {!r}".format(leaf_type))
+    raise InvalidValueError(f"Unknown leaf type {leaf_type!r}")
 
 
 def validate_document(document):
@@ -304,7 +308,7 @@ def validate_patch(patch):
             value = set_part[path]
             if dynamic:
                 raise AmbiguousPatchError(
-                    "Cannot 'set' a dynamic inner key directly: {!r}".format(path)
+                    f"Cannot 'set' a dynamic inner key directly: {path!r}"
                 )
             if isinstance(spec, dict):
                 # Replace a whole subtree: validate it as a full node.
@@ -319,14 +323,14 @@ def validate_patch(patch):
             if spec == "str_list":
                 if not isinstance(value, list):
                     raise AmbiguousPatchError(
-                        "'remove' for list field {!r} must list items".format(path)
+                        f"'remove' for list field {path!r} must list items"
                     )
                 for item in value:
                     _validate_str(item, path)
             elif spec == "float_map":
                 if not isinstance(value, list):
                     raise AmbiguousPatchError(
-                        "'remove' for map field {!r} must list keys".format(path)
+                        f"'remove' for map field {path!r} must list keys"
                     )
                 for key in value:
                     _validate_str(key, path)
@@ -334,13 +338,13 @@ def validate_patch(patch):
                 # Remove a dict key or reset a scalar/subtree to default.
                 if value is not None:
                     raise AmbiguousPatchError(
-                        "'remove' for {!r} must use null to reset/delete".format(path)
+                        f"'remove' for {path!r} must use null to reset/delete"
                     )
             else:
                 # Defensive: str_list/float_map/dynamic/scalar/dict specs are all
                 # handled above; unreachable under the current schema.
                 raise AmbiguousPatchError(
-                    "'remove' not supported for {!r}".format(path)
+                    f"'remove' not supported for {path!r}"
                 )  # pragma: no cover
 
 
@@ -353,7 +357,7 @@ def _validate_node_value(node_spec, value):
         node_spec2 = spec
         if isinstance(node_spec2, dict):
             if not isinstance(node, dict):  # pragma: no cover - no dict-of-dict in schema
-                raise InvalidValueError("{!r} must be an object".format(prefix))
+                raise InvalidValueError(f"{prefix!r} must be an object")
             missing = [k for k in node_spec2 if k not in node]
             unknown = [k for k in node if k not in node_spec2]
             if missing:
@@ -361,7 +365,7 @@ def _validate_node_value(node_spec, value):
             if unknown:
                 raise UnknownFieldError("Unknown field(s): {}".format(", ".join(unknown)))
             for key, sub in node_spec2.items():
-                walk(sub, node[key], ".".join([prefix, key]) if prefix else key)
+                walk(sub, node[key], f"{prefix}.{key}" if prefix else key)
             return
         validate_value(prefix, node_spec2, node)
     walk(node_spec, value, "")
@@ -466,7 +470,7 @@ def _money(value, currency):
         return "Not specified"
     # Currency is user-supplied; escape markdown control characters before
     # embedding (n1).
-    return "{} {:,}".format(_escape_md(currency).upper(), int(value))
+    return f"{_escape_md(currency).upper()} {int(value):,}"
 
 
 def to_markdown(document):
@@ -480,6 +484,8 @@ def to_markdown(document):
         lines.append("- Minimum equity target: {:.1f}%".format(comp["equity_minimum_percent"]))
     else:
         lines.append("- Minimum equity target: Not specified")
+    if comp["require_public_company"] is not None:
+        lines.append("- Require public company: {}".format("Yes" if comp["require_public_company"] else "No"))
     lines.append("")
 
     _section(lines, "Culture", document["culture"])
@@ -488,6 +494,8 @@ def to_markdown(document):
     lines.append("- Modes: {}".format(", ".join(_escape_md(m) for m in wl["modes"]) or "Any"))
     lines.append("- Countries: {}".format(", ".join(_escape_md(c) for c in wl["countries"]) or "Any"))
     lines.append("- Require onsite: {}".format("Yes" if wl["require_onsite"] else "No"))
+    if wl["max_in_office_days"] is not None:
+        lines.append("- Max in-office days/week: {}".format(wl["max_in_office_days"]))
     lines.append("")
     geo = document["geography"]
     lines.append("## Geography")
@@ -524,10 +532,10 @@ def to_markdown(document):
 
 
 def _section(lines, heading, items):
-    lines.append("## {}".format(heading))
+    lines.append(f"## {heading}")
     if items:
         for item in items:
-            lines.append("- {}".format(_escape_md(item)))
+            lines.append(f"- {_escape_md(item)}")
     else:
         lines.append("- None")
     lines.append("")
@@ -608,9 +616,7 @@ def _check_stale(pref, expected_modified):
         raise StalePreferenceError("Expected an ISO-8601 modified timestamp")
     if pref.modified != expected:
         raise StalePreferenceError(
-            "Preference version changed; expected {}, current {}".format(
-                expected.isoformat(), pref.modified.isoformat()
-            )
+            f"Preference version changed; expected {expected.isoformat()}, current {pref.modified.isoformat()}"
         )
 
 

@@ -1,10 +1,9 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 from django.contrib.admin.sites import AdminSite
-from django.core.exceptions import ValidationError
+from django.contrib.auth.models import User
 from django.db import IntegrityError, connection
 from django.test import TestCase
-from django.contrib.auth.models import User
 
 from crank.admin import (
     ConversationAdmin,
@@ -21,17 +20,19 @@ class MockStaffRequest:
 
 
 class UserPreferenceModelTests(TestCase):
-    def test_defaults_valid_under_schema_version_1(self):
+    def test_defaults_valid_under_schema_version(self):
         user = User.objects.create_user(username="pref-user", password="pw")
         pref = UserPreference.objects.create(user=user)
         self.assertEqual(pref.schema_version, UserPreference.SCHEMA_VERSION)
-        self.assertEqual(pref.schema_version, 1)
-        # Defaults must be valid schema-v1 documents.
+        self.assertEqual(pref.schema_version, 2)
+        # Defaults must be valid schema-v2 documents.
         self.assertEqual(pref.preferences, default_preferences())
         self.assertIn("compensation", pref.preferences)
         self.assertIn("priorities", pref.preferences)
         self.assertIn("exclusions", pref.preferences)
         self.assertIn("notes", pref.preferences)
+        self.assertIn("work_location", pref.preferences)
+        self.assertIn("vesting", pref.preferences)
         self.assertEqual(pref.preferences_markdown, "")
         self.assertIsNotNone(pref.created)
         self.assertIsNotNone(pref.modified)
@@ -185,12 +186,9 @@ class ConversationModelTests(TestCase):
     def test_messages_indexed_constraint_names_registered(self):
         """Indexes/constraints defined in Meta exist in the schema."""
         with connection.cursor() as cursor:
-            tables = set(
-                row[0]
-                for row in cursor.execute(
-                    "SELECT name FROM sqlite_master WHERE type IN ('index','table')"
-                )
-            )
+            tables = {row[0] for row in cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('index','table')"
+            )}
         self.assertIn("crank_conv_user_modified_idx", tables)
         self.assertIn("crank_conv_user_status_idx", tables)
         self.assertIn("crank_msg_conv_order_idx", tables)

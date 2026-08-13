@@ -4,7 +4,9 @@ import * as React from 'react';
 
 /**
  * JobMatchPanel displays the user's job-match status with distinct empty-state
- * copy and recovery actions, or a compact match summary when matches exist.
+ * copy and recovery actions, or a compact match summary when matches exist,
+ * or ranked matches with reasons and links when preference-grounded matches
+ * are available.
  *
  * The state model is shared with the chat backend via /api/job-matches/status/
  * so wording is consistent across surfaces.
@@ -18,16 +20,35 @@ interface EmptyStatePayload {
     staff_detail?: string;
 }
 
-interface MatchSummary {
-    count: number;
+interface RankedJobMatch {
+    listing_id: number;
+    title: string;
+    employer_name: string;
+    organization_id: number | null;
+    organization_name: string;
+    canonical_url: string;
+    location_text: string;
+    is_remote: boolean;
+    score: number;
+    reasons: string[];
+}
+
+interface RankedOrgMatch {
+    organization_id: number;
+    name: string;
+    url: string;
+    funding_round: string;
+    rto_policy: string;
+    score: number;
+    reasons: string[];
+}
+
+interface RankedMatchesPayload {
+    job_matches: RankedJobMatch[];
+    organization_matches: RankedOrgMatch[];
 }
 
 type PanelPhase = 'loading' | 'error' | 'ready';
-
-function getCookie(name: string): string {
-    const match = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
-    return match ? decodeURIComponent(match[2]) : '';
-}
 
 const ACTION_LABELS: Record<string, string> = {
     suggest_company: 'Suggest a company',
@@ -45,19 +66,48 @@ const ACTION_ICONS: Record<string, string> = {
     complete_profile: 'fa-solid fa-user-pen',
 };
 
+const RTO_LABELS: Record<string, string> = {
+    R: 'Remote',
+    H: 'Hybrid',
+    O: 'In-office',
+};
+
+const FUNDING_LABELS: Record<string, string> = {
+    S: 'Seed',
+    A: 'Series A',
+    B: 'Series B',
+    C: 'Series C',
+    D: 'Series D',
+    E: 'Series E',
+    F: 'Series F',
+    X: 'Series G+',
+    O: 'Other Private',
+    P: 'Public',
+};
+
+function fundingLabel(code: string): string {
+    return FUNDING_LABELS[code] || code || 'Unknown';
+}
+
+function rtoLabel(code: string): string {
+    return RTO_LABELS[code] || code || 'Unknown';
+}
+
 const JobMatchPanel: React.FC = () => {
     const [phase, setPhase] = React.useState<PanelPhase>('loading');
     const [emptyState, setEmptyState] = React.useState<EmptyStatePayload | null>(null);
     const [matchCount, setMatchCount] = React.useState<number>(0);
+    const [rankedMatches, setRankedMatches] = React.useState<RankedMatchesPayload | null>(null);
     const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
 
     const fetchStatus = React.useCallback(async () => {
         setPhase('loading');
         setErrorMsg(null);
         try {
-            const [statusRes, matchRes] = await Promise.all([
+            const [statusRes, matchRes, rankedRes] = await Promise.all([
                 fetch('/api/job-matches/status/'),
                 fetch('/api/job-matches/?page=1&page_size=1'),
+                fetch('/api/job-matches/ranked/?limit=10'),
             ]);
             if (!statusRes.ok) throw new Error(`Status ${statusRes.status}`);
             const statusData: EmptyStatePayload = await statusRes.json();
@@ -66,6 +116,12 @@ const JobMatchPanel: React.FC = () => {
             if (matchRes.ok) {
                 const matchData = await matchRes.json();
                 setMatchCount(matchData.count || 0);
+            }
+            if (rankedRes.ok) {
+                const rankedData: RankedMatchesPayload = await rankedRes.json();
+                setRankedMatches(rankedData);
+            } else {
+                setRankedMatches(null);
             }
             setPhase('ready');
         } catch (e) {
@@ -84,8 +140,6 @@ const JobMatchPanel: React.FC = () => {
                 fetchStatus();
                 break;
             case 'suggest_company': {
-                // Dispatch a custom event that the SuggestCompanyModal can listen for,
-                // or navigate to the home page where the modal lives.
                 window.dispatchEvent(new CustomEvent('crank:suggest-company'));
                 break;
             }
@@ -109,7 +163,6 @@ const JobMatchPanel: React.FC = () => {
                 break;
             }
             default:
-                // Unknown action; no-op.
                 break;
         }
     }, [fetchStatus]);
@@ -154,8 +207,105 @@ const JobMatchPanel: React.FC = () => {
         );
     }
 
-    // Ready phase: show empty state or match summary
+    // Ready phase: show ranked matches if available, else empty state or match count
+    const hasRankedMatches = rankedMatches && (
+        (rankedMatches.job_matches && rankedMatches.job_matches.length > 0) ||
+        (rankedMatches.organization_matches && rankedMatches.organization_matches.length > 0)
+    );
     const hasMatches = emptyState && emptyState.state === 'ok' && matchCount > 0;
+
+    if (hasRankedMatches) {
+        const jobs = rankedMatches!.job_matches || [];
+        const orgs = rankedMatches!.organization_matches || [];
+        return (
+            <section className="card bg-dark mb-3" data-testid="job-match-panel"
+                     aria-labelledby="job-match-panel-title">
+                <div className="card-header d-flex justify-content-between align-items-center">
+                    <h2 id="job-match-panel-title" className="h6 mb-0">Your Job Matches</h2>
+                    <button type="button" className="btn btn-sm btn-outline-light"
+                            onClick={fetchStatus} aria-label="Refresh match status"
+                            data-testid="job-match-refresh">
+                        <i className="fa-solid fa-rotate"></i>
+                    </button>
+                </div>
+                <div className="card-body">
+                    {jobs.length > 0 && (
+                        <div data-testid="ranked-job-matches" className="mb-3">
+                            <h3 className="h6 mb-2">Ranked Job Listings</h3>
+                            {jobs.map((match) => (
+                                <div key={match.listing_id} className="border-bottom border-secondary pb-2 mb-2"
+                                     data-testid={`ranked-job-${match.listing_id}`}>
+                                    <div className="d-flex justify-content-between align-items-start">
+                                        <div className="flex-grow-1">
+                                            <a href={match.canonical_url} target="_blank" rel="noopener noreferrer"
+                                               className="text-info text-decoration-none fw-bold">
+                                                {match.title}
+                                            </a>
+                                            <span className="text-muted ms-2">{match.employer_name}</span>
+                                        </div>
+                                        <span className="badge bg-primary" data-testid={`job-score-${match.listing_id}`}>
+                                            {match.score.toFixed(1)}
+                                        </span>
+                                    </div>
+                                    {match.location_text && (
+                                        <small className="text-muted d-block">
+                                            <i className="fa-solid fa-location-dot me-1"></i>{match.location_text}
+                                            {match.is_remote && <span className="badge bg-success ms-1">Remote</span>}
+                                        </small>
+                                    )}
+                                    {match.reasons.length > 0 && (
+                                        <div className="mt-1" data-testid={`job-reasons-${match.listing_id}`}>
+                                            {match.reasons.map((reason, idx) => (
+                                                <span key={idx} className="badge bg-secondary me-1 mb-1 small">
+                                                    {reason}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    {orgs.length > 0 && (
+                        <div data-testid="ranked-org-matches">
+                            <h3 className="h6 mb-2">Ranked Organizations</h3>
+                            {orgs.map((org) => (
+                                <div key={org.organization_id} className="border-bottom border-secondary pb-2 mb-2"
+                                     data-testid={`ranked-org-${org.organization_id}`}>
+                                    <div className="d-flex justify-content-between align-items-start">
+                                        <div className="flex-grow-1">
+                                            {org.url ? (
+                                                <a href={org.url} target="_blank" rel="noopener noreferrer"
+                                                   className="text-info text-decoration-none fw-bold">
+                                                    {org.name}
+                                                </a>
+                                            ) : (
+                                                <span className="fw-bold">{org.name}</span>
+                                            )}
+                                            <span className="text-muted ms-2">{fundingLabel(org.funding_round)}</span>
+                                            <span className="text-muted ms-1">· {rtoLabel(org.rto_policy)}</span>
+                                        </div>
+                                        <span className="badge bg-primary" data-testid={`org-score-${org.organization_id}`}>
+                                            {org.score.toFixed(1)}
+                                        </span>
+                                    </div>
+                                    {org.reasons.length > 0 && (
+                                        <div className="mt-1" data-testid={`org-reasons-${org.organization_id}`}>
+                                            {org.reasons.map((reason, idx) => (
+                                                <span key={idx} className="badge bg-secondary me-1 mb-1 small">
+                                                    {reason}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </section>
+        );
+    }
 
     if (hasMatches) {
         return (

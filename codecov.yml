@@ -1,0 +1,16 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+    patch:
+      default:
+        target: 80%
+ignore:
+  - "crank/migrations/**"
+  - "crank/tests/**"
+  - "crank/settings/**"
+  - "crank/management/**"

@@ -12,7 +12,8 @@ arbitrary models, SQL, files, hosts, or URLs.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping, Optional
+from collections.abc import Mapping
+from typing import Any
 
 MAX_ORGANIZATION_RESULTS = 25
 MAX_SCORE_SUMMARY_RESULTS = 5
@@ -33,7 +34,7 @@ class InvalidToolInputError(ValueError):
     """A tool invocation violated the bounded input schema."""
 
 
-def validate_organization_filters(filters: Optional[Mapping[str, Any]]) -> Dict[str, str]:
+def validate_organization_filters(filters: Mapping[str, Any] | None) -> dict[str, str]:
     """Validate and normalize organization filter kwargs.
 
     Raises :class:`InvalidToolInputError` for unknown keys, non-string values,
@@ -46,41 +47,41 @@ def validate_organization_filters(filters: Optional[Mapping[str, Any]]) -> Dict[
     unknown = set(filters) - ALLOWED_ORGANIZATION_FILTERS
     if unknown:
         raise InvalidToolInputError(
-            "unknown organization filter(s): %s" % ", ".join(sorted(unknown))
+            f"unknown organization filter(s): {', '.join(sorted(unknown))}"
         )
-    normalized: Dict[str, str] = {}
+    normalized: dict[str, str] = {}
     for key in ("query", "funding_round", "rto_policy"):
         value = filters.get(key)
         if value is None:
             continue
         if not isinstance(value, str):
-            raise InvalidToolInputError("filter %r must be a string" % key)
+            raise InvalidToolInputError(f"filter {key!r} must be a string")
         value = value.strip()
         if not value:
             continue
         if key == "query":
             if len(value) > MAX_FILTER_QUERY_LENGTH:
                 raise InvalidToolInputError(
-                    "query filter exceeds %d characters" % MAX_FILTER_QUERY_LENGTH
+                    f"query filter exceeds {MAX_FILTER_QUERY_LENGTH} characters"
                 )
         elif key == "funding_round" and value not in FUNDING_ROUND_VALUES:
-            raise InvalidToolInputError("invalid funding_round value %r" % value)
+            raise InvalidToolInputError(f"invalid funding_round value {value!r}")
         elif key == "rto_policy" and value not in RTO_POLICY_VALUES:
-            raise InvalidToolInputError("invalid rto_policy value %r" % value)
+            raise InvalidToolInputError(f"invalid rto_policy value {value!r}")
         normalized[key] = value
     return normalized
 
 
-def clamp_result_limit(limit: Optional[int], *, maximum: int) -> int:
+def clamp_result_limit(limit: int | None, *, maximum: int) -> int:
     """Clamp a requested result limit to the fixed maximum (and at least 1)."""
     if isinstance(limit, int) and not isinstance(limit, bool):
         return max(1, min(limit, maximum))
     return maximum
 
 
-def normalize_organization_rows(rows: List[Any]) -> List[Dict[str, Any]]:
+def normalize_organization_rows(rows: list[Any]) -> list[dict[str, Any]]:
     """Project ORM rows to the safe, minimal dict the model sees."""
-    output: List[Dict[str, Any]] = []
+    output: list[dict[str, Any]] = []
     for row in rows:
         output.append({
             "id": int(row.id),
@@ -92,7 +93,7 @@ def normalize_organization_rows(rows: List[Any]) -> List[Dict[str, Any]]:
     return output
 
 
-def normalize_score_summary_rows(rows: Optional[List[Any]]) -> List[Dict[str, Any]]:
+def normalize_score_summary_rows(rows: list[Any] | None) -> list[dict[str, Any]]:
     """Project/validate score-summary rows to the canonical dict renderers expect.
 
     Score rows are injectable (``score_datasource`` may be faked in tests), so
@@ -103,11 +104,11 @@ def normalize_score_summary_rows(rows: Optional[List[Any]]) -> List[Dict[str, An
     """
     from crank.agents.job_search.errors import InvalidScoreSummaryRowError
 
-    output: List[Dict[str, Any]] = []
+    output: list[dict[str, Any]] = []
     for row in rows or []:
         if not isinstance(row, dict):
             raise InvalidScoreSummaryRowError(
-                "score summary rows must be dicts, got %s" % type(row).__name__
+                f"score summary rows must be dicts, got {type(row).__name__}"
             )
         org_id = row.get("organization_id")
         score_type = row.get("score_type")
@@ -123,8 +124,7 @@ def normalize_score_summary_rows(rows: Optional[List[Any]]) -> List[Dict[str, An
             raise InvalidScoreSummaryRowError(
                 "score summary row must have integer organization_id, "
                 "non-empty string score_type, and numeric avg_score; "
-                "got organization_id=%r score_type=%r avg_score=%r"
-                % (org_id, score_type, avg_score)
+                f"got organization_id={org_id!r} score_type={score_type!r} avg_score={avg_score!r}"
             )
         output.append({
             "organization_id": int(org_id),
@@ -136,7 +136,7 @@ def normalize_score_summary_rows(rows: Optional[List[Any]]) -> List[Dict[str, An
 
 def default_organization_datasource(
     filters: Mapping[str, Any], limit: int
-) -> List[Any]:
+) -> list[Any]:
     """Server-controlled query: active, public organizations only.
 
     Import is deferred so importing this package never requires Django settings
@@ -155,10 +155,10 @@ def default_organization_datasource(
 
 
 def query_active_organizations(
-    filters: Optional[Mapping[str, Any]] = None,
-    limit: Optional[int] = None,
-    datasource: Optional[callable] = None,
-) -> List[Dict[str, Any]]:
+    filters: Mapping[str, Any] | None = None,
+    limit: int | None = None,
+    datasource: callable | None = None,
+) -> list[dict[str, Any]]:
     """Validate the request and return bounded, normalized organization rows.
 
     This is the public "tool" surface. ``datasource`` defaults to the Django
@@ -172,8 +172,8 @@ def query_active_organizations(
 
 
 def validate_score_summary_input(
-    organization_ids: Any, score_types: Optional[Any]
-) -> List[int]:
+    organization_ids: Any, score_types: Any | None
+) -> list[int]:
     """Validate the score-summary tool input.
 
     ``organization_ids`` must be a non-empty flat list of unique integers.
@@ -181,7 +181,7 @@ def validate_score_summary_input(
     """
     if not isinstance(organization_ids, (list, tuple)) or not organization_ids:
         raise InvalidToolInputError("score_summary requires a non-empty organization_ids list")
-    ids: List[int] = []
+    ids: list[int] = []
     for value in organization_ids:
         if isinstance(value, bool) or not isinstance(value, int):
             raise InvalidToolInputError("organization_ids must be integers")
@@ -192,10 +192,10 @@ def validate_score_summary_input(
 
 
 def default_score_summary_datasource(
-    organization_ids: List[int],
-    score_types: Optional[List[str]],
+    organization_ids: list[int],
+    score_types: list[str] | None,
     limit: int,
-) -> List[Any]:
+) -> list[Any]:
     """Server-controlled query: average score summaries for the given targets."""
     from django.db.models import Avg
 
@@ -221,10 +221,10 @@ def default_score_summary_datasource(
 
 def query_score_summaries(
     organization_ids: Any,
-    score_types: Optional[Any] = None,
-    limit: Optional[int] = None,
-    datasource: Optional[callable] = None,
-) -> List[Dict[str, Any]]:
+    score_types: Any | None = None,
+    limit: int | None = None,
+    datasource: callable | None = None,
+) -> list[dict[str, Any]]:
     """Validate the request and return bounded score summaries.
 
     The set of allowed ``organization_ids`` is whatever the caller already
@@ -237,7 +237,7 @@ def query_score_summaries(
     return loader(ids, score_types, capped)
 
 
-def union_server_controlled_ids(rows: List[Dict[str, Any]]) -> List[int]:
+def union_server_controlled_ids(rows: list[dict[str, Any]]) -> list[int]:
     """Return the sorted IDs the server actually exposed via the tools."""
     return sorted({int(row.get("id")) for row in rows if row.get("id") is not None})
 
@@ -262,7 +262,7 @@ ALLOWED_JOB_LISTING_FILTERS = frozenset(
 JOB_LISTING_STATUS_VALUES = frozenset({"open"})
 
 
-def validate_job_listing_filters(filters: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+def validate_job_listing_filters(filters: Mapping[str, Any] | None) -> dict[str, Any]:
     """Validate and normalize job-listing filter kwargs.
 
     Raises :class:`InvalidToolInputError` for unknown keys, overlong
@@ -276,22 +276,21 @@ def validate_job_listing_filters(filters: Optional[Mapping[str, Any]]) -> Dict[s
     unknown = set(filters) - ALLOWED_JOB_LISTING_FILTERS
     if unknown:
         raise InvalidToolInputError(
-            "unknown job listing filter(s): %s" % ", ".join(sorted(unknown))
+            f"unknown job listing filter(s): {', '.join(sorted(unknown))}"
         )
-    normalized: Dict[str, Any] = {}
+    normalized: dict[str, Any] = {}
     for key in ("query", "location"):
         value = filters.get(key)
         if value is None:
             continue
         if not isinstance(value, str):
-            raise InvalidToolInputError("filter %r must be a string" % key)
+            raise InvalidToolInputError(f"filter {key!r} must be a string")
         value = value.strip()
         if not value:
             continue
         if len(value) > MAX_JOB_LISTING_QUERY_LENGTH:
             raise InvalidToolInputError(
-                "%s filter exceeds %d characters"
-                % (key, MAX_JOB_LISTING_QUERY_LENGTH)
+                f"{key} filter exceeds {MAX_JOB_LISTING_QUERY_LENGTH} characters"
             )
         normalized[key] = value
     # remote: must be a real bool
@@ -324,26 +323,25 @@ def validate_job_listing_filters(filters: Optional[Mapping[str, Any]]) -> Dict[s
         status = status.strip()
         if status not in JOB_LISTING_STATUS_VALUES:
             raise InvalidToolInputError(
-                "invalid status value %r; allowed: %s"
-                % (status, ", ".join(sorted(JOB_LISTING_STATUS_VALUES)))
+                f"invalid status value {status!r}; allowed: {', '.join(sorted(JOB_LISTING_STATUS_VALUES))}"
             )
         normalized["status"] = status
     return normalized
 
 
-def normalize_job_listing_rows(rows: List[Any]) -> List[Dict[str, Any]]:
+def normalize_job_listing_rows(rows: list[Any]) -> list[dict[str, Any]]:
     """Project ORM ``JobListing`` rows to the safe, minimal dict the model sees.
 
     Untrusted text (title, employer name, location) is relayed as-is; the
     canonical URL always comes from the row, never invented by the model.
     """
-    output: List[Dict[str, Any]] = []
+    output: list[dict[str, Any]] = []
     for row in rows:
         comp_min = getattr(row, "compensation_min", None)
         comp_max = getattr(row, "compensation_max", None)
         comp_currency = getattr(row, "compensation_currency", "") or ""
         comp_interval = getattr(row, "compensation_interval", "") or ""
-        compensation: Optional[Dict[str, Any]]
+        compensation: dict[str, Any] | None
         if comp_min is not None or comp_max is not None:
             compensation = {
                 "min": float(comp_min) if comp_min is not None else None,
@@ -369,7 +367,7 @@ def normalize_job_listing_rows(rows: List[Any]) -> List[Dict[str, Any]]:
     return output
 
 
-def _iso_or_none(value: Any) -> Optional[str]:
+def _iso_or_none(value: Any) -> str | None:
     """Return an ISO-8601 string for a datetime, or ``None``."""
     if value is None:
         return None
@@ -380,7 +378,7 @@ def _iso_or_none(value: Any) -> Optional[str]:
 
 def default_job_listing_datasource(
     filters: Mapping[str, Any], limit: int
-) -> List[Any]:
+) -> list[Any]:
     """Server-controlled query: active/open ``JobListing`` rows only.
 
     Import is deferred so importing this package never requires Django settings
@@ -409,10 +407,10 @@ def default_job_listing_datasource(
 
 
 def search_job_listings(
-    filters: Optional[Mapping[str, Any]] = None,
-    limit: Optional[int] = None,
-    datasource: Optional[callable] = None,
-) -> List[Dict[str, Any]]:
+    filters: Mapping[str, Any] | None = None,
+    limit: int | None = None,
+    datasource: callable | None = None,
+) -> list[dict[str, Any]]:
     """Validate the request and return bounded, normalized job-listing rows.
 
     This is the public "tool" surface. ``datasource`` defaults to the Django
@@ -427,7 +425,7 @@ def search_job_listings(
 
 def default_job_listing_detail_datasource(
     listing_id: int,
-) -> Optional[Any]:
+) -> Any | None:
     """Server-controlled query: a single active ``JobListing`` by ID.
 
     Import is deferred so importing this package never requires Django
@@ -442,8 +440,8 @@ def default_job_listing_detail_datasource(
 
 def get_job_listing_detail(
     listing_id: int,
-    datasource: Optional[callable] = None,
-) -> Optional[Dict[str, Any]]:
+    datasource: callable | None = None,
+) -> dict[str, Any] | None:
     """Validate the request and return a single job-listing row, or ``None``.
 
     ``datasource`` defaults to the Django ORM query (active listing by ID)
@@ -466,6 +464,102 @@ def get_job_listing_detail(
     return result
 
 
-def union_server_controlled_listing_ids(rows: List[Dict[str, Any]]) -> List[int]:
+def union_server_controlled_listing_ids(rows: list[dict[str, Any]]) -> list[int]:
     """Return the sorted listing IDs the server actually exposed via the tools."""
     return sorted({int(row.get("id")) for row in rows if row.get("id") is not None})
+
+
+# ---------------------------------------------------------------------------
+# Preference-grounded matching tools (issue #395)
+# ---------------------------------------------------------------------------
+
+MAX_MATCH_RESULTS = 25
+
+
+def normalize_match_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project match result dicts to the safe, minimal shape the model sees."""
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        output.append({
+            "listing_id": int(row.get("listing_id", 0)),
+            "title": str(row.get("title", "")),
+            "employer_name": str(row.get("employer_name", "")),
+            "organization_id": row.get("organization_id"),
+            "organization_name": str(row.get("organization_name", "")),
+            "canonical_url": str(row.get("canonical_url", "")),
+            "location": str(row.get("location_text", "")),
+            "remote": bool(row.get("is_remote", False)),
+            "score": float(row.get("score", 0.0)),
+            "reasons": list(row.get("reasons", [])),
+        })
+    return output
+
+
+def normalize_org_match_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Project org match result dicts to the safe, minimal shape the model sees."""
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        output.append({
+            "organization_id": int(row.get("organization_id", 0)),
+            "name": str(row.get("name", "")),
+            "url": str(row.get("url", "")),
+            "funding_round": str(row.get("funding_round", "")),
+            "rto_policy": str(row.get("rto_policy", "")),
+            "score": float(row.get("score", 0.0)),
+            "reasons": list(row.get("reasons", [])),
+        })
+    return output
+
+
+def get_matches_for_user(
+    user: Any,
+    *,
+    limit: int | None = None,
+    match_service: callable | None = None,
+) -> dict[str, Any]:
+    """Return bounded, ranked job and organization matches for *user*.
+
+    This is the public tool surface for preference-grounded matching. It
+    delegates to :mod:`crank.services.job_matching` and returns normalized,
+    bounded results with human-readable reasons. ``match_service`` may be
+    injected in tests.
+    """
+    capped = clamp_result_limit(limit, maximum=MAX_MATCH_RESULTS)
+    if match_service is not None:
+        job_results, org_results = match_service(user, limit=capped)
+    else:
+        from crank.services.job_matching import match_jobs, match_organizations
+        job_results = match_jobs(user, limit=capped)
+        org_results = match_organizations(user, limit=capped)
+
+    job_dicts = [
+        {
+            "listing_id": r.listing_id,
+            "title": r.title,
+            "employer_name": r.employer_name,
+            "organization_id": r.organization_id,
+            "organization_name": r.organization_name,
+            "canonical_url": r.canonical_url,
+            "location_text": r.location_text,
+            "is_remote": r.is_remote,
+            "score": r.score,
+            "reasons": r.reasons,
+        }
+        for r in job_results
+    ]
+    org_dicts = [
+        {
+            "organization_id": r.organization_id,
+            "name": r.name,
+            "url": r.url,
+            "funding_round": r.funding_round,
+            "rto_policy": r.rto_policy,
+            "score": r.score,
+            "reasons": r.reasons,
+        }
+        for r in org_results
+    ]
+    return {
+        "job_matches": normalize_match_rows(job_dicts),
+        "organization_matches": normalize_org_match_rows(org_dicts),
+    }

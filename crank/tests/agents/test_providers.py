@@ -64,7 +64,7 @@ class FakeLLM:
         if self._exc is not None:
             raise self._exc
         mod = _llm()
-        content = self._result or '{"message": "ok", "cited_organization_ids": [], "preference_patch": null}'
+        content = self._result or '{"message": "ok", "cited_organization_ids": [], "cited_job_listing_ids": [], "preference_patch": null}'
         return mod.LLMResult(
             content=content,
             data=None,
@@ -91,7 +91,7 @@ def make_fake_llm(result=None, exc=None):
 
 class LLMGatewayTests(SimpleTestCase):
     def test_complete_translates_request_and_response(self):
-        llm = make_fake_llm(result='{"message": "Hello!", "cited_organization_ids": [1], "preference_patch": null}')
+        llm = make_fake_llm(result='{"message": "Hello!", "cited_organization_ids": [1], "cited_job_listing_ids": [], "preference_patch": null}')
         gw = LLMGateway(provider=llm)
         response = gw.complete(
             ModelRequest(
@@ -231,6 +231,7 @@ class OrchestratorProviderTests(SimpleTestCase):
             preference_service=preference,
             org_datasource=lambda filters, limit: [ORG_ACME, ORG_GLOBEX],
             score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [],
         )
         return OrchestratorJobSearchProvider(orchestrator=orchestrator)
 
@@ -240,6 +241,7 @@ class OrchestratorProviderTests(SimpleTestCase):
             gateway_result={
                 "message": "I recommend Globex for remote seed-stage work.",
                 "cited_organization_ids": [2],
+                "cited_job_listing_ids": [],
                 "preference_patch": None,
             },
         )
@@ -269,6 +271,7 @@ class OrchestratorProviderTests(SimpleTestCase):
             gateway_result={
                 "message": "Updated your preferences.",
                 "cited_organization_ids": [],
+                "cited_job_listing_ids": [],
                 "preference_patch": {"set": {"funding_stage": ["S"]}},
             },
             pref=FakePreferenceService(apply_result=True),
@@ -322,6 +325,7 @@ class OrchestratorProviderTests(SimpleTestCase):
             gateway_result={
                 "message": "Check out org 999.",
                 "cited_organization_ids": [999],
+                "cited_job_listing_ids": [],
                 "preference_patch": None,
             },
         )
@@ -441,6 +445,7 @@ class OrchestratorProviderIntegrationTests(TestCase):
         gw = FakeGateway(result={
             "message": "Based on your preferences, Globex is a strong match.",
             "cited_organization_ids": [2],
+            "cited_job_listing_ids": [],
             "preference_patch": None,
         })
         orchestrator = JobSearchOrchestrator(
@@ -448,6 +453,7 @@ class OrchestratorProviderIntegrationTests(TestCase):
             preference_service=FakePreferenceService(),
             org_datasource=lambda filters, limit: [ORG_ACME, ORG_GLOBEX],
             score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [],
         )
         provider = OrchestratorJobSearchProvider(orchestrator=orchestrator)
 
@@ -537,8 +543,9 @@ class ResponseSchemaTests(SimpleTestCase):
     def test_schema_has_required_keys(self):
         self.assertIn("message", _RESPONSE_SCHEMA["properties"])
         self.assertIn("cited_organization_ids", _RESPONSE_SCHEMA["properties"])
+        self.assertIn("cited_job_listing_ids", _RESPONSE_SCHEMA["properties"])
         self.assertIn("preference_patch", _RESPONSE_SCHEMA["properties"])
         self.assertEqual(
             set(_RESPONSE_SCHEMA["required"]),
-            {"message", "cited_organization_ids", "preference_patch"},
+            {"message", "cited_organization_ids", "cited_job_listing_ids", "preference_patch"},
         )

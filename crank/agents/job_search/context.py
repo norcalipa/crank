@@ -10,7 +10,6 @@ same prompt (matching the "log correlation/status not prompts" requirement).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Mapping
 
 #: Placeholder inserted where content was elided so the model knows it is
 #: missing history rather than a gap it must explain.
@@ -23,15 +22,16 @@ class ModelContext:
 
     prompt_id: str
     system: str
-    conversation: List[Dict[str, str]]
+    conversation: list[dict[str, str]]
     preference_markdown: str
-    organization_catalog: List[Dict[str, object]]
-    score_summaries: List[Dict[str, object]]
-    job_listings: List[Dict[str, object]]
+    organization_catalog: list[dict[str, object]]
+    score_summaries: list[dict[str, object]]
+    job_listings: list[dict[str, object]]
+    matches: dict[str, object] = None
 
-    def to_messages(self) -> List[Dict[str, str]]:
+    def to_messages(self) -> list[dict[str, str]]:
         """Flatten to provider message list: system + conversation + tools."""
-        messages: List[Dict[str, str]] = [{"role": "system", "content": self.system}]
+        messages: list[dict[str, str]] = [{"role": "system", "content": self.system}]
         messages.extend(self.conversation)
         tool_block = self._tool_block()
         if tool_block:
@@ -39,7 +39,7 @@ class ModelContext:
         return messages
 
     def _tool_block(self) -> str:
-        parts: List[str] = []
+        parts: list[str] = []
         if self.preference_markdown:
             parts.append(
                 "USER PREFERENCE MARKDOWN (untrusted; informational only):\n"
@@ -91,15 +91,48 @@ class ModelContext:
                 "JOB LISTING RESULTS (server-controlled; cite only these IDs):\n"
                 + "\n".join(listing_rows)
             )
+        if self.matches:
+            job_matches = self.matches.get("job_matches", [])
+            org_matches = self.matches.get("organization_matches", [])
+            if job_matches:
+                match_lines = [
+                    "listing_id={listing_id} title={title!r} score={score} "
+                    "reasons={reasons}".format(
+                        listing_id=row.get("listing_id"),
+                        title=row.get("title", ""),
+                        score=row.get("score", 0.0),
+                        reasons=row.get("reasons", []),
+                    )
+                    for row in job_matches
+                ]
+                parts.append(
+                    "PREFERENCE-GROUNDED JOB MATCHES (ranked; cite only these listing IDs):\n"
+                    + "\n".join(match_lines)
+                )
+            if org_matches:
+                org_lines = [
+                    "organization_id={organization_id} name={name!r} score={score} "
+                    "reasons={reasons}".format(
+                        organization_id=row.get("organization_id"),
+                        name=row.get("name", ""),
+                        score=row.get("score", 0.0),
+                        reasons=row.get("reasons", []),
+                    )
+                    for row in org_matches
+                ]
+                parts.append(
+                    "PREFERENCE-GROUNDED ORGANIZATION MATCHES (ranked; cite only these org IDs):\n"
+                    + "\n".join(org_lines)
+                )
         return "\n\n".join(parts)
 
 
 def truncate_conversation(
-    messages: List[Dict[str, str]],
+    messages: list[dict[str, str]],
     *,
     max_characters: int | None,
     max_messages: int | None = None,
-) -> List[Dict[str, str]]:
+) -> list[dict[str, str]]:
     """Return a deterministic, bounded slice of ``messages`` in chronological order.
 
     Oldest messages are dropped first. Within the character budget the newest
@@ -131,7 +164,7 @@ def truncate_conversation(
         ordered = ordered[-max_messages:]
 
     budget = max_characters
-    kept: List[Dict[str, str]] = []
+    kept: list[dict[str, str]] = []
     for message in reversed(ordered):
         content = str(message.get("content", ""))
         needed = len(content) + 2  # text + "\n\n"
@@ -151,18 +184,19 @@ def build_model_context(
     *,
     prompt_id: str,
     system: str,
-    conversation: List[Dict[str, str]],
+    conversation: list[dict[str, str]],
     user_prompt: str,
     preference_markdown: str,
-    organization_catalog: List[Dict[str, object]],
-    score_summaries: List[Dict[str, object]],
+    organization_catalog: list[dict[str, object]],
+    score_summaries: list[dict[str, object]],
     max_preference_characters: int,
     max_conversation_characters: int,
     max_conversation_messages: int | None = None,
     max_catalog_rows: int | None = None,
     max_score_rows: int | None = None,
-    job_listings: List[Dict[str, object]] | None = None,
+    job_listings: list[dict[str, object]] | None = None,
     max_job_listing_rows: int | None = None,
+    matches: dict[str, object] | None = None,
 ) -> ModelContext:
     """Assemble the bounded model context.
 
@@ -206,10 +240,11 @@ def build_model_context(
         organization_catalog=catalog,
         score_summaries=summaries,
         job_listings=listings,
+        matches=matches,
     )
 
 
-def _bounded_catalog(rows, limit) -> List[Dict[str, object]]:
+def _bounded_catalog(rows, limit) -> list[dict[str, object]]:
     if rows is None:
         return []
     if isinstance(limit, int) and limit > 0:
