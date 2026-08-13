@@ -32,6 +32,16 @@ describe('OrganizationList', () => {
                     json: () => Promise.resolve({ 'R': 'Remote', 'H': 'Hybrid' }),
                 });
             }
+            if (url.includes('/api/organizations/') && url.includes('/provenance/')) {
+                return Promise.resolve({
+                    json: () => Promise.resolve({
+                        organization_id: 1,
+                        organization_modified: '2025-01-15T10:00:00Z',
+                        organization_created: '2024-06-01T00:00:00Z',
+                        latest_observation: null,
+                    }),
+                });
+            }
             if (url.includes('/api/organizations/')) {
                 return Promise.resolve({
                     json: () => Promise.resolve({
@@ -391,6 +401,9 @@ describe('OrganizationList', () => {
                 return Promise.resolve({
                     json: () => Promise.resolve({ 'R': 'Remote', 'H': 'Hybrid' }),
                 });
+            }
+            if (url.includes('/api/organizations/') && url.includes('/provenance/')) {
+                return Promise.reject(new Error('API Error'));
             }
             if (url.includes('/api/organizations/')) {
                 return Promise.reject(new Error('API Error'));

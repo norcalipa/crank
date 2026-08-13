@@ -429,6 +429,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 organization={selectedOrganization}
                 visible={showPopup}
                 onClose={this.handleClosePopup}
+                isAuthenticated={this.props.isAuthenticated}
             />
             <SuggestCompanyModal
                 visible={this.state.showSuggestModal}
