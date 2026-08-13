@@ -40,6 +40,7 @@ from crank.views.job_matches import (
     job_match_detail,
     job_match_seen,
     job_match_dismiss,
+    job_match_status,
 )
 from crank.views.health import readiness
 from crank.views.help import HelpView, PrivacyView
@@ -68,6 +69,7 @@ urlpatterns = [
     path('api/job-matches/<int:match_id>/', job_match_detail, name='job-match-detail'),
     path('api/job-matches/<int:match_id>/seen/', job_match_seen, name='job-match-seen'),
     path('api/job-matches/<int:match_id>/dismiss/', job_match_dismiss, name='job-match-dismiss'),
+    path('api/job-matches/status/', job_match_status, name='job-match-status'),
     path('help/', HelpView.as_view(), name='help'),
     path('privacy/', PrivacyView.as_view(), name='privacy'),
     path('api-auth/', include('rest_framework.urls')),

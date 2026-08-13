@@ -9,6 +9,7 @@ module.exports = {
     entry: {
         main: './static/js/OrganizationList.tsx',
         jobsearch: './static/js/JobSearchChat.tsx',
+        jobmatch: './static/js/JobMatchPanel.tsx',
     },
     output: {
         path: path.resolve(__dirname, 'static/dist'),
