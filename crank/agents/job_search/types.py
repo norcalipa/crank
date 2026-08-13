@@ -16,10 +16,14 @@ from typing import Any, Dict, List, Optional, Tuple
 from crank.agents.job_search.errors import InvalidModelOutputError
 
 #: Top-level keys that must all be present in the model's result object.
-_REQUIRED_KEYS = frozenset({"message", "cited_organization_ids", "preference_patch"})
+_REQUIRED_KEYS = frozenset(
+    {"message", "cited_organization_ids", "cited_job_listing_ids", "preference_patch"}
+)
 _ALLOWED_KEYS = _REQUIRED_KEYS
 #: Absolute ceiling on how many cited organization IDs are accepted.
 _MAX_CITED_ORGANIZATIONS = 200
+#: Absolute ceiling on how many cited job-listing IDs are accepted.
+_MAX_CITED_JOB_LISTINGS = 200
 #: Ceiling on preference-patch nesting depth (guards against pathological JSON).
 _MAX_PATCH_DEPTH = 8
 # Keep a hostile provider response from becoming an unbounded in-memory object
@@ -42,12 +46,16 @@ class AssistantCompletion:
     cited_organization_ids:
         Unique, ordered organization IDs the recommendation relies on. These are
         validated downstream against the server-controlled catalog.
+    cited_job_listing_ids:
+        Unique, ordered job-listing IDs the reply references. These are
+        validated downstream against the server-controlled listing tools.
     preference_patch:
         Optional typed preference update forwarded to the preference service.
     """
 
     message: str
     cited_organization_ids: Tuple[int, ...] = ()
+    cited_job_listing_ids: Tuple[int, ...] = ()
     preference_patch: Optional[Dict[str, Any]] = None
 
     @classmethod
@@ -120,6 +128,28 @@ class AssistantCompletion:
                 "model output cited_organization_ids must be unique"
             )
 
+        raw_listing_ids = payload.get("cited_job_listing_ids")
+        if not isinstance(raw_listing_ids, (list, tuple)):
+            raise InvalidModelOutputError(
+                "model output 'cited_job_listing_ids' must be a list"
+            )
+        if len(raw_listing_ids) > _MAX_CITED_JOB_LISTINGS:
+            raise InvalidModelOutputError(
+                "model output cites more than %d job listing IDs"
+                % _MAX_CITED_JOB_LISTINGS
+            )
+        listing_ids: List[int] = []
+        for value in raw_listing_ids:
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise InvalidModelOutputError(
+                    "model output cited_job_listing_ids must be integers"
+                )
+            listing_ids.append(value)
+        if len(set(listing_ids)) != len(listing_ids):
+            raise InvalidModelOutputError(
+                "model output cited_job_listing_ids must be unique"
+            )
+
         patch = payload.get("preference_patch")
         if patch is not None:
             if not isinstance(patch, dict):
@@ -136,6 +166,7 @@ class AssistantCompletion:
         return cls(
             message=message.strip(),
             cited_organization_ids=tuple(sorted(org_ids)),
+            cited_job_listing_ids=tuple(sorted(listing_ids)),
             preference_patch=_freeze_patch(patch) if patch is not None else None,
         )
 

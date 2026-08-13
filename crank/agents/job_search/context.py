@@ -27,6 +27,7 @@ class ModelContext:
     preference_markdown: str
     organization_catalog: List[Dict[str, object]]
     score_summaries: List[Dict[str, object]]
+    job_listings: List[Dict[str, object]]
 
     def to_messages(self) -> List[Dict[str, str]]:
         """Flatten to provider message list: system + conversation + tools."""
@@ -70,6 +71,25 @@ class ModelContext:
                     )
                     for row in self.score_summaries
                 )
+            )
+        if self.job_listings:
+            listing_rows = [
+                "id={id} title={title!r} organization={organization_name!r} "
+                "organization_id={organization_id} location={location!r} "
+                "remote={remote} url={canonical_url}".format(
+                    id=row.get("id"),
+                    title=row.get("title", ""),
+                    organization_name=row.get("organization_name", ""),
+                    organization_id=row.get("organization_id"),
+                    location=row.get("location", ""),
+                    remote=row.get("remote", False),
+                    canonical_url=row.get("canonical_url", ""),
+                )
+                for row in self.job_listings
+            ]
+            parts.append(
+                "JOB LISTING RESULTS (server-controlled; cite only these IDs):\n"
+                + "\n".join(listing_rows)
             )
         return "\n\n".join(parts)
 
@@ -141,6 +161,8 @@ def build_model_context(
     max_conversation_messages: int | None = None,
     max_catalog_rows: int | None = None,
     max_score_rows: int | None = None,
+    job_listings: List[Dict[str, object]] | None = None,
+    max_job_listing_rows: int | None = None,
 ) -> ModelContext:
     """Assemble the bounded model context.
 
@@ -174,6 +196,7 @@ def build_model_context(
 
     catalog = _bounded_catalog(organization_catalog, max_catalog_rows)
     summaries = _bounded_catalog(score_summaries, max_score_rows)
+    listings = _bounded_catalog(job_listings, max_job_listing_rows)
 
     return ModelContext(
         prompt_id=prompt_id,
@@ -182,6 +205,7 @@ def build_model_context(
         preference_markdown=preference_markdown,
         organization_catalog=catalog,
         score_summaries=summaries,
+        job_listings=listings,
     )
 
 

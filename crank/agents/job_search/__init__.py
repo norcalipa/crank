@@ -24,6 +24,7 @@ Security model
 """
 from crank.agents.job_search.errors import (
     CostLimitError,
+    InvalidJobListingReferenceError,
     InvalidModelOutputError,
     InvalidOrganizationReferenceError,
     InvalidPreferencePatchError,
@@ -38,6 +39,7 @@ from crank.agents.job_search.service import (
 
 __all__ = [
     "CostLimitError",
+    "InvalidJobListingReferenceError",
     "InvalidModelOutputError",
     "InvalidOrganizationReferenceError",
     "InvalidPreferencePatchError",

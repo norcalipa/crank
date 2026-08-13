@@ -240,3 +240,232 @@ def query_score_summaries(
 def union_server_controlled_ids(rows: List[Dict[str, Any]]) -> List[int]:
     """Return the sorted IDs the server actually exposed via the tools."""
     return sorted({int(row.get("id")) for row in rows if row.get("id") is not None})
+
+
+# ---------------------------------------------------------------------------
+# Job-listing tools (issue #393)
+# ---------------------------------------------------------------------------
+
+MAX_JOB_LISTING_RESULTS = 25
+MAX_JOB_LISTING_QUERY_LENGTH = 120
+MAX_DESCRIPTION_EXCERPT_LENGTH = 500
+
+#: Filters the model may apply to the job-listing search. Anything else is
+#: rejected so the model cannot inject arbitrary ORM lookups.
+ALLOWED_JOB_LISTING_FILTERS = frozenset(
+    {"query", "location", "remote", "min_compensation", "organization_id", "status"}
+)
+
+#: The only ``status`` value the model may request. The server enforces
+#: ``open``/active regardless, but accepting the key keeps the tool interface
+#: explicit about what the model can ask for.
+JOB_LISTING_STATUS_VALUES = frozenset({"open"})
+
+
+def validate_job_listing_filters(filters: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Validate and normalize job-listing filter kwargs.
+
+    Raises :class:`InvalidToolInputError` for unknown keys, overlong
+    queries, non-boolean ``remote``, non-integer ``min_compensation`` or
+    ``organization_id``, or invalid ``status`` values.
+    """
+    if not filters:
+        return {}
+    if not isinstance(filters, Mapping):
+        raise InvalidToolInputError("job listing filters must be a mapping")
+    unknown = set(filters) - ALLOWED_JOB_LISTING_FILTERS
+    if unknown:
+        raise InvalidToolInputError(
+            "unknown job listing filter(s): %s" % ", ".join(sorted(unknown))
+        )
+    normalized: Dict[str, Any] = {}
+    for key in ("query", "location"):
+        value = filters.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise InvalidToolInputError("filter %r must be a string" % key)
+        value = value.strip()
+        if not value:
+            continue
+        if len(value) > MAX_JOB_LISTING_QUERY_LENGTH:
+            raise InvalidToolInputError(
+                "%s filter exceeds %d characters"
+                % (key, MAX_JOB_LISTING_QUERY_LENGTH)
+            )
+        normalized[key] = value
+    # remote: must be a real bool
+    remote = filters.get("remote")
+    if remote is not None:
+        if not isinstance(remote, bool):
+            raise InvalidToolInputError("filter 'remote' must be a boolean")
+        normalized["remote"] = remote
+    # min_compensation: positive integer
+    min_comp = filters.get("min_compensation")
+    if min_comp is not None:
+        if isinstance(min_comp, bool) or not isinstance(min_comp, int):
+            raise InvalidToolInputError("filter 'min_compensation' must be an integer")
+        if min_comp < 0:
+            raise InvalidToolInputError("filter 'min_compensation' must be non-negative")
+        normalized["min_compensation"] = min_comp
+    # organization_id: positive integer
+    org_id = filters.get("organization_id")
+    if org_id is not None:
+        if isinstance(org_id, bool) or not isinstance(org_id, int):
+            raise InvalidToolInputError("filter 'organization_id' must be an integer")
+        if org_id < 1:
+            raise InvalidToolInputError("filter 'organization_id' must be positive")
+        normalized["organization_id"] = org_id
+    # status: only "open" is allowed
+    status = filters.get("status")
+    if status is not None:
+        if not isinstance(status, str):
+            raise InvalidToolInputError("filter 'status' must be a string")
+        status = status.strip()
+        if status not in JOB_LISTING_STATUS_VALUES:
+            raise InvalidToolInputError(
+                "invalid status value %r; allowed: %s"
+                % (status, ", ".join(sorted(JOB_LISTING_STATUS_VALUES)))
+            )
+        normalized["status"] = status
+    return normalized
+
+
+def normalize_job_listing_rows(rows: List[Any]) -> List[Dict[str, Any]]:
+    """Project ORM ``JobListing`` rows to the safe, minimal dict the model sees.
+
+    Untrusted text (title, employer name, location) is relayed as-is; the
+    canonical URL always comes from the row, never invented by the model.
+    """
+    output: List[Dict[str, Any]] = []
+    for row in rows:
+        comp_min = getattr(row, "compensation_min", None)
+        comp_max = getattr(row, "compensation_max", None)
+        comp_currency = getattr(row, "compensation_currency", "") or ""
+        comp_interval = getattr(row, "compensation_interval", "") or ""
+        compensation: Optional[Dict[str, Any]]
+        if comp_min is not None or comp_max is not None:
+            compensation = {
+                "min": float(comp_min) if comp_min is not None else None,
+                "max": float(comp_max) if comp_max is not None else None,
+                "currency": str(comp_currency),
+                "interval": str(comp_interval),
+            }
+        else:
+            compensation = None
+        org = getattr(row, "organization", None)
+        output.append({
+            "id": int(row.id),
+            "title": str(getattr(row, "title", "")),
+            "organization_name": str(getattr(org, "name", "")) if org is not None else "",
+            "organization_id": int(org.id) if org is not None and getattr(org, "id", None) is not None else None,
+            "location": str(getattr(row, "location_text", "")),
+            "remote": bool(getattr(row, "is_remote", False)),
+            "compensation": compensation,
+            "canonical_url": str(getattr(row, "canonical_url", "")),
+            "observed_at": _iso_or_none(getattr(row, "last_seen_at", None)),
+            "updated_at": _iso_or_none(getattr(row, "modified", None)),
+        })
+    return output
+
+
+def _iso_or_none(value: Any) -> Optional[str]:
+    """Return an ISO-8601 string for a datetime, or ``None``."""
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def default_job_listing_datasource(
+    filters: Mapping[str, Any], limit: int
+) -> List[Any]:
+    """Server-controlled query: active/open ``JobListing`` rows only.
+
+    Import is deferred so importing this package never requires Django settings
+    to be configured. Filters are already validated by the caller.
+    """
+    from crank.models.job import JobListing
+
+    queryset = JobListing.objects.all()
+    # The default manager already filters to active listings, but be explicit.
+    queryset = queryset.filter(status=JobListing.Status.ACTIVE)
+    if filters.get("query"):
+        queryset = queryset.filter(title__icontains=filters["query"])
+    if filters.get("location"):
+        queryset = queryset.filter(location_text__icontains=filters["location"])
+    if filters.get("remote"):
+        queryset = queryset.filter(is_remote=True)
+    if filters.get("min_compensation") is not None:
+        queryset = queryset.filter(
+            compensation_min__gte=filters["min_compensation"]
+        )
+    if filters.get("organization_id") is not None:
+        queryset = queryset.filter(organization_id=filters["organization_id"])
+    # Ordering by freshness (last_seen_at desc) is the model default.
+    queryset = queryset.order_by("-last_seen_at", "-id")
+    return list(queryset[:limit])
+
+
+def search_job_listings(
+    filters: Optional[Mapping[str, Any]] = None,
+    limit: Optional[int] = None,
+    datasource: Optional[callable] = None,
+) -> List[Dict[str, Any]]:
+    """Validate the request and return bounded, normalized job-listing rows.
+
+    This is the public "tool" surface. ``datasource`` defaults to the Django
+    ORM query (active listings only) and may be injected in tests.
+    """
+    normalized = validate_job_listing_filters(filters)
+    capped = clamp_result_limit(limit, maximum=MAX_JOB_LISTING_RESULTS)
+    loader = datasource or default_job_listing_datasource
+    rows = loader(normalized, capped)
+    return normalize_job_listing_rows(rows)
+
+
+def default_job_listing_detail_datasource(
+    listing_id: int,
+) -> Optional[Any]:
+    """Server-controlled query: a single active ``JobListing`` by ID.
+
+    Import is deferred so importing this package never requires Django
+    settings to be configured.
+    """
+    from crank.models.job import JobListing
+
+    return JobListing.objects.filter(
+        id=listing_id, status=JobListing.Status.ACTIVE
+    ).first()
+
+
+def get_job_listing_detail(
+    listing_id: int,
+    datasource: Optional[callable] = None,
+) -> Optional[Dict[str, Any]]:
+    """Validate the request and return a single job-listing row, or ``None``.
+
+    ``datasource`` defaults to the Django ORM query (active listing by ID)
+    and may be injected in tests.
+    """
+    if isinstance(listing_id, bool) or not isinstance(listing_id, int):
+        raise InvalidToolInputError("listing_id must be an integer")
+    if listing_id < 1:
+        raise InvalidToolInputError("listing_id must be positive")
+    loader = datasource or default_job_listing_detail_datasource
+    row = loader(listing_id)
+    if row is None:
+        return None
+    result = normalize_job_listing_rows([row])[0]
+    # Add description excerpt for the detail view.
+    excerpt = str(getattr(row, "description_excerpt", "") or "")
+    if len(excerpt) > MAX_DESCRIPTION_EXCERPT_LENGTH:
+        excerpt = excerpt[:MAX_DESCRIPTION_EXCERPT_LENGTH]
+    result["description_excerpt"] = excerpt
+    return result
+
+
+def union_server_controlled_listing_ids(rows: List[Dict[str, Any]]) -> List[int]:
+    """Return the sorted listing IDs the server actually exposed via the tools."""
+    return sorted({int(row.get("id")) for row in rows if row.get("id") is not None})
