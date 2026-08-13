@@ -6,8 +6,7 @@ from unittest.mock import Mock, patch
 
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth.models import User
-from django.contrib.messages.storage.fallback import FallbackStorage
-from django.test import TestCase, RequestFactory, override_settings
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -122,7 +121,7 @@ class JobRetrievalOpsAdminTests(TestCase):
         self.assertIn("Configured job sources", content)
 
     def test_dashboard_shows_latest_run(self):
-        run = AgentRun.objects.create(
+        AgentRun.objects.create(
             run_type=AgentRun.RunType.JOB_PIPELINE,
             status=AgentRun.Status.SUCCEEDED,
         )
@@ -197,6 +196,16 @@ class JobRetrievalOpsAdminTests(TestCase):
         with patch.object(self.admin, "message_user"):
             self.admin.seed_execute_view(request)
         self.assertEqual(JobSourceCatalog.objects.count(), first_count)
+
+    def test_seed_execute_skips_non_allowed_hosts(self):
+        """Seed execute should skip sources whose hosts are not on the allowlist."""
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user"), patch(
+            "crank.admin_dashboard._is_allowed", return_value=False
+        ):
+            self.admin.seed_execute_view(request)
+        # No sources should be created when all hosts are disallowed
+        self.assertEqual(JobSourceCatalog.objects.count(), 0)
 
     # ── Queue retrieval ──
 

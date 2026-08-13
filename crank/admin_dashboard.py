@@ -14,14 +14,11 @@ import logging
 from urllib.parse import urlsplit
 
 from django.conf import settings
-from django.contrib import admin
-from django.contrib import messages
-from django.db import transaction
+from django.contrib import admin, messages
 from django.shortcuts import redirect
 from django.template.response import TemplateResponse
 from django.urls import reverse
 from django.utils import timezone
-from django.utils.html import format_html
 
 from crank.admin import StaffOnlyAdminMixin
 from crank.agents.jobs.base import APPROVED_JOB_SOURCE_DOMAINS
@@ -31,7 +28,6 @@ from crank.models.employer import UnresolvedEmployer
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.monitoring import OperationalChangeAudit
-from crank.services import agent_runs as agent_runs_svc
 from crank.services import monitoring
 
 logger = logging.getLogger(__name__)
@@ -253,7 +249,7 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
             if not _is_allowed(host):
                 skipped += 1
                 continue
-            obj, created_flag = JobSourceCatalog.objects.update_or_create(
+            _obj, created_flag = JobSourceCatalog.objects.update_or_create(
                 name=entry["name"],
                 defaults={
                     "adapter_key": entry["adapter_key"],
