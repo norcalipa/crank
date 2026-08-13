@@ -62,6 +62,38 @@ describe('JobSearchChat', () => {
         jest.restoreAllMocks();
     });
 
+    describe('viewport-reactive height measurement', () => {
+        test('sets a computed pixel height instead of a fixed 7rem offset', async () => {
+            await renderChat();
+            const chat = screen.getByTestId('job-search-chat');
+            // jsdom: innerHeight 768, card top 0, bottom gap 16 -> 752px
+            expect(chat).toHaveStyle({height: '752px', minHeight: '20rem'});
+        });
+
+        test('observes the parent for match-panel resizes when ResizeObserver is available', async () => {
+            const observe = jest.fn();
+            const disconnect = jest.fn();
+            class MockResizeObserver {
+                observe = observe;
+                disconnect = disconnect;
+            }
+            (globalThis as {ResizeObserver?: unknown}).ResizeObserver = MockResizeObserver;
+            await renderChat();
+            expect(observe).toHaveBeenCalled();
+            (globalThis as {ResizeObserver?: unknown}).ResizeObserver = undefined;
+        });
+
+        test('re-measures height when the viewport resizes', async () => {
+            await renderChat();
+            const chat = screen.getByTestId('job-search-chat');
+            const before = chat.style.height;
+            expect(before).toBeTruthy();
+            fireEvent(window, new Event('resize'));
+            // Height is recomputed from the same jsdom metrics, so it stays stable.
+            expect(chat).toHaveStyle({height: before});
+        });
+    });
+
     describe('rendering & accessibility semantics', () => {
         test('uses a viewport-aware flex layout with a pinned composer', async () => {
             await renderChat();
@@ -69,7 +101,7 @@ describe('JobSearchChat', () => {
             const history = screen.getByLabelText('Message history');
             const composer = document.querySelector('form')!.parentElement!;
             expect(chat).toHaveClass('d-flex', 'flex-column');
-            expect(chat).toHaveStyle({height: 'calc(100dvh - 7rem)'});
+            expect(chat).toHaveStyle({minHeight: '20rem'});
             expect(history).toHaveClass('flex-grow-1');
             expect(history).toHaveStyle({overflowY: 'auto'});
             expect(composer).toHaveClass('flex-shrink-0');

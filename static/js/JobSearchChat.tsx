@@ -234,7 +234,6 @@ const JobSearchChat: React.FC = () => {
     const lastSent = React.useRef<{content: string; key: string} | null>(null);
     const statusRef = React.useRef<HTMLDivElement>(null);
     const historyRef = React.useRef<HTMLDivElement>(null);
-
     // Auto-resize the composer textarea up to a bounded max rows.
     const MAX_COMPOSER_ROWS = 6;
     const composerRef = React.useRef<HTMLTextAreaElement>(null);
@@ -261,8 +260,50 @@ const JobSearchChat: React.FC = () => {
             window.visualViewport?.removeEventListener('resize', adjustComposerHeight);
         };
     }, [adjustComposerHeight, input]);
+    const cardRef = React.useRef<HTMLElement>(null);
     const nearBottomRef = React.useRef(true);
     const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
+    const [cardHeight, setCardHeight] = React.useState<number | null>(null);
+
+    // Measure the actual vertical space left after the page header, match panel,
+    // and margins so the chat card fits the viewport instead of assuming a fixed
+    // 7rem header offset. This keeps the composer visible and makes history the
+    // single intentional scroll region.
+    const measureCardHeight = React.useCallback(() => {
+        const card = cardRef.current;
+        if (!card) return;
+        const viewport = window.visualViewport;
+        const viewportHeight = viewport ? viewport.height : window.innerHeight;
+        const top = card.getBoundingClientRect().top;
+        const bottomGap = 16; // breathing room above the page bottom
+        const computed = viewportHeight - top - bottomGap;
+        setCardHeight(Math.max(computed, 320));
+    }, []);
+
+    React.useEffect(() => {
+        measureCardHeight();
+        window.addEventListener('resize', measureCardHeight);
+        window.visualViewport?.addEventListener('resize', measureCardHeight);
+        // Watch the card's offset parent so a match-panel resize above the chat
+        // (e.g. empty -> results) re-measures the available height.
+        let observer: ResizeObserver | null = null;
+        if (typeof ResizeObserver !== 'undefined' && cardRef.current?.parentElement) {
+            observer = new ResizeObserver(() => measureCardHeight());
+            observer.observe(cardRef.current.parentElement);
+        }
+        return () => {
+            window.removeEventListener('resize', measureCardHeight);
+            window.visualViewport?.removeEventListener('resize', measureCardHeight);
+            observer?.disconnect();
+        };
+    }, [measureCardHeight]);
+
+    const chatCardStyle = React.useMemo<React.CSSProperties>(() => {
+        if (cardHeight !== null) {
+            return {height: `${cardHeight}px`, minHeight: '20rem'};
+        }
+        return {minHeight: '20rem'};
+    }, [cardHeight]);
 
     const prefersReducedMotion = (): boolean => (
         typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -551,7 +592,8 @@ const JobSearchChat: React.FC = () => {
     return (
         <section className="card bg-dark d-flex flex-column" data-testid="job-search-chat"
                  aria-labelledby="job-search-chat-title"
-                 style={{height: 'calc(100dvh - 7rem)', minHeight: '20rem'}}>
+                 ref={cardRef}
+                 style={chatCardStyle}>
             <div className="card-header d-flex justify-content-between align-items-center">
                 <h2 id="job-search-chat-title" className="h6 mb-0">Conversation</h2>
                 <div className="btn-group btn-group-sm flex-wrap" role="group" aria-label="Conversation controls">
