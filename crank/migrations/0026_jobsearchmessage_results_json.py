@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("crank", "0023_alter_agentrun_run_type_crawlrun"),
+        ("crank", "0025_alter_userpreference_schema_version_and_more"),
     ]
 
     operations = [
