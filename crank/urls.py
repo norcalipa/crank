@@ -49,6 +49,7 @@ from crank.views.job_search import (
     agent_conversation_reset,
 )
 from crank.views.logout import CustomLogoutView
+from crank.views.release_diagnostics import release_diagnostics
 from crank.views.rtopolicy import RTOPolicyChoicesView
 
 app_name = "crank"
@@ -79,6 +80,7 @@ urlpatterns = [
     path('api/job-matches/ranked/', job_match_ranked, name='job-match-ranked'),
     path('help/', HelpView.as_view(), name='help'),
     path('privacy/', PrivacyView.as_view(), name='privacy'),
+    path('staff/release-diagnostics/', release_diagnostics, name='release-diagnostics'),
     path('api-auth/', include('rest_framework.urls')),
     path('accounts/logout/', CustomLogoutView.as_view(), name='account_logout'),
     path('accounts/', include('allauth.urls')),
