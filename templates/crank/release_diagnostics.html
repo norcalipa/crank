@@ -1,0 +1,45 @@
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
+{% extends "base.html" %}
+{% block head_title %}Release Diagnostics — CRank{% endblock %}
+{% block content %}
+<div class="container mt-4 readable-page-container">
+    <h1>Release Diagnostics</h1>
+    <p class="lead">Deploy-integrity signals for the currently running release. Secrets and user content are never shown.</p>
+
+    <h2>Build Identifiers</h2>
+    <table class="table table-striped">
+        <tbody>
+            <tr><th scope="row">Backend git SHA / image identifier</th><td>{{ diagnostics.git_sha }}</td></tr>
+            <tr><th scope="row">Frontend webpack build identifier</th><td>{{ diagnostics.frontend_build_id }}</td></tr>
+        </tbody>
+    </table>
+
+    <h2>Migrations</h2>
+    <table class="table table-striped">
+        <tbody>
+            <tr><th scope="row">Status</th><td>{{ diagnostics.migrations.status }}</td></tr>
+            <tr><th scope="row">Applied</th><td>{{ diagnostics.migrations.applied_count }}</td></tr>
+            <tr><th scope="row">Pending</th><td>{{ diagnostics.migrations.pending_count }}</td></tr>
+        </tbody>
+    </table>
+
+    <h2>Feature Modes</h2>
+    <table class="table table-striped">
+        <tbody>
+            <tr><th scope="row">Job search provider</th><td>{{ diagnostics.config.job_search_provider }}</td></tr>
+            <tr><th scope="row">LLM configured</th><td>{{ diagnostics.config.llm_configured }}</td></tr>
+            <tr><th scope="row">Job pipeline enabled</th><td>{{ diagnostics.config.job_pipeline_enabled }}</td></tr>
+            <tr><th scope="row">Crawl scheduling enabled</th><td>{{ diagnostics.config.crawl_scheduling_enabled }}</td></tr>
+        </tbody>
+    </table>
+
+    <h2>Data Counts</h2>
+    <table class="table table-striped">
+        <tbody>
+            <tr><th scope="row">Job source catalog entries</th><td>{{ diagnostics.counts.job_source_catalog_count }}</td></tr>
+            <tr><th scope="row">Active job listings</th><td>{{ diagnostics.counts.active_job_listing_count }}</td></tr>
+        </tbody>
+    </table>
+</div>
+{% endblock %}
