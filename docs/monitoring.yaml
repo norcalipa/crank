@@ -30,6 +30,11 @@ widgets:
     nrql: >-
       SELECT latest(freshness_seconds) FROM CrankOperation
       WHERE event_name = 'source_stage' FACET source_key SINCE 24 hours ago
+  - name: Job inventory health
+    nrql: >-
+      SELECT latest(sources_total), latest(enabled_sources), latest(active_listings),
+      latest(stale_sources), latest(repeated_failure_sources), latest(collapsed_sources)
+      FROM CrankOperation WHERE event_name = 'inventory_health' SINCE 24 hours ago
   - name: Estimated cost and token throughput
     nrql: >-
       SELECT sum(estimated_cost_usd), sum(total_tokens), count(*)
@@ -65,3 +70,28 @@ alerts:
     nrql: "SELECT sum(users_failed) FROM CrankOperation WHERE event_name = 'matching_batch' SINCE 30 minutes ago"
     threshold: 10
     recovery: "Inspect deadline/resource pressure and keep the job_pipeline capability disabled until safe."
+  - name: zero-enabled-sources
+    nrql: "SELECT count(*) FROM CrankOperation WHERE event_name = 'inventory_health' AND enabled_sources = 0 SINCE 30 minutes ago"
+    threshold: 1
+    operator: above
+    recovery: "Run seed_job_sources --dry-run then seed_job_sources; verify with crawl_status."
+  - name: zero-active-listings
+    nrql: "SELECT count(*) FROM CrankOperation WHERE event_name = 'inventory_health' AND active_listings = 0 AND enabled_sources > 0 SINCE 30 minutes ago"
+    threshold: 1
+    operator: above
+    recovery: "Run crawl_status and trigger one bounded crawl; check provider credentials and adapter state."
+  - name: stale-inventory
+    nrql: "SELECT count(*) FROM CrankOperation WHERE event_name = 'inventory_health' AND stale_sources > 0 SINCE 30 minutes ago"
+    threshold: 1
+    operator: above
+    recovery: "Verify CRAWL_CRON_ENABLED and the crawl CronJobs are unsuspended, then run a bounded schedule_crawls."
+  - name: repeated-failures
+    nrql: "SELECT count(*) FROM CrankOperation WHERE event_name = 'inventory_health' AND repeated_failure_sources > 0 SINCE 30 minutes ago"
+    threshold: 1
+    operator: above
+    recovery: "Inspect sanitized CrawlRun history, isolate the failing source, and re-enable only after a confirmed healthy run."
+  - name: listing-collapse
+    nrql: "SELECT count(*) FROM CrankOperation WHERE event_name = 'inventory_health' AND collapsed_sources > 0 SINCE 30 minutes ago"
+    threshold: 1
+    operator: above
+    recovery: "Inspect the source that lost all active listings and re-run a bounded crawl before re-seeding or re-enabling."

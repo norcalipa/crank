@@ -396,6 +396,9 @@ CRAWL_MAX_SOURCES = _env_int("CRAWL_MAX_SOURCES", 10)
 CRAWL_MAX_JOB_LISTINGS = _env_int("CRAWL_MAX_JOB_LISTINGS", 100)
 CRAWL_MAX_PAGES = _env_int("CRAWL_MAX_PAGES", 10)
 CRAWL_DEADLINE_SECONDS = _env_int("CRAWL_DEADLINE_SECONDS", 300)
+# Consecutive failed crawls that mark a source as repeatedly failing in the
+# read-only inventory health check. Operators can lower it for tighter alerts.
+CRAWL_REPEATED_FAILURE_THRESHOLD = _env_int("CRAWL_REPEATED_FAILURE_THRESHOLD", 3)
 # Staleness TTL (seconds): a RUNNING claim older than this is treated as a
 # crashed/stale lock and reclaimed by the next claim for the same run type.
 AGENT_RUN_STALE_AFTER_SECONDS = _env_int("AGENT_RUN_STALE_AFTER_SECONDS", 3600)

@@ -27,6 +27,7 @@ EVENT_NAMES = frozenset(
         "crawl_run_started",
         "crawl_run_completed",
         "crawl_run_failed",
+        "inventory_health",
     }
 )
 
@@ -77,6 +78,13 @@ _SAFE_KEYS = frozenset(
         "jobs_total",
         "provider",
         "model",
+        "enabled_sources",
+        "active_listings",
+        "stale_sources",
+        "repeated_failure_sources",
+        "collapsed_sources",
+        "unregistered_adapter_sources",
+        "healthy",
     }
 )
 _SENSITIVE_KEY = re.compile(r"(?i)(response|body|content|secret|credential)")
