@@ -88,24 +88,6 @@ table.organization-table tr.organization-row:hover td {
     background-color: rgba(255, 255, 255, 0.05) !important;
 }
 
-/* Prevent blinking cursor and unwanted focus effects */
-.organization-table,
-.organization-table *,
-.organization-row,
-.organization-row * {
-    outline: none !important;
-    caret-color: transparent !important;
-}
-
-/* Ensure the entire document doesn't show unwanted focus indicators */
-body:focus, 
-div:focus,
-table:focus,
-tr:focus,
-td:focus {
-    outline: none !important;
-    caret-color: transparent !important;
-} 
 /* Shared responsive layout primitives. Keep content inside the viewport on phones. */
 html, body {
     max-width: 100%;
@@ -209,6 +191,11 @@ html, body {
 
 .organization-table-wrap {
     overflow-x: auto;
+    /* Prevent an inner vertical scrollbar: `overflow-x: auto` alone makes
+       `overflow-y` compute to `auto`, which produces a needless vertical
+       scrollbar when a horizontal scrollbar is present. The wrapper sizes
+       to its content, so `hidden` never clips real rows. */
+    overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
     border: 1px solid var(--bs-border-color);
     border-radius: var(--bs-border-radius);
@@ -238,6 +225,7 @@ html, body {
 
 .organization-card:focus-visible,
 .organization-row:focus-visible,
+.organization-table-wrap:focus-visible,
 .scoring-summary:focus-visible,
 .navbar-actions .btn:focus-visible,
 .navbar-brand:focus-visible {
