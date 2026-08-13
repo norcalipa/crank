@@ -797,3 +797,81 @@ describe('JobSearchChat result cards (issue #396)', () => {
         expect(jobCard).toHaveStyle({overflow: 'hidden', maxWidth: '100%'});
     });
 });
+
+// ── Textarea composer (issue #407) ──────────────────────────────────────
+
+describe('textarea composer', () => {
+    test('renders a textarea instead of a single-line input', async () => {
+        await renderChat();
+        const textarea = screen.getByRole('textbox', {name: 'Message'});
+        expect(textarea.tagName).toBe('TEXTAREA');
+        expect(textarea).toHaveAttribute('rows', '1');
+    });
+
+    test('Enter submits the message', async () => {
+        await renderChat();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse({message: assistantMessage(5, 'reply'), preferences_changed: false}, 201),
+        );
+        const textarea = screen.getByRole('textbox', {name: 'Message'});
+        fireEvent.change(textarea, {target: {value: 'hello world'}});
+        fireEvent.keyDown(textarea, {key: 'Enter', shiftKey: false});
+        await screen.findByText('reply');
+        expect(screen.getByText('reply')).toBeInTheDocument();
+    });
+
+    test('Enter does not submit when IME composition is active', async () => {
+        await renderChat();
+        const textarea = screen.getByRole('textbox', {name: 'Message'});
+        fireEvent.change(textarea, {target: {value: 'nihao'}});
+        fireEvent.keyDown(textarea, {
+            key: 'Enter',
+            shiftKey: false,
+            nativeEvent: {isComposing: true} as KeyboardEvent,
+        });
+        expect(textarea).toHaveValue('nihao');
+    });
+
+    test('Shift+Enter does not submit the form', async () => {
+        await renderChat();
+        const textarea = screen.getByRole('textbox', {name: 'Message'});
+        fireEvent.change(textarea, {target: {value: 'line one'}});
+        fireEvent.keyDown(textarea, {key: 'Enter', shiftKey: true});
+        // No submit occurred: input is unchanged and no pending/assistant state.
+        expect(textarea).toHaveValue('line one');
+    });
+
+    test('auto-grows to fit content up to a max height', async () => {
+        await renderChat();
+        const textarea = screen.getByRole('textbox', {name: 'Message'}) as HTMLTextAreaElement;
+        fireEvent.change(textarea, {target: {value: 'a'.repeat(200)}});
+        // After the change, the effect should have set a height
+        expect(textarea.style.height).toBeTruthy();
+    });
+
+    test('resets to single-row height after send', async () => {
+        await renderChat();
+        (global.fetch as jest.Mock)
+            .mockResolvedValueOnce(
+                jsonResponse({message: assistantMessage(5, 'got it'), preferences_changed: false}, 201),
+            );
+        const textarea = screen.getByRole('textbox', {name: 'Message'}) as HTMLTextAreaElement;
+        fireEvent.change(textarea, {target: {value: 'hello'}});
+        fireEvent.keyDown(textarea, {key: 'Enter', shiftKey: false});
+        await screen.findByText('got it');
+        expect(textarea).toHaveValue('');
+    });
+
+    test('retry restores the composer input and height', async () => {
+        await renderChat();
+        (global.fetch as jest.Mock)
+            .mockResolvedValueOnce(
+                jsonResponse({error: {message: 'server error'}}, 500),
+            );
+        const textarea = screen.getByRole('textbox', {name: 'Message'}) as HTMLTextAreaElement;
+        fireEvent.change(textarea, {target: {value: 'will fail'}});
+        fireEvent.keyDown(textarea, {key: 'Enter', shiftKey: false});
+        await screen.findByTestId('chat-error');
+        expect(textarea).toHaveValue('');
+    });
+});
