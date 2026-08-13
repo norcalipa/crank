@@ -277,7 +277,7 @@ class OrchestratorJobSearchProvider:
                 ) from exc
             raise
 
-        return result.message, result.preferences_changed
+        return result.message, result.preferences_changed, result.results
 
     # -- helpers -----------------------------------------------------------
 

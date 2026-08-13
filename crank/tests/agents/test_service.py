@@ -413,3 +413,115 @@ class TestJobListingCitations:
         )
         assert result.cited_job_listing_ids == ()
         assert result.message == "No jobs currently match."
+
+
+class TestStructuredResultsBuilding:
+    """Verify the orchestrator builds structured results from cited IDs."""
+
+    def _make_orchestrator(self, gateway, orgs=None, listings=None):
+        return JobSearchOrchestrator(
+            gateway=gateway,
+            preference_service=FakePreferenceService(),
+            org_datasource=lambda filters, limit: orgs if orgs is not None else [ORG_ACME, ORG_GLOBEX],
+            score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: listings or [],
+        )
+
+    def test_results_none_when_no_citations(self):
+        gw = FakeGateway({
+            "message": "Hello!",
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [],
+            "preference_patch": None,
+        })
+        result = self._make_orchestrator(gw).run(
+            user_prompt="hi", conversation=[], preference_markdown="",
+        )
+        assert result.results is None
+
+    def test_results_contain_cited_organizations(self):
+        gw = FakeGateway({
+            "message": "Check Acme.",
+            "cited_organization_ids": [1],
+            "cited_job_listing_ids": [],
+            "preference_patch": None,
+        })
+        result = self._make_orchestrator(gw).run(
+            user_prompt="recommend", conversation=[], preference_markdown="",
+        )
+        assert result.results is not None
+        assert len(result.results.organizations) == 1
+        assert result.results.organizations[0].name == "Acme Inc"
+        assert result.results.organizations[0].funding_round == "A"
+        assert len(result.results.jobs) == 0
+
+    def test_results_contain_cited_jobs(self):
+        JOB1 = SimpleNamespace(
+            id=10, title="Engineer", organization=ORG_ACME,
+            location_text="SF", is_remote=True,
+            compensation_min=100000, compensation_max=200000,
+            compensation_currency="USD", compensation_interval="year",
+            canonical_url="https://acme.example/jobs/10",
+            last_seen_at=None, modified=None,
+        )
+        gw = FakeGateway({
+            "message": "Check this job.",
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [10],
+            "preference_patch": None,
+        })
+        result = self._make_orchestrator(gw, listings=[JOB1]).run(
+            user_prompt="jobs?", conversation=[], preference_markdown="",
+        )
+        assert result.results is not None
+        assert len(result.results.jobs) == 1
+        assert result.results.jobs[0].title == "Engineer"
+        assert result.results.jobs[0].organization_name == "Acme Inc"
+        assert result.results.jobs[0].remote is True
+        assert result.results.jobs[0].compensation["min"] == 100000
+        assert result.results.jobs[0].canonical_url == "https://acme.example/jobs/10"
+        assert len(result.results.organizations) == 0
+
+    def test_results_only_include_cited_ids(self):
+        """Results must not include uncited rows even if the server exposed them."""
+        JOB1 = SimpleNamespace(
+            id=10, title="Engineer", organization=ORG_ACME,
+            location_text="SF", is_remote=False,
+            compensation_min=None, compensation_max=None,
+            compensation_currency="", compensation_interval="",
+            canonical_url="https://acme.example/jobs/10",
+            last_seen_at=None, modified=None,
+        )
+        gw = FakeGateway({
+            "message": "Check Acme.",
+            "cited_organization_ids": [1],
+            "cited_job_listing_ids": [10],
+            "preference_patch": None,
+        })
+        result = self._make_orchestrator(gw, listings=[JOB1]).run(
+            user_prompt="recommend", conversation=[], preference_markdown="",
+        )
+        assert result.results is not None
+        assert len(result.results.organizations) == 1
+        assert result.results.organizations[0].id == 1
+        assert len(result.results.jobs) == 1
+        assert result.results.jobs[0].id == 10
+
+    def test_results_to_json_dict_round_trip(self):
+        gw = FakeGateway({
+            "message": "Check Acme.",
+            "cited_organization_ids": [1],
+            "cited_job_listing_ids": [],
+            "preference_patch": None,
+        })
+        result = self._make_orchestrator(gw).run(
+            user_prompt="recommend", conversation=[], preference_markdown="",
+        )
+        d = result.results.to_json_dict()
+        assert "jobs" in d
+        assert "organizations" in d
+        assert d["organizations"][0]["name"] == "Acme Inc"
+        from crank.agents.job_search.types import StructuredResults
+        restored = StructuredResults.from_json_dict(d)
+        assert len(restored.organizations) == 1
+        assert restored.organizations[0].name == "Acme Inc"

@@ -63,6 +63,12 @@ class JobSearchMessage(TimeStampedModel):
         db_index=True,
         help_text="Client-supplied key so retried submissions do not duplicate messages.",
     )
+    results_json = models.TextField(
+        blank=True,
+        default="",
+        help_text="Bounded JSON of citation-validated structured results (job/org cards), "
+                  "persisted so history renders identically on reload.",
+    )
 
     class Meta:
         app_label = "crank"

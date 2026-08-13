@@ -260,7 +260,7 @@ class OrchestratorProviderTests(SimpleTestCase):
             "_get_preference_markdown",
             return_value="",
         ):
-            reply, changed = provider.generate_reply(
+            reply, changed, _ = provider.generate_reply(
                 conversation=conv, user_message="recommend seed startups"
             )
         self.assertIn("Globex", reply)
@@ -286,7 +286,7 @@ class OrchestratorProviderTests(SimpleTestCase):
             "_get_preference_markdown",
             return_value="",
         ):
-            reply, changed = provider.generate_reply(
+            reply, changed, _ = provider.generate_reply(
                 conversation=conv, user_message="prefer seed"
             )
         self.assertTrue(changed)
@@ -462,7 +462,7 @@ class OrchestratorProviderIntegrationTests(TestCase):
             "_get_preference_markdown",
             return_value="",
         ):
-            reply, changed = provider.generate_reply(
+            reply, changed, results = provider.generate_reply(
                 conversation=conv, user_message="what about seed startups?"
             )
         self.assertIn("Globex", reply)

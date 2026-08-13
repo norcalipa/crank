@@ -453,3 +453,25 @@ html, body {
         grid-column: auto;
     }
 }
+
+/* Job-search result cards (issue #396) */
+.job-card, .org-card {
+    box-sizing: border-box;
+    max-width: 100%;
+    overflow-wrap: break-word;
+    word-break: break-word;
+}
+
+.job-card a, .org-card a {
+    word-break: break-all;
+}
+
+@media (max-width: 390px) {
+    .job-card, .org-card {
+        padding: 0.5rem;
+        font-size: 0.875rem;
+    }
+    .job-card strong, .org-card strong {
+        font-size: 0.9rem;
+    }
+}

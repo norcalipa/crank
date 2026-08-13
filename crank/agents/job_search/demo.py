@@ -63,7 +63,7 @@ class DemoJobSearchProvider:
     ASSISTANT_NAME = "CRank Career Assistant"
 
     def generate_reply(self, *, conversation, user_message):
-        """Return ``(reply_text, preferences_changed)`` for a single turn."""
+        """Return ``(reply_text, preferences_changed, results)`` for a single turn."""
         text = (user_message or "").strip()
         turn_number = conversation.messages.filter(role="user").count()
         changed = any(hint in text.lower() for hint in self.PREFERENCE_HINTS)
@@ -84,7 +84,7 @@ class DemoJobSearchProvider:
                 f"reviewing the organizations that match '{text}'. I'll keep "
                 f"refining the match as we go."
             )
-        return reply, changed
+        return reply, changed, None
 
 
 def _build_provider():
@@ -113,13 +113,14 @@ class JobSearchService:
         self.provider = provider or _build_provider()
 
     def run_turn(self, *, conversation, user_message):
-        """Run one turn; returns ``(reply_text, preferences_changed)``.
+        """Run one turn; returns ``(reply_text, preferences_changed, results)``.
 
+        ``results`` is an optional :class:`StructuredResults` (or ``None``).
         Raises :class:`JobSearchServiceError` when the provider fails so the
         view can return a stable 500 without persisting a duplicate message.
         """
         try:
-            reply_text, changed = self.provider.generate_reply(
+            reply_text, changed, results = self.provider.generate_reply(
                 conversation=conversation, user_message=user_message
             )
         except Exception as exc:  # provider failure -> stable service error
@@ -135,4 +136,4 @@ class JobSearchService:
         max_len = getattr(settings, "JOB_SEARCH_RESPONSE_MAX_LEN", 8000)
         if len(reply_text) > max_len:
             reply_text = reply_text[:max_len]
-        return (reply_text or "").strip(), bool(changed)
+        return (reply_text or "").strip(), bool(changed), results

@@ -3,12 +3,43 @@
 import * as React from 'react';
 import {createRoot} from 'react-dom/client';
 
+export interface JobResult {
+    id: number;
+    title: string;
+    organization_name: string;
+    location: string;
+    remote: boolean;
+    compensation: {
+        min: number | null;
+        max: number | null;
+        currency: string;
+        interval: string;
+    } | null;
+    canonical_url: string;
+    observed_at: string | null;
+    updated_at: string | null;
+}
+
+export interface OrganizationResult {
+    id: number;
+    name: string;
+    url: string;
+    funding_round: string;
+    rto_policy: string;
+}
+
+export interface StructuredResults {
+    jobs: JobResult[];
+    organizations: OrganizationResult[];
+}
+
 export interface ChatMessage {
     id: number;
     role: 'user' | 'assistant';
     content: string;
     preferences_changed: boolean;
     created: string | null;
+    results: StructuredResults | null;
 }
 
 interface Conversation {
@@ -58,6 +89,133 @@ async function csrfFetch(url: string, init: RequestInit = {}): Promise<Response>
         headers['Content-Type'] = 'application/json';
     }
     return fetch(url, {...init, headers});
+}
+
+function formatCompensation(comp: JobResult['compensation']): string {
+    if (!comp) return '';
+    const parts: string[] = [];
+    const fmt = (v: number | null) => v !== null ? v.toLocaleString() : '';
+    if (comp.min !== null && comp.max !== null) {
+        parts.push(`${fmt(comp.min)}-${fmt(comp.max)}`);
+    } else if (comp.min !== null) {
+        parts.push(`${fmt(comp.min)}+`);
+    } else if (comp.max !== null) {
+        parts.push(`up to ${fmt(comp.max)}`);
+    }
+    if (comp.currency) parts.push(comp.currency);
+    if (comp.interval) parts.push(comp.interval);
+    return parts.join(' ');
+}
+
+function fundingRoundLabel(code: string): string {
+    const map: Record<string, string> = {
+        S: 'Seed', A: 'Series A', B: 'Series B', C: 'Series C',
+        D: 'Series D', E: 'Series E', F: 'Series F',
+        X: 'Late Stage', O: 'IPO', P: 'Pre-IPO',
+    };
+    return map[code] || code || '';
+}
+
+function rtoPolicyLabel(code: string): string {
+    const map: Record<string, string> = {
+        R: 'Remote', H: 'Hybrid', O: 'On-site',
+    };
+    return map[code] || code || '';
+}
+
+function JobCard({job}: {job: JobResult}) {
+    const comp = formatCompensation(job.compensation);
+    const freshness = job.observed_at
+        ? new Date(job.observed_at).toLocaleDateString(undefined, {month: 'short', day: 'numeric'})
+        : '';
+    return (
+        <article
+            className="job-card border rounded p-2 mb-2"
+            tabIndex={0}
+            role="article"
+            aria-label={`Job: ${job.title} at ${job.organization_name}`}
+            style={{maxWidth: '100%', overflow: 'hidden'}}
+        >
+            <div className="d-flex justify-content-between align-items-start flex-wrap">
+                <strong className="text-break" style={{maxWidth: '100%'}}>{job.title}</strong>
+                {freshness && <small className="text-muted text-nowrap ms-2">{freshness}</small>}
+            </div>
+            <div className="text-muted small">
+                {job.organization_name}{job.location ? ` · ${job.location}` : ''}
+                {job.remote ? ' · Remote' : ''}
+            </div>
+            {comp && <div className="small">{comp}</div>}
+            {job.canonical_url && (
+                <a
+                    href={job.canonical_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="small d-inline-block mt-1"
+                    aria-label={`Open listing for ${job.title} (opens in a new tab)`}
+                >
+                    View listing ↗
+                </a>
+            )}
+        </article>
+    );
+}
+
+function OrgCard({org}: {org: OrganizationResult}) {
+    const funding = fundingRoundLabel(org.funding_round);
+    const rto = rtoPolicyLabel(org.rto_policy);
+    return (
+        <article
+            className="org-card border rounded p-2 mb-2"
+            tabIndex={0}
+            role="article"
+            aria-label={`Organization: ${org.name}`}
+            style={{maxWidth: '100%', overflow: 'hidden'}}
+        >
+            <strong className="text-break" style={{maxWidth: '100%'}}>{org.name}</strong>
+            <div className="text-muted small">
+                {funding && <span>{funding}</span>}
+                {funding && rto && ' · '}
+                {rto && <span>{rto}</span>}
+            </div>
+            {org.url && (
+                <a
+                    href={org.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="small d-inline-block mt-1"
+                    aria-label={`View details for ${org.name} (opens in a new tab)`}
+                >
+                    Details ↗
+                </a>
+            )}
+        </article>
+    );
+}
+
+function ResultCards({results}: {results: StructuredResults}) {
+    const hasJobs = results.jobs && results.jobs.length > 0;
+    const hasOrgs = results.organizations && results.organizations.length > 0;
+    if (!hasJobs && !hasOrgs) return null;
+    return (
+        <div className="mt-2" data-testid="result-cards">
+            {hasJobs && (
+                <div>
+                    <h3 className="h6 small text-muted mb-1">Job Listings</h3>
+                    {results.jobs.map((job) => (
+                        <JobCard key={`job-${job.id}`} job={job} />
+                    ))}
+                </div>
+            )}
+            {hasOrgs && (
+                <div>
+                    <h3 className="h6 small text-muted mb-1">Organizations</h3>
+                    {results.organizations.map((org) => (
+                        <OrgCard key={`org-${org.id}`} org={org} />
+                    ))}
+                </div>
+            )}
+        </div>
+    );
 }
 
 const JobSearchChat: React.FC = () => {
@@ -231,6 +389,7 @@ const JobSearchChat: React.FC = () => {
             content,
             preferences_changed: false,
             created: new Date().toISOString(),
+            results: null,
         };
         setMessages((prev) => [...prev, optimisticUser]);
 
@@ -409,15 +568,18 @@ const JobSearchChat: React.FC = () => {
                                 Ask about compensation, work location, funding, or culture to get started.
                             </p>
                         )}
-                        {messages.map((m) => (
-                            <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
-                                     className={`d-flex ${m.role === 'user' ? 'justify-content-end' : 'justify-content-start'} mb-2`}>
-                                <div className={`rounded p-2 ${m.role === 'user' ? 'bg-primary' : 'bg-secondary'}`}
-                                     style={{maxWidth: '80%', whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>
-                                    {m.content}
-                                </div>
-                            </article>
-                        ))}
+                            {messages.map((m) => (
+                                <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
+                                         className={`d-flex ${m.role === 'user' ? 'justify-content-end' : 'justify-content-start'} mb-2`}>
+                                    <div className={`rounded p-2 ${m.role === 'user' ? 'bg-primary' : 'bg-secondary'}`}
+                                         style={{maxWidth: '80%', whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>
+                                        {m.content}
+                                        {m.role === 'assistant' && m.results && (
+                                            <ResultCards results={m.results} />
+                                        )}
+                                    </div>
+                                </article>
+                            ))}
                         {pending && (
                             <div className="text-muted" role="status" aria-live="polite" data-testid="pending-status">
                                 <i className="fa-solid fa-spinner fa-spin me-1"></i>Assistant is typing…
