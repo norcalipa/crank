@@ -88,11 +88,22 @@ class DemoJobSearchProvider:
 
 
 def _build_provider():
-    """Resolve the configured provider (the bounded demo for phase 1)."""
+    """Resolve the configured provider (demo by default, orchestrator for production)."""
     name = getattr(settings, "JOB_SEARCH_PROVIDER", "demo")
     if name == "demo":
         return DemoJobSearchProvider()
-    raise JobSearchServiceError("Unknown JOB_SEARCH_PROVIDER: {!r}".format(name))
+    if name == "orchestrator":
+        from crank.agents.job_search.providers import OrchestratorJobSearchProvider
+        try:
+            return OrchestratorJobSearchProvider()
+        except Exception as exc:
+            # Surface config errors (e.g. missing API key) as a friendly service
+            # error so the view returns a stable message, not a 500 crash.
+            raise JobSearchServiceError(
+                "The job-search assistant could not be started. "
+                "Please try again later or contact support."
+            ) from exc
+    raise JobSearchServiceError(f"Unknown JOB_SEARCH_PROVIDER: {name!r}")
 
 
 class JobSearchService:

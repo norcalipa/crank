@@ -24,8 +24,14 @@ import importlib
 import json
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Protocol, runtime_checkable
+from typing import (
+    Any,
+    Literal,
+    Protocol,
+    runtime_checkable,
+)
 
 # ---------------------------------------------------------------------------
 # Exceptions (provider-neutral, redaction-safe)
@@ -65,16 +71,16 @@ class LLMSchemaError(LLMError):
 # lifetime of the gateway process. DOCUMENTED LIMITATION: it is not durable
 # across restarts nor shared horizontally across processes/workers, so it is a
 # best-effort per-process guard, not an authoritative accounting ledger.
-_PER_USER_SPEND: Dict[str, float] = {}
+_PER_USER_SPEND: dict[str, float] = {}
 
 # A lazy, shared executor lets ``complete()`` enforce a wall-clock timeout on a
 # blocking synchronous SDK call without leaking a fresh thread per invocation
 # or blocking on shutdown of a hung worker.
-_executor: Optional["concurrent.futures.ThreadPoolExecutor"] = None
+_executor: concurrent.futures.ThreadPoolExecutor | None = None
 _executor_lock = threading.Lock()
 
 
-def _gateway_executor() -> "concurrent.futures.ThreadPoolExecutor":
+def _gateway_executor() -> concurrent.futures.ThreadPoolExecutor:
     """Return the shared (lazily created) gateway executor."""
     global _executor
     if _executor is None:
@@ -96,7 +102,7 @@ def get_per_user_spend(user_id: str) -> float:
     return _PER_USER_SPEND.get(user_id, 0.0)
 
 
-def _record_per_user_spend(user_id: Optional[str], cost_usd: float) -> None:
+def _record_per_user_spend(user_id: str | None, cost_usd: float) -> None:
     if not user_id or not cost_usd:
         return
     _PER_USER_SPEND[user_id] = _PER_USER_SPEND.get(user_id, 0.0) + cost_usd
@@ -149,12 +155,12 @@ class LLMMessage:
 class LLMRequest:
     """A single completion request."""
 
-    messages: List[LLMMessage]
-    response_schema: Optional[Dict[str, Any]] = None
-    max_tokens: Optional[int] = None
-    cost_ceiling_usd: Optional[float] = None
-    user_id: Optional[str] = None
-    correlation_id: Optional[str] = None
+    messages: list[LLMMessage]
+    response_schema: dict[str, Any] | None = None
+    max_tokens: int | None = None
+    cost_ceiling_usd: float | None = None
+    user_id: str | None = None
+    correlation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -171,7 +177,7 @@ class LLMResult:
     model: str
     usage: LLMUsage
     latency_ms: int
-    correlation_id: Optional[str] = None
+    correlation_id: str | None = None
 
 
 @runtime_checkable
@@ -181,7 +187,7 @@ class LLMProvider(Protocol):
     def complete(self, request: LLMRequest) -> LLMResult: ...
 
 
-def _sanitized_exception(exc: Exception, config: "LLMConfig", correlation_id: Optional[str]) -> str:
+def _sanitized_exception(exc: Exception, config: LLMConfig, correlation_id: str | None) -> str:
     """Build a log-friendly message that never leaks SDK content.
 
     ``str(exc)`` from a provider SDK may embed prompts, responses, or
@@ -257,7 +263,7 @@ class BaseLLMProvider(abc.ABC):
             raise LLMTimeoutError(
                 _sanitized_exception(exc, self.config, request.correlation_id)
             ) from exc
-        except Exception as exc:  # noqa: BLE001 - normalized at the boundary
+        except Exception as exc:
             raise LLMProviderError(
                 _sanitized_exception(exc, self.config, request.correlation_id)
             ) from exc
@@ -363,7 +369,7 @@ class BaseLLMProvider(abc.ABC):
             cost_estimate_usd=round(cost, 6),
         )
 
-    def _estimate_prompt_tokens(self, messages: List[LLMMessage]) -> int:
+    def _estimate_prompt_tokens(self, messages: list[LLMMessage]) -> int:
         # Rough, deterministic heuristic (~4 chars/token). Providers should
         # override with real tokenizers when accuracy matters.
         chars = sum(len(m.content or "") for m in messages) + sum(
@@ -396,7 +402,7 @@ class FakeLLMProvider(BaseLLMProvider):
     requires_api_key = False
     requires_model = False
 
-    def _call(self, request: LLMRequest) -> Dict[str, Any]:
+    def _call(self, request: LLMRequest) -> dict[str, Any]:
         _ = self.config  # config is bound at construction
         payload = self._build_placeholder(request.response_schema)
         self._validate_payload(payload, request.response_schema)
@@ -415,7 +421,7 @@ class FakeLLMProvider(BaseLLMProvider):
 
     # -- helpers -----------------------------------------------------------
 
-    def _fake_usage(self, request: LLMRequest, content: str) -> Dict[str, int]:
+    def _fake_usage(self, request: LLMRequest, content: str) -> dict[str, int]:
         prompt_tokens = self._estimate_prompt_tokens(request.messages)
         completion_tokens = max(1, len(content) // 4)
         return {
@@ -425,7 +431,7 @@ class FakeLLMProvider(BaseLLMProvider):
             "cost_estimate_usd": 0.0,  # filled in by _normalize_usage
         }
 
-    def _build_placeholder(self, schema: Optional[Dict[str, Any]]) -> Any:
+    def _build_placeholder(self, schema: dict[str, Any] | None) -> Any:
         if schema is None:
             # No schema requested: echo a safe summary of the request.
             return {"message": "ok"}
@@ -436,12 +442,12 @@ class FakeLLMProvider(BaseLLMProvider):
         if schema_type not in (None, "object"):
             return {"message": "ok"}
         properties = schema.get("properties") or {}
-        payload: Dict[str, Any] = {}
+        payload: dict[str, Any] = {}
         for key, prop in properties.items():
             payload[key] = self._placeholder_for(prop)
         return payload
 
-    def _placeholder_for(self, prop: Dict[str, Any]) -> Any:
+    def _placeholder_for(self, prop: dict[str, Any]) -> Any:
         ptype = prop.get("type")
         if ptype in ("string",):
             return ""
@@ -455,12 +461,150 @@ class FakeLLMProvider(BaseLLMProvider):
             return {}
         return None
 
-    def _validate_payload(self, payload: Any, schema: Optional[Dict[str, Any]]) -> None:
+    def _validate_payload(self, payload: Any, schema: dict[str, Any] | None) -> None:
         for key in (schema or {}).get("required", []):
             if key not in payload:
                 raise LLMSchemaError(
                     f"Provider response missing required property '{key}'."
                 )
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible HTTP chat-completions adapter
+# ---------------------------------------------------------------------------
+
+
+class OpenAIChatAdapter(BaseLLMProvider):
+    """Concrete LLM adapter for any OpenAI-compatible chat-completions endpoint.
+
+    Uses ``requests`` with an explicit timeout to call a chat-completions API.
+    Supports structured output via ``response_format`` (JSON schema) when the
+    caller supplies ``response_schema`` on the request. All errors are
+    sanitized through the base class so prompts, keys, and user text never
+    appear in logs or telemetry.
+
+    A pluggable ``transport`` callable (defaulting to ``requests.post``) makes
+    the adapter fully testable without any network I/O: tests inject a fake
+    transport that returns canned responses.
+    """
+
+    provider_name = "openai-chat"
+    requires_api_key = True
+    requires_model = True
+
+    #: Default endpoint; overridable via ``LLM_API_BASE_URL`` setting.
+    _default_api_base_url = "https://api.openai.com/v1"
+
+    def __init__(self, config: LLMConfig, *, transport: Callable | None = None) -> None:
+        super().__init__(config)
+        self._transport = transport  # None => use requests.post lazily
+
+    # -- BaseLLMProvider interface -----------------------------------------
+
+    def _call(self, request: LLMRequest) -> dict[str, Any]:
+        import requests  # deferred so module import never requires requests
+
+        url = self._api_url()
+        headers = self._headers()
+        body = self._build_body(request)
+        transport = self._transport or requests.post
+        response = transport(
+            url,
+            json=body,
+            headers=headers,
+            timeout=self.config.timeout_seconds,
+        )
+        return self._handle_response(response, request)
+
+    def _parse_response(self, raw: Any, request: LLMRequest):
+        return raw.get("content"), raw.get("data")
+
+    # -- HTTP request building --------------------------------------------
+
+    def _api_url(self) -> str:
+        from django.conf import settings
+
+        base = getattr(settings, "LLM_API_BASE_URL", self._default_api_base_url)
+        return "{}/chat/completions".format(base.rstrip("/"))
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.config.api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def _build_body(self, request: LLMRequest) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": [
+                {"role": m.role, "content": m.content}
+                for m in request.messages
+            ],
+        }
+        max_tokens = request.max_tokens or self.config.max_tokens
+        if max_tokens:
+            body["max_tokens"] = max_tokens
+        if request.response_schema is not None:
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "crank_response",
+                    "schema": request.response_schema,
+                    "strict": True,
+                },
+            }
+        return body
+
+    # -- HTTP response handling -------------------------------------------
+
+    def _handle_response(self, response: Any, request: LLMRequest) -> dict[str, Any]:
+        """Parse an HTTP response into the canonical adapter dict.
+
+        Expects a ``requests.Response``-like object with ``status_code``,
+        ``json()``. For non-200 responses, raises a sanitized ``LLMError``.
+        """
+        status = getattr(response, "status_code", 0)
+        if status >= 400:
+            raise LLMProviderError(
+                f"LLM provider '{self.config.provider}' returned HTTP {status} (correlation_id={request.correlation_id})"
+            )
+        try:
+            payload = response.json()
+        except Exception as exc:
+            raise LLMProviderError(
+                f"LLM provider '{self.config.provider}' returned non-JSON response (correlation_id={request.correlation_id})"
+            ) from exc
+        return self._extract_result(payload)
+
+    def _extract_result(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Extract content, data, and usage from an OpenAI-compatible response."""
+        choices = payload.get("choices") or []
+        if not choices:
+            raise LLMProviderError("LLM response contained no choices")
+        choice = choices[0]
+        message = choice.get("message") or {}
+        content = message.get("content") or ""
+        data: Any = None
+        if content:
+            try:
+                data = json.loads(content)
+            except (json.JSONDecodeError, ValueError):
+                data = None
+        usage_raw = payload.get("usage") or {}
+        return {
+            "content": content,
+            "data": data,
+            "usage": {
+                "prompt_tokens": int(usage_raw.get("prompt_tokens", 0) or 0),
+                "completion_tokens": int(usage_raw.get("completion_tokens", 0) or 0),
+                "total_tokens": int(
+                    usage_raw.get("total_tokens", 0)
+                    or (usage_raw.get("prompt_tokens", 0) or 0)
+                    + (usage_raw.get("completion_tokens", 0) or 0)
+                ),
+                "cost_estimate_usd": 0.0,
+            },
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -504,7 +648,7 @@ def build_llm_config_from_settings() -> LLMConfig:
     )
 
 
-def get_llm_provider(config: Optional[LLMConfig] = None) -> BaseLLMProvider:
+def get_llm_provider(config: LLMConfig | None = None) -> BaseLLMProvider:
     """Select and build the configured provider (fail closed)."""
     cfg = config if config is not None else build_llm_config_from_settings()
     klass = _import_provider(cfg.provider)
@@ -525,7 +669,7 @@ def _import_provider(dotted: str) -> type:
         module_name, _, class_name = dotted.rpartition(".")
     try:
         module = importlib.import_module(module_name)
-    except Exception as exc:  # noqa: BLE001 - normalized configuration error
+    except Exception as exc:
         raise LLMConfigurationError(
             f"Could not import LLM provider module '{module_name}'."
         ) from exc
