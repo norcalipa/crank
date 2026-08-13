@@ -60,3 +60,11 @@ class SourceMigrationTests(TransactionTestCase):
             )
         except CommandError as exc:  # pragma: no cover - failure signal
             self.fail(f"Detected unmigrated model changes: {exc}")
+
+
+class SilencedChecksTests(TransactionTestCase):
+    """Verify that the W036 MySQL warning is silenced in settings."""
+
+    def test_w036_is_silenced(self):
+        from django.conf import settings
+        self.assertIn("models.W036", settings.SILENCED_SYSTEM_CHECKS)
