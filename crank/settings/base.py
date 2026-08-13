@@ -297,6 +297,13 @@ MANIFEST_LOADER = {
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
+# Silence MySQL W036: MySQL does not support unique constraints with
+# conditions (PartialUniqueConstraint).  Several crank and allauth models use
+# conditional unique constraints that are valid on PostgreSQL/SQLite but
+# emit W036 on MySQL.  The constraints are harmless on MySQL (Django simply
+# creates them as full unique indexes), so suppress the check globally.
+SILENCED_SYSTEM_CHECKS = ["models.W036"]
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # ---------------------------------------------------------------------------
