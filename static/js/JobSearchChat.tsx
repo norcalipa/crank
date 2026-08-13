@@ -232,9 +232,35 @@ const JobSearchChat: React.FC = () => {
 
     // Ref to the last submitted turn so Retry replays the same content + idempotency key.
     const lastSent = React.useRef<{content: string; key: string} | null>(null);
-    const inputRef = React.useRef<HTMLInputElement>(null);
     const statusRef = React.useRef<HTMLDivElement>(null);
     const historyRef = React.useRef<HTMLDivElement>(null);
+
+    // Auto-resize the composer textarea up to a bounded max rows.
+    const MAX_COMPOSER_ROWS = 6;
+    const composerRef = React.useRef<HTMLTextAreaElement>(null);
+    const adjustComposerHeight = React.useCallback(() => {
+        const ta = composerRef.current;
+        if (!ta) return;
+        ta.style.height = 'auto';
+        if (!ta.value) {
+            ta.style.overflowY = 'hidden';
+            return;
+        }
+        const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 24;
+        const maxHeight = lineHeight * MAX_COMPOSER_ROWS;
+        const desired = Math.min(ta.scrollHeight, maxHeight);
+        ta.style.height = `${desired}px`;
+        ta.style.overflowY = ta.scrollHeight > maxHeight ? 'auto' : 'hidden';
+    }, []);
+    React.useEffect(() => {
+        adjustComposerHeight();
+        window.addEventListener('resize', adjustComposerHeight);
+        window.visualViewport?.addEventListener('resize', adjustComposerHeight);
+        return () => {
+            window.removeEventListener('resize', adjustComposerHeight);
+            window.visualViewport?.removeEventListener('resize', adjustComposerHeight);
+        };
+    }, [adjustComposerHeight, input]);
     const nearBottomRef = React.useRef(true);
     const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
 
@@ -320,7 +346,7 @@ const JobSearchChat: React.FC = () => {
                         setConversationId(createData.id);
                         setMessages(createData.messages);
                         setLoading(false);
-                        inputRef.current?.focus();
+                        composerRef.current?.focus();
                     } catch {
                         if (cancelled) return;
                         setInitError('Could not start a conversation. Please try again.');
@@ -337,7 +363,7 @@ const JobSearchChat: React.FC = () => {
                 setMessages(data.messages);
                 setPreferencesChanged(data.preferences_changed);
                 setLoading(false);
-                inputRef.current?.focus();
+                composerRef.current?.focus();
             })
             .catch(() => {
                 if (cancelled) return;
@@ -428,7 +454,7 @@ const JobSearchChat: React.FC = () => {
             setInput('');
             // Defer refocus until React flushes the re-render (the submit button
             // becoming disabled would otherwise steal focus back to <body>).
-            window.setTimeout(() => inputRef.current?.focus(), 0);
+            window.setTimeout(() => composerRef.current?.focus(), 0);
         }
     };
 
@@ -437,6 +463,16 @@ const JobSearchChat: React.FC = () => {
         const content = input.trim();
         if (!content || !isReady) return;
         await sendTurn(content, newId());
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            const content = input.trim();
+            if (content && isReady) {
+                sendTurn(content, newId());
+            }
+        }
     };
 
     const handleRetry = async () => {
@@ -455,7 +491,7 @@ const JobSearchChat: React.FC = () => {
             setInitError('Could not start a conversation. Please try again.');
         } finally {
             setLoading(false);
-            inputRef.current?.focus();
+            composerRef.current?.focus();
         }
     };
 
@@ -487,7 +523,7 @@ const JobSearchChat: React.FC = () => {
             setPreferencesChanged(false);
             setPrefDismissed(false);
             setError(null);
-            inputRef.current?.focus();
+            composerRef.current?.focus();
         } catch {
             setError('Could not reset the conversation.');
         }
@@ -504,7 +540,7 @@ const JobSearchChat: React.FC = () => {
             setPreferencesChanged(false);
             setPrefDismissed(false);
             setError(null);
-            inputRef.current?.focus();
+            composerRef.current?.focus();
         } catch {
             setError('Could not delete the conversation.');
         }
@@ -611,16 +647,18 @@ const JobSearchChat: React.FC = () => {
 
                     <form onSubmit={handleSubmit} aria-busy={pending}>
                         <div className="input-group">
-                            <input
-                                ref={inputRef}
-                                type="text"
+                            <textarea
+                                ref={composerRef}
                                 className="form-control"
                                 placeholder="Type your message…"
                                 aria-label="Message"
                                 value={input}
                                 onChange={(e) => setInput(e.target.value)}
+                                onKeyDown={handleKeyDown}
                                 disabled={!conversationId || pending}
                                 autoComplete="off"
+                                rows={1}
+                                style={{resize: 'none', overflowY: 'hidden'}}
                             />
                             <button type="submit" className="btn btn-primary" disabled={!conversationId || pending || !input.trim()}
                                     aria-label="Send message">
