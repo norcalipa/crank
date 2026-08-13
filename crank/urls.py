@@ -26,7 +26,7 @@ from crank.views.fundinground import FundingRoundChoicesView
 from crank.views.rtopolicy import RTOPolicyChoicesView
 from crank.views.index import IndexView
 from crank.views.logout import CustomLogoutView
-from crank.views.api import organization_detail, organization_scores
+from crank.views.api import organization_detail, organization_scores, organization_provenance
 from crank.views.company_requests import company_requests
 from crank.views.job_search import (
     agent_conversation_list,
@@ -55,6 +55,7 @@ urlpatterns = [
     path('api/funding-round-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(FundingRoundChoicesView.as_view()), name='funding_round_choices'),
     path('api/rto-policy-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(RTOPolicyChoicesView.as_view()), name='rto_policy_choices'),
     path('api/organizations/<int:pk>/', organization_detail, name='organization-detail'),
+    path('api/organizations/<int:pk>/provenance/', organization_provenance, name='organization-provenance'),
     path('api/organizations/<int:pk>/scores/', organization_scores, name='organization-scores'),
     path('api/company-requests/', company_requests, name='company-request-list'),
     path('api/company-requests/<int:pk>/', company_requests, name='company-request-detail'),

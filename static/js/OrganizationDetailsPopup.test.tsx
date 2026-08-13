@@ -41,6 +41,22 @@ describe('OrganizationDetailsPopup', () => {
                     ]),
                 });
             }
+            if (url.includes('/api/organizations/1/provenance/')) {
+                return Promise.resolve({
+                    json: () => Promise.resolve({
+                        organization_id: 1,
+                        organization_modified: '2025-01-15T10:00:00Z',
+                        organization_created: '2024-06-01T00:00:00Z',
+                        latest_observation: {
+                            source_url: 'https://example.com/about',
+                            observed_domain: 'example.com',
+                            observed_at: '2025-01-10T12:00:00Z',
+                            extraction_version: 'v1.2.3',
+                            status: 'auto_applied',
+                        },
+                    }),
+                });
+            }
             return Promise.reject(new Error('Fetch not mocked for this URL'));
         });
     });
@@ -156,8 +172,10 @@ describe('OrganizationDetailsPopup', () => {
         expect(screen.getByText('4.70')).toBeInTheDocument();
         expect(screen.getByText('Work-Life Balance')).toBeInTheDocument();
         expect(screen.getByText('3.90')).toBeInTheDocument();
-        
-        expect(global.fetch).not.toHaveBeenCalled();
+
+        // Scores are pre-loaded so the scores endpoint should not be called,
+        // but the provenance endpoint is always fetched when visible.
+        expect(global.fetch).not.toHaveBeenCalledWith('/api/organizations/1/scores/');
     });
 
     test('handles API error when fetching scores', async () => {
@@ -464,5 +482,278 @@ describe('OrganizationDetailsPopup', () => {
             value: originalActiveElement,
             configurable: true
         });
+    });
+
+    test('renders provenance section with observation data', async () => {
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={() => {}}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('provenance-section')).toBeInTheDocument();
+        });
+
+        expect(screen.getByText('Data Freshness & Sources')).toBeInTheDocument();
+        expect(screen.getByTestId('last-updated')).toBeInTheDocument();
+        expect(screen.getByTestId('added-to-catalog')).toBeInTheDocument();
+        expect(screen.getByTestId('observation-details')).toBeInTheDocument();
+        expect(screen.getByText('example.com')).toBeInTheDocument();
+        expect(screen.getByText('v1.2.3')).toBeInTheDocument();
+        expect(screen.getByText('auto_applied')).toBeInTheDocument();
+    });
+
+    test('shows loading state for provenance', async () => {
+        // Mock a slow provenance response
+        global.fetch = jest.fn().mockImplementation((url) => {
+            if (url.includes('/api/organizations/1/scores/')) {
+                return Promise.resolve({
+                    json: () => Promise.resolve([]),
+                });
+            }
+            if (url.includes('/api/organizations/1/provenance/')) {
+                return new Promise(() => {}); // never resolves
+            }
+            return Promise.reject(new Error('not mocked'));
+        });
+
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={() => {}}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('provenance-loading')).toBeInTheDocument();
+        });
+    });
+
+    test('shows no-observation message when latest_observation is null', async () => {
+        global.fetch = jest.fn().mockImplementation((url) => {
+            if (url.includes('/api/organizations/1/scores/')) {
+                return Promise.resolve({ json: () => Promise.resolve([]) });
+            }
+            if (url.includes('/api/organizations/1/provenance/')) {
+                return Promise.resolve({
+                    json: () => Promise.resolve({
+                        organization_id: 1,
+                        organization_modified: '2025-01-15T10:00:00Z',
+                        organization_created: '2024-06-01T00:00:00Z',
+                        latest_observation: null,
+                    }),
+                });
+            }
+            return Promise.reject(new Error('not mocked'));
+        });
+
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={() => {}}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('no-observation')).toBeInTheDocument();
+        });
+    });
+
+    test('shows suggest correction link when authenticated', async () => {
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={() => {}}
+                isAuthenticated={true}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('correction-action')).toBeInTheDocument();
+        });
+        expect(screen.getByTestId('suggest-correction-link')).toBeInTheDocument();
+    });
+
+    test('does not show correction link when not authenticated', async () => {
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={() => {}}
+                isAuthenticated={false}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('provenance-section')).toBeInTheDocument();
+        });
+        expect(screen.queryByTestId('correction-action')).toBeNull();
+    });
+
+    test('handles provenance fetch error gracefully', async () => {
+        global.fetch = jest.fn().mockImplementation((url) => {
+            if (url.includes('/api/organizations/1/scores/')) {
+                return Promise.resolve({ json: () => Promise.resolve([]) });
+            }
+            if (url.includes('/api/organizations/1/provenance/')) {
+                return Promise.reject(new Error('Network error'));
+            }
+            return Promise.reject(new Error('not mocked'));
+        });
+
+        const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={() => {}}
+            />
+        );
+
+        await waitFor(() => {
+            expect(consoleSpy).toHaveBeenCalledWith('Error fetching organization provenance:', expect.any(Error));
+        });
+
+        consoleSpy.mockRestore();
+    });
+
+    test('formats relative time as months ago for dates > 30 days', async () => {
+        // Use dates relative to the real current time so coverage tracks properly
+        const now = new Date();
+        const monthsAgo = new Date(now.getTime() - 75 * 24 * 60 * 60 * 1000); // ~75 days ago
+        const yearsAgo = new Date(now.getTime() - 800 * 24 * 60 * 60 * 1000); // ~800 days ago
+
+        global.fetch = jest.fn().mockImplementation((url) => {
+            if (url.includes('/api/organizations/1/scores/')) {
+                return Promise.resolve({ json: () => Promise.resolve([]) });
+            }
+            if (url.includes('/api/organizations/1/provenance/')) {
+                return Promise.resolve({
+                    json: () => Promise.resolve({
+                        organization_id: 1,
+                        organization_modified: monthsAgo.toISOString(),
+                        organization_created: yearsAgo.toISOString(),
+                        latest_observation: {
+                            source_url: 'https://example.com',
+                            observed_domain: 'example.com',
+                            observed_at: monthsAgo.toISOString(),
+                            extraction_version: 'v1',
+                            status: 'accepted',
+                        },
+                    }),
+                });
+            }
+            return Promise.reject(new Error('not mocked'));
+        });
+
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={() => {}}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('observation-details')).toBeInTheDocument();
+        });
+
+        // ~75 days ago should be '2 months ago' or '3 months ago'
+        const lastUpdated = screen.getByTestId('last-updated');
+        expect(lastUpdated.textContent).toContain('months ago');
+    });
+
+    test('formats relative time as years ago for dates > 365 days', async () => {
+        const now = new Date();
+        const yearsAgo = new Date(now.getTime() - 800 * 24 * 60 * 60 * 1000); // ~800 days ago
+
+        global.fetch = jest.fn().mockImplementation((url) => {
+            if (url.includes('/api/organizations/1/scores/')) {
+                return Promise.resolve({ json: () => Promise.resolve([]) });
+            }
+            if (url.includes('/api/organizations/1/provenance/')) {
+                return Promise.resolve({
+                    json: () => Promise.resolve({
+                        organization_id: 1,
+                        organization_modified: yearsAgo.toISOString(),
+                        organization_created: yearsAgo.toISOString(),
+                        latest_observation: {
+                            source_url: 'https://example.com',
+                            observed_domain: 'example.com',
+                            observed_at: yearsAgo.toISOString(),
+                            extraction_version: 'v1',
+                            status: 'accepted',
+                        },
+                    }),
+                });
+            }
+            return Promise.reject(new Error('not mocked'));
+        });
+
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={() => {}}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('observation-details')).toBeInTheDocument();
+        });
+
+        // ~800 days ago should be 'years ago'
+        const lastUpdated = screen.getByTestId('last-updated');
+        expect(lastUpdated.textContent).toContain('years ago');
+    });
+
+    test('formats relative time as weeks ago for dates 7-30 days', async () => {
+        const now = new Date();
+        const weeksAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000); // 14 days ago
+
+        global.fetch = jest.fn().mockImplementation((url) => {
+            if (url.includes('/api/organizations/1/scores/')) {
+                return Promise.resolve({ json: () => Promise.resolve([]) });
+            }
+            if (url.includes('/api/organizations/1/provenance/')) {
+                return Promise.resolve({
+                    json: () => Promise.resolve({
+                        organization_id: 1,
+                        organization_modified: weeksAgo.toISOString(),
+                        organization_created: weeksAgo.toISOString(),
+                        latest_observation: {
+                            source_url: 'https://example.com',
+                            observed_domain: 'example.com',
+                            observed_at: weeksAgo.toISOString(),
+                            extraction_version: 'v1',
+                            status: 'accepted',
+                        },
+                    }),
+                });
+            }
+            return Promise.reject(new Error('not mocked'));
+        });
+
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={() => {}}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('observation-details')).toBeInTheDocument();
+        });
+
+        const lastUpdated = screen.getByTestId('last-updated');
+        expect(lastUpdated.textContent).toContain('weeks ago');
     });
 });
