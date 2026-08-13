@@ -118,6 +118,7 @@ describe('JobSearchChat', () => {
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-live', 'polite');
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-busy', 'false');
             expect(screen.getByTestId('empty-history')).toBeInTheDocument();
+            expect(screen.getByTestId('empty-history')).toHaveTextContent(/matches are shown in the panel above/i);
         });
 
         test('renders existing message history', async () => {

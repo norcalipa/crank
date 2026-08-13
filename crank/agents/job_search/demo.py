@@ -88,11 +88,27 @@ class DemoJobSearchProvider:
 
 
 def _build_provider():
-    """Resolve the configured provider (demo by default, orchestrator for production)."""
+    """Resolve the configured provider (demo by default, orchestrator for production).
+
+    Production (orchestrator) fails closed when:
+    - ``INTERACTIVE_AGENT_ENABLED`` is False
+    - ``LLM_PROVIDER`` is not configured or the selected provider raises
+      ``LLMConfigurationError`` (missing API key, missing model, etc.)
+    - Any other ``LLMError`` prevents the provider from starting.
+
+    There is never a silent fallback to the demo provider — if the operator
+    selected ``orchestrator``, they must also configure the LLM gateway.
+    """
     name = getattr(settings, "JOB_SEARCH_PROVIDER", "demo")
     if name == "demo":
         return DemoJobSearchProvider()
     if name == "orchestrator":
+        # Fail closed: refuse to start if the interactive agent feature flag is off.
+        if not getattr(settings, "INTERACTIVE_AGENT_ENABLED", False):
+            raise JobSearchServiceError(
+                "The job-search assistant is not enabled. "
+                "Please try again later or contact support."
+            )
         from crank.agents.job_search.providers import OrchestratorJobSearchProvider
         try:
             return OrchestratorJobSearchProvider()
