@@ -149,6 +149,23 @@ class InventoryHealthTests(TestCase):
         self.assertEqual(result["sources_total"], 3)
         self.assertEqual(result["enabled_sources"], 1)
 
+    def test_bounded_query_count_with_many_sources(self):
+        # Guards the N+1 regression: signals resolve in SQL regardless of how
+        # many approved+enabled sources exist.
+        now = timezone.now()
+        for i in range(5):
+            source = make_source(f"Source {i}", last_crawl_at=now)
+            make_listing(source, title=f"Engineer {i}")
+            make_crawl_run(
+                source,
+                CrawlRun.Outcome.SUCCESS,
+                now - timedelta(hours=1),
+                counts={"listings_ingested": 2},
+            )
+        with self.assertNumQueries(4):
+            result = inventory_health.check_inventory_health(now=now)
+        self.assertEqual(result["enabled_sources"], 5)
+
     def test_adapter_registered_helper(self):
         self.assertTrue(inventory_health.adapter_registered("firecrawl-careers"))
         self.assertFalse(inventory_health.adapter_registered("no-such-adapter"))
@@ -167,6 +184,55 @@ class InventoryHealthTests(TestCase):
     @override_settings(JOB_FRESHNESS_HOURS=-5)
     def test_freshness_hours_clamps_to_zero(self):
         self.assertEqual(inventory_health.freshness_hours(), 0)
+
+    @override_settings(JOB_FRESHNESS_HOURS=0)
+    def test_zero_freshness_disables_staleness(self):
+        now = timezone.now()
+        source = make_source("Old But Ignored", last_crawl_at=now - timedelta(days=30))
+        make_listing(source)
+        self.assertEqual(inventory_health.freshness_hours(), 0)
+        self.assertFalse(inventory_health._is_stale(source.last_crawl_at, now))
+        result = inventory_health.check_inventory_health(now=now)
+        self.assertEqual(result["stale_sources"], 0)
+        self.assertTrue(result["healthy"])
+
+    def test_repeated_failures_use_most_recent_runs(self):
+        now = timezone.now()
+        source = make_source("Recently Flaky", last_crawl_at=now)
+        make_crawl_run(source, CrawlRun.Outcome.SUCCESS, now - timedelta(hours=5))
+        for i in range(3):
+            make_crawl_run(
+                source, CrawlRun.Outcome.FAILURE, now - timedelta(minutes=i + 1)
+            )
+        result = inventory_health.check_inventory_health(now=now)
+        self.assertEqual(result["repeated_failure_sources"], 1)
+
+    def test_partial_crawl_with_ingested_listings_counts_as_produced(self):
+        now = timezone.now()
+        source = make_source("Partial", last_crawl_at=now)
+        make_crawl_run(
+            source,
+            CrawlRun.Outcome.PARTIAL,
+            now - timedelta(hours=1),
+            counts={"listings_ingested": 3},
+        )
+        result = inventory_health.check_inventory_health(now=now)
+        self.assertEqual(result["collapsed_sources"], 1)
+        self.assertIn(
+            "1 source(s) collapsed to zero active listings", result["violations"]
+        )
+
+    def test_success_without_ingested_listings_is_not_collapsed(self):
+        now = timezone.now()
+        source = make_source("No Data", last_crawl_at=now)
+        make_crawl_run(
+            source,
+            CrawlRun.Outcome.SUCCESS,
+            now - timedelta(hours=1),
+            counts={"listings_ingested": 0},
+        )
+        result = inventory_health.check_inventory_health(now=now)
+        self.assertEqual(result["collapsed_sources"], 0)
 
     @override_settings(CRAWL_REPEATED_FAILURE_THRESHOLD=1)
     def test_repeated_failure_threshold_is_configurable(self):
