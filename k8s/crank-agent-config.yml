@@ -26,6 +26,9 @@ data:
   CRAWL_MAX_JOB_LISTINGS: "100"
   CRAWL_MAX_PAGES: "10"
   CRAWL_DEADLINE_SECONDS: "300"
+  # Consecutive failed crawls that mark a source as repeatedly failing in the
+  # read-only inventory health check.
+  CRAWL_REPEATED_FAILURE_THRESHOLD: "3"
   # Interactive job-search agent (Phase 6). Disabled by default; enabling
   # requires LLM secrets (API key, model) to be configured via a Kubernetes
   # Secret and referenced here. The "demo" provider is the offline/test

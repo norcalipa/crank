@@ -8,6 +8,11 @@ allowed_event_names:
   - source_stage
   - matching_batch
   - operational_change
+  - crawl_planning
+  - crawl_run_started
+  - crawl_run_completed
+  - crawl_run_failed
+  - inventory_health
 facets:
   - run_type
   - stage
@@ -33,7 +38,8 @@ widgets:
   - name: Job inventory health
     nrql: >-
       SELECT latest(sources_total), latest(enabled_sources), latest(active_listings),
-      latest(stale_sources), latest(repeated_failure_sources), latest(collapsed_sources)
+      latest(stale_sources), latest(repeated_failure_sources), latest(collapsed_sources),
+      latest(unregistered_adapter_sources)
       FROM CrankOperation WHERE event_name = 'inventory_health' SINCE 24 hours ago
   - name: Estimated cost and token throughput
     nrql: >-
