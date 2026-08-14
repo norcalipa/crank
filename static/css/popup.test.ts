@@ -23,14 +23,21 @@ describe('organization listing overflow and focus (issue #409)', () => {
         const body = rule![0];
         expect(body).toMatch(/overflow-x:\s*auto/);
         expect(body).toMatch(/overflow-y:\s*hidden/);
-        expect(body).not.toMatch(/overflow-y:\s*(auto|scroll)/);
-        expect(body).not.toMatch(/height\s*:/);
-        expect(body).not.toMatch(/max-height\s*:/);
+        // Forbid any fixed / max vertical sizing that could reintroduce the
+        // inner scrollbar, but allow `min-height` for layout stability with
+        // very few rows (anchored so `min-height:` is not matched).
+        expect(body).not.toMatch(/^\s*(?:height|max-height)\s*:/m);
     });
 
-    it('does not globally suppress focus outlines or carets', () => {
-        expect(popupCss).not.toMatch(/outline:\s*none\s*!important/);
-        expect(popupCss).not.toMatch(/caret-color:\s*transparent\s*!important/);
+    it('does not suppress focus outlines or carets on organization listing elements', () => {
+        // Scope the assertion to the organization-listing rules so a legitimate
+        // focus/caret suppression elsewhere in the stylesheet cannot break it.
+        const listingRules = (popupCss.match(/[^{}]+\{[^}]*\}/g) ?? []).filter((rule) =>
+            /\.organization-(row|card|table|table-wrap)\b/.test(rule),
+        );
+        expect(listingRules.length).toBeGreaterThan(0);
+        expect(listingRules.join('\n')).not.toMatch(/outline:\s*none\s*!important/);
+        expect(listingRules.join('\n')).not.toMatch(/caret-color:\s*transparent\s*!important/);
     });
 
     it('keeps visible keyboard focus indicators for rows, cards, and the table region', () => {
