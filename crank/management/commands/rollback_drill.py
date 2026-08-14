@@ -5,17 +5,23 @@
 This command rehearses the rollback procedure documented in
 ``docs/rollout-gates.md``. It is a diagnostic that:
 
-1. Disables each capability switch and verifies ``capability_enabled()``
+1. Disables each capability switch and verifies ``monitoring.capability_enabled()``
    returns False.
-2. Verifies that the ``AgentRunCommand.get_enabled()`` kill-switch layer
-   blocks new runs for matching run types.
+2. Re-checks the capability gate for the drill run type where it matches the
+   switch key (``gather_scores``, ``job_pipeline``); for the
+   ``interactive_agent``/``noop`` pairing the settings flags are the primary
+   gate and the switch is an additional defense.
 3. Checks for orphaned RUNNING runs beyond the stale-lock TTL.
 4. Records an ``OperationalChangeAudit`` entry for the drill.
 5. Emits a monitoring event for the rollback drill.
 6. Reports a JSON or human-readable summary without sensitive data.
 
-The drill does **not** create or modify ``AgentRun`` rows, does not call
-external providers, and does not touch source catalogs.
+Scope: the drill does **not** call ``AgentRunCommand.get_enabled()`` and does
+**not** snapshot or assert ``AgentRun`` row counts, so it cannot by itself
+prove that new runs are blocked; the rollout gate's operator
+"Confirm new-run blocking" step covers that guarantee. The drill only reads
+``AgentRun`` rows (orphan check) — it does not create or modify them, does
+not call external providers, and does not touch source catalogs.
 """
 import json
 from datetime import timedelta
@@ -46,7 +52,8 @@ STALE_TTL_SECONDS = getattr(settings, "AGENT_RUN_STALE_AFTER_SECONDS", 3600)
 class Command(BaseCommand):
     help = (
         "Rehearse the rollback procedure: disable capability switches, "
-        "verify no new runs would start, and check data consistency."
+        "verify the kill-switch capability gates respond, and check data "
+        "consistency."
     )
 
     def add_arguments(self, parser):
