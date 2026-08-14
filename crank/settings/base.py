@@ -71,7 +71,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'django.contrib.sites',
-    'crank',
+    'crank.apps.CrankConfig',
     'django_bootstrap5',
     'django_extensions',
     'fontawesomefree',

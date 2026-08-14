@@ -19,10 +19,12 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from crank.agents.job_search import context as ctx
+from crank.agents.job_search import quality
 from crank.agents.job_search import system_prompt as prompt
 from crank.agents.job_search import tools
 from crank.agents.job_search.errors import (
     CostLimitError,
+    EchoReplyError,
     InvalidJobListingReferenceError,
     InvalidOrganizationReferenceError,
     InvalidPreferencePatchError,
@@ -73,6 +75,12 @@ class OrchestratorResult:
     preferences_changed: bool = False
     prompt_id: str = prompt.prompt_id()
     results: Optional[StructuredResults] = None
+    # Bounded operator telemetry (issue #397). Counts/names only, never content.
+    tools_used: tuple = ()
+    result_counts: tuple = ()
+    cited_ids_count: int = 0
+    empty_result: bool = True
+    inventory_nonempty: bool = False
 
 
 class JobSearchOrchestrator:
@@ -149,20 +157,39 @@ class JobSearchOrchestrator:
                 max_tokens=max_tokens,
             )
         except Exception as exc:
+            latency_ms = int((time.monotonic() - started) * 1000)
             monitoring.record_event(
                 "interactive_call",
                 {
                     "status": "failed",
                     "reason_code": monitoring.failure_reason(exc),
-                    "latency_ms": int((time.monotonic() - started) * 1000),
+                    "provider_error_class": type(exc).__name__,
+                    "latency_ms": latency_ms,
+                    "latency_bucket": monitoring.latency_bucket(latency_ms),
                 },
             )
             raise
+        latency_ms = int((time.monotonic() - started) * 1000)
         monitoring.record_event(
             "interactive_call",
             {
                 "status": "succeeded",
-                "latency_ms": int((time.monotonic() - started) * 1000),
+                "latency_ms": latency_ms,
+                "latency_bucket": monitoring.latency_bucket(latency_ms),
+            },
+        )
+        # Per-turn helpfulness telemetry: how many tools fired, how many rows
+        # and citations resulted, whether the turn produced any result card.
+        monitoring.record_event(
+            "job_search_turn",
+            {
+                "tools_called": len(result.tools_used),
+                "result_count": sum(result.result_counts),
+                "cited_ids_count": result.cited_ids_count,
+                "empty_result": result.empty_result,
+                "inventory_nonempty": result.inventory_nonempty,
+                "latency_ms": latency_ms,
+                "latency_bucket": monitoring.latency_bucket(latency_ms),
             },
         )
         return result
@@ -253,6 +280,16 @@ class JobSearchOrchestrator:
             completion.cited_job_listing_ids, frozenset(known_listing_ids)
         )
 
+        # Anti-echo guard: never serve a reply that merely restates the user's
+        # message when server data was available and no tool-grounded work was
+        # done (guards against a demo/echo provider leaking into production).
+        inventory_nonempty = bool(known_ids or known_listing_ids)
+        self._guard_echo(
+            user_prompt=user_prompt,
+            completion=completion,
+            inventory_nonempty=inventory_nonempty,
+        )
+
         # 6. Validate + apply the optional preference patch.
         preferences_changed = False
         applied_patch: dict[str, Any] | None = None
@@ -265,6 +302,23 @@ class JobSearchOrchestrator:
             org_rows,
             completion.cited_job_listing_ids,
             listing_rows,
+        )
+
+        tools_used = (
+            "query_active_organizations",
+            "query_score_summaries",
+            "search_job_listings",
+            "get_matches_for_user",
+        )
+        result_counts = (
+            len(org_rows),
+            len(score_rows),
+            len(listing_rows),
+            len(match_data.get("job_matches", []))
+            + len(match_data.get("organization_matches", [])),
+        )
+        cited_ids_count = len(completion.cited_organization_ids) + len(
+            completion.cited_job_listing_ids
         )
 
         logger.info(
@@ -282,6 +336,11 @@ class JobSearchOrchestrator:
             preference_patch=applied_patch,
             preferences_changed=preferences_changed,
             results=structured_results,
+            tools_used=tools_used,
+            result_counts=result_counts,
+            cited_ids_count=cited_ids_count,
+            empty_result=cited_ids_count == 0,
+            inventory_nonempty=inventory_nonempty,
         )
 
     # -- internals ------------------------------------------------------------
@@ -412,6 +471,29 @@ class JobSearchOrchestrator:
         if unknown:
             raise InvalidJobListingReferenceError(
                 f"model cited job listing IDs not exposed by server tools: {', '.join(str(i) for i in unknown)}"
+            )
+
+    @staticmethod
+    def _guard_echo(
+        *, user_prompt: str, completion: AssistantCompletion, inventory_nonempty: bool
+    ) -> None:
+        """Reject an unrooted echo of the user turn when inventory is non-empty.
+
+        The classic demo-provider regression is a reply that restates the
+        user's message and produces no citation, no result card, and no
+        preference patch even though server data was available for grounding.
+        Fail the turn closed (raise :class:`EchoReplyError`) so the defective
+        reply surfaces instead of silently degrading the chat.
+        """
+        if not inventory_nonempty:
+            return
+        if completion.cited_organization_ids or completion.cited_job_listing_ids:
+            return
+        if completion.has_preference_patch:
+            return  # preference elicitation / patch turns are legitimate.
+        if quality.is_echo(user_prompt, completion.message):
+            raise EchoReplyError(
+                "assistant reply only restates the user message without any tool-grounded result"
             )
 
     @staticmethod

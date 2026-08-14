@@ -28,6 +28,9 @@ EVENT_NAMES = frozenset(
         "crawl_run_completed",
         "crawl_run_failed",
         "inventory_health",
+        "job_search_turn",
+        "job_search_tool_invocation",
+        "job_search_helpfulness_gap",
     }
 )
 
@@ -85,6 +88,20 @@ _SAFE_KEYS = frozenset(
         "collapsed_sources",
         "unregistered_adapter_sources",
         "healthy",
+        # Assistant quality guardrails (issue #397): scalar operational
+        # counters only. Prompt/response text and conversation identifiers are
+        # never event attributes.
+        "tool",
+        "result_count",
+        "job_match_count",
+        "organization_match_count",
+        "tools_called",
+        "cited_ids_count",
+        "empty_result",
+        "inventory_nonempty",
+        "latency_bucket",
+        "provider_error_class",
+        "turns_without_result",
     }
 )
 _SENSITIVE_KEY = re.compile(r"(?i)(response|body|content|secret|credential)")
@@ -150,6 +167,18 @@ def record_metric(name: str, value: float, attributes: Mapping[str, Any] | None 
         return
 
 
+def latency_bucket(ms: int) -> str:
+    """Map a latency to a low-cardinality bucket for faceting."""
+    ms = int(ms)
+    if ms < 100:
+        return "lt100"
+    if ms < 300:
+        return "100-300"
+    if ms < 1000:
+        return "300-1000"
+    return "gt1000"
+
+
 def capability_enabled(key: str, default: bool = True) -> bool:
     """Return an operator switch value without making startup depend on DB."""
     from crank.models.monitoring import CapabilitySwitch
@@ -165,6 +194,7 @@ __all__ = [
     "EVENT_NAMES",
     "event_attributes",
     "failure_reason",
+    "latency_bucket",
     "record_event",
     "record_metric",
     "capability_enabled",
