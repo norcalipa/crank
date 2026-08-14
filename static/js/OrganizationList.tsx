@@ -204,10 +204,6 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     };
 
     handleOrganizationClick = (organization: Organization) => {
-        // Remove focus from any element to prevent blinking cursor
-        if (document.activeElement instanceof HTMLElement) {
-            document.activeElement.blur();
-        }
         // Get organization details if not already fetched
         if (!organization.url || !organization.type) {
             fetch(`/api/organizations/${organization.id}/`)
@@ -247,10 +243,6 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     };
 
     handleClosePopup = () => {
-        // Remove focus from any element to prevent blinking cursor
-        if (document.activeElement instanceof HTMLElement) {
-            document.activeElement.blur();
-        }
         this.setState({ showPopup: false });
     };
 

@@ -389,6 +389,48 @@ describe('OrganizationList', () => {
         expect(screen.getByText('https://org1.example.com')).toBeInTheDocument();
     });
 
+    test('does not blur the focused element when opening or closing the popup (#409)', async () => {
+        // Guard against the removed `document.activeElement.blur()` workaround:
+        // keyboard focus must survive row activation and popup close so the
+        // restored `:focus-visible` indicators remain meaningful.
+        const blurSpy = jest.fn();
+        const fakeActive = { blur: blurSpy };
+        const originalDescriptor = Object.getOwnPropertyDescriptor(document, 'activeElement');
+        Object.defineProperty(document, 'activeElement', {
+            configurable: true,
+            get: () => fakeActive,
+        });
+
+        try {
+            render(<OrganizationList organizations={organizations} />);
+
+            await waitFor(() => {
+                expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+            });
+
+            // Open the popup from the table row (cached data path, no fetch).
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await waitFor(() => {
+                expect(screen.getByText('https://org1.example.com')).toBeInTheDocument();
+            });
+            expect(blurSpy).not.toHaveBeenCalled();
+
+            // Close the popup.
+            fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+            await waitFor(() => {
+                expect(screen.queryByText('https://org1.example.com')).not.toBeInTheDocument();
+            });
+            expect(blurSpy).not.toHaveBeenCalled();
+        } finally {
+            if (originalDescriptor) {
+                Object.defineProperty(document, 'activeElement', originalDescriptor);
+            } else {
+                // @ts-expect-error - restoring an overridable accessor
+                delete document.activeElement;
+            }
+        }
+    });
+
     test('handles error when fetching organization details', async () => {
         // Override the fetch mock to simulate an error for organization details
         global.fetch = jest.fn().mockImplementation((url) => {
