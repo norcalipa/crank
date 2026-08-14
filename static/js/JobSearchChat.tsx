@@ -234,9 +234,13 @@ const JobSearchChat: React.FC = () => {
     const lastSent = React.useRef<{content: string; key: string} | null>(null);
     const statusRef = React.useRef<HTMLDivElement>(null);
     const historyRef = React.useRef<HTMLDivElement>(null);
+
     // Auto-resize the composer textarea up to a bounded max rows.
     const MAX_COMPOSER_ROWS = 6;
     const composerRef = React.useRef<HTMLTextAreaElement>(null);
+    // Shared floor for the measured card height; must stay in sync with the
+    // `20rem` inline minHeight below (16px rem * 20) so the two cannot drift.
+    const MIN_CARD_PX = 320;
     const adjustComposerHeight = React.useCallback(() => {
         const ta = composerRef.current;
         if (!ta) return;
@@ -264,6 +268,10 @@ const JobSearchChat: React.FC = () => {
     const nearBottomRef = React.useRef(true);
     const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
     const [cardHeight, setCardHeight] = React.useState<number | null>(null);
+    // rAF bookkeeping so resize/orientation/keyboard bursts coalesce into at most
+    // one measure per frame instead of thrashing layout on every event.
+    const rafIdRef = React.useRef<number | null>(null);
+    const rafPendingRef = React.useRef(false);
 
     // Measure the actual vertical space left after the page header, match panel,
     // and margins so the chat card fits the viewport instead of assuming a fixed
@@ -274,29 +282,59 @@ const JobSearchChat: React.FC = () => {
         if (!card) return;
         const viewport = window.visualViewport;
         const viewportHeight = viewport ? viewport.height : window.innerHeight;
-        const top = card.getBoundingClientRect().top;
-        const bottomGap = 16; // breathing room above the page bottom
+        // Clamp so a negative offset when the page is scrolled cannot inflate the
+        // card past the viewport (which would bury the composer below the fold).
+        const top = Math.max(0, card.getBoundingClientRect().top);
+        // Respect the device home-indicator inset (iPhone X+). env() is exposed as
+        // a CSS custom property (popup.css) since it isn't directly readable.
+        let safeAreaBottom = 0;
+        try {
+            const raw = getComputedStyle(document.documentElement)
+                .getPropertyValue('--safe-area-inset-bottom').trim();
+            const parsed = parseFloat(raw);
+            safeAreaBottom = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+        } catch {
+            safeAreaBottom = 0;
+        }
+        const bottomGap = safeAreaBottom || 16; // breathing room above the page bottom
         const computed = viewportHeight - top - bottomGap;
-        setCardHeight(Math.max(computed, 320));
+        setCardHeight(Math.max(computed, MIN_CARD_PX));
     }, []);
 
+    // Coalesce high-frequency resize/viewport events (fired many times per second
+    // on mobile for orientation changes and keyboard show/hide) into one measure
+    // per animation frame. The guard flag guarantees only a single rAF is ever
+    // outstanding, so bursts do not thrash layout or re-render on every event.
+    const scheduleMeasure = React.useCallback(() => {
+        if (rafPendingRef.current) return;
+        rafPendingRef.current = true;
+        rafIdRef.current = window.requestAnimationFrame(() => {
+            rafPendingRef.current = false;
+            rafIdRef.current = null;
+            measureCardHeight();
+        });
+    }, [measureCardHeight]);
+
     React.useEffect(() => {
-        measureCardHeight();
-        window.addEventListener('resize', measureCardHeight);
-        window.visualViewport?.addEventListener('resize', measureCardHeight);
+        scheduleMeasure();
+        window.addEventListener('resize', scheduleMeasure);
+        window.visualViewport?.addEventListener('resize', scheduleMeasure);
         // Watch the card's offset parent so a match-panel resize above the chat
         // (e.g. empty -> results) re-measures the available height.
         let observer: ResizeObserver | null = null;
         if (typeof ResizeObserver !== 'undefined' && cardRef.current?.parentElement) {
-            observer = new ResizeObserver(() => measureCardHeight());
+            observer = new ResizeObserver(scheduleMeasure);
             observer.observe(cardRef.current.parentElement);
         }
         return () => {
-            window.removeEventListener('resize', measureCardHeight);
-            window.visualViewport?.removeEventListener('resize', measureCardHeight);
+            if (rafIdRef.current !== null) {
+                window.cancelAnimationFrame(rafIdRef.current);
+            }
+            window.removeEventListener('resize', scheduleMeasure);
+            window.visualViewport?.removeEventListener('resize', scheduleMeasure);
             observer?.disconnect();
         };
-    }, [measureCardHeight]);
+    }, [scheduleMeasure]);
 
     const chatCardStyle = React.useMemo<React.CSSProperties>(() => {
         if (cardHeight !== null) {
