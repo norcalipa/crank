@@ -383,21 +383,41 @@ checks, never a live production claim.
 Verify the deployed SHA and that schema/assets/configuration are coherent
 before trusting job retrieval:
 
-- **Release SHA:** confirm the running build matches the intended merge SHA
-  (e.g. from the [#410](#child-issues-prs-and-merge-shas) child table) via the
-  release page and the build fingerprint in the release-diagnostics view.
+- **Release SHA:** confirm the running build matches the **deployed release
+  SHA** — the merge commit of this closeout PR on `main` (the current `main`
+  tip / the release tag or artifact actually deployed to the environment) —
+  and that its ancestry contains *all* children. Do **not** validate against an
+  intermediate child merge SHA: every SHA in the child table predates the full
+  closeout change set, so a child SHA can certify a stale/incomplete
+  deployment. The child table is **historical evidence only**. Verify via the
+  release page, the build fingerprint in the release-diagnostics view, and a
+  build-fingerprint / ancestry check against that release target.
 - **Assets:** confirm the webpack/manifest fingerprint matches the deployed
   build (release-diagnostics reports `build.status`; `mismatch` means the
   frontend bundle and backend do not agree — resolve before proceeding).
 - **Migrations:** run `python manage.py migration_status` and confirm
-  `pending == 0` / status `clean`. It also verifies the Job Search Assistant
-  tables (conversations, job sources, crawl runs) are present. **Automated in
-  CI** only at the wiring level (see the smoke test); the live DB check here is
-  operator-run.
-- **Provider mode:** confirm `JOB_SEARCH_PROVIDER` is set to the intended
-  mode (`demo` vs. a real provider) for the environment. List all relevant
-  kill-switch defaults at runtime (see
-  [Rollback + kill switches](#7-rollback-and-kill-switches)).
+  `pending == 0` / status `clean`. Be precise about its scope: `migration_status`
+  verifies applied migrations plus the presence of **only** the two conversation
+  tables it defines — `crank_jobsearchconversation` and
+  `crank_jobsearchmessage`. It does **not** inspect job-source, listing, or
+  crawl-run tables, so `status=clean` does **not** imply the retrieval schema is
+  present. For the full migration state this gate depends on, run
+  `python manage.py showmigrations --plan` (or the release-diagnostics view) and
+  confirm the retrieval tables exist via `crawl_status` connectivity and the Job
+  Retrieval Ops admin surface in
+  [2. Admin Job Retrieval Ops](#2-admin-job-retrieval-ops--seed-and-listing-counts).
+  **Automated in CI** only at the wiring level (see the smoke test); the live DB
+  check here is operator-run.
+- **Provider mode (production/staging gate FAILS on demo):**
+  `JOB_SEARCH_PROVIDER` **must be `orchestrator`** (the real provider) for any
+  production or staging gate. If it is `demo` — or any canned response — in a
+  non-dev environment, the gate **FAILS** immediately; demo behavior is
+  explicitly **non-production only** and contradicts #406's requirement that
+  production use the real orchestrator and not display canned recommendations.
+  Confirm provider/model readiness and that at least one real active
+  listing/result card is produced before passing. List all relevant kill-switch
+  defaults at runtime (see
+  [Rollback + kill switches](#5-rollback-and-kill-switches)).
 
 ### 2. Admin Job Retrieval Ops — Seed and Listing Counts
 
@@ -409,8 +429,17 @@ before trusting job retrieval:
   (`/admin/.../jobretrievalops/`, staff-only) and confirm sources, readiness,
   and audit actions load. **Automated (wiring only):** the smoke test asserts
   the admin surface is registered.
-- **Listing counts:** run `python manage.py crawl_status` and confirm per-source
-  listing counts, last-crawl time, and last outcome are populated as expected.
+- **Run retrieval (required):** seeding sources alone produces **zero**
+  inventory — the operator **must trigger retrieval** before any listing-count
+  assertion. With readiness and budget gates confirmed, invoke the pipeline
+  (`python manage.py run_job_pipeline`) and/or dispatch bounded crawls
+  (`python manage.py schedule_crawls`, or a single confirmed crawl via
+  `python manage.py trigger_crawl --source-key ... --source-type job --confirm`,
+  or the dashboard's own run control), then wait for the run to complete.
+- **Listing counts:** *after* a completed retrieval run, run
+  `python manage.py crawl_status` and confirm per-source listing counts,
+  last-crawl time, and last outcome are populated as expected. A non-zero
+  listing count requires an executed run, not merely a seeded source.
 - **Health:** run `python manage.py crawl_healthcheck` and confirm it emits a
   bounded telemetry event and reports no inventory anomalies.
 
@@ -420,8 +449,10 @@ Child [#406](https://github.com/norcalipa/crank/issues/406) added conversation
 history retention and reload; verify the loop as an operator:
 
 - Open the chat (`/chat/`, the `job_search` page) as a logged-in user.
-- Submit a message and confirm a job recommendation is returned (or the
-  expected `demo` response when `JOB_SEARCH_PROVIDER=demo`).
+- Submit a message and confirm a **real** job recommendation is returned from
+  live inventory. A `demo`/canned response is **not** acceptable for the
+  production gate — `JOB_SEARCH_PROVIDER` must be `orchestrator` (see
+  [Provider mode](#1-release-assets-migrations-and-config-diagnostics) above).
 - Reload the page and confirm prior conversation history is restored via the
   retained-history endpoint.
 - Exercise the conversation controls: list/detail, export (JSON, only the
@@ -434,20 +465,40 @@ history retention and reload; verify the loop as an operator:
 
 - **#407 Composer:** the chat composer renders correctly, handles multi-line
   input, submit-on-Enter affordance, and empty/invalid send without error.
-- **#408 Viewport shell:** the shell is reactive across desktop and mobile
-  widths (no horizontal overflow; panels collapse gracefully).
-- **#409 Organization-list scrollbar:** the organization list scrolls
-  independently and shows a correct scrollbar (no clipped/fixed-height
-  overflow) at desktop and mobile sizes.
+- **#408 Viewport shell:** verify across the viewport matrix required by
+  #407/#408 — desktop (≥1280px), tablet (~768px), mobile (~375px), a
+  short-height window (<700px), and 200% browser zoom — confirming no
+  horizontal overflow, no hidden controls, and graceful panel collapse in every
+  case. Re-check with the on-screen/virtual keyboard open and on
+  `visualViewport` resize (mobile), and run the composer through an IME
+  composition (e.g. CJK) to ensure in-progress input never jumps or is clipped.
+  Record per-case evidence (viewport size, zoom level, keyboard state) for the
+  [production record](#6-production-verification-record).
+- **#409 Organization-list scrollbar:** the organization list shows **no**
+  inner vertical scrollbar when the paginated rows fit — the document owns
+  scrolling. A nested/independent scrollbar is only permitted where content
+  intentionally exceeds its container (the detail dialog's bounded overflow);
+  otherwise no inner scrollbar may appear at desktop and mobile sizes.
 
 ### 5. Rollback and Kill Switches
 
 Pre-verified rollback path before enabling anything:
 
-- Rehearse with `python manage.py rollback_drill` (optionally `--json`):
-  disables capability switches, verifies `capability_enabled()` returns
-  `False`, asserts no new `AgentRun` rows after disablement, checks for
-  orphaned RUNNING runs, and records an `OperationalChangeAudit` entry.
+- Rehearse with `python manage.py rollback_drill` (optionally `--json`), and
+  note its **precise scope**: it disables each capability `CapabilitySwitch`,
+  verifies `capability_enabled()` returns `False` for the switch key (and for
+  the matching run type where the key and run type align), checks for orphaned
+  RUNNING runs beyond the stale-lock TTL, records an `OperationalChangeAudit`
+  entry, and emits a monitoring event. It does **not** snapshot or assert
+  `AgentRun` creation counts and does **not** call
+  `AgentRunCommand.get_enabled()`; for `interactive_agent` (where the drilled
+  `noop` run type mismatches the switch key) the settings flags are the primary
+  gate and the switch is an additional defense.
+- Confirm new-run blocking (covers the guarantees `rollback_drill` does not):
+  with the kill switch and env flags disabled, call
+  `AgentRunCommand.get_enabled()` for the drilled run types and confirm it
+  returns `False`, and confirm no new `AgentRun` row is created when a run is
+  attempted (compare `AgentRun` counts before/after).
 - Confirm the runtime kill switch `CapabilitySwitch(key="job_pipeline")` (and
   `interactive_agent` / `gather_scores` where applicable) blocks `get_enabled()`.
 - Confirm environment flags: `AGENT_RUN_ENABLED` (master, default `False`),
@@ -471,6 +522,31 @@ section documents the *record format*, not a verified state:
 | Latest successful run | _date/outcome of last `run_job_pipeline` / crawl_ |
 | Desktop screenshot | _attach file / link_ |
 | Mobile screenshot | _attach file / link_ |
+| UX evidence matrix | _viewport / zoom / keyboard / IME per case (see #408)_ |
+
+## Remaining Operator Evidence (blocks #410 close)
+
+This PR intentionally does **not** auto-close **#410** via `Fixes`; it is linked
+with **Refs / Contributes to**. The code and documentation land here, but the
+umbrella issue stays open until an operator records the following
+environment-dependent evidence **here or on #410** for a specific release SHA:
+
+- [ ] **Authenticated staging smoke:** seed → `run_job_pipeline` / scheduled
+      crawl → non-zero listings → chat recommendation from real inventory →
+      history reload → follow-through (list/detail/export/reset/delete/
+      seen/dismiss).
+- [ ] **Production verification record** filled in under
+      [6. Production Verification Record](#6-production-verification-record)
+      for a release SHA, with `JOB_SEARCH_PROVIDER=orchestrator` (**no demo**)
+      and at least one real active listing/result card.
+- [ ] **Rollback and kill switches** exercised, including `get_enabled()`
+      returning False and no new `AgentRun` rows (see
+      [5. Rollback and Kill Switches](#5-rollback-and-kill-switches)).
+- [ ] **UX evidence** for the viewport/zoom/keyboard/IME matrix (see
+      [4. UX Acceptance Notes](#4-ux-acceptance-notes)).
+
+Closing #410 is an **operator action** backed by the evidence above, not a
+merge side-effect.
 
 ## Summary: Automated vs. Operator-Run
 
@@ -484,7 +560,7 @@ section documents the *record format*, not a verified state:
 | Source seed / listing counts | — | `seed_job_sources`, `crawl_status`, dashboard |
 | Crawl health | — | `crawl_healthcheck` |
 | Chat E2E + history reload | — | manual chat walkthrough |
-| UX acceptance (composer/shell/scrollbar) | — | manual desktop+mobile review |
+| UX acceptance (composer/shell/scrollbar) | — | manual viewport/zoom/keyboard/IME matrix review |
 | Rollback rehearsal | — | `rollback_drill` |
 | Kill-switch confirmation | — | env + `CapabilitySwitch` checks |
 | Production verification record | — | filled by operator per release |
