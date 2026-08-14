@@ -7,6 +7,20 @@
     <h1>Release Diagnostics</h1>
     <p class="lead">Deploy-integrity signals for the currently running release. Secrets and user content are never shown.</p>
 
+    {% if diagnostics.build.status != "ok" %}
+    <div class="alert alert-warning" role="alert">
+        <strong>Release integrity warning:</strong>
+        {% if diagnostics.build.status == "mismatch" %}
+            The deployed build does not match the release that was pinned at deploy time
+            (mismatched: {{ diagnostics.build.mismatched|join:", " }}). Do not serve traffic on this image.
+        {% else %}
+            Release identifiers could not be verified against a pinned deploy
+            (no <code>RELEASE_BACKEND_SHA</code> / <code>RELEASE_FRONTEND_BUILD</code> was pinned).
+            Pin a release at deploy time so stale assets are detected automatically.
+        {% endif %}
+    </div>
+    {% endif %}
+
     <h2>Build Identifiers</h2>
     <table class="table table-striped">
         <tbody>
@@ -19,8 +33,8 @@
     <table class="table table-striped">
         <tbody>
             <tr><th scope="row">Status</th><td>{{ diagnostics.migrations.status }}</td></tr>
-            <tr><th scope="row">Applied</th><td>{{ diagnostics.migrations.applied_count }}</td></tr>
-            <tr><th scope="row">Pending</th><td>{{ diagnostics.migrations.pending_count }}</td></tr>
+            <tr><th scope="row">Applied</th><td>{{ diagnostics.migrations.applied_count|default:"—" }}</td></tr>
+            <tr><th scope="row">Pending</th><td>{{ diagnostics.migrations.pending_count|default:"—" }}</td></tr>
         </tbody>
     </table>
 
