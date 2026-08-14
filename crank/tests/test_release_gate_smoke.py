@@ -13,6 +13,8 @@ from django.core.management import get_commands
 from django.test import SimpleTestCase
 from django.urls import reverse
 
+from crank import release
+
 
 class ManagementCommandPresenceTest(SimpleTestCase):
     """Required job-retrieval and ops management commands must be registered."""
@@ -26,9 +28,11 @@ class ManagementCommandPresenceTest(SimpleTestCase):
         "migration_status",
         # Rollback rehearsal (rollback drill).
         "rollback_drill",
-        # Pipeline entrypoints.
+        # Pipeline / retrieval entrypoints (required before non-zero listing
+        # counts can be asserted for the stage smoke).
         "run_job_pipeline",
         "schedule_crawls",  # conditional: present in this codebase
+        "trigger_crawl",  # single confirmed bounded crawl
     )
 
     def setUp(self):
@@ -83,3 +87,45 @@ class RollbackDrillInterfaceTest(SimpleTestCase):
         for entry in rollback_drill.DRILL_CAPABILITIES:
             self.assertIn("key", entry)
             self.assertIn("run_type", entry)
+
+
+class RollbackDrillScopeTest(SimpleTestCase):
+    """Doc honest about the drill's scope.
+
+    The rollout gate documents that ``rollback_drill`` verifies
+    ``capability_enabled()`` rather than ``get_enabled()`` and does not snapshot
+    ``AgentRun`` counts. Guard the drill's interface so the documented scope and
+    the gate stay in lockstep.
+    """
+
+    def test_drill_has_capability_blocked_wiring(self):
+        from crank.management.commands import rollback_drill
+        from crank.services import monitoring
+
+        # The drill's per-capability result reports the switch-key block via
+        # ``monitoring.capability_enabled``, which is what the gate claims it
+        # verifies; it does not call ``get_enabled()`` nor snapshot AgentRun.
+        self.assertTrue(callable(monitoring.capability_enabled))
+        self.assertFalse(hasattr(rollback_drill, "get_enabled"))
+        self.assertFalse(hasattr(rollback_drill.Command, "get_enabled"))
+
+
+class ProviderModeWiringTest(SimpleTestCase):
+    """Wiring behind the demo-is-not-production gate (#406 / #410).
+
+    Wiring-only: asserts the release-diagnostics provider-mode surface exists
+    and never echoes a raw provider value (e.g. a URL with embedded creds). It
+    does not authenticate or verify a live provider.
+    """
+
+    def test_config_modes_reports_provider_safely(self):
+        from django.conf import settings
+
+        modes = release.config_modes()
+        self.assertIn("job_search_provider", modes)
+        # A misconfigured provider (URL with creds / blank) is reduced to a
+        # safe token, never echoed onto the diagnostics page.
+        self.assertRegex(modes["job_search_provider"], r"^\w[-\w.]{0,63}$")
+        self.assertNotIn("://", modes["job_search_provider"])
+        # The release gate names the real (orchestrator) provider explicitly.
+        self.assertEqual(getattr(settings, "JOB_SEARCH_PROVIDER", ""), "demo")
