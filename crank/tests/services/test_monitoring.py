@@ -135,3 +135,47 @@ class MonitoringContractTests(TestCase):
             action="changed",
         )
         self.assertEqual(str(audit), "changed:capability:job_pipeline")
+
+    def test_latency_buckets_are_low_cardinality(self):
+        self.assertEqual(monitoring.latency_bucket(50), "lt100")
+        self.assertEqual(monitoring.latency_bucket(100), "100-300")
+        self.assertEqual(monitoring.latency_bucket(299), "100-300")
+        self.assertEqual(monitoring.latency_bucket(300), "300-1000")
+        self.assertEqual(monitoring.latency_bucket(999), "300-1000")
+        self.assertEqual(monitoring.latency_bucket(5000), "gt1000")
+
+    def test_job_search_turn_event_accepts_quality_dimensions(self):
+        payload = monitoring.event_attributes(
+            "job_search_turn",
+            {
+                "tools_called": 4,
+                "result_count": 12,
+                "cited_ids_count": 0,
+                "empty_result": True,
+                "inventory_nonempty": True,
+                "latency_bucket": monitoring.latency_bucket(250),
+                "latency_ms": 250,
+                "provider_error_class": "ProviderTimeoutError",
+                "turns_without_result": 3,
+            },
+        )
+        self.assertEqual(payload["event_name"], "job_search_turn")
+        self.assertEqual(payload["tools_called"], 4)
+        self.assertTrue(payload["empty_result"])
+        self.assertEqual(payload["latency_bucket"], "100-300")
+
+    def test_job_search_tool_invocation_is_registered(self):
+        payload = monitoring.event_attributes(
+            "job_search_tool_invocation",
+            {"tool": "search_job_listings", "result_count": 3, "job_match_count": 1, "organization_match_count": 1},
+        )
+        self.assertEqual(payload["tool"], "search_job_listings")
+        self.assertEqual(payload["result_count"], 3)
+
+    def test_helpfulness_gap_event_is_registered(self):
+        payload = monitoring.event_attributes(
+            "job_search_helpfulness_gap",
+            {"turns_without_result": 5, "empty_result": True},
+        )
+        self.assertEqual(payload["event_name"], "job_search_helpfulness_gap")
+        self.assertEqual(payload["turns_without_result"], 5)

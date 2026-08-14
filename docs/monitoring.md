@@ -8,7 +8,8 @@ Crank emits two best-effort New Relic custom event types:
 - `AgentRun` is the compatibility event for scheduled lifecycle transitions.
 - `CrankOperation` is the bounded Phase 4 event. Its `event_name` is one of
   `interactive_call`, `scheduled_run`, `source_stage`, `matching_batch`,
-  `operational_change`, or `inventory_health`.
+  `operational_change`, `inventory_health`, `job_search_turn`,
+  `job_search_tool_invocation`, or `job_search_helpfulness_gap`.
 
 Only stable operational attributes are accepted: run type, status, stage,
 registered adapter key, reason code, bounded counters, latency/duration,
@@ -68,6 +69,44 @@ emits a degraded `inventory_health` event with `healthy = false` and a
 `reason_code`, then exits non-zero. Keep Kubernetes-level alerting on CronJob
 failures enabled so infrastructure outages surface even when the event
 pipeline is down.
+
+## Assistant helpfulness (job-search chat)
+
+Issue #397 added telemetry to the job-search assistant so an operator can spot
+"chat is useless" regressions (for example a demo/echo provider leaking into
+production) before users hit them.
+
+Per assistant turn the orchestrator emits a `job_search_turn` event with only
+scalar counters: `tools_called`, `result_count`, `cited_ids_count`,
+`empty_result` (the turn produced no result card), `inventory_nonempty`, and
+`latency_ms`/`latency_bucket`. Each bounded datasource tool also emits a
+`job_search_tool_invocation` event with `tool` and its `result_count`. When a
+conversation has accumulated several assistant turns but produced no result
+card, the view emits a `job_search_helpfulness_gap` event with
+`turns_without_result` and `empty_result` (see `MIN_HELPFUL_TURNS`). No prompt,
+response, or conversation-identifier content is ever an event attribute.
+
+**Reading the telemetry to detect a useless chat:**
+
+- Alert on a sustained high rate of `job_search_turn` where `empty_result` is
+  true **and** `inventory_nonempty` is true — the assistant is engaged but not
+  surfacing any server-grounded citations. (An empty catalog legitimately
+  yields `empty_result`; empty inventory is reported separately via
+  `inventory_nonempty`.)
+- Alert on any `job_search_helpfulness_gap` event — it means real users are
+  holding multi-turn conversations that never produce a single result card.
+- Monitor the `EchoReplyError` / anti-echo guard: the orchestrator rejects a
+  reply that restates the user turn without tool work when inventory is
+  non-empty. A spike in helper rejected-turn counts (`reason_code = rejected`
+  on `interactive_call`) signals either a bad provider or a too-aggressive
+  prompt.
+- Trend `latency_bucket` per provider; a jump in `gt1000` alongside rising
+  `empty_result` suggests the gateway is timing out before grounding data.
+
+**Deployment check.** The `crank.W001` system check warns loudly when
+`JOB_SEARCH_PROVIDER=demo` in a non-dev environment (`ENV` of `prod`/`staging`
+or `DEBUG` off). Run `python manage.py check --deploy` in CI: a demo provider
+in a production config must never silently serve simulated replies.
 
 ## Admin controls and recovery
 

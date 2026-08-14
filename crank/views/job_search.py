@@ -31,7 +31,9 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from crank.agents.job_search.demo import JobSearchService, JobSearchServiceError
+from crank.agents.job_search import quality
 from crank.models import JobSearchConversation, JobSearchMessage
+from crank.services import monitoring
 from crank.serializers.job_search import (
     ConversationCreateSerializer,
     MessageSubmitSerializer,
@@ -298,6 +300,24 @@ def agent_conversation_detail(request, conversation_id):
             "results_json": results_json_str,
         },
     )
+
+    # Helpfulness-gap telemetry (issue #397): size conversations that keep
+    # engaging the assistant but never produce a result card. Scalar counts
+    # only; no message content or conversation identity is emitted.
+    assistant_qs = conversation.messages.filter(role=JobSearchMessage.Role.ASSISTANT)
+    assistant_turns = assistant_qs.count()
+    result_cards = assistant_qs.exclude(results_json="").count()
+    if quality.has_helpfulness_gap(
+        assistant_turns=assistant_turns, result_cards=result_cards
+    ):
+        monitoring.record_event(
+            "job_search_helpfulness_gap",
+            {
+                "turns_without_result": assistant_turns - result_cards,
+                "empty_result": True,
+            },
+        )
+
     return JsonResponse(
         {
             "message": serialize_message(assistant_message),

@@ -22,6 +22,13 @@ from crank.models import JobSearchConversation, JobSearchMessage
 LOCMEM = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
 
 
+class _FakeResults:
+    """Minimal results object; only serialization shape is used by the view."""
+
+    def to_json_dict(self) -> dict:
+        return {"jobs": [], "organizations": []}
+
+
 @override_settings(CACHES=LOCMEM)
 class JobSearchApiTestCase(TestCase):
     def setUp(self):
@@ -122,6 +129,40 @@ class JobSearchApiTestCase(TestCase):
         roles = [m["role"] for m in history["messages"]]
         self.assertEqual(roles, ["user", "assistant", "user", "assistant"])
         self.assertTrue(history["preferences_changed"])
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_helpfulness_gap_emitted_after_many_resultless_turns(self, record):
+        # The demo provider never produces result cards; after several turns
+        # the conversation trips the helpfulness-gap telemetry (issue #397).
+        conversation_id = self._start_conversation()
+        for i in range(4):
+            self._submit(conversation_id, f"turn {i}", self._uuid(i))
+        gap_events = [
+            call
+            for call in record.call_args_list
+            if call.args[0] == "job_search_helpfulness_gap"
+        ]
+        self.assertGreaterEqual(len(gap_events), 1)
+        event_type, attrs = gap_events[-1].args
+        self.assertEqual(event_type, "job_search_helpfulness_gap")
+        self.assertTrue(attrs["empty_result"])
+        self.assertEqual(attrs["turns_without_result"], 4)
+
+        # A conversation that produced a result card never fires the gap.
+        record.reset_mock()
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True,
+            side_effect=lambda self, conversation, user_message: (
+                "Here's a match", False, _FakeResults(),
+            ),
+        ):
+            self._submit(conversation_id, "give me matches", self._uuid(99))
+        gap_events = [
+            call
+            for call in record.call_args_list
+            if call.args[0] == "job_search_helpfulness_gap"
+        ]
+        self.assertEqual(gap_events, [])
 
     def test_create_new_starts_fresh_conversation(self):
         first_id = self._start_conversation(create_new=True)

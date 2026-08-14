@@ -52,6 +52,16 @@ class InvalidScoreSummaryRowError(JobSearchError):
     """
 
 
+class EchoReplyError(InvalidModelOutputError):
+    """The assistant merely restated the user's message without tool work.
+
+    Raised when the inventory is non-empty yet the reply is an unrooted echo
+    of the user turn (no citations and no preference patch). This guards
+    against a demo/echo provider leaking into production, where the assistant
+    would be chatting but never surfacing a result card.
+    """
+
+
 class InvalidJobListingReferenceError(InvalidModelOutputError):
     """The model cited a job-listing ID not returned by server-controlled tools.
 
