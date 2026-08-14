@@ -29,7 +29,19 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        result = inventory_health.check_inventory_health()
+        try:
+            result = inventory_health.check_inventory_health()
+        except Exception as exc:
+            # Infrastructure failure (e.g. DB unreachable) means the probe
+            # itself cannot run. Emit a degraded event so operators can see
+            # the outage, then exit non-zero for CronJob failure surfacing.
+            self.stderr.write(self.style.ERROR(f"inventory health check failed: {exc}"))
+            if not options["no_emit"]:
+                monitoring.record_event(
+                    "inventory_health",
+                    {"healthy": False, "reason_code": monitoring.failure_reason(exc)},
+                )
+            raise SystemExit(1)
 
         self.stdout.write(
             self.style.SUCCESS(

@@ -137,13 +137,20 @@ adapters. It is safe to run at any time and never needs provider credentials:
 # Local/one-off check (exits 1 when unhealthy)
 python manage.py crawl_healthcheck
 
-# Recurring probe: unsuspend the healthcheck CronJob
+# Recurring probe: apply the CronJob manifest once, then unsuspend it
+kubectl -n crank apply -f k8s/crank-healthcheck-cron.yaml
 kubectl -n crank patch cronjob crank-healthcheck -p '{"spec":{"suspend":false}}'
 ```
 
 The probe emits an `inventory_health` New Relic event; the alert policy in
 `docs/monitoring.yaml` (zero-enabled-sources, zero-active-listings,
 stale-inventory, repeated-failures, listing-collapse) fires from that event.
+
+If the probe itself cannot run (for example the database is unreachable), it
+emits a degraded `inventory_health` event with `healthy = false` and a
+`reason_code`, and the CronJob fails so `failedJobsHistoryLimit` retains
+evidence. Keep Kubernetes-level alerting on CronJob failures enabled so
+infrastructure outages surface even when the event pipeline is down.
 
 ## Rollback
 

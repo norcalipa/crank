@@ -63,6 +63,12 @@ failure, and the same event drives the inventory alert policy:
 The probe is safe to run before the crawl is enabled and never requires
 provider credentials.
 
+If the probe itself cannot run (for example the database is unreachable), it
+emits a degraded `inventory_health` event with `healthy = false` and a
+`reason_code`, then exits non-zero. Keep Kubernetes-level alerting on CronJob
+failures enabled so infrastructure outages surface even when the event
+pipeline is down.
+
 ## Admin controls and recovery
 
 Staff-only Django admin views expose sanitized `AgentRun`/`SourceRun` history,

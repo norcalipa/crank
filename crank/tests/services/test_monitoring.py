@@ -33,6 +33,21 @@ class MonitoringContractTests(TestCase):
         with self.assertRaises(ValueError):
             monitoring.event_attributes("raw_prompt", {})
 
+    def test_inventory_health_payload_excludes_violations(self):
+        # Operator-only detail must never leak into the bounded telemetry event;
+        # guards a future regression if "violations" were allowlisted.
+        payload = monitoring.event_attributes(
+            "inventory_health",
+            {
+                "healthy": False,
+                "enabled_sources": 0,
+                "violations": ["no approved and enabled job sources"],
+            },
+        )
+        self.assertNotIn("violations", payload)
+        self.assertFalse(payload["healthy"])
+        self.assertEqual(payload["enabled_sources"], 0)
+
     def test_reason_codes_are_finite_and_stable(self):
         self.assertEqual(monitoring.failure_reason(TimeoutError()), "timeout")
         self.assertEqual(

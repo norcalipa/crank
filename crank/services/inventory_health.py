@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from django.conf import settings
+from django.db.models import Count, Exists, OuterRef, Prefetch, Q
 from django.utils import timezone
 
 from crank.agents.jobs.registry import REGISTRY
@@ -43,7 +44,11 @@ def freshness_hours() -> int:
 def _is_stale(last_crawl_at: datetime | None, reference: datetime) -> bool:
     if last_crawl_at is None:
         return True
-    return reference - last_crawl_at >= timedelta(hours=freshness_hours())
+    hours = freshness_hours()
+    if hours <= 0:
+        # A non-positive freshness target disables staleness reporting.
+        return False
+    return reference - last_crawl_at >= timedelta(hours=hours)
 
 
 def adapter_registered(adapter_key: str) -> bool:
@@ -59,13 +64,39 @@ def check_inventory_health(*, now: datetime | None = None) -> dict[str, Any]:
     telemetry; the ``violations`` list is for operator output and never emitted.
     """
     reference = now or timezone.now()
-    sources = list(JobSourceCatalog.objects.all().order_by("pk"))
-    approved_enabled = [
-        source
-        for source in sources
-        if source.approval_state == JobSourceCatalog.ApprovalState.APPROVED
-        and source.enabled
-    ]
+    sources_total = JobSourceCatalog.objects.count()
+    # Single bounded query set: per-source active-listing counts and the
+    # "ever produced listings" signal are resolved in SQL, and crawl runs are
+    # prefetched once (ordered) so the per-source loop issues no additional
+    # queries and only inspects the first min_failures outcomes.
+    approved_enabled = list(
+        JobSourceCatalog.objects.filter(
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+        )
+        .order_by("pk")
+        .annotate(
+            source_active=Count(
+                "listings", filter=Q(listings__status=JobListing.Status.ACTIVE)
+            ),
+            produced_listings=Exists(
+                CrawlRun.objects.filter(
+                    job_source=OuterRef("pk"),
+                    outcome__in=[
+                        CrawlRun.Outcome.SUCCESS,
+                        CrawlRun.Outcome.PARTIAL,
+                    ],
+                    counts__listings_ingested__gt=0,
+                )
+            ),
+        )
+        .prefetch_related(
+            Prefetch(
+                "crawl_runs",
+                queryset=CrawlRun.objects.order_by("-started_at", "-id"),
+            )
+        )
+    )
     active_listings = JobListing.objects.count()
     min_failures = max(
         1,
@@ -84,20 +115,14 @@ def check_inventory_health(*, now: datetime | None = None) -> dict[str, Any]:
         if not adapter_registered(source.adapter_key):
             unregistered_adapter_sources += 1
 
-        runs = list(source.crawl_runs.order_by("-started_at", "-id"))
+        runs = source.crawl_runs.all()
         recent_outcomes = [run.outcome for run in runs[:min_failures]]
         if len(recent_outcomes) >= min_failures and all(
             outcome in FAILURE_OUTCOMES for outcome in recent_outcomes
         ):
             repeated_failure_sources += 1
 
-        source_active = JobListing.objects.filter(source=source).count()
-        produced_listings = any(
-            run.outcome in {CrawlRun.Outcome.SUCCESS, CrawlRun.Outcome.PARTIAL}
-            and int((run.counts or {}).get("listings_ingested", 0) or 0) > 0
-            for run in runs
-        )
-        if source_active == 0 and produced_listings:
+        if source.source_active == 0 and source.produced_listings:
             collapsed_sources += 1
 
     zero_enabled_sources = len(approved_enabled) == 0
@@ -122,7 +147,7 @@ def check_inventory_health(*, now: datetime | None = None) -> dict[str, Any]:
         )
 
     return {
-        "sources_total": len(sources),
+        "sources_total": sources_total,
         "enabled_sources": len(approved_enabled),
         "active_listings": active_listings,
         "stale_sources": stale_sources,
