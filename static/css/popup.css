@@ -1,3 +1,10 @@
+/* Expose the device home-indicator inset (iPhone X+) to JS: env() is not
+   directly readable via getComputedStyle, so surface it through a custom
+   property that the viewport-reactive chat shell reads in measureCardHeight. */
+:root {
+    --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+}
+
 .popup-overlay {
     position: fixed;
     top: 0;

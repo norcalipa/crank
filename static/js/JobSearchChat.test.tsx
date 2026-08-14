@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import {render, screen, fireEvent, waitFor} from '@testing-library/react';
+import {render, screen, fireEvent, waitFor, act} from '@testing-library/react';
 import * as React from 'react';
 
 import JobSearchChat, {ChatMessage} from './JobSearchChat';
@@ -53,6 +53,8 @@ function postBodies(fetchMock: jest.Mock, urlPrefix: string) {
         .map(([url, init]) => JSON.parse((init as RequestInit).body as string));
 }
 
+const originalResizeObserver = globalThis.ResizeObserver;
+
 describe('JobSearchChat', () => {
     beforeEach(() => {
         global.fetch = jest.fn();
@@ -60,13 +62,38 @@ describe('JobSearchChat', () => {
 
     afterEach(() => {
         jest.restoreAllMocks();
+        // Restore ResizeObserver so a mock leaking from a failing test cannot
+        // affect later tests (MINOR-3).
+        if (originalResizeObserver === undefined) {
+            delete (globalThis as {ResizeObserver?: unknown}).ResizeObserver;
+        } else {
+            (globalThis as {ResizeObserver?: unknown}).ResizeObserver = originalResizeObserver;
+        }
     });
 
+    // jsdom implements requestAnimationFrame as a real ~16ms timer. Use this to
+    // flush the height measurement before asserting on rendered style.
+    function flushRaf(): Promise<void> {
+        return new Promise((resolve) => {
+            const id = window.requestAnimationFrame(() => {
+                window.cancelAnimationFrame(id);
+                resolve();
+            });
+        });
+    }
+
     describe('viewport-reactive height measurement', () => {
+        beforeEach(() => {
+            // Pin the jsdom default explicitly (768) rather than relying on it, so
+            // the expected pixel heights below are self-explanatory (NIT-3).
+            window.innerHeight = 768;
+        });
+
         test('sets a computed pixel height instead of a fixed 7rem offset', async () => {
             await renderChat();
+            await act(async () => { await flushRaf(); });
             const chat = screen.getByTestId('job-search-chat');
-            // jsdom: innerHeight 768, card top 0, bottom gap 16 -> 752px
+            // innerHeight 768 - card top 0 - bottom gap 16 -> 752px.
             expect(chat).toHaveStyle({height: '752px', minHeight: '20rem'});
         });
 
@@ -79,18 +106,72 @@ describe('JobSearchChat', () => {
             }
             (globalThis as {ResizeObserver?: unknown}).ResizeObserver = MockResizeObserver;
             await renderChat();
+            // afterEach restores the original ResizeObserver, so there is no
+            // manual leave-behind to leak into later tests.
             expect(observe).toHaveBeenCalled();
-            (globalThis as {ResizeObserver?: unknown}).ResizeObserver = undefined;
         });
 
-        test('re-measures height when the viewport resizes', async () => {
+        test('re-measures the card height when the viewport resizes', async () => {
             await renderChat();
             const chat = screen.getByTestId('job-search-chat');
-            const before = chat.style.height;
-            expect(before).toBeTruthy();
-            fireEvent(window, new Event('resize'));
-            // Height is recomputed from the same jsdom metrics, so it stays stable.
-            expect(chat).toHaveStyle({height: before});
+            await act(async () => { await flushRaf(); });
+            expect(chat).toHaveStyle({height: '752px'});
+
+            // Shrink the viewport; the card must re-measure to the new height.
+            window.innerHeight = 600;
+            await act(async () => {
+                fireEvent(window, new Event('resize'));
+                await flushRaf();
+            });
+            // 600 - 0 - 16 = 584px (> MIN_CARD_PX 320).
+            expect(chat).toHaveStyle({height: '584px'});
+        });
+
+        test('coalesces a resize burst into a single queued measure', async () => {
+            await renderChat();
+            await act(async () => { await flushRaf(); }); // settle mount measure
+            const rafSpy = jest.spyOn(window, 'requestAnimationFrame');
+            await act(async () => {
+                fireEvent(window, new Event('resize'));
+                fireEvent(window, new Event('resize'));
+                fireEvent(window, new Event('resize'));
+            });
+            // The guard flag allows only one rAF to be outstanding for the burst.
+            expect(rafSpy).toHaveBeenCalledTimes(1);
+            await act(async () => { await flushRaf(); }); // drain the pending frame
+        });
+
+        test('clamps a negative (scrolled) card offset so the card never exceeds the viewport', async () => {
+            await renderChat();
+            const chat = screen.getByTestId('job-search-chat');
+            // Simulate the page scrolled so the card's viewport offset is negative.
+            jest.spyOn(chat, 'getBoundingClientRect').mockReturnValue({
+                top: -200, bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: -200,
+                toJSON: () => ({}),
+            } as DOMRect);
+            await act(async () => {
+                fireEvent(window, new Event('resize'));
+                await flushRaf();
+            });
+            // Un-clamped, -200 would compute 768 - (-200) - 16 = 952px. Clamping the
+            // offset to 0 keeps the card within the viewport at 752px.
+            expect(chat).toHaveStyle({height: '752px'});
+            expect(chat).not.toHaveStyle({height: '952px'});
+        });
+
+        test('falls back to the default bottom gap when the safe-area inset cannot be read', async () => {
+            await renderChat();
+            const chat = screen.getByTestId('job-search-chat');
+            await act(async () => { await flushRaf(); });
+            jest.spyOn(window, 'getComputedStyle').mockImplementationOnce(() => {
+                throw new Error('getComputedStyle unavailable');
+            });
+            await act(async () => {
+                fireEvent(window, new Event('resize'));
+                await flushRaf();
+            });
+            // Non-fatal: measurement still completes with the 16px fallback.
+            expect(chat).toHaveStyle({height: '752px'});
         });
     });
 
