@@ -9,6 +9,7 @@ import tempfile
 from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
+from django.core.cache import cache
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
@@ -21,6 +22,7 @@ from crank.release import (
     frontend_build_id,
     git_sha,
     migration_status_summary,
+    release_build_status,
 )
 
 
@@ -84,6 +86,19 @@ class FrontendBuildIdTests(SimpleTestCase):
         with override_settings(MANIFEST_LOADER={"MANIFEST_PATH": path}):
             self.assertEqual(frontend_build_id(), "unknown")
 
+    def test_unknown_when_no_contenthash(self):
+        # A dev build manifest has entries like ``{"main.js": "main.js"}`` with
+        # no contenthash. It is not a build identifier and must not be reported
+        # as one.
+        path = self._write_manifest(json.dumps({"main.js": "main.js"}))
+        with override_settings(MANIFEST_LOADER={"MANIFEST_PATH": path}):
+            self.assertEqual(frontend_build_id(), "unknown")
+
+    def test_unknown_when_fallback_main_has_no_contenthash(self):
+        path = self._write_manifest(json.dumps({"main": "main.js"}))
+        with override_settings(MANIFEST_LOADER={"MANIFEST_PATH": path}):
+            self.assertEqual(frontend_build_id(), "unknown")
+
     def test_unknown_when_manifest_loader_unconfigured(self):
         # With no MANIFEST_PATH the helper derives a path from BASE_DIR;
         # point BASE_DIR at a location that has no manifest so it fails closed.
@@ -100,23 +115,22 @@ class MigrationStatusSummaryTests(SimpleTestCase):
     @patch("crank.release.MigrationExecutor")
     def test_clean_when_no_pending(self, executor_class):
         executor = executor_class.return_value
-        executor.loader.applied_migrations = [1, 2, 3]
+        executor.loader.applied_migrations = {("crank", "0026"): Mock()}
         executor.loader.graph.leaf_nodes.return_value = [("crank", "0026")]
-        executor.migration_plan.return_value = []
         self.assertEqual(
             migration_status_summary(),
-            {"applied_count": 3, "pending_count": 0, "status": "clean"},
+            {"applied_count": 1, "pending_count": 0, "status": "clean"},
         )
 
     @patch("crank.release.MigrationExecutor")
-    def test_pending_when_plan_nonempty(self, executor_class):
+    def test_pending_when_leaf_unapplied(self, executor_class):
+        # A leaf node not present in the applied set is a pending migration.
         executor = executor_class.return_value
-        executor.loader.applied_migrations = [1]
+        executor.loader.applied_migrations = {("crank", "0025"): Mock()}
         executor.loader.graph.leaf_nodes.return_value = [("crank", "0026")]
-        executor.migration_plan.return_value = [Mock(), Mock()]
         self.assertEqual(
             migration_status_summary(),
-            {"applied_count": 1, "pending_count": 2, "status": "pending"},
+            {"applied_count": 1, "pending_count": 1, "status": "pending"},
         )
 
     @patch("crank.release.MigrationExecutor", side_effect=RuntimeError("DB down"))
@@ -125,6 +139,90 @@ class MigrationStatusSummaryTests(SimpleTestCase):
             migration_status_summary(),
             {"applied_count": None, "pending_count": None, "status": "error"},
         )
+
+
+class ReleaseBuildStatusTests(SimpleTestCase):
+    """Coverage for stale-asset / release-drift detection."""
+
+    def _manifest(self, asset="main.1a2b3c4d5e6f.js"):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        path = os.path.join(directory, "manifest.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"main.js": asset}, handle)
+        return path
+
+    def test_unverifiable_when_nothing_pinned(self):
+        with _git_env(), override_settings(
+            MANIFEST_LOADER={}, BASE_DIR="/nonexistent/crank"
+        ):
+            self.assertEqual(
+                release_build_status(),
+                {"status": "unverifiable", "mismatched": []},
+            )
+
+    def test_ok_when_pinned_matches_served(self):
+        path = self._manifest()
+        with _git_env(
+            GIT_SHA="abc123def456",
+            RELEASE_BACKEND_SHA="abc123def456",
+            RELEASE_FRONTEND_BUILD="1a2b3c4d5e6f",
+        ), override_settings(MANIFEST_LOADER={"MANIFEST_PATH": path}):
+            self.assertEqual(
+                release_build_status(),
+                {"status": "ok", "mismatched": []},
+            )
+
+    def test_mismatch_when_backend_drifts(self):
+        path = self._manifest()
+        with _git_env(
+            GIT_SHA="deadbeef",
+            RELEASE_BACKEND_SHA="abc123def456",
+            RELEASE_FRONTEND_BUILD="1a2b3c4d5e6f",
+        ), override_settings(MANIFEST_LOADER={"MANIFEST_PATH": path}):
+            self.assertEqual(
+                release_build_status(),
+                {"status": "mismatch", "mismatched": ["backend"]},
+            )
+
+    def test_mismatch_when_frontend_assets_stale(self):
+        # Pinned deploy expects contenthash 1a2b3c4d5e6f but the server serves
+        # a different (older) manifest -> stale webpack assets detected.
+        path = self._manifest(asset="main.deadbeefcafe.js")
+        with _git_env(
+            GIT_SHA="abc123def456",
+            RELEASE_BACKEND_SHA="abc123def456",
+            RELEASE_FRONTEND_BUILD="1a2b3c4d5e6f",
+        ), override_settings(MANIFEST_LOADER={"MANIFEST_PATH": path}):
+            self.assertEqual(
+                release_build_status(),
+                {"status": "mismatch", "mismatched": ["frontend"]},
+            )
+
+    def test_mismatch_reports_both_when_both_drift(self):
+        # No backend sha lets the frontend pin alone still detect drift; assert
+        # both reported when both identifiers are pinned and both differ.
+        path = self._manifest(asset="main.deadbeefcafe.js")
+        with _git_env(
+            GIT_SHA="deadbeef",
+            RELEASE_BACKEND_SHA="abc123def456",
+            RELEASE_FRONTEND_BUILD="1a2b3c4d5e6f",
+        ), override_settings(MANIFEST_LOADER={"MANIFEST_PATH": path}):
+            self.assertEqual(
+                release_build_status(),
+                {"status": "mismatch", "mismatched": ["backend", "frontend"]},
+            )
+
+    def test_frontend_drift_reported_when_manifest_unreadable(self):
+        with _git_env(
+            RELEASE_BACKEND_SHA="abc123def456",
+            RELEASE_FRONTEND_BUILD="1a2b3c4d5e6f",
+        ), override_settings(MANIFEST_LOADER={}, BASE_DIR="/nonexistent/crank"):
+            # Served frontend is unknown while a frontend build is pinned ->
+            # the stale-asset signal must not be silent.
+            result = release_build_status()
+            self.assertEqual(result["status"], "mismatch")
+            self.assertIn("frontend", result["mismatched"])
 
 
 class ConfigModesTests(SimpleTestCase):
@@ -152,8 +250,27 @@ class ConfigModesTests(SimpleTestCase):
         self.assertNotIn("super-secret-key", json.dumps(modes))
         self.assertNotIn("api_key", json.dumps(modes))
 
+    @override_settings(
+        JOB_SEARCH_PROVIDER="https://user:pass@example.com/jobs"
+    )
+    def test_provider_credential_like_value_is_redacted(self):
+        self.assertEqual(config_modes()["job_search_provider"], "unknown")
+
+    @override_settings(JOB_SEARCH_PROVIDER="")
+    def test_empty_provider_is_unknown(self):
+        self.assertEqual(config_modes()["job_search_provider"], "unknown")
+
+    @override_settings(JOB_SEARCH_PROVIDER="usa_jobs")
+    def test_safe_provider_is_reported(self):
+        self.assertEqual(config_modes()["job_search_provider"], "usa_jobs")
+
 
 class CountsTests(TestCase):
+    def setUp(self):
+        # ``counts()`` caches full-table COUNT(*) briefly; clear so each test
+        # sees fresh data regardless of run order.
+        cache.clear()
+
     def test_counts_active_only(self):
         source = JobSourceCatalog.objects.create(
             name="Test jobs",
@@ -187,6 +304,9 @@ class CountsTests(TestCase):
 
 
 class DiagnosticsTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
     @override_settings(
         LLM_API_KEY="sk-1234567890",
         YELP_API_KEY="yelp-secret",
@@ -211,7 +331,11 @@ class DiagnosticsTests(TestCase):
         data = diagnostics()
         self.assertEqual(
             set(data),
-            {"git_sha", "frontend_build_id", "migrations", "config", "counts"},
+            {"git_sha", "frontend_build_id", "build", "migrations", "config", "counts"},
+        )
+        self.assertEqual(
+            set(data["build"]),
+            {"status", "mismatched"},
         )
         self.assertEqual(
             set(data["config"]),

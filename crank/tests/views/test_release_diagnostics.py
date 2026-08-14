@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import tempfile
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.test import Client, TestCase, override_settings
@@ -66,3 +67,48 @@ class ReleaseDiagnosticsViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotContains(response, "sk-super-secret")
         self.assertNotContains(response, "yelp-secret")
+
+    @patch(
+        "crank.views.release_diagnostics.diagnostics",
+        return_value={
+            "git_sha": "deadbeef",
+            "frontend_build_id": "1a2b3c4d5e6f",
+            "build": {"status": "mismatch", "mismatched": ["frontend"]},
+            "migrations": {
+                "status": "error",
+                "applied_count": None,
+                "pending_count": None,
+            },
+            "config": {},
+            "counts": {},
+        },
+    )
+    def test_warning_banner_and_default_filter_render(self, _mocked):
+        # A build mismatch surfaces a visible warning banner, and a None
+        # migration count renders as an em dash, never the literal "None".
+        self.client.force_login(self.staff)
+        response = self.client.get(reverse("release-diagnostics"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Release integrity warning")
+        self.assertContains(response, "mismatched: frontend")
+        # ``{{ value|default:"—" }}`` renders the em dash, not the string None.
+        self.assertContains(response, "\u2014")
+        self.assertNotContains(response, "None")
+
+    @patch(
+        "crank.views.release_diagnostics.diagnostics",
+        return_value={
+            "git_sha": "unknown",
+            "frontend_build_id": "unknown",
+            "build": {"status": "unverifiable", "mismatched": []},
+            "migrations": {"status": "clean", "applied_count": 3, "pending_count": 0},
+            "config": {},
+            "counts": {},
+        },
+    )
+    def test_unverifiable_build_shows_pin_guidance(self, _mocked):
+        self.client.force_login(self.staff)
+        response = self.client.get(reverse("release-diagnostics"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Release integrity warning")
+        self.assertContains(response, "could not be verified")
