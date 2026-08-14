@@ -10,7 +10,7 @@ verified. Live verification is a human-operator task per the rollout gate.
 """
 
 from django.core.management import get_commands
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, override_settings
 from django.urls import reverse
 
 from crank import release
@@ -31,7 +31,7 @@ class ManagementCommandPresenceTest(SimpleTestCase):
         # Pipeline / retrieval entrypoints (required before non-zero listing
         # counts can be asserted for the stage smoke).
         "run_job_pipeline",
-        "schedule_crawls",  # conditional: present in this codebase
+        "schedule_crawls",  # bounded crawl scheduling entrypoint
         "trigger_crawl",  # single confirmed bounded crawl
     )
 
@@ -115,17 +115,36 @@ class ProviderModeWiringTest(SimpleTestCase):
 
     Wiring-only: asserts the release-diagnostics provider-mode surface exists
     and never echoes a raw provider value (e.g. a URL with embedded creds). It
-    does not authenticate or verify a live provider.
+    does not authenticate or verify a live provider, and it is agnostic to the
+    process environment's ``JOB_SEARCH_PROVIDER`` mode (``demo`` for dev,
+    ``orchestrator`` for staging/prod as the gate mandates).
     """
 
     def test_config_modes_reports_provider_safely(self):
-        from django.conf import settings
-
         modes = release.config_modes()
         self.assertIn("job_search_provider", modes)
-        # A misconfigured provider (URL with creds / blank) is reduced to a
-        # safe token, never echoed onto the diagnostics page.
-        self.assertRegex(modes["job_search_provider"], r"^\w[-\w.]{0,63}$")
-        self.assertNotIn("://", modes["job_search_provider"])
-        # The release gate names the real (orchestrator) provider explicitly.
-        self.assertEqual(getattr(settings, "JOB_SEARCH_PROVIDER", ""), "demo")
+        # Whatever the current mode is, it surfaces as a safe token: an ASCII
+        # allowlist identifier (matching release's ``_PROVIDER_PATTERN``) or
+        # the ``unknown`` sentinel — never a raw provider value such as a URL
+        # with embedded creds echoed onto the diagnostics page.
+        provider = modes["job_search_provider"]
+        self.assertRegex(
+            provider, r"^(?:[0-9A-Za-z][0-9A-Za-z._-]{0,63}|unknown)$"
+        )
+        self.assertNotIn("://", provider)
+
+    @override_settings(JOB_SEARCH_PROVIDER="orchestrator")
+    def test_config_modes_accepts_safe_provider_token(self):
+        # The mode the gate mandates for staging/prod is a non-secret
+        # allowlist value and surfaces verbatim.
+        self.assertEqual(
+            release.config_modes()["job_search_provider"], "orchestrator"
+        )
+
+    @override_settings(JOB_SEARCH_PROVIDER="https://user:pass@provider.example/api")
+    def test_config_modes_redacts_credential_bearing_provider(self):
+        # A misconfigured provider (URL with creds) is reduced to the safe
+        # ``unknown`` sentinel, never echoed onto the diagnostics page.
+        self.assertEqual(
+            release.config_modes()["job_search_provider"], release.UNKNOWN
+        )
