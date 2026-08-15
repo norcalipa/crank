@@ -128,7 +128,15 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     React.useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             if (visible && event.key === 'Escape') {
-                // Remove focus from any element to prevent blinking cursor
+                // INTENTIONAL dialog focus management (issue #423): blurs any
+                // focused element before closing so focus never lingers on a
+                // now-hidden node and no "blinking cursor" artifact remains.
+                // Unlike the removed OrganizationList workaround (a non-modal
+                // list), this lives inside a real role="dialog" aria-modal
+                // popup, so returning focus to the caller would be the also-
+                // valid pattern; blur+onClose is the deliberate choice here,
+                // guarded by instanceof HTMLElement. The same rationale applies
+                // to the blur in handleCloseClick / handleOverlayClick below.
                 if (document.activeElement instanceof HTMLElement) {
                     document.activeElement.blur();
                 }

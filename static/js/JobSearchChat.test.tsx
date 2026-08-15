@@ -963,6 +963,80 @@ describe('textarea composer', () => {
         expect(textarea.style.height).toBeTruthy();
     });
 
+    test('clamps the composed height to the max rows', async () => {
+        // Pin the measured line-height so the 6-row ceiling is deterministic:
+        // 24px * MAX_COMPOSER_ROWS(6) = 144px.
+        jest.spyOn(window, 'getComputedStyle').mockImplementation(() =>
+            ({lineHeight: '24px', getPropertyValue: () => ''} as unknown as CSSStyleDeclaration),
+        );
+        await renderChat();
+        const textarea = screen.getByRole('textbox', {name: 'Message'}) as HTMLTextAreaElement;
+        Object.defineProperty(textarea, 'scrollHeight', {configurable: true, writable: true, value: 500});
+        fireEvent.change(textarea, {target: {value: 'a'.repeat(500)}});
+        // scrollHeight (500) exceeds the 144px ceiling, so the composer must
+        // clamp to the max height and scroll instead of growing unbounded.
+        expect(textarea.style.height).toBe('144px');
+        expect(textarea.style.overflowY).toBe('auto');
+    });
+
+    test('recalculates composer height when fonts finish loading', async () => {
+        let settleFonts: () => void = () => {};
+        const readyPromise = new Promise<void>((resolve) => { settleFonts = resolve; });
+        // Stub document.fonts with a FontFaceSet-like ready hook (jsdom may not
+        // implement one), so the listener fires on an explicit font load.
+        Object.defineProperty(document, 'fonts', {configurable: true, value: {ready: readyPromise}});
+        const gcs = jest.spyOn(window, 'getComputedStyle');
+        await renderChat();
+        const textarea = screen.getByRole('textbox', {name: 'Message'}) as HTMLTextAreaElement;
+        fireEvent.change(textarea, {target: {value: 'hello world'}});
+        const callsBefore = gcs.mock.calls.length;
+        // Fonts finishing must re-run the measure so the composer height reflects
+        // the real loaded face rather than the pre-load fallback line-height.
+        await act(async () => { settleFonts(); await readyPromise; });
+        expect(gcs.mock.calls.length).toBeGreaterThan(callsBefore);
+        gcs.mockRestore();
+        delete (document as {fonts?: unknown}).fonts;
+    });
+
+    test('composer still works when document.fonts has no ready hook', async () => {
+        // Documents with a null/absent FontFaceSet ready promise (or a missing
+        // ready) must not throw and the composer must still measure on mount.
+        Object.defineProperty(document, 'fonts', {configurable: true, value: {ready: null}});
+        await renderChat();
+        const textarea = screen.getByRole('textbox', {name: 'Message'}) as HTMLTextAreaElement;
+        fireEvent.change(textarea, {target: {value: 'a'.repeat(20)}});
+        expect(textarea.style.height).toBeTruthy();
+        delete (document as {fonts?: unknown}).fonts;
+    });
+
+    test('registers height listeners on visualViewport when present', async () => {
+        // jsdom does not expose visualViewport (it is undefined by default), so
+        // the composer's nullish guard is exercised in every other test. Provide
+        // a mock here so the non-null path — actually attaching the resize
+        // listener to visualViewport — is covered too.
+        const addEventListener = jest.fn();
+        const removeEventListener = jest.fn();
+        Object.defineProperty(window, 'visualViewport', {
+            configurable: true,
+            value: {height: 800, addEventListener, removeEventListener},
+        });
+        try {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse(emptyConversation(42)),
+            );
+            const {unmount} = render(<JobSearchChat/>);
+            await screen.findByLabelText('Message');
+            await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+            // On mount the composer attaches its resize listener to the viewport.
+            expect(addEventListener).toHaveBeenCalledWith('resize', expect.any(Function));
+            unmount();
+            // And detaches it again on cleanup.
+            expect(removeEventListener).toHaveBeenCalledWith('resize', expect.any(Function));
+        } finally {
+            delete (window as {visualViewport?: unknown}).visualViewport;
+        }
+    });
+
     test('resets to single-row height after send', async () => {
         await renderChat();
         (global.fetch as jest.Mock)
@@ -976,7 +1050,7 @@ describe('textarea composer', () => {
         expect(textarea).toHaveValue('');
     });
 
-    test('retry restores the composer input and height', async () => {
+    test('clears the composer input and resets height when a send fails', async () => {
         await renderChat();
         (global.fetch as jest.Mock)
             .mockResolvedValueOnce(
@@ -987,5 +1061,7 @@ describe('textarea composer', () => {
         fireEvent.keyDown(textarea, {key: 'Enter', shiftKey: false});
         await screen.findByTestId('chat-error');
         expect(textarea).toHaveValue('');
+        // With the input cleared, the composer collapses back to a single row.
+        await waitFor(() => expect(textarea.style.overflowY).toBe('hidden'));
     });
 });

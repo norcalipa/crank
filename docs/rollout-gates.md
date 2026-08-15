@@ -463,6 +463,14 @@ history retention and reload; verify the loop as an operator:
 
 ### 4. UX Acceptance Notes
 
+> **Permanent AC waiver — automated viewport suite:** this repository is a
+> jest/jsdom project and intentionally has **no Playwright / automated-browser
+> viewport suite**. The #407/#408 viewport, zoom, keyboard, and IME acceptance
+> criteria are therefore verified only by **manual, operator-recorded evidence**
+> (see the matrix below); the jest/jsdom suite asserts layout wiring, not
+> rendered-browser behavior. Adding a Playwright viewport harness is tracked as
+> an accepted gap, out of scope for this gate, not a pending AC here.
+
 - **#407 Composer:** the chat composer renders correctly, handles multi-line
   input, submit-on-Enter affordance, and empty/invalid send without error.
 - **#408 Viewport shell:** verify across the viewport matrix required by
@@ -544,6 +552,17 @@ environment-dependent evidence **here or on #410** for a specific release SHA:
       [5. Rollback and Kill Switches](#5-rollback-and-kill-switches)).
 - [ ] **UX evidence** for the viewport/zoom/keyboard/IME matrix (see
       [4. UX Acceptance Notes](#4-ux-acceptance-notes)).
+
+**#403 post-deploy smoke AC — documented split (accepted gap):** the smoke
+acceptance is covered by the automated CI wiring test
+(`test_release_gate_smoke.py` — commands registered, key URLs resolve) plus
+this **operator-run authenticated smoke** (seed → `run_job_pipeline` / crawl →
+non-zero listings → chat recommendation → history reload → follow-through).
+There is **no operator-automated hook** (e.g. a scheduled job executing an
+authenticated end-to-end smoke against a deployed environment) at this gate;
+that is a documented, accepted gap rather than a silent miss. Deployment health
+that *is* automated in CI/ops is covered by `migration_status` and the
+`release-diagnostics` build-fingerprint drift alerting (`release_build_status`).
 
 Closing #410 is an **operator action** backed by the evidence above, not a
 merge side-effect.
