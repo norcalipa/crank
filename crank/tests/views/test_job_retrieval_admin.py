@@ -1,12 +1,24 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
-"""Comprehensive tests for the Job Retrieval Operations admin dashboard (issue #404)."""
+"""Comprehensive tests for the Job Retrieval Operations admin dashboard (issue #404).
 
+Covers:
+- Staff-only authorization
+- Dashboard rendering and counts
+- Seed preview (renders actionable per-source rows)
+- Seed execute (create-only, preserves operator policy fields)
+- Queue retrieval / pipeline / retry (overlap-safe against RUNNING and PENDING)
+- Concurrent double-submit (single run created)
+- Confirm interstitial UX (aligned with #422 pattern)
+"""
+
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth.models import User
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
@@ -152,23 +164,58 @@ class JobRetrievalOpsAdminTests(TestCase):
         before = JobSourceCatalog.objects.count()
         request = self._request(self.staff)
         response = self.admin.seed_preview_view(request)
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(JobSourceCatalog.objects.count(), before)
 
-    def test_seed_preview_message(self):
+    def test_seed_preview_renders_template(self):
+        """Seed preview renders a TemplateResponse, not a redirect."""
         request = self._request(self.staff)
-        with patch.object(self.admin, "message_user") as msg:
-            self.admin.seed_preview_view(request)
-        self.assertTrue(msg.called)
-        self.assertIn("dry-run", msg.call_args[0][1].lower())
+        response = self.admin.seed_preview_view(request)
+        self.assertEqual(response.status_code, 200)
+        content = response.render().content.decode()
+        self.assertIn("Seed Preview", content)
+        self.assertIn("dry-run", content.lower())
+
+    def test_seed_preview_shows_per_source_rows(self):
+        """Seed preview renders actionable per-source preview rows."""
+        request = self._request(self.staff)
+        response = self.admin.seed_preview_view(request)
+        content = response.render().content.decode()
+        # Should contain table headers with actionable data
+        self.assertIn("Name", content)
+        self.assertIn("Adapter", content)
+        self.assertIn("Base URL", content)
+        self.assertIn("Host Allowed", content)
+        self.assertIn("Exists", content)
+        # Should mention specific seed source names
+        self.assertIn("USAJOBS", content)
+
+    def test_seed_preview_shows_existing_source_state(self):
+        """Seed preview shows existing source enabled/approval state."""
+        JobSourceCatalog.objects.create(
+            name="USAJOBS Search",
+            adapter_key="usajobs",
+            base_url="https://data.usajobs.gov/",
+            approval_state=JobSourceCatalog.ApprovalState.BLOCKED,
+            enabled=False,
+        )
+        request = self._request(self.staff)
+        response = self.admin.seed_preview_view(request)
+        content = response.render().content.decode()
+        self.assertIn("blocked", content.lower())
+        self.assertIn("False", content)
 
     # ── Seed execute ──
 
     def test_seed_execute_requires_confirmation(self):
+        """Without confirm=yes, shows interstitial page (not redirect)."""
         before = JobSourceCatalog.objects.count()
         request = self._request(self.staff)
         response = self.admin.seed_execute_view(request)
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
+        content = response.render().content.decode()
+        self.assertIn("Confirm", content)
+        self.assertIn("Yes, I'm sure", content)
         self.assertEqual(JobSourceCatalog.objects.count(), before)
 
     def test_seed_execute_creates_sources(self):
@@ -207,13 +254,84 @@ class JobRetrievalOpsAdminTests(TestCase):
         # No sources should be created when all hosts are disallowed
         self.assertEqual(JobSourceCatalog.objects.count(), 0)
 
+    def test_seed_execute_records_monitoring_event(self):
+        """seed_execute_view records a monitoring event (n1 from review)."""
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user"), patch(
+            "crank.admin_dashboard.monitoring.record_event"
+        ) as mock_event:
+            self.admin.seed_execute_view(request)
+        mock_event.assert_called_once_with(
+            "operational_change",
+            {"action": "seed_job_sources", "confirmed": True},
+        )
+
+    def test_seed_execute_preserves_operator_disabled_sources(self):
+        """Re-seeding should not re-enable a source an operator disabled."""
+        # Create a source that an operator has disabled and blocked
+        existing = JobSourceCatalog.objects.create(
+            name="USAJOBS Search",
+            adapter_key="old_adapter",
+            base_url="https://data.usajobs.gov/",
+            approval_state=JobSourceCatalog.ApprovalState.BLOCKED,
+            enabled=False,
+        )
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user"):
+            self.admin.seed_execute_view(request)
+
+        existing.refresh_from_db()
+        self.assertEqual(existing.approval_state, JobSourceCatalog.ApprovalState.BLOCKED)
+        self.assertFalse(existing.enabled)
+        # Structural fields should be updated
+        self.assertEqual(existing.adapter_key, "usajobs")
+
+    def test_seed_execute_preserves_operator_approval_state(self):
+        """Re-seeding should not change approval_state on existing sources."""
+        existing = JobSourceCatalog.objects.create(
+            name="USAJOBS Search",
+            adapter_key="usajobs",
+            base_url="https://data.usajobs.gov/",
+            approval_state=JobSourceCatalog.ApprovalState.PENDING,
+            enabled=True,
+        )
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user"):
+            self.admin.seed_execute_view(request)
+
+        existing.refresh_from_db()
+        self.assertEqual(existing.approval_state, JobSourceCatalog.ApprovalState.PENDING)
+        self.assertTrue(existing.enabled)
+
+    def test_seed_execute_updates_structural_fields_on_existing(self):
+        """Re-seeding updates adapter_key and base_url on existing sources."""
+        existing = JobSourceCatalog.objects.create(
+            name="USAJOBS Search",
+            adapter_key="old_key",
+            base_url="https://data.usajobs.gov/",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=False,
+        )
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user"):
+            self.admin.seed_execute_view(request)
+
+        existing.refresh_from_db()
+        self.assertEqual(existing.adapter_key, "usajobs")
+        self.assertEqual(existing.base_url, "https://data.usajobs.gov/")
+        # Operator-set enabled should be preserved
+        self.assertFalse(existing.enabled)
+
     # ── Queue retrieval ──
 
     def test_queue_retrieval_requires_confirmation(self):
+        """Without confirm=yes, shows interstitial page."""
         before = AgentRun.objects.count()
         request = self._request(self.staff)
         response = self.admin.queue_retrieval_view(request)
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
+        content = response.render().content.decode()
+        self.assertIn("Confirm", content)
         self.assertEqual(AgentRun.objects.count(), before)
 
     def test_queue_retrieval_creates_pending_run(self):
@@ -275,13 +393,48 @@ class JobRetrievalOpsAdminTests(TestCase):
         ).first()
         self.assertEqual(audit.new_value.get("sources_count"), 2)
 
+    def test_queue_retrieval_skips_when_running(self):
+        """Queue retrieval skips when a RUNNING run exists."""
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.RUNNING,
+        )
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user") as msg:
+            self.admin.queue_retrieval_view(request)
+        msg.assert_called_once()
+        self.assertIn("already active", msg.call_args[0][1].lower())
+        # No new PENDING run should be created
+        self.assertEqual(
+            AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 0
+        )
+
+    def test_queue_retrieval_skips_when_pending(self):
+        """Queue retrieval skips when a PENDING run exists (overlap safety)."""
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.PENDING,
+        )
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user") as msg:
+            self.admin.queue_retrieval_view(request)
+        msg.assert_called_once()
+        self.assertIn("already active", msg.call_args[0][1].lower())
+        # Only the original PENDING run should exist
+        self.assertEqual(
+            AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 1
+        )
+
     # ── Queue pipeline ──
 
     def test_queue_pipeline_requires_confirmation(self):
+        """Without confirm=yes, shows interstitial page."""
         before = AgentRun.objects.count()
         request = self._request(self.staff)
         response = self.admin.queue_pipeline_view(request)
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
+        content = response.render().content.decode()
+        self.assertIn("Confirm", content)
         self.assertEqual(AgentRun.objects.count(), before)
 
     def test_queue_pipeline_creates_run(self):
@@ -317,14 +470,32 @@ class JobRetrievalOpsAdminTests(TestCase):
         with patch.object(self.admin, "message_user") as msg:
             self.admin.queue_pipeline_view(request)
         msg.assert_called_once()
-        self.assertIn("already running", msg.call_args[0][1].lower())
+        self.assertIn("already active", msg.call_args[0][1].lower())
+
+    def test_queue_pipeline_skips_when_pending(self):
+        """Queue pipeline skips when a PENDING run exists (overlap safety)."""
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.PENDING,
+        )
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user") as msg:
+            self.admin.queue_pipeline_view(request)
+        msg.assert_called_once()
+        self.assertIn("already active", msg.call_args[0][1].lower())
+        self.assertEqual(
+            AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 1
+        )
 
     # ── Retry failed ──
 
     def test_retry_failed_requires_confirmation(self):
+        """Without confirm=yes, shows interstitial page."""
         request = self._request(self.staff)
         response = self.admin.retry_failed_view(request)
-        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.status_code, 200)
+        content = response.render().content.decode()
+        self.assertIn("Confirm", content)
 
     def test_retry_failed_no_eligible_run(self):
         request = self._request(self.staff, confirmed=True)
@@ -379,7 +550,54 @@ class JobRetrievalOpsAdminTests(TestCase):
         with patch.object(self.admin, "message_user") as msg:
             self.admin.retry_failed_view(request)
         msg.assert_called_once()
-        self.assertIn("already running", msg.call_args[0][1].lower())
+        self.assertIn("already active", msg.call_args[0][1].lower())
+
+    def test_retry_failed_skips_when_pending(self):
+        """Retry failed skips when a PENDING run exists (overlap safety)."""
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.FAILED,
+        )
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.PENDING,
+        )
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user") as msg:
+            self.admin.retry_failed_view(request)
+        msg.assert_called_once()
+        self.assertIn("already active", msg.call_args[0][1].lower())
+        self.assertEqual(
+            AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 1
+        )
+
+    # ── Confirm interstitial UX ──
+
+    def test_confirm_interstitial_shows_action_label(self):
+        """The confirm page shows the action label and a confirm button."""
+        request = self._request(self.staff)
+        response = self.admin.queue_pipeline_view(request)
+        content = response.render().content.decode()
+        self.assertIn("Queue Job Pipeline Run", content)
+        self.assertIn("Yes, I'm sure", content)
+        self.assertIn("Cancel", content)
+
+    def test_confirm_interstitial_has_confirm_form(self):
+        """The interstitial page contains a form with confirm=yes."""
+        request = self._request(self.staff)
+        response = self.admin.seed_execute_view(request)
+        content = response.render().content.decode()
+        self.assertIn('name="confirm"', content)
+        self.assertIn('value="yes"', content)
+        # The form should post to the action URL
+        self.assertIn("seed-execute", content)
+
+    def test_dashboard_no_hidden_confirm_yes(self):
+        """The dashboard template should not have hidden confirm=yes fields."""
+        request = self._request(self.staff)
+        response = self.admin.dashboard_view(request)
+        content = response.render().content.decode()
+        self.assertNotIn('type="hidden" name="confirm" value="yes"', content)
 
     # ── URL configuration ──
 
@@ -577,3 +795,153 @@ class JobRetrievalOpsAdminTests(TestCase):
             run_type=AgentRun.RunType.JOB_PIPELINE,
             status=AgentRun.Status.SUCCEEDED,
         )
+
+
+class ConcurrentDoubleSubmitTests(TransactionTestCase):
+    """Tests proving that concurrent double-submit creates only one run.
+
+    Uses TransactionTestCase because threading + TestCase's transaction
+    wrapping is incompatible (threads don't share the test transaction).
+    """
+
+    def setUp(self):
+        self.site = AdminSite()
+        self.admin = JobRetrievalOperationsAdmin(JobRetrievalOps, self.site)
+        self.staff = User.objects.create_user(
+            username="staff", password="pw", is_staff=True
+        )
+
+    def test_concurrent_double_submit_queue_pipeline_creates_single_run(self):
+        """Two concurrent queue_pipeline submissions create only one PENDING run."""
+        from django.db import connections
+
+        barrier = threading.Barrier(2, timeout=10)
+        results = []
+
+        def submit():
+            try:
+                connections.close_all()
+                request = self._make_request(self.staff, confirmed=True)
+                with patch.object(self.admin, "message_user"), patch(
+                    "crank.admin_dashboard.monitoring.record_event"
+                ), patch("crank.admin_dashboard._audit"):
+                    barrier.wait(timeout=10)
+                    self.admin.queue_pipeline_view(request)
+                results.append("ok")
+            except Exception as exc:
+                results.append(exc)
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(submit) for _ in range(2)]
+            for f in futures:
+                f.result(timeout=20)
+
+        pending_count = AgentRun.objects.filter(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.PENDING,
+        ).count()
+        self.assertEqual(
+            pending_count, 1,
+            f"Expected 1 PENDING run from concurrent double-submit, got {pending_count}. Results: {results}",
+        )
+
+    def test_concurrent_double_submit_queue_retrieval_creates_single_run(self):
+        """Two concurrent queue_retrieval submissions create only one PENDING run."""
+        from django.db import connections
+
+        JobSourceCatalog.objects.create(
+            name="S1", adapter_key="a1", base_url="https://jobs.example.test",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+        )
+        barrier = threading.Barrier(2, timeout=10)
+        results = []
+
+        def submit():
+            try:
+                connections.close_all()
+                request = self._make_request(self.staff, confirmed=True)
+                with patch.object(self.admin, "message_user"), patch(
+                    "crank.admin_dashboard.monitoring.record_event"
+                ), patch("crank.admin_dashboard._audit"):
+                    barrier.wait(timeout=10)
+                    self.admin.queue_retrieval_view(request)
+                results.append("ok")
+            except Exception as exc:
+                results.append(exc)
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(submit) for _ in range(2)]
+            for f in futures:
+                f.result(timeout=20)
+
+        pending_count = AgentRun.objects.filter(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.PENDING,
+        ).count()
+        self.assertEqual(
+            pending_count, 1,
+            f"Expected 1 PENDING run from concurrent double-submit, got {pending_count}. Results: {results}",
+        )
+
+    def test_concurrent_double_submit_retry_failed_creates_single_run(self):
+        """Two concurrent retry_failed submissions create only one PENDING run."""
+        from django.db import connections
+
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.FAILED,
+        )
+        barrier = threading.Barrier(2, timeout=10)
+        results = []
+
+        def submit():
+            try:
+                connections.close_all()
+                request = self._make_request(self.staff, confirmed=True)
+                with patch.object(self.admin, "message_user"), patch(
+                    "crank.admin_dashboard.monitoring.record_event"
+                ), patch("crank.admin_dashboard._audit"):
+                    barrier.wait(timeout=10)
+                    self.admin.retry_failed_view(request)
+                results.append("ok")
+            except Exception as exc:
+                results.append(exc)
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(submit) for _ in range(2)]
+            for f in futures:
+                f.result(timeout=20)
+
+        pending_count = AgentRun.objects.filter(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.PENDING,
+        ).count()
+        self.assertEqual(
+            pending_count, 1,
+            f"Expected 1 PENDING run from concurrent double-submit, got {pending_count}. Results: {results}",
+        )
+
+    def _make_request(self, user, confirmed=False):
+        post = {"confirm": "yes"} if confirmed else {}
+        messages_mock = Mock()
+        messages_mock.__iter__ = Mock(return_value=iter([]))
+        request = type(
+            "Request",
+            (),
+            {
+                "user": user,
+                "POST": post,
+                "method": "POST",
+                "META": {"SCRIPT_NAME": ""},
+                "_messages": messages_mock,
+                "session": {},
+            },
+        )()
+        return request

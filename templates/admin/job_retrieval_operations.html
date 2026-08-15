@@ -112,6 +112,8 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
   <div class="module">
     <h2>Actions</h2>
 
+    <p style="color: #666;">All actions require explicit confirmation on a dedicated page before execution.</p>
+
     <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
       <h3>Seed Curated Job Sources (dry-run)</h3>
       <p>Preview seed_job_sources without writing to the database.</p>
@@ -123,40 +125,36 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
 
     <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
       <h3>Seed Curated Job Sources</h3>
-      <p>Create/update approved+enabled curated sources. Only allowlisted domains are seeded.</p>
+      <p>Create/update approved+enabled curated sources. Only allowlisted domains are seeded. Existing operator-set policy (approval/enabled) is preserved.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_seed_execute' %}">
         {% csrf_token %}
-        <input type="hidden" name="confirm" value="yes">
         <input type="submit" value="Execute Seed" class="button" style="background: #ba2121;">
       </form>
     </div>
 
     <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
       <h3>Queue Retrieval for Approved+Enabled Sources</h3>
-      <p>Creates a pending pipeline run for all approved+enabled job sources. Work is performed asynchronously.</p>
+      <p>Creates a pending pipeline run for all approved+enabled job sources. Work is performed asynchronously. Skipped if a run is already active or queued.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_queue_retrieval' %}">
         {% csrf_token %}
-        <input type="hidden" name="confirm" value="yes">
         <input type="submit" value="Queue Retrieval" class="button" style="background: #ba2121;">
       </form>
     </div>
 
     <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
       <h3>Queue Job Pipeline Run</h3>
-      <p>Creates a pending pipeline run. Work is performed asynchronously. Skipped if a run is already active.</p>
+      <p>Creates a pending pipeline run. Work is performed asynchronously. Skipped if a run is already active or queued.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_queue_pipeline' %}">
         {% csrf_token %}
-        <input type="hidden" name="confirm" value="yes">
         <input type="submit" value="Queue Pipeline Run" class="button" style="background: #ba2121;">
       </form>
     </div>
 
     <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
       <h3>Retry Eligible Failed Run</h3>
-      <p>Retries the most recent failed pipeline run by creating a new pending run. Skipped if a run is already active.</p>
+      <p>Retries the most recent failed pipeline run by creating a new pending run. Skipped if a run is already active or queued.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_retry_failed' %}">
         {% csrf_token %}
-        <input type="hidden" name="confirm" value="yes">
         <input type="submit" value="Retry Failed Run" class="button" style="background: #ba2121;">
       </form>
     </div>

@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.contrib import admin, messages
+from django.db import transaction
 from django.shortcuts import redirect
 from django.template.response import TemplateResponse
 from django.urls import reverse
@@ -197,217 +198,24 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
             ),
         ]
 
-    def dashboard_view(self, request):
+    # ── Shared helpers ──
+
+    def _confirm_interstitial(self, request, action_label, action_url):
+        """Show an interstitial confirmation page before destructive actions.
+
+        This aligns with the shared confirmation UX pattern being introduced
+        in issue #422 for ``crank/admin.py``: the operator must explicitly click
+        a "Confirm" button on a dedicated page rather than relying on a hidden
+        ``confirm=yes`` form field that is always present.
+        """
         context = {
             **self.admin_site.each_context(request),
-            "title": "Job Retrieval Operations",
-            "counts": _aggregate_counts(),
-            "gates": _readiness_gates(),
+            "title": f"Confirm: {action_label}",
+            "action_label": action_label,
+            "action_url": action_url,
             "opts": self.model._meta,
-            "admin_links": self._admin_links(),
         }
-        return TemplateResponse(request, self.change_list_template, context)
-
-    def seed_preview_view(self, request):
-        """Dry-run preview of seed_job_sources without writing to the database."""
-        preview = []
-        for entry in SEED_SOURCES:
-            host = _host(entry["base_url"])
-            allowed = _is_allowed(host)
-            existing = JobSourceCatalog.objects.filter(name=entry["name"]).first()
-            preview.append(
-                {
-                    "name": entry["name"],
-                    "adapter_key": entry["adapter_key"],
-                    "base_url": entry["base_url"],
-                    "host_allowed": allowed,
-                    "exists": existing is not None,
-                    "existing_enabled": existing.enabled if existing else None,
-                    "existing_approval": existing.approval_state if existing else None,
-                }
-            )
-        self.message_user(
-            request,
-            f"Seed preview: {len(preview)} sources inspected (dry-run only).",
-            level=messages.INFO,
-        )
-        return redirect(self._dashboard_url())
-
-    def seed_execute_view(self, request):
-        """Execute seed_job_sources with confirmation."""
-        if not _confirm(request):
-            self.message_user(
-                request,
-                "No changes made. Confirm with confirm=yes to seed sources.",
-                level=messages.WARNING,
-            )
-            return redirect(self._dashboard_url())
-
-        created = updated = skipped = 0
-        for entry in SEED_SOURCES:
-            host = _host(entry["base_url"])
-            if not _is_allowed(host):
-                skipped += 1
-                continue
-            _obj, created_flag = JobSourceCatalog.objects.update_or_create(
-                name=entry["name"],
-                defaults={
-                    "adapter_key": entry["adapter_key"],
-                    "base_url": entry["base_url"],
-                    "approval_state": JobSourceCatalog.ApprovalState.APPROVED,
-                    "enabled": True,
-                    "catalog_metadata": entry.get("catalog_metadata", {}),
-                },
-            )
-            if created_flag:
-                created += 1
-            else:
-                updated += 1
-
-        summary = f"Seed complete: {created} created, {updated} updated, {skipped} skipped."
-        _audit(request, "seed_job_sources", new_value={"created": created, "updated": updated, "skipped": skipped})
-        self.message_user(request, summary, level=messages.SUCCESS)
-        return redirect(self._dashboard_url())
-
-    def queue_retrieval_view(self, request):
-        """Queue retrieval for approved+enabled job sources."""
-        if not _confirm(request):
-            self.message_user(
-                request,
-                "No retrieval queued. Confirm with confirm=yes.",
-                level=messages.WARNING,
-            )
-            return redirect(self._dashboard_url())
-
-        sources = JobSourceCatalog.objects.filter(
-            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
-            enabled=True,
-        )
-        count = sources.count()
-        # Queue work by creating a pending AgentRun record; the actual
-        # retrieval is performed asynchronously by the scheduler.
-        run = AgentRun.objects.create(
-            run_type=AgentRun.RunType.JOB_PIPELINE,
-            status=AgentRun.Status.PENDING,
-        )
-        _audit(
-            request,
-            "queue_retrieval",
-            new_value={"sources_count": count, "agent_run_id": run.pk},
-        )
-        monitoring.record_event(
-            "operational_change",
-            {"action": "queue_retrieval", "confirmed": True},
-        )
-        self.message_user(
-            request,
-            f"Retrieval queued for {count} approved+enabled sources (run {run.correlation_id}).",
-            level=messages.SUCCESS,
-        )
-        return redirect(self._dashboard_url())
-
-    def queue_pipeline_view(self, request):
-        """Queue a bounded job pipeline run."""
-        if not _confirm(request):
-            self.message_user(
-                request,
-                "No pipeline queued. Confirm with confirm=yes.",
-                level=messages.WARNING,
-            )
-            return redirect(self._dashboard_url())
-
-        # Check for active run first
-        active = AgentRun.objects.filter(
-            run_type=AgentRun.RunType.JOB_PIPELINE,
-            status=AgentRun.Status.RUNNING,
-        ).first()
-        if active is not None:
-            self.message_user(
-                request,
-                f"Pipeline already running (run {active.correlation_id}). Queue skipped.",
-                level=messages.WARNING,
-            )
-            return redirect(self._dashboard_url())
-
-        run = AgentRun.objects.create(
-            run_type=AgentRun.RunType.JOB_PIPELINE,
-            status=AgentRun.Status.PENDING,
-        )
-        _audit(
-            request,
-            "queue_pipeline",
-            new_value={"agent_run_id": run.pk},
-        )
-        monitoring.record_event(
-            "operational_change",
-            {"action": "queue_pipeline", "confirmed": True},
-        )
-        self.message_user(
-            request,
-            f"Pipeline run queued (run {run.correlation_id}).",
-            level=messages.SUCCESS,
-        )
-        return redirect(self._dashboard_url())
-
-    def retry_failed_view(self, request):
-        """Retry the most recent eligible failed pipeline run."""
-        if not _confirm(request):
-            self.message_user(
-                request,
-                "No retry attempted. Confirm with confirm=yes.",
-                level=messages.WARNING,
-            )
-            return redirect(self._dashboard_url())
-
-        failed = (
-            AgentRun.objects.filter(
-                run_type=AgentRun.RunType.JOB_PIPELINE,
-                status=AgentRun.Status.FAILED,
-            )
-            .order_by("-created", "-id")
-            .first()
-        )
-        if failed is None:
-            self.message_user(
-                request,
-                "No eligible failed run to retry.",
-                level=messages.WARNING,
-            )
-            return redirect(self._dashboard_url())
-
-        # Check for active run
-        active = AgentRun.objects.filter(
-            run_type=AgentRun.RunType.JOB_PIPELINE,
-            status=AgentRun.Status.RUNNING,
-        ).first()
-        if active is not None:
-            self.message_user(
-                request,
-                f"Pipeline already running (run {active.correlation_id}). Retry skipped.",
-                level=messages.WARNING,
-            )
-            return redirect(self._dashboard_url())
-
-        run = AgentRun.objects.create(
-            run_type=AgentRun.RunType.JOB_PIPELINE,
-            status=AgentRun.Status.PENDING,
-        )
-        _audit(
-            request,
-            "retry_failed",
-            old_value={"retried_run_id": failed.pk, "retried_correlation_id": str(failed.correlation_id)},
-            new_value={"agent_run_id": run.pk},
-        )
-        monitoring.record_event(
-            "operational_change",
-            {"action": "retry_failed", "confirmed": True},
-        )
-        self.message_user(
-            request,
-            f"Retry queued as run {run.correlation_id} (retried from {failed.correlation_id}).",
-            level=messages.SUCCESS,
-        )
-        return redirect(self._dashboard_url())
+        return TemplateResponse(request, "admin/job_retrieval_confirm.html", context)
 
     def _dashboard_url(self):
         return reverse("admin:crank_jobretrievalops_changelist")
@@ -448,3 +256,276 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
                 "url": reverse("admin:crank_operationalchangeaudit_changelist"),
             },
         ]
+
+    # ── Views ──
+
+    def dashboard_view(self, request):
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Job Retrieval Operations",
+            "counts": _aggregate_counts(),
+            "gates": _readiness_gates(),
+            "opts": self.model._meta,
+            "admin_links": self._admin_links(),
+        }
+        return TemplateResponse(request, self.change_list_template, context)
+
+    def seed_preview_view(self, request):
+        """Dry-run preview of seed_job_sources without writing to the database.
+
+        Renders actionable per-source preview rows so the operator can see
+        which sources would be created, which already exist, and what their
+        current approval/enabled state is.
+        """
+        preview = []
+        for entry in SEED_SOURCES:
+            host = _host(entry["base_url"])
+            allowed = _is_allowed(host)
+            existing = JobSourceCatalog.objects.filter(name=entry["name"]).first()
+            preview.append(
+                {
+                    "name": entry["name"],
+                    "adapter_key": entry["adapter_key"],
+                    "base_url": entry["base_url"],
+                    "host_allowed": allowed,
+                    "exists": existing is not None,
+                    "existing_enabled": existing.enabled if existing else None,
+                    "existing_approval": existing.approval_state if existing else None,
+                }
+            )
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Seed Preview (dry-run)",
+            "preview": preview,
+            "opts": self.model._meta,
+        }
+        return TemplateResponse(request, "admin/job_retrieval_seed_preview.html", context)
+
+    def seed_execute_view(self, request):
+        """Execute seed_job_sources with confirmation.
+
+        Creates new sources with ``APPROVED`` / ``enabled=True`` defaults, but
+        preserves operator-set ``approval_state`` and ``enabled`` on existing
+        rows so re-seeding never silently reclobbers a disabled or blocked source.
+        """
+        if not _confirm(request):
+            return self._confirm_interstitial(
+                request,
+                "Execute Seed: Create/Update Curated Job Sources",
+                reverse("admin:crank_jobretrievalops_seed_execute"),
+            )
+
+        created = updated = skipped = 0
+        for entry in SEED_SOURCES:
+            host = _host(entry["base_url"])
+            if not _is_allowed(host):
+                skipped += 1
+                continue
+            obj, created_flag = JobSourceCatalog.objects.get_or_create(
+                name=entry["name"],
+                defaults={
+                    "adapter_key": entry["adapter_key"],
+                    "base_url": entry["base_url"],
+                    "approval_state": JobSourceCatalog.ApprovalState.APPROVED,
+                    "enabled": True,
+                    "catalog_metadata": entry.get("catalog_metadata", {}),
+                },
+            )
+            if created_flag:
+                created += 1
+            else:
+                # Update structural fields only; preserve operator-set policy
+                # fields (approval_state, enabled) on existing rows.
+                obj.adapter_key = entry["adapter_key"]
+                obj.base_url = entry["base_url"]
+                obj.catalog_metadata = entry.get("catalog_metadata", {})
+                obj.save(update_fields=["adapter_key", "base_url", "catalog_metadata", "modified"])
+                updated += 1
+
+        summary = f"Seed complete: {created} created, {updated} updated, {skipped} skipped."
+        _audit(request, "seed_job_sources", new_value={"created": created, "updated": updated, "skipped": skipped})
+        monitoring.record_event(
+            "operational_change",
+            {"action": "seed_job_sources", "confirmed": True},
+        )
+        self.message_user(request, summary, level=messages.SUCCESS)
+        return redirect(self._dashboard_url())
+
+    def queue_retrieval_view(self, request):
+        """Queue retrieval for approved+enabled job sources.
+
+        Overlap-safe: checks for existing RUNNING **and** PENDING pipeline runs
+        inside a ``select_for_update`` transaction so concurrent double-submit
+        requests cannot create duplicate runs.
+        """
+        if not _confirm(request):
+            return self._confirm_interstitial(
+                request,
+                "Queue Retrieval for Approved+Enabled Sources",
+                reverse("admin:crank_jobretrievalops_queue_retrieval"),
+            )
+
+        skip_message = None
+        run = None
+        count = 0
+        with transaction.atomic():
+            existing = AgentRun.objects.select_for_update().filter(
+                run_type=AgentRun.RunType.JOB_PIPELINE,
+                status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING],
+            ).first()
+            if existing is not None:
+                skip_message = (
+                    f"Pipeline already active (run {existing.correlation_id}). "
+                    f"Queue skipped."
+                )
+            else:
+                sources = JobSourceCatalog.objects.filter(
+                    approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+                    enabled=True,
+                )
+                count = sources.count()
+                run = AgentRun.objects.create(
+                    run_type=AgentRun.RunType.JOB_PIPELINE,
+                    status=AgentRun.Status.PENDING,
+                )
+
+        if skip_message:
+            self.message_user(request, skip_message, level=messages.WARNING)
+            return redirect(self._dashboard_url())
+
+        _audit(
+            request,
+            "queue_retrieval",
+            new_value={"sources_count": count, "agent_run_id": run.pk},
+        )
+        monitoring.record_event(
+            "operational_change",
+            {"action": "queue_retrieval", "confirmed": True},
+        )
+        self.message_user(
+            request,
+            f"Retrieval queued for {count} approved+enabled sources (run {run.correlation_id}).",
+            level=messages.SUCCESS,
+        )
+        return redirect(self._dashboard_url())
+
+    def queue_pipeline_view(self, request):
+        """Queue a bounded job pipeline run.
+
+        Overlap-safe: checks for existing RUNNING **and** PENDING pipeline runs
+        inside a ``select_for_update`` transaction so concurrent double-submit
+        requests cannot create duplicate runs.
+        """
+        if not _confirm(request):
+            return self._confirm_interstitial(
+                request,
+                "Queue Job Pipeline Run",
+                reverse("admin:crank_jobretrievalops_queue_pipeline"),
+            )
+
+        skip_message = None
+        run = None
+        with transaction.atomic():
+            existing = AgentRun.objects.select_for_update().filter(
+                run_type=AgentRun.RunType.JOB_PIPELINE,
+                status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING],
+            ).first()
+            if existing is not None:
+                skip_message = (
+                    f"Pipeline already active or queued (run {existing.correlation_id}). "
+                    f"Queue skipped."
+                )
+            else:
+                run = AgentRun.objects.create(
+                    run_type=AgentRun.RunType.JOB_PIPELINE,
+                    status=AgentRun.Status.PENDING,
+                )
+
+        if skip_message:
+            self.message_user(request, skip_message, level=messages.WARNING)
+            return redirect(self._dashboard_url())
+
+        _audit(
+            request,
+            "queue_pipeline",
+            new_value={"agent_run_id": run.pk},
+        )
+        monitoring.record_event(
+            "operational_change",
+            {"action": "queue_pipeline", "confirmed": True},
+        )
+        self.message_user(
+            request,
+            f"Pipeline run queued (run {run.correlation_id}).",
+            level=messages.SUCCESS,
+        )
+        return redirect(self._dashboard_url())
+
+    def retry_failed_view(self, request):
+        """Retry the most recent eligible failed pipeline run.
+
+        Overlap-safe: checks for existing RUNNING **and** PENDING pipeline runs
+        inside a ``select_for_update`` transaction so concurrent double-submit
+        requests cannot create duplicate runs.
+        """
+        if not _confirm(request):
+            return self._confirm_interstitial(
+                request,
+                "Retry Eligible Failed Pipeline Run",
+                reverse("admin:crank_jobretrievalops_retry_failed"),
+            )
+
+        failed = (
+            AgentRun.objects.filter(
+                run_type=AgentRun.RunType.JOB_PIPELINE,
+                status=AgentRun.Status.FAILED,
+            )
+            .order_by("-created", "-id")
+            .first()
+        )
+        if failed is None:
+            self.message_user(
+                request,
+                "No eligible failed run to retry.",
+                level=messages.WARNING,
+            )
+            return redirect(self._dashboard_url())
+
+        skip_message = None
+        run = None
+        with transaction.atomic():
+            existing = AgentRun.objects.select_for_update().filter(
+                run_type=AgentRun.RunType.JOB_PIPELINE,
+                status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING],
+            ).first()
+            if existing is not None:
+                skip_message = (
+                    f"Pipeline already active or queued (run {existing.correlation_id}). "
+                    f"Retry skipped."
+                )
+            else:
+                run = AgentRun.objects.create(
+                    run_type=AgentRun.RunType.JOB_PIPELINE,
+                    status=AgentRun.Status.PENDING,
+                )
+
+        if skip_message:
+            self.message_user(request, skip_message, level=messages.WARNING)
+            return redirect(self._dashboard_url())
+
+        _audit(
+            request,
+            "retry_failed",
+            old_value={"retried_run_id": failed.pk, "retried_correlation_id": str(failed.correlation_id)},
+            new_value={"agent_run_id": run.pk},
+        )
+        monitoring.record_event(
+            "operational_change",
+            {"action": "retry_failed", "confirmed": True},
+        )
+        self.message_user(
+            request,
+            f"Retry queued as run {run.correlation_id} (retried from {failed.correlation_id}).",
+            level=messages.SUCCESS,
+        )
+        return redirect(self._dashboard_url())

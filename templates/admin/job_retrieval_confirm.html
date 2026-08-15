@@ -1,0 +1,27 @@
+{% extends "admin/base_site.html" %}
+{% comment %}
+Copyright (c) 2024 Isaac Adams
+Licensed under the MIT License. See LICENSE file in the project root for full license information.
+{% endcomment %}
+{% load i18n %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block content %}
+<div id="content-main">
+  <h1>{{ title }}</h1>
+
+  <div class="module" style="border: 1px solid #ccc; padding: 1.5rem; max-width: 600px;">
+    <p style="font-size: 1.1rem;">Are you sure you want to:</p>
+    <p style="font-size: 1.2rem; font-weight: bold;">{{ action_label }}</p>
+    <p style="color: #666;">This action is audited and cannot be undone.</p>
+
+    <form method="post" action="{{ action_url }}">
+      {% csrf_token %}
+      <input type="hidden" name="confirm" value="yes">
+      <input type="submit" value="Yes, I'm sure" class="button" style="background: #ba2121; color: white; padding: 0.5rem 1.5rem; font-size: 1rem;">
+      <a href="{% url 'admin:crank_jobretrievalops_changelist' %}" class="button" style="background: #79aec8; color: white; padding: 0.5rem 1.5rem; font-size: 1rem; text-decoration: none; margin-left: 1rem;">Cancel</a>
+    </form>
+  </div>
+</div>
+{% endblock %}
