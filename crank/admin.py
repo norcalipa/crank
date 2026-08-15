@@ -201,7 +201,9 @@ class ConfirmableAdminActionMixin:
 
         Only applies when the operator confirmed a ``select_across=1`` preview
         that carried a ``confirmed_total`` snapshot; absent that value (e.g. a
-        direct/older flow) no drift gate is imposed.
+        direct/older flow) no drift gate is imposed. A malformed (non-integer)
+        snapshot is treated as drift so a tampered value can never silently
+        bypass the gate and act on an unreviewed set.
         """
         if not self._select_across_flag(request):
             return False
@@ -211,7 +213,7 @@ class ConfirmableAdminActionMixin:
         try:
             reviewed = int(reviewed)
         except (TypeError, ValueError):
-            reviewed = -1
+            return True
         return reviewed >= 0 and queryset.count() != reviewed
 
     def _requested_action(self, request):
