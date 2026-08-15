@@ -112,6 +112,14 @@ class TestProviderTimeout:
     transport provider re-raises it, and :class:`JobSearchService.run_turn`
     folds it into :class:`JobSearchServiceError` -- the exact exception the
     view maps to its "please retry" response. No status dict is manufactured.
+
+    These tests deliberately stay at the transport/service layer (the typed
+    error above, not a mock), proving the timeout propagates end to end without
+    status-dict fabrication. The view's stable ``500``/``service_error``
+    envelope is asserted separately in the API suite
+    (``test_service_error_is_stable_and_retry_does_not_duplicate``), which
+    drives the same :class:`JobSearchServiceError` through the real HTTP
+    endpoint.
     """
 
     def _transport_run(self, gateway):

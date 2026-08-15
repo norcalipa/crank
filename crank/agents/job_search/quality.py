@@ -58,19 +58,33 @@ _MIN_SUBSTANTIVE_TOKENS = 3
 _ECHO_TOLERANCE = 0.8
 
 
+def _is_question(message: str) -> bool:
+    """Return True when ``message`` is phrased as a clarifying question.
+
+    A short reply that restates the prompt with a trailing ``?`` (``remote
+    jobs`` -> ``Remote jobs?``) is a clarification, not a verbatim
+    restatement (issue #423 MINOR).
+    """
+    return (message or "").strip().endswith("?")
+
+
 def _strip_ack(tokens):
     """Drop leading acknowledgment tokens from a reply's token list.
 
-    Multi-word ack phrases ("of course", "sure thing", "i understand") are
-    matched first as a unit; remaining leading single-token acks are then
-    stripped one-by-one.
+    Multi-word acknowledgment phrases ("of course", "sure thing", "i
+    understand") are matched first as a single unit at a token boundary;
+    only remaining leading single-word acks are then stripped one-by-one.
     """
-    # Try multi-word ack phrases first.
+    # Try multi-word ack phrases first. Matching is token-boundary aware: a
+    # phrase must either consume the whole reply or be followed by a space, so
+    # ``"i see"`` cannot fire on ``"i seeker..."`` (issue #423 NIT-2).
     text = " ".join(tokens)
     for phrase in _ACK_PHRASES:
-        if text.startswith(phrase):
-            stripped = text[len(phrase):].lstrip()
-            tokens = stripped.split()
+        if text == phrase:
+            tokens = []
+            break
+        if text.startswith(phrase + " "):
+            tokens = text[len(phrase):].lstrip().split()
             break
     # Also strip leading single-token acks (covers "got it" which is already
     # in _ACK_SINGLE as individual tokens, plus single-word acks like "sure").
@@ -80,7 +94,9 @@ def _strip_ack(tokens):
     return tokens[start:]
 
 
-def is_echo(user_prompt: str, message: str) -> bool:
+def is_echo(
+    user_prompt: str, message: str, *, tolerance: float = _ECHO_TOLERANCE
+) -> bool:
     """Return True when ``message`` merely restates ``user_prompt``.
 
     A reply is an echo when at least 80% (``_ECHO_TOLERANCE``) of its
@@ -90,15 +106,21 @@ def is_echo(user_prompt: str, message: str) -> bool:
     is still caught (e.g. ``show me jobs`` -> ``Sure, show me jobs``).
     Trailing politeness tokens (``please``, ``thanks``) are also stripped so
     they cannot dilute the overlap ratio (e.g. ``show me jobs`` -> ``show me
-    jobs please``). A verbatim restatement of the prompt is always an echo
-    regardless of length, except for single-token clarifying questions that
-    add punctuation (``salary`` -> ``Salary?``). Very short replies (a
+    jobs please``). A keyword ``tolerance`` (default 0.8, ``_ECHO_TOLERANCE``)
+    sets the minimum overlap fraction required for an echo verdict. A
+    verbatim restatement of the prompt is always an echo, except for short
+    clarifying questions that add punctuation (``"remote jobs"`` ->
+    ``"Remote jobs?"`` and ``"salary"`` -> ``"Salary?"``). Very short replies (a
     keyword or two, e.g. ``salary`` -> ``Salary?``) are clarifying questions
     rather than restatements and are not flagged. This catches the classic
     demo-provider failure mode where the assistant parrots the user's turn
     back verbatim without calling a tool or citing server data, while leaving
     genuine answers, refusals, and clarifying questions untouched.
+
+    ``tolerance`` must be in ``(0, 1]``; anything else raises ``ValueError``.
     """
+    if not 0.0 < tolerance <= 1.0:
+        raise ValueError("tolerance must be in the interval (0, 1]")
     up_tokens = _WORD.findall((user_prompt or "").lower())
     reply_tokens = _strip_ack(_WORD.findall((message or "").lower()))
     # Strip trailing politeness tokens ("please", "thanks") that dilute the
@@ -119,6 +141,11 @@ def is_echo(user_prompt: str, message: str) -> bool:
     # restatement.
     if reply_tokens == up_tokens:
         if len(up_tokens) >= 2:
+            # A short multi-token reply phrased as a question (``remote
+            # jobs`` -> ``Remote jobs?``) is a clarification, not a verbatim
+            # restatement (MINOR-1). Longer exact restatements stay echoes.
+            if _is_question(message) and len(reply_tokens) < _MIN_SUBSTANTIVE_TOKENS:
+                return False
             return True
         if (message or "").strip().lower() == (user_prompt or "").strip().lower():
             return True
@@ -126,7 +153,7 @@ def is_echo(user_prompt: str, message: str) -> bool:
         return False
     user_set = set(up_tokens)
     overlap = sum(1 for token in reply_tokens if token in user_set)
-    return overlap >= _ECHO_TOLERANCE * len(reply_tokens)
+    return overlap >= tolerance * len(reply_tokens)
 
 
 def has_helpfulness_gap(*, assistant_turns: int, result_cards: int) -> bool:

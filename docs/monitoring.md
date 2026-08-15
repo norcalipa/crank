@@ -23,7 +23,7 @@ Reason codes are the finite set `none`, `timeout`, `cost_limit`, `rejected`,
 The checked-in query definitions in [`monitoring.yaml`](./monitoring.yaml) are
 the source of truth for a New Relic dashboard and alert policy. They intentionally
 use `FACET` only on the bounded dimensions `run_type`, `stage`, `source_key`,
-and `reason_code`.
+`reason_code`, and `tool` (per-datasource tool invocation).
 
 The dashboard answers:
 
@@ -82,9 +82,11 @@ scalar counters: `tools_called`, `result_count`, `cited_ids_count`,
 `latency_ms`/`latency_bucket`. Each bounded datasource tool also emits a
 `job_search_tool_invocation` event with `tool` and its `result_count`. When a
 conversation has accumulated several assistant turns but produced no result
-card, the view emits a `job_search_helpfulness_gap` event with
-`turns_without_result` and `empty_result` (see `MIN_HELPFUL_TURNS`). No prompt,
-response, or conversation-identifier content is ever an event attribute.
+card, the view emits a `job_search_helpfulness_gap` event once per
+conversation (an atomic flag guarantees exactly-once emission even under
+concurrency) with `turns_without_result` and `empty_result` (see
+`MIN_HELPFUL_TURNS`). No prompt, response, or conversation-identifier content
+is ever an event attribute.
 
 **Reading the telemetry to detect a useless chat:**
 
