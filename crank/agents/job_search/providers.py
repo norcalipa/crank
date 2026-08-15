@@ -175,21 +175,66 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 
 
-class _NullPreferenceService:
-    """Minimal preference service stub used when no real one is wired.
+class _PreferenceServiceAdapter:
+    """Owner-scoped adapter over the production preference store.
 
-    Validates patches pass-through and always reports no change.  Production
-    wires the real preference service from ``crank.services.preferences``.
+    Wires :mod:`crank.services.preferences` — the same store the preference
+    editor uses — so chat preference changes are validated against the
+    version-1 schema and persisted for the conversation owner.
+    ``apply_patch`` returns whether the stored document actually changed, so
+    ``preferences_changed`` accurately reflects persistence.
+    """
+
+    def __init__(self, user: Any) -> None:
+        self._user = user
+
+    def validate_patch(self, patch: dict[str, Any]) -> None:
+        from crank.services.preferences import validate_patch
+
+        validate_patch(patch)
+
+    def apply_patch(self, patch: dict[str, Any]) -> bool:
+        from crank.services.preferences import apply_patch_to_user
+
+        result = apply_patch_to_user(self._user, patch)
+        return bool(result.get("changed", False))
+
+
+class _NullPreferenceService:
+    """Fallback preference service used when no owner can be resolved.
+
+    Only reachable when ``conversation.owner`` is unavailable (so there is no
+    user to persist to). ``apply_patch`` returns ``False`` to signal nothing
+    was applied, so ``preferences_changed`` accurately reports degradation
+    rather than silently claiming a change persisted.
     """
 
     def validate_patch(self, patch: dict[str, Any]) -> None:
-        # Accept any patch shape; the orchestrator already validated it via
-        # AssistantCompletion schema. The real preference service does deeper
-        # validation.
+        # No user is available to persist to, so there is nothing meaningful
+        # to validate against. The orchestrator already bounds the patch shape.
         pass
 
     def apply_patch(self, patch: dict[str, Any]) -> bool:
         return False
+
+
+def _matches_for_user(user: Any):
+    """Return the orchestrator ``match_service`` for *user*.
+
+    The returned callable matches the orchestrator's ``match_service``
+    contract — ``f(user, *, limit=...)`` returning
+    ``{"job_matches": [...], "organization_matches": [...]}`` — by delegating
+    to the real, preference-grounded matching engine
+    (:func:`crank.agents.job_search.tools.get_matches_for_user`). Allowing the
+    injection side-effect keeps tests deterministic without live ORM/network.
+    """
+
+    def _match(user: Any, *, limit: int | None = None) -> dict[str, Any]:
+        from crank.agents.job_search.tools import get_matches_for_user
+
+        return get_matches_for_user(user, limit=limit)
+
+    return _match
 
 
 class OrchestratorJobSearchProvider:
@@ -209,24 +254,73 @@ class OrchestratorJobSearchProvider:
         *,
         gateway: ProviderGateway | None = None,
         preference_service: Any | None = None,
+        match_service: callable | None = None,
         orchestrator: JobSearchOrchestrator | None = None,
     ) -> None:
         if orchestrator is not None:
-            self._orchestrator = orchestrator
+            # A fully-wired orchestrator was injected (tests / callers); use it
+            # verbatim rather than re-wiring the owner services.
+            self._fixed_orchestrator = orchestrator
+            self._gateway = None
+            self._preference_service = None
+            self._match_service = None
         else:
-            gw = gateway or LLMGateway()
-            pref = preference_service or _NullPreferenceService()
-            self._orchestrator = JobSearchOrchestrator(
-                gateway=gw,
-                preference_service=pref,
+            self._fixed_orchestrator = None
+            # Resolve the gateway eagerly so configuration errors (missing API
+            # key, missing model, etc.) fail closed at provider construction
+            # (in ``_build_provider``), not on the first chat turn.
+            self._gateway = gateway or LLMGateway()
+            self._preference_service = preference_service
+            self._match_service = match_service
+        # Built lazily for the conversation owner once we know *who* is chatting.
+        self._orchestrator: JobSearchOrchestrator | None = None
+
+    def _ensure_orchestrator(self, user: Any) -> JobSearchOrchestrator:
+        """Return the orchestrator for *user*, wiring preferences and matches.
+
+        Because the owner service wiring depends on ``conversation.owner``
+        (only known at ``generate_reply`` time), the orchestrator is built on
+        first use and cached. The owner's real, preference-grounded
+        ``PreferenceService`` and ``match_service`` are wired so saved
+        preferences feed matching and preference patches persist.
+        """
+        if self._fixed_orchestrator is not None:
+            return self._fixed_orchestrator
+        if self._orchestrator is not None:
+            return self._orchestrator
+        pref = self._preference_service
+        if pref is None:
+            # Wire the real owner-scoped preference store in production. The
+            # null fallback is only reachable when no owner could be resolved.
+            pref = (
+                _PreferenceServiceAdapter(user)
+                if user is not None
+                else _NullPreferenceService()
             )
+        match = self._match_service or _matches_for_user(user)
+        self._orchestrator = JobSearchOrchestrator(
+            gateway=self._gateway,
+            preference_service=pref,
+            user=user,
+            match_service=match,
+        )
+        return self._orchestrator
+
+    @staticmethod
+    def _resolve_user(conversation):
+        """Return the conversation owner, or ``None`` when unavailable."""
+        return getattr(conversation, "owner", None)
 
     def generate_reply(self, *, conversation, user_message):
-        """Return ``(reply_text, preferences_changed)`` for a single turn.
+        """Return ``(reply_text, preferences_changed, results)`` for a turn.
 
-        Raises :class:`~crank.agents.job_search.demo.JobSearchServiceError`
-        for configuration errors so the view returns a friendly message.
+        Passes ``conversation.owner`` through to the orchestrator so saved
+        preferences are loaded and matches are preference-grounded. Raises
+        :class:`~crank.agents.job_search.demo.JobSearchServiceError` for
+        configuration errors so the view returns a friendly message.
         """
+        user = self._resolve_user(conversation)
+        orchestrator = self._ensure_orchestrator(user)
         try:
             history = self._build_conversation_history(conversation)
             preference_markdown = self._get_preference_markdown(conversation)
@@ -239,7 +333,7 @@ class OrchestratorJobSearchProvider:
             raise
 
         try:
-            result = self._orchestrator.run(
+            result = orchestrator.run(
                 user_prompt=user_message or "",
                 conversation=history,
                 preference_markdown=preference_markdown,
