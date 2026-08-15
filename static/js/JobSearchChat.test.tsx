@@ -985,28 +985,34 @@ describe('textarea composer', () => {
         // Stub document.fonts with a FontFaceSet-like ready hook (jsdom may not
         // implement one), so the listener fires on an explicit font load.
         Object.defineProperty(document, 'fonts', {configurable: true, value: {ready: readyPromise}});
-        const gcs = jest.spyOn(window, 'getComputedStyle');
-        await renderChat();
-        const textarea = screen.getByRole('textbox', {name: 'Message'}) as HTMLTextAreaElement;
-        fireEvent.change(textarea, {target: {value: 'hello world'}});
-        const callsBefore = gcs.mock.calls.length;
-        // Fonts finishing must re-run the measure so the composer height reflects
-        // the real loaded face rather than the pre-load fallback line-height.
-        await act(async () => { settleFonts(); await readyPromise; });
-        expect(gcs.mock.calls.length).toBeGreaterThan(callsBefore);
-        gcs.mockRestore();
-        delete (document as {fonts?: unknown}).fonts;
+        try {
+            const gcs = jest.spyOn(window, 'getComputedStyle');
+            await renderChat();
+            const textarea = screen.getByRole('textbox', {name: 'Message'}) as HTMLTextAreaElement;
+            fireEvent.change(textarea, {target: {value: 'hello world'}});
+            const callsBefore = gcs.mock.calls.length;
+            // Fonts finishing must re-run the measure so the composer height reflects
+            // the real loaded face rather than the pre-load fallback line-height.
+            await act(async () => { settleFonts(); await readyPromise; });
+            expect(gcs.mock.calls.length).toBeGreaterThan(callsBefore);
+            gcs.mockRestore();
+        } finally {
+            delete (document as {fonts?: unknown}).fonts;
+        }
     });
 
     test('composer still works when document.fonts has no ready hook', async () => {
         // Documents with a null/absent FontFaceSet ready promise (or a missing
         // ready) must not throw and the composer must still measure on mount.
         Object.defineProperty(document, 'fonts', {configurable: true, value: {ready: null}});
-        await renderChat();
-        const textarea = screen.getByRole('textbox', {name: 'Message'}) as HTMLTextAreaElement;
-        fireEvent.change(textarea, {target: {value: 'a'.repeat(20)}});
-        expect(textarea.style.height).toBeTruthy();
-        delete (document as {fonts?: unknown}).fonts;
+        try {
+            await renderChat();
+            const textarea = screen.getByRole('textbox', {name: 'Message'}) as HTMLTextAreaElement;
+            fireEvent.change(textarea, {target: {value: 'a'.repeat(20)}});
+            expect(textarea.style.height).toBeTruthy();
+        } finally {
+            delete (document as {fonts?: unknown}).fonts;
+        }
     });
 
     test('registers height listeners on visualViewport when present', async () => {

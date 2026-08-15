@@ -469,7 +469,8 @@ history retention and reload; verify the loop as an operator:
 > criteria are therefore verified only by **manual, operator-recorded evidence**
 > (see the matrix below); the jest/jsdom suite asserts layout wiring, not
 > rendered-browser behavior. Adding a Playwright viewport harness is tracked as
-> an accepted gap, out of scope for this gate, not a pending AC here.
+> an accepted gap [#431](https://github.com/norcalipa/crank/issues/431),
+> out of scope for this gate, not a pending AC here.
 
 - **#407 Composer:** the chat composer renders correctly, handles multi-line
   input, submit-on-Enter affordance, and empty/invalid send without error.
