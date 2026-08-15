@@ -27,10 +27,12 @@ from crank.agents.job_search.errors import (
 )
 from crank.agents.job_search.gateway import GatewayResponse, ModelRequest
 from crank.agents.job_search.providers import (
+    _NO_OWNER,
     _RESPONSE_SCHEMA,
     LLMGateway,
     OrchestratorJobSearchProvider,
     _NullPreferenceService,
+    _PreferenceServiceAdapter,
 )
 from crank.agents.job_search.service import JobSearchOrchestrator
 from crank.models import JobSearchConversation, JobSearchMessage
@@ -210,6 +212,19 @@ class FakePreferenceService:
         return self.apply_result
 
 
+class _OwnerScopedPref:
+    """Owner-bound preference service double (mirrors ``_PreferenceServiceAdapter``)."""
+
+    def __init__(self, user):
+        self._user = user
+
+    def validate_patch(self, patch):
+        pass
+
+    def apply_patch(self, patch):
+        return False
+
+
 class _NullPreferenceServiceTests(SimpleTestCase):
     def test_null_preference_service_validate_passes(self):
         svc = _NullPreferenceService()
@@ -376,6 +391,171 @@ class OrchestratorProviderTests(SimpleTestCase):
         self.assertIs(provider._ensure_orchestrator(alice), orch_alice)
         self.assertIs(provider._ensure_orchestrator(bob), orch_bob)
 
+    # -- MAJOR-1: no supported injection path may leak owner A's wiring to B ---
+
+    def test_injected_preference_service_bound_different_owner_fails_closed(self):
+        """MAJOR-1 path (b): an owner-bound preference service (the production
+        ``_PreferenceServiceAdapter``) can only ever serve its own owner.
+
+        Bob's request must raise rather than be wired to Alice's adapter — a
+        preference patch from Bob would otherwise be persisted to Alice's row.
+        """
+        alice = SimpleNamespace(pk=1, username="alice")
+        bob = SimpleNamespace(pk=2, username="bob")
+        provider = OrchestratorJobSearchProvider(
+            gateway=FakeGateway(),
+            preference_service=_PreferenceServiceAdapter(alice),
+        )
+
+        # The injected adapter is wired only for its own owner.
+        self.assertIs(
+            provider._ensure_orchestrator(alice)._preference_service,
+            provider._preference_service,
+        )
+        # A different owner must never receive (or be wired to) Bob's adapter.
+        with pytest.raises(ValueError):
+            provider._ensure_orchestrator(bob)
+
+    def test_injected_orchestrator_bound_other_owner_fails_closed(self):
+        """MAJOR-1 path (a): an injected, owner-bound orchestrator (``_user``
+        set) can only ever serve that owner. A different owner's request fails
+        closed instead of receiving the first owner's orchestrator."""
+        alice = SimpleNamespace(pk=1, username="alice")
+        bob = SimpleNamespace(pk=2, username="bob")
+        orch_alice = JobSearchOrchestrator(
+            gateway=FakeGateway(),
+            preference_service=FakePreferenceService(),
+            user=alice,
+        )
+        provider = OrchestratorJobSearchProvider(orchestrator=orch_alice)
+
+        self.assertIs(provider._ensure_orchestrator(alice), orch_alice)
+        with pytest.raises(ValueError):
+            provider._ensure_orchestrator(bob)
+
+    def test_bound_injection_reused_for_same_owner_across_instances(self):
+        """An owner-bound artifact is only rejected for a DIFFERENT owner: the
+        same database user materialized as a new instance is still allowed."""
+        alice = SimpleNamespace(pk=1, username="alice")
+        alice_again = SimpleNamespace(pk=1, username="alice")
+        provider = OrchestratorJobSearchProvider(
+            gateway=FakeGateway(),
+            preference_service=_PreferenceServiceAdapter(alice),
+        )
+        self.assertIs(
+            provider._ensure_orchestrator(alice_again)._preference_service,
+            provider._preference_service,
+        )
+
+    def test_preference_service_factory_wires_per_owner(self):
+        """MAJOR-1 remedy: per-owner preference factory builds fresh,
+        owner-bound wiring for each owner — never the first owner's adapter."""
+        alice = SimpleNamespace(pk=1, username="alice")
+        bob = SimpleNamespace(pk=2, username="bob")
+
+        def factory(user):
+            return _OwnerScopedPref(user)
+
+        provider = OrchestratorJobSearchProvider(
+            gateway=FakeGateway(),
+            preference_service_factory=factory,
+        )
+        orch_alice = provider._ensure_orchestrator(alice)
+        orch_bob = provider._ensure_orchestrator(bob)
+
+        self.assertIsNot(orch_alice, orch_bob)
+        self.assertIs(orch_alice._preference_service._user, alice)
+        self.assertIs(orch_bob._preference_service._user, bob)
+        self.assertIsNot(orch_alice._preference_service, orch_bob._preference_service)
+
+    def test_orchestrator_factory_wires_per_owner(self):
+        """MAJOR-1 safe path: an injected orchestrator factory yields a fresh,
+        owner-bound orchestrator per owner instead of one fixed orchestrator."""
+        alice = SimpleNamespace(pk=1, username="alice")
+        bob = SimpleNamespace(pk=2, username="bob")
+
+        def factory(user):
+            return JobSearchOrchestrator(
+                gateway=FakeGateway(),
+                preference_service=_OwnerScopedPref(user),
+                user=user,
+            )
+
+        provider = OrchestratorJobSearchProvider(orchestrator_factory=factory)
+        orch_alice = provider._ensure_orchestrator(alice)
+        orch_bob = provider._ensure_orchestrator(bob)
+
+        self.assertIsNot(orch_alice, orch_bob)
+        self.assertIs(orch_alice._user, alice)
+        self.assertIs(orch_bob._user, bob)
+
+    # -- MINOR-1: bounded cache --------------------------------------------
+
+    def test_orchestrator_cache_is_bounded_lru(self):
+        """The per-owner cache is bounded: evicting the least-recently-used
+        owner releases its orchestrator, so a shared, long-lived provider never
+        retains every owner seen (MINOR-1)."""
+        provider = OrchestratorJobSearchProvider(gateway=FakeGateway())
+        provider._cache_size = 2
+        alice = SimpleNamespace(pk=1, username="alice")
+        bob = SimpleNamespace(pk=2, username="bob")
+        carol = SimpleNamespace(pk=3, username="carol")
+
+        orch_alice = provider._ensure_orchestrator(alice)
+        orch_bob = provider._ensure_orchestrator(bob)
+        self.assertIs(provider._ensure_orchestrator(alice), orch_alice)  # touch alice
+        orch_carol = provider._ensure_orchestrator(carol)  # capacity 2 -> evicts bob
+
+        self.assertEqual(len(provider._orchestrators), 2)
+        self.assertIs(provider._ensure_orchestrator(alice), orch_alice)  # still cached
+        self.assertIsNot(provider._ensure_orchestrator(bob), orch_bob)  # rebuilt after eviction
+
+    # -- MINOR-2: stable owner identity ------------------------------------
+
+    def test_cache_keyed_by_stable_owner_identity(self):
+        """Two instances materializing the same DB row (same label+pk) share
+        one cached orchestrator rather than building duplicates (MINOR-2)."""
+        alice = SimpleNamespace(pk=7, username="alice")
+        alice_again = SimpleNamespace(pk=7, username="alice")
+        provider = OrchestratorJobSearchProvider(gateway=FakeGateway())
+
+        orch_a = provider._ensure_orchestrator(alice)
+        orch_a2 = provider._ensure_orchestrator(alice_again)
+
+        self.assertIs(orch_a, orch_a2)
+        self.assertEqual(provider._owner_key(alice), ("SimpleNamespace", 7))
+
+    def test_unsaved_user_not_shared_across_instances(self):
+        """Unsaved owners (no pk) have no stable identity and are never shared
+        across distinct instances (explicit unsaved-user behavior, MINOR-2)."""
+        provider = OrchestratorJobSearchProvider(gateway=FakeGateway())
+        a = SimpleNamespace(pk=None, username="who")
+        b = SimpleNamespace(pk=None, username="who")
+
+        orch_a = provider._ensure_orchestrator(a)
+        orch_b = provider._ensure_orchestrator(b)
+        self.assertIsNot(orch_a, orch_b)
+        self.assertIs(provider._ensure_orchestrator(a), orch_a)
+
+    # -- NIT-1 / NIT-2: sentinel key & no-owner contract -------------------
+
+    def test_no_owner_sentinel_reused_and_distinct(self):
+        """NIT-1/NIT-2: ``_NO_OWNER`` is a valid cache key (typing excludes no
+        real key) and repeated ``None`` calls reuse the no-owner entry, distinct
+        from every real-owner entry."""
+        self.assertIs(OrchestratorJobSearchProvider._owner_key(None), _NO_OWNER)
+        alice = SimpleNamespace(pk=1, username="alice")
+        provider = OrchestratorJobSearchProvider(gateway=FakeGateway())
+
+        orch_none1 = provider._ensure_orchestrator(None)
+        orch_none2 = provider._ensure_orchestrator(None)
+        self.assertIs(orch_none1, orch_none2)  # repeated None reuses the entry
+        self.assertIsInstance(orch_none1._preference_service, _NullPreferenceService)
+
+        orch_alice = provider._ensure_orchestrator(alice)
+        self.assertIsNot(orch_none1, orch_alice)  # distinct from real owner
+        self.assertIs(provider._ensure_orchestrator(None), orch_none1)  # retained
+
 
 class OrchestratorProviderErrorMappingTests(SimpleTestCase):
     """Cover all error-mapping branches in generate_reply."""
@@ -383,6 +563,10 @@ class OrchestratorProviderErrorMappingTests(SimpleTestCase):
     def _make_provider_with_mock_orchestrator(self, side_effect):
         """Build a provider whose orchestrator.run() raises the given exception."""
         orchestrator = MagicMock()
+        # The mock stands in for an owner-neutral injected orchestrator (the
+        # error-mapping tests don't exercise owner identity), so it must not be
+        # mistaken for an owner-bound orchestrator and rejected.
+        orchestrator._user = None
         orchestrator.run.side_effect = side_effect
         provider = OrchestratorJobSearchProvider(orchestrator=orchestrator)
         # Skip preference markdown DB lookup
@@ -448,6 +632,7 @@ class OrchestratorProviderErrorMappingTests(SimpleTestCase):
     def test_history_build_failure_logs_and_reraises(self):
         """Exercises the except-block that catches history/preference failures."""
         orchestrator = MagicMock()
+        orchestrator._user = None  # owner-neutral mock, so owner checks pass
         provider = OrchestratorJobSearchProvider(orchestrator=orchestrator)
 
         def _build_failing(conversation):

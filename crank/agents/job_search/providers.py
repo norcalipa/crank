@@ -24,7 +24,8 @@ rather than a 500 crash.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from collections import OrderedDict
+from typing import Any, TypeAlias, Union
 
 from crank.agents.job_search.errors import (
     CostLimitError,
@@ -49,6 +50,12 @@ logger = logging.getLogger("crank.agents.job_search")
 #: is ``None``). Kept distinct from any real user object so the ``None`` owner
 #: builds its own orchestrator rather than reusing a real user's.
 _NO_OWNER = object()
+
+#: Stable cache key identifying an owner. A resolved, saved user maps to
+#: ``(model_label, pk)`` so the same row materialized as different instances
+#: shares one orchestrator; an unsaved user maps to a unique per-instance token;
+#: and an unresolved owner maps to the :data:`_NO_OWNER` sentinel object.
+_OwnerKey: TypeAlias = Union[object, tuple[str, Any]]
 
 __all__ = [
     "LLMGateway",
@@ -259,31 +266,143 @@ class OrchestratorJobSearchProvider:
         *,
         gateway: ProviderGateway | None = None,
         preference_service: Any | None = None,
+        preference_service_factory: callable | None = None,
         match_service: callable | None = None,
         orchestrator: JobSearchOrchestrator | None = None,
+        orchestrator_factory: callable | None = None,
     ) -> None:
         if orchestrator is not None:
             # A fully-wired orchestrator was injected (tests / callers); use it
-            # verbatim rather than re-wiring the owner services.
+            # verbatim rather than re-wiring the owner services. If the injected
+            # orchestrator is owner-bound (has a non-None ``_user``) it can only
+            # ever serve that owner: a request for any other owner fails closed
+            # rather than leaking the first owner's wiring.
             self._fixed_orchestrator = orchestrator
+            self._fixed_orchestrator_owner = getattr(orchestrator, "_user", None)
             self._gateway = None
             self._preference_service = None
+            self._preference_service_factory = None
             self._match_service = None
+            self._orchestrator_factory = None
         else:
             self._fixed_orchestrator = None
-            # Resolve the gateway eagerly so configuration errors (missing API
-            # key, missing model, etc.) fail closed at provider construction
-            # (in ``_build_provider``), not on the first chat turn.
-            self._gateway = gateway or LLMGateway()
+            self._fixed_orchestrator_owner = None
+            # Resolve the gateway eagerly so startup errors (missing API key,
+            # missing model, etc.) fail closed at provider construction (in
+            # ``_build_provider``), not on the first chat turn. When an
+            # ``orchestrator_factory`` is injected, the caller owns the full
+            # orchestrator wiring (including any gateway), so no gateway is
+            # resolved here.
+            self._gateway = (
+                None
+                if orchestrator_factory is not None
+                else (gateway or LLMGateway())
+            )
             self._preference_service = preference_service
+            self._preference_service_factory = preference_service_factory
             self._match_service = match_service
-        # Lazy per-owner orchestrator cache: ``id(user) -> (owner, orchestrator)``.
-        # Keying by the resolved owner keeps a shared provider owner-safe — a
-        # second owner never receives the first owner's orchestrator. The stored
-        # owner reference guards against ``id`` reuse across garbage-collected
-        # users, so each distinct owner (or ``_NO_OWNER`` for an unresolved
-        # owner) always gets its own freshly-wired orchestrator.
-        self._orchestrators: dict[int, tuple[Any, JobSearchOrchestrator]] = {}
+            self._orchestrator_factory = orchestrator_factory
+        # Lazy per-owner orchestrator cache, an LRU (bounded) so a shared,
+        # long-lived provider never retains every owner seen. Keys are the
+        # stable owner identity (``_owner_key``), so the same DB user reuses a
+        # single orchestrator even when re-materialized as a new instance, and
+        # evicted entries release their owner-bound orchestrators for
+        # collection. Each distinct owner (or ``_NO_OWNER`` for an unresolved
+        # owner) still gets its own freshly-wired orchestrator.
+        self._orchestrators: OrderedDict[_OwnerKey, JobSearchOrchestrator] = OrderedDict()
+
+    # -- owner resolution & safe injection ---------------------------------
+
+    @staticmethod
+    def _owner_key(user: Any) -> _OwnerKey:
+        """Map *user* to a stable, hashable cache key.
+
+        A saved user (one with a primary key) maps to ``(model_label, pk)`` so
+        the same database row materialized as different Python instances shares
+        one orchestrator instead of building duplicates. An unsaved user (no
+        pk) has no stable identity, so it maps to a unique per-instance token
+        and is never shared across instances. ``None`` maps to the
+        :data:`_NO_OWNER` sentinel.
+        """
+        if user is None:
+            return _NO_OWNER
+        pk = getattr(user, "pk", None)
+        if pk is not None:
+            try:
+                label = type(user)._meta.label
+            except AttributeError:
+                # Non-ORM owner (e.g. a simple test double): fall back to the
+                # class name, which is still stable for a given row.
+                label = type(user).__name__
+            return (label, pk)
+        return ("__unsaved__", id(user))
+
+    @staticmethod
+    def _reject_mismatched_owner(
+        requested: Any,
+        bound: Any,
+        what: str,
+    ) -> None:
+        """Fail closed when an injected, owner-bound artifact is reused.
+
+        *bound* is the owner an injected orchestrator/preference service is
+        tied to (its ``_user``), or ``None`` when it is owner-neutral. Owner-
+        neutral injection may be reused across owners; an owner-bound artifact
+        may only serve its own owner. A request for a different owner (or an
+        unresolved ``None`` owner) raises instead of leaking the bound owner's
+        wiring or data.
+        """
+        if bound is None:
+            return
+        if requested is None or not OrchestratorJobSearchProvider._same_owner(
+            requested, bound
+        ):
+            raise ValueError(
+                f"the injected {what} is owner-scoped to {bound!r} and cannot "
+                f"serve {requested!r}; inject a per-owner factory instead"
+            )
+
+    @staticmethod
+    def _same_owner(a: Any, b: Any) -> bool:
+        """Return True when *a* and *b* resolve to the same owner identity.
+
+        Two different instances materializing the same database user row compare
+        equal (same ``(label, pk)`` key); ``None`` only equals ``None``; and
+        unsaved instances are only identical to themselves.
+        """
+        return (
+            OrchestratorJobSearchProvider._owner_key(a)
+            == OrchestratorJobSearchProvider._owner_key(b)
+        )
+
+    def _resolve_preference_service(self, user: Any):
+        """Return the preference service to wire for *user*."""
+        factory = getattr(self, "_preference_service_factory", None)
+        if factory is not None:
+            return factory(user)
+        injected = getattr(self, "_preference_service", None)
+        if injected is None:
+            # Wire the real owner-scoped preference store. The null fallback is
+            # only reachable when no owner could be resolved.
+            return (
+                _PreferenceServiceAdapter(user)
+                if user is not None
+                else _NullPreferenceService()
+            )
+        bound = getattr(injected, "_user", None)
+        self._reject_mismatched_owner(user, bound, "preference service")
+        return injected
+
+    def _cache_orchestrator(
+        self, key: _OwnerKey, orchestrator: JobSearchOrchestrator
+    ) -> None:
+        """Insert *orchestrator*, evicting the least-recently-used owner."""
+        self._orchestrators[key] = orchestrator
+        self._orchestrators.move_to_end(key)
+        while len(self._orchestrators) > self._cache_size:
+            self._orchestrators.popitem(last=False)
+
+    _cache_size: int = 128
 
     def _ensure_orchestrator(self, user: Any) -> JobSearchOrchestrator:
         """Return the orchestrator for *user*, wiring preferences and matches.
@@ -297,28 +416,28 @@ class OrchestratorJobSearchProvider:
         wired so saved preferences feed matching and preference patches persist.
         """
         if self._fixed_orchestrator is not None:
-            return self._fixed_orchestrator
-        key = _NO_OWNER if user is None else id(user)
-        cached = self._orchestrators.get(key)
-        if cached is not None and cached[0] is user:
-            return cached[1]
-        pref = self._preference_service
-        if pref is None:
-            # Wire the real owner-scoped preference store in production. The
-            # null fallback is only reachable when no owner could be resolved.
-            pref = (
-                _PreferenceServiceAdapter(user)
-                if user is not None
-                else _NullPreferenceService()
+            self._reject_mismatched_owner(
+                user, self._fixed_orchestrator_owner, "orchestrator"
             )
-        match = self._match_service or _matches_for_user(user)
-        orchestrator = JobSearchOrchestrator(
-            gateway=self._gateway,
-            preference_service=pref,
-            user=user,
-            match_service=match,
-        )
-        self._orchestrators[key] = (user, orchestrator)
+            return self._fixed_orchestrator
+        key = self._owner_key(user)
+        cached = self._orchestrators.get(key)
+        if cached is not None:
+            self._orchestrators.move_to_end(key)
+            return cached
+        factory = getattr(self, "_orchestrator_factory", None)
+        if factory is not None:
+            orchestrator = factory(user)
+        else:
+            pref = self._resolve_preference_service(user)
+            match = self._match_service or _matches_for_user(user)
+            orchestrator = JobSearchOrchestrator(
+                gateway=self._gateway,
+                preference_service=pref,
+                user=user,
+                match_service=match,
+            )
+        self._cache_orchestrator(key, orchestrator)
         return orchestrator
 
     @staticmethod
