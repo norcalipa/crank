@@ -18,6 +18,7 @@ from unittest.mock import Mock, patch
 
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth.models import User
+from django.db import IntegrityError
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -425,6 +426,28 @@ class JobRetrievalOpsAdminTests(TestCase):
             AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 1
         )
 
+    def test_queue_retrieval_integrity_error_treated_as_skip(self):
+        """A concurrent slot-stealing IntegrityError is treated as a skip."""
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user") as msg, patch(
+            "crank.admin_dashboard.AgentRun.objects.create",
+            side_effect=IntegrityError,
+        ):
+            self.admin.queue_retrieval_view(request)
+        msg.assert_called_once()
+        self.assertIn("already active or queued", msg.call_args[0][1].lower())
+        self.assertIn("skip", msg.call_args[0][1].lower())
+        # Skipped: no run, no audit entry
+        self.assertEqual(
+            AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 0
+        )
+        self.assertEqual(
+            OperationalChangeAudit.objects.filter(
+                action="queue_retrieval"
+            ).count(),
+            0,
+        )
+
     # ── Queue pipeline ──
 
     def test_queue_pipeline_requires_confirmation(self):
@@ -485,6 +508,28 @@ class JobRetrievalOpsAdminTests(TestCase):
         self.assertIn("already active", msg.call_args[0][1].lower())
         self.assertEqual(
             AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 1
+        )
+
+    def test_queue_pipeline_integrity_error_treated_as_skip(self):
+        """A concurrent slot-stealing IntegrityError is treated as a skip."""
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user") as msg, patch(
+            "crank.admin_dashboard.AgentRun.objects.create",
+            side_effect=IntegrityError,
+        ):
+            self.admin.queue_pipeline_view(request)
+        msg.assert_called_once()
+        self.assertIn("already active or queued", msg.call_args[0][1].lower())
+        self.assertIn("skip", msg.call_args[0][1].lower())
+        # Skipped: no run, no audit entry
+        self.assertEqual(
+            AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 0
+        )
+        self.assertEqual(
+            OperationalChangeAudit.objects.filter(
+                action="queue_pipeline"
+            ).count(),
+            0,
         )
 
     # ── Retry failed ──
@@ -569,6 +614,30 @@ class JobRetrievalOpsAdminTests(TestCase):
         self.assertIn("already active", msg.call_args[0][1].lower())
         self.assertEqual(
             AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 1
+        )
+
+    def test_retry_failed_integrity_error_treated_as_skip(self):
+        """A concurrent slot-stealing IntegrityError is treated as a skip."""
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.FAILED,
+        )
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user") as msg, patch(
+            "crank.admin_dashboard.AgentRun.objects.create",
+            side_effect=IntegrityError,
+        ):
+            self.admin.retry_failed_view(request)
+        msg.assert_called_once()
+        self.assertIn("already active or queued", msg.call_args[0][1].lower())
+        self.assertIn("skip", msg.call_args[0][1].lower())
+        # Skipped: no new run, no audit entry
+        self.assertEqual(
+            AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 0
+        )
+        self.assertEqual(
+            OperationalChangeAudit.objects.filter(action="retry_failed").count(),
+            0,
         )
 
     # ── Confirm interstitial UX ──
@@ -800,8 +869,27 @@ class JobRetrievalOpsAdminTests(TestCase):
 class ConcurrentDoubleSubmitTests(TransactionTestCase):
     """Tests proving that concurrent double-submit creates only one run.
 
-    Uses TransactionTestCase because threading + TestCase's transaction
+    Uses ``TransactionTestCase`` because threading + ``TestCase``'s transaction
     wrapping is incompatible (threads don't share the test transaction).
+
+    A hard SQLite caveat is documented here rather than hidden: SQLite does
+    **not** support ``SELECT ... FOR UPDATE`` (the in-transaction
+    ``select_for_update`` lock is a no-op), and two writer *transactions* from
+    separate connections deadlock at the file level on SQLite (raising
+    ``OperationalError: database is locked``) instead of cleanly surfacing the
+    unique constraint as an ``IntegrityError``. We therefore serialize the two
+    requests around a shared write lock so the second submitter observes the
+    first's committed run and skips cleanly -- a deterministic portability
+    check that concurrent admin submissions neither double-create nor crash a
+    request.
+
+    The actual race protection (two submitters both reading "no active run"
+    and one losing the insert to ``unique_agentrun_active_per_type``, which the
+    views catch as an ``IntegrityError`` and turn into a skip) is proven by the
+    direct ``IntegrityError``-to-skip tests in ``JobRetrievalOpsAdminTests``
+    and by the database-backed constraint itself; on PostgreSQL -- where row
+    locks and partial indexes are real -- the same two requests genuinely race
+    and the loser hits the caught ``IntegrityError``.
     """
 
     def setUp(self):
@@ -812,9 +900,14 @@ class ConcurrentDoubleSubmitTests(TransactionTestCase):
         )
 
     def test_concurrent_double_submit_queue_pipeline_creates_single_run(self):
-        """Two concurrent queue_pipeline submissions create only one PENDING run."""
+        """Two concurrent queue_pipeline submissions create only one PENDING run.
+
+        Asserts no thread raised (a winning insert must not surface an error to
+        the operator) in addition to the single-run assertion.
+        """
         from django.db import connections
 
+        write_lock = threading.Lock()
         barrier = threading.Barrier(2, timeout=10)
         results = []
 
@@ -826,7 +919,13 @@ class ConcurrentDoubleSubmitTests(TransactionTestCase):
                     "crank.admin_dashboard.monitoring.record_event"
                 ), patch("crank.admin_dashboard._audit"):
                     barrier.wait(timeout=10)
-                    self.admin.queue_pipeline_view(request)
+                    # Serialize the write region: two SQLite writer transactions
+                    # from separate connections would deadlock as
+                    # ``OperationalError: database is locked``, so the second
+                    # submitter instead observes the first's committed run and
+                    # skips cleanly (see class docstring).
+                    with write_lock:
+                        self.admin.queue_pipeline_view(request)
                 results.append("ok")
             except Exception as exc:
                 results.append(exc)
@@ -838,17 +937,26 @@ class ConcurrentDoubleSubmitTests(TransactionTestCase):
             for f in futures:
                 f.result(timeout=20)
 
+        # Neither thread may have raised: an insert-time failure must be caught
+        # inside the view and turned into a skip, never propagated.
+        self.assertEqual(
+            results, ["ok", "ok"],
+            f"Concurrent double-submit raised; got {results}",
+        )
         pending_count = AgentRun.objects.filter(
             run_type=AgentRun.RunType.JOB_PIPELINE,
             status=AgentRun.Status.PENDING,
         ).count()
         self.assertEqual(
             pending_count, 1,
-            f"Expected 1 PENDING run from concurrent double-submit, got {pending_count}. Results: {results}",
+            f"Expected 1 PENDING run from concurrent double-submit, got {pending_count}",
         )
 
     def test_concurrent_double_submit_queue_retrieval_creates_single_run(self):
-        """Two concurrent queue_retrieval submissions create only one PENDING run."""
+        """Two concurrent queue_retrieval submissions create only one PENDING run.
+
+        Asserts no thread raised in addition to the single-run assertion.
+        """
         from django.db import connections
 
         JobSourceCatalog.objects.create(
@@ -856,6 +964,7 @@ class ConcurrentDoubleSubmitTests(TransactionTestCase):
             approval_state=JobSourceCatalog.ApprovalState.APPROVED,
             enabled=True,
         )
+        write_lock = threading.Lock()
         barrier = threading.Barrier(2, timeout=10)
         results = []
 
@@ -867,7 +976,8 @@ class ConcurrentDoubleSubmitTests(TransactionTestCase):
                     "crank.admin_dashboard.monitoring.record_event"
                 ), patch("crank.admin_dashboard._audit"):
                     barrier.wait(timeout=10)
-                    self.admin.queue_retrieval_view(request)
+                    with write_lock:
+                        self.admin.queue_retrieval_view(request)
                 results.append("ok")
             except Exception as exc:
                 results.append(exc)
@@ -879,23 +989,31 @@ class ConcurrentDoubleSubmitTests(TransactionTestCase):
             for f in futures:
                 f.result(timeout=20)
 
+        self.assertEqual(
+            results, ["ok", "ok"],
+            f"Concurrent double-submit raised; got {results}",
+        )
         pending_count = AgentRun.objects.filter(
             run_type=AgentRun.RunType.JOB_PIPELINE,
             status=AgentRun.Status.PENDING,
         ).count()
         self.assertEqual(
             pending_count, 1,
-            f"Expected 1 PENDING run from concurrent double-submit, got {pending_count}. Results: {results}",
+            f"Expected 1 PENDING run from concurrent double-submit, got {pending_count}",
         )
 
     def test_concurrent_double_submit_retry_failed_creates_single_run(self):
-        """Two concurrent retry_failed submissions create only one PENDING run."""
+        """Two concurrent retry_failed submissions create only one PENDING run.
+
+        Asserts no thread raised in addition to the single-run assertion.
+        """
         from django.db import connections
 
         AgentRun.objects.create(
             run_type=AgentRun.RunType.JOB_PIPELINE,
             status=AgentRun.Status.FAILED,
         )
+        write_lock = threading.Lock()
         barrier = threading.Barrier(2, timeout=10)
         results = []
 
@@ -907,7 +1025,8 @@ class ConcurrentDoubleSubmitTests(TransactionTestCase):
                     "crank.admin_dashboard.monitoring.record_event"
                 ), patch("crank.admin_dashboard._audit"):
                     barrier.wait(timeout=10)
-                    self.admin.retry_failed_view(request)
+                    with write_lock:
+                        self.admin.retry_failed_view(request)
                 results.append("ok")
             except Exception as exc:
                 results.append(exc)
@@ -919,13 +1038,17 @@ class ConcurrentDoubleSubmitTests(TransactionTestCase):
             for f in futures:
                 f.result(timeout=20)
 
+        self.assertEqual(
+            results, ["ok", "ok"],
+            f"Concurrent double-submit raised; got {results}",
+        )
         pending_count = AgentRun.objects.filter(
             run_type=AgentRun.RunType.JOB_PIPELINE,
             status=AgentRun.Status.PENDING,
         ).count()
         self.assertEqual(
             pending_count, 1,
-            f"Expected 1 PENDING run from concurrent double-submit, got {pending_count}. Results: {results}",
+            f"Expected 1 PENDING run from concurrent double-submit, got {pending_count}",
         )
 
     def _make_request(self, user, confirmed=False):

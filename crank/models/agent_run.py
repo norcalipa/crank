@@ -3,10 +3,10 @@
 """Persisted summary of a single scheduled agent run.
 
 A run claims the scheduler slot for its ``run_type`` through the partial
-unique constraint below: at most one row may be in the ``running`` status per
-run type at a time. Overlapping invocations fail that insert and are recorded
-as ``skipped`` instead. This is the database-backed overlap guard that the
-Kubernetes scheduler's ``concurrencyPolicy: Forbid`` cannot fully replace
+unique constraint below: at most one row may be ``running`` **or** ``pending``
+per run type at a time. Overlapping invocations fail that insert and are
+recorded as ``skipped`` instead. This is the database-backed overlap guard that
+the Kubernetes scheduler's ``concurrencyPolicy: Forbid`` cannot fully replace
 (retries, manual triggers, or multiple replicas can still collide).
 """
 import uuid
@@ -107,16 +107,20 @@ class AgentRun(TimeStampedModel):
     class Meta:
         app_label = 'crank'
         constraints = [
-            # At most one running run per run type. This is the database-backed
-            # overlap lock: the first invocation to insert a RUNNING row wins;
-            # later ones hit the constraint and are recorded as SKIPPED.
+            # At most one active run per run type. This is the database-backed
+            # overlap lock covering both queued (PENDING) and in-flight
+            # (RUNNING) runs: the first invocation to insert an active row
+            # wins; later ones hit the constraint and are recorded as SKIPPED.
+            # This is a strict superset of the historical running-only
+            # constraint, so concurrent dispatchers that both see "no active
+            # run" cannot both insert a PENDING row.
             UniqueConstraint(
-                name="unique_agentrun_running_per_type",
+                name="unique_agentrun_active_per_type",
                 fields=["run_type", "status"],
-                condition=Q(status="running"),
+                condition=Q(status__in=["running", "pending"]),
                 violation_error_message=(
-                    "An agent run of this type is already running; this "
-                    "invocation should be recorded as skipped."
+                    "An agent run of this type is already active (running or "
+                    "pending); this invocation should be recorded as skipped."
                 ),
             )
         ]

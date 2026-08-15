@@ -116,7 +116,7 @@ def claim_run(run_type):
     invocation as skipped (see :func:`record_skipped`).
 
     The overlap guard is DB-portable. The partial unique constraint
-    (``unique_agentrun_running_per_type``) is the authoritative guard on
+    (``unique_agentrun_active_per_type``) is the authoritative guard on
     databases that support partial indexes (SQLite, Postgres). MySQL does not
     support partial indexes, so we ALSO serialize claims in the service layer:
     concurrent claims lock the most recent non-skipped row for the run type and
