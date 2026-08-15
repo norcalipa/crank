@@ -2,20 +2,70 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 """Persisted summary of a single scheduled agent run.
 
-A run claims the scheduler slot for its ``run_type`` through the partial
-unique constraint below: at most one row may be ``running`` **or** ``pending``
-per run type at a time. Overlapping invocations fail that insert and are
-recorded as ``skipped`` instead. This is the database-backed overlap guard that
-the Kubernetes scheduler's ``concurrencyPolicy: Forbid`` cannot fully replace
-(retries, manual triggers, or multiple replicas can still collide).
+A run claims the scheduler slot for its ``run_type`` through a combination
+of a partial unique constraint and a database-portable advisory lock:
+at most one row may be ``running`` **or** ``pending`` per run type at a time.
+
+On backends that support partial indexes (PostgreSQL, SQLite) the
+``UniqueConstraint`` below is the authoritative guard. MySQL does **not** emit
+partial unique constraints, so :func:`crank.services.agent_runs.claim_run`
+also acquires a named advisory lock (``GET_LOCK``) per run type before the
+insert, closing the TOCTOU window on MySQL.
+
+Overlapping invocations fail the insert (or lose the advisory lock) and are
+recorded as ``skipped`` instead. This is the database-backed overlap guard
+that the Kubernetes scheduler's ``concurrencyPolicy: Forbid`` cannot fully
+replace (retries, manual triggers, or multiple replicas can still collide).
 """
 import uuid
 
-from django.db import models
+from django.db import models, connection
 from django.db.models import Q, UniqueConstraint
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from django_extensions.db.models import TimeStampedModel
+
+
+def advisory_lock_key(run_type):
+    """Return a stable integer lock key for a run type (MySQL ``GET_LOCK``).
+
+    MySQL ``GET_LOCK`` accepts a string name, but returning a deterministic
+    hash-derived integer keeps the value compact and backend-agnostic.
+    """
+    return abs(hash(f"agent_run:{run_type}")) % (2**31)
+
+
+def acquire_advisory_lock(run_type, timeout_seconds=0):
+    """Acquire a MySQL advisory lock for the given run type.
+
+    Returns ``True`` if the lock was acquired (or the backend does not support
+    advisory locks, in which case the caller relies on the partial unique
+    constraint). Returns ``False`` if the lock could not be acquired within
+    the timeout.
+    """
+    vendor = connection.vendor
+    if vendor != "mysql":
+        # On SQLite/PostgreSQL the partial unique constraint is authoritative;
+        # PostgreSQL advisory locks exist but are session-scoped and unnecessary
+        # given the partial index.
+        return True
+    key = advisory_lock_key(run_type)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT GET_LOCK(%s, %s)", [str(key), timeout_seconds]
+        )
+        row = cursor.fetchone()
+    return bool(row and row[0] == 1)
+
+
+def release_advisory_lock(run_type):
+    """Release the MySQL advisory lock for the given run type, if held."""
+    vendor = connection.vendor
+    if vendor != "mysql":
+        return
+    key = advisory_lock_key(run_type)
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT RELEASE_LOCK(%s)", [str(key)])
 
 
 class AgentRun(TimeStampedModel):

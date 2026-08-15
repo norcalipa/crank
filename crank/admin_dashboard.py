@@ -372,6 +372,7 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
         skip_message = None
         run = None
         source_count = 0
+        skip_reason = None
         # Compute source count outside the transaction to minimize lock
         # duration.
         if count_sources:
@@ -393,16 +394,38 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
                         "Pipeline already active or queued "
                         f"(run {existing.correlation_id}). {action} skipped."
                     )
+                    skip_reason = "overlap_existing"
                 else:
                     try:
                         run = AgentRun.objects.create(
                             run_type=AgentRun.RunType.JOB_PIPELINE,
                             status=AgentRun.Status.PENDING,
                         )
-                    except IntegrityError:
+                    except IntegrityError as create_exc:
                         # A concurrent request won the slot between our
-                        # (empty) read and our insert; mirror the active-run
-                        # UX so the operator sees a skip rather than an error.
+                        # (empty) read and our insert. Inspect the error to
+                        # confirm it is the overlap constraint (NIT-1):
+                        # backends that expose the constraint name are checked
+                        # directly; on backends that don't (MySQL), re-read for
+                        # an active row after rollback and only treat as a skip
+                        # if a winner exists.
+                        msg = str(create_exc).lower()
+                        if "unique_agentrun_active_per_type" in msg:
+                            skip_reason = "overlap_constraint"
+                        else:
+                            # Re-read after rollback to confirm an active run
+                            # exists; if none, re-raise the unexpected error.
+                            active = AgentRun.objects.filter(
+                                run_type=AgentRun.RunType.JOB_PIPELINE,
+                                status__in=[
+                                    AgentRun.Status.RUNNING,
+                                    AgentRun.Status.PENDING,
+                                ],
+                            ).exists()
+                            if active:
+                                skip_reason = "overlap_constraint"
+                            else:
+                                raise
                         skip_message = (
                             f"Pipeline already active or queued. "
                             f"{action} skipped."
@@ -410,6 +433,16 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
         except IntegrityError:
             # Non-create IntegrityError — re-raise instead of masking.
             raise
+        if skip_reason:
+            monitoring.record_event(
+                "scheduled_run",
+                {
+                    "run_type": AgentRun.RunType.JOB_PIPELINE,
+                    "status": "skipped",
+                    "reason_code": skip_reason,
+                    "action": action.lower(),
+                },
+            )
         return skip_message, run, source_count
 
     def queue_retrieval_view(self, request):
@@ -504,6 +537,7 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 
         failed = None
         skip_message = None
+        skip_reason = None
         run = None
         try:
             with transaction.atomic():
@@ -519,6 +553,7 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
                         "Pipeline already active or queued "
                         f"(run {existing.correlation_id}). Retry skipped."
                     )
+                    skip_reason = "overlap_existing"
                 else:
                     failed = (
                         AgentRun.objects.select_for_update()
@@ -537,10 +572,25 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
                                 run_type=AgentRun.RunType.JOB_PIPELINE,
                                 status=AgentRun.Status.PENDING,
                             )
-                        except IntegrityError:
+                        except IntegrityError as create_exc:
                             # A concurrent request won the slot between our
-                            # (empty) read and our insert; mirror the active-run
-                            # UX so the operator sees a skip rather than an error.
+                            # (empty) read and our insert. Inspect the error
+                            # to confirm it is the overlap constraint (NIT-1):
+                            msg = str(create_exc).lower()
+                            if "unique_agentrun_active_per_type" in msg:
+                                skip_reason = "overlap_constraint"
+                            else:
+                                active = AgentRun.objects.filter(
+                                    run_type=AgentRun.RunType.JOB_PIPELINE,
+                                    status__in=[
+                                        AgentRun.Status.RUNNING,
+                                        AgentRun.Status.PENDING,
+                                    ],
+                                ).exists()
+                                if active:
+                                    skip_reason = "overlap_constraint"
+                                else:
+                                    raise
                             skip_message = (
                                 "Pipeline already active or queued. "
                                 "Retry skipped."
@@ -550,6 +600,16 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
             # Re-raise: these should not be silently swallowed.
             raise
 
+        if skip_reason:
+            monitoring.record_event(
+                "scheduled_run",
+                {
+                    "run_type": AgentRun.RunType.JOB_PIPELINE,
+                    "status": "skipped",
+                    "reason_code": skip_reason,
+                    "action": "retry_failed",
+                },
+            )
         if skip_message:
             self.message_user(request, skip_message, level=messages.WARNING)
             return redirect(self._dashboard_url())
