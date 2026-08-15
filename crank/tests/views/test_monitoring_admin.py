@@ -699,6 +699,33 @@ class JobSourceCatalogClientAdminTest(TestCase):
         self.assertFalse(s1.enabled)
         self.assertFalse(s2.enabled)
 
+    def test_select_across_malformed_confirmed_total_reconfirms(self):
+        # MINOR: a tampered/non-integer confirmed_total snapshot must not
+        # silently bypass the drift gate - treat it as a need to re-confirm.
+        s1 = self._unique_source("alpha", enabled=True)
+        s2 = self._unique_source("beta", enabled=True)
+        base = reverse("admin:crank_jobsourcecatalog_changelist")
+        url = base + "?enabled=1"
+        data = {
+            "action": "disable_sources",
+            "_selected_action": [str(s1.pk)],
+            "index": "0",
+            "select_across": "1",
+        }
+        # A malformed integer snapshot (tampered form) re-renders the
+        # confirmation page instead of executing the action.
+        with patch("crank.admin.monitoring.record_event"):
+            resp = self.client.post(
+                url, {**data, "confirm": "yes", "confirmed_total": "not-a-number"}
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Confirm admin action", resp.content.decode())
+        s1.refresh_from_db()
+        s2.refresh_from_db()
+        self.assertTrue(s1.enabled)
+        self.assertTrue(s2.enabled)
+        self.assertFalse(OperationalChangeAudit.objects.exists())
+
     def test_confirmation_preserves_encoded_query_string(self):
         # NIT: the confirmation re-POST must preserve an encoded changelist query
         # string (&, quotes, <>, spaces) via get_full_path, with the values
