@@ -7,6 +7,8 @@ from pathlib import Path
 
 pymysql.install_as_MySQLdb()
 
+JOB_SEARCH_PROVIDER = "orchestrator"
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEBUG = False
 ENV = "staging"

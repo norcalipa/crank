@@ -9,6 +9,8 @@ from pathlib import Path
 
 from crank.settings import REDIS_MASTER_URL
 
+JOB_SEARCH_PROVIDER = "orchestrator"
+
 pymysql.install_as_MySQLdb()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
