@@ -427,16 +427,31 @@ class JobRetrievalOpsAdminTests(TestCase):
         )
 
     def test_queue_retrieval_integrity_error_treated_as_skip(self):
-        """A concurrent slot-stealing IntegrityError is treated as a skip."""
+        """A concurrent slot-stealing IntegrityError is treated as a skip.
+
+        NIT-1: the IntegrityError must be cause-specific (the overlap
+        constraint).
+        """
         request = self._request(self.staff, confirmed=True)
+        constraint_error = IntegrityError(
+            "UNIQUE constraint failed: unique_agentrun_active_per_type"
+        )
         with patch.object(self.admin, "message_user") as msg, patch(
             "crank.admin_dashboard.AgentRun.objects.create",
-            side_effect=IntegrityError,
-        ):
+            side_effect=constraint_error,
+        ), patch(
+            "crank.admin_dashboard.monitoring.record_event"
+        ) as mock_event:
             self.admin.queue_retrieval_view(request)
         msg.assert_called_once()
         self.assertIn("already active or queued", msg.call_args[0][1].lower())
         self.assertIn("skip", msg.call_args[0][1].lower())
+        # NIT-3: overlap-skipped event should be emitted
+        mock_event.assert_any_call(
+            "scheduled_run",
+            {"run_type": AgentRun.RunType.JOB_PIPELINE, "status": "skipped",
+             "reason_code": "overlap_constraint", "action": "queue"},
+        )
         # Skipped: no run, no audit entry
         self.assertEqual(
             AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 0
@@ -526,17 +541,87 @@ class JobRetrievalOpsAdminTests(TestCase):
         # The error must propagate, never be converted into a user-facing skip.
         msg.assert_not_called()
 
-    def test_queue_pipeline_integrity_error_treated_as_skip(self):
-        """A concurrent slot-stealing IntegrityError is treated as a skip."""
+    def test_queue_pipeline_unrecognized_integrity_error_reraises(self):
+        """NIT-1: An IntegrityError not from the overlap constraint must propagate.
+
+        When the error message does not contain the constraint name AND no
+        active run exists, the error is unexpected and must be re-raised.
+        """
         request = self._request(self.staff, confirmed=True)
+        unrecognized_error = IntegrityError("some other constraint violation")
         with patch.object(self.admin, "message_user") as msg, patch(
             "crank.admin_dashboard.AgentRun.objects.create",
-            side_effect=IntegrityError,
+            side_effect=unrecognized_error,
         ):
+            with self.assertRaises(IntegrityError):
+                self.admin.queue_pipeline_view(request)
+        msg.assert_not_called()
+
+    def test_queue_pipeline_mysql_constraint_hit_treated_as_skip(self):
+        """NIT-1: On MySQL (no constraint name in error), re-read active row.
+
+        When the IntegrityError message does not contain the constraint name
+        but an active run exists, treat it as the overlap constraint hit.
+        Simulates a concurrent insert where the initial select_for_update
+        found nothing (race window) and the create hits the constraint.
+        """
+        # Create an active run AFTER the select_for_update check would run.
+        # We mock select_for_update to return an empty queryset so the
+        # code proceeds to create, which then fails with a MySQL-style error.
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.RUNNING,
+        )
+        request = self._request(self.staff, confirmed=True)
+        mysql_error = IntegrityError("Duplicate entry")
+        empty_qs = AgentRun.objects.none()
+        with patch.object(self.admin, "message_user") as msg, patch(
+            "crank.admin_dashboard.AgentRun.objects.create",
+            side_effect=mysql_error,
+        ), patch(
+            "crank.admin_dashboard.AgentRun.objects.select_for_update",
+            return_value=empty_qs,
+        ), patch(
+            "crank.admin_dashboard.monitoring.record_event"
+        ) as mock_event:
             self.admin.queue_pipeline_view(request)
         msg.assert_called_once()
         self.assertIn("already active or queued", msg.call_args[0][1].lower())
         self.assertIn("skip", msg.call_args[0][1].lower())
+        mock_event.assert_any_call(
+            "scheduled_run",
+            {"run_type": AgentRun.RunType.JOB_PIPELINE, "status": "skipped",
+             "reason_code": "overlap_constraint", "action": "queue"},
+        )
+
+    def test_queue_pipeline_integrity_error_treated_as_skip(self):
+        """A concurrent slot-stealing IntegrityError is treated as a skip.
+
+        NIT-1: the IntegrityError must be cause-specific (the overlap
+        constraint). We simulate a constraint hit by including the constraint
+        name in the error message, which backends like PostgreSQL/SQLite
+        expose.
+        """
+        request = self._request(self.staff, confirmed=True)
+        constraint_error = IntegrityError(
+            "UNIQUE constraint failed: unique_agentrun_active_per_type"
+        )
+        with patch.object(self.admin, "message_user") as msg, patch(
+            "crank.admin_dashboard.AgentRun.objects.create",
+            side_effect=constraint_error,
+        ), patch(
+            "crank.admin_dashboard.monitoring.record_event"
+        ) as mock_event:
+            self.admin.queue_pipeline_view(request)
+        msg.assert_called_once()
+        self.assertIn("already active or queued", msg.call_args[0][1].lower())
+        self.assertIn("skip", msg.call_args[0][1].lower())
+        # NIT-3: overlap-skipped event should be emitted
+        mock_event.assert_any_call(
+            "scheduled_run",
+            {"run_type": AgentRun.RunType.JOB_PIPELINE, "status": "skipped",
+             "reason_code": "overlap_constraint", "action": "queue"},
+        )
         # Skipped: no run, no audit entry
         self.assertEqual(
             AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 0
@@ -644,21 +729,97 @@ class JobRetrievalOpsAdminTests(TestCase):
                 )
         msg.assert_not_called()
 
-    def test_retry_failed_integrity_error_treated_as_skip(self):
-        """A concurrent slot-stealing IntegrityError is treated as a skip."""
+    def test_retry_failed_unrecognized_integrity_error_reraises(self):
+        """NIT-1: An IntegrityError not from the overlap constraint must propagate."""
         AgentRun.objects.create(
             run_type=AgentRun.RunType.JOB_PIPELINE,
             status=AgentRun.Status.FAILED,
         )
         request = self._request(self.staff, confirmed=True)
+        unrecognized_error = IntegrityError("some other constraint violation")
         with patch.object(self.admin, "message_user") as msg, patch(
             "crank.admin_dashboard.AgentRun.objects.create",
-            side_effect=IntegrityError,
+            side_effect=unrecognized_error,
         ):
+            with self.assertRaises(IntegrityError):
+                self.admin.retry_failed_view(request)
+        msg.assert_not_called()
+
+    def test_retry_failed_mysql_constraint_hit_treated_as_skip(self):
+        """NIT-1: On MySQL (no constraint name), re-read active row.
+
+        Simulates a concurrent insert where the initial select_for_update
+        found nothing (race window) and the create hits the constraint.
+        """
+        failed_run = AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.FAILED,
+        )
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.RUNNING,
+        )
+        request = self._request(self.staff, confirmed=True)
+        mysql_error = IntegrityError("Duplicate entry")
+
+        # select_for_update is called twice: first for the active check
+        # (return empty to simulate the race), then for the failed run
+        # lookup (return the real failed queryset).
+        call_count = [0]
+        original_select = AgentRun.objects.select_for_update
+        def mock_select(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return AgentRun.objects.none()
+            return original_select()
+
+        with patch.object(self.admin, "message_user") as msg, patch(
+            "crank.admin_dashboard.AgentRun.objects.create",
+            side_effect=mysql_error,
+        ), patch(
+            "crank.admin_dashboard.AgentRun.objects.select_for_update",
+            side_effect=mock_select,
+        ), patch("crank.admin_dashboard.monitoring.record_event") as mock_event:
             self.admin.retry_failed_view(request)
         msg.assert_called_once()
         self.assertIn("already active or queued", msg.call_args[0][1].lower())
         self.assertIn("skip", msg.call_args[0][1].lower())
+        mock_event.assert_any_call(
+            "scheduled_run",
+            {"run_type": AgentRun.RunType.JOB_PIPELINE, "status": "skipped",
+             "reason_code": "overlap_constraint", "action": "retry_failed"},
+        )
+
+    def test_retry_failed_integrity_error_treated_as_skip(self):
+        """A concurrent slot-stealing IntegrityError is treated as a skip.
+
+        NIT-1: the IntegrityError must be cause-specific (the overlap
+        constraint).
+        """
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.FAILED,
+        )
+        request = self._request(self.staff, confirmed=True)
+        constraint_error = IntegrityError(
+            "UNIQUE constraint failed: unique_agentrun_active_per_type"
+        )
+        with patch.object(self.admin, "message_user") as msg, patch(
+            "crank.admin_dashboard.AgentRun.objects.create",
+            side_effect=constraint_error,
+        ), patch(
+            "crank.admin_dashboard.monitoring.record_event"
+        ) as mock_event:
+            self.admin.retry_failed_view(request)
+        msg.assert_called_once()
+        self.assertIn("already active or queued", msg.call_args[0][1].lower())
+        self.assertIn("skip", msg.call_args[0][1].lower())
+        # NIT-3: overlap-skipped event should be emitted
+        mock_event.assert_any_call(
+            "scheduled_run",
+            {"run_type": AgentRun.RunType.JOB_PIPELINE, "status": "skipped",
+             "reason_code": "overlap_constraint", "action": "retry_failed"},
+        )
         # Skipped: no new run, no audit entry
         self.assertEqual(
             AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 0

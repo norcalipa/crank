@@ -16,7 +16,7 @@ from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from crank.models.agent_run import AgentRun
+from crank.models.agent_run import AgentRun, acquire_advisory_lock, release_advisory_lock
 from crank.services import monitoring
 
 logger = logging.getLogger("agent_runs")
@@ -118,59 +118,73 @@ def claim_run(run_type):
     The overlap guard is DB-portable. The partial unique constraint
     (``unique_agentrun_active_per_type``) is the authoritative guard on
     databases that support partial indexes (SQLite, Postgres). MySQL does not
-    support partial indexes, so we ALSO serialize claims in the service layer:
-    concurrent claims lock the most recent non-skipped row for the run type and
-    re-check for an existing RUNNING row before inserting. A RUNNING claim
-    older than ``AGENT_RUN_STALE_AFTER_SECONDS`` is treated as a crashed/stale
-    lock and reclaimed (finalized as failed) before a new claim is allowed.
+    support partial indexes, so we ALSO acquire a named advisory lock
+    (``GET_LOCK``) per run type before the insert, closing the TOCTOU window
+    on MySQL. A RUNNING claim older than ``AGENT_RUN_STALE_AFTER_SECONDS`` is
+    treated as a crashed/stale lock and reclaimed (finalized as failed) before
+    a new claim is allowed.
     """
     stale_after = timedelta(seconds=int(
         getattr(settings, "AGENT_RUN_STALE_AFTER_SECONDS", 3600)
     ))
-    with transaction.atomic():
-        # Serialize concurrent claims for the same run type. Locking the most
-        # recent non-skipped row (when one exists) makes contenders block on a
-        # single row, so the re-check below is race-free on DBs without partial
-        # indexes. (The residual first-ever-insert window for a brand-new run
-        # type is covered by the partial unique constraint where supported.)
-        AgentRun.objects.filter(
-            run_type=run_type
-        ).exclude(
-            status=AgentRun.Status.SKIPPED
-        ).order_by("-id").select_for_update().first()
-
-        now = timezone.now()
-        active = AgentRun.objects.filter(
-            run_type=run_type,
-            status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING],
-        ).first()
-        if active is not None:
-            if (
-                active.status == AgentRun.Status.RUNNING
-                and active.started_at
-                and (now - active.started_at) >= stale_after
-            ):
-                # Crashed/stale lock: claimed but never finalized (e.g. a pod
-                # died between claim and finalize). Reclaim so the run type is
-                # not blocked forever.
-                active.finalize(
-                    AgentRun.Status.FAILED,
-                    error_summary=(
-                        "Stale run reclaimed: started but never finalized before "
-                        "the staleness TTL (possible crash)."
-                    ),
-                )
-            else:
-                raise IntegrityError(
-                    f"Agent run {run_type} is already active "
-                    f"(status={active.status})"
-                )
-
-        run = AgentRun.objects.create(
-            run_type=run_type,
-            status=AgentRun.Status.RUNNING,
-            started_at=now,
+    # Acquire MySQL advisory lock (no-op on SQLite/PostgreSQL where the
+    # partial unique constraint is authoritative).
+    lock_acquired = acquire_advisory_lock(run_type, timeout_seconds=0)
+    if not lock_acquired:
+        monitoring.record_event(
+            "scheduled_run",
+            {"run_type": run_type, "status": "skipped", "reason_code": "overlap_advisory_lock"},
         )
+        raise IntegrityError(
+            f"Agent run {run_type}: advisory lock not acquired (another run is active)"
+        )
+    try:
+        with transaction.atomic():
+            # Serialize concurrent claims for the same run type. Locking the most
+            # recent non-skipped row (when one exists) makes contenders block on a
+            # single row, so the re-check below is race-free on DBs without partial
+            # indexes. (The residual first-ever-insert window for a brand-new run
+            # type is covered by the partial unique constraint where supported.)
+            AgentRun.objects.filter(
+                run_type=run_type
+            ).exclude(
+                status=AgentRun.Status.SKIPPED
+            ).order_by("-id").select_for_update().first()
+
+            now = timezone.now()
+            active = AgentRun.objects.filter(
+                run_type=run_type,
+                status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING],
+            ).first()
+            if active is not None:
+                if (
+                    active.status == AgentRun.Status.RUNNING
+                    and active.started_at
+                    and (now - active.started_at) >= stale_after
+                ):
+                    # Crashed/stale lock: claimed but never finalized (e.g. a pod
+                    # died between claim and finalize). Reclaim so the run type is
+                    # not blocked forever.
+                    active.finalize(
+                        AgentRun.Status.FAILED,
+                        error_summary=(
+                            "Stale run reclaimed: started but never finalized before "
+                            "the staleness TTL (possible crash)."
+                        ),
+                    )
+                else:
+                    raise IntegrityError(
+                        f"Agent run {run_type} is already active "
+                        f"(status={active.status})"
+                    )
+
+            run = AgentRun.objects.create(
+                run_type=run_type,
+                status=AgentRun.Status.RUNNING,
+                started_at=now,
+            )
+    finally:
+        release_advisory_lock(run_type)
     logger.info(
         "agent run claimed: run_type=%s status=%s correlation_id=%s",
         run.run_type,
@@ -185,8 +199,14 @@ def claim_run(run_type):
     return run
 
 
-def record_skipped(run_type):
-    """Record a skipped invocation for a run type that is already active."""
+def record_skipped(run_type, *, reason="overlap"):
+    """Record a skipped invocation for a run type that is already active.
+
+    ``reason`` is a low-cardinality string (``"overlap"`` for an existing
+    active run detected by the service lock, ``"constraint"`` for a DB
+    unique-constraint hit) emitted as a monitoring event dimension so
+    operators can observe contended skips outside the request message.
+    """
     run = AgentRun.objects.create(
         run_type=run_type,
         status=AgentRun.Status.SKIPPED,
@@ -194,9 +214,14 @@ def record_skipped(run_type):
         finished_at=timezone.now(),
     )
     logger.info(
-        "agent run skipped (overlap): run_type=%s correlation_id=%s",
+        "agent run skipped (overlap): run_type=%s correlation_id=%s reason=%s",
         run.run_type,
         run.correlation_id,
+        reason,
+    )
+    monitoring.record_event(
+        "scheduled_run",
+        {"run_type": run_type, "status": "skipped", "reason_code": reason},
     )
     record_agent_event(run, "run_skipped")
     return run

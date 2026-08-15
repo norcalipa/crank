@@ -77,7 +77,7 @@ class AgentRunCommand(BaseCommand):
         except IntegrityError:
             # Another invocation won the slot first; record and exit cleanly.
             with transaction.atomic():
-                agent_runs.record_skipped(self.run_type)
+                agent_runs.record_skipped(self.run_type, reason="overlap")
             self.stdout.write(
                 self.style.WARNING(
                     f"{self.run_type}: another run is active; recorded as skipped"

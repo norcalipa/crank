@@ -11,6 +11,44 @@ from crank.models.agent_run import AgentRun
 from crank.services import agent_runs
 
 
+class ClaimRunMySQLAdvisoryLockTests(TestCase):
+    """Tests for the MySQL advisory lock path in claim_run (MINOR-1)."""
+
+    @patch("crank.services.agent_runs.acquire_advisory_lock", return_value=False)
+    @patch("crank.services.agent_runs.monitoring.record_event")
+    def test_claim_run_advisory_lock_failure_raises_integrity_error(self, mock_event, _lock):
+        """When the MySQL advisory lock cannot be acquired, claim_run raises
+        IntegrityError and emits a monitoring event."""
+        with self.assertRaises(IntegrityError):
+            agent_runs.claim_run(AgentRun.RunType.NOOP)
+        mock_event.assert_called_once_with(
+            "scheduled_run",
+            {"run_type": AgentRun.RunType.NOOP, "status": "skipped",
+             "reason_code": "overlap_advisory_lock"},
+        )
+
+    @patch("crank.services.agent_runs.acquire_advisory_lock", return_value=True)
+    @patch("crank.services.agent_runs.release_advisory_lock")
+    def test_claim_run_releases_advisory_lock_on_success(self, mock_release, _lock):
+        """Advisory lock is released after a successful claim."""
+        run = agent_runs.claim_run(AgentRun.RunType.NOOP)
+        self.assertEqual(run.status, AgentRun.Status.RUNNING)
+        mock_release.assert_called_once_with(AgentRun.RunType.NOOP)
+
+    @patch("crank.services.agent_runs.acquire_advisory_lock", return_value=True)
+    @patch("crank.services.agent_runs.release_advisory_lock")
+    def test_claim_run_releases_advisory_lock_on_integrity_error(self, mock_release, _lock):
+        """Advisory lock is released even when claim raises IntegrityError."""
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.NOOP,
+            status=AgentRun.Status.RUNNING,
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                agent_runs.claim_run(AgentRun.RunType.NOOP)
+        mock_release.assert_called_once_with(AgentRun.RunType.NOOP)
+
+
 class AgentRunService(TestCase):
     def test_claim_run_creates_running_run(self):
         run = agent_runs.claim_run(AgentRun.RunType.NOOP)
@@ -61,6 +99,17 @@ class AgentRunService(TestCase):
         run.refresh_from_db()
         self.assertEqual(run.status, AgentRun.Status.SKIPPED)
         self.assertIsNotNone(run.finished_at)
+
+    @patch("crank.services.agent_runs.monitoring.record_event")
+    @patch("crank.services.agent_runs.newrelic.agent.record_custom_event")
+    def test_record_skipped_emits_monitoring_event(self, _nr, mock_event):
+        """NIT-3: record_skipped emits a low-cardinality overlap-skipped event."""
+        agent_runs.record_skipped(AgentRun.RunType.NOOP, reason="overlap")
+        # The overlap-skipped event is emitted with reason_code dimension
+        mock_event.assert_any_call(
+            "scheduled_run",
+            {"run_type": AgentRun.RunType.NOOP, "status": "skipped", "reason_code": "overlap"},
+        )
 
     def test_finalize_success_logs_counters(self):
         run = agent_runs.claim_run(AgentRun.RunType.NOOP)
