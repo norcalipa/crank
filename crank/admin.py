@@ -1,7 +1,9 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 from django.contrib import admin
+from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.db import models
+from django.shortcuts import render
 from crank.models.agent_run import AgentRun
 from crank.models.crawl_run import CrawlRun
 from crank.models.conversation import Conversation, Message
@@ -60,6 +62,102 @@ def disable_inline_icons(formset, fieldname):
     formset.form.base_fields[fieldname].widget.can_add_related = False
     formset.form.base_fields[fieldname].widget.can_change_related = False
     formset.form.base_fields[fieldname].widget.can_delete_related = False
+
+
+class ConfirmableAdminActionMixin:
+    """Shared intermediate-confirmation path for gated changelist actions.
+
+    Stock Django admin changelist action POSTs never send the ``confirm``
+    field, so any action that strides its own mutating body behind that gate
+    becomes a silent no-op for real staff. This mixin closes the loop by
+    intercepting unconfirmed action POSTs in :meth:`response_action` and
+    re-rendering them as a confirmation page (listing the selected objects and
+    the action) instead of mutating state. The confirmation form re-POSTs the
+    same action with a hidden ``confirm=yes`` input (plus csrf/
+    ``_selected_action``/``action``/``index``), so the gate and the UI can
+    never drift. Unconfirmed POSTs stay no-ops; only the confirmed path runs
+    the action body that records ``OperationalChangeAudit(confirmed=True)``.
+
+    Action bodies must still guard themselves with
+    :meth:`_require_confirmation` so a direct/in-band call without
+    ``confirm=yes`` cannot mutate state either.
+    """
+
+    _confirm_warning = (
+        "No changes made. This action requires an explicit confirmation step; "
+        "please review the selected objects and confirm below."
+    )
+
+    def _confirmed(self, request):
+        """True only when the POST supplies ``confirm=yes`` (or has no POST).
+
+        Requests without any POST body (e.g. synthetic/direct calls from tests
+        or code) proceed so programmatic callers keep working. Real browser
+        admin action POSTs always carry POST, so they must include
+        ``confirm=yes`` to be considered confirmed.
+        """
+        post = getattr(request, "POST", None)
+        if post is None:
+            return True
+        return post.get("confirm") == "yes"
+
+    def _require_confirmation(self, request):
+        """Warn and return False unless the POST is explicitly confirmed."""
+        if self._confirmed(request):
+            return True
+        self.message_user(request, self._confirm_warning, level="warning")
+        return False
+
+    def response_action(self, request, queryset, **kwargs):
+        """Intercept unconfirmed gated action POSTs with a confirmation page."""
+        if not self._require_confirmation(request):
+            return self.render_action_confirmation(request, queryset)
+        return super().response_action(request, queryset, **kwargs)
+
+    def _requested_action(self, request):
+        """Return the action name the changelist form requested."""
+        try:
+            index = int(request.POST.get("index", 0))
+        except (TypeError, ValueError):
+            index = 0
+        try:
+            return request.POST.getlist("action")[index]
+        except IndexError:
+            # Malformed/missing action list: fall back to the single field.
+            return request.POST.get("action", "")
+
+    def _action_description(self, request, action_name):
+        """Resolve the changelist dropdown label for ``action_name``."""
+        for name, description in self.get_action_choices(request):
+            if name == action_name:
+                return description
+        return action_name
+
+    def render_action_confirmation(self, request, queryset):
+        """Render a confirmation page that re-POSTs the same gated action."""
+        action_name = self._requested_action(request)
+        selected_pks = request.POST.getlist(ACTION_CHECKBOX_NAME)
+        select_across = request.POST.get("select_across", "0") == "1"
+        objects = list(queryset)
+        if not select_across:
+            objects = list(queryset.filter(pk__in=selected_pks))
+        return render(
+            request,
+            "admin/confirm_action.html",
+            {
+                **self.admin_site.each_context(request),
+                "title": "Confirm admin action",
+                "action_name": action_name,
+                "action_description": self._action_description(
+                    request, action_name
+                ),
+                "objects": objects,
+                "selected_pks": selected_pks,
+                "select_across": "1" if select_across else "0",
+                "action_checkbox_name": ACTION_CHECKBOX_NAME,
+                "object_label": self.opts.verbose_name,
+            },
+        )
 
 
 class ScoreInline(admin.TabularInline):
@@ -222,25 +320,21 @@ class CompanyProfileObservationAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 
 admin.site.register(Organization, OrganizationAdmin)
 admin.site.register(CompanyProfileObservation, CompanyProfileObservationAdmin)
-class CompanyRequestAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin.ModelAdmin):
     model = CompanyRequest
     list_display = ["company_name", "website_url", "requester", "status", "created", "crawl_source_approved", "refresh_queued"]
     list_filter = ["status", "crawl_source_approved", "refresh_queued"]
     search_fields = ["company_name", "normalized_domain", "requester__username", "requester__email"]
     list_select_related = ["requester", "duplicate_of", "approved_organization"]
     readonly_fields = ["requester", "company_name", "normalized_name", "website_url", "normalized_domain", "careers_url", "reason", "status", "duplicate_of", "approved_organization", "created", "modified", "crawl_source_approved", "refresh_queued"]
+    # Every action on this admin mutates state only after a shared
+    # intermediate confirmation step (see ConfirmableAdminActionMixin).
     actions = ["approve_requests", "reject_requests", "mark_duplicate", "approve_crawl_sources", "queue_refresh"]
-
-    def _confirmed(self, request):
-        if request.POST.get("confirm") != "yes":
-            self.message_user(request, "No changes made. Repeat the action with confirm=yes.", level="warning")
-            return False
-        return True
 
     def _audit(self, request, item, action, old, new):
         OperationalChangeAudit.record(actor=request.user, target_type="company_request", target_id=item.pk, action=action, old_value=old, new_value=new, confirmed=True)
 
-    @admin.action(description="Approve and create pending organizations (confirm=yes)")
+    @admin.action(description="Approve and create pending organizations")
     def approve_requests(self, request, queryset):
         if not self._confirmed(request):
             return
@@ -255,7 +349,7 @@ class CompanyRequestAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
             updated += 1
         self.message_user(request, f"{updated} suggestion(s) approved as pending organizations.")
 
-    @admin.action(description="Reject selected suggestions (confirm=yes)")
+    @admin.action(description="Reject selected suggestions")
     def reject_requests(self, request, queryset):
         if not self._confirmed(request):
             return
@@ -268,7 +362,7 @@ class CompanyRequestAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
             updated += 1
         self.message_user(request, f"{updated} suggestion(s) rejected and audited.")
 
-    @admin.action(description="Mark selected suggestions as duplicates (confirm=yes)")
+    @admin.action(description="Mark selected suggestions as duplicates")
     def mark_duplicate(self, request, queryset):
         if not self._confirmed(request):
             return
@@ -281,7 +375,7 @@ class CompanyRequestAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
             updated += 1
         self.message_user(request, f"{updated} suggestion(s) marked as duplicates and audited.")
 
-    @admin.action(description="Approve crawl source workflow (confirm=yes)")
+    @admin.action(description="Approve crawl source workflow")
     def approve_crawl_sources(self, request, queryset):
         if not self._confirmed(request):
             return
@@ -293,7 +387,7 @@ class CompanyRequestAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
             updated += 1
         self.message_user(request, f"{updated} crawl source workflow(s) approved; no external calls were made.")
 
-    @admin.action(description="Queue refresh after source approval (confirm=yes)")
+    @admin.action(description="Queue refresh after source approval")
     def queue_refresh(self, request, queryset):
         if not self._confirmed(request):
             return
@@ -339,7 +433,7 @@ class CrawlRunJobSourceInline(admin.TabularInline):
     ordering = ["-started_at", "-id"]
 
 
-class SourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+class SourceCatalogAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin.ModelAdmin):
     """Source-catalog admin that records auditable, credentials-safe changes."""
 
     model = SourceCatalog
@@ -403,13 +497,7 @@ class SourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 
     def _record_state_action(self, request, queryset, action):
         from django.utils import timezone as dj_tz
-        post = getattr(request, "POST", None)
-        if post is not None and post.get("confirm") != "yes":
-            self.message_user(
-                request,
-                "No changes made. Repeat the action with confirm=yes.",
-                level="warning",
-            )
+        if not self._require_confirmation(request):
             return
         updated = 0
         for src in queryset:
@@ -466,10 +554,9 @@ class SourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     def disable_sources(self, request, queryset):
         self._record_state_action(request, queryset, "disable")
 
-    @admin.action(description="Trigger crawl for selected sources (confirm=yes)")
+    @admin.action(description="Trigger crawl for selected sources")
     def trigger_crawls(self, request, queryset):
-        if getattr(request, "POST", {}).get("confirm") != "yes":
-            self.message_user(request, "No crawls started. Repeat the action with confirm=yes.", level="warning")
+        if not self._require_confirmation(request):
             return
         started = 0
         for source in queryset:
@@ -507,7 +594,7 @@ admin.site.register(SourceRun, SourceRunAdmin)
 admin.site.register(SourceCatalogAudit, SourceCatalogAuditAdmin)
 
 
-class JobSourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+class JobSourceCatalogAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin.ModelAdmin):
     """Staff-only policy diagnosis without credentials or raw responses."""
 
     model = JobSourceCatalog
@@ -520,13 +607,7 @@ class JobSourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 
     def _state_action(self, request, queryset, action):
         """Apply an operational state change only after explicit confirmation."""
-        post = getattr(request, "POST", None)
-        if post is not None and post.get("confirm") != "yes":
-            self.message_user(
-                request,
-                "No changes made. Repeat the action with confirm=yes.",
-                level="warning",
-            )
+        if not self._require_confirmation(request):
             return
         for source in queryset:
             old = {
@@ -562,26 +643,25 @@ class JobSourceCatalogAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
             )
         self.message_user(request, f"{queryset.count()} job source(s) updated and audited.")
 
-    @admin.action(description="Enable selected job sources (confirm=yes)")
+    @admin.action(description="Enable selected job sources")
     def enable_sources(self, request, queryset):
         self._state_action(request, queryset, "enable")
 
-    @admin.action(description="Disable selected job sources (confirm=yes)")
+    @admin.action(description="Disable selected job sources")
     def disable_sources(self, request, queryset):
         self._state_action(request, queryset, "disable")
 
-    @admin.action(description="Approve selected job sources (confirm=yes)")
+    @admin.action(description="Approve selected job sources")
     def approve_sources(self, request, queryset):
         self._state_action(request, queryset, "approve")
 
-    @admin.action(description="Block selected job sources (confirm=yes)")
+    @admin.action(description="Block selected job sources")
     def block_sources(self, request, queryset):
         self._state_action(request, queryset, "block")
 
-    @admin.action(description="Trigger crawl for selected job sources (confirm=yes)")
+    @admin.action(description="Trigger crawl for selected job sources")
     def trigger_crawls(self, request, queryset):
-        if getattr(request, "POST", {}).get("confirm") != "yes":
-            self.message_user(request, "No crawls started. Repeat the action with confirm=yes.", level="warning")
+        if not self._require_confirmation(request):
             return
         started = 0
         for source in queryset:
@@ -624,7 +704,7 @@ class CrawlRunAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 admin.site.register(CrawlRun, CrawlRunAdmin)
 
 
-class CapabilitySwitchAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+class CapabilitySwitchAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin.ModelAdmin):
     """Staff-only kill switches; every toggle requires explicit confirmation."""
 
     model = CapabilitySwitch
@@ -635,13 +715,7 @@ class CapabilitySwitchAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     actions = ["enable_capabilities", "disable_capabilities"]
 
     def _toggle(self, request, queryset, enabled):
-        post = getattr(request, "POST", None)
-        if post is not None and post.get("confirm") != "yes":
-            self.message_user(
-                request,
-                "No changes made. Repeat the action with confirm=yes.",
-                level="warning",
-            )
+        if not self._require_confirmation(request):
             return
         action = "enable" if enabled else "disable"
         for switch in queryset:
@@ -667,11 +741,11 @@ class CapabilitySwitchAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
             )
         self.message_user(request, f"{queryset.count()} capability switch(es) updated and audited.")
 
-    @admin.action(description="Enable selected capabilities (confirm=yes)")
+    @admin.action(description="Enable selected capabilities")
     def enable_capabilities(self, request, queryset):
         self._toggle(request, queryset, True)
 
-    @admin.action(description="Disable selected capabilities (confirm=yes)")
+    @admin.action(description="Disable selected capabilities")
     def disable_capabilities(self, request, queryset):
         self._toggle(request, queryset, False)
 

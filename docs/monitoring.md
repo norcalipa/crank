@@ -116,9 +116,19 @@ Staff-only Django admin views expose sanitized `AgentRun`/`SourceRun` history,
 source approval/enabled state, last success/failure and bounded counters. The
 `CapabilitySwitch` model provides kill switches for existing capabilities (for
 example `interactive_agent` and `job_pipeline`); it does not create arbitrary
-execution controls. Job-source and capability bulk actions require the explicit
-`confirm=yes` confirmation marker. Every confirmed change records actor,
-timestamp (`created`), target, action, old value, new value, and confirmation in
+execution controls.
+
+**How confirmation works.** Every gated action on the company-request, rating
+source, job-source, and capability-switch admins shares a single intermediate
+confirmation step (`ConfirmableAdminActionMixin`). Selecting items and clicking
+the action in the changelist re-renders a **confirmation page** that lists the
+selected objects and the action. The operator reviews it and clicks
+**Confirm and apply**; the form then re-POSTs the same action with a hidden
+`confirm=yes` (plus csrf / `_selected_action` / `action` / `index`). Nothing is
+mutated on the first click — the action body no-ops until the operator
+confirms explicitly. Operators never need to hand-add `confirm=yes`; the UI
+supplies it. Every confirmed change records actor, timestamp (`created`),
+target, action, old value, new value, and `confirmed=True` in
 `OperationalChangeAudit`. Non-staff users cannot view or mutate these models.
 
 No admin action executes a run. A scheduled command remains the only execution

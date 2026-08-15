@@ -4,7 +4,8 @@ from unittest.mock import patch
 
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth.models import User
-from django.test import TestCase
+from django.test import Client, TestCase
+from django.urls import reverse
 
 from crank.admin import (
     AgentRunAdmin,
@@ -350,3 +351,44 @@ class MonitoringAdminTests(TestCase):
         self.assertEqual(audit.new_value, {"enabled": True})
         self.assertTrue(audit.confirmed)
         event.assert_called_once()
+
+
+class CapabilitySwitchClientAdminTest(TestCase):
+    """E2E admin-client path locking the shared confirm mixin (issue #422)."""
+
+    def setUp(self):
+        self.client = Client()
+        self.staff = User.objects.create_superuser(
+            username="opswho", password="pw", is_staff=True
+        )
+        self.client.force_login(self.staff)
+
+    def test_capability_switch_e2e_requires_confirmation_then_applies(self):
+        switch = CapabilitySwitch.objects.create(key="interactive_agent", enabled=True)
+        changelist = reverse("admin:crank_capabilityswitch_changelist")
+        data = {
+            "action": "disable_capabilities",
+            "_selected_action": [str(switch.pk)],
+            "index": "0",
+            "select_across": "0",
+        }
+        # First POST (no confirm) -> confirmation page, no mutation.
+        resp = self.client.post(changelist, data)
+        self.assertEqual(resp.status_code, 200)
+        content = resp.content.decode()
+        self.assertIn("Confirm admin action", content)
+        self.assertIn("Disable selected capabilities", content)
+        self.assertIn('name="confirm"', content)
+        switch.refresh_from_db()
+        self.assertTrue(switch.enabled)
+        self.assertFalse(OperationalChangeAudit.objects.exists())
+        # Confirmation POST with confirm=yes -> toggled + audited.
+        with patch("crank.admin.monitoring.record_event"):
+            resp2 = self.client.post(changelist, {**data, "confirm": "yes"})
+        self.assertEqual(resp2.status_code, 302)
+        switch.refresh_from_db()
+        self.assertFalse(switch.enabled)
+        audit = OperationalChangeAudit.objects.get(
+            target_type="capability", action="disable"
+        )
+        self.assertTrue(audit.confirmed)

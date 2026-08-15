@@ -471,3 +471,95 @@ class CompanyRequestAdminTest(TestCase):
         self.assertFalse(mixin.has_module_permission(
             type("r", (), {"user": non_staff})()
         ))
+
+    # --- E2E admin-client path (issue #422) ---
+
+    def _post_changelist(self, action, pks, confirm=None, index="0", select_across="0"):
+        data = {
+            "action": action,
+            "_selected_action": [str(pk) for pk in pks],
+            "index": index,
+            "select_across": select_across,
+        }
+        if confirm is not None:
+            data["confirm"] = confirm
+        return self.client.post(reverse("admin:crank_companyrequest_changelist"), data)
+
+    def test_approve_e2e_requires_confirmation_then_applies(self):
+        req = self._make_request()
+        # First POST (no confirm) -> confirmation page, no mutation.
+        resp = self._post_changelist("approve_requests", [req.pk])
+        self.assertEqual(resp.status_code, 200)
+        content = resp.content.decode()
+        self.assertIn("Confirm admin action", content)
+        self.assertIn("Approve and create pending organizations", content)
+        # The form re-POSTs confirm=yes with a csrf token.
+        self.assertIn('name="confirm"', content)
+        self.assertIn('value="yes"', content)
+        self.assertIn("csrfmiddlewaretoken", content)
+        self.assertIn("requires an explicit confirmation step", content)
+        req.refresh_from_db()
+        self.assertEqual(req.status, CompanyRequest.Status.PENDING)
+        self.assertEqual(Organization.objects.filter(name="Acme").count(), 0)
+        self.assertFalse(OperationalChangeAudit.objects.exists())
+        # Confirmation POST with confirm=yes -> approved + org + audited.
+        resp2 = self._post_changelist("approve_requests", [req.pk], confirm="yes")
+        self.assertEqual(resp2.status_code, 302)
+        req.refresh_from_db()
+        self.assertEqual(req.status, CompanyRequest.Status.APPROVED)
+        self.assertIsNotNone(req.approved_organization)
+        self.assertEqual(req.approved_organization.name, "Acme")
+        self.assertEqual(req.approved_organization.status, 0)
+        audit = OperationalChangeAudit.objects.get(
+            target_type="company_request", action="approve"
+        )
+        self.assertTrue(audit.confirmed)
+
+    def test_reject_e2e_requires_confirmation_then_applies(self):
+        req = self._make_request()
+        resp = self._post_changelist("reject_requests", [req.pk])
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("Reject selected suggestions", resp.content.decode())
+        req.refresh_from_db()
+        self.assertEqual(req.status, CompanyRequest.Status.PENDING)
+        self.assertFalse(OperationalChangeAudit.objects.exists())
+        resp2 = self._post_changelist("reject_requests", [req.pk], confirm="yes")
+        self.assertEqual(resp2.status_code, 302)
+        req.refresh_from_db()
+        self.assertEqual(req.status, CompanyRequest.Status.REJECTED)
+        audit = OperationalChangeAudit.objects.get(target_type="company_request", action="reject")
+        self.assertTrue(audit.confirmed)
+
+    def test_confirmation_page_is_selective_and_preserves_action(self):
+        keep = self._make_request(company_name="Keep", website_url="https://keep.example.com")
+        other = self._make_request(company_name="Other", website_url="https://other.example.com")
+        resp = self._post_changelist("approve_requests", [keep.pk])
+        self.assertEqual(resp.status_code, 200)
+        content = resp.content.decode()
+        # Only the selected object is listed on the confirmation page.
+        self.assertIn("Keep", content)
+        self.assertNotIn("Other", content)
+        # The hidden inputs preserve the selection and the action.
+        self.assertIn(f'name="_selected_action" value="{keep.pk}"', content)
+        self.assertIn("approve_requests", content)
+
+    # --- Mixin helper branches (issue #422 coverage) ---
+
+    def test_requested_action_bad_index_falls_back(self):
+        request = self._mock_post(confirm="no")
+        request.POST = request.POST.copy()  # QueryDict copy is mutable.
+        # index is non-numeric -> default to 0, then read getlist('action').
+        request.POST["index"] = "not-an-int"
+        request.POST["action"] = "approve_requests"
+        self.assertEqual(self.admin._requested_action(request), "approve_requests")
+
+    def test_requested_action_missing_list_falls_back(self):
+        request = self._mock_post(confirm="no")
+        request.POST = request.POST.copy()  # QueryDict copy is mutable.
+        request.POST.pop("action", None)
+        request.POST["index"] = "5"
+        # getlist('action') is empty -> IndexError -> fall back to GET('action').
+        self.assertEqual(self.admin._requested_action(request), "")
+
+    def test_action_description_fallback(self):
+        self.assertEqual(self.admin._action_description(self._mock_post(), "__missing__"), "__missing__")

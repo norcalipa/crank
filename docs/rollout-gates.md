@@ -95,7 +95,8 @@ decision; each is evaluated independently.
 ### Rollback Procedure
 
 1. Set `CapabilitySwitch(key="interactive_agent", enabled=False)` via admin
-   (requires `confirm=yes`).
+   (the changelist action prompts an intermediate confirmation page before it
+   applies; the page re-POSTs `confirm=yes` on confirm).
 2. Set `AGENT_RUN_ENABLED=False` and `AGENT_NOOP_ENABLED=False` in the
    ConfigMap.
 3. Verify no new `AgentRun` rows are created after disablement.
@@ -331,7 +332,9 @@ improvements, additional alerting thresholds.
   changes.
 - Do not place environment secrets or user data in rollout records.
 - Critical security/privacy findings immediately trigger rollback.
-- All flag changes go through admin actions requiring `confirm=yes`.
+- All flag changes go through admin actions that require an explicit
+  confirmation page first (the confirm step re-POSTs a hidden
+  `confirm=yes`); unconfirmed POSTs stay no-ops.
 
 ---
 
