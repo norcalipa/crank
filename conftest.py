@@ -1,6 +1,5 @@
-# Temporary conftest (removed after gate): isolate the pytest test database to a
-# PID-unique sqlite file so concurrent external test runs (which share and wipe
-# the default test_db.sqlite3) cannot corrupt/lock this run.
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import os
 
 import pytest
