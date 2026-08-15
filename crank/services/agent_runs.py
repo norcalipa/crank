@@ -112,7 +112,7 @@ def claim_run(run_type):
     """Atomically claim the scheduler slot for ``run_type``.
 
     Returns the claimed ``AgentRun``. Raises ``IntegrityError`` if another run
-    of this type is currently running; the caller should record that
+    of this type is currently running or pending; the caller should record that
     invocation as skipped (see :func:`record_skipped`).
 
     The overlap guard is DB-portable. The partial unique constraint
@@ -141,10 +141,15 @@ def claim_run(run_type):
 
         now = timezone.now()
         active = AgentRun.objects.filter(
-            run_type=run_type, status=AgentRun.Status.RUNNING
+            run_type=run_type,
+            status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING],
         ).first()
         if active is not None:
-            if active.started_at and (now - active.started_at) >= stale_after:
+            if (
+                active.status == AgentRun.Status.RUNNING
+                and active.started_at
+                and (now - active.started_at) >= stale_after
+            ):
                 # Crashed/stale lock: claimed but never finalized (e.g. a pod
                 # died between claim and finalize). Reclaim so the run type is
                 # not blocked forever.
@@ -157,7 +162,8 @@ def claim_run(run_type):
                 )
             else:
                 raise IntegrityError(
-                    f"Agent run {run_type} is already running"
+                    f"Agent run {run_type} is already active "
+                    f"(status={active.status})"
                 )
 
         run = AgentRun.objects.create(

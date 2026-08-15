@@ -7,6 +7,14 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
 
 {% block title %}{{ title }}{% endblock %}
 
+{% block extrastyle %}
+{{ block.super }}
+<style>
+  .column-left { text-align: left; }
+  .column-center { text-align: center; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div id="content-main">
   <h1>{{ title }}</h1>
@@ -17,13 +25,13 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     <table>
       <thead>
         <tr>
-          <th style="text-align: left;">Name</th>
-          <th style="text-align: left;">Adapter</th>
-          <th style="text-align: left;">Base URL</th>
-          <th style="text-align: center;">Host Allowed</th>
-          <th style="text-align: center;">Exists</th>
-          <th style="text-align: center;">Current Enabled</th>
-          <th style="text-align: center;">Current Approval</th>
+          <th class="column-left">Name</th>
+          <th class="column-left">Adapter</th>
+          <th class="column-left">Base URL</th>
+          <th class="column-center">Host Allowed</th>
+          <th class="column-center">Exists</th>
+          <th class="column-center">Current Enabled</th>
+          <th class="column-center">Current Approval</th>
         </tr>
       </thead>
       <tbody>
@@ -32,16 +40,16 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
           <td>{{ row.name }}</td>
           <td>{{ row.adapter_key }}</td>
           <td><a href="{{ row.base_url }}" target="_blank">{{ row.base_url }}</a></td>
-          <td style="text-align: center;">
+          <td class="column-center">
             {% if row.host_allowed %}&#x2705;{% else %}&#x274C;{% endif %}
           </td>
-          <td style="text-align: center;">
+          <td class="column-center">
             {% if row.exists %}Yes{% else %}No{% endif %}
           </td>
-          <td style="text-align: center;">
+          <td class="column-center">
             {% if row.exists %}{{ row.existing_enabled }}{% else %}&mdash;{% endif %}
           </td>
-          <td style="text-align: center;">
+          <td class="column-center">
             {% if row.exists %}{{ row.existing_approval }}{% else %}&mdash;{% endif %}
           </td>
         </tr>
