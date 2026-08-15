@@ -930,7 +930,7 @@ class OrchestratorE2ESmokeTests(TestCase):
         provider._gateway = object()
         provider._preference_service = None
         provider._match_service = None
-        provider._orchestrator = None
+        provider._orchestrators = {}
 
         self.assertIs(provider._resolve_user(conv), user)
         orch = provider._ensure_orchestrator(user)
