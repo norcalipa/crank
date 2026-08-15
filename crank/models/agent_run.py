@@ -116,11 +116,7 @@ class AgentRun(TimeStampedModel):
             # run" cannot both insert a PENDING row.
             UniqueConstraint(
                 name="unique_agentrun_active_per_type",
-                fields=["run_type", "status"],
+                fields=["run_type"],
                 condition=Q(status__in=["running", "pending"]),
-                violation_error_message=(
-                    "An agent run of this type is already active (running or "
-                    "pending); this invocation should be recorded as skipped."
-                ),
             )
         ]

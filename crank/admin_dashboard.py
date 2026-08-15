@@ -361,17 +361,24 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
         """Atomically claim the job-pipeline slot or report why we must skip.
 
         The DB partial unique index ``unique_agentrun_active_per_type`` is the
-        authoritative overlap guard: only one RUNNING-or-PENDING run per type
-        may exist. We still gate with ``select_for_update`` first (best-effort;
-        it only locks *existing* rows, so on an empty result set it locks
-        nothing), then fall back to catching the ``IntegrityError`` that a
-        concurrent insert triggers on the constraint hit. Returns
-        ``(skip_message, run, source_count)`` where ``run`` is ``None`` when
-        the request was skipped.
+        authoritative overlap guard: at most one active (RUNNING or PENDING)
+        run per ``run_type`` may exist. We gate with ``select_for_update``
+        first (best-effort; it only locks *existing* rows, so on an empty
+        result set it locks nothing), then fall back to catching the
+        ``IntegrityError`` from the constraint hit on a concurrent insert.
+        Returns ``(skip_message, run, source_count)`` where ``run`` is
+        ``None`` when the request was skipped.
         """
         skip_message = None
         run = None
         source_count = 0
+        # Compute source count outside the transaction to minimize lock
+        # duration.
+        if count_sources:
+            source_count = JobSourceCatalog.objects.filter(
+                approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+                enabled=True,
+            ).count()
         try:
             with transaction.atomic():
                 existing = AgentRun.objects.select_for_update().filter(
@@ -387,20 +394,22 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
                         f"(run {existing.correlation_id}). {action} skipped."
                     )
                 else:
-                    if count_sources:
-                        source_count = JobSourceCatalog.objects.filter(
-                            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
-                            enabled=True,
-                        ).count()
-                    run = AgentRun.objects.create(
-                        run_type=AgentRun.RunType.JOB_PIPELINE,
-                        status=AgentRun.Status.PENDING,
-                    )
+                    try:
+                        run = AgentRun.objects.create(
+                            run_type=AgentRun.RunType.JOB_PIPELINE,
+                            status=AgentRun.Status.PENDING,
+                        )
+                    except IntegrityError:
+                        # A concurrent request won the slot between our
+                        # (empty) read and our insert; mirror the active-run
+                        # UX so the operator sees a skip rather than an error.
+                        skip_message = (
+                            f"Pipeline already active or queued. "
+                            f"{action} skipped."
+                        )
         except IntegrityError:
-            # A concurrent request won the slot between our (empty) read and
-            # our insert; mirror the active-run UX so the operator sees a skip
-            # rather than an error.
-            skip_message = f"Pipeline already active or queued. {action} skipped."
+            # Non-create IntegrityError — re-raise instead of masking.
+            raise
         return skip_message, run, source_count
 
     def queue_retrieval_view(self, request):
@@ -456,7 +465,7 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
                 reverse("admin:crank_jobretrievalops_queue_pipeline"),
             )
 
-        skip_message, run, _count = self._acquire_pipeline_slot("Queue")
+        skip_message, run, _ = self._acquire_pipeline_slot("Queue")
         if skip_message:
             self.message_user(request, skip_message, level=messages.WARNING)
             return redirect(self._dashboard_url())
@@ -523,15 +532,23 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
                     if failed is None:
                         skip_message = "No eligible failed run to retry."
                     else:
-                        run = AgentRun.objects.create(
-                            run_type=AgentRun.RunType.JOB_PIPELINE,
-                            status=AgentRun.Status.PENDING,
-                        )
+                        try:
+                            run = AgentRun.objects.create(
+                                run_type=AgentRun.RunType.JOB_PIPELINE,
+                                status=AgentRun.Status.PENDING,
+                            )
+                        except IntegrityError:
+                            # A concurrent request won the slot between our
+                            # (empty) read and our insert; mirror the active-run
+                            # UX so the operator sees a skip rather than an error.
+                            skip_message = (
+                                "Pipeline already active or queued. "
+                                "Retry skipped."
+                            )
         except IntegrityError:
-            # A concurrent request won the slot between our (empty) read and
-            # our insert; mirror the active-run UX so the operator sees a skip
-            # rather than an error.
-            skip_message = "Pipeline already active or queued. Retry skipped."
+            # Non-create IntegrityError (from the select or failed lookup).
+            # Re-raise: these should not be silently swallowed.
+            raise
 
         if skip_message:
             self.message_user(request, skip_message, level=messages.WARNING)

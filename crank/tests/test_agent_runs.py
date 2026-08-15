@@ -41,6 +41,21 @@ class AgentRunService(TestCase):
         self.assertEqual(run.status, AgentRun.Status.RUNNING)
         self.assertNotEqual(run.pk, stale.pk)
 
+    def test_claim_run_raises_integrity_error_when_pending_exists(self):
+        # An admin-queued PENDING run must block the scheduler's claim path:
+        # a RUNNING claim cannot be created alongside it (at-most-one-active).
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.NOOP,
+            status=AgentRun.Status.PENDING,
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                agent_runs.claim_run(AgentRun.RunType.NOOP)
+        self.assertEqual(
+            AgentRun.objects.filter(run_type=AgentRun.RunType.NOOP).count(),
+            1,
+        )
+
     def test_record_skipped_marks_terminal_skipped(self):
         run = agent_runs.record_skipped(AgentRun.RunType.NOOP)
         run.refresh_from_db()

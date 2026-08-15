@@ -510,6 +510,22 @@ class JobRetrievalOpsAdminTests(TestCase):
             AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 1
         )
 
+    def test_queue_pipeline_non_create_integrity_error_reraises(self):
+        """A non-create IntegrityError must propagate, not be masked as a skip.
+
+        Only the ``create`` insert is the intended unique-constraint hit; an
+        IntegrityError from the lock/read query is unexpected and must surface.
+        """
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user") as msg, patch(
+            "crank.admin_dashboard.AgentRun.objects.select_for_update",
+            side_effect=IntegrityError,
+        ):
+            with self.assertRaises(IntegrityError):
+                self.admin.queue_pipeline_view(request)
+        # The error must propagate, never be converted into a user-facing skip.
+        msg.assert_not_called()
+
     def test_queue_pipeline_integrity_error_treated_as_skip(self):
         """A concurrent slot-stealing IntegrityError is treated as a skip."""
         request = self._request(self.staff, confirmed=True)
@@ -615,6 +631,18 @@ class JobRetrievalOpsAdminTests(TestCase):
         self.assertEqual(
             AgentRun.objects.filter(status=AgentRun.Status.PENDING).count(), 1
         )
+
+    def test_retry_failed_non_create_integrity_error_reraises(self):
+        """A non-create IntegrityError from the retry path must propagate."""
+        with patch.object(self.admin, "message_user") as msg, patch(
+            "crank.admin_dashboard.AgentRun.objects.select_for_update",
+            side_effect=IntegrityError,
+        ):
+            with self.assertRaises(IntegrityError):
+                self.admin.retry_failed_view(
+                    self._request(self.staff, confirmed=True)
+                )
+        msg.assert_not_called()
 
     def test_retry_failed_integrity_error_treated_as_skip(self):
         """A concurrent slot-stealing IntegrityError is treated as a skip."""
