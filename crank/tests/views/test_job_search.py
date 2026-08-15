@@ -9,6 +9,7 @@ service errors, rate limiting, and no cross-user leakage.
 import json
 import threading
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
@@ -929,8 +930,10 @@ class OrchestratorE2ESmokeTests(TestCase):
         provider._fixed_orchestrator = None
         provider._gateway = object()
         provider._preference_service = None
+        provider._preference_service_factory = None
         provider._match_service = None
-        provider._orchestrators = {}
+        provider._orchestrator_factory = None
+        provider._orchestrators = OrderedDict()
 
         self.assertIs(provider._resolve_user(conv), user)
         orch = provider._ensure_orchestrator(user)
