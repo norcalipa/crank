@@ -341,6 +341,41 @@ class OrchestratorProviderTests(SimpleTestCase):
         ), pytest.raises(InvalidOrganizationReferenceError):
             provider.generate_reply(conversation=conv, user_message="hi")
 
+    def test_cross_owner_reuse_does_not_leak_orchestrator(self):
+        """A provider reused across two DIFFERENT owners never leaks the first
+        owner's orchestrator: the second owner gets an orchestrator built for
+        the second owner, never the first (regression for #432).
+
+        The orchestrator is lazy-built and cached *per owner*; when the same
+        provider sees a new owner it must rebuild rather than return the first
+        owner's cached orchestrator.
+        """
+        alice = SimpleNamespace(pk=1, username="alice")
+        bob = SimpleNamespace(pk=2, username="bob")
+
+        # No shared match service is injected, so each owner's orchestrator gets
+        # its own owner-scoped match wiring via ``_matches_for_user``.
+        provider = OrchestratorJobSearchProvider(
+            gateway=FakeGateway(),
+            preference_service=FakePreferenceService(),
+        )
+
+        orch_alice = provider._ensure_orchestrator(alice)
+        orch_bob = provider._ensure_orchestrator(bob)
+
+        # Distinct owners must never share an orchestrator — bob gets his own
+        # orchestrator wired to bob, not alice's cached one.
+        self.assertIsNot(orch_alice, orch_bob)
+        self.assertIs(orch_alice._user, alice)
+        self.assertIs(orch_bob._user, bob)
+        self.assertIsNot(orch_bob._user, alice)
+        # Each owner gets its own match wiring, never the first owner's.
+        self.assertIsNot(orch_bob._match_service, orch_alice._match_service)
+
+        # Same owner still reuses its cached orchestrator (lazy-build retained).
+        self.assertIs(provider._ensure_orchestrator(alice), orch_alice)
+        self.assertIs(provider._ensure_orchestrator(bob), orch_bob)
+
 
 class OrchestratorProviderErrorMappingTests(SimpleTestCase):
     """Cover all error-mapping branches in generate_reply."""

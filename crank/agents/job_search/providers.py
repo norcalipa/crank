@@ -45,6 +45,11 @@ from crank.agents.llm import BaseLLMProvider, get_llm_provider
 
 logger = logging.getLogger("crank.agents.job_search")
 
+#: Sentinel cache key used when no owner could be resolved (``conversation.owner``
+#: is ``None``). Kept distinct from any real user object so the ``None`` owner
+#: builds its own orchestrator rather than reusing a real user's.
+_NO_OWNER = object()
+
 __all__ = [
     "LLMGateway",
     "OrchestratorJobSearchProvider",
@@ -272,22 +277,31 @@ class OrchestratorJobSearchProvider:
             self._gateway = gateway or LLMGateway()
             self._preference_service = preference_service
             self._match_service = match_service
-        # Built lazily for the conversation owner once we know *who* is chatting.
-        self._orchestrator: JobSearchOrchestrator | None = None
+        # Lazy per-owner orchestrator cache: ``id(user) -> (owner, orchestrator)``.
+        # Keying by the resolved owner keeps a shared provider owner-safe — a
+        # second owner never receives the first owner's orchestrator. The stored
+        # owner reference guards against ``id`` reuse across garbage-collected
+        # users, so each distinct owner (or ``_NO_OWNER`` for an unresolved
+        # owner) always gets its own freshly-wired orchestrator.
+        self._orchestrators: dict[int, tuple[Any, JobSearchOrchestrator]] = {}
 
     def _ensure_orchestrator(self, user: Any) -> JobSearchOrchestrator:
         """Return the orchestrator for *user*, wiring preferences and matches.
 
         Because the owner service wiring depends on ``conversation.owner``
         (only known at ``generate_reply`` time), the orchestrator is built on
-        first use and cached. The owner's real, preference-grounded
-        ``PreferenceService`` and ``match_service`` are wired so saved
-        preferences feed matching and preference patches persist.
+        first use and cached **per owner**. Reusing one provider across
+        different conversation owners builds — and returns — an orchestrator
+        wired for each owner, never the first owner's. The owner's real,
+        preference-grounded ``PreferenceService`` and ``match_service`` are
+        wired so saved preferences feed matching and preference patches persist.
         """
         if self._fixed_orchestrator is not None:
             return self._fixed_orchestrator
-        if self._orchestrator is not None:
-            return self._orchestrator
+        key = _NO_OWNER if user is None else id(user)
+        cached = self._orchestrators.get(key)
+        if cached is not None and cached[0] is user:
+            return cached[1]
         pref = self._preference_service
         if pref is None:
             # Wire the real owner-scoped preference store in production. The
@@ -298,13 +312,14 @@ class OrchestratorJobSearchProvider:
                 else _NullPreferenceService()
             )
         match = self._match_service or _matches_for_user(user)
-        self._orchestrator = JobSearchOrchestrator(
+        orchestrator = JobSearchOrchestrator(
             gateway=self._gateway,
             preference_service=pref,
             user=user,
             match_service=match,
         )
-        return self._orchestrator
+        self._orchestrators[key] = (user, orchestrator)
+        return orchestrator
 
     @staticmethod
     def _resolve_user(conversation):
