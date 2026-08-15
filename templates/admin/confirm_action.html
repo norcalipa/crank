@@ -1,0 +1,56 @@
+{% extends "admin/base_site.html" %}
+{% comment %}
+Copyright (c) 2024 Isaac Adams
+Licensed under the MIT License. See LICENSE file in the project root for full license information.
+{% endcomment %}
+{% load i18n admin_urls %}
+
+{% block title %}Confirm {{ action_description }}{{ block.super }}{% endblock %}
+
+{% block branding %}
+<h1 id="site-name"><a href="{% url 'admin:index' %}">Crank Admin</a></h1>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+  <h1>Confirm action</h1>
+  <p>
+    You are about to apply <strong>{{ action_description }}</strong>
+    to the {{ objects|length }} selected {{ object_label|default:"object" }}(s) below.
+    This is a deliberate, auditable change: it will be recorded in
+    <code>OperationalChangeAudit</code> with confirmation before it is applied.
+  </p>
+
+  <form method="post" action="{{ request.path }}">
+    {% csrf_token %}
+    <input type="hidden" name="action" value="{{ action_name }}">
+    <input type="hidden" name="index" value="0">
+    <input type="hidden" name="select_across" value="{{ select_across }}">
+    <input type="hidden" name="confirm" value="yes">
+    {% for pk in selected_pks %}
+      <input type="hidden" name="{{ action_checkbox_name }}" value="{{ pk }}">
+    {% endfor %}
+
+    <fieldset class="module aligned">
+      <h2>Selected items</h2>
+      {% for obj in objects %}
+        <div class="form-row">
+          <div>
+            <label>Selected item:</label>
+            <p>{{ obj }}</p>
+          </div>
+        </div>
+      {% empty %}
+        <div class="form-row">
+          <p>No items were selected.</p>
+        </div>
+      {% endfor %}
+    </fieldset>
+
+    <div class="submit-row">
+      <input type="submit" value="Confirm and apply" class="default">
+      <a href="{{ request.path }}" class="button cancel-link">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
