@@ -525,3 +525,64 @@ class TestStructuredResultsBuilding:
         restored = StructuredResults.from_json_dict(d)
         assert len(restored.organizations) == 1
         assert restored.organizations[0].name == "Acme Inc"
+
+class TestToolsUsedNegation:
+    """MINOR-1: assert that omitted tools are absent from tools_used."""
+
+    def test_get_matches_for_user_absent_when_no_user(self):
+        """Without a wired user, get_matches_for_user must NOT be in tools_used."""
+        gw = FakeGateway({
+            "message": "Globex is a strong fit.",
+            "cited_organization_ids": [2],
+            "cited_job_listing_ids": [],
+            "preference_patch": None,
+        })
+        orch = make_orchestrator(gw, FakePreferenceService())
+        result = orch.run(
+            user_prompt="recommend remote seed startups",
+            conversation=[], preference_markdown="remote only",
+        )
+        assert "get_matches_for_user" not in result.tools_used
+        assert "query_active_organizations" in result.tools_used
+
+    def test_get_matches_for_user_absent_when_no_match_service(self):
+        """With a user but no match_service, get_matches_for_user is absent."""
+        gw = FakeGateway({
+            "message": "Acme looks good.",
+            "cited_organization_ids": [1],
+            "cited_job_listing_ids": [],
+            "preference_patch": None,
+        })
+        user = SimpleNamespace(id=1, username="test")
+        orch = JobSearchOrchestrator(
+            gateway=gw, preference_service=FakePreferenceService(),
+            user=user,
+            org_datasource=lambda filters, limit: [ORG_ACME, ORG_GLOBEX],
+            score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [],
+            match_service=None,
+        )
+        result = orch.run(
+            user_prompt="recommend", conversation=[], preference_markdown="",
+        )
+        assert "get_matches_for_user" not in result.tools_used
+
+    def test_query_score_summaries_absent_when_no_orgs(self):
+        """When the org catalog is empty, query_score_summaries is omitted."""
+        gw = FakeGateway({
+            "message": "No organizations yet.",
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [],
+            "preference_patch": None,
+        })
+        orch = JobSearchOrchestrator(
+            gateway=gw, preference_service=FakePreferenceService(),
+            org_datasource=lambda filters, limit: [],
+            score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [],
+        )
+        result = orch.run(
+            user_prompt="any orgs?", conversation=[], preference_markdown="",
+        )
+        assert "query_score_summaries" not in result.tools_used
+        assert "query_active_organizations" in result.tools_used

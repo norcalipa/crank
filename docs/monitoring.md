@@ -104,8 +104,8 @@ response, or conversation-identifier content is ever an event attribute.
   `empty_result` suggests the gateway is timing out before grounding data.
 
 **Deployment check.** The `crank.W001` system check warns loudly when
-`JOB_SEARCH_PROVIDER=demo` in a non-dev environment (`ENV` of `prod`/`staging`
-or `DEBUG` off). Run `python manage.py check --deploy` in CI: a demo provider
+`JOB_SEARCH_PROVIDER=demo` in a non-dev environment (`ENV` of `prod`/`staging`).
+Run `python manage.py check --deploy` in CI: a demo provider
 in a production config must never silently serve simulated replies.
 
 ## Admin controls and recovery

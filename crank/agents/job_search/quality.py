@@ -23,7 +23,7 @@ _WORD = re.compile(r"[a-z0-9]+")
 #: Reply tokens that merely acknowledge the user ("Sure, show me jobs" ->
 #: "show me jobs") and must not count toward an echo verdict. Only leading
 #: acknowledgments are stripped so genuine answers keep their intent words.
-_ACK = frozenset(
+_ACK_SINGLE = frozenset(
     {
         "sure", "ok", "okay", "yes", "yeah", "yep", "right", "great",
         "absolutely", "certainly", "gotcha", "alright", "alrighty",
@@ -31,29 +31,68 @@ _ACK = frozenset(
     }
 )
 
+#: Multi-word acknowledgment phrases that must be stripped as a unit before
+#: falling back to single-token stripping. These are common conversational
+#: openers ("of course", "sure thing") whose individual tokens ("of",
+#: "thing", "i", "understand") are not ack tokens on their own.
+_ACK_PHRASES = (
+    "of course", "sure thing", "i understand", "i see",
+    "i got it", "no problem", "no worries", "you got it",
+    "for sure", "all right",
+)
+
+#: Trailing politeness tokens that inflate the reply length and dilute the
+#: overlap ratio below the echo threshold ("show me jobs" -> "show me jobs
+#: please" drops from 100% to 75%). Stripping them before the overlap
+#: calculation catches the echo without false-positiving genuine answers.
+_TRAILING_POLITE = frozenset({"please", "thanks", "thank", "you"})
+
 #: A reply shorter than this is a clarification/augment, not a full
 #: restatement of the user's turn. Single-keyword replies such as
 #: ``salary`` -> ``Salary?`` are legitimate clarifications and must not be
 #: flagged as echoes (issue #423).
 _MIN_SUBSTANTIVE_TOKENS = 3
 
+#: Minimum fraction of the reply's meaningful tokens that must appear in the
+#: user's message (after ack/politeness stripping) to count as an echo.
+_ECHO_TOLERANCE = 0.8
+
 
 def _strip_ack(tokens):
-    """Drop leading acknowledgment tokens from a reply's token list."""
+    """Drop leading acknowledgment tokens from a reply's token list.
+
+    Multi-word ack phrases ("of course", "sure thing", "i understand") are
+    matched first as a unit; remaining leading single-token acks are then
+    stripped one-by-one.
+    """
+    # Try multi-word ack phrases first.
+    text = " ".join(tokens)
+    for phrase in _ACK_PHRASES:
+        if text.startswith(phrase):
+            stripped = text[len(phrase):].lstrip()
+            tokens = stripped.split()
+            break
+    # Also strip leading single-token acks (covers "got it" which is already
+    # in _ACK_SINGLE as individual tokens, plus single-word acks like "sure").
     start = 0
-    while start < len(tokens) and tokens[start] in _ACK:
+    while start < len(tokens) and tokens[start] in _ACK_SINGLE:
         start += 1
     return tokens[start:]
 
 
-def is_echo(user_prompt: str, message: str, *, tolerance: float = 0.8) -> bool:
+def is_echo(user_prompt: str, message: str) -> bool:
     """Return True when ``message`` merely restates ``user_prompt``.
 
-    A reply is an echo when at least ``tolerance`` (default 80%) of its
+    A reply is an echo when at least 80% (``_ECHO_TOLERANCE``) of its
     meaningful tokens also appear in the user's message. Leading
-    acknowledgment words (``Sure``, ``Got it``) are stripped so a reply that
-    paraphrases the user after a filler prefix is still caught (e.g.
-    ``show me jobs`` -> ``Sure, show me jobs``). Very short replies (a
+    acknowledgment words and phrases (``Sure``, ``Got it``, ``Of course``)
+    are stripped so a reply that paraphrases the user after a filler prefix
+    is still caught (e.g. ``show me jobs`` -> ``Sure, show me jobs``).
+    Trailing politeness tokens (``please``, ``thanks``) are also stripped so
+    they cannot dilute the overlap ratio (e.g. ``show me jobs`` -> ``show me
+    jobs please``). A verbatim restatement of the prompt is always an echo
+    regardless of length, except for single-token clarifying questions that
+    add punctuation (``salary`` -> ``Salary?``). Very short replies (a
     keyword or two, e.g. ``salary`` -> ``Salary?``) are clarifying questions
     rather than restatements and are not flagged. This catches the classic
     demo-provider failure mode where the assistant parrots the user's turn
@@ -62,13 +101,32 @@ def is_echo(user_prompt: str, message: str, *, tolerance: float = 0.8) -> bool:
     """
     up_tokens = _WORD.findall((user_prompt or "").lower())
     reply_tokens = _strip_ack(_WORD.findall((message or "").lower()))
+    # Strip trailing politeness tokens ("please", "thanks") that dilute the
+    # overlap ratio below the echo threshold (NIT-1).
+    while reply_tokens and reply_tokens[-1] in _TRAILING_POLITE:
+        reply_tokens = reply_tokens[:-1]
     if not up_tokens or not reply_tokens:
         return False
+    # MAJOR-1: a verbatim restatement is always an echo regardless of length.
+    # The ``_MIN_SUBSTANTIVE_TOKENS`` exemption is for genuine short
+    # clarifications (``salary`` -> ``Salary?``), not for parroting back a
+    # 1- or 2-token prompt.
+    #
+    # For 2+ token prompts, exact token equality is always an echo.
+    # For single-token prompts, distinguish verbatim echo (``jobs`` -> ``jobs``)
+    # from a clarifying question (``salary`` -> ``Salary?``) by checking raw
+    # string equality: punctuation like ``?`` makes it a question, not a
+    # restatement.
+    if reply_tokens == up_tokens:
+        if len(up_tokens) >= 2:
+            return True
+        if (message or "").strip().lower() == (user_prompt or "").strip().lower():
+            return True
     if len(reply_tokens) < _MIN_SUBSTANTIVE_TOKENS:
         return False
     user_set = set(up_tokens)
     overlap = sum(1 for token in reply_tokens if token in user_set)
-    return overlap >= tolerance * len(reply_tokens)
+    return overlap >= _ECHO_TOLERANCE * len(reply_tokens)
 
 
 def has_helpfulness_gap(*, assistant_turns: int, result_cards: int) -> bool:

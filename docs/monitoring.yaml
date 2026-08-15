@@ -69,6 +69,7 @@ alerts:
   - name: repeated-failure
     nrql: "SELECT count(*) FROM CrankOperation WHERE status = 'failed' SINCE 15 minutes ago"
     threshold: 3
+    operator: above
     recovery: "Inspect sanitized AgentRun/SourceRun, then disable the affected source or capability."
   - name: no-recent-success
     nrql: "SELECT count(*) FROM CrankOperation WHERE event_name = 'scheduled_run' AND status = 'succeeded' SINCE 6 hours ago"
@@ -78,18 +79,22 @@ alerts:
   - name: deadline-resource-pressure
     nrql: "SELECT sum(deadline_reached) FROM CrankOperation WHERE event_name = 'matching_batch' SINCE 30 minutes ago"
     threshold: 1
+    operator: above
     recovery: "Reduce configured bounded work or raise the approved deadline after review."
   - name: cost-limit
     nrql: "SELECT sum(estimated_cost_usd) FROM CrankOperation WHERE event_name = 'interactive_call' SINCE 1 day ago"
     threshold: 10
+    operator: above
     recovery: "Disable interactive_agent and inspect token/cost settings before re-enabling."
   - name: rejection-spike
     nrql: "SELECT sum(items_failed) FROM CrankOperation WHERE event_name = 'source_stage' SINCE 30 minutes ago"
     threshold: 20
+    operator: above
     recovery: "Inspect reason-coded source failures and isolate the source; no raw response is retained."
   - name: matching-backlog
     nrql: "SELECT sum(users_failed) FROM CrankOperation WHERE event_name = 'matching_batch' SINCE 30 minutes ago"
     threshold: 10
+    operator: above
     recovery: "Inspect deadline/resource pressure and keep the job_pipeline capability disabled until safe."
   - name: zero-enabled-sources
     nrql: "SELECT count(*) FROM CrankOperation WHERE event_name = 'inventory_health' AND enabled_sources = 0 SINCE 30 minutes ago"
@@ -104,6 +109,7 @@ alerts:
   - name: recurring-helpfulness-gaps
     nrql: "SELECT count(*) FROM CrankOperation WHERE event_name = 'job_search_helpfulness_gap' SINCE 1 day ago"
     threshold: 3
+    operator: above
     recovery: "Inspect assistant/LLM grounding: verify the orchestrator provider is selected in production and the anti-echo guard is intact."
   - name: stale-inventory
     nrql: "SELECT count(*) FROM CrankOperation WHERE event_name = 'inventory_health' AND stale_sources > 0 SINCE 30 minutes ago"
