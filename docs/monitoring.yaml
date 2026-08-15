@@ -13,6 +13,9 @@ allowed_event_names:
   - crawl_run_completed
   - crawl_run_failed
   - inventory_health
+  - job_search_turn
+  - job_search_tool_invocation
+  - job_search_helpfulness_gap
 facets:
   - run_type
   - stage
@@ -45,6 +48,18 @@ widgets:
     nrql: >-
       SELECT sum(estimated_cost_usd), sum(total_tokens), count(*)
       FROM CrankOperation WHERE event_name = 'interactive_call' SINCE 24 hours ago
+  - name: Assistant turn quality
+    nrql: >-
+      SELECT count(*), average(tools_called), sum(cited_ids_count)
+      FROM CrankOperation WHERE event_name = 'job_search_turn' SINCE 24 hours ago
+  - name: Tool invocation volume
+    nrql: >-
+      SELECT count(*) FROM CrankOperation
+      WHERE event_name = 'job_search_tool_invocation' FACET tool SINCE 24 hours ago
+  - name: Helpfulness gaps
+    nrql: >-
+      SELECT count(*), average(turns_without_result)
+      FROM CrankOperation WHERE event_name = 'job_search_helpfulness_gap' SINCE 7 days ago
   - name: Deadline, rejection, and backlog pressure
     nrql: >-
       SELECT sum(deadline_reached), sum(items_failed), sum(users_failed),
@@ -86,6 +101,10 @@ alerts:
     threshold: 1
     operator: above
     recovery: "Run crawl_status and trigger one bounded crawl; check provider credentials and adapter state."
+  - name: recurring-helpfulness-gaps
+    nrql: "SELECT count(*) FROM CrankOperation WHERE event_name = 'job_search_helpfulness_gap' SINCE 1 day ago"
+    threshold: 3
+    recovery: "Inspect assistant/LLM grounding: verify the orchestrator provider is selected in production and the anti-echo guard is intact."
   - name: stale-inventory
     nrql: "SELECT count(*) FROM CrankOperation WHERE event_name = 'inventory_health' AND stale_sources > 0 SINCE 30 minutes ago"
     threshold: 1

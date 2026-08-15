@@ -9,6 +9,7 @@ pymysql.install_as_MySQLdb()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEBUG = False
+ENV = "staging"
 SECRET_KEY = os.environ["SECRET_KEY"]
 CPU_COUNT = multiprocessing.cpu_count()
 

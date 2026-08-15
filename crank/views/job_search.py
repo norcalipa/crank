@@ -307,8 +307,16 @@ def agent_conversation_detail(request, conversation_id):
     assistant_qs = conversation.messages.filter(role=JobSearchMessage.Role.ASSISTANT)
     assistant_turns = assistant_qs.count()
     result_cards = assistant_qs.exclude(results_json="").count()
-    if quality.has_helpfulness_gap(
-        assistant_turns=assistant_turns, result_cards=result_cards
+    # First-crossing signal (issue #423): emit once, at the turn where the
+    # conversation first becomes a gap, instead of on every subsequent
+    # resultless turn. ``has_helpfulness_gap`` is monotonic (it triggers as
+    # soon as the assistant has enough turns and no result card), so the
+    # first crossing is exactly ``MIN_HELPFUL_TURNS``.
+    if (
+        assistant_turns == quality.MIN_HELPFUL_TURNS
+        and quality.has_helpfulness_gap(
+            assistant_turns=assistant_turns, result_cards=result_cards
+        )
     ):
         monitoring.record_event(
             "job_search_helpfulness_gap",

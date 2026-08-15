@@ -24,6 +24,9 @@ import logging
 
 from django.conf import settings
 
+from crank.agents.job_search import quality
+from crank.checks import is_non_dev_environment
+
 logger = logging.getLogger("crank.agents.job_search")
 
 __all__ = [
@@ -90,6 +93,11 @@ class DemoJobSearchProvider:
 def _build_provider():
     """Resolve the configured provider (demo by default, orchestrator for production).
 
+    The demo provider is an offline/test double only: it never touches a real
+    inventory and can't ground an anti-echo guard. In a non-dev environment it
+    is disabled outright so an ungrounded demo can never serve production
+    traffic (issue #423).
+
     Production (orchestrator) fails closed when:
     - ``INTERACTIVE_AGENT_ENABLED`` is False
     - ``LLM_PROVIDER`` is not configured or the selected provider raises
@@ -101,6 +109,12 @@ def _build_provider():
     """
     name = getattr(settings, "JOB_SEARCH_PROVIDER", "demo")
     if name == "demo":
+        if is_non_dev_environment():
+            raise JobSearchServiceError(
+                "The demo job-search provider is disabled outside development. "
+                "Configure JOB_SEARCH_PROVIDER=orchestrator with a real LLM "
+                "gateway so the assistant serves grounded recommendations."
+            )
         return DemoJobSearchProvider()
     if name == "orchestrator":
         # Fail closed: refuse to start if the interactive agent feature flag is off.
@@ -152,4 +166,15 @@ class JobSearchService:
         max_len = getattr(settings, "JOB_SEARCH_RESPONSE_MAX_LEN", 8000)
         if len(reply_text) > max_len:
             reply_text = reply_text[:max_len]
+        # Anti-echo guarantee for the configured demo path (issue #423). The
+        # orchestrator guards the server-grounded provider internally; the
+        # demo provider is guarded here so it can never serve a reply that
+        # merely restates the user's turn.
+        if isinstance(self.provider, DemoJobSearchProvider) and quality.is_echo(
+            user_message or "", reply_text
+        ):
+            raise JobSearchServiceError(
+                "The assistant could not produce a grounded reply. "
+                "Please try again later or contact support."
+            )
         return (reply_text or "").strip(), bool(changed), results

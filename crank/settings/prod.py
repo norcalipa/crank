@@ -13,6 +13,7 @@ pymysql.install_as_MySQLdb()
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEBUG = False
+ENV = "prod"
 # NOTE: SECURE_SSL_REDIRECT must stay disabled. Production runs Django's dev
 # server (`manage.py runserver`, HTTP-only) on port 8080 behind Cloudflare.
 # Enabling SSL redirect here makes Django return 301 -> https for every

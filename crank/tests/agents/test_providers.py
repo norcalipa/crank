@@ -536,6 +536,56 @@ class JobSearchServiceOrchestratorTests(TestCase):
         with self.assertRaises(JobSearchServiceError):
             _build_provider()
 
+    @override_settings(JOB_SEARCH_PROVIDER="demo", ENV="prod")
+    def test_demo_provider_is_disabled_in_non_dev(self):
+        """The demo simulator must never serve production traffic (issue #423)."""
+        from crank.agents.job_search.demo import _build_provider
+        with self.assertRaises(JobSearchServiceError):
+            _build_provider()
+
+    @override_settings(JOB_SEARCH_PROVIDER="demo", ENV="staging")
+    def test_demo_provider_is_disabled_in_staging(self):
+        from crank.agents.job_search.demo import _build_provider
+        with self.assertRaises(JobSearchServiceError):
+            _build_provider()
+
+    @override_settings(JOB_SEARCH_PROVIDER="demo", ENV="dev")
+    def test_demo_provider_is_allowed_in_dev(self):
+        from crank.agents.job_search.demo import _build_provider
+        self.assertEqual(
+            type(_build_provider()).__name__, "DemoJobSearchProvider"
+        )
+
+    def test_demo_echo_reply_is_rejected_by_service(self):
+        """Anti-echo guard applies to the configured demo path (issue #423)."""
+        from crank.agents.job_search.demo import (
+            DemoJobSearchProvider,
+            JobSearchService,
+        )
+
+        class EchoProvider(DemoJobSearchProvider):
+            def generate_reply(self, *, conversation, user_message):
+                return user_message, False, None  # verbatim echo
+
+        conv = JobSearchConversation.objects.create(owner=self.user)
+        svc = JobSearchService(provider=EchoProvider())
+        with self.assertRaises(JobSearchServiceError):
+            svc.run_turn(conversation=conv, user_message="show me jobs")
+
+    def test_demo_grounded_reply_is_not_rejected(self):
+        """The demo's non-echo canned replies still pass the guard."""
+        from crank.agents.job_search.demo import (
+            DemoJobSearchProvider,
+            JobSearchService,
+        )
+
+        conv = JobSearchConversation.objects.create(owner=self.user)
+        svc = JobSearchService(provider=DemoJobSearchProvider())
+        reply, changed, _ = svc.run_turn(
+            conversation=conv, user_message="show me jobs"
+        )
+        self.assertTrue(reply)
+
 
 class ResponseSchemaTests(SimpleTestCase):
     """Verify the response schema matches AssistantCompletion contract."""
