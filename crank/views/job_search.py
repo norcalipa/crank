@@ -304,20 +304,22 @@ def agent_conversation_detail(request, conversation_id):
     # Helpfulness-gap telemetry (issue #397): size conversations that keep
     # engaging the assistant but never produce a result card. Scalar counts
     # only; no message content or conversation identity is emitted.
+    #
+    # The one-time emission is made durable and concurrency-safe (issue #423
+    # MINOR-2): ``assistant_turns == MIN_HELPFUL_TURNS`` was only a derived
+    # snapshot, so two concurrent submissions could both observe the crossing
+    # and double-emit (or both observe a later count and miss it). Instead we
+    # claim the transition atomically with a conditional update that flips
+    # ``helpfulness_gap_emitted`` false -> true; exactly one concurrent
+    # request wins the update and emits, the rest see no row to claim.
     assistant_qs = conversation.messages.filter(role=JobSearchMessage.Role.ASSISTANT)
     assistant_turns = assistant_qs.count()
     result_cards = assistant_qs.exclude(results_json="").count()
-    # First-crossing signal (issue #423): emit once, at the turn where the
-    # conversation first becomes a gap, instead of on every subsequent
-    # resultless turn. ``has_helpfulness_gap`` is monotonic (it triggers as
-    # soon as the assistant has enough turns and no result card), so the
-    # first crossing is exactly ``MIN_HELPFUL_TURNS``.
-    if (
-        assistant_turns == quality.MIN_HELPFUL_TURNS
-        and quality.has_helpfulness_gap(
-            assistant_turns=assistant_turns, result_cards=result_cards
-        )
-    ):
+    if quality.has_helpfulness_gap(
+        assistant_turns=assistant_turns, result_cards=result_cards
+    ) and JobSearchConversation.objects.filter(
+        pk=conversation.pk, helpfulness_gap_emitted=False
+    ).update(helpfulness_gap_emitted=True):
         monitoring.record_event(
             "job_search_helpfulness_gap",
             {

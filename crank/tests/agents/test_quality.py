@@ -124,6 +124,66 @@ class TestIsEcho:
             "show me remote jobs", "show me remote jobs now"
         ) is True
 
+    # -- MINOR-1: two-word clarifying questions --------------------------
+
+    def test_two_word_clarifying_question_is_not_echo(self):
+        """remote jobs -> Remote jobs? is a clarification, not an echo. The
+        exact-token override (MAJOR-1) must not swallow short question-marked
+        restatements (issue #423 MINOR-1)."""
+        assert quality.is_echo("remote jobs", "Remote jobs?") is False
+
+    def test_two_word_clarifying_question_with_ack_prefix_is_not_echo(self):
+        assert quality.is_echo("remote jobs", "Sure, remote jobs?") is False
+
+    def test_two_word_verbatim_echo_still_detected_after_minor_fix(self):
+        """The MINOR-1 exemption is question-scoped only: plain and
+        statement restatements must stay echoes."""
+        assert quality.is_echo("remote jobs", "remote jobs") is True
+        assert quality.is_echo("remote jobs", "Remote jobs.") is True
+
+    # -- NIT-2: token-boundary ack phrase matching -----------------------
+
+    def test_ack_phrase_not_stripped_from_inside_longer_token(self):
+        """A multi-word ack phrase must end at a token boundary (NIT-2).
+        ``"i see"`` must not strip from ``"i seeker..."``; ``"i see"``
+        followed by a space is the only match."""
+        assert quality._strip_ack(["i", "seeker", "show", "me", "jobs"]) == [
+            "i", "seeker", "show", "me", "jobs",
+        ]
+        assert quality._strip_ack(["i", "see", "show", "me", "jobs"]) == [
+            "show", "me", "jobs",
+        ]
+
+    def test_ack_phrase_only_reply_is_not_echo(self):
+        """A reply that is exactly an ack phrase has no surviving tokens
+        (covers the ``text == phrase`` branch)."""
+        assert quality.is_echo("show me jobs", "Of course") is False
+        assert quality.is_echo("show me jobs", "Sure thing") is False
+
+    # -- NIT: evaluated tolerance parameter ------------------------------
+
+    def test_tolerance_lower_than_default_flags_low_overlap(self):
+        """A caller can lower tolerance to treat 2/4 = 50% overlap as echo.
+        This exercises the ``tolerance`` parameter that must not be silently
+        removed from the public signature (issue #423 NIT)."""
+        assert quality.is_echo(
+            "show me remote jobs", "show me other things", tolerance=0.5
+        ) is True
+
+    def test_tolerance_default_and_stricter_not_flag_low_overlap(self):
+        assert quality.is_echo("show me remote jobs", "show me other things") is False
+        assert quality.is_echo(
+            "show me remote jobs", "show me other things", tolerance=1.0
+        ) is False
+
+    def test_tolerance_out_of_range_rejected(self):
+        import pytest
+
+        with pytest.raises(ValueError):
+            quality.is_echo("show me jobs", "show me jobs", tolerance=0.0)
+        with pytest.raises(ValueError):
+            quality.is_echo("show me jobs", "show me jobs", tolerance=1.5)
+
 
 class TestHasHelpfulnessGap:
     def test_below_minimum_turns_is_not_a_gap(self):

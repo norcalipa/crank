@@ -29,6 +29,12 @@ class JobSearchConversation(TimeStampedModel):
         related_name="job_search_conversations",
     )
     active = models.BooleanField(default=True, help_text="Closed conversations are ignored on resume.")
+    helpfulness_gap_emitted = models.BooleanField(
+        default=False,
+        help_text="True once the one-time job_search_helpfulness_gap telemetry event "
+                  "has been emitted for this conversation. Set atomically so "
+                  "concurrent submissions emit the gap signal exactly once.",
+    )
 
     class Meta:
         app_label = "crank"

@@ -7,12 +7,14 @@ Covers auth, ownership, CSRF, malformed/oversized payloads, idempotent retry,
 service errors, rate limiting, and no cross-user leakage.
 """
 import json
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
-from django.test import Client, TestCase, override_settings
+from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 
 from crank.agents.job_search.demo import JobSearchService, JobSearchServiceError
@@ -1195,3 +1197,69 @@ class OrchestratorE2ESmokeTests(TestCase):
             messages = JobSearchConversation.objects.get(pk=conv_id).messages
             self.assertEqual(messages.filter(role="user").count(), 1)
             self.assertEqual(messages.filter(role="assistant").count(), 1)
+
+
+class HelpfulnessGapConcurrencyTest(TransactionTestCase):
+    """Concurrency safety of the one-time helpfulness-gap emission.
+
+    Issue #423 MINOR-2: the previous ``assistant_turns == MIN_HELPFUL_TURNS``
+    check was only a derived snapshot, so concurrent submissions could both
+    observe the crossing and double-emit (or both observe a later count and
+    miss it). The emission is now gated by a durable atomic transition: the
+    conditional update that flips ``helpfulness_gap_emitted`` false -> true on
+    a single row can succeed exactly once, regardless of how many concurrent
+    submissions race it.
+
+    ``TransactionTestCase`` (file-backed sqlite) is used so every worker
+    thread uses its own DB connection and contends on the same row, which is
+    what a real concurrent crossing looks like.
+    """
+
+    def test_concurrent_gap_crossing_emits_exactly_once(self):
+        from unittest.mock import patch as _patch
+
+        alice = User.objects.create_user("concurrent", "c@example.com", "pw")
+        client = Client()
+        client.force_login(alice)
+        cache.clear()
+
+        create = client.post(
+            reverse("agent-conversation-list"),
+            data=json.dumps({"create_new": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(create.status_code, 201)
+        conversation_id = create.json()["id"]
+
+        def post(content, key):
+            return client.post(
+                reverse("agent-conversation-detail", args=[conversation_id]),
+                data=json.dumps({"content": content, "idempotency_key": key}),
+                content_type="application/json",
+            )
+
+        # Force the gap condition true so that every concurrent submission
+        # reaches the one-time claim with the durable flag still unset. The
+        # race is then purely on the atomic claim, which is the invariant
+        # (issue #423 MINOR-2): exactly one submission may flip the flag.
+        with _patch(
+            "crank.agents.job_search.quality.has_helpfulness_gap", return_value=True
+        ):
+            with _patch("crank.views.job_search.monitoring.record_event") as record:
+                with ThreadPoolExecutor(max_workers=6) as pool:
+                    futures = [
+                        pool.submit(post, "race {}".format(i), str(uuid.uuid4()))
+                        for i in range(6)
+                    ]
+                    for future in futures:
+                        future.result()
+
+        gap_events = [
+            call for call in record.call_args_list
+            if call.args[0] == "job_search_helpfulness_gap"
+        ]
+        self.assertEqual(len(gap_events), 1)
+        self.assertTrue(
+            JobSearchConversation.objects.get(pk=conversation_id).helpfulness_gap_emitted
+        )
+        cache.clear()

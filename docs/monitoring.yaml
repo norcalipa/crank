@@ -21,6 +21,7 @@ facets:
   - stage
   - source_key
   - reason_code
+  - tool
 widgets:
   - name: Last successful scheduled run
     nrql: >-
