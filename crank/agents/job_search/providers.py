@@ -24,7 +24,9 @@ rather than a 500 crash.
 from __future__ import annotations
 
 import logging
+import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from typing import Any, TypeAlias, Union
 
 from crank.agents.job_search.errors import (
@@ -266,11 +268,24 @@ class OrchestratorJobSearchProvider:
         *,
         gateway: ProviderGateway | None = None,
         preference_service: Any | None = None,
-        preference_service_factory: callable | None = None,
-        match_service: callable | None = None,
+        preference_service_factory: Callable[[Any], Any] | None = None,
+        match_service: Callable[..., Any] | None = None,
         orchestrator: JobSearchOrchestrator | None = None,
-        orchestrator_factory: callable | None = None,
+        orchestrator_factory: Callable[[Any], JobSearchOrchestrator] | None = None,
     ) -> None:
+        # NIT: reject ambiguous / mutually exclusive construction modes so
+        # security-relevant wiring mistakes fail loudly instead of silently
+        # dropping inputs (e.g. a fixed ``orchestrator`` that ignores the
+        # factory/service/gateway wiring, or a factory that ignores the
+        # preference/match/gateway inputs).
+        self._reject_conflicting_modes(
+            gateway=gateway,
+            preference_service=preference_service,
+            preference_service_factory=preference_service_factory,
+            match_service=match_service,
+            orchestrator=orchestrator,
+            orchestrator_factory=orchestrator_factory,
+        )
         if orchestrator is not None:
             # A fully-wired orchestrator was injected (tests / callers); use it
             # verbatim rather than re-wiring the owner services. If the injected
@@ -310,6 +325,92 @@ class OrchestratorJobSearchProvider:
         # collection. Each distinct owner (or ``_NO_OWNER`` for an unresolved
         # owner) still gets its own freshly-wired orchestrator.
         self._orchestrators: OrderedDict[_OwnerKey, JobSearchOrchestrator] = OrderedDict()
+        # Guards the cache's lookup / build / insert / eviction so a shared,
+        # long-lived provider is safe under concurrent requests: ``get()`` and
+        # ``move_to_end()`` are atomic (no ``KeyError`` on eviction races) and
+        # same-owner concurrent misses single-flight (only one orchestrator is
+        # built and handed to every simultaneous turn). Reentrant so the owner
+        # factories (which may recurse into the provider) cannot self-deadlock.
+        self._lock: threading.RLock = threading.RLock()
+
+    @staticmethod
+    def _reject_conflicting_modes(
+        *,
+        gateway: ProviderGateway | None,
+        preference_service: Any | None,
+        preference_service_factory: Callable[[Any], Any] | None,
+        match_service: Callable[..., Any] | None,
+        orchestrator: JobSearchOrchestrator | None,
+        orchestrator_factory: Callable[[Any], JobSearchOrchestrator] | None,
+    ) -> None:
+        """Fail loudly on ambiguous constructor combinations.
+
+        A fixed ``orchestrator`` completely owns wiring, so any of the factory
+        / service / gateway / match inputs alongside it would be silently
+        dropped. Likewise an ``orchestrator_factory`` owns the full orchestrator
+        wiring (including any gateway), so the gateway and preference/match
+        inputs would be ignored. And ``preference_service`` vs
+        ``preference_service_factory`` are two competing preference-wiring
+        modes. Each conflict raises ``ValueError`` up front.
+        """
+        if orchestrator is not None:
+            _ignored = [
+                name
+                for name, val in (
+                    ("gateway", gateway),
+                    ("preference_service", preference_service),
+                    ("preference_service_factory", preference_service_factory),
+                    ("match_service", match_service),
+                    ("orchestrator_factory", orchestrator_factory),
+                )
+                if val is not None
+            ]
+            if _ignored:
+                raise ValueError(
+                    "cannot combine a fixed 'orchestrator' with "
+                    + ", ".join(sorted(_ignored))
+                    + "; the fixed orchestrator owns all wiring and these "
+                    "inputs would be ignored"
+                )
+        elif orchestrator_factory is not None:
+            _ignored = [
+                name
+                for name, value in (
+                    ("gateway", gateway),
+                    ("preference_service", preference_service),
+                    ("preference_service_factory", preference_service_factory),
+                    ("match_service", match_service),
+                )
+                if value is not None
+            ]
+            if _ignored:
+                raise ValueError(
+                    "cannot combine 'orchestrator_factory' with "
+                    + ", ".join(sorted(_ignored))
+                    + "; the factory owns the full orchestrator wiring and "
+                    "these inputs would be ignored"
+                )
+        if (
+            preference_service is not None
+            and preference_service_factory is not None
+        ):
+            raise ValueError(
+                "cannot supply both 'preference_service' and "
+                "'preference_service_factory'; choose one preference wiring mode"
+            )
+
+    def _ensure_lock(self) -> threading.RLock:
+        """Return the cache lock, creating it lazily on first use.
+
+        The lock is normally created in ``__init__``; lazy creation keeps the
+        cache concurrency-safe even when an instance is constructed via
+        ``__new__`` (a pattern the tests use to build a bare provider without
+        running the constructor).
+        """
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            lock = self._lock = threading.RLock()
+        return lock
 
     # -- owner resolution & safe injection ---------------------------------
 
@@ -343,14 +444,16 @@ class OrchestratorJobSearchProvider:
         bound: Any,
         what: str,
     ) -> None:
-        """Fail closed when an injected, owner-bound artifact is reused.
+        """Fail closed when an owner-bound artifact is reused for another owner.
 
-        *bound* is the owner an injected orchestrator/preference service is
-        tied to (its ``_user``), or ``None`` when it is owner-neutral. Owner-
-        neutral injection may be reused across owners; an owner-bound artifact
-        may only serve its own owner. A request for a different owner (or an
-        unresolved ``None`` owner) raises instead of leaking the bound owner's
-        wiring or data.
+        *bound* is the owner an injected or factory-built orchestrator /
+        preference service is tied to (its ``_user``), or ``None`` when it is
+        owner-neutral. Owner-neutral artifacts may be reused across owners; an
+        owner-bound artifact may only serve its own owner. A request for a
+        different owner (or an unresolved ``None`` owner) raises instead of
+        leaking the bound owner's wiring or data. The error deliberately exposes
+        no owner ``repr()`` — only the role name and a generic remediation — so
+        no owner fields can leak through the exception (NIT).
         """
         if bound is None:
             return
@@ -358,8 +461,8 @@ class OrchestratorJobSearchProvider:
             requested, bound
         ):
             raise ValueError(
-                f"the injected {what} is owner-scoped to {bound!r} and cannot "
-                f"serve {requested!r}; inject a per-owner factory instead"
+                f"the {what} is owner-scoped and cannot serve a different owner; "
+                "inject a per-owner factory instead"
             )
 
     @staticmethod
@@ -379,7 +482,15 @@ class OrchestratorJobSearchProvider:
         """Return the preference service to wire for *user*."""
         factory = getattr(self, "_preference_service_factory", None)
         if factory is not None:
-            return factory(user)
+            # MINOR-1: validate the factory product is actually owner-bound to
+            # the requested owner before wiring it. A buggy factory returning
+            # Alice's adapter for Bob would otherwise persist Bob's patch into
+            # Alice's row.
+            service = factory(user)
+            self._reject_mismatched_owner(
+                user, getattr(service, "_user", None), "preference service factory"
+            )
+            return service
         injected = getattr(self, "_preference_service", None)
         if injected is None:
             # Wire the real owner-scoped preference store. The null fallback is
@@ -407,38 +518,54 @@ class OrchestratorJobSearchProvider:
     def _ensure_orchestrator(self, user: Any) -> JobSearchOrchestrator:
         """Return the orchestrator for *user*, wiring preferences and matches.
 
-        Because the owner service wiring depends on ``conversation.owner``
+        Because the owner preference wiring depends on ``conversation.owner``
         (only known at ``generate_reply`` time), the orchestrator is built on
-        first use and cached **per owner**. Reusing one provider across
-        different conversation owners builds — and returns — an orchestrator
-        wired for each owner, never the first owner's. The owner's real,
-        preference-grounded ``PreferenceService`` and ``match_service`` are
-        wired so saved preferences feed matching and preference patches persist.
+        first use and cached **per user**. Reusing one provider across different
+        conversation owners builds, and returns, an orchestrator wired for each
+        owner, never the first owner's. The owner's real, preference-grounded
+        ``PreferenceService`` and ``match_service`` are wired so saved
+        preferences feed matching and preference patches persist.
+
+        The whole lookup / build / insert / recency / eviction cycle runs under
+        :attr:`_lock` so a shared provider is safe under concurrent requests
+        (MINOR-2): a recency update can never race an eviction into a
+        ``KeyError``, and simultaneous misses for one owner single-flight into a
+        single orchestrator.
         """
-        if self._fixed_orchestrator is not None:
-            self._reject_mismatched_owner(
-                user, self._fixed_orchestrator_owner, "orchestrator"
-            )
-            return self._fixed_orchestrator
-        key = self._owner_key(user)
-        cached = self._orchestrators.get(key)
-        if cached is not None:
-            self._orchestrators.move_to_end(key)
-            return cached
-        factory = getattr(self, "_orchestrator_factory", None)
-        if factory is not None:
-            orchestrator = factory(user)
-        else:
-            pref = self._resolve_preference_service(user)
-            match = self._match_service or _matches_for_user(user)
-            orchestrator = JobSearchOrchestrator(
-                gateway=self._gateway,
-                preference_service=pref,
-                user=user,
-                match_service=match,
-            )
-        self._cache_orchestrator(key, orchestrator)
-        return orchestrator
+        with self._ensure_lock():
+            if self._fixed_orchestrator is not None:
+                self._reject_mismatched_owner(
+                    user, self._fixed_orchestrator_owner, "orchestrator"
+                )
+                return self._fixed_orchestrator
+            key = self._owner_key(user)
+            cached = self._orchestrators.get(key)
+            if cached is not None:
+                self._orchestrators.move_to_end(key)
+                return cached
+            factory = getattr(self, "_orchestrator_factory", None)
+            if factory is not None:
+                # MINOR-1: validate the factory product before caching it under
+                # that owner's key. A buggy factory returning Alice's
+                # orchestrator for Bob would otherwise be cached under Bob's key
+                # and leak Alice's wiring.
+                orchestrator = factory(user)
+                self._reject_mismatched_owner(
+                    user,
+                    getattr(orchestrator, "_user", None),
+                    "orchestrator factory",
+                )
+            else:
+                pref = self._resolve_preference_service(user)
+                match = self._match_service or _matches_for_user(user)
+                orchestrator = JobSearchOrchestrator(
+                    gateway=self._gateway,
+                    preference_service=pref,
+                    user=user,
+                    match_service=match,
+                )
+            self._cache_orchestrator(key, orchestrator)
+            return orchestrator
 
     @staticmethod
     def _resolve_user(conversation):

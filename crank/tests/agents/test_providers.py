@@ -11,6 +11,7 @@ These tests verify:
 - No live network calls (all via fake transports/gateways)
 """
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -488,6 +489,136 @@ class OrchestratorProviderTests(SimpleTestCase):
         self.assertIsNot(orch_alice, orch_bob)
         self.assertIs(orch_alice._user, alice)
         self.assertIs(orch_bob._user, bob)
+
+    # -- MINOR-1 (security gate): validate factory results before caching ---
+
+    def test_orchestrator_factory_wrong_owner_fails_closed(self):
+        """MINOR-1: a buggy ``orchestrator_factory`` that returns Alice's
+        orchestrator while asked for Bob must fail closed rather than be cached
+        under Bob's key (which would leak Alice's wiring to Bob)."""
+        alice = SimpleNamespace(pk=1, username="alice")
+        bob = SimpleNamespace(pk=2, username="bob")
+
+        def factory(user):
+            return JobSearchOrchestrator(
+                gateway=FakeGateway(),
+                preference_service=_OwnerScopedPref(alice),
+                user=alice,
+            )
+
+        provider = OrchestratorJobSearchProvider(orchestrator_factory=factory)
+        with pytest.raises(ValueError):
+            provider._ensure_orchestrator(bob)
+        # The mismatched artifact was never cached under Bob's key.
+        self.assertNotIn(provider._owner_key(bob), provider._orchestrators)
+
+    def test_preference_service_factory_wrong_owner_fails_closed(self):
+        """MINOR-1: a ``preference_service_factory`` that returns Alice's
+        adapter while asked for Bob must fail closed so Bob's preference patch
+        cannot be persisted to Alice's row."""
+        alice = SimpleNamespace(pk=1, username="alice")
+        bob = SimpleNamespace(pk=2, username="bob")
+
+        def factory(user):
+            return _OwnerScopedPref(alice)
+
+        provider = OrchestratorJobSearchProvider(
+            gateway=FakeGateway(),
+            preference_service_factory=factory,
+        )
+        with pytest.raises(ValueError):
+            provider._ensure_orchestrator(bob)
+        self.assertNotIn(provider._owner_key(bob), provider._orchestrators)
+
+    # -- MINOR-2 (security gate): concurrency-safe, single-flight cache -----
+
+    def test_concurrent_same_owner_single_flights(self):
+        """MINOR-2: simultaneous misses for one owner build exactly one
+        orchestrator and every concurrent caller receives that same instance —
+        no duplicate construction and no eviction/recency ``KeyError`` race."""
+        alice = SimpleNamespace(pk=1, username="alice")
+        calls = []
+
+        def factory(user):
+            calls.append(user)
+            return JobSearchOrchestrator(
+                gateway=FakeGateway(),
+                preference_service=_OwnerScopedPref(user),
+                user=user,
+            )
+
+        provider = OrchestratorJobSearchProvider(orchestrator_factory=factory)
+        results = {}
+        barrier = threading.Barrier(8)
+
+        def worker():
+            barrier.wait()
+            results[threading.get_ident()] = provider._ensure_orchestrator(alice)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(calls), 1)  # single-flight: the factory ran once
+        orchs = list(results.values())
+        self.assertEqual(len(orchs), 8)
+        for orch in orchs:
+            self.assertIs(orch, orchs[0])  # all callers got one identical orchestrator
+        self.assertIs(provider._ensure_orchestrator(alice), orchs[0])  # still cached
+
+    # -- NIT (security gate): reject ambiguous constructor modes -----------
+
+    def test_fixed_orchestrator_with_other_wiring_rejected(self):
+        """NIT: a fixed ``orchestrator`` must not silently drop factory / service
+        / gateway / match wiring supplied alongside it."""
+        fixed = JobSearchOrchestrator(
+            gateway=FakeGateway(), preference_service=FakePreferenceService()
+        )
+        with self.assertRaises(ValueError):
+            OrchestratorJobSearchProvider(orchestrator=fixed, gateway=FakeGateway())
+        with self.assertRaises(ValueError):
+            OrchestratorJobSearchProvider(
+                orchestrator=fixed,
+                preference_service_factory=lambda user: FakePreferenceService(),
+            )
+        with self.assertRaises(ValueError):
+            OrchestratorJobSearchProvider(orchestrator=fixed, match_service=lambda u: u)
+
+    def test_orchestrator_factory_with_other_wiring_rejected(self):
+        """NIT: an ``orchestrator_factory`` owns the full wiring, so gateway and
+        preference/match inputs alongside it would be silently ignored."""
+        def factory(user):
+            return JobSearchOrchestrator(
+                gateway=FakeGateway(),
+                preference_service=_OwnerScopedPref(user),
+                user=user,
+            )
+
+        with self.assertRaises(ValueError):
+            OrchestratorJobSearchProvider(
+                orchestrator_factory=factory, gateway=FakeGateway()
+            )
+        with self.assertRaises(ValueError):
+            OrchestratorJobSearchProvider(
+                orchestrator_factory=factory,
+                preference_service=_OwnerScopedPref(SimpleNamespace(pk=1)),
+            )
+        with self.assertRaises(ValueError):
+            OrchestratorJobSearchProvider(
+                orchestrator_factory=factory, match_service=lambda u: u
+            )
+
+    def test_preference_service_and_factory_mutually_exclusive(self):
+        """NIT: ``preference_service`` and ``preference_service_factory`` are
+        competing preference-wiring modes and must not be combined."""
+        with self.assertRaises(ValueError):
+            OrchestratorJobSearchProvider(
+                gateway=FakeGateway(),
+                preference_service=FakePreferenceService(),
+                preference_service_factory=lambda user: FakePreferenceService(),
+            )
 
     # -- MINOR-1: bounded cache --------------------------------------------
 
