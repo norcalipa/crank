@@ -353,6 +353,42 @@ class MonitoringAdminTests(TestCase):
         self.assertTrue(audit.confirmed)
         event.assert_called_once()
 
+    def test_gated_action_and_audit_are_transactional(self):
+        # MINOR: the audit write is transactionally coupled to the mutation it
+        # attests - if the audit raises, the operational change must roll back
+        # rather than commit without its promised audit row.
+        switch = CapabilitySwitch.objects.create(key="interactive_agent", enabled=True)
+        switch_admin = CapabilitySwitchAdmin(CapabilitySwitch, self.site)
+        with patch.object(switch_admin, "message_user"), patch(
+            "crank.admin.monitoring.record_event"
+        ):
+            with patch(
+                "crank.admin.OperationalChangeAudit.record",
+                side_effect=RuntimeError("audit write failed"),
+            ):
+                with self.assertRaises(RuntimeError):
+                    switch_admin.disable_capabilities(
+                        self.request(confirmed=True),
+                        CapabilitySwitch.objects.filter(pk=switch.pk),
+                    )
+        switch.refresh_from_db()
+        self.assertTrue(switch.enabled)  # mutation rolled back with the audit
+        self.assertFalse(OperationalChangeAudit.objects.exists())
+
+    def test_confirmable_actions_allowlist_is_enforced(self):
+        # NIT: the gated-action allowlist is asserted, so a future custom action
+        # can't silently d... the confirmation gate by convention alone.
+        admin = CapabilitySwitchAdmin(CapabilitySwitch, self.site)
+        admin.actions = ["enable_capabilities", "disable_capabilities", "oops_action"]
+        errors = admin.check()
+        self.assertTrue(any(e.id == "crank.E422" for e in errors))
+        self.assertTrue(
+            any("oops_action" in (e.msg or "") for e in errors)
+        )
+        # Restoring the declaration clears the error.
+        admin.confirmable_actions = ["enable_capabilities", "disable_capabilities", "oops_action"]
+        self.assertEqual(admin.check(), [])
+
 
 class CapabilitySwitchClientAdminTest(TestCase):
     """E2E admin-client path locking the shared confirm mixin (issue #422)."""
@@ -500,6 +536,15 @@ class JobSourceCatalogClientAdminTest(TestCase):
             enabled=enabled,
         )
 
+    def _unique_source(self, tag, enabled):
+        return JobSourceCatalog.objects.create(
+            name=f"Drift source {tag}",
+            adapter_key=f"drift-{tag}",
+            base_url="https://jobs.example.test",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=enabled,
+        )
+
     def test_job_source_gated_action_e2e(self):
         source = self._source(enabled=True)
         changelist = reverse("admin:crank_jobsourcecatalog_changelist")
@@ -605,3 +650,140 @@ class JobSourceCatalogClientAdminTest(TestCase):
         self.assertFalse(
             JobSourceCatalog.objects.filter(pk=source.pk).exists()
         )
+
+    def test_select_across_count_drift_requires_reconfirmation(self):
+        # MINOR: a confirmed select_across=1 POST must not act on a matching
+        # set that grew/changed since the operator reviewed it. On count drift
+        # the page re-renders for re-confirmation instead of executing.
+        s1 = self._unique_source("one", enabled=True)
+        s2 = self._unique_source("two", enabled=True)
+        base = reverse("admin:crank_jobsourcecatalog_changelist")
+        url = base + "?enabled=1"
+        data = {
+            "action": "disable_sources",
+            "_selected_action": [str(s1.pk)],
+            "index": "0",
+            "select_across": "1",
+        }
+        resp = self.client.post(url, data)
+        self.assertEqual(resp.status_code, 200)
+        content = resp.content.decode()
+        self.assertIn("Confirm admin action", content)
+        self.assertIn('name="confirmed_total"', content)
+        self.assertIn('name="confirmed_total" value="2"', content)
+        # Drift before confirm: a third source joins the matching set.
+        self._unique_source("three", enabled=True)
+        with patch("crank.admin.monitoring.record_event"):
+            resp2 = self.client.post(
+                url, {**data, "confirm": "yes", "confirmed_total": "2"}
+            )
+        # Drift detected: re-render the confirmation page, do NOT execute.
+        self.assertEqual(resp2.status_code, 200)
+        content2 = resp2.content.decode()
+        self.assertIn("Confirm admin action", content2)
+        self.assertIn("current", content2)
+        self.assertIn('name="confirmed_total" value="3"', content2)
+        s1.refresh_from_db()
+        s2.refresh_from_db()
+        self.assertTrue(s1.enabled)
+        self.assertTrue(s2.enabled)
+        self.assertFalse(OperationalChangeAudit.objects.exists())
+        # Re-confirming against the revised set executes (all three disabled).
+        with patch("crank.admin.monitoring.record_event"):
+            resp3 = self.client.post(
+                url, {**data, "confirm": "yes", "confirmed_total": "3"}
+            )
+        self.assertEqual(resp3.status_code, 302)
+        s1.refresh_from_db()
+        s2.refresh_from_db()
+        self.assertFalse(s1.enabled)
+        self.assertFalse(s2.enabled)
+
+    def test_confirmation_preserves_encoded_query_string(self):
+        # NIT: the confirmation re-POST must preserve an encoded changelist query
+        # string (&, quotes, <>, spaces) via get_full_path, with the values
+        # percent-encoded so no attribute breakout is possible.
+        import re
+        from urllib.parse import urlencode
+
+        payload = 'onmouseover="alert(1)"> <script> &'
+        source = JobSourceCatalog.objects.create(
+            name=f"Encoded {payload} source",
+            adapter_key="enc-1",
+            base_url="https://jobs.example.test",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=False,
+        )
+        base = reverse("admin:crank_jobsourcecatalog_changelist")
+        url = base + "?" + urlencode({"q": payload, "enabled": "0"})
+        data = {
+            "action": "disable_sources",
+            "_selected_action": [str(source.pk)],
+            "index": "0",
+            "select_across": "0",
+        }
+        resp = self.client.post(url, data)
+        self.assertEqual(resp.status_code, 200)
+        content = resp.content.decode()
+        self.assertIn("Confirm admin action", content)
+        self.assertIn('name="confirmed_total"', content)
+        match = re.search(r'<form[^>]*action="([^"]+)"', content)
+        self.assertIsNotNone(match)
+        # The page (extends admin base) may contain other forms (e.g. logout);
+        # pick the confirmation form that targets this changelist path.
+        action = next(
+            (a for a in re.findall(r'<form[^>]*action="([^"]+)"', content)
+             if a.startswith(base)),
+            match.group(1),
+        )
+        self.assertTrue(action.startswith(base + "?q="))
+        # Dangerous characters are percent-encoded (no raw form exists) and the
+        # between-param & is HTML-escaped to &amp; in the rendered attribute.
+        self.assertIn("%22", action)  # quote
+        self.assertIn("%3Cscript%3E", action)  # <script>
+        self.assertIn("onmouseover%3D%22alert", action)  # = and "
+        self.assertIn("%26", action)  # & inside the query value
+        self.assertNotIn("<script>", action)
+        self.assertNotIn(" onmouseover=", action)
+        self.assertIn("&amp;enabled=0", action)
+
+    def test_empty_selection_delegates_to_django_validation(self):
+        # NIT: a POST whose selection resolves to nothing under the current
+        # filter must not render a spurious confirmation page; it defers to
+        # Django's native "no items" handling and mutates nothing.
+        source = self._source(enabled=True)
+        base = reverse("admin:crank_jobsourcecatalog_changelist")
+        # Only enabled source is filtered out by ?enabled=0 -> empty queryset.
+        url = base + "?enabled=0"
+        data = {
+            "action": "disable_sources",
+            "_selected_action": [str(source.pk)],
+            "index": "0",
+            "select_across": "0",
+        }
+        resp = self.client.post(url, data)
+        content = resp.content.decode()
+        self.assertNotIn("Confirm admin action", content)
+        source.refresh_from_db()
+        self.assertTrue(source.enabled)
+        self.assertFalse(OperationalChangeAudit.objects.exists())
+
+    def test_unknown_action_gets_native_warning_not_confirmation_page(self):
+        # NIT: an unknown/malformed action name gets a native "No action
+        # selected" warning rather than the gate's confirmation page.
+        source = self._source(enabled=True)
+        admin = JobSourceCatalogAdmin(JobSourceCatalog, AdminSite())
+        from django.test import RequestFactory
+
+        request = RequestFactory().post(
+            "/admin/", {"action": "not_a_real_action", "index": "0"}
+        )
+        request.user = self.staff
+        with patch.object(admin, "message_user") as m:
+            result = admin.response_action(
+                request, JobSourceCatalog.objects.none()
+            )
+        self.assertIsNone(result)
+        self.assertEqual(m.call_count, 1)
+        rendered = " ".join(str(a) for a in m.call_args.args)
+        self.assertIn("No action selected", rendered)

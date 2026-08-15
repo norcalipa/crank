@@ -16,10 +16,26 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
   <h1>Confirm action</h1>
   <p>
     You are about to apply <strong>{{ action_description }}</strong>
-    to the {{ objects|length }} selected {{ object_label|default:"object" }}(s) below.
+    to the {{ total_count }} currently matching {{ object_label|default:"object" }}(s) below.
     This is a deliberate, auditable change: it will be recorded in
     <code>OperationalChangeAudit</code> with confirmation before it is applied.
   </p>
+
+  {% if drift %}
+    {# select_across=1 matching set changed since this page was first shown. #}
+    <div class="errornote">
+      {{ drift_warning }}
+    </div>
+  {% endif %}
+
+  {% if select_across == "1" %}
+    <p class="help">
+      <strong>Note:</strong> this action applies to the <em>current</em> set of
+      {{ total_count }} objects matching your filters, not just the ones listed below.
+      The set may change between preview and confirmation; if it does, you will be
+      asked to confirm again against the revised set.
+    </p>
+  {% endif %}
 
   {# get_full_path preserves the changelist query string (filters, search, page) #}
   {# so the re-POST runs against the same filtered subset shown on this page. #}
@@ -28,6 +44,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     <input type="hidden" name="action" value="{{ action_name }}">
     <input type="hidden" name="index" value="0">
     <input type="hidden" name="select_across" value="{{ select_across }}">
+    <input type="hidden" name="confirmed_total" value="{{ total_count }}">
     <input type="hidden" name="confirm" value="yes">
     {% for pk in selected_pks %}
       <input type="hidden" name="{{ action_checkbox_name }}" value="{{ pk }}">

@@ -2,8 +2,10 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 from django.contrib import admin
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
-from django.db import models
+from django.core import checks
+from django.db import models, transaction
 from django.shortcuts import render
+from django.utils.translation import gettext as _
 from crank.models.agent_run import AgentRun
 from crank.models.crawl_run import CrawlRun
 from crank.models.conversation import Conversation, Message
@@ -81,6 +83,15 @@ class ConfirmableAdminActionMixin:
     Action bodies must still guard themselves with
     :meth:`_require_confirmation` so a direct/in-band call without
     ``confirm=yes`` cannot mutate state either.
+
+    **Transaction policy (documented MINOR-1 choice).** Every confirmable action
+    wraps its mutations and audit writes in a single ``transaction.atomic()``,
+    giving whole-action (all-or-nothing) atomicity: a multi-row batch either
+    fully applies *with* its audit rows or fully rolls back. No partial batch is
+    ever persisted, so a failed batch can be retried without double-applying the
+    rows that succeeded before the failure point. This is a deliberate trade
+    against per-row atomicity (which would preserve earlier good rows but could
+    leave a visibly split batch / interleaved audits).
     """
 
     _confirm_warning = (
@@ -94,6 +105,39 @@ class ConfirmableAdminActionMixin:
     # Like Django's own ``delete_confirmation_max_display``, bound how many
     # objects the ``select_across=1`` confirmation preview evaluates in memory.
     _confirm_max_display = 100
+    # Every gated admin must enumerate the actions it guards here. ``check()``
+    # asserts that no custom action drifts outside this allowlist, so a future
+    # site-wide/custom action can't silently bypass the confirmation gate.
+    confirmable_actions = ()
+    # Copy of the confirmation page copy used to warn when the ``select_across``
+    # matching set changes between preview and confirm.
+    _drift_warning = (
+        "The set of objects matching the current filters changed since you "
+        "reviewed it. The action now applies to a different set than shown "
+        "above; please review the current matching set and confirm again."
+    )
+
+    def check(self, **kwargs):
+        """Fail loudly if a custom action isn't declared ``confirmable_actions``.
+
+        The gate is enforced by convention (each action body must call
+        ``_require_confirmation``); this system check makes drift detectable at
+        startup/test time instead of only by review.
+        """
+        errors = super().check(**kwargs) if hasattr(super(), "check") else []
+        declared = set(self.confirmable_actions or ())
+        for name in self.actions or ():
+            if name == self._delete_action_name or name in declared:
+                continue
+            errors.append(
+                checks.Error(
+                    f"Admin action {name!r} on {self.__class__.__name__} mutates "
+                    f"state but is missing from confirmable_actions. Add it there "
+                    f"and make sure the action body calls _require_confirmation().",
+                    id="crank.E422",
+                )
+            )
+        return errors
 
     def _confirmed(self, request):
         """True only when the POST supplies ``confirm=yes``.
@@ -122,12 +166,53 @@ class ConfirmableAdminActionMixin:
         ``_delete_action_name``): it has its own confirmation page keyed on
         ``request.POST['post']``, and intercepting it would bounce the operator
         forever between the two confirmation pages without ever deleting.
+
+        Malformed/no-selection POSTs fall through to Django's native action-form
+        validation (native "no action selected" / "items must be selected"
+        warnings) instead of rendering a spurious confirmation page. Confirmed
+        ``select_across=1`` POSTs are re-checked against the previewed count and
+        re-confirmed on drift so the operator never acts on a result set they
+        didn't review.
         """
-        if self._requested_action(request) == self._delete_action_name:
+        action_name = self._requested_action(request)
+        if action_name == self._delete_action_name:
+            return super().response_action(request, queryset, **kwargs)
+        if not action_name or action_name not in self.get_actions(request):
+            # Unknown/blank action: don't show the gate's confirmation page.
+            self.message_user(request, _("No action selected."), level="warning")
+            return None
+        if not queryset and not self._select_across_flag(request):
+            # Nothing to confirm: delegate so Django issues its native
+            # "items must be selected" warning rather than a spurious page.
             return super().response_action(request, queryset, **kwargs)
         if not self._require_confirmation(request):
             return self.render_action_confirmation(request, queryset)
+        if self._count_drifted(request, queryset):
+            # MINOR: the matching set changed since the operator reviewed it.
+            return self.render_action_confirmation(request, queryset, drift=True)
         return super().response_action(request, queryset, **kwargs)
+
+    def _select_across_flag(self, request):
+        """True when the changelist form requested select-across."""
+        return request.POST.get("select_across", "0") == "1"
+
+    def _count_drifted(self, request, queryset):
+        """Whether the reviewed ``select_across`` set changed before confirm.
+
+        Only applies when the operator confirmed a ``select_across=1`` preview
+        that carried a ``confirmed_total`` snapshot; absent that value (e.g. a
+        direct/older flow) no drift gate is imposed.
+        """
+        if not self._select_across_flag(request):
+            return False
+        reviewed = request.POST.get("confirmed_total")
+        if reviewed is None:
+            return False
+        try:
+            reviewed = int(reviewed)
+        except (TypeError, ValueError):
+            reviewed = -1
+        return reviewed >= 0 and queryset.count() != reviewed
 
     def _requested_action(self, request):
         """Return the action name the changelist form requested."""
@@ -148,18 +233,19 @@ class ConfirmableAdminActionMixin:
                 return description
         return action_name
 
-    def render_action_confirmation(self, request, queryset):
+    def render_action_confirmation(self, request, queryset, drift=False):
         """Render a confirmation page that re-POSTs the same gated action.
 
         For ``select_across=1`` the queryset is truncated to
         ``_confirm_max_display`` items (mirroring Django's own delete
         confirmation) so large filtered sets never load the whole table into
         memory or emit a giant page; the form still re-POSTs ``select_across=1``
-        so the full (still filtered) set is acted on.
+        with a ``confirmed_total`` snapshot so the confirmed POST can detect
+        when the matching set drifted from what the operator reviewed.
         """
         action_name = self._requested_action(request)
         selected_pks = request.POST.getlist(ACTION_CHECKBOX_NAME)
-        select_across = request.POST.get("select_across", "0") == "1"
+        select_across = self._select_across_flag(request)
         if select_across:
             total = queryset.count()
             objects = list(queryset[: self._confirm_max_display])
@@ -181,6 +267,8 @@ class ConfirmableAdminActionMixin:
                 "objects": objects,
                 "total_count": total,
                 "truncated": truncated,
+                "drift": drift,
+                "drift_warning": self._drift_warning,
                 "selected_pks": selected_pks,
                 "select_across": "1" if select_across else "0",
                 "action_checkbox_name": ACTION_CHECKBOX_NAME,
@@ -359,6 +447,11 @@ class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admi
     # Every action on this admin mutates state only after a shared
     # intermediate confirmation step (see ConfirmableAdminActionMixin).
     actions = ["approve_requests", "reject_requests", "mark_duplicate", "approve_crawl_sources", "queue_refresh"]
+    # Allow-list enforced by ConfirmableAdminActionMixin.check().
+    confirmable_actions = [
+        "approve_requests", "reject_requests", "mark_duplicate",
+        "approve_crawl_sources", "queue_refresh",
+    ]
 
     def _audit(self, request, item, action, old, new):
         OperationalChangeAudit.record(actor=request.user, target_type="company_request", target_id=item.pk, action=action, old_value=old, new_value=new, confirmed=True)
@@ -368,14 +461,17 @@ class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admi
         if not self._require_confirmation(request):
             return
         updated = 0
-        for item in queryset.filter(status=CompanyRequest.Status.PENDING):
-            organization = Organization.objects.create(name=item.company_name, url=item.website_url, status=0, public=True)
-            old = {"status": item.status, "approved_organization": None}
-            item.status = CompanyRequest.Status.APPROVED
-            item.approved_organization = organization
-            item.save(update_fields=["status", "approved_organization", "modified"])
-            self._audit(request, item, "approve", old, {"status": item.status, "approved_organization": organization.pk})
-            updated += 1
+        # All-or-nothing whole-action transaction (documented MINOR-1 policy; see
+        # ConfirmableAdminActionMixin): change + audit commit together or roll back.
+        with transaction.atomic():
+            for item in queryset.filter(status=CompanyRequest.Status.PENDING):
+                organization = Organization.objects.create(name=item.company_name, url=item.website_url, status=0, public=True)
+                old = {"status": item.status, "approved_organization": None}
+                item.status = CompanyRequest.Status.APPROVED
+                item.approved_organization = organization
+                item.save(update_fields=["status", "approved_organization", "modified"])
+                self._audit(request, item, "approve", old, {"status": item.status, "approved_organization": organization.pk})
+                updated += 1
         self.message_user(request, f"{updated} suggestion(s) approved as pending organizations.")
 
     @admin.action(description="Reject selected suggestions")
@@ -383,12 +479,14 @@ class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admi
         if not self._require_confirmation(request):
             return
         updated = 0
-        for item in queryset.filter(status=CompanyRequest.Status.PENDING):
-            old = {"status": item.status}
-            item.status = CompanyRequest.Status.REJECTED
-            item.save(update_fields=["status", "modified"])
-            self._audit(request, item, "reject", old, {"status": item.status})
-            updated += 1
+        # All-or-nothing whole-action transaction (documented MINOR-1 policy).
+        with transaction.atomic():
+            for item in queryset.filter(status=CompanyRequest.Status.PENDING):
+                old = {"status": item.status}
+                item.status = CompanyRequest.Status.REJECTED
+                item.save(update_fields=["status", "modified"])
+                self._audit(request, item, "reject", old, {"status": item.status})
+                updated += 1
         self.message_user(request, f"{updated} suggestion(s) rejected and audited.")
 
     @admin.action(description="Mark selected suggestions as duplicates")
@@ -396,12 +494,14 @@ class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admi
         if not self._require_confirmation(request):
             return
         updated = 0
-        for item in queryset.filter(status=CompanyRequest.Status.PENDING).exclude(duplicate_of=None):
-            old = {"status": item.status, "duplicate_of": None}
-            item.status = CompanyRequest.Status.DUPLICATE
-            item.save(update_fields=["status", "modified"])
-            self._audit(request, item, "duplicate", old, {"status": item.status, "duplicate_of": item.duplicate_of_id})
-            updated += 1
+        # All-or-nothing whole-action transaction (documented MINOR-1 policy).
+        with transaction.atomic():
+            for item in queryset.filter(status=CompanyRequest.Status.PENDING).exclude(duplicate_of=None):
+                old = {"status": item.status, "duplicate_of": None}
+                item.status = CompanyRequest.Status.DUPLICATE
+                item.save(update_fields=["status", "modified"])
+                self._audit(request, item, "duplicate", old, {"status": item.status, "duplicate_of": item.duplicate_of_id})
+                updated += 1
         self.message_user(request, f"{updated} suggestion(s) marked as duplicates and audited.")
 
     @admin.action(description="Approve crawl source workflow")
@@ -409,11 +509,13 @@ class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admi
         if not self._require_confirmation(request):
             return
         updated = 0
-        for item in queryset.filter(status=CompanyRequest.Status.APPROVED, crawl_source_approved=False):
-            item.crawl_source_approved = True
-            item.save(update_fields=["crawl_source_approved", "modified"])
-            self._audit(request, item, "approve_source", {"crawl_source_approved": False}, {"crawl_source_approved": True})
-            updated += 1
+        # All-or-nothing whole-action transaction (documented MINOR-1 policy).
+        with transaction.atomic():
+            for item in queryset.filter(status=CompanyRequest.Status.APPROVED, crawl_source_approved=False):
+                item.crawl_source_approved = True
+                item.save(update_fields=["crawl_source_approved", "modified"])
+                self._audit(request, item, "approve_source", {"crawl_source_approved": False}, {"crawl_source_approved": True})
+                updated += 1
         self.message_user(request, f"{updated} crawl source workflow(s) approved; no external calls were made.")
 
     @admin.action(description="Queue refresh after source approval")
@@ -421,11 +523,13 @@ class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admi
         if not self._require_confirmation(request):
             return
         updated = 0
-        for item in queryset.filter(status=CompanyRequest.Status.APPROVED, crawl_source_approved=True, refresh_queued=False):
-            item.refresh_queued = True
-            item.save(update_fields=["refresh_queued", "modified"])
-            self._audit(request, item, "queue_refresh", {"refresh_queued": False}, {"refresh_queued": True})
-            updated += 1
+        # All-or-nothing whole-action transaction (documented MINOR-1 policy).
+        with transaction.atomic():
+            for item in queryset.filter(status=CompanyRequest.Status.APPROVED, crawl_source_approved=True, refresh_queued=False):
+                item.refresh_queued = True
+                item.save(update_fields=["refresh_queued", "modified"])
+                self._audit(request, item, "queue_refresh", {"refresh_queued": False}, {"refresh_queued": True})
+                updated += 1
         self.message_user(request, f"{updated} refresh request(s) queued for the approved workflow.")
 
 
@@ -484,87 +588,100 @@ class SourceCatalogAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin
     readonly_fields = ["approved_at", "created", "modified"]
     filter_horizontal = ["supported_score_types"]
     actions = ["approve_sources", "block_sources", "enable_sources", "disable_sources", "trigger_crawls"]
+    # Allow-list enforced by ConfirmableAdminActionMixin.check().
+    confirmable_actions = [
+        "approve_sources", "block_sources", "enable_sources",
+        "disable_sources", "trigger_crawls",
+    ]
 
     def save_model(self, request, obj, form, change):
-        """Persist the row and record an audit (created/changed deltas)."""
+        """Persist the row and record an audit (created/changed deltas).
+
+        The write and its audit rows share one transaction so the promised
+        ``OperationalChangeAudit``/``SourceCatalogAudit`` never detaches from
+        the change it attests.
+        """
         old = None
         if change:
             try:
                 old = SourceCatalog.objects.get(pk=obj.pk)
             except SourceCatalog.DoesNotExist:
                 old = None
-        super().save_model(request, obj, form, change)
-        if not change:
-            SourceCatalogAudit.record(
-                source=obj, user=request.user, action=SourceCatalogAudit.Action.CREATED,
-                note=f"Source catalog created via admin.",
-            )
-            return
-        changes = {}
-        if old is not None:
-            for field_name in ("name", "adapter_key", "base_url", "approval_state",
-                               "enabled", "cadence", "timeout_seconds",
-                               "rate_limit_per_minute", "max_response_bytes"):
-                new_v = getattr(obj, field_name)
-                old_v = getattr(old, field_name)
-                if new_v != old_v:
-                    changes[field_name] = (old_v, new_v)
-        if changes:
-            SourceCatalogAudit.record(
-                source=obj, user=request.user, action=SourceCatalogAudit.Action.CHANGED,
-                changes=changes, note=f"Source catalog updated via admin.",
-            )
-            OperationalChangeAudit.record(
-                actor=request.user,
-                target_type="rating_source",
-                target_id=obj.pk,
-                action="changed",
-                old_value={field: old for field, (old, _new) in changes.items()},
-                new_value={field: new for field, (_old, new) in changes.items()},
-                confirmed=True,
-            )
+        with transaction.atomic():
+            super().save_model(request, obj, form, change)
+            if not change:
+                SourceCatalogAudit.record(
+                    source=obj, user=request.user, action=SourceCatalogAudit.Action.CREATED,
+                    note=f"Source catalog created via admin.",
+                )
+                return
+            changes = {}
+            if old is not None:
+                for field_name in ("name", "adapter_key", "base_url", "approval_state",
+                                   "enabled", "cadence", "timeout_seconds",
+                                   "rate_limit_per_minute", "max_response_bytes"):
+                    new_v = getattr(obj, field_name)
+                    old_v = getattr(old, field_name)
+                    if new_v != old_v:
+                        changes[field_name] = (old_v, new_v)
+            if changes:
+                SourceCatalogAudit.record(
+                    source=obj, user=request.user, action=SourceCatalogAudit.Action.CHANGED,
+                    changes=changes, note=f"Source catalog updated via admin.",
+                )
+                OperationalChangeAudit.record(
+                    actor=request.user,
+                    target_type="rating_source",
+                    target_id=obj.pk,
+                    action="changed",
+                    old_value={field: old for field, (old, _new) in changes.items()},
+                    new_value={field: new for field, (_old, new) in changes.items()},
+                    confirmed=True,
+                )
 
     def _record_state_action(self, request, queryset, action):
         from django.utils import timezone as dj_tz
         if not self._require_confirmation(request):
             return
         updated = 0
-        for src in queryset:
-            old = {"approval_state": src.approval_state, "enabled": src.enabled}
-            if action == "approve":
-                src.approval_state = ApprovalState.APPROVED
-                src.approved_at = dj_tz.now()
-            elif action == "block":
-                src.approval_state = ApprovalState.BLOCKED
-            if action in ("enable",):
-                src.enabled = True
-            if action in ("disable",):
-                src.enabled = False
-            src.save(update_fields=["approval_state", "approved_at", "enabled"])
-            audit_action = {
-                "approve": SourceCatalogAudit.Action.APPROVED,
-                "block": SourceCatalogAudit.Action.BLOCKED,
-                "enable": SourceCatalogAudit.Action.ENABLED,
-                "disable": SourceCatalogAudit.Action.DISABLED,
-            }[action]
-            SourceCatalogAudit.record(
-                source=src, user=request.user, action=audit_action,
-                changes={
-                    "approval_state": (old["approval_state"], src.approval_state),
-                    "enabled": (old["enabled"], src.enabled),
-                },
-                note=f"Source {action}d via admin action; confirmed=yes.",
-            )
-            OperationalChangeAudit.record(
-                actor=request.user,
-                target_type="rating_source",
-                target_id=src.pk,
-                action=action,
-                old_value=old,
-                new_value={"approval_state": src.approval_state, "enabled": src.enabled},
-                confirmed=True,
-            )
-            updated += 1
+        # All-or-nothing whole-action transaction (documented MINOR-1 policy).
+        with transaction.atomic():
+            for src in queryset:
+                old = {"approval_state": src.approval_state, "enabled": src.enabled}
+                if action == "approve":
+                    src.approval_state = ApprovalState.APPROVED
+                    src.approved_at = dj_tz.now()
+                elif action == "block":
+                    src.approval_state = ApprovalState.BLOCKED
+                if action in ("enable",):
+                    src.enabled = True
+                if action in ("disable",):
+                    src.enabled = False
+                src.save(update_fields=["approval_state", "approved_at", "enabled"])
+                audit_action = {
+                    "approve": SourceCatalogAudit.Action.APPROVED,
+                    "block": SourceCatalogAudit.Action.BLOCKED,
+                    "enable": SourceCatalogAudit.Action.ENABLED,
+                    "disable": SourceCatalogAudit.Action.DISABLED,
+                }[action]
+                SourceCatalogAudit.record(
+                    source=src, user=request.user, action=audit_action,
+                    changes={
+                        "approval_state": (old["approval_state"], src.approval_state),
+                        "enabled": (old["enabled"], src.enabled),
+                    },
+                    note=f"Source {action}d via admin action; confirmed=yes.",
+                )
+                OperationalChangeAudit.record(
+                    actor=request.user,
+                    target_type="rating_source",
+                    target_id=src.pk,
+                    action=action,
+                    old_value=old,
+                    new_value={"approval_state": src.approval_state, "enabled": src.enabled},
+                    confirmed=True,
+                )
+                updated += 1
         self.message_user(request, f"{updated} source(s) {action}d and audited.")
 
     @admin.action(description="Approve selected sources")
@@ -633,43 +750,50 @@ class JobSourceCatalogAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, ad
     search_fields = ["name", "adapter_key", "base_url"]
     readonly_fields = ["created", "modified"]
     actions = ["enable_sources", "disable_sources", "approve_sources", "block_sources", "trigger_crawls"]
+    # Allow-list enforced by ConfirmableAdminActionMixin.check().
+    confirmable_actions = [
+        "enable_sources", "disable_sources", "approve_sources",
+        "block_sources", "trigger_crawls",
+    ]
 
     def _state_action(self, request, queryset, action):
         """Apply an operational state change only after explicit confirmation."""
         if not self._require_confirmation(request):
             return
-        for source in queryset:
-            old = {
-                "approval_state": source.approval_state,
-                "enabled": source.enabled,
-            }
-            if action == "approve":
-                source.approval_state = JobSourceCatalog.ApprovalState.APPROVED
-            elif action == "block":
-                source.approval_state = JobSourceCatalog.ApprovalState.BLOCKED
-            elif action == "enable":
-                source.enabled = True
-            else:
-                source.enabled = False
-            source.save(update_fields=["approval_state", "enabled", "modified"])
-            new = {"approval_state": source.approval_state, "enabled": source.enabled}
-            OperationalChangeAudit.record(
-                actor=request.user,
-                target_type="job_source",
-                target_id=source.pk,
-                action=action,
-                old_value=old,
-                new_value=new,
-                confirmed=True,
-            )
-            monitoring.record_event(
-                "operational_change",
-                {
-                    "action": action,
-                    "capability": "job_source",
-                    "confirmed": True,
-                },
-            )
+        # All-or-nothing whole-action transaction (documented MINOR-1 policy).
+        with transaction.atomic():
+            for source in queryset:
+                old = {
+                    "approval_state": source.approval_state,
+                    "enabled": source.enabled,
+                }
+                if action == "approve":
+                    source.approval_state = JobSourceCatalog.ApprovalState.APPROVED
+                elif action == "block":
+                    source.approval_state = JobSourceCatalog.ApprovalState.BLOCKED
+                elif action == "enable":
+                    source.enabled = True
+                else:
+                    source.enabled = False
+                source.save(update_fields=["approval_state", "enabled", "modified"])
+                new = {"approval_state": source.approval_state, "enabled": source.enabled}
+                OperationalChangeAudit.record(
+                    actor=request.user,
+                    target_type="job_source",
+                    target_id=source.pk,
+                    action=action,
+                    old_value=old,
+                    new_value=new,
+                    confirmed=True,
+                )
+                monitoring.record_event(
+                    "operational_change",
+                    {
+                        "action": action,
+                        "capability": "job_source",
+                        "confirmed": True,
+                    },
+                )
         self.message_user(request, f"{queryset.count()} job source(s) updated and audited.")
 
     @admin.action(description="Enable selected job sources")
@@ -742,32 +866,36 @@ class CapabilitySwitchAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, ad
     search_fields = ["key", "note"]
     readonly_fields = ["created", "modified"]
     actions = ["enable_capabilities", "disable_capabilities"]
+    # Allow-list enforced by ConfirmableAdminActionMixin.check().
+    confirmable_actions = ["enable_capabilities", "disable_capabilities"]
 
     def _toggle(self, request, queryset, enabled):
         if not self._require_confirmation(request):
             return
         action = "enable" if enabled else "disable"
-        for switch in queryset:
-            old = {"enabled": switch.enabled}
-            switch.enabled = enabled
-            switch.save(update_fields=["enabled", "modified"])
-            OperationalChangeAudit.record(
-                actor=request.user,
-                target_type="capability",
-                target_id=switch.key,
-                action=action,
-                old_value=old,
-                new_value={"enabled": enabled},
-                confirmed=True,
-            )
-            monitoring.record_event(
-                "operational_change",
-                {
-                    "action": action,
-                    "capability": switch.key,
-                    "confirmed": True,
-                },
-            )
+        # All-or-nothing whole-action transaction (documented MINOR-1 policy).
+        with transaction.atomic():
+            for switch in queryset:
+                old = {"enabled": switch.enabled}
+                switch.enabled = enabled
+                switch.save(update_fields=["enabled", "modified"])
+                OperationalChangeAudit.record(
+                    actor=request.user,
+                    target_type="capability",
+                    target_id=switch.key,
+                    action=action,
+                    old_value=old,
+                    new_value={"enabled": enabled},
+                    confirmed=True,
+                )
+                monitoring.record_event(
+                    "operational_change",
+                    {
+                        "action": action,
+                        "capability": switch.key,
+                        "confirmed": True,
+                    },
+                )
         self.message_user(request, f"{queryset.count()} capability switch(es) updated and audited.")
 
     @admin.action(description="Enable selected capabilities")
