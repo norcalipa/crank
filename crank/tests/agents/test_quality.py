@@ -47,7 +47,7 @@ class TestIsEcho:
         assert quality.is_echo("compensation", "compensation?") is False
 
     def test_echo_with_acknowledgement_prefix_is_detected(self):
-        # A filler prefix (","Sure,") must not hide a full restatement
+        # A filler prefix ("Sure,") must not hide a full restatement
         # (issue #423 false negative).
         assert quality.is_echo("show me jobs", "Sure, show me jobs") is True
 
@@ -57,6 +57,72 @@ class TestIsEcho:
     def test_acknowledgement_only_reply_is_not_echo(self):
         # A bare acknowledgment is a brief clarification, not a restatement.
         assert quality.is_echo("show me jobs", "Sure") is False
+
+    # -- MAJOR-1: verbatim echo of <=2-token prompts -------------------------
+
+    def test_verbatim_echo_two_token_prompt_is_detected(self):
+        """A 2-token verbatim echo must be caught even though it is below
+        _MIN_SUBSTANTIVE_TOKENS."""
+        assert quality.is_echo("remote jobs", "remote jobs") is True
+
+    def test_verbatim_echo_two_token_prompt_case_insensitive(self):
+        assert quality.is_echo("Remote Jobs", "remote jobs") is True
+
+    def test_verbatim_echo_one_token_prompt_is_detected(self):
+        """A 1-token verbatim echo must be caught (no punctuation to make it
+        a question)."""
+        assert quality.is_echo("jobs", "jobs") is True
+
+    def test_verbatim_echo_two_token_with_ack_prefix_is_detected(self):
+        assert quality.is_echo("remote jobs", "Sure, remote jobs") is True
+
+    def test_single_token_clarification_with_punctuation_is_not_echo(self):
+        """salary -> Salary? is a clarifying question, not a verbatim echo."""
+        assert quality.is_echo("salary", "Salary?") is False
+
+    # -- MAJOR-2: multi-word ack phrases ------------------------------------
+
+    def test_echo_with_of_course_ack_is_detected(self):
+        assert quality.is_echo("show me jobs", "Of course, show me jobs") is True
+
+    def test_echo_with_sure_thing_ack_is_detected(self):
+        assert quality.is_echo("show me jobs", "Sure thing, show me jobs") is True
+
+    def test_echo_with_i_understand_ack_is_detected(self):
+        assert quality.is_echo("show me jobs", "I understand, show me jobs") is True
+
+    def test_echo_with_i_got_it_ack_is_detected(self):
+        assert quality.is_echo("show me jobs", "I got it, show me jobs") is True
+
+    def test_echo_with_no_problem_ack_is_detected(self):
+        assert quality.is_echo("show me jobs", "No problem, show me jobs") is True
+
+    # -- NIT-1: trailing politeness tokens ----------------------------------
+
+    def test_trailing_please_does_not_defeat_echo_detection(self):
+        """show me jobs -> show me jobs please must still be detected."""
+        assert quality.is_echo("show me jobs", "show me jobs please") is True
+
+    def test_trailing_thanks_does_not_defeat_echo_detection(self):
+        assert quality.is_echo("show me jobs", "show me jobs thanks") is True
+
+    def test_trailing_please_with_ack_prefix_is_detected(self):
+        assert quality.is_echo("show me jobs", "Sure, show me jobs please") is True
+
+    # -- NIT-5: echo threshold boundary (fixed 80%) -------------------------
+
+    def test_partial_overlap_below_threshold_is_not_echo(self):
+        """2/4 = 50% overlap is below the 80% echo threshold."""
+        assert quality.is_echo(
+            "show me remote jobs", "show me other things"
+        ) is False
+
+    def test_bare_at_or_above_threshold_is_echo(self):
+        """3/3 = 100% overlap is an echo even when the extra token is a real
+        content word (not stripped but still overlapping the prompt)."""
+        assert quality.is_echo(
+            "show me remote jobs", "show me remote jobs now"
+        ) is True
 
 
 class TestHasHelpfulnessGap:

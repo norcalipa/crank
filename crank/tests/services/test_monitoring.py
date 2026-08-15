@@ -179,3 +179,38 @@ class MonitoringContractTests(TestCase):
         )
         self.assertEqual(payload["event_name"], "job_search_helpfulness_gap")
         self.assertEqual(payload["turns_without_result"], 5)
+
+    def test_monitoring_yaml_allowlist_matches_code_event_names(self):
+        """MINOR-3: The YAML allowed_event_names must match EVENT_NAMES in code.
+
+        Parses ``docs/monitoring.yaml`` and diffs its ``allowed_event_names``
+        list against ``crank.services.monitoring.EVENT_NAMES`` so future drift
+        between the two is detected at test time.
+        """
+        import pathlib
+        import yaml
+
+        yaml_path = pathlib.Path(__file__).resolve().parents[3] / "docs" / "monitoring.yaml"
+        with open(yaml_path) as fh:
+            doc = yaml.safe_load(fh)
+        yaml_names = frozenset(doc["allowed_event_names"])
+        self.assertEqual(
+            yaml_names,
+            monitoring.EVENT_NAMES,
+            msg="monitoring.yaml allowed_event_names drifted from EVENT_NAMES",
+        )
+
+    def test_recurring_helpfulness_gaps_alert_has_operator(self):
+        """MINOR-2: the recurring-helpfulness-gaps alert must specify an operator.
+
+        Scoped to the specific alert that lacked one (other alerts deliberately
+        omit ``operator``, so a cross-alert assertion would be wrong).
+        """
+        import pathlib
+        import yaml
+
+        yaml_path = pathlib.Path(__file__).resolve().parents[3] / "docs" / "monitoring.yaml"
+        with open(yaml_path) as fh:
+            doc = yaml.safe_load(fh)
+        alert = next(a for a in doc["alerts"] if a["name"] == "recurring-helpfulness-gaps")
+        self.assertEqual(alert.get("operator"), "above")

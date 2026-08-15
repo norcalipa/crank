@@ -421,10 +421,13 @@ class JobSearchCoverageEdges(TestCase):
 
     def test_service_run_turn_success_and_truncation(self):
         from crank.agents.job_search.demo import DemoJobSearchProvider
+        from crank.agents.job_search.quality import is_echo
         conv = JobSearchConversation.objects.create(owner=self.user)
         svc = JobSearchService(DemoJobSearchProvider())
         reply, changed, results = svc.run_turn(conversation=conv, user_message="salary")
         self.assertTrue(reply)
+        # NIT-4: verify the reply is genuinely non-echo, not just non-empty.
+        self.assertFalse(is_echo("salary", reply))
         self.assertTrue(changed)
         JobSearchMessage.objects.create(
             conversation=conv, role="user", content="salary"
