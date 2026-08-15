@@ -21,7 +21,9 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     <code>OperationalChangeAudit</code> with confirmation before it is applied.
   </p>
 
-  <form method="post" action="{{ request.path }}">
+  {# get_full_path preserves the changelist query string (filters, search, page) #}
+  {# so the re-POST runs against the same filtered subset shown on this page. #}
+  <form method="post" action="{{ request.get_full_path }}">
     {% csrf_token %}
     <input type="hidden" name="action" value="{{ action_name }}">
     <input type="hidden" name="index" value="0">
@@ -45,11 +47,19 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
           <p>No items were selected.</p>
         </div>
       {% endfor %}
+      {% if truncated %}
+        <div class="form-row">
+          <p>
+            Showing the first {{ objects|length }} of {{ total_count }} selected
+            {{ object_label }}s. The action applies to all {{ total_count }}.
+          </p>
+        </div>
+      {% endif %}
     </fieldset>
 
     <div class="submit-row">
       <input type="submit" value="Confirm and apply" class="default">
-      <a href="{{ request.path }}" class="button cancel-link">Cancel</a>
+      <a href="{{ request.get_full_path }}" class="button cancel-link">Cancel</a>
     </div>
   </form>
 </div>

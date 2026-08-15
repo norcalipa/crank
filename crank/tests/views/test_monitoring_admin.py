@@ -21,6 +21,7 @@ from crank.models import (
     OperationalChangeAudit,
     SourceCatalog,
 )
+from crank.models.organization import Organization
 from crank.models.source import ApprovalState
 from crank.services.crawl_runs import CrawlRequestError
 
@@ -392,3 +393,215 @@ class CapabilitySwitchClientAdminTest(TestCase):
             target_type="capability", action="disable"
         )
         self.assertTrue(audit.confirmed)
+
+
+class SourceCatalogClientAdminTest(TestCase):
+    """E2E gated-action coverage for SourceCatalogAdmin (issue #422)."""
+
+    def setUp(self):
+        self.client = Client()
+        self.staff = User.objects.create_superuser(
+            username="srchops", password="pw", is_staff=True
+        )
+        self.client.force_login(self.staff)
+        self.org = Organization.objects.create(
+            name="RatingsOrg", url="https://ratings.example.test", status=1
+        )
+
+    def test_source_catalog_gated_action_e2e(self):
+        catalog = SourceCatalog.objects.create(
+            organization=self.org,
+            name="Rating Source",
+            adapter_key="rating.v1",
+            base_url="https://ratings.example.test",
+            approval_state=ApprovalState.APPROVED,
+            enabled=True,
+        )
+        changelist = reverse("admin:crank_sourcecatalog_changelist")
+        data = {
+            "action": "block_sources",
+            "_selected_action": [str(catalog.pk)],
+            "index": "0",
+            "select_across": "0",
+        }
+        # No confirm -> mixin confirmation page, no mutation.
+        resp = self.client.post(changelist, data)
+        self.assertEqual(resp.status_code, 200)
+        content = resp.content.decode()
+        self.assertIn("Confirm admin action", content)
+        self.assertIn("Block selected sources", content)
+        catalog.refresh_from_db()
+        self.assertEqual(catalog.approval_state, ApprovalState.APPROVED)
+        self.assertFalse(OperationalChangeAudit.objects.exists())
+        # Confirmed -> blocked + audited.
+        resp2 = self.client.post(changelist, {**data, "confirm": "yes"})
+        self.assertEqual(resp2.status_code, 302)
+        catalog.refresh_from_db()
+        self.assertEqual(catalog.approval_state, ApprovalState.BLOCKED)
+        audit = OperationalChangeAudit.objects.get(
+            target_type="rating_source", action="block"
+        )
+        self.assertTrue(audit.confirmed)
+
+    def test_source_catalog_select_across_confirmation_truncates_preview(self):
+        # MINOR-5: select_across=1 preview must be truncated, not load the
+        # whole queryset into memory.
+        from django.contrib.messages.storage.fallback import FallbackStorage
+        from django.contrib.sessions.backends.db import SessionStore
+        from django.test import RequestFactory
+
+        for i in range(7):
+            org = Organization.objects.create(
+                name=f"TruncOrg {i}", url=f"https://trunc-{i}.example.test", status=1
+            )
+            SourceCatalog.objects.create(
+                organization=org,
+                name=f"Rating {i}",
+                adapter_key=f"rating.{i}",
+                base_url=f"https://ratings-{i}.example.test",
+                approval_state=ApprovalState.APPROVED,
+                enabled=True,
+            )
+        catalog_admin = SourceCatalogAdmin(SourceCatalog, AdminSite())
+        catalog_admin._confirm_max_display = 3
+        request = RequestFactory().post(
+            reverse("admin:crank_sourcecatalog_changelist") + "?enabled=1",
+            {"action": "block_sources", "index": "0", "select_across": "1"},
+        )
+        request.user = self.staff
+        request.session = SessionStore()
+        setattr(request, "_messages", FallbackStorage(request))
+        response = catalog_admin.render_action_confirmation(
+            request, SourceCatalog.objects.all()
+        )
+        content = response.content.decode()
+        # Only the truncated preview is shown, with the notice.
+        self.assertIn("Showing the first 3 of 7", content)
+        self.assertIn("Rating 0", content)
+        self.assertNotIn("Rating 6", content)
+
+
+class JobSourceCatalogClientAdminTest(TestCase):
+    """E2E gated-action + query-scope coverage for JobSourceCatalogAdmin."""
+
+    def setUp(self):
+        self.client = Client()
+        self.staff = User.objects.create_superuser(
+            username="jobops", password="pw", is_staff=True
+        )
+        self.client.force_login(self.staff)
+
+    def _source(self, enabled):
+        return JobSourceCatalog.objects.create(
+            name=f"Job source enabled={enabled}",
+            adapter_key=f"job-{enabled}",
+            base_url="https://jobs.example.test",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=enabled,
+        )
+
+    def test_job_source_gated_action_e2e(self):
+        source = self._source(enabled=True)
+        changelist = reverse("admin:crank_jobsourcecatalog_changelist")
+        data = {
+            "action": "block_sources",
+            "_selected_action": [str(source.pk)],
+            "index": "0",
+            "select_across": "0",
+        }
+        resp = self.client.post(changelist, data)
+        self.assertEqual(resp.status_code, 200)
+        content = resp.content.decode()
+        self.assertIn("Confirm admin action", content)
+        self.assertIn("Block selected job sources", content)
+        source.refresh_from_db()
+        self.assertEqual(
+            source.approval_state, JobSourceCatalog.ApprovalState.APPROVED
+        )
+        with patch("crank.admin.monitoring.record_event"):
+            resp2 = self.client.post(changelist, {**data, "confirm": "yes"})
+        self.assertEqual(resp2.status_code, 302)
+        source.refresh_from_db()
+        self.assertEqual(
+            source.approval_state, JobSourceCatalog.ApprovalState.BLOCKED
+        )
+        audit = OperationalChangeAudit.objects.get(
+            target_type="job_source", action="block"
+        )
+        self.assertTrue(audit.confirmed)
+
+    def test_select_across_action_respects_changelist_filter(self):
+        # CRITICAL: the confirmation re-POST must keep the changelist query
+        # string so a filtered + select_across=1 action never spills onto ALL
+        # rows.
+        enabled = self._source(enabled=True)
+        disabled = self._source(enabled=False)
+        # Filter to DISABLED sources only, select-all-across-pages, disable.
+        filtered_url = (
+            reverse("admin:crank_jobsourcecatalog_changelist") + "?enabled=0"
+        )
+        data = {
+            "action": "disable_sources",
+            # select_across=1 still requires at least one checkbox so Django's
+            # changelist calls response_action (Django then acts on the whole
+            # filtered queryset, not just this row).
+            "_selected_action": [str(disabled.pk)],
+            "index": "0",
+            "select_across": "1",
+        }
+        resp = self.client.post(filtered_url, data)
+        self.assertEqual(resp.status_code, 200)
+        content = resp.content.decode()
+        self.assertIn("Confirm admin action", content)
+        self.assertIn("Disable selected job sources", content)
+        # Confirmation page previews only the filtered subset.
+        self.assertIn(disabled.name, content)
+        self.assertNotIn(enabled.name, content)
+        # The re-POST form preserves the query string (request.get_full_path).
+        self.assertIn(f'action="{filtered_url}"', content)
+        enabled.refresh_from_db()
+        disabled.refresh_from_db()
+        self.assertFalse(disabled.enabled)
+        self.assertTrue(enabled.enabled)
+        # Confirmed POST to the SAME filtered URL -> only the filtered subset
+        # is acted on; the disabled (excluded) source stays untouched.
+        with patch("crank.admin.monitoring.record_event"):
+            resp2 = self.client.post(filtered_url, {**data, "confirm": "yes"})
+        self.assertEqual(resp2.status_code, 302)
+        # Redirect preserves the query string (MINOR-4).
+        self.assertIn("?enabled=0", resp2["Location"])
+        enabled.refresh_from_db()
+        disabled.refresh_from_db()
+        self.assertFalse(disabled.enabled)
+        # Had the query string been dropped, the action would have run on ALL
+        # sources and disabled this enabled one too.
+        self.assertTrue(enabled.enabled)
+
+    def test_delete_selected_not_intercepted_by_mixin(self):
+        # MAJOR: Django's built-in delete_selected must be handled by Django's
+        # own confirmation page, never bounced back into the mixin loop.
+        source = self._source(enabled=True)
+        changelist = reverse("admin:crank_jobsourcecatalog_changelist")
+        data = {
+            "action": "delete_selected",
+            "_selected_action": [str(source.pk)],
+            "index": "0",
+        }
+        resp = self.client.post(changelist, data)
+        self.assertEqual(resp.status_code, 200)
+        content = resp.content.decode()
+        # Not the mixin's confirmation page.
+        self.assertNotIn("Confirm admin action", content)
+        self.assertNotIn('name="confirm"', content)
+        # Django's own delete confirmation (keyed on 'post') is rendered.
+        self.assertIn('name="post"', content)
+        source.refresh_from_db()
+        self.assertTrue(
+            JobSourceCatalog.objects.filter(pk=source.pk).exists()
+        )
+        # And the actual delete still works via Django's confirmation flow.
+        resp2 = self.client.post(changelist, {**data, "post": "yes"})
+        self.assertEqual(resp2.status_code, 302)
+        self.assertFalse(
+            JobSourceCatalog.objects.filter(pk=source.pk).exists()
+        )

@@ -20,6 +20,10 @@ class MockRequest:
         self.user = user or User.objects.create_user(
             username="staff", password="pw", is_staff=True
         )
+        # Action bodies only run when the POST explicitly confirms (issue #422;
+        # absence of a POST body must not silently confirm), so direct-call
+        # tests that exercise the mutation logic supply confirm=yes here.
+        self.POST = {"confirm": "yes"}
 
 
 def make_source():
