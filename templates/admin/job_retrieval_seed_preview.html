@@ -14,34 +14,34 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
   <p>Dry-run preview of curated seed sources. No database writes are performed.</p>
 
   <div class="module">
-    <table style="width: 100%; border-collapse: collapse;">
+    <table>
       <thead>
-        <tr style="border-bottom: 2px solid #ccc;">
-          <th style="text-align: left; padding: 0.5rem;">Name</th>
-          <th style="text-align: left; padding: 0.5rem;">Adapter</th>
-          <th style="text-align: left; padding: 0.5rem;">Base URL</th>
-          <th style="text-align: center; padding: 0.5rem;">Host Allowed</th>
-          <th style="text-align: center; padding: 0.5rem;">Exists</th>
-          <th style="text-align: center; padding: 0.5rem;">Current Enabled</th>
-          <th style="text-align: center; padding: 0.5rem;">Current Approval</th>
+        <tr>
+          <th style="text-align: left;">Name</th>
+          <th style="text-align: left;">Adapter</th>
+          <th style="text-align: left;">Base URL</th>
+          <th style="text-align: center;">Host Allowed</th>
+          <th style="text-align: center;">Exists</th>
+          <th style="text-align: center;">Current Enabled</th>
+          <th style="text-align: center;">Current Approval</th>
         </tr>
       </thead>
       <tbody>
         {% for row in preview %}
-        <tr style="border-bottom: 1px solid #ddd;">
-          <td style="padding: 0.5rem;">{{ row.name }}</td>
-          <td style="padding: 0.5rem;">{{ row.adapter_key }}</td>
-          <td style="padding: 0.5rem;"><a href="{{ row.base_url }}" target="_blank">{{ row.base_url }}</a></td>
-          <td style="text-align: center; padding: 0.5rem;">
+        <tr>
+          <td>{{ row.name }}</td>
+          <td>{{ row.adapter_key }}</td>
+          <td><a href="{{ row.base_url }}" target="_blank">{{ row.base_url }}</a></td>
+          <td style="text-align: center;">
             {% if row.host_allowed %}&#x2705;{% else %}&#x274C;{% endif %}
           </td>
-          <td style="text-align: center; padding: 0.5rem;">
+          <td style="text-align: center;">
             {% if row.exists %}Yes{% else %}No{% endif %}
           </td>
-          <td style="text-align: center; padding: 0.5rem;">
+          <td style="text-align: center;">
             {% if row.exists %}{{ row.existing_enabled }}{% else %}&mdash;{% endif %}
           </td>
-          <td style="text-align: center; padding: 0.5rem;">
+          <td style="text-align: center;">
             {% if row.exists %}{{ row.existing_approval }}{% else %}&mdash;{% endif %}
           </td>
         </tr>
@@ -50,9 +50,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     </table>
   </div>
 
-  <p style="margin-top: 1rem;">
-    <strong>{{ preview|length }}</strong> sources inspected (dry-run only).
-  </p>
+  <p><strong>{{ preview|length }}</strong> sources inspected (dry-run only).</p>
 
   <p>
     <a href="{% url 'admin:crank_jobretrievalops_changelist' %}">&larr; Back to Dashboard</a>

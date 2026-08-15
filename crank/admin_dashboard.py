@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.contrib import admin, messages
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.shortcuts import redirect
 from django.template.response import TemplateResponse
 from django.urls import reverse
@@ -278,10 +278,16 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
         current approval/enabled state is.
         """
         preview = []
+        existing_by_name = {
+            obj.name: obj
+            for obj in JobSourceCatalog.objects.filter(
+                name__in=[entry["name"] for entry in SEED_SOURCES]
+            )
+        }
         for entry in SEED_SOURCES:
             host = _host(entry["base_url"])
             allowed = _is_allowed(host)
-            existing = JobSourceCatalog.objects.filter(name=entry["name"]).first()
+            existing = existing_by_name.get(entry["name"])
             preview.append(
                 {
                     "name": entry["name"],
@@ -351,12 +357,59 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
         self.message_user(request, summary, level=messages.SUCCESS)
         return redirect(self._dashboard_url())
 
+    def _acquire_pipeline_slot(self, action, count_sources=False):
+        """Atomically claim the job-pipeline slot or report why we must skip.
+
+        The DB partial unique index ``unique_agentrun_active_per_type`` is the
+        authoritative overlap guard: only one RUNNING-or-PENDING run per type
+        may exist. We still gate with ``select_for_update`` first (best-effort;
+        it only locks *existing* rows, so on an empty result set it locks
+        nothing), then fall back to catching the ``IntegrityError`` that a
+        concurrent insert triggers on the constraint hit. Returns
+        ``(skip_message, run, source_count)`` where ``run`` is ``None`` when
+        the request was skipped.
+        """
+        skip_message = None
+        run = None
+        source_count = 0
+        try:
+            with transaction.atomic():
+                existing = AgentRun.objects.select_for_update().filter(
+                    run_type=AgentRun.RunType.JOB_PIPELINE,
+                    status__in=[
+                        AgentRun.Status.RUNNING,
+                        AgentRun.Status.PENDING,
+                    ],
+                ).first()
+                if existing is not None:
+                    skip_message = (
+                        "Pipeline already active or queued "
+                        f"(run {existing.correlation_id}). {action} skipped."
+                    )
+                else:
+                    if count_sources:
+                        source_count = JobSourceCatalog.objects.filter(
+                            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+                            enabled=True,
+                        ).count()
+                    run = AgentRun.objects.create(
+                        run_type=AgentRun.RunType.JOB_PIPELINE,
+                        status=AgentRun.Status.PENDING,
+                    )
+        except IntegrityError:
+            # A concurrent request won the slot between our (empty) read and
+            # our insert; mirror the active-run UX so the operator sees a skip
+            # rather than an error.
+            skip_message = f"Pipeline already active or queued. {action} skipped."
+        return skip_message, run, source_count
+
     def queue_retrieval_view(self, request):
         """Queue retrieval for approved+enabled job sources.
 
-        Overlap-safe: checks for existing RUNNING **and** PENDING pipeline runs
-        inside a ``select_for_update`` transaction so concurrent double-submit
-        requests cannot create duplicate runs.
+        Overlap-safe: guards the RUNNING **and** PENDING pipeline slot with a
+        ``select_for_update`` transaction plus a database partial unique
+        constraint so concurrent double-submit requests cannot create duplicate
+        runs.
         """
         if not _confirm(request):
             return self._confirm_interstitial(
@@ -365,30 +418,9 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
                 reverse("admin:crank_jobretrievalops_queue_retrieval"),
             )
 
-        skip_message = None
-        run = None
-        count = 0
-        with transaction.atomic():
-            existing = AgentRun.objects.select_for_update().filter(
-                run_type=AgentRun.RunType.JOB_PIPELINE,
-                status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING],
-            ).first()
-            if existing is not None:
-                skip_message = (
-                    f"Pipeline already active (run {existing.correlation_id}). "
-                    f"Queue skipped."
-                )
-            else:
-                sources = JobSourceCatalog.objects.filter(
-                    approval_state=JobSourceCatalog.ApprovalState.APPROVED,
-                    enabled=True,
-                )
-                count = sources.count()
-                run = AgentRun.objects.create(
-                    run_type=AgentRun.RunType.JOB_PIPELINE,
-                    status=AgentRun.Status.PENDING,
-                )
-
+        skip_message, run, count = self._acquire_pipeline_slot(
+            "Queue", count_sources=True
+        )
         if skip_message:
             self.message_user(request, skip_message, level=messages.WARNING)
             return redirect(self._dashboard_url())
@@ -412,9 +444,10 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     def queue_pipeline_view(self, request):
         """Queue a bounded job pipeline run.
 
-        Overlap-safe: checks for existing RUNNING **and** PENDING pipeline runs
-        inside a ``select_for_update`` transaction so concurrent double-submit
-        requests cannot create duplicate runs.
+        Overlap-safe: guards the RUNNING **and** PENDING pipeline slot with a
+        ``select_for_update`` transaction plus a database partial unique
+        constraint so concurrent double-submit requests cannot create duplicate
+        runs.
         """
         if not _confirm(request):
             return self._confirm_interstitial(
@@ -423,24 +456,7 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
                 reverse("admin:crank_jobretrievalops_queue_pipeline"),
             )
 
-        skip_message = None
-        run = None
-        with transaction.atomic():
-            existing = AgentRun.objects.select_for_update().filter(
-                run_type=AgentRun.RunType.JOB_PIPELINE,
-                status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING],
-            ).first()
-            if existing is not None:
-                skip_message = (
-                    f"Pipeline already active or queued (run {existing.correlation_id}). "
-                    f"Queue skipped."
-                )
-            else:
-                run = AgentRun.objects.create(
-                    run_type=AgentRun.RunType.JOB_PIPELINE,
-                    status=AgentRun.Status.PENDING,
-                )
-
+        skip_message, run, _count = self._acquire_pipeline_slot("Queue")
         if skip_message:
             self.message_user(request, skip_message, level=messages.WARNING)
             return redirect(self._dashboard_url())
@@ -464,9 +480,11 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     def retry_failed_view(self, request):
         """Retry the most recent eligible failed pipeline run.
 
-        Overlap-safe: checks for existing RUNNING **and** PENDING pipeline runs
-        inside a ``select_for_update`` transaction so concurrent double-submit
-        requests cannot create duplicate runs.
+        Overlap-safe: guards the RUNNING **and** PENDING pipeline slot and
+        looks up the failed run to retry inside a ``select_for_update``
+        transaction (locking the failed row serializes concurrent retries), and
+        the database partial unique constraint is the authoritative guard that
+        only one active run per type may exist.
         """
         if not _confirm(request):
             return self._confirm_interstitial(
@@ -475,39 +493,45 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
                 reverse("admin:crank_jobretrievalops_retry_failed"),
             )
 
-        failed = (
-            AgentRun.objects.filter(
-                run_type=AgentRun.RunType.JOB_PIPELINE,
-                status=AgentRun.Status.FAILED,
-            )
-            .order_by("-created", "-id")
-            .first()
-        )
-        if failed is None:
-            self.message_user(
-                request,
-                "No eligible failed run to retry.",
-                level=messages.WARNING,
-            )
-            return redirect(self._dashboard_url())
-
+        failed = None
         skip_message = None
         run = None
-        with transaction.atomic():
-            existing = AgentRun.objects.select_for_update().filter(
-                run_type=AgentRun.RunType.JOB_PIPELINE,
-                status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING],
-            ).first()
-            if existing is not None:
-                skip_message = (
-                    f"Pipeline already active or queued (run {existing.correlation_id}). "
-                    f"Retry skipped."
-                )
-            else:
-                run = AgentRun.objects.create(
+        try:
+            with transaction.atomic():
+                existing = AgentRun.objects.select_for_update().filter(
                     run_type=AgentRun.RunType.JOB_PIPELINE,
-                    status=AgentRun.Status.PENDING,
-                )
+                    status__in=[
+                        AgentRun.Status.RUNNING,
+                        AgentRun.Status.PENDING,
+                    ],
+                ).first()
+                if existing is not None:
+                    skip_message = (
+                        "Pipeline already active or queued "
+                        f"(run {existing.correlation_id}). Retry skipped."
+                    )
+                else:
+                    failed = (
+                        AgentRun.objects.select_for_update()
+                        .filter(
+                            run_type=AgentRun.RunType.JOB_PIPELINE,
+                            status=AgentRun.Status.FAILED,
+                        )
+                        .order_by("-created", "-id")
+                        .first()
+                    )
+                    if failed is None:
+                        skip_message = "No eligible failed run to retry."
+                    else:
+                        run = AgentRun.objects.create(
+                            run_type=AgentRun.RunType.JOB_PIPELINE,
+                            status=AgentRun.Status.PENDING,
+                        )
+        except IntegrityError:
+            # A concurrent request won the slot between our (empty) read and
+            # our insert; mirror the active-run UX so the operator sees a skip
+            # rather than an error.
+            skip_message = "Pipeline already active or queued. Retry skipped."
 
         if skip_message:
             self.message_user(request, skip_message, level=messages.WARNING)
@@ -516,7 +540,10 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
         _audit(
             request,
             "retry_failed",
-            old_value={"retried_run_id": failed.pk, "retried_correlation_id": str(failed.correlation_id)},
+            old_value={
+                "retried_run_id": failed.pk,
+                "retried_correlation_id": str(failed.correlation_id),
+            },
             new_value={"agent_run_id": run.pk},
         )
         monitoring.record_event(
