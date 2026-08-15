@@ -87,18 +87,25 @@ class ConfirmableAdminActionMixin:
         "No changes made. This action requires an explicit confirmation step; "
         "please review the selected objects and confirm below."
     )
+    # Django's built-in delete confirmation handles ``delete_selected`` with its
+    # own ``post=yes`` page; intercepting it here would trap the operator in an
+    # infinite two-page confirmation loop, so it is excluded from the mixin.
+    _delete_action_name = "delete_selected"
+    # Like Django's own ``delete_confirmation_max_display``, bound how many
+    # objects the ``select_across=1`` confirmation preview evaluates in memory.
+    _confirm_max_display = 100
 
     def _confirmed(self, request):
-        """True only when the POST supplies ``confirm=yes`` (or has no POST).
+        """True only when the POST supplies ``confirm=yes``.
 
-        Requests without any POST body (e.g. synthetic/direct calls from tests
-        or code) proceed so programmatic callers keep working. Real browser
-        admin action POSTs always carry POST, so they must include
-        ``confirm=yes`` to be considered confirmed.
+        Real admin action POSTs always carry a POST QueryDict (even plain GETs
+        get an empty one), so an absent ``request.POST`` is *not* treated as
+        confirmed - closing the bypass where a non-standard request without a
+        POST attribute would silently confirm a gated action.
         """
         post = getattr(request, "POST", None)
         if post is None:
-            return True
+            return False
         return post.get("confirm") == "yes"
 
     def _require_confirmation(self, request):
@@ -109,7 +116,15 @@ class ConfirmableAdminActionMixin:
         return False
 
     def response_action(self, request, queryset, **kwargs):
-        """Intercept unconfirmed gated action POSTs with a confirmation page."""
+        """Intercept unconfirmed gated action POSTs with a confirmation page.
+
+        Django's built-in ``delete_selected`` is deliberately excluded (see
+        ``_delete_action_name``): it has its own confirmation page keyed on
+        ``request.POST['post']``, and intercepting it would bounce the operator
+        forever between the two confirmation pages without ever deleting.
+        """
+        if self._requested_action(request) == self._delete_action_name:
+            return super().response_action(request, queryset, **kwargs)
         if not self._require_confirmation(request):
             return self.render_action_confirmation(request, queryset)
         return super().response_action(request, queryset, **kwargs)
@@ -134,13 +149,25 @@ class ConfirmableAdminActionMixin:
         return action_name
 
     def render_action_confirmation(self, request, queryset):
-        """Render a confirmation page that re-POSTs the same gated action."""
+        """Render a confirmation page that re-POSTs the same gated action.
+
+        For ``select_across=1`` the queryset is truncated to
+        ``_confirm_max_display`` items (mirroring Django's own delete
+        confirmation) so large filtered sets never load the whole table into
+        memory or emit a giant page; the form still re-POSTs ``select_across=1``
+        so the full (still filtered) set is acted on.
+        """
         action_name = self._requested_action(request)
         selected_pks = request.POST.getlist(ACTION_CHECKBOX_NAME)
         select_across = request.POST.get("select_across", "0") == "1"
-        objects = list(queryset)
-        if not select_across:
+        if select_across:
+            total = queryset.count()
+            objects = list(queryset[: self._confirm_max_display])
+            truncated = total > self._confirm_max_display
+        else:
             objects = list(queryset.filter(pk__in=selected_pks))
+            total = len(objects)
+            truncated = False
         return render(
             request,
             "admin/confirm_action.html",
@@ -152,6 +179,8 @@ class ConfirmableAdminActionMixin:
                     request, action_name
                 ),
                 "objects": objects,
+                "total_count": total,
+                "truncated": truncated,
                 "selected_pks": selected_pks,
                 "select_across": "1" if select_across else "0",
                 "action_checkbox_name": ACTION_CHECKBOX_NAME,
@@ -336,7 +365,7 @@ class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admi
 
     @admin.action(description="Approve and create pending organizations")
     def approve_requests(self, request, queryset):
-        if not self._confirmed(request):
+        if not self._require_confirmation(request):
             return
         updated = 0
         for item in queryset.filter(status=CompanyRequest.Status.PENDING):
@@ -351,7 +380,7 @@ class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admi
 
     @admin.action(description="Reject selected suggestions")
     def reject_requests(self, request, queryset):
-        if not self._confirmed(request):
+        if not self._require_confirmation(request):
             return
         updated = 0
         for item in queryset.filter(status=CompanyRequest.Status.PENDING):
@@ -364,7 +393,7 @@ class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admi
 
     @admin.action(description="Mark selected suggestions as duplicates")
     def mark_duplicate(self, request, queryset):
-        if not self._confirmed(request):
+        if not self._require_confirmation(request):
             return
         updated = 0
         for item in queryset.filter(status=CompanyRequest.Status.PENDING).exclude(duplicate_of=None):
@@ -377,7 +406,7 @@ class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admi
 
     @admin.action(description="Approve crawl source workflow")
     def approve_crawl_sources(self, request, queryset):
-        if not self._confirmed(request):
+        if not self._require_confirmation(request):
             return
         updated = 0
         for item in queryset.filter(status=CompanyRequest.Status.APPROVED, crawl_source_approved=False):
@@ -389,7 +418,7 @@ class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admi
 
     @admin.action(description="Queue refresh after source approval")
     def queue_refresh(self, request, queryset):
-        if not self._confirmed(request):
+        if not self._require_confirmation(request):
             return
         updated = 0
         for item in queryset.filter(status=CompanyRequest.Status.APPROVED, crawl_source_approved=True, refresh_queued=False):

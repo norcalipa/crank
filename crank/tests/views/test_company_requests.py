@@ -563,3 +563,21 @@ class CompanyRequestAdminTest(TestCase):
 
     def test_action_description_fallback(self):
         self.assertEqual(self.admin._action_description(self._mock_post(), "__missing__"), "__missing__")
+
+    def test_confirmed_requires_post_attribute(self):
+        # A request without any POST body must NOT silently confirm (NIT-1).
+        request = type("R", (), {})()
+        self.assertFalse(self.admin._confirmed(request))
+
+    def test_unconfirmed_company_request_uses_warning_path(self):
+        # CompanyRequestAdmin must warn via _require_confirmation (MINOR-1),
+        # matching the other three mixin-covered admins.
+        req = self._make_request()
+        with patch.object(self.admin, "message_user") as message:
+            self.admin.approve_requests(
+                self._mock_post(confirm="no"),
+                CompanyRequest.objects.filter(pk=req.pk),
+            )
+        req.refresh_from_db()
+        self.assertEqual(req.status, CompanyRequest.Status.PENDING)
+        message.assert_called_once()
