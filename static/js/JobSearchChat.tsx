@@ -255,15 +255,31 @@ const JobSearchChat: React.FC = () => {
         ta.style.height = `${desired}px`;
         ta.style.overflowY = ta.scrollHeight > maxHeight ? 'auto' : 'hidden';
     }, []);
+    // Adjust the composer on mount and on every keystroke/content reset. This
+    // only invokes the (stable) adjuster; it does *not* (re)register the passive
+    // window/font listeners below, so typing does not recreate them each key.
     React.useEffect(() => {
         adjustComposerHeight();
+    }, [adjustComposerHeight, input]);
+
+    // Register the long-lived listeners exactly once: window/viewport resize plus
+    // a one-shot document.fonts.ready hook so the height is re-measured once web
+    // fonts finish loading (the initial measure uses a fallback line-height before
+    // the real face paints). Because adjustComposerHeight is stable and the only
+    // dependency, these listeners are never re-registered per keystroke.
+    React.useEffect(() => {
+        adjustComposerHeight();
+        if (document.fonts && typeof document.fonts.ready?.then === 'function') {
+            const reflow = () => adjustComposerHeight();
+            void document.fonts.ready.then(reflow, reflow);
+        }
         window.addEventListener('resize', adjustComposerHeight);
         window.visualViewport?.addEventListener('resize', adjustComposerHeight);
         return () => {
             window.removeEventListener('resize', adjustComposerHeight);
             window.visualViewport?.removeEventListener('resize', adjustComposerHeight);
         };
-    }, [adjustComposerHeight, input]);
+    }, [adjustComposerHeight]);
     const cardRef = React.useRef<HTMLElement>(null);
     const nearBottomRef = React.useRef(true);
     const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
