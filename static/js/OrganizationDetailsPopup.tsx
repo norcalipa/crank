@@ -137,6 +137,9 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                 // valid pattern; blur+onClose is the deliberate choice here,
                 // guarded by instanceof HTMLElement. The same rationale applies
                 // to the blur in handleCloseClick / handleOverlayClick below.
+                //
+                // TODO(#430): restore focus to the trigger element on close
+                // per WAI-ARIA dialog patterns.
                 if (document.activeElement instanceof HTMLElement) {
                     document.activeElement.blur();
                 }
@@ -186,7 +189,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
 
     const handleCloseClick = (e: React.MouseEvent) => {
         e.stopPropagation();
-        // Remove focus from any element to prevent blinking cursor
+        // Blur active element before close; see Escape-key handler rationale above.
         if (document.activeElement instanceof HTMLElement) {
             document.activeElement.blur();
         }
@@ -196,7 +199,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     const handleOverlayClick = (e: React.MouseEvent) => {
         // Only close if clicking directly on the overlay, not its children
         if (e.target === e.currentTarget) {
-            // Remove focus from any element to prevent blinking cursor
+            // Blur active element before close; see Escape-key handler rationale above.
             if (document.activeElement instanceof HTMLElement) {
                 document.activeElement.blur();
             }

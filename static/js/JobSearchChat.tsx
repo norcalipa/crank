@@ -269,13 +269,15 @@ const JobSearchChat: React.FC = () => {
     // dependency, these listeners are never re-registered per keystroke.
     React.useEffect(() => {
         adjustComposerHeight();
+        let cancelled = false;
         if (document.fonts && typeof document.fonts.ready?.then === 'function') {
-            const reflow = () => adjustComposerHeight();
+            const reflow = () => { if (!cancelled) adjustComposerHeight(); };
             void document.fonts.ready.then(reflow, reflow);
         }
         window.addEventListener('resize', adjustComposerHeight);
         window.visualViewport?.addEventListener('resize', adjustComposerHeight);
         return () => {
+            cancelled = true;
             window.removeEventListener('resize', adjustComposerHeight);
             window.visualViewport?.removeEventListener('resize', adjustComposerHeight);
         };
