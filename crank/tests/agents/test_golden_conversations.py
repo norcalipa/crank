@@ -104,22 +104,46 @@ def make_orchestrator(
     )
 
 
-def _friendly_retry(gateway, **kw):
-    """Run a turn and map provider failures to the friendly retry contract.
+class TestProviderTimeout:
+    """Provider timeout -> typed error -> the transport's retry contract.
 
-    Mirrors the transport: a :class:`ProviderError` produces a retry-friendly
-    outcome rather than a crash.
+    These exercise the real chain the chat view depends on: the orchestrator
+    raises a typed :class:`ProviderTimeoutError`/``ProviderError``, the
+    transport provider re-raises it, and :class:`JobSearchService.run_turn`
+    folds it into :class:`JobSearchServiceError` -- the exact exception the
+    view maps to its "please retry" response. No status dict is manufactured.
     """
-    orchestrator = make_orchestrator(gateway, **kw)
-    try:
-        orchestrator.run(
-            user_prompt="what jobs match?",
-            conversation=[],
-            preference_markdown="## preferences\nremote only",
+
+    def _transport_run(self, gateway):
+        """Run a turn through the real transport chain and its provider."""
+        from crank.agents.job_search.demo import (
+            JobSearchService,
+            JobSearchServiceError,
         )
-    except (ProviderError, ProviderTimeoutError):
-        return {"status": "retry"}
-    raise AssertionError("expected a provider failure")  # pragma: no cover
+        from crank.agents.job_search.providers import OrchestratorJobSearchProvider
+
+        provider = OrchestratorJobSearchProvider(
+            orchestrator=make_orchestrator(gateway)
+        )
+        service = JobSearchService(provider=provider)
+        conversation = SimpleNamespace(pk=1)
+        # The fake conversation has no messages/owner rows; the provider's
+        # history builder yields an empty turn and the failing gateway raises.
+        return service, provider, conversation, JobSearchServiceError
+
+    def test_timeout_surfaces_typed_error_through_transport(self):
+        service, _, conversation, Error = self._transport_run(
+            ScriptedGateway(exc=ProviderTimeoutError("deadline exceeded"))
+        )
+        with pytest.raises(Error):
+            service.run_turn(conversation=conversation, user_message="what jobs match?")
+
+    def test_generic_provider_failure_surfaces_transport_retry(self):
+        service, _, conversation, Error = self._transport_run(
+            ScriptedGateway(exc=ProviderError("5xx upstream"))
+        )
+        with pytest.raises(Error):
+            service.run_turn(conversation=conversation, user_message="what jobs match?")
 
 
 class TestPreferenceElicitation:
@@ -302,16 +326,6 @@ class TestOffTopicInjection:
         # Bounded refusal: a message with no tool work and no citations.
         assert result.cited_organization_ids == ()
         assert result.results is None or len(result.results.jobs) == 0
-
-
-class TestProviderTimeout:
-    """Provider timeout -> typed error -> friendly retry message."""
-
-    def test_timeout_surfaces_typed_error(self):
-        assert _friendly_retry(ScriptedGateway(exc=ProviderTimeoutError("deadline exceeded")))["status"] == "retry"
-
-    def test_generic_provider_failure_surfaces_friendly_retry(self):
-        assert _friendly_retry(ScriptedGateway(exc=ProviderError("5xx upstream")))["status"] == "retry"
 
 
 class TestAntiEcho:

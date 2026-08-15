@@ -142,11 +142,25 @@ class JobSearchApiTestCase(TestCase):
             for call in record.call_args_list
             if call.args[0] == "job_search_helpfulness_gap"
         ]
-        self.assertGreaterEqual(len(gap_events), 1)
-        event_type, attrs = gap_events[-1].args
+        # First-crossing (issue #423): exactly one event, on the turn where
+        # the conversation first becomes a gap -- not on every resultless
+        # turn after the threshold.
+        self.assertEqual(len(gap_events), 1)
+        event_type, attrs = gap_events[0].args
         self.assertEqual(event_type, "job_search_helpfulness_gap")
         self.assertTrue(attrs["empty_result"])
-        self.assertEqual(attrs["turns_without_result"], 4)
+        self.assertEqual(attrs["turns_without_result"], 3)
+
+        # A further resultless turn does not re-emit: the signal is a
+        # per-conversation first-crossing, not an every-turn counter.
+        record.reset_mock()
+        self._submit(conversation_id, "still nothing", self._uuid(99))
+        gap_events = [
+            call
+            for call in record.call_args_list
+            if call.args[0] == "job_search_helpfulness_gap"
+        ]
+        self.assertEqual(gap_events, [])
 
         # A conversation that produced a result card never fires the gap.
         record.reset_mock()

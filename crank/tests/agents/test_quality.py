@@ -38,6 +38,26 @@ class TestIsEcho:
         # A reply uses less than 80% of its tokens from the user's message.
         assert quality.is_echo("a b c d e f", "x y z w q r s t u v") is False
 
+    def test_short_keyword_clarification_is_not_echo(self):
+        # A single-keyword clarifying question is not a restatement (issue
+        # #423 false positive).
+        assert quality.is_echo("salary", "Salary?") is False
+
+    def test_single_token_augment_is_not_echo(self):
+        assert quality.is_echo("compensation", "compensation?") is False
+
+    def test_echo_with_acknowledgement_prefix_is_detected(self):
+        # A filler prefix (","Sure,") must not hide a full restatement
+        # (issue #423 false negative).
+        assert quality.is_echo("show me jobs", "Sure, show me jobs") is True
+
+    def test_echo_with_ack_tokens_is_detected(self):
+        assert quality.is_echo("show me remote jobs", "Got it, show me remote jobs") is True
+
+    def test_acknowledgement_only_reply_is_not_echo(self):
+        # A bare acknowledgment is a brief clarification, not a restatement.
+        assert quality.is_echo("show me jobs", "Sure") is False
+
 
 class TestHasHelpfulnessGap:
     def test_below_minimum_turns_is_not_a_gap(self):

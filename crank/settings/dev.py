@@ -8,6 +8,7 @@ import os
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DEBUG = True
+ENV = "dev"
 SECRET_KEY = os.environ.get("SECRET_KEY")
 CPU_COUNT = multiprocessing.cpu_count()
 
@@ -48,4 +49,3 @@ LOGGING = {
         }
     }
 }
-

@@ -1,6 +1,10 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 """Tests for the deployment-safety system checks (issue #397)."""
+import os
+import types
+from unittest.mock import patch
+
 from django.test import SimpleTestCase, override_settings
 
 from crank.checks import check_job_search_provider, is_non_dev_environment
@@ -30,6 +34,57 @@ class IsNonDevEnvironmentTests(SimpleTestCase):
     @override_settings(ENV="PROD")
     def test_env_is_case_insensitive(self):
         self.assertTrue(is_non_dev_environment())
+
+    def test_os_env_var_is_fallback_when_settings_lacks_env(self):
+        # Production shape (issue #423): the deployment signal is the OS
+        # ``ENV`` var that ``crank.settings`` branches on. Even if a settings
+        # object does not carry ``ENV``, the real deployment signal must fire.
+        with patch.dict(os.environ, {"ENV": "prod"}):
+            with override_settings(ENV=""):
+                self.assertTrue(is_non_dev_environment())
+
+    def test_os_env_var_staging_is_non_dev(self):
+        with patch.dict(os.environ, {"ENV": "staging"}):
+            with override_settings(ENV=""):
+                self.assertTrue(is_non_dev_environment())
+
+    def test_os_env_var_is_case_insensitive_fallback(self):
+        with patch.dict(os.environ, {"ENV": "PROD"}):
+            with override_settings(ENV=""):
+                self.assertTrue(is_non_dev_environment())
+
+    def test_settings_modules_declare_env(self):
+        # Each settings module now declares ENV so ``settings.ENV`` is
+        # populated in a real deploy (the authoritative signal).
+        import importlib
+
+        dev = importlib.import_module("crank.settings.dev")
+        self.assertEqual(dev.ENV, "dev")
+
+    def test_prod_and_staging_settings_modules_declare_env(self):
+        # Import the non-dev settings modules (with the optional MySQL pool
+        # backend stubbed out of the environment) so their deployment-selected
+        # ``ENV`` values actually execute and are covered.
+        import importlib
+        import sys
+
+        _pool = types.ModuleType("dj_db_conn_pool")
+        _backends = types.ModuleType("dj_db_conn_pool.backends")
+        _mysql = types.ModuleType("dj_db_conn_pool.backends.mysql")
+        _pool.backends = _backends
+        _backends.mysql = _mysql
+        with patch.dict(
+            sys.modules,
+            {
+                "dj_db_conn_pool": _pool,
+                "dj_db_conn_pool.backends": _backends,
+                "dj_db_conn_pool.backends.mysql": _mysql,
+            },
+        ):
+            prod = importlib.import_module("crank.settings.prod")
+            staging = importlib.import_module("crank.settings.staging")
+        self.assertEqual(prod.ENV, "prod")
+        self.assertEqual(staging.ENV, "staging")
 
 
 class CheckJobSearchProviderTests(SimpleTestCase):

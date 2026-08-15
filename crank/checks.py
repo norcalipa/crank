@@ -8,6 +8,8 @@ a legitimate offline/test choice, so a production deployment that still points
 """
 from __future__ import annotations
 
+import os
+
 from django.conf import settings
 from django.core.checks import Warning, register
 
@@ -18,13 +20,18 @@ _NON_DEV_ENVS = frozenset({"prod", "staging"})
 def is_non_dev_environment() -> bool:
     """Return True when the configured environment is not a dev one.
 
-    The crank package selects its settings module from the explicit ``ENV``
-    env var (``prod``/``staging``) and otherwise defaults to local dev
-    settings. ``ENV`` is the authoritative deployment selector and does not
-    move during test runs (Django forces ``DEBUG`` off under the test runner,
-    so DEBUG is not a reliable dev signal here).
+    The crank package selects its settings module from the ``ENV`` env var
+    (``prod``/``staging``) and otherwise defaults to local dev settings. Each
+    settings module also declares ``ENV`` explicitly, so ``settings.ENV`` is
+    the authoritative value in a real deploy. The ``os.environ["ENV"]``
+    fallback covers any setup where the settings module was selected without
+    declaring ``ENV``. ``ENV`` is the authoritative deployment selector and
+    does not move during test runs (Django forces ``DEBUG`` off under the
+    test runner, so DEBUG is not a reliable dev signal here).
     """
-    env = (getattr(settings, "ENV", "") or "").strip().lower()
+    env = (
+        getattr(settings, "ENV", "") or os.environ.get("ENV", "") or ""
+    ).strip().lower()
     return env in _NON_DEV_ENVS
 
 

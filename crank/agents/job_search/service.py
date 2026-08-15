@@ -221,39 +221,53 @@ class JobSearchOrchestrator:
         listing_rows = self._load_job_listings()
         known_listing_ids = tools.union_server_controlled_listing_ids(listing_rows)
 
-        # 1c. Preference-grounded matches (issue #395).
+        # 1c. Preference-grounded matches (issue #395). Only invoked when a
+        # match service and a user are actually wired up.
         match_data = self._load_matches()
+        match_enabled = self._match_service is not None and self._user is not None
 
-        # Telemetry: count tool invocations and result sizes without payloads.
+        # Telemetry: count only the datasources actually invoked this turn,
+        # and surface the same set in ``tools_used``/``result_counts`` so the
+        # two can never drift (issue #423). Counts/sizes only, no payloads.
+        tools_used: list[str] = []
+        result_counts: list[int] = []
+
+        tools_used.append("query_active_organizations")
+        result_counts.append(len(org_rows))
         monitoring.record_event(
             "job_search_tool_invocation",
-            {
-                "tool": "query_active_organizations",
-                "result_count": len(org_rows),
-            },
+            {"tool": "query_active_organizations", "result_count": len(org_rows)},
         )
+
+        if known_ids:
+            tools_used.append("query_score_summaries")
+            result_counts.append(len(score_rows))
+            monitoring.record_event(
+                "job_search_tool_invocation",
+                {"tool": "query_score_summaries", "result_count": len(score_rows)},
+            )
+
+        tools_used.append("search_job_listings")
+        result_counts.append(len(listing_rows))
         monitoring.record_event(
             "job_search_tool_invocation",
-            {
-                "tool": "query_score_summaries",
-                "result_count": len(score_rows),
-            },
+            {"tool": "search_job_listings", "result_count": len(listing_rows)},
         )
-        monitoring.record_event(
-            "job_search_tool_invocation",
-            {
-                "tool": "search_job_listings",
-                "result_count": len(listing_rows),
-            },
-        )
-        monitoring.record_event(
-            "job_search_tool_invocation",
-            {
-                "tool": "get_matches_for_user",
-                "job_match_count": len(match_data.get("job_matches", [])),
-                "organization_match_count": len(match_data.get("organization_matches", [])),
-            },
-        )
+
+        if match_enabled:
+            tools_used.append("get_matches_for_user")
+            result_counts.append(
+                len(match_data.get("job_matches", []))
+                + len(match_data.get("organization_matches", []))
+            )
+            monitoring.record_event(
+                "job_search_tool_invocation",
+                {
+                    "tool": "get_matches_for_user",
+                    "job_match_count": len(match_data.get("job_matches", [])),
+                    "organization_match_count": len(match_data.get("organization_matches", [])),
+                },
+            )
 
         # 2. Deterministic, truncated model context.
         model_context = self._build_model_context(
@@ -304,19 +318,8 @@ class JobSearchOrchestrator:
             listing_rows,
         )
 
-        tools_used = (
-            "query_active_organizations",
-            "query_score_summaries",
-            "search_job_listings",
-            "get_matches_for_user",
-        )
-        result_counts = (
-            len(org_rows),
-            len(score_rows),
-            len(listing_rows),
-            len(match_data.get("job_matches", []))
-            + len(match_data.get("organization_matches", [])),
-        )
+        tools_used = tuple(tools_used)
+        result_counts = tuple(result_counts)
         cited_ids_count = len(completion.cited_organization_ids) + len(
             completion.cited_job_listing_ids
         )
