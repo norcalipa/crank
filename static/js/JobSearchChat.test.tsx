@@ -915,6 +915,10 @@ describe('JobSearchChat result cards (issue #396)', () => {
 // ── Textarea composer (issue #407) ──────────────────────────────────────
 
 describe('textarea composer', () => {
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
     test('renders a textarea instead of a single-line input', async () => {
         await renderChat();
         const textarea = screen.getByRole('textbox', {name: 'Message'});
@@ -1035,9 +1039,14 @@ describe('textarea composer', () => {
             await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
             // On mount the composer attaches its resize listener to the viewport.
             expect(addEventListener).toHaveBeenCalledWith('resize', expect.any(Function));
+            // Pin the listener identity so we can assert symmetry on cleanup.
+            const viewportListener = addEventListener.mock.calls.find(
+                ([event]) => event === 'resize',
+            )?.[1] as Function;
+            expect(viewportListener).toBeDefined();
             unmount();
-            // And detaches it again on cleanup.
-            expect(removeEventListener).toHaveBeenCalledWith('resize', expect.any(Function));
+            // And detaches the SAME function reference on cleanup.
+            expect(removeEventListener).toHaveBeenCalledWith('resize', viewportListener);
         } finally {
             delete (window as {visualViewport?: unknown}).visualViewport;
         }

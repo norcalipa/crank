@@ -268,6 +268,10 @@ const JobSearchChat: React.FC = () => {
     // the real face paints). Because adjustComposerHeight is stable and the only
     // dependency, these listeners are never re-registered per keystroke.
     React.useEffect(() => {
+        // Defensive/idempotent mount-time measure: Effect 1 already runs
+        // adjustComposerHeight when the input state settles, but this guarantees
+        // the height is correct before the font/resize listeners are registered
+        // — the two effects are intentionally order-independent.
         adjustComposerHeight();
         let cancelled = false;
         if (document.fonts && typeof document.fonts.ready?.then === 'function') {
