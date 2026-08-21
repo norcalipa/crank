@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Organization List — E2E fixture</title>
+    <link rel="stylesheet" href="/static/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/static/css/popup.css">
+</head>
+<body>
+    <div class="container py-4 page-container">
+        <div class="row">
+            <div class="col-12">
+                <div id="organization-list"></div>
+            </div>
+        </div>
+    </div>
+    <script id="organization-data" type="application/json">
+    [
+        {"id": 1, "name": "Acme Robotics", "ranking": 1, "avg_score": 4.82, "funding_round": "C", "rto_policy": "H", "profile_completeness": 96, "accelerated_vesting": true, "url": "https://acme.example", "type": "C"},
+        {"id": 2, "name": "Beacon Health", "ranking": 2, "avg_score": 4.71, "funding_round": "B", "rto_policy": "R", "profile_completeness": 91, "accelerated_vesting": false, "url": "https://beacon.example", "type": "C"},
+        {"id": 3, "name": "Civic Data Trust", "ranking": 3, "avg_score": 4.60, "funding_round": "A", "rto_policy": "O", "profile_completeness": 84, "accelerated_vesting": false, "url": "https://civic.example", "type": "N"},
+        {"id": 4, "name": "Dune Analytics Group", "ranking": 4, "avg_score": 4.55, "funding_round": "D", "rto_policy": "H", "profile_completeness": 88, "accelerated_vesting": true, "url": "https://dune.example", "type": "C"},
+        {"id": 5, "name": "Evergreen Bio", "ranking": 5, "avg_score": 4.43, "funding_round": "B", "rto_policy": "R", "profile_completeness": 79, "accelerated_vesting": false, "url": "https://evergreen.example", "type": "C"}
+    ]
+    </script>
+    <script src="/static/dist/e2e.js"></script>
+</body>
+</html>
