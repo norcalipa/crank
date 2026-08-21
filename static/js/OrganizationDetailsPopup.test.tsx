@@ -235,17 +235,23 @@ describe('OrganizationDetailsPopup', () => {
         const closeButton = screen.getByRole('button', { name: 'Close' });
         fireEvent.click(closeButton);
         
-        // Check that onClose was called and that focus was removed
+        // Check that onClose was called and focus returned to the opener.
         expect(onCloseMock).toHaveBeenCalledTimes(1);
-        expect(document.activeElement).not.toBe(focusableDiv);
+        expect(document.activeElement).toBe(focusableDiv);
         
         // Clean up
         document.body.removeChild(focusableDiv);
     });
 
-    test('calls onClose when Escape key is pressed', () => {
+    test('calls onClose and restores focus to opener when Escape key is pressed', () => {
         const onCloseMock = jest.fn();
-        
+
+        // Create a div with tabindex to make it focusable and add to the DOM
+        const focusableDiv = document.createElement('div');
+        focusableDiv.setAttribute('tabindex', '0');
+        document.body.appendChild(focusableDiv);
+        focusableDiv.focus();
+
         render(
             <OrganizationDetailsPopup
                 organization={mockOrganization}
@@ -258,6 +264,9 @@ describe('OrganizationDetailsPopup', () => {
         fireEvent.keyDown(document, { key: 'Escape' });
         
         expect(onCloseMock).toHaveBeenCalledTimes(1);
+        expect(document.activeElement).toBe(focusableDiv);
+
+        document.body.removeChild(focusableDiv);
     });
 
     test('does not call onClose when other keys are pressed', () => {
@@ -395,7 +404,6 @@ describe('OrganizationDetailsPopup', () => {
         const overlay = screen.getByTestId('popup-overlay');
         const closeButton = screen.getByRole('button', {name: 'Close'});
         expect(closeButton).toHaveFocus();
-        const blurSpy = jest.spyOn(closeButton, 'blur');
         
         // Simulate click on the overlay (not its children)
         // Using fireEvent directly instead of the mock approach
@@ -406,13 +414,12 @@ describe('OrganizationDetailsPopup', () => {
             currentTarget: overlay
         });
         
-        // Check that onClose was called and the active control was blurred.
+        // Check that onClose was called and focus returned to the opener.
         expect(onCloseMock).toHaveBeenCalledTimes(1);
-        expect(blurSpy).toHaveBeenCalled();
+        expect(document.activeElement).toBe(focusableDiv);
         
         // Clean up
         document.body.removeChild(focusableDiv);
-        blurSpy.mockRestore();
     });
     
     test('does not close popup when clicking on popup content', () => {
@@ -445,18 +452,19 @@ describe('OrganizationDetailsPopup', () => {
         expect(onCloseMock).not.toHaveBeenCalled();
     });
     
-    test('blurs activeElement when clicking overlay with non-HTMLElement activeElement', () => {
+    test('closes popup without error when activeElement is not an HTMLElement', () => {
         const onCloseMock = jest.fn();
-        
-        // Save the original activeElement property
-        const originalActiveElement = document.activeElement;
-        
+
+        // Save the original activeElement property descriptor so it can be
+        // restored exactly (activeElement is an accessor in jsdom).
+        const originalDescriptor = Object.getOwnPropertyDescriptor(document, 'activeElement');
+
         // Mock document.activeElement to return a non-HTMLElement (like null)
         Object.defineProperty(document, 'activeElement', {
             get: jest.fn(() => null),
             configurable: true
         });
-        
+
         render(
             <OrganizationDetailsPopup
                 organization={mockOrganization}
@@ -464,24 +472,57 @@ describe('OrganizationDetailsPopup', () => {
                 onClose={onCloseMock}
             />
         );
-        
+
         // Get the overlay
         const overlay = screen.getByTestId('popup-overlay');
-        
+
         // Simulate click on the overlay
         fireEvent.click(overlay, {
             target: overlay,
             currentTarget: overlay
         });
-        
+
         // Check that onClose was called
         expect(onCloseMock).toHaveBeenCalledTimes(1);
-        
-        // Restore the original activeElement property
-        Object.defineProperty(document, 'activeElement', {
-            value: originalActiveElement,
-            configurable: true
-        });
+
+        // Restore the original activeElement property (or remove our own
+        // property so the prototype accessor is used again).
+        if (originalDescriptor) {
+            Object.defineProperty(document, 'activeElement', originalDescriptor);
+        } else {
+            delete (document as any).activeElement;
+        }
+    });
+
+    test('blurs active element when opener is no longer connected on close', () => {
+        const onCloseMock = jest.fn();
+
+        const focusableDiv = document.createElement('div');
+        focusableDiv.setAttribute('tabindex', '0');
+        document.body.appendChild(focusableDiv);
+        focusableDiv.focus();
+
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={onCloseMock}
+            />
+        );
+
+        // Detach the opener so it is no longer connected, simulating the
+        // trigger being removed from the DOM while the dialog is open.
+        document.body.removeChild(focusableDiv);
+
+        const closeButton = screen.getByRole('button', { name: 'Close' });
+        const blurSpy = jest.spyOn(closeButton, 'blur');
+
+        fireEvent.keyDown(document, { key: 'Escape' });
+
+        expect(onCloseMock).toHaveBeenCalledTimes(1);
+        expect(blurSpy).toHaveBeenCalled();
+
+        blurSpy.mockRestore();
     });
 
     test('renders provenance section with observation data', async () => {
