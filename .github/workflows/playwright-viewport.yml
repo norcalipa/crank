@@ -1,0 +1,46 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+name: Viewport E2E
+
+on:
+  push:
+    paths-ignore:
+      - '/*'
+      - '.github/**'
+      - 'crank/content/**'
+      - 'seeds/**'
+      - 'dump/**'
+      - 'k8s/**'
+      - '.gitignore'
+  workflow_dispatch:
+
+jobs:
+  viewport-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Node.js dependencies
+        run: npm install
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium firefox webkit
+
+      - name: Run viewport regression tests
+        run: npx playwright test
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
