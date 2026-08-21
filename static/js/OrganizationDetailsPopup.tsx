@@ -83,6 +83,9 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     const [provenance, setProvenance] = React.useState<ProvenanceData | null>(null);
     const [provenanceLoading, setProvenanceLoading] = React.useState(false);
     const closeButtonRef = React.useRef<HTMLButtonElement>(null);
+    // Element that had focus when the dialog opened (the trigger). Restored on
+    // close so keyboard and pointer users return to where they left off.
+    const openerRef = React.useRef<HTMLElement | null>(null);
 
     React.useEffect(() => {
         if (organization && visible && !organization.avg_scores) {
@@ -118,31 +121,35 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         }
     }, [organization, visible]);
 
-    // Add keyboard event listener for Escape key
+    // On open, capture the element that triggered the dialog (document.activeElement)
+    // before focus moves to the Close button, then move focus into the dialog.
     React.useEffect(() => {
         if (visible) {
+            if (document.activeElement instanceof HTMLElement) {
+                openerRef.current = document.activeElement;
+            }
             closeButtonRef.current?.focus();
         }
     }, [visible]);
 
+    // Restore focus to the opener on close (WAI-ARIA dialog pattern). If the
+    // opener is no longer in the document, defensively blur the active element
+    // so focus never lingers on a now-hidden node. Uses the same
+    // instanceof HTMLElement guard as the rest of this component.
+    const restoreFocusToOpener = () => {
+        if (openerRef.current instanceof HTMLElement && openerRef.current.isConnected) {
+            openerRef.current.focus();
+        } else if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+        }
+    };
+
     React.useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             if (visible && event.key === 'Escape') {
-                // INTENTIONAL dialog focus management (issue #423): blurs any
-                // focused element before closing so focus never lingers on a
-                // now-hidden node and no "blinking cursor" artifact remains.
-                // Unlike the removed OrganizationList workaround (a non-modal
-                // list), this lives inside a real role="dialog" aria-modal
-                // popup, so returning focus to the caller would be the also-
-                // valid pattern; blur+onClose is the deliberate choice here,
-                // guarded by instanceof HTMLElement. The same rationale applies
-                // to the blur in handleCloseClick / handleOverlayClick below.
-                //
-                // TODO(#430): restore focus to the trigger element on close
-                // per WAI-ARIA dialog patterns.
-                if (document.activeElement instanceof HTMLElement) {
-                    document.activeElement.blur();
-                }
+                // WAI-ARIA dialog pattern: return focus to the trigger element
+                // that opened the dialog before closing (issue #430).
+                restoreFocusToOpener();
                 onClose();
             }
         };
@@ -189,20 +196,16 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
 
     const handleCloseClick = (e: React.MouseEvent) => {
         e.stopPropagation();
-        // Blur active element before close; see Escape-key handler rationale above.
-        if (document.activeElement instanceof HTMLElement) {
-            document.activeElement.blur();
-        }
+        // Return focus to the trigger element before close (WAI-ARIA dialog pattern).
+        restoreFocusToOpener();
         onClose();
     };
 
     const handleOverlayClick = (e: React.MouseEvent) => {
         // Only close if clicking directly on the overlay, not its children
         if (e.target === e.currentTarget) {
-            // Blur active element before close; see Escape-key handler rationale above.
-            if (document.activeElement instanceof HTMLElement) {
-                document.activeElement.blur();
-            }
+            // Return focus to the trigger element before close (WAI-ARIA dialog pattern).
+            restoreFocusToOpener();
             onClose();
         }
     };
