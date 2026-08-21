@@ -9,4 +9,5 @@ module.exports = {
     testEnvironment: 'jsdom',
     moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node'],
     testMatch: ['**/?(*.)+(spec|test).ts?(x)'],
+    testPathIgnorePatterns: ['/node_modules/', '/e2e/'],
 };

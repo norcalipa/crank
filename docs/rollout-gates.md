@@ -466,14 +466,15 @@ history retention and reload; verify the loop as an operator:
 
 ### 4. UX Acceptance Notes
 
-> **Permanent AC waiver — automated viewport suite:** this repository is a
-> jest/jsdom project and intentionally has **no Playwright / automated-browser
-> viewport suite**. The #407/#408 viewport, zoom, keyboard, and IME acceptance
-> criteria are therefore verified only by **manual, operator-recorded evidence**
-> (see the matrix below); the jest/jsdom suite asserts layout wiring, not
-> rendered-browser behavior. Adding a Playwright viewport harness is tracked as
-> an accepted gap [#431](https://github.com/norcalipa/crank/issues/431),
-> out of scope for this gate, not a pending AC here.
+> **Automated viewport suite (formerly a permanent AC waiver):** the #407/#408
+> viewport, zoom, keyboard, and IME acceptance criteria are now asserted by an
+> automated Playwright harness ([#431](https://github.com/norcalipa/crank/issues/431))
+> that renders the job-search chat and organization list across a desktop,
+> tablet, mobile, and short-height viewport matrix (plus a Chromium 200%-zoom
+> check and IME-composition guard) in Chromium, Firefox, and WebKit via the
+> `Viewport E2E` workflow. The jest/jsdom suite still asserts layout wiring.
+> The per-case evidence matrix below remains the operator-recorded record for a
+> specific production release SHA.
 
 - **#407 Composer:** the chat composer renders correctly, handles multi-line
   input, submit-on-Enter affordance, and empty/invalid send without error.
