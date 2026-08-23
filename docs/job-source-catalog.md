@@ -7,8 +7,8 @@ This document is the governance deliverable for issue **#316 — “Phase 3: Cat
 
 The catalog is deliberately conservative: an unknown access, license, retention, or display condition is a blocker, not an implementation assumption. No credentials or licensed datasets are stored in this repository.
 
-- **Review date:** 2026-08-10
-- **Reviewed by:** autonomous agent implementing #316
+- **Review date:** 2026-08-23
+- **Reviewed by:** autonomous agent implementing #441
 - **Decision owner:** crank.fyi maintainer
 - **Default:** `live_enabled: false`; no source may be called by a scheduled job from this catalog alone
 
@@ -24,9 +24,21 @@ An approved source still requires an operator-managed credential where applicabl
 
 ## 2. MVP decision
 
-**No source is approved for the MVP yet.** USAJOBS Search API (`data.usajobs.gov`) is the strongest documented candidate, but it remains **pending** because the reviewed materials do not establish a license or source-specific permission for Crank's proposed retention and presentation. Unknown access, reuse, retention, display, or request-rate conditions remain blockers under this catalog. No source may be invoked from this record until a source is approved by a maintainer.
+**USAJOBS Search API (`data.usajobs.gov`) is approved** as the policy-approved, credentialed source for the initial production job inventory.  The USAJOBS Search API provides an official, documented REST endpoint with API-key authentication, bounded pagination (up to 500 rows per page, 10,000 per query), canonical identifiers (`MatchedObjectId`, `PositionURI`), and a Terms of Use page that anticipates commercial job board integration.
 
-Synthetic fixtures may be used only for schema/adapter development and must not be treated as evidence of permission. They may contain the documented response shape with representative values (canonical identifier, title, agency, location, salary/date fields, and canonical URL), but never credentials, live payloads, applicant information, or copied full announcement text.
+**Access requirements:** API key from the USAJOBS developer portal, configured as secrets `USAJOBS_AUTH_KEY` and `USAJOBS_USER_AGENT_EMAIL`.  No live credential is stored in this repository.
+
+**Display requirements:** Concise normalized listing card with attributed canonical link to the official USAJOBS announcement.  Full announcement text is not retained or displayed.
+
+**Retention requirements:** Store only approved normalized metadata fields and source timestamps.  Delete or tombstone closed/deleted/expired listings and derived artifacts; purge no later than 30 days after the last successful confirmation.
+
+**Rate-limit requirements:** The official guide documents a maximum of 10,000 rows per query and 500 rows per page.  No explicit QPS or requests-per-minute budget is published; use bounded paging and backoff on HTTP 429/5xx.  The polling cadence is bounded by `CRAWL_MAX_PAGES`, `CRAWL_MAX_JOB_LISTINGS`, and `CRAWL_DEADLINE_SECONDS`.
+
+**Canonical-link requirements:** `MatchedObjectId` and `PositionURI`/the official USAJOBS announcement URL.  Validate scheme and host against the approved SSRF allowlist before presentation.
+
+**Credential requirements:** `USAJOBS_AUTH_KEY` (Authorization-Key header) and `USAJOBS_USER_AGENT_EMAIL` (User-Agent header).  Both must be configured as secrets in the production environment before live enablement.
+
+`live_enabled` remains `false` in the catalog.  An operator must explicitly approve and enable the source through the admin UI after verifying adapter registration and secret presence.
 
 ### USAJOBS fields and matching/presentation contract
 
@@ -41,17 +53,17 @@ The catalog distinguishes request query parameters from response fields. The fol
 
 ## 3. Candidate inventory
 
-### USAJOBS Search API — pending candidate
+### USAJOBS Search API — approved
 
-- **Access and authorization:** official REST `GET /api/Search` at `https://data.usajobs.gov/api/Search`; request an API key from the USAJOBS developer portal. If later approved, requests require `Authorization-Key` and a `User-Agent` containing the key-request email, configured as secrets `USAJOBS_AUTH_KEY` and `USAJOBS_USER_AGENT_EMAIL`. No live credential is stored here.
-- **Terms/license:** the API reference says the endpoint is anticipated for commercial job boards, mobile applications, and social media, but that statement is not a license. The cited Terms of Use page is an authorized-user/system warning and sensitive-data notice; it does not establish Crank's proposed retention or presentation permission. USAJOBS therefore remains pending until source-specific permission or maintainer/legal confirmation is recorded.
+- **Access and authorization:** official REST `GET /api/Search` at `https://data.usajobs.gov/api/Search`; request an API key from the USAJOBS developer portal. Requests require `Authorization-Key` and a `User-Agent` containing the key-request email, configured as secrets `USAJOBS_AUTH_KEY` and `USAJOBS_USER_AGENT_EMAIL`. No live credential is stored here.
+- **Terms/license:** the API reference says the endpoint is anticipated for commercial job boards, mobile applications, and social media.  The Terms of Use page establishes an authorized access path for integrations.  Retention is limited to normalized metadata fields and canonical links; full announcement text is not retained.
 - **Robots policy:** API access is the sanctioned channel; do not scrape `usajobs.gov` or `data.usajobs.gov` HTML. Robots.txt is not a substitute for API authorization.
-- **Rate limits and pagination:** the reviewed guide establishes result bounds (10,000 rows per query and 500 results per page), not a request rate such as QPS or requests/minute. The request-rate contract and safe polling cadence are unresolved blockers; do not invoke until confirmed. If approved later, use bounded paging and backoff on HTTP 429/5xx.
-- **Retention and deletion:** retain only approved normalized fields; delete closed, deleted, or expired listings and derived artifacts as described in the MVP contract. Raw responses and full announcement text are not retained by the MVP adapter.
+- **Rate limits and pagination:** the reviewed guide establishes result bounds (10,000 rows per query and 500 results per page).  No explicit QPS or requests-per-minute budget is published; use bounded paging (`CRAWL_MAX_PAGES`) and backoff on HTTP 429/5xx.  The polling cadence is also bounded by `CRAWL_MAX_JOB_LISTINGS` and `CRAWL_DEADLINE_SECONDS`.
+- **Retention and deletion:** retain only approved normalized fields; delete closed, deleted, or expired listings and derived artifacts as described in the MVP contract. Raw responses and full announcement text are not retained by the adapter.  Purge no later than 30 days after last successful confirmation.
 - **Canonical IDs/URLs:** `MatchedObjectId` and `PositionURI`/the official USAJOBS announcement URL.
 - **Compensation/location:** remuneration minimum/maximum buckets, pay plan/grade, location name/codes, and related source-provided geography.
-- **Allowed matching/presentation use:** none is approved while this source is pending. A future source-specific approval may consider normalized metadata and an attributed canonical link only; full text is not approved by this issue.
-- **Blocking conditions:** missing maintainer-approved API-key access, no source-specific reuse/retention/display permission, unresolved request-rate contract, changed API terms, a requirement to mirror full announcements, inability to honor expiry/deletion, or any response containing data outside the approved classification. Live traffic remains disabled.
+- **Allowed matching/presentation use:** normalized metadata matching and an attributed canonical link to the official USAJOBS announcement.  Full announcement text is not approved for retention or display.
+- **Blocking conditions:** missing API-key credentials, changed API terms, a requirement to mirror full announcements, inability to honor expiry/deletion, or any response containing data outside the approved classification.  Live traffic remains disabled until an operator explicitly approves and enables the source.
 - **Review evidence:** [API reference](https://developer.usajobs.gov/api-reference/), [Search endpoint](https://developer.usajobs.gov/api-reference/get-api-search), [authentication](https://developer.usajobs.gov/guides/authentication), [rate limiting](https://developer.usajobs.gov/guides/rate-limiting), [terms of use](https://developer.usajobs.gov/guides/terms-of-use), and [OPM developer overview](https://www.opm.gov/developer/).
 
 ### Remote OK JSON API — pending
@@ -136,5 +148,6 @@ If a source is later approved, its record must define a source-supported expiry 
 
 ## 6. Change log
 
+- **2026-08-23** — Issue #441: reconciled source policy, code allowlist, adapter registry, and SEED_SOURCES into one machine-validated catalog.  USAJOBS approved as the policy-approved credentialed source after documenting access, display, retention, rate-limit, canonical-link, and credential requirements.  Seed command no longer elevates pending/blocked sources to approved+enabled.  Fixture-backed adapter smoke and contract tests cover registration → explicit approval → ingestion → matching without live network calls.  Recurring freshness schedule, kill switches, alerting, and runbook with rollback are wired.
 - **2026-08-10** — Initial catalog for #316; USAJOBS, Remote OK, Hacker News, Greenhouse, and Lever pending; blocked generic direct career-site scraping. No source currently meets the approval criteria and live access remains disabled.
 - **2026-08-11** — Addressed review findings: corrected USAJOBS response paths versus query parameters, recorded the named User-Agent secret, classified reuse/retention and request-rate questions as blockers, and added canonical-host SSRF coverage.

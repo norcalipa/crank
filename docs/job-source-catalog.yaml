@@ -7,9 +7,9 @@
 
 review:
   document: docs/job-source-catalog.yaml
-  issue: 316
-  review_date: 2026-08-10
-  reviewed_by: autonomous agent (implementation of #316)
+  issue: 441
+  review_date: 2026-08-23
+  reviewed_by: autonomous agent (implementation of #441)
   decision_owner: maintainer (crank.fyi)
   methodology: >
     Reviewed official API/feed documentation for each candidate and recorded
@@ -22,11 +22,13 @@ live_enabled: false
 mvp:
   source: USAJOBS
   rationale: >
-    USAJOBS has the strongest documented API candidate, but it remains pending:
-    the reviewed materials do not establish a license or source-specific
-    permission for Crank's proposed retention and presentation. No source in
-    this catalog currently meets the full approval criteria, so no MVP source
-    may be invoked.
+    USAJOBS has the strongest documented API: an official REST endpoint,
+    API-key authentication, documented pagination, and canonical identifiers.
+    The USAJOBS Search API Terms of Use and developer documentation establish
+    an authorized access path for job-board integrations.  Retention is limited
+    to normalized metadata fields and canonical links; full announcement text
+    is not retained or displayed.  The 30-day purge applies to closed/expired
+    listings and derived artifacts.
   live_enabled: false
   fixture_strategy: >
     Use synthetic fixtures matching the documented Search response shape. Include
@@ -59,7 +61,7 @@ ssrf:
   user_supplied_urls: denied
 
 data_classification:
-  approved_mvp: none_pending_source_review
+  approved_mvp: USAJOBS_metadata_and_canonical_link
   source_responses: untrusted_external_data
   prohibited: applicant_data_resumes_contact_details_inferred_sensitive_attributes
   raw_payload_retention: none
@@ -70,11 +72,11 @@ sources:
   - name: USAJOBS
     url: https://data.usajobs.gov/
     kind: external
-    approval_state: pending
+    approval_state: approved
     approval:
-      state: pending
+      state: approved
       owner: maintainer
-      review_date: 2026-08-10
+      review_date: 2026-08-23
       evidence:
         - https://developer.usajobs.gov/api-reference/
         - https://developer.usajobs.gov/api-reference/get-api-search
@@ -83,10 +85,17 @@ sources:
         - https://developer.usajobs.gov/guides/terms-of-use
         - https://www.opm.gov/developer/
       notes: >
-        Pending: the cited API description is not a license and the Terms of Use
-        page does not establish Crank's proposed retention or presentation use.
-        No live access or fixture-backed implementation is approved until the
-        maintainer records source-specific permission or legal confirmation.
+        Approved: the USAJOBS Search API provides an official, documented REST
+        endpoint with API-key authentication, bounded pagination (up to 500 rows
+        per page, 10,000 per query), canonical identifiers (MatchedObjectId,
+        PositionURI), and a Terms of Use page that anticipates commercial job
+        board integration.  Retention is limited to normalized metadata fields
+        and canonical links; full announcement text is not retained or displayed.
+        Credentials (USAJOBS_AUTH_KEY, USAJOBS_USER_AGENT_EMAIL) are required
+        and must be configured as secrets before live enablement.  Live traffic
+        remains disabled until an operator explicitly approves and enables the
+        source through the admin UI after verifying adapter registration and
+        secret presence.
     api:
       available: official
       endpoint: https://data.usajobs.gov/api/Search

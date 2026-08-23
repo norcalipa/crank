@@ -14,14 +14,14 @@ from crank.models.job import JobSourceCatalog
 class SeedJobSourcesTests(TestCase):
     """Idempotency, dry-run, allowlist enforcement, and seeding correctness."""
 
-    def test_seed_creates_approved_enabled_rows(self):
+    def test_seed_creates_pending_disabled_rows(self):
         out = StringIO()
         call_command("seed_job_sources", stdout=out)
         created_count = JobSourceCatalog.objects.count()
         self.assertGreaterEqual(created_count, 1)
         for source in JobSourceCatalog.objects.all():
-            self.assertEqual(source.approval_state, JobSourceCatalog.ApprovalState.APPROVED)
-            self.assertTrue(source.enabled)
+            self.assertEqual(source.approval_state, JobSourceCatalog.ApprovalState.PENDING)
+            self.assertFalse(source.enabled)
             host = _host(source.base_url)
             self.assertTrue(_is_allowed(host), f"{source.name} host {host} not allowlisted")
 
@@ -33,18 +33,37 @@ class SeedJobSourcesTests(TestCase):
         second_count = JobSourceCatalog.objects.count()
         self.assertEqual(first_count, second_count)
 
-    def test_seed_updates_existing_row(self):
-        """Re-seeding with changed defaults upserts the existing row."""
+    def test_seed_preserves_operator_set_policy_fields(self):
+        """Re-seeding must not clobber operator-set approval_state/enabled.
+
+        The seed command creates rows as pending/disabled.  An operator then
+        approves and enables a source through the admin UI.  Re-seeding must
+        preserve those operator-set policy fields rather than silently
+        resetting them to the seed defaults.
+        """
         call_command("seed_job_sources", stdout=StringIO())
         source = JobSourceCatalog.objects.get(name=SEED_SOURCES[0]["name"])
-        source.enabled = False
-        source.approval_state = JobSourceCatalog.ApprovalState.PENDING
-        source.save(update_fields=["enabled", "approval_state", "modified"])
+        # Simulate operator approval and enablement
+        source.approval_state = JobSourceCatalog.ApprovalState.APPROVED
+        source.enabled = True
+        source.save(update_fields=["approval_state", "enabled", "modified"])
 
         call_command("seed_job_sources", stdout=StringIO())
         source.refresh_from_db()
-        self.assertTrue(source.enabled)
         self.assertEqual(source.approval_state, JobSourceCatalog.ApprovalState.APPROVED)
+        self.assertTrue(source.enabled)
+
+    def test_seed_does_not_elevate_blocked_source(self):
+        """Re-seeding must not change a blocked source to approved."""
+        call_command("seed_job_sources", stdout=StringIO())
+        source = JobSourceCatalog.objects.get(name=SEED_SOURCES[0]["name"])
+        source.approval_state = JobSourceCatalog.ApprovalState.BLOCKED
+        source.save(update_fields=["approval_state", "modified"])
+
+        call_command("seed_job_sources", stdout=StringIO())
+        source.refresh_from_db()
+        self.assertEqual(source.approval_state, JobSourceCatalog.ApprovalState.BLOCKED)
+        self.assertFalse(source.enabled)
 
     def test_dry_run_does_not_write(self):
         out = StringIO()
@@ -52,10 +71,11 @@ class SeedJobSourcesTests(TestCase):
         self.assertEqual(JobSourceCatalog.objects.count(), 0)
         self.assertIn("[dry-run]", out.getvalue())
 
-    def test_dry_run_reports_create(self):
+    def test_dry_run_reports_create_pending(self):
         out = StringIO()
         call_command("seed_job_sources", "--dry-run", stdout=out)
         self.assertIn("CREATE", out.getvalue())
+        self.assertIn("pending", out.getvalue().lower())
 
     def test_dry_run_reports_no_change(self):
         """Second dry-run after seeding reports NO CHANGE for unchanged rows."""
@@ -67,8 +87,8 @@ class SeedJobSourcesTests(TestCase):
     def test_dry_run_reports_update_for_modified_row(self):
         call_command("seed_job_sources", stdout=StringIO())
         source = JobSourceCatalog.objects.first()
-        source.enabled = False
-        source.save(update_fields=["enabled", "modified"])
+        source.adapter_key = "changed-adapter"
+        source.save(update_fields=["adapter_key", "modified"])
         out = StringIO()
         call_command("seed_job_sources", "--dry-run", stdout=out)
         self.assertIn("UPDATE", out.getvalue())
@@ -140,20 +160,26 @@ class SeedJobSourcesTests(TestCase):
         call_command("seed_job_sources", "--dry-run", stdout=out)
         self.assertIn("catalog_metadata", out.getvalue())
 
-    def test_diff_detects_enabled_change(self):
+    def test_diff_does_not_report_approval_or_enabled_changes(self):
+        """The diff should not report approval_state or enabled changes because
+        the seed command no longer modifies those fields on existing rows."""
         call_command("seed_job_sources", stdout=StringIO())
         source = JobSourceCatalog.objects.first()
         source.enabled = False
-        source.save(update_fields=["enabled", "modified"])
+        source.approval_state = JobSourceCatalog.ApprovalState.PENDING
+        source.save(update_fields=["enabled", "approval_state", "modified"])
         out = StringIO()
         call_command("seed_job_sources", "--dry-run", stdout=out)
-        self.assertIn("enabled:", out.getvalue())
+        self.assertNotIn("approval_state:", out.getvalue())
+        self.assertNotIn("enabled:", out.getvalue())
 
-    def test_diff_detects_approval_state_change(self):
+    def test_diff_detects_only_structural_changes(self):
         call_command("seed_job_sources", stdout=StringIO())
         source = JobSourceCatalog.objects.first()
         source.approval_state = JobSourceCatalog.ApprovalState.PENDING
         source.save(update_fields=["approval_state", "modified"])
         out = StringIO()
         call_command("seed_job_sources", "--dry-run", stdout=out)
-        self.assertIn("approval_state:", out.getvalue())
+        # approval_state is no longer reported by diff since the seed no
+        # longer changes it on existing rows
+        self.assertNotIn("approval_state:", out.getvalue())

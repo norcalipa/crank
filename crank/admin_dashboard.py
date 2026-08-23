@@ -310,9 +310,12 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     def seed_execute_view(self, request):
         """Execute seed_job_sources with confirmation.
 
-        Creates new sources with ``APPROVED`` / ``enabled=True`` defaults, but
+        Creates new sources with ``pending`` / ``enabled=False`` defaults, and
         preserves operator-set ``approval_state`` and ``enabled`` on existing
         rows so re-seeding never silently reclobbers a disabled or blocked source.
+        The operator must explicitly approve and enable a source through the
+        Job Source Catalog admin after verifying adapter registration and
+        secret presence.
         """
         if not _confirm(request):
             return self._confirm_interstitial(
@@ -332,8 +335,8 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
                 defaults={
                     "adapter_key": entry["adapter_key"],
                     "base_url": entry["base_url"],
-                    "approval_state": JobSourceCatalog.ApprovalState.APPROVED,
-                    "enabled": True,
+                    "approval_state": JobSourceCatalog.ApprovalState.PENDING,
+                    "enabled": False,
                     "catalog_metadata": entry.get("catalog_metadata", {}),
                 },
             )
