@@ -1,0 +1,54 @@
+{
+  "no_findings": [],
+  "github_actions_failure": [
+    {
+      "severity": "error",
+      "source": "github_actions",
+      "message": "Workflow run 12345 concluded as failure",
+      "details": {
+        "run_id": 12345,
+        "workflow_name": "Tests With Coverage",
+        "branch": "main",
+        "conclusion": "failure",
+        "html_url": "https://github.com/owner/repo/actions/runs/12345"
+      }
+    }
+  ],
+  "django_check_warning": [
+    {
+      "severity": "warn",
+      "source": "django_check",
+      "message": "Django system check produced warnings",
+      "details": {"output": "crank.W001: JOB_SEARCH_PROVIDER is demo"}
+    }
+  ],
+  "aged_pr_warning": [
+    {
+      "severity": "warn",
+      "source": "aged_prs",
+      "message": "PR #42 stale (5 days since update)",
+      "details": {
+        "pr_number": 42,
+        "title": "Fix something",
+        "days_stale": 5
+      }
+    }
+  ],
+  "mixed_findings": [
+    {
+      "severity": "error",
+      "source": "github_actions",
+      "message": "Workflow run 12345 concluded as failure"
+    },
+    {
+      "severity": "warn",
+      "source": "aged_prs",
+      "message": "PR #42 stale (5 days since update)"
+    },
+    {
+      "severity": "info",
+      "source": "django_check",
+      "message": "All checks passed"
+    }
+  ]
+}
