@@ -63,8 +63,12 @@ spec:
           envFrom:
             - configMapRef:
                 name: crank-config
+            - configMapRef:
+                name: crank-agent-config
             - secretRef:
                 name: db-connect-credentials
+            - secretRef:
+                name: crank-capability-secrets
           resources:
             requests:
               memory: "256Mi"

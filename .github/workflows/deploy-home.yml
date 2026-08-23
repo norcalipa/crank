@@ -76,17 +76,34 @@ jobs:
 
       - name: Deploy to Kubernetes
         run: |
-          # Copy crank.yml to the remote system
+          # Copy all manifest files to the remote system
           scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/crank.yml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/crank.yml
           scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/crank-configmap.yml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/crank-configmap.yml
+          scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/crank-agent-config.yml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/crank-agent-config.yml
+          scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/crank-capability-secrets.yml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/crank-capability-secrets.yml
           scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/migrate-job.yml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/migrate-job.yml
+          scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/crank-cronjob.yml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/crank-cronjob.yml
+          scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/crank-crawl-cron.yaml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/crank-crawl-cron.yaml
+          scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/crank-healthcheck-cron.yaml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/crank-healthcheck-cron.yaml
+          scp -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ./k8s/cron-gather-scores.yml ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }}:/tmp/cron-gather-scores.yml
 
-          # Apply the copied crank.yml
+          # Apply manifests in deterministic order: namespace → ConfigMaps →
+          # Secrets → migration Job → CronJobs → web Deployment.
           ssh -o ProxyCommand='cloudflared access ssh --hostname %h' -o StrictHostKeyChecking=no ${{ secrets.SSH_USERNAME }}@${{ secrets.SSH_HOST }} <<EOF
           set -euo pipefail
           export GITHUB_SHA=${{ github.event.workflow_run.head_sha }}
           k3s kubectl create namespace crank --dry-run=client -o yaml | k3s kubectl apply -f -
           envsubst < /tmp/crank-configmap.yml | k3s kubectl apply -f -
+          envsubst < /tmp/crank-agent-config.yml | k3s kubectl apply -f -
+          # Create capability secrets if they do not exist; never overwrite
+          # values an operator has already populated out-of-band.
+          k3s kubectl -n crank create secret generic crank-capability-secrets \
+            --from-literal=LLM_API_KEY='' \
+            --from-literal=YELP_API_KEY='' \
+            --from-literal=USAJOBS_AUTH_KEY='' \
+            --from-literal=USAJOBS_USER_AGENT_EMAIL='' \
+            --from-literal=FIRECRAWL_API_KEY='' \
+            --dry-run=client -o yaml | k3s kubectl apply -f -
           JOB_NAME="crank-migrate-\${GITHUB_SHA}"
           k3s kubectl delete job "\${JOB_NAME}" --namespace crank --ignore-not-found
           envsubst < /tmp/migrate-job.yml | k3s kubectl apply -f -
@@ -132,6 +149,11 @@ jobs:
             echo "Migration Job timed out after 900 seconds" >&2
             exit 1
           fi
+
+          envsubst < /tmp/crank-cronjob.yml | k3s kubectl apply -f -
+          envsubst < /tmp/crank-crawl-cron.yaml | k3s kubectl apply -f -
+          envsubst < /tmp/crank-healthcheck-cron.yaml | k3s kubectl apply -f -
+          envsubst < /tmp/cron-gather-scores.yml | k3s kubectl apply -f -
 
           envsubst < /tmp/crank.yml | k3s kubectl apply -f -
           EOF

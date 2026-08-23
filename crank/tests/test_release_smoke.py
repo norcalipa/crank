@@ -90,3 +90,12 @@ class StaticAssetFingerprintSmokeTest(TestCase):
         self.assertIn("build", data)
         self.assertEqual(set(data["build"]), {"status", "mismatched"})
         self.assertIn(data["build"]["status"], {"ok", "mismatch", "unverifiable"})
+
+    def test_diagnostics_surfaces_capability_config(self):
+        data = diagnostics()
+        self.assertIn("config", data)
+        self.assertIn("capability_config_version", data["config"])
+        self.assertIn("capability_all_ok", data["config"])
+        self.assertIn("capability_issues", data["config"])
+        self.assertIsInstance(data["config"]["capability_issues"], list)
+        self.assertIsInstance(data["config"]["capability_all_ok"], bool)

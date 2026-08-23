@@ -19,3 +19,4 @@ class CrankConfig(AppConfig):
         """Import and register system checks once Django is set up."""
         # Importing the module triggers ``@register()`` on the check functions.
         from crank import checks  # noqa: F401
+        from crank import capability  # noqa: F401

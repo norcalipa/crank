@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase, override_settings
 
-from crank.checks import check_job_search_provider, is_non_dev_environment
+from crank.checks import check_capability_config, check_job_search_provider, is_non_dev_environment
 
 
 class IsNonDevEnvironmentTests(SimpleTestCase):
@@ -121,3 +121,48 @@ class CheckJobSearchProviderTests(SimpleTestCase):
         from django.apps import apps
 
         self.assertEqual(apps.get_app_config("crank").name, "crank")
+
+
+class CheckCapabilityConfigTests(SimpleTestCase):
+    def test_no_issues_when_all_disabled(self):
+        self.assertEqual(check_capability_config(), [])
+
+    @override_settings(
+        INTERACTIVE_AGENT_ENABLED=True,
+        LLM_PROVIDER="crank.agents.llm:FakeLLMProvider",
+        LLM_MODEL="test",
+        LLM_API_KEY="test",
+    )
+    def test_no_issues_when_enabled_and_configured(self):
+        self.assertEqual(check_capability_config(), [])
+
+    @override_settings(
+        INTERACTIVE_AGENT_ENABLED=True,
+        LLM_PROVIDER="",
+        LLM_MODEL="",
+        LLM_API_KEY="",
+    )
+    def test_warning_when_enabled_but_misconfigured(self):
+        errors = check_capability_config()
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].id, "crank.W002")
+        self.assertIn("missing required configuration", errors[0].msg)
+
+    @override_settings(
+        INTERACTIVE_AGENT_ENABLED=True,
+        LLM_PROVIDER="",
+        LLM_MODEL="",
+        LLM_API_KEY="sk-super-secret",
+    )
+    def test_warning_never_leaks_secret_values(self):
+        errors = check_capability_config()
+        self.assertEqual(len(errors), 1)
+        import json
+
+        blob = json.dumps(errors[0].msg)
+        self.assertNotIn("sk-super-secret", blob)
+
+    def test_capability_check_is_registered(self):
+        from django.core.checks.registry import registry
+
+        self.assertIn(check_capability_config, registry.registered_checks)
