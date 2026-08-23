@@ -20,7 +20,8 @@ class AuthenticationPresentationTests(TestCase):
 
         home = self.client.get(reverse("index"))
         self.assertContains(home, "Your session has expired or you have been logged out.")
-        self.assertContains(home, "Sign In")
+        # Anonymous nav footer presents the login affordance as "Login" (issue #443).
+        self.assertContains(home, "Login")
         self.assertNotContains(self.client.get(reverse("index")), "Your session has expired")
 
     def test_authenticated_chat_request_is_allowed(self):

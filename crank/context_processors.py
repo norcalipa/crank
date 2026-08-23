@@ -21,7 +21,10 @@ def _safe_reverse(url_name):
 def navigation_context(request):
     """Provide the canonical navigation items to every template."""
     # Determine which section is active based on the request path.
-    path = request.path
+    # Some in-app requests (e.g. admin view test helpers) construct minimal
+    # request objects without a ``path`` attribute; fall back to "" so the
+    # context processor never crashes template rendering.
+    path = getattr(request, "path", "")
     is_admin = path.startswith("/admin") or path.startswith("/staff/")
     is_job_search = path.startswith("/chat/")
     is_help = path.startswith("/help/") or path.startswith("/privacy/")
