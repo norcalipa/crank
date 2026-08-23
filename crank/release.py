@@ -123,6 +123,16 @@ def migration_status_summary() -> dict:
 # never echoed verbatim onto the diagnostics page.
 _PROVIDER_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$")
 
+#: Same safe-token pattern, reused for model identifiers and other non-secret
+#: config values that should not leak URLs with embedded credentials.
+_SAFE_TOKEN_PATTERN = _PROVIDER_PATTERN
+
+
+def _safe_token(value: str) -> str:
+    """Return the value if it matches a safe token pattern, else 'unknown'."""
+    value = str(value or "").strip()
+    return value if _SAFE_TOKEN_PATTERN.match(value) else UNKNOWN
+
 
 def _safe_job_search_provider() -> str:
     value = str(getattr(settings, "JOB_SEARCH_PROVIDER", "") or "").strip()
@@ -131,15 +141,33 @@ def _safe_job_search_provider() -> str:
 
 def config_modes() -> dict:
     """Return non-secret feature modes. Secrets are reduced to booleans or omitted."""
+    from crank.capability import capability_report
+
+    report = capability_report()
     return {
         "job_search_provider": _safe_job_search_provider(),
         "llm_configured": bool(getattr(settings, "LLM_PROVIDER", "")),
+        "llm_model": _safe_token(getattr(settings, "LLM_MODEL", "")),
+        "llm_api_key_present": bool(
+            (getattr(settings, "LLM_API_KEY", "") or "").strip()
+        ),
+        "interactive_agent_enabled": bool(
+            getattr(settings, "INTERACTIVE_AGENT_ENABLED", False)
+        ),
         "job_pipeline_enabled": bool(
             getattr(settings, "JOB_PIPELINE_ENABLED", False)
         ),
         "crawl_scheduling_enabled": bool(
             getattr(settings, "CRAWL_CRON_ENABLED", False)
         ),
+        "agent_run_enabled": bool(getattr(settings, "AGENT_RUN_ENABLED", False)),
+        "capability_config_version": report.config_version,
+        "capability_all_ok": report.all_ok,
+        "capability_issues": [
+            f"{c.name}: {issue}"
+            for c in report.capabilities
+            for issue in c.issues
+        ],
     }
 
 

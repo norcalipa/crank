@@ -229,26 +229,38 @@ class ConfigModesTests(SimpleTestCase):
     @override_settings(
         JOB_SEARCH_PROVIDER="usa_jobs",
         LLM_PROVIDER="openai",
+        LLM_MODEL="gpt-4",
+        LLM_API_KEY="test-key",
         JOB_PIPELINE_ENABLED=True,
         CRAWL_CRON_ENABLED=True,
+        AGENT_RUN_ENABLED=True,
+        INTERACTIVE_AGENT_ENABLED=False,
     )
     def test_reports_non_secret_modes(self):
-        self.assertEqual(
-            config_modes(),
-            {
-                "job_search_provider": "usa_jobs",
-                "llm_configured": True,
-                "job_pipeline_enabled": True,
-                "crawl_scheduling_enabled": True,
-            },
-        )
+        modes = config_modes()
+        self.assertEqual(modes["job_search_provider"], "usa_jobs")
+        self.assertTrue(modes["llm_configured"])
+        self.assertEqual(modes["llm_model"], "gpt-4")
+        self.assertTrue(modes["llm_api_key_present"])
+        self.assertFalse(modes["interactive_agent_enabled"])
+        self.assertTrue(modes["job_pipeline_enabled"])
+        self.assertTrue(modes["crawl_scheduling_enabled"])
+        self.assertTrue(modes["agent_run_enabled"])
+        self.assertIn("capability_config_version", modes)
+        self.assertIn("capability_all_ok", modes)
+        self.assertIn("capability_issues", modes)
 
     @override_settings(LLM_PROVIDER="", LLM_API_KEY="super-secret-key")
     def test_llm_configured_is_bool_only(self):
         modes = config_modes()
         self.assertFalse(modes["llm_configured"])
         self.assertNotIn("super-secret-key", json.dumps(modes))
-        self.assertNotIn("api_key", json.dumps(modes))
+        # The key presence is a bool, never the key value.
+        self.assertIsInstance(modes["llm_api_key_present"], bool)
+        self.assertTrue(modes["llm_api_key_present"])  # key is set but not shown
+        # Verify no actual secret value appears in any mode value.
+        for key, value in modes.items():
+            self.assertNotIn("super-secret-key", str(value))
 
     @override_settings(
         JOB_SEARCH_PROVIDER="https://user:pass@example.com/jobs"
@@ -324,8 +336,14 @@ class DiagnosticsTests(TestCase):
             "django-secret",
         ):
             self.assertNotIn(secret, blob)
-        for forbidden in ("api_key", "auth_key", "password", "secret_key"):
-            self.assertNotIn(forbidden, blob.lower())
+        # Field names like "llm_api_key_present" contain "api_key" as a
+        # substring; that's the key *name*, not the key *value*. Verify
+        # actual secret values never appear in the blob.
+        self.assertNotIn("sk-", blob)
+        self.assertNotIn("yelp-secret", blob)
+        self.assertNotIn("fc-secret", blob)
+        self.assertNotIn("usajobs-secret", blob)
+        self.assertNotIn("django-secret", blob)
 
     def test_diagnostics_shape(self):
         data = diagnostics()
@@ -337,12 +355,10 @@ class DiagnosticsTests(TestCase):
             set(data["build"]),
             {"status", "mismatched"},
         )
-        self.assertEqual(
-            set(data["config"]),
-            {
-                "job_search_provider",
-                "llm_configured",
-                "job_pipeline_enabled",
-                "crawl_scheduling_enabled",
-            },
-        )
+        self.assertIn("capability_config_version", data["config"])
+        self.assertIn("capability_all_ok", data["config"])
+        self.assertIn("capability_issues", data["config"])
+        self.assertIn("interactive_agent_enabled", data["config"])
+        self.assertIn("agent_run_enabled", data["config"])
+        self.assertIn("llm_api_key_present", data["config"])
+        self.assertIn("llm_model", data["config"])

@@ -63,7 +63,42 @@ def check_job_search_provider(app_configs=None, **kwargs) -> list[Warning]:
     return []
 
 
+@register()
+def check_capability_config(app_configs=None, **kwargs) -> list[Warning]:
+    """Error when an enabled capability is missing required configuration.
+
+    This check runs at system-check time (``manage.py check``) and at
+    startup via ``AppConfig.ready()``. In a non-dev environment, any
+    enabled capability that is missing required provider/model/key
+    configuration produces a warning so the operator knows the pod will
+    hold readiness false and not serve that capability's traffic.
+
+    In dev, capabilities are typically disabled and the check is silent.
+    """
+    from crank.capability import capability_issues
+
+    issues = capability_issues()
+    if not issues:
+        return []
+    return [
+        Warning(
+            "Enabled capability is missing required configuration: "
+            + "; ".join(issues),
+            hint=(
+                "Either disable the capability flag or provide the required "
+                "provider, model, and secret configuration via the "
+                "crank-agent-config ConfigMap and crank-capability-secrets "
+                "Secret. The readiness probe will hold readiness false until "
+                "the configuration is complete."
+            ),
+            obj=settings,
+            id="crank.W002",
+        )
+    ]
+
+
 __all__ = [
+    "check_capability_config",
     "check_job_search_provider",
     "is_non_dev_environment",
 ]

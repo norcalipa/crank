@@ -93,6 +93,8 @@ spec:
                     name: crank-agent-config
                 - secretRef:
                     name: db-connect-credentials
+                - secretRef:
+                    name: crank-capability-secrets
           imagePullSecrets:
             - name: ghcr-credentials
           volumes:
