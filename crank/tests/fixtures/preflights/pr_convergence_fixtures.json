@@ -1,0 +1,66 @@
+{
+  "no_managed_prs": [],
+  "all_clean_pr": {
+    "number": 42,
+    "state": "open",
+    "head": {"sha": "abc123"},
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "labels": [{"name": "sf-managed"}, {"name": "ready-to-merge"}],
+    "reviews": [{"author": {"login": "reviewer1"}, "state": "APPROVED"}],
+    "statusCheckRollup": [{"conclusion": "SUCCESS", "status": "COMPLETED"}]
+  },
+  "conflict_pr": {
+    "number": 99,
+    "state": "open",
+    "head": {"sha": "def456"},
+    "mergeable": false,
+    "mergeable_state": "dirty",
+    "labels": [{"name": "sf-managed"}],
+    "reviews": [{"author": {"login": "reviewer1"}, "state": "APPROVED"}],
+    "statusCheckRollup": [{"conclusion": "SUCCESS", "status": "COMPLETED"}]
+  },
+  "failing_check_pr": {
+    "number": 77,
+    "state": "open",
+    "head": {"sha": "ghi789"},
+    "mergeable": true,
+    "mergeable_state": "blocked",
+    "labels": [{"name": "factory"}],
+    "reviews": [{"author": {"login": "reviewer1"}, "state": "APPROVED"}],
+    "statusCheckRollup": [{"conclusion": "FAILURE", "status": "COMPLETED"}]
+  },
+  "changes_requested_pr": {
+    "number": 55,
+    "state": "open",
+    "head": {"sha": "jkl012"},
+    "mergeable": true,
+    "mergeable_state": "blocked",
+    "labels": [{"name": "sf-managed"}],
+    "reviews": [
+      {"author": {"login": "reviewer1"}, "state": "APPROVED"},
+      {"author": {"login": "reviewer2"}, "state": "CHANGES_REQUESTED"}
+    ],
+    "statusCheckRollup": [{"conclusion": "SUCCESS", "status": "COMPLETED"}]
+  },
+  "blocked_label_pr": {
+    "number": 33,
+    "state": "open",
+    "head": {"sha": "mno345"},
+    "mergeable": true,
+    "mergeable_state": "blocked",
+    "labels": [{"name": "sf-managed"}, {"name": "blocked"}],
+    "reviews": [{"author": {"login": "reviewer1"}, "state": "APPROVED"}],
+    "statusCheckRollup": [{"conclusion": "SUCCESS", "status": "COMPLETED"}]
+  },
+  "non_managed_pr": {
+    "number": 11,
+    "state": "open",
+    "head": {"sha": "pqr678"},
+    "mergeable": true,
+    "mergeable_state": "clean",
+    "labels": [{"name": "bug"}],
+    "reviews": [],
+    "statusCheckRollup": []
+  }
+}

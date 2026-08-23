@@ -26,3 +26,6 @@ htmlcov/
 /blob-report/
 /.playwright/
 screenshots/
+
+# Preflight state (non-secret fingerprints)
+.preflight-state/
