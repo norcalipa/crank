@@ -24,3 +24,4 @@ htmlcov/
 /playwright-report/
 /blob-report/
 /.playwright/
+screenshots/

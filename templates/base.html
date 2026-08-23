@@ -20,47 +20,18 @@
     <script src="{% manifest 'main.js' %}"></script>
 </head>
 <body>
-<div class="container">
-    <nav class="navbar navbar-expand-md navbar-dark bg-dark crank-navbar">
-        <ul class="nav navbar-brand-list">
-            <li><a href="/" class="navbar-brand"><i class="fa-solid fa-ranking-star"></i> CRank</a></li>
-        </ul>
-
-        <div class="text-end navbar-actions">
-            {% if user.is_authenticated %}
-                <a class="btn btn-outline-light btn-sm me-1" href="{% url 'job_search' %}">Job&nbsp;Search</a>
-                <a class="btn btn-outline-light btn-sm me-1" href="{% url 'help' %}">Help</a>
-                {% if user.is_staff %}
-                    <a class="btn btn-primary btn-sm" href="/admin">Admin</a>
-                {% endif %}
-                <form method="post" action="{% url 'account_logout' %}" style="display:inline;">
-                    {% csrf_token %}
-                    <button class="btn btn-secondary btn-sm" type="submit">Logout {{ user.username }}</button>
-                </form>
-            {% else %}
-                <a class="btn btn-outline-light btn-sm me-1" href="{% url 'help' %}">Help</a>
-                <a class="btn btn-outline-light btn-sm me-1" href="{% url 'account_login' %}">Sign In</a>
-                {% get_cached_social_app 'google' as social_app %}
-                {% if social_app %}
-                    <a class="btn btn-light btn-sm" href="{% provider_login_url 'google' %}">
-                        <i class="fab fa-google"></i>
-                        Login with Google
-                    </a>
-                {% endif %}
-            {% endif %}
-        </div>
-    </nav>
-</div>
+{% include "_navigation.html" %}
 {% if messages %}
-    <div class="container mt-3" role="status" aria-live="polite">
+    <div class="container mt-3 app-messages" role="status" aria-live="polite">
         {% for message in messages %}
             <div class="alert alert-{{ message.tags|default:'info' }}" role="alert">{{ message }}</div>
         {% endfor %}
     </div>
 {% endif %}
-<div>
+<main id="main-content" class="app-content" tabindex="-1">
     {% block content %} {% endblock %}
-</div>
+</main>
+<script src="{% static 'js/app-nav.js' %}"></script>
 <!-- Cloudflare Web Analytics -->
 <script defer src='https://static.cloudflareinsights.com/beacon.min.js'
         data-cf-beacon='{"token": "47ad721970f040feb8b977942546247c"}'></script><!-- End Cloudflare Web Analytics -->
