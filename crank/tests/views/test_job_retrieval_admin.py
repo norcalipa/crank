@@ -225,6 +225,15 @@ class JobRetrievalOpsAdminTests(TestCase):
             self.admin.seed_execute_view(request)
         self.assertGreater(JobSourceCatalog.objects.count(), 0)
 
+    def test_seed_execute_creates_sources_as_pending_disabled(self):
+        """New sources created by seed_execute should be pending and disabled."""
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user"):
+            self.admin.seed_execute_view(request)
+        for source in JobSourceCatalog.objects.all():
+            self.assertEqual(source.approval_state, JobSourceCatalog.ApprovalState.PENDING)
+            self.assertFalse(source.enabled)
+
     def test_seed_execute_audits(self):
         request = self._request(self.staff, confirmed=True)
         with patch.object(self.admin, "message_user"):

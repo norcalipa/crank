@@ -1,10 +1,16 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
-"""Seed approved+enabled JobSourceCatalog rows for an initial curated set.
+"""Seed catalog JobSourceCatalog rows for an initial curated set.
 
-The command is idempotent: re-running updates existing rows (approval state,
-enabled flag, adapter key, metadata) without duplicating.  A dry-run mode
-prints what would change without touching the database.
+The command is idempotent: re-running updates structural fields (adapter
+key, base URL, catalog metadata) without duplicating.  Crucially, it does
+**not** change ``approval_state`` or ``enabled`` on existing rows — those
+are operator-controlled policy fields that can only be changed through the
+admin UI or an explicit management action.  New rows are created with
+``pending`` approval and ``enabled=False`` so the seed never silently
+elevates a source to live traffic.
+
+A dry-run mode prints what would change without touching the database.
 
 Only domains on the code-owned ``APPROVED_JOB_SOURCE_DOMAINS`` allowlist are
 seeded, so the SSRF guard is preserved.  Sources whose base URL host is not
@@ -74,7 +80,7 @@ def _is_allowed(host: str) -> bool:
 
 
 class Command(BaseCommand):
-    help = "Seed approved+enabled JobSourceCatalog rows for the initial crawl."
+    help = "Seed catalog JobSourceCatalog rows for the initial crawl (does not elevate pending/blocked sources)."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -110,7 +116,7 @@ class Command(BaseCommand):
                 existing = JobSourceCatalog.objects.filter(name=name).first()
                 if existing is None:
                     self.stdout.write(
-                        self.style.NOTICE(f"CREATE {name} ({adapter_key}) -> {base_url}")
+                        self.style.NOTICE(f"CREATE {name} ({adapter_key}) -> {base_url} [pending, disabled]")
                     )
                     created += 1
                 else:
@@ -126,25 +132,34 @@ class Command(BaseCommand):
                         )
                 continue
 
-            _obj, created_flag = JobSourceCatalog.objects.update_or_create(
+            _obj, created_flag = JobSourceCatalog.objects.get_or_create(
                 name=name,
                 defaults={
                     "adapter_key": adapter_key,
                     "base_url": base_url,
-                    "approval_state": JobSourceCatalog.ApprovalState.APPROVED,
-                    "enabled": True,
+                    # New rows start pending and disabled.  An operator must
+                    # explicitly approve and enable through the admin UI.
+                    "approval_state": JobSourceCatalog.ApprovalState.PENDING,
+                    "enabled": False,
                     "catalog_metadata": metadata,
                 },
             )
+            if not created_flag:
+                # Update structural fields only; preserve operator-set
+                # approval_state and enabled on existing rows.
+                _obj.adapter_key = adapter_key
+                _obj.base_url = base_url
+                _obj.catalog_metadata = metadata
+                _obj.save(update_fields=["adapter_key", "base_url", "catalog_metadata", "modified"])
             if created_flag:
                 created += 1
                 self.stdout.write(
-                    self.style.SUCCESS(f"CREATED {name} ({adapter_key})")
+                    self.style.SUCCESS(f"CREATED {name} ({adapter_key}) [pending, disabled]")
                 )
             else:
                 updated += 1
                 self.stdout.write(
-                    self.style.SUCCESS(f"UPDATED {name} ({adapter_key})")
+                    self.style.SUCCESS(f"UPDATED {name} ({adapter_key}) [policy preserved]")
                 )
 
         summary = f"seed_job_sources: {created} created, {updated} updated, {skipped} skipped"
@@ -162,10 +177,4 @@ class Command(BaseCommand):
             changes.append(f"base_url: {existing.base_url} -> {base_url}")
         if existing.catalog_metadata != metadata:
             changes.append("catalog_metadata updated")
-        if existing.approval_state != JobSourceCatalog.ApprovalState.APPROVED:
-            changes.append(
-                f"approval_state: {existing.approval_state} -> approved"
-            )
-        if not existing.enabled:
-            changes.append("enabled: False -> True")
         return changes

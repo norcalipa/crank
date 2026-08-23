@@ -207,8 +207,8 @@ If something goes wrong:
 
 All commands are safe to re-run:
 
-- `seed_job_sources` upserts rows by name.
+- `seed_job_sources` upserts rows by name and creates new rows as pending/disabled. Re-seeding preserves operator-set approval_state and enabled fields on existing rows.
 - `trigger_crawl` rejects a second concurrent crawl for the same source.
-- `schedule_crawls` skips sources that are fresh (within `JOB_FRESHNESS_HOURS`)
+- `schedule_crawls` skips sources that are not approved+enabled, fresh (within `JOB_FRESHNESS_HOURS`)
   or disabled.
 - `crawl_status` and `crawl_healthcheck` are read-only.

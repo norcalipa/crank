@@ -18,6 +18,7 @@ coverage/
 .coverage
 .coverage.*
 htmlcov/
+.pytest_cache/
 
 # Playwright E2E artifacts
 /test-results/

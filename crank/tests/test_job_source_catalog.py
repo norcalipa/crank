@@ -113,7 +113,7 @@ def catalog():
 
 def test_catalog_parseable_and_shaped(catalog):
     assert catalog["review"].keys() >= REQUIRED_REVIEW_KEYS
-    assert catalog["review"]["issue"] == 316
+    assert catalog["review"]["issue"] == 441
     assert catalog["mvp"]["source"]
     assert catalog["mvp"]["live_enabled"] is False
     assert catalog["live_enabled"] is False
@@ -167,6 +167,8 @@ def test_mvp_source_is_not_live_by_default(catalog):
     assert catalog["live_enabled"] is False
     assert catalog["mvp"]["live_enabled"] is False
     assert mvp_sources[0]["live_enabled"] is False
+    # The MVP source (USAJOBS) is approved but not live-enabled.
+    assert mvp_sources[0]["approval_state"] == "approved"
 
 
 def test_ssrf_allowlist_contains_valid_bare_hostnames(catalog):
@@ -188,6 +190,21 @@ def test_ssrf_allowlist_contains_valid_bare_hostnames(catalog):
 
 def test_source_ssrf_policy_covers_request_and_canonical_hosts(catalog):
     _check_source_ssrf_policy(catalog)
+
+
+def test_approved_source_has_ssrf_allowlist_and_credentials(catalog):
+    """The approved MVP source must have a non-empty SSRF allowlist and
+    documented credential requirements."""
+    approved = [s for s in catalog["sources"] if s["approval_state"] == "approved"]
+    assert len(approved) == 1
+    source = approved[0]
+    assert source["ssrf_allowlist"], "approved source needs a source SSRF allowlist"
+    api = source["api"]
+    assert api.get("authentication") == "api_key"
+    assert api.get("credential_secret")
+    assert api.get("required_secrets")
+    assert "USAJOBS_AUTH_KEY" in api["required_secrets"]
+    assert "USAJOBS_USER_AGENT_EMAIL" in api["required_secrets"]
 
 
 def test_approved_source_branches_with_mock(catalog):
