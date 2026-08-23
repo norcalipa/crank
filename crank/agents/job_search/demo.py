@@ -25,19 +25,44 @@ import logging
 from django.conf import settings
 
 from crank.agents.job_search import quality
+from crank.agents.job_search.errors import (
+    CostLimitError as _OrchestratorCostLimit,
+    InvalidModelOutputError as _OrchestratorInvalidOutput,
+    ProviderTimeoutError as _OrchestratorTimeout,
+)
 from crank.checks import is_non_dev_environment
 
 logger = logging.getLogger("crank.agents.job_search")
 
 __all__ = [
+    "AssistantUnavailable",
     "DemoJobSearchProvider",
     "JobSearchService",
     "JobSearchServiceError",
+    "ServiceCostLimit",
+    "ServiceInvalidOutput",
+    "ServiceTimeout",
 ]
 
 
 class JobSearchServiceError(Exception):
     """Raised when a provider cannot produce a valid reply for a turn."""
+
+
+class AssistantUnavailable(JobSearchServiceError):
+    """The assistant is disabled or not configured for this environment."""
+
+
+class ServiceTimeout(JobSearchServiceError):
+    """The provider exceeded its response timeout."""
+
+
+class ServiceCostLimit(JobSearchServiceError):
+    """The provider call would exceed the configured cost/token limit."""
+
+
+class ServiceInvalidOutput(JobSearchServiceError):
+    """The provider output failed schema validation."""
 
 
 class DemoJobSearchProvider:
@@ -110,30 +135,31 @@ def _build_provider():
     name = getattr(settings, "JOB_SEARCH_PROVIDER", "demo")
     if name == "demo":
         if is_non_dev_environment():
-            raise JobSearchServiceError(
-                "The demo job-search provider is disabled outside development. "
-                "Configure JOB_SEARCH_PROVIDER=orchestrator with a real LLM "
-                "gateway so the assistant serves grounded recommendations."
+            raise AssistantUnavailable(
+                "The job-search assistant is not available. "
+                "Please try again later or contact support."
             )
         return DemoJobSearchProvider()
     if name == "orchestrator":
         # Fail closed: refuse to start if the interactive agent feature flag is off.
         if not getattr(settings, "INTERACTIVE_AGENT_ENABLED", False):
-            raise JobSearchServiceError(
-                "The job-search assistant is not enabled. "
+            raise AssistantUnavailable(
+                "The job-search assistant is not available. "
                 "Please try again later or contact support."
             )
         from crank.agents.job_search.providers import OrchestratorJobSearchProvider
         try:
             return OrchestratorJobSearchProvider()
         except Exception as exc:
-            # Surface config errors (e.g. missing API key) as a friendly service
-            # error so the view returns a stable message, not a 500 crash.
-            raise JobSearchServiceError(
-                "The job-search assistant could not be started. "
+            # Surface config errors (e.g. missing API key) as an unavailable
+            # error so the view returns a stable 503, not a 500 crash.
+            raise AssistantUnavailable(
+                "The job-search assistant is not available. "
                 "Please try again later or contact support."
             ) from exc
-    raise JobSearchServiceError(f"Unknown JOB_SEARCH_PROVIDER: {name!r}")
+    raise AssistantUnavailable(
+        f"Unknown JOB_SEARCH_PROVIDER: {name!r}"
+    )
 
 
 class JobSearchService:
@@ -153,6 +179,36 @@ class JobSearchService:
             reply_text, changed, results = self.provider.generate_reply(
                 conversation=conversation, user_message=user_message
             )
+        except JobSearchServiceError:
+            # Already a typed service error (e.g. from generate_reply);
+            # let it propagate without re-wrapping.
+            raise
+        except _OrchestratorTimeout as exc:
+            logger.error(
+                "job_search provider timeout conversation=%s",
+                getattr(conversation, "pk", None),
+            )
+            raise ServiceTimeout(
+                "The assistant took too long to respond. Please retry."
+            ) from exc
+        except _OrchestratorCostLimit as exc:
+            logger.error(
+                "job_search cost limit conversation=%s",
+                getattr(conversation, "pk", None),
+            )
+            raise ServiceCostLimit(
+                "The assistant has reached its usage limit. "
+                "Please try again later."
+            ) from exc
+        except _OrchestratorInvalidOutput as exc:
+            logger.error(
+                "job_search invalid model output conversation=%s",
+                getattr(conversation, "pk", None),
+            )
+            raise ServiceInvalidOutput(
+                "The assistant produced an unexpected response. "
+                "Please try again."
+            ) from exc
         except Exception as exc:  # provider failure -> stable service error
             logger.error(
                 "job_search service error conversation=%s provider=%s error_type=%s",
@@ -160,7 +216,9 @@ class JobSearchService:
                 type(self.provider).__name__,
                 type(exc).__name__,
             )
-            raise JobSearchServiceError("provider failed to produce a response") from exc
+            raise JobSearchServiceError(
+                "provider failed to produce a response"
+            ) from exc
 
         # Bound the reply deterministically; never trust unbounded output.
         max_len = getattr(settings, "JOB_SEARCH_RESPONSE_MAX_LEN", 8000)
