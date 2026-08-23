@@ -129,8 +129,16 @@ test.describe('navigation shell — mobile', () => {
         await expect(toggle).toBeFocused();
     });
 
+});
+
+// The mobile-emulation context (isMobile/hasTouch) makes the runtime
+// page.setViewportSize call hang in Firefox, so the 320px overflow measurement
+// never ran there. Use a declarative 320px viewport instead, which is reliable
+// across all browser projects, while keeping the same assertion.
+test.describe('navigation shell — 320px overflow', () => {
+    test.use({viewport: {width: 320, height: 568}});
+
     test('no horizontal overflow at 320px', async ({page}) => {
-        await page.setViewportSize({width: 320, height: 568});
         await page.goto(NAV_FIXTURE);
         await expectNoHorizontalOverflow(page);
     });
