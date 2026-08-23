@@ -30,8 +30,15 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from crank.agents.job_search.demo import JobSearchService, JobSearchServiceError
 from crank.agents.job_search import quality
+from crank.agents.job_search.demo import (
+    AssistantUnavailable,
+    JobSearchService,
+    JobSearchServiceError,
+    ServiceCostLimit,
+    ServiceInvalidOutput,
+    ServiceTimeout,
+)
 from crank.models import JobSearchConversation, JobSearchMessage
 from crank.services import monitoring
 from crank.serializers.job_search import (
@@ -260,16 +267,79 @@ def agent_conversation_detail(request, conversation_id):
             defaults={"content": message_text},
         )
 
-    service = JobSearchService()
     try:
+        service = JobSearchService()
         reply_text, changed, results = service.run_turn(
             conversation=conversation, user_message=user_message.content
         )
+    except AssistantUnavailable:
+        monitoring.record_event("interactive_call", {
+            "status": "error",
+            "reason_code": "assistant_unavailable",
+            "correlation_id": request_id,
+        })
+        # User turn remains persisted; the client can retry with same key.
+        return _error(
+            request, 503, "assistant_unavailable",
+            "The assistant is not available right now. Please try again later.",
+            request_id,
+        )
+    except ServiceTimeout:
+        monitoring.record_event("interactive_call", {
+            "status": "error",
+            "reason_code": "provider_timeout",
+            "correlation_id": request_id,
+        })
+        return _error(
+            request, 504, "provider_timeout",
+            "The assistant took too long to respond. Please retry.",
+            request_id,
+        )
+    except ServiceCostLimit:
+        monitoring.record_event("interactive_call", {
+            "status": "error",
+            "reason_code": "cost_limit",
+            "correlation_id": request_id,
+        })
+        return _error(
+            request, 429, "cost_limit",
+            "The assistant has reached its usage limit. "
+            "Please try again later.",
+            request_id,
+        )
+    except ServiceInvalidOutput:
+        monitoring.record_event("interactive_call", {
+            "status": "error",
+            "reason_code": "invalid_output",
+            "correlation_id": request_id,
+        })
+        return _error(
+            request, 500, "invalid_output",
+            "The assistant produced an unexpected response. Please try again.",
+            request_id,
+        )
     except JobSearchServiceError:
+        monitoring.record_event("interactive_call", {
+            "status": "error",
+            "reason_code": "service_error",
+            "correlation_id": request_id,
+        })
         # User turn remains persisted; the client can retry with same key.
         return _error(
             request, 500, "service_error",
             "We couldn't respond right now. Please retry.", request_id,
+        )
+    except Exception:
+        logger.exception("unexpected job_search error")
+        monitoring.record_event("interactive_call", {
+            "status": "error",
+            "reason_code": "unexpected_error",
+            "correlation_id": request_id,
+        })
+        return _error(
+            request, 500, "unexpected_error",
+            "An unexpected error occurred. Please try again.",
+            request_id,
         )
 
     # Serialize structured results for persistence (bounded JSON).

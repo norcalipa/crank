@@ -226,6 +226,7 @@ const JobSearchChat: React.FC = () => {
     const [loading, setLoading] = React.useState(true);
     const [initError, setInitError] = React.useState<string | null>(null);
     const [error, setError] = React.useState<string | null>(null);
+    const [errorType, setErrorType] = React.useState<string | null>(null);
     const [retrying, setRetrying] = React.useState(false);
     const [preferencesChanged, setPreferencesChanged] = React.useState(false);
     const [prefDismissed, setPrefDismissed] = React.useState(false);
@@ -507,6 +508,7 @@ const JobSearchChat: React.FC = () => {
         if (!conversationId) return;
         setPending(true);
         setError(null);
+        setErrorType(null);
         setRetrying(false);
 
         // Optimistically append the user's turn so the UI reflects it immediately.
@@ -527,12 +529,17 @@ const JobSearchChat: React.FC = () => {
             });
             if (!res.ok) {
                 let serverMsg = `Request failed (${res.status})`;
+                let serverType: string | undefined;
                 try {
                     const body = (await res.json()) as ApiError;
-                    if (body.error && body.error.message) serverMsg = body.error.message;
+                    if (body.error) {
+                        if (body.error.message) serverMsg = body.error.message;
+                        if (body.error.type) serverType = body.error.type;
+                    }
                 } catch {
                     // non-JSON error; keep the generic message
                 }
+                setErrorType(serverType || null);
                 throw new Error(serverMsg);
             }
             const data = (await res.json()) as SubmitResponse;
@@ -580,6 +587,8 @@ const JobSearchChat: React.FC = () => {
         const sent = lastSent.current;
         if (!sent) return;
         setRetrying(false);
+        setError(null);
+        setErrorType(null);
         await sendTurn(sent.content, sent.key);
     };
 
@@ -743,10 +752,10 @@ const JobSearchChat: React.FC = () => {
                 <div className="flex-shrink-0" style={{paddingBottom: 'calc(0.25rem + env(safe-area-inset-bottom))'}}>
                     {error && (
                         <div className="alert alert-danger d-flex justify-content-between align-items-center"
-                             role="alert" data-testid="chat-error">
-                            <span>{error}</span>
+                             role="alert" data-testid="chat-error" data-error-type={errorType || undefined}>
+                            <span className="flex-grow-1 me-2">{error}</span>
                             {retrying && (
-                                <button type="button" className="btn btn-sm btn-outline-danger ms-2"
+                                <button type="button" className="btn btn-sm btn-outline-danger ms-2 flex-shrink-0 text-nowrap"
                                         onClick={handleRetry} data-testid="retry-button">
                                     Retry
                                 </button>

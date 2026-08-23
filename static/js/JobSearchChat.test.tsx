@@ -394,6 +394,107 @@ describe('JobSearchChat', () => {
             expect(arrivals[1].idempotency_key).toBe(firstBody.idempotency_key);
             expect(arrivals[1].content).toBe('critical message');
         });
+
+        test('surfaces assistant_unavailable error with data-error-type and retries', async () => {
+            await renderChat();
+            const mockFetch = global.fetch as jest.Mock;
+            mockFetch
+                .mockResolvedValueOnce(
+                    jsonResponse({
+                        error: {type: 'assistant_unavailable', message: 'The assistant is not available right now.', request_id: 'rid-503'},
+                    }, 503),
+                )
+                .mockResolvedValueOnce(
+                    jsonResponse({message: assistantMessage(6, 'Back online.'), preferences_changed: false}, 201),
+                );
+
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'config test'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+
+            const alert = await screen.findByRole('alert');
+            expect(alert).toHaveTextContent('The assistant is not available right now.');
+            expect(alert).toHaveAttribute('data-error-type', 'assistant_unavailable');
+            expect(screen.getByTestId('retry-button')).toBeInTheDocument();
+
+            fireEvent.click(screen.getByTestId('retry-button'));
+            await screen.findByText('Back online.');
+            const arrivals = postBodies(mockFetch, messageUrl());
+            expect(arrivals).toHaveLength(2);
+            expect(arrivals[1].idempotency_key).toBe(arrivals[0].idempotency_key);
+        });
+
+        test('surfaces provider_timeout error with data-error-type', async () => {
+            await renderChat();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse({
+                    error: {type: 'provider_timeout', message: 'The assistant took too long.', request_id: 'rid-504'},
+                }, 504),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'slow'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const alert = await screen.findByRole('alert');
+            expect(alert).toHaveAttribute('data-error-type', 'provider_timeout');
+            expect(screen.getByTestId('retry-button')).toBeInTheDocument();
+        });
+
+        test('surfaces cost_limit error with data-error-type', async () => {
+            await renderChat();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse({
+                    error: {type: 'cost_limit', message: 'Usage limit reached.', request_id: 'rid-429'},
+                }, 429),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'too many'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const alert = await screen.findByRole('alert');
+            expect(alert).toHaveAttribute('data-error-type', 'cost_limit');
+            expect(alert).toHaveTextContent('Usage limit reached.');
+            expect(screen.getByTestId('retry-button')).toBeInTheDocument();
+        });
+
+        test('surfaces invalid_output error with data-error-type', async () => {
+            await renderChat();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse({
+                    error: {type: 'invalid_output', message: 'Unexpected response.', request_id: 'rid-500'},
+                }, 500),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'bad output'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const alert = await screen.findByRole('alert');
+            expect(alert).toHaveAttribute('data-error-type', 'invalid_output');
+        });
+
+        test('surfaces unexpected_error with data-error-type', async () => {
+            await renderChat();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse({
+                    error: {type: 'unexpected_error', message: 'Unexpected error.', request_id: 'rid-500b'},
+                }, 500),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'unexpected'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const alert = await screen.findByRole('alert');
+            expect(alert).toHaveAttribute('data-error-type', 'unexpected_error');
+        });
+
+        test('clears error type when a new message is sent', async () => {
+            await renderChat();
+            const mockFetch = global.fetch as jest.Mock;
+            mockFetch.mockResolvedValueOnce(
+                jsonResponse({error: {type: 'provider_timeout', message: 'Timeout.'}}, 504),
+            ).mockResolvedValueOnce(
+                jsonResponse({message: assistantMessage(7, 'ok'), preferences_changed: false}, 201),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'first'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const alert1 = await screen.findByRole('alert');
+            expect(alert1).toHaveAttribute('data-error-type', 'provider_timeout');
+            // Retry with same key clears the error and succeeds.
+            fireEvent.click(screen.getByTestId('retry-button'));
+            await screen.findByText('ok');
+            expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+        });
     });
 
     describe('reset / delete controls', () => {

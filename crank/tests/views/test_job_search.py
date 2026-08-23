@@ -18,7 +18,14 @@ from django.core.cache import cache
 from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 
-from crank.agents.job_search.demo import JobSearchService, JobSearchServiceError
+from crank.agents.job_search.demo import (
+    AssistantUnavailable,
+    JobSearchService,
+    JobSearchServiceError,
+    ServiceCostLimit,
+    ServiceInvalidOutput,
+    ServiceTimeout,
+)
 from crank.models import JobSearchConversation, JobSearchMessage
 
 
@@ -1266,3 +1273,205 @@ class HelpfulnessGapConcurrencyTest(TransactionTestCase):
             JobSearchConversation.objects.get(pk=conversation_id).helpfulness_gap_emitted
         )
         cache.clear()
+
+
+@override_settings(CACHES=LOCMEM)
+class TypedErrorCategoryTests(TestCase):
+    """Tests for typed, redaction-safe failure categories (issue #442).
+
+    Each failure category returns a stable JSON envelope with a typed
+    ``error.type``, safe user copy, ``request_id``, and the correct HTTP
+    status code.  The user turn is persisted before the error so the client
+    can retry with the same idempotency key without duplicating.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user("typed", "typed@example.com", "pw")
+        self.client = Client()
+        self.client.force_login(self.user)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _start_conversation(self):
+        resp = self.client.post(
+            reverse("agent-conversation-list"),
+            data=json.dumps({"create_new": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        return resp.json()["id"]
+
+    def _submit(self, conversation_id, content, key):
+        return self.client.post(
+            reverse("agent-conversation-detail", args=[conversation_id]),
+            data=json.dumps({"content": content, "idempotency_key": key}),
+            content_type="application/json",
+        )
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_assistant_unavailable_returns_503(self, record):
+        """Disabled/unconfigured assistant returns 503 with typed envelope."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        with patch.object(
+            JobSearchService, "__init__",
+            side_effect=AssistantUnavailable("not configured"),
+        ):
+            resp = self._submit(conv_id, "hello", key)
+        self.assertEqual(resp.status_code, 503)
+        body = resp.json()
+        self.assertEqual(body["error"]["type"], "assistant_unavailable")
+        self.assertIn("request_id", body["error"])
+        self.assertNotIn("not configured", body["error"]["message"])
+        self.assertTrue(resp.headers.get("X-Request-ID"))
+        # Telemetry records the error category without content.
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "assistant_unavailable" for c in calls))
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_provider_timeout_returns_504(self, record):
+        """Provider timeout returns 504 with typed envelope."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        with patch.object(
+            JobSearchService, "run_turn",
+            side_effect=ServiceTimeout("timed out"),
+        ):
+            resp = self._submit(conv_id, "hello", key)
+        self.assertEqual(resp.status_code, 504)
+        body = resp.json()
+        self.assertEqual(body["error"]["type"], "provider_timeout")
+        self.assertIn("request_id", body["error"])
+        self.assertNotIn("timed out", body["error"]["message"])
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "provider_timeout" for c in calls))
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_cost_limit_returns_429(self, record):
+        """Cost/rate limit returns 429 with typed envelope."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        with patch.object(
+            JobSearchService, "run_turn",
+            side_effect=ServiceCostLimit("over budget"),
+        ):
+            resp = self._submit(conv_id, "hello", key)
+        self.assertEqual(resp.status_code, 429)
+        body = resp.json()
+        self.assertEqual(body["error"]["type"], "cost_limit")
+        self.assertIn("request_id", body["error"])
+        self.assertNotIn("over budget", body["error"]["message"])
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "cost_limit" for c in calls))
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_invalid_output_returns_500(self, record):
+        """Invalid model output returns 500 with typed envelope."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        with patch.object(
+            JobSearchService, "run_turn",
+            side_effect=ServiceInvalidOutput("bad schema"),
+        ):
+            resp = self._submit(conv_id, "hello", key)
+        self.assertEqual(resp.status_code, 500)
+        body = resp.json()
+        self.assertEqual(body["error"]["type"], "invalid_output")
+        self.assertIn("request_id", body["error"])
+        self.assertNotIn("bad schema", body["error"]["message"])
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "invalid_output" for c in calls))
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_generic_service_error_returns_500(self, record):
+        """Generic JobSearchServiceError returns 500 with service_error type."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        with patch.object(
+            JobSearchService, "run_turn",
+            side_effect=JobSearchServiceError("boom"),
+        ):
+            resp = self._submit(conv_id, "hello", key)
+        self.assertEqual(resp.status_code, 500)
+        body = resp.json()
+        self.assertEqual(body["error"]["type"], "service_error")
+        self.assertIn("request_id", body["error"])
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "service_error" for c in calls))
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_unexpected_error_returns_500_unexpected_error(self, record):
+        """Unexpected non-service exception returns 500 with unexpected_error type."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        with patch.object(
+            JobSearchService, "run_turn",
+            side_effect=ValueError("unexpected bug"),
+        ):
+            resp = self._submit(conv_id, "hello", key)
+        self.assertEqual(resp.status_code, 500)
+        body = resp.json()
+        self.assertEqual(body["error"]["type"], "unexpected_error")
+        self.assertIn("request_id", body["error"])
+        self.assertNotIn("unexpected bug", body["error"]["message"])
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "unexpected_error" for c in calls))
+
+    def test_typed_error_preserves_user_turn_for_retry(self):
+        """A typed error preserves the user turn so retry with same key works."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        # First attempt: timeout error.
+        with patch.object(
+            JobSearchService, "run_turn",
+            side_effect=ServiceTimeout("timed out"),
+        ):
+            resp = self._submit(conv_id, "retry me", key)
+        self.assertEqual(resp.status_code, 504)
+        # User message persisted once.
+        conv = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertEqual(conv.messages.filter(role="user").count(), 1)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+        # Retry with same key succeeds.
+        real_run = JobSearchService().run_turn.__func__
+        with patch.object(JobSearchService, "run_turn", autospec=True, side_effect=real_run):
+            retry = self._submit(conv_id, "retry me", key)
+        self.assertEqual(retry.status_code, 201)
+        conv = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertEqual(conv.messages.filter(role="user").count(), 1)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 1)
+
+    def test_assistant_unavailable_from_build_provider_in_view(self):
+        """JobSearchService() construction failure inside the try/except
+        returns 503, not an unhandled 500."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        # Patch __init__ to raise AssistantUnavailable (as _build_provider would).
+        with patch.object(
+            JobSearchService, "__init__",
+            side_effect=AssistantUnavailable("disabled"),
+        ):
+            resp = self._submit(conv_id, "config test", key)
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.json()["error"]["type"], "assistant_unavailable")
+
+    def test_error_envelope_never_leaks_provider_details(self):
+        """The error envelope must never expose provider details, credentials,
+        or internal error messages."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        sensitive = "api_key=sk-1234567890 provider=OpenAI model=gpt-4"
+        with patch.object(
+            JobSearchService, "run_turn",
+            side_effect=ServiceTimeout(sensitive),
+        ):
+            resp = self._submit(conv_id, "leak test", key)
+        body = resp.json()
+        msg = body["error"]["message"]
+        # The safe user copy must not contain the sensitive exception text.
+        self.assertNotIn("sk-1234567890", msg)
+        self.assertNotIn("api_key", msg)
+        self.assertNotIn("OpenAI", msg)
+        self.assertNotIn("gpt-4", msg)
