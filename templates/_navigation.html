@@ -1,0 +1,161 @@
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
+{% load static %}
+{% load socialaccount %}
+{% load socialapp_cache %}
+<!-- Skip-to-content link: first focusable element on the page -->
+<a href="#main-content" class="skip-to-content" data-skip-to-content>Skip to content</a>
+
+<div class="app-shell">
+    <aside class="app-nav-rail" aria-label="Application navigation" data-nav-rail>
+        <nav class="app-nav" aria-label="Main navigation">
+            <a href="/" class="app-nav-brand" aria-label="CRank home">
+                <i class="fa-solid fa-ranking-star" aria-hidden="true"></i>
+                <span class="app-nav-brand-text">CRank</span>
+            </a>
+
+            <ul class="app-nav-list" role="list">
+                {% for item in nav_items %}
+                    <li>
+                        <a href="{{ item.url }}"
+                           id="{{ item.id }}"
+                           class="app-nav-link{% if item.is_active %} app-nav-link--active{% endif %}"
+                           {% if item.is_active %}aria-current="page"{% endif %}>
+                            <i class="{{ item.icon }}" aria-hidden="true"></i>
+                            <span class="app-nav-label">{{ item.label }}</span>
+                        </a>
+                    </li>
+                {% endfor %}
+
+                {% if user.is_authenticated %}
+                    <li>
+                        <a href="/admin/"
+                           id="nav-admin"
+                           class="app-nav-link{% if nav_is_admin %} app-nav-link--active{% endif %}"
+                           {% if nav_is_admin %}aria-current="page"{% endif %}>
+                            <i class="fa-solid fa-gear" aria-hidden="true"></i>
+                            <span class="app-nav-label">Admin</span>
+                        </a>
+                    </li>
+                {% endif %}
+            </ul>
+
+            <div class="app-nav-footer">
+                {% if user.is_authenticated %}
+                    <div class="app-nav-user" id="nav-account">
+                        <i class="fa-solid fa-user-circle" aria-hidden="true"></i>
+                        <span class="app-nav-label">{{ user.username }}</span>
+                    </div>
+                    <form method="post" action="{% url 'account_logout' %}" class="app-nav-logout-form">
+                        {% csrf_token %}
+                        <button type="submit" class="app-nav-link app-nav-link--logout">
+                            <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
+                            <span class="app-nav-label">Logout</span>
+                        </button>
+                    </form>
+                {% else %}
+                    <a href="{% url 'account_login' %}"
+                       id="nav-login"
+                       class="app-nav-link{% if request.path == '/accounts/login/' %} app-nav-link--active{% endif %}"
+                       {% if request.path == '/accounts/login/' %}aria-current="page"{% endif %}>
+                        <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i>
+                        <span class="app-nav-label">Login</span>
+                    </a>
+                    {% get_cached_social_app 'google' as social_app %}
+                    {% if social_app %}
+                        <a href="{% provider_login_url 'google' %}"
+                           class="app-nav-link app-nav-link--google">
+                            <i class="fab fa-google" aria-hidden="true"></i>
+                            <span class="app-nav-label">Google</span>
+                        </a>
+                    {% endif %}
+                {% endif %}
+            </div>
+        </nav>
+    </aside>
+
+    <button class="app-nav-toggle"
+            type="button"
+            aria-expanded="false"
+            aria-controls="mobile-nav"
+            aria-label="Open navigation menu"
+            data-nav-toggle>
+        <i class="fa-solid fa-bars" aria-hidden="true"></i>
+    </button>
+
+    <div class="app-nav-drawer"
+         id="mobile-nav"
+         data-nav-drawer
+         hidden>
+        <div class="app-nav-drawer-header">
+            <a href="/" class="app-nav-brand" aria-label="CRank home">
+                <i class="fa-solid fa-ranking-star" aria-hidden="true"></i>
+                <span class="app-nav-brand-text">CRank</span>
+            </a>
+            <button type="button"
+                    class="app-nav-drawer-close"
+                    aria-label="Close navigation menu"
+                    data-nav-close>
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>
+        </div>
+        <nav class="app-nav" aria-label="Mobile navigation">
+            <ul class="app-nav-list" role="list">
+                {% for item in nav_items %}
+                    <li>
+                        <a href="{{ item.url }}"
+                           class="app-nav-link{% if item.is_active %} app-nav-link--active{% endif %}"
+                           {% if item.is_active %}aria-current="page"{% endif %}>
+                            <i class="{{ item.icon }}" aria-hidden="true"></i>
+                            <span class="app-nav-label">{{ item.label }}</span>
+                        </a>
+                    </li>
+                {% endfor %}
+
+                {% if user.is_authenticated %}
+                    <li>
+                        <a href="/admin/"
+                           class="app-nav-link{% if nav_is_admin %} app-nav-link--active{% endif %}"
+                           {% if nav_is_admin %}aria-current="page"{% endif %}>
+                            <i class="fa-solid fa-gear" aria-hidden="true"></i>
+                            <span class="app-nav-label">Admin</span>
+                        </a>
+                    </li>
+                {% endif %}
+            </ul>
+
+            <div class="app-nav-footer">
+                {% if user.is_authenticated %}
+                    <div class="app-nav-user">
+                        <i class="fa-solid fa-user-circle" aria-hidden="true"></i>
+                        <span class="app-nav-label">{{ user.username }}</span>
+                    </div>
+                    <form method="post" action="{% url 'account_logout' %}" class="app-nav-logout-form">
+                        {% csrf_token %}
+                        <button type="submit" class="app-nav-link app-nav-link--logout">
+                            <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
+                            <span class="app-nav-label">Logout</span>
+                        </button>
+                    </form>
+                {% else %}
+                    <a href="{% url 'account_login' %}"
+                       class="app-nav-link{% if request.path == '/accounts/login/' %} app-nav-link--active{% endif %}"
+                       {% if request.path == '/accounts/login/' %}aria-current="page"{% endif %}>
+                        <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i>
+                        <span class="app-nav-label">Login</span>
+                    </a>
+                    {% get_cached_social_app 'google' as social_app %}
+                    {% if social_app %}
+                        <a href="{% provider_login_url 'google' %}"
+                           class="app-nav-link app-nav-link--google">
+                            <i class="fab fa-google" aria-hidden="true"></i>
+                            <span class="app-nav-label">Google</span>
+                        </a>
+                    {% endif %}
+                {% endif %}
+            </div>
+        </nav>
+    </div>
+
+    <div class="app-nav-overlay" data-nav-overlay hidden></div>
+</div>

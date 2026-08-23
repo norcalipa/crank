@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Navigation Shell — E2E fixture</title>
+    <link rel="stylesheet" href="/static/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/static/css/popup.css">
+    <style>
+        /* Inline minimal icon substitutes for E2E fixture (FontAwesome not installed in worktree) */
+        .fa-solid, .fab { font-style: normal; }
+        .fa-ranking-star::before { content: "★"; }
+        .fa-comments::before { content: "💬"; }
+        .fa-circle-question::before { content: "?"; }
+        .fa-gear::before { content: "⚙"; }
+        .fa-user-circle::before { content: "●"; }
+        .fa-right-from-bracket::before { content: "⇲"; }
+        .fa-right-to-bracket::before { content: "⇲"; }
+        .fa-bars::before { content: "≡"; font-size: 1.5rem; }
+        .fa-xmark::before { content: "✕"; }
+    </style>
+</head>
+<body>
+<a href="#main-content" class="skip-to-content" data-skip-to-content>Skip to content</a>
+<div class="app-shell">
+    <aside class="app-nav-rail" aria-label="Application navigation" data-nav-rail>
+        <nav class="app-nav" aria-label="Main navigation">
+            <a href="/" class="app-nav-brand" aria-label="CRank home">
+                <span class="fa-solid fa-ranking-star" aria-hidden="true"></span>
+                <span class="app-nav-brand-text">CRank</span>
+            </a>
+            <ul class="app-nav-list" role="list">
+                <li>
+                    <a href="/" id="nav-rankings" class="app-nav-link app-nav-link--active" aria-current="page">
+                        <span class="fa-solid fa-ranking-star" aria-hidden="true"></span>
+                        <span class="app-nav-label">Company Rankings</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="/chat/" id="nav-job-search" class="app-nav-link">
+                        <span class="fa-solid fa-comments" aria-hidden="true"></span>
+                        <span class="app-nav-label">Job Search</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="/help/" id="nav-help" class="app-nav-link">
+                        <span class="fa-solid fa-circle-question" aria-hidden="true"></span>
+                        <span class="app-nav-label">Help</span>
+                    </a>
+                </li>
+                <li>
+                    <a href="/admin/" id="nav-admin" class="app-nav-link">
+                        <span class="fa-solid fa-gear" aria-hidden="true"></span>
+                        <span class="app-nav-label">Admin</span>
+                    </a>
+                </li>
+            </ul>
+            <div class="app-nav-footer">
+                <div class="app-nav-user" id="nav-account">
+                    <span class="fa-solid fa-user-circle" aria-hidden="true"></span>
+                    <span class="app-nav-label">testuser</span>
+                </div>
+                <form method="post" action="/accounts/logout/" class="app-nav-logout-form">
+                    <button type="submit" class="app-nav-link app-nav-link--logout">
+                        <span class="fa-solid fa-right-from-bracket" aria-hidden="true"></span>
+                        <span class="app-nav-label">Logout</span>
+                    </button>
+                </form>
+            </div>
+        </nav>
+    </aside>
+    <button class="app-nav-toggle" type="button" aria-expanded="false" aria-controls="mobile-nav" aria-label="Open navigation menu" data-nav-toggle>
+        <span class="fa-solid fa-bars" aria-hidden="true"></span>
+    </button>
+    <div class="app-nav-drawer" id="mobile-nav" data-nav-drawer hidden>
+        <div class="app-nav-drawer-header">
+            <a href="/" class="app-nav-brand" aria-label="CRank home">
+                <span class="fa-solid fa-ranking-star" aria-hidden="true"></span>
+                <span class="app-nav-brand-text">CRank</span>
+            </a>
+            <button type="button" class="app-nav-drawer-close" aria-label="Close navigation menu" data-nav-close>
+                <span class="fa-solid fa-xmark" aria-hidden="true"></span>
+            </button>
+        </div>
+        <nav class="app-nav" aria-label="Mobile navigation">
+            <ul class="app-nav-list" role="list">
+                <li><a href="/" class="app-nav-link app-nav-link--active" aria-current="page"><span class="fa-solid fa-ranking-star" aria-hidden="true"></span><span class="app-nav-label">Company Rankings</span></a></li>
+                <li><a href="/chat/" class="app-nav-link"><span class="fa-solid fa-comments" aria-hidden="true"></span><span class="app-nav-label">Job Search</span></a></li>
+                <li><a href="/help/" class="app-nav-link"><span class="fa-solid fa-circle-question" aria-hidden="true"></span><span class="app-nav-label">Help</span></a></li>
+                <li><a href="/admin/" class="app-nav-link"><span class="fa-solid fa-gear" aria-hidden="true"></span><span class="app-nav-label">Admin</span></a></li>
+            </ul>
+            <div class="app-nav-footer">
+                <div class="app-nav-user"><span class="fa-solid fa-user-circle" aria-hidden="true"></span><span class="app-nav-label">testuser</span></div>
+                <form method="post" action="/accounts/logout/" class="app-nav-logout-form">
+                    <button type="submit" class="app-nav-link app-nav-link--logout"><span class="fa-solid fa-right-from-bracket" aria-hidden="true"></span><span class="app-nav-label">Logout</span></button>
+                </form>
+            </div>
+        </nav>
+    </div>
+    <div class="app-nav-overlay" data-nav-overlay hidden></div>
+</div>
+<main id="main-content" class="app-content" tabindex="-1">
+    <div style="max-width: 960px;">
+        <h1 style="font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; margin: 0 0 .5rem;">Company Rankings</h1>
+        <p style="font-size: .9375rem; color: #9ca3af; margin: 0 0 1.5rem;">Browse companies ranked by scoring algorithm.</p>
+        <div style="display: flex; gap: .75rem; align-items: center; margin-bottom: 1.5rem;">
+            <label for="algo" style="font-size: .75rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: #6b7280;">Algorithm</label>
+            <select id="algo" style="min-width: 220px; padding: .5rem .75rem; border-radius: .5rem; border: 1px solid #374151; background: #111827; color: #e5e7eb;">
+                <option>Weighted Average</option>
+                <option>Simple Average</option>
+            </select>
+        </div>
+        <div style="border: 1px solid #2d323c; border-radius: .75rem; overflow: hidden;">
+            <table style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: #1a1f27;">
+                        <th style="padding: .75rem 1rem; text-align: left; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: #9ca3af;">Rank</th>
+                        <th style="padding: .75rem 1rem; text-align: left; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: #9ca3af;">Company</th>
+                        <th style="padding: .75rem 1rem; text-align: left; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: #9ca3af;">Score</th>
+                        <th style="padding: .75rem 1rem; text-align: left; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: #9ca3af;">Funding</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr style="border-bottom: 1px solid #2d323c;">
+                        <td style="padding: .75rem 1rem; color: #d1d5db;">1</td>
+                        <td style="padding: .75rem 1rem; color: #d1d5db; font-weight: 600;">Acme Robotics</td>
+                        <td style="padding: .75rem 1rem; color: #d1d5db;">4.82</td>
+                        <td style="padding: .75rem 1rem; color: #d1d5db;">Series C</td>
+                    </tr>
+                    <tr style="border-bottom: 1px solid #2d323c;">
+                        <td style="padding: .75rem 1rem; color: #d1d5db;">2</td>
+                        <td style="padding: .75rem 1rem; color: #d1d5db; font-weight: 600;">Beacon Health</td>
+                        <td style="padding: .75rem 1rem; color: #d1d5db;">4.71</td>
+                        <td style="padding: .75rem 1rem; color: #d1d5db;">Series B</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: .75rem 1rem; color: #d1d5db;">3</td>
+                        <td style="padding: .75rem 1rem; color: #d1d5db; font-weight: 600;">Civic Data Trust</td>
+                        <td style="padding: .75rem 1rem; color: #d1d5db;">4.60</td>
+                        <td style="padding: .75rem 1rem; color: #d1d5db;">Series A</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</main>
+<script src="/static/js/app-nav.js"></script>
+</body>
+</html>
