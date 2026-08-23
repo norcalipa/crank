@@ -43,17 +43,13 @@ jobs:
 
     steps:
       - name: Checkout code
+        if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Check if triggered by workflow_run and workflow was successful
-        if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success' }}
-        run: |
-          echo "The triggering workflow did not succeed. Skipping build."
-          exit 1
-
       - name: Set environment variables from .env-prod
+        if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
         id: env-vars
         run: |
           set -a
