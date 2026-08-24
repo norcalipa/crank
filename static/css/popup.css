@@ -178,6 +178,7 @@ html, body {
     overflow-y: auto;
     min-height: 0;
     display: grid;
+    align-content: start;
     gap: .125rem;
 }
 
