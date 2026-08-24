@@ -225,7 +225,6 @@ def collect_findings(
     Returns:
         List of finding dicts with ``severity``, ``source``, ``message``.
     """
-    repo = repo or DEFAULT_REPO
     findings: list[dict[str, Any]] = []
 
     if github_actions_override is not None:
@@ -269,7 +268,6 @@ def run_preflight(
     Returns:
         PreflightResult with fire/no-fire and findings summary.
     """
-    repo = repo or DEFAULT_REPO
     store = StateStore(state_dir, job_name=JOB_NAME)
 
     if findings_override is not None:
@@ -329,7 +327,7 @@ def run_preflight(
 def main() -> None:
     """Entry point for the watchdog preflight script."""
     try:
-        result = run_preflight()
+        result = run_preflight(repo=DEFAULT_REPO)
         emit_and_exit(result)
     except RateLimitError as exc:
         emit_error_and_exit(exc, JOB_NAME)
