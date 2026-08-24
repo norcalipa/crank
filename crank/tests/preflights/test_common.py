@@ -199,7 +199,7 @@ class RunGhTests(SimpleTestCase):
             run_gh("api", "endpoint")
 
     @patch("preflights.common.subprocess.run")
-    def test_repo_flag_passed_to_gh(self, mock_run):
+    def test_repo_env_passed_to_gh(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
             stdout='{"ok": true}',
@@ -207,8 +207,10 @@ class RunGhTests(SimpleTestCase):
         )
         run_gh("api", "endpoint", repo="owner/repo")
         cmd = mock_run.call_args[0][0]
-        self.assertIn("--repo", cmd)
-        self.assertIn("owner/repo", cmd)
+        self.assertNotIn("--repo", cmd)
+        env = mock_run.call_args.kwargs.get("env")
+        self.assertIsNotNone(env)
+        self.assertEqual(env["GH_REPO"], "owner/repo")
 
 
 class ErrorHierarchyTests(SimpleTestCase):

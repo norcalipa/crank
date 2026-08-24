@@ -102,9 +102,11 @@ def run_gh(
         APIError: on non-zero exit or JSON parse failure.
     """
     cmd = ["gh"]
-    if repo:
-        cmd.extend(["--repo", repo])
     cmd.extend(args)
+
+    env = None
+    if repo:
+        env = dict(os.environ, GH_REPO=repo)
 
     try:
         proc = subprocess.run(
@@ -112,6 +114,7 @@ def run_gh(
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         raise TimeoutError(
@@ -158,9 +161,11 @@ def run_gh_paginated(
         response, it is wrapped in a single-element list.
     """
     cmd = ["gh"]
-    if repo:
-        cmd.extend(["--repo", repo])
     cmd.extend(["api", "--paginate", "-X", "GET", template])
+
+    env = None
+    if repo:
+        env = dict(os.environ, GH_REPO=repo)
     if jq_filter:
         cmd.extend(["--jq", jq_filter])
 
@@ -170,6 +175,7 @@ def run_gh_paginated(
             capture_output=True,
             text=True,
             timeout=timeout * max_pages,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         raise TimeoutError(
