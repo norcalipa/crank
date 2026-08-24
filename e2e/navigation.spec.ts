@@ -41,6 +41,27 @@ test.describe('navigation shell — desktop', () => {
         await expect(activeLink).toContainText('Company Rankings');
     });
 
+    test('primary destinations are top-aligned while account actions stay at the bottom', async ({page}) => {
+        await page.goto(NAV_FIXTURE);
+        const rail = page.locator('[data-nav-rail]');
+        const brandBox = await rail.locator('.app-nav-brand').boundingBox();
+        const rankingsBox = await rail.locator('#nav-rankings').boundingBox();
+        const adminBox = await rail.locator('#nav-admin').boundingBox();
+        const footerBox = await rail.locator('.app-nav-footer').boundingBox();
+        const railBox = await rail.boundingBox();
+
+        expect(brandBox).not.toBeNull();
+        expect(rankingsBox).not.toBeNull();
+        expect(adminBox).not.toBeNull();
+        expect(footerBox).not.toBeNull();
+        expect(railBox).not.toBeNull();
+
+        expect(rankingsBox!.y - (brandBox!.y + brandBox!.height)).toBeLessThanOrEqual(24);
+        expect(adminBox!.y - (rankingsBox!.y + rankingsBox!.height)).toBeLessThanOrEqual(160);
+        expect(footerBox!.y).toBeGreaterThan(adminBox!.y + adminBox!.height + 200);
+        expect(Math.abs(footerBox!.y + footerBox!.height - (railBox!.y + railBox!.height))).toBeLessThanOrEqual(1);
+    });
+
     test('skip-to-content link focuses main content', async ({page}) => {
         await page.goto(NAV_FIXTURE);
         const skipLink = page.locator('[data-skip-to-content]');

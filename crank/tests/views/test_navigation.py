@@ -216,6 +216,17 @@ class NavigationShellTests(TestCase):
             css = f.read()
         self.assertIn("overflow-x: hidden", css)
 
+    def test_primary_nav_grid_is_top_aligned(self):
+        import os
+        css_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+            "static", "css", "popup.css",
+        )
+        with open(css_path) as f:
+            css = f.read()
+        nav_list_block = css.split(".app-nav-list {", 1)[1].split("}", 1)[0]
+        self.assertIn("align-content: start", nav_list_block)
+
     # --- Reduced motion support -----------------------------------------
 
     def test_css_has_reduced_motion_support(self):
