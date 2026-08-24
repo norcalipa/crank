@@ -323,7 +323,6 @@ def run_preflight(
     Returns:
         PreflightResult with fire/no-fire and summary.
     """
-    repo = repo or DEFAULT_REPO
     if not repo and prs_override is None:
         return PreflightResult(
             fire=False,
@@ -413,7 +412,7 @@ def run_preflight(
 def main() -> None:
     """Entry point for the preflight script."""
     try:
-        result = run_preflight()
+        result = run_preflight(repo=DEFAULT_REPO)
         emit_and_exit(result)
     except RateLimitError as exc:
         emit_error_and_exit(exc, JOB_NAME)
