@@ -33,13 +33,13 @@ spec:
         runAsUser: 10000
         runAsGroup: 10000
         fsGroup: 10000
-      # `fats` is the k3s host (10.0.0.10) that runs the MySQL database on
+      # `fats` is the k3s host (192.168.0.10) that runs the MySQL database on
       # :3306. It is not a Kubernetes Service and does not resolve via in-cluster
       # DNS, so DB_HOST=fats fails with EAI_AGAIN inside containers. Inject the
       # mapping into each pod's /etc/hosts so the hostname resolves without
       # depending on DNS or hardcoding the IP in the ConfigMap.
       hostAliases:
-        - ip: "10.0.0.10"
+        - ip: "192.168.0.10"
           hostnames:
             - "fats"
       # In-cluster DNS (CoreDNS) cannot resolve external names in this cluster
