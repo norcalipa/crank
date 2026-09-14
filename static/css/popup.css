@@ -207,7 +207,7 @@ html, body {
 
 .app-nav-link--active {
     background-color: rgba(0, 123, 255, .15);
-    color: #a8ccff;
+    color: var(--bs-primary-text-emphasis, #0a58ca);
     font-weight: 600;
     box-shadow: inset 3px 0 0 var(--bs-link-color);
     border-radius: .375rem;
@@ -277,6 +277,16 @@ html, body {
     font-size: 1.25rem;
     line-height: 1;
     cursor: pointer;
+}
+
+/* Mobile top bar: gives the hamburger its own reserved band with a clean
+   border so navigation never overlays page content (notice, search label). */
+.app-mobile-topbar {
+    display: none;
+}
+
+.app-mobile-topbar .app-nav-toggle {
+    position: static;
 }
 
 .app-nav-toggle:focus-visible {
@@ -417,11 +427,19 @@ body.app-nav-drawer-open {
 .organization-search {
     flex: 1 1 14rem;
     min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+}
+
+.organization-search .form-control {
+    flex: 1 1 10rem;
+    min-width: 0;
 }
 
 .organization-filter {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: .5rem;
     flex: 1 1 18rem;
     min-width: 0;
@@ -430,9 +448,24 @@ body.app-nav-drawer-open {
     border-radius: var(--bs-border-radius);
 }
 
+.organization-filter .form-check-input {
+    flex: 0 0 auto;
+    margin-top: .25rem;
+}
+
 .organization-filter label {
     margin: 0;
     overflow-wrap: anywhere;
+}
+
+.organization-results-count,
+.organization-page-count {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.organization-page-count {
+    margin-top: .25rem;
 }
 
 .organization-table-wrap {
@@ -590,12 +623,32 @@ body.app-nav-drawer-open {
         place-items: center;
     }
 
+    .app-mobile-topbar {
+        position: sticky;
+        top: 0;
+        z-index: 1030;
+        display: flex;
+        align-items: center;
+        min-height: 48px;
+        padding: .125rem .75rem;
+        background: var(--bs-body-bg);
+        border-bottom: 1px solid var(--bs-border-color);
+    }
+
     .app-content {
-        padding: 1.25rem 1rem 2.5rem 4.5rem;
+        padding: .5rem 1rem 2.5rem;
     }
 
     .app-messages {
-        padding: 1rem 1rem 1rem 4.5rem;
+        padding: .25rem .75rem;
+    }
+
+    .app-messages .alert {
+        margin-bottom: 0;
+    }
+
+    .page-container {
+        padding-top: .25rem;
     }
 
     .scoring-summary {
@@ -613,6 +666,22 @@ body.app-nav-drawer-open {
     .organization-cards {
         display: grid;
         gap: .75rem;
+    }
+
+    /* Company names keep the same link affordance as the desktop table: */
+    .organization-card .organization-card-name {
+        color: var(--bs-link-color);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+    }
+
+    /* Comfortable touch targets for controls users tap on phones. */
+    #job-search-chat .btn-group .btn {
+        min-height: 44px;
+    }
+
+    button[data-testid='suggest-company-btn'] {
+        min-height: 44px;
     }
 
     .organization-card .card-body {
@@ -671,12 +740,34 @@ body.app-nav-drawer-open {
     }
 
     #job-search-chat .card-body {
-        padding: .75rem;
+        padding: .5rem .75rem;
+    }
+
+    #job-search-chat .card-body .alert {
+        margin-bottom: .5rem;
     }
 
     #job-search-chat .input-group {
         align-items: stretch;
     }
+}
+
+/* The chat card is a dark surface; the default danger red is hard to read
+   on it, so use a lighter treatment with sufficient contrast (icon + text). */
+#job-search-chat .btn-outline-danger {
+    color: #ff9ba3;
+    border-color: #ff9ba3;
+}
+
+#job-search-chat .btn-outline-danger:hover,
+#job-search-chat .btn-outline-danger:focus-visible {
+    color: #212529;
+    background-color: #ff9ba3;
+}
+
+#job-search-chat .btn-outline-danger:disabled {
+    color: rgba(255, 155, 163, .65);
+    border-color: rgba(255, 155, 163, .65);
 }
 
 @media (max-width: 390px) {

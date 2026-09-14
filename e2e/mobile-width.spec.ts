@@ -193,6 +193,12 @@ test.describe('zoom resilience (mobile 375px)', () => {
 
         await expectNoHorizontalOverflow(page);
         await expectHitTestable(page, '#organization-search', 'organization search input at 200% text zoom');
+        // At 200% text zoom the card list stacks taller and the first card
+        // sits below the fold in normal flow; a user scrolls to it, so
+        // assert reachability after scrolling (same pattern as the
+        // composer below).
+        const opener = page.locator('article[aria-label^="View details for"]').first();
+        await opener.scrollIntoViewIfNeeded();
         await expectHitTestable(page, 'article[aria-label^="View details for"]', 'details opener at 200% text zoom');
 
         await page.goto(CHAT_FIXTURE);

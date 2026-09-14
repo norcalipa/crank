@@ -269,19 +269,23 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         const lastResult = Math.min(indexOfLastItem, filteredOrganizations.length);
 
         return (<div>
+            <h1 className="h4 mb-3">Company rankings</h1>
             <div className="mb-3">
                 <label className="form-label" htmlFor="organization-search">Search organizations</label>
-                <div className="input-group">
-                    <input
-                        id="organization-search"
-                        type="text"
-                        className="form-control"
-                        placeholder="Search organizations"
-                        value={searchTerm}
-                        onChange={this.handleSearchChange}
-                    />
-                    {searchTerm && <button type="button" className="btn btn-outline-secondary" onClick={this.handleClearFilters} aria-label="Clear search">Clear search</button>}
-                    <span className="input-group-text">
+                <div className="organization-controls">
+                    <div className="organization-search">
+                        <input
+                            id="organization-search"
+                            type="text"
+                            className="form-control"
+                            placeholder="Search organizations"
+                            aria-label="Search organizations"
+                            value={searchTerm}
+                            onChange={this.handleSearchChange}
+                        />
+                        {searchTerm && <button type="button" className="btn btn-outline-secondary" onClick={this.handleClearFilters} aria-label="Clear search">Clear search</button>}
+                    </div>
+                    <div className="organization-filter">
                         <input
                             type="checkbox"
                             className="form-check-input"
@@ -290,8 +294,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             checked={acceleratedVesting}
                             onChange={this.handleFilterChange}
                         />
-                        <label className="form-check-label" htmlFor="acceleratedVesting">&nbsp;Show only companies with first vesting in &lt; 1 year</label>
-                    </span>
+                        <label className="form-check-label" htmlFor="acceleratedVesting">Show only companies with first vesting in &lt; 1 year</label>
+                    </div>
                 </div>
                 {this.props.isAuthenticated && (
                     <button type="button" className="btn btn-outline-primary btn-sm mt-2"
@@ -301,8 +305,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 )}
             </div>
             <div className="mb-2" role="status" aria-live="polite">
-                {`Showing ${firstResult}-${lastResult} of ${filteredOrganizations.length} organizations`}
-                <span className="ms-2">{`Page ${displayedPage} of ${pageCount}`}</span>
+                <div className="organization-results-count">{`Showing ${firstResult}-${lastResult} of ${filteredOrganizations.length} organizations`}</div>
+                <div className="organization-page-count">{`Page ${displayedPage} of ${pageCount}`}</div>
             </div>
             <nav aria-label="Organization pagination">
                 <ul className="pagination">
