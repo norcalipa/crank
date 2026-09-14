@@ -4,7 +4,16 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase, TransactionTestCase
 from unittest.mock import patch, MagicMock
 
-from crank.models.agent_run import AgentRun, acquire_advisory_lock, release_advisory_lock, advisory_lock_key
+from crank.models.agent_run import (
+    AgentRun,
+    acquire_advisory_lock,
+    acquire_named_advisory_lock,
+    advisory_lock_key,
+    release_advisory_lock,
+    release_named_advisory_lock,
+    run_type_lock_name,
+    source_lock_name,
+)
 
 
 class AgentRunModelTests(TestCase):
@@ -190,6 +199,119 @@ class AdvisoryLockTests(TestCase):
         k2 = advisory_lock_key("noop")
         self.assertEqual(k1, k2)
         self.assertNotEqual(advisory_lock_key("noop"), advisory_lock_key("crawl"))
+
+    def test_advisory_lock_key_is_stable_across_processes(self):
+        """The key must not depend on the interpreter's per-process hash salt.
+
+        Python's builtin ``hash()`` is salted per process, which gave separate
+        workers different ``GET_LOCK`` keys and silently disabled the
+        cross-process guard (issue #462 validation requirement).
+        """
+        import os
+        import subprocess
+        import sys
+
+        code = (
+            "import django; django.setup();"
+            "from crank.models.agent_run import advisory_lock_key;"
+            "print(advisory_lock_key('agent_run:noop'))"
+        )
+        env = {
+            **os.environ,
+            "DJANGO_SETTINGS_MODULE": "crank.settings",
+            "SECRET_KEY": "test",
+            "ENV": "dev",
+            "PYTHONHASHSEED": "random",
+        }
+        first = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, env=env
+        )
+        second = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, env=env
+        )
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(first.stdout.strip(), second.stdout.strip())
+
+    def test_run_type_and_source_lock_names(self):
+        self.assertEqual(run_type_lock_name("noop"), "agent_run:noop")
+        self.assertEqual(source_lock_name(type("S", (), {"pk": 7})()), "job_source:7")
+        # Run-type and per-source locks never collide.
+        self.assertNotEqual(
+            advisory_lock_key(run_type_lock_name("7")),
+            advisory_lock_key(source_lock_name(type("S", (), {"pk": 7})())),
+        )
+
+    def test_acquire_named_advisory_lock_noop_on_non_mysql(self):
+        with patch("crank.models.agent_run.connection") as mock_conn:
+            mock_conn.vendor = "sqlite"
+            self.assertTrue(
+                acquire_named_advisory_lock("job_source:7", timeout_seconds=3)
+            )
+            mock_conn.cursor.assert_not_called()
+
+    def test_release_named_advisory_lock_noop_on_non_mysql(self):
+        with patch("crank.models.agent_run.connection") as mock_conn:
+            mock_conn.vendor = "postgresql"
+            release_named_advisory_lock("job_source:7")
+            mock_conn.cursor.assert_not_called()
+
+    @patch("crank.models.agent_run.connection")
+    def test_acquire_named_advisory_lock_mysql_calls_get_lock(self, mock_conn):
+        """On MySQL, the named lock calls GET_LOCK with the stable key."""
+        mock_conn.vendor = "mysql"
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (1,)
+        mock_conn.cursor.return_value.__enter__.return_value = cursor
+        self.assertTrue(
+            acquire_named_advisory_lock("job_source:7", timeout_seconds=5)
+        )
+        cursor.execute.assert_called_once()
+        self.assertIn("GET_LOCK", cursor.execute.call_args.args[0])
+        self.assertEqual(
+            cursor.execute.call_args.args[1],
+            [str(advisory_lock_key("job_source:7")), 5],
+        )
+
+    @patch("crank.models.agent_run.connection")
+    def test_acquire_named_advisory_lock_mysql_returns_false_on_failure(self, mock_conn):
+        mock_conn.vendor = "mysql"
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (0,)
+        mock_conn.cursor.return_value.__enter__.return_value = cursor
+        self.assertFalse(acquire_named_advisory_lock("job_source:7"))
+
+    @patch("crank.models.agent_run.connection")
+    def test_release_named_advisory_lock_mysql_calls_release_lock(self, mock_conn):
+        mock_conn.vendor = "mysql"
+        cursor = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = cursor
+        release_named_advisory_lock("job_source:7")
+        cursor.execute.assert_called_once()
+        self.assertIn("RELEASE_LOCK", cursor.execute.call_args.args[0])
+        self.assertEqual(
+            cursor.execute.call_args.args[1],
+            [str(advisory_lock_key("job_source:7"))],
+        )
+
+    @patch("crank.models.agent_run.connection")
+    def test_run_type_locks_delegate_to_named_locks(self, mock_conn):
+        """acquire/release_advisory_lock keep working through the named API."""
+        mock_conn.vendor = "mysql"
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (1,)
+        mock_conn.cursor.return_value.__enter__.return_value = cursor
+        self.assertTrue(acquire_advisory_lock("noop", timeout_seconds=5))
+        self.assertEqual(
+            cursor.execute.call_args.args[1],
+            [str(advisory_lock_key("agent_run:noop")), 5],
+        )
+        release_advisory_lock("noop")
+        self.assertIn("RELEASE_LOCK", cursor.execute.call_args.args[0])
+        self.assertEqual(
+            cursor.execute.call_args.args[1],
+            [str(advisory_lock_key("agent_run:noop"))],
+        )
 
     @patch("crank.models.agent_run.connection")
     def test_acquire_advisory_lock_noop_on_non_mysql(self, mock_conn):
