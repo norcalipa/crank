@@ -667,18 +667,18 @@ const JobSearchChat: React.FC = () => {
                 <h2 id="job-search-chat-title" className="h6 mb-0">Conversation</h2>
                 <div className="btn-group btn-group-sm flex-wrap" role="group" aria-label="Conversation controls">
                     <button type="button" className="btn btn-outline-light" onClick={handleExport}
-                            disabled={!conversationId || !messages.length} aria-label="Export conversation">Export</button>
+                            disabled={!conversationId || !messages.length}>Export chat</button>
                     <button type="button" className="btn btn-outline-light" onClick={handleReset}
-                            disabled={!conversationId} aria-label="Reset conversation">Reset</button>
+                            disabled={!conversationId}>Reset chat</button>
                     <button type="button" className="btn btn-outline-danger" onClick={handleDelete}
-                            disabled={!conversationId} aria-label="Delete conversation">Delete</button>
+                            disabled={!conversationId}>Delete conversation</button>
                 </div>
             </div>
 
             <div className="card-body d-flex flex-column" style={{minHeight: 0}}>
                 <div id="job-search-data-note" className="alert alert-info" role="note">
                     The assistant is automated and can be wrong. Check important details yourself. Your messages
-                    and preference updates are saved to your account; use Export, Reset, or Delete above to manage them.
+                    and preference updates are saved to your account; manage them with the controls above.
                 </div>
 
                 {revealingPrefs && (

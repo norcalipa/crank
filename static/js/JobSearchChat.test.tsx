@@ -505,7 +505,7 @@ describe('JobSearchChat', () => {
                 jsonResponse({deleted: true}),
             );
 
-            fireEvent.click(screen.getByLabelText('Delete conversation'));
+            fireEvent.click(screen.getByRole('button', {name: 'Delete conversation'}));
             await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
             expect(screen.queryByText('done with this')).not.toBeInTheDocument();
         });
@@ -679,7 +679,7 @@ describe('additional JobSearchChat coverage', () => {
             const click = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
             (global.fetch as jest.Mock).mockResolvedValueOnce(new Response(new Blob(['{}'], {type: 'application/json'})));
 
-            fireEvent.click(screen.getByRole('button', {name: 'Export conversation'}));
+            fireEvent.click(screen.getByRole('button', {name: 'Export chat'}));
             await waitFor(() => expect(click).toHaveBeenCalled());
             expect(createUrl).toHaveBeenCalled();
             expect(revoke).toHaveBeenCalled();
@@ -693,7 +693,7 @@ describe('additional JobSearchChat coverage', () => {
             render(<JobSearchChat/>);
             await screen.findByText('x');
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
-            fireEvent.click(screen.getByRole('button', {name: 'Export conversation'}));
+            fireEvent.click(screen.getByRole('button', {name: 'Export chat'}));
             expect(await screen.findByText(/could not export your conversation/i)).toBeInTheDocument();
         });
     });
@@ -764,7 +764,7 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
         await screen.findByText('old');
         window.confirm = jest.fn().mockReturnValue(true);
         (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(7)));
-        fireEvent.click(screen.getByLabelText('Reset conversation'));
+        fireEvent.click(screen.getByRole('button', {name: 'Reset chat'}));
         await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
         expect(screen.queryByText('old')).not.toBeInTheDocument();
     });
@@ -777,7 +777,7 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
         await screen.findByText('keep');
         window.confirm = jest.fn().mockReturnValue(true);
         (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
-        fireEvent.click(screen.getByLabelText('Reset conversation'));
+        fireEvent.click(screen.getByRole('button', {name: 'Reset chat'}));
         await screen.findByText(/could not reset the conversation/i);
         expect(screen.getByText('keep')).toBeInTheDocument();
     });
@@ -790,7 +790,7 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
         await screen.findByText('del');
         window.confirm = jest.fn().mockReturnValue(true);
         (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
-        fireEvent.click(screen.getByLabelText('Delete conversation'));
+        fireEvent.click(screen.getByRole('button', {name: 'Delete conversation'}));
         await screen.findByText(/could not delete the conversation/i);
     });
 });
