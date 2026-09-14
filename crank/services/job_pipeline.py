@@ -14,7 +14,7 @@ from django.utils import timezone
 
 from crank.agents.jobs.base import JobSourceQuery
 from crank.agents.jobs.employer import resolve_employer
-from crank.agents.jobs.ingest import JobIngestResult, ingest_jobs
+from crank.agents.jobs.ingest import JobIngestResult
 from crank.agents.jobs.match_persist import persist_matches
 from crank.agents.jobs.matching import project_criteria, rank_listings
 from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
@@ -22,6 +22,7 @@ from crank.models.agent_run import AgentRun
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.preference import UserPreference, default_preferences
 from crank.services import agent_runs
+from crank.services.job_ingest import ingest_job_source
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ COUNT_KEYS = (
     "sources_total",
     "sources_succeeded",
     "sources_failed",
+    "sources_skipped",
     "listings_ingested",
     "listings_updated",
     "employers_resolved",
@@ -154,16 +156,27 @@ def _resolve_source_listings(source: Any, before_ids: set[int]) -> tuple[int, in
 
 def _ingest_source(
     source: Any, options: Mapping[str, Any], before_ids: set[int]
-) -> tuple[JobIngestResult, int, int]:
+) -> tuple[JobIngestResult | None, int, int, bool]:
+    """Ingest through the shared single-owner boundary (issue #462).
+
+    Returns ``(result, resolved, unresolved, skipped)``; ``result`` is ``None``
+    exactly when ``skipped`` is ``True`` (the per-source lock was held by
+    another ingestion path, which records its own sanitized skip event).
+    """
     query = _source_query(
         options,
         _setting(options, "JOB_PIPELINE_MAX_LISTINGS_PER_USER", 500),
     )
-    result = ingest_jobs(source, query, adapter=_adapter_for(source, options))
+    ingestion = ingest_job_source(
+        source, query=query, adapter=_adapter_for(source, options)
+    )
+    if ingestion.skipped:
+        return None, 0, 0, True
+    result = ingestion.result
     resolved, unresolved = _resolve_source_listings(source, before_ids)
     # Attach resolution totals for the caller without changing the public
     # ingest result dataclass or its adapter contract.
-    return result, resolved, unresolved
+    return result, resolved, unresolved, False
 
 
 def _active_listings(limit: int):
@@ -227,7 +240,12 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
             JobListing.all_objects.filter(source=source).values_list("pk", flat=True)
         )
         try:
-            result, resolved, unresolved = _ingest_source(source, options, before_ids)
+            result, resolved, unresolved, skipped = _ingest_source(
+                source, options, before_ids
+            )
+            if skipped:
+                counts["sources_skipped"] += 1
+                continue
             counts["listings_ingested"] += int(result.ingested)
             counts["listings_updated"] += int(result.updated)
             counts["employers_resolved"] += resolved
@@ -310,7 +328,11 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
         },
     )
     if not counts["deadline_reached"]:
-        if counts["sources_total"] and not successful_sources:
+        if (
+            counts["sources_total"]
+            and not successful_sources
+            and not counts["sources_skipped"]
+        ):
             raise JobPipelineError("all approved job sources failed", counts)
         if counts["users_total"] and not successful_users:
             raise JobPipelineError("all eligible users failed", counts)

@@ -23,8 +23,9 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
+from crank.services import agent_runs
 from crank.admin import JobRetrievalOps
-from crank.admin_dashboard import JobRetrievalOperationsAdmin
+from crank.admin_dashboard import JobRetrievalOperationsAdmin, _readiness_gates
 from crank.models.agent_run import AgentRun
 from crank.models.employer import UnresolvedEmployer
 from crank.models.job import JobListing, JobSourceCatalog
@@ -157,7 +158,71 @@ class JobRetrievalOpsAdminTests(TestCase):
         request = self._request(self.staff)
         response = self.admin.dashboard_view(request)
         content = response.render().content.decode()
-        self.assertIn("Running", content)
+        # The gate renders the raw status value ("running"), capitalized only
+        # by CSS/typography, so assert case-insensitively.
+        self.assertIn("running", content.lower())
+
+    def test_dashboard_shows_queued_runs_awaiting_consumer(self):
+        """Queued (PENDING) runs are surfaced with count and age (issue #462)."""
+        pending = AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.PENDING,
+        )
+        AgentRun.objects.filter(pk=pending.pk).update(
+            created=timezone.now() - timezone.timedelta(minutes=5)
+        )
+        request = self._request(self.staff)
+        response = self.admin.dashboard_view(request)
+        counts = response.context_data["counts"]
+        self.assertEqual(counts["pending_run"]["count"], 1)
+        self.assertGreaterEqual(counts["pending_run"]["oldest_age_seconds"], 300)
+        self.assertIn("m", counts["pending_run"]["oldest_age_display"])
+        content = response.render().content.decode()
+        self.assertIn("Queued runs awaiting consumer", content)
+        self.assertIn(str(pending.correlation_id), content)
+
+    def test_dashboard_pending_absent_when_no_queue(self):
+        request = self._request(self.staff)
+        response = self.admin.dashboard_view(request)
+        self.assertIsNone(response.context_data["counts"]["pending_run"])
+
+    def test_dashboard_readiness_gate_flags_queued_run(self):
+        """A queued PENDING row occupies the slot: the gate must flag it."""
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.PENDING,
+        )
+        gates = _readiness_gates()
+        self.assertTrue(gates["active_run"])
+        self.assertEqual(gates["active_run_status"], AgentRun.Status.PENDING)
+
+    def test_dashboard_pending_age_display_units(self):
+        """The oldest-queued age renders in hours or seconds as appropriate."""
+        from datetime import timedelta
+
+        from crank.admin_dashboard import _aggregate_counts
+
+        hours_old = AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.PENDING,
+        )
+        AgentRun.objects.filter(pk=hours_old.pk).update(
+            created=timezone.now() - timedelta(hours=2, minutes=5)
+        )
+        counts = _aggregate_counts()
+        self.assertEqual(counts["pending_run"]["oldest_age_display"], "2h 5m")
+
+        AgentRun.objects.filter(pk=hours_old.pk).delete()
+        seconds_old = AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.PENDING,
+        )
+        AgentRun.objects.filter(pk=seconds_old.pk).update(
+            created=timezone.now() - timedelta(seconds=30)
+        )
+        counts = _aggregate_counts()
+        self.assertEqual(counts["pending_run"]["oldest_age_display"], "30s")
+        self.assertGreaterEqual(counts["pending_run"]["oldest_age_seconds"], 30)
 
     # ── Seed preview (dry-run) ──
 
@@ -377,6 +442,25 @@ class JobRetrievalOpsAdminTests(TestCase):
         ).first()
         self.assertIsNotNone(audit)
         self.assertTrue(audit.confirmed)
+
+    def test_queued_pipeline_run_is_consumed_by_next_claim(self):
+        """Integration: an admin-queued PENDING run is executed by the next
+        deployed consumer invocation instead of blocking it (issue #462)."""
+        request = self._request(self.staff, confirmed=True)
+        with patch.object(self.admin, "message_user"), patch(
+            "crank.admin_dashboard.monitoring.record_event"
+        ):
+            self.admin.queue_pipeline_view(request)
+        queued = AgentRun.objects.get(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.PENDING,
+        )
+        # The next CronJob tick (or manual run) claims the queued work.
+        run = agent_runs.claim_run(AgentRun.RunType.JOB_PIPELINE)
+        self.assertEqual(run.pk, queued.pk)
+        run.refresh_from_db()
+        self.assertEqual(run.status, AgentRun.Status.RUNNING)
+        self.assertEqual(run.correlation_id, queued.correlation_id)
 
     def test_queue_retrieval_counts_sources(self):
         JobSourceCatalog.objects.create(

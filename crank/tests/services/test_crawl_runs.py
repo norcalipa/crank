@@ -15,12 +15,14 @@ from crank.models import AgentRun, CrawlRun, JobSourceCatalog, OperationalChange
 from crank.models.source import ApprovalState
 from crank.services.crawl_runs import (
     CrawlRequestError,
+    SourceLockHeld,
     _execute,
     _outcome,
     _safe_counts,
     resolve_source,
     trigger_crawl,
 )
+from crank.services.job_ingest import SKIP_OVERLAP, JobSourceIngestion
 from crank.agents.jobs.ingest import JobIngestResult
 
 
@@ -89,11 +91,26 @@ class CrawlRunTests(TestCase):
         self.assertEqual(_outcome(type("Result", (), {"errors": 2, "error_reasons": (), "total": 0})()), "failure")
 
     @patch("crank.services.crawl_runs.crawl_company_profile")
-    @patch("crank.services.crawl_runs.ingest_jobs")
+    @patch("crank.services.crawl_runs.ingest_job_source")
     def test_execute_dispatches_by_source_type(self, ingest, company):
+        ingest.return_value = JobSourceIngestion(
+            result=JobIngestResult(), skipped=False, reason=""
+        )
         _execute(self.source, "organization")
         company.assert_called_once_with(self.source)
         _execute(self.job_source, "job")
+        ingest.assert_called_once()
+        self.assertEqual(ingest.call_args.kwargs["query"].max_listings, 100)
+
+    @patch("crank.services.crawl_runs.ingest_job_source")
+    def test_execute_raises_source_lock_held_on_skip(self, ingest):
+        # When the per-source lock is held by another ingestion path, the
+        # manual crawl raises the sanitized skip signal instead of fetching.
+        ingest.return_value = JobSourceIngestion(
+            result=None, skipped=True, reason=SKIP_OVERLAP
+        )
+        with self.assertRaises(SourceLockHeld):
+            _execute(self.job_source, "job")
         ingest.assert_called_once()
 
     def test_policy_rejects_unknown_source_type(self):
@@ -161,6 +178,25 @@ class CrawlRunTests(TestCase):
         )
         with self.assertRaises(CrawlRequestError):
             trigger_crawl(source_key="fixture-adapter", source_type="job")
+
+    @patch("crank.services.crawl_runs._execute", side_effect=SourceLockHeld())
+    @patch("crank.services.crawl_runs.monitoring.record_event")
+    def test_lock_held_overlap_records_sanitized_skip(self, event, execute):
+        """Overlap with an in-flight pipeline is recorded, sanitized, not fetched."""
+        run = trigger_crawl(source_key="fixture-adapter", source_type="job")
+        run.refresh_from_db()
+        self.assertEqual(run.outcome, CrawlRun.Outcome.FAILURE)
+        self.assertIn("Skipped", run.error_summary)
+        self.assertIn(SKIP_OVERLAP, run.error_summary)
+        self.assertNotIn("payload", run.error_summary.lower())
+        self.assertEqual(run.agent_run.status, AgentRun.Status.FAILED)
+        self.assertEqual(run.agent_run.error_summary, run.error_summary)
+        event.assert_any_call(
+            "crawl_run_skipped", {"run_id": run.pk, "source_key": "fixture-adapter"}
+        )
+        self.assertTrue(
+            OperationalChangeAudit.objects.filter(action="crawl_skipped").exists()
+        )
 
     def test_duration_and_string(self):
         pending = CrawlRun(source_type="job", source_key="fixture-adapter")

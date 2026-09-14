@@ -38,6 +38,18 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
           {% endif %}
         </td>
       </tr>
+      <tr>
+        <td>Queued runs awaiting consumer</td>
+        <td>
+          {% if counts.pending_run %}
+            <strong>{{ counts.pending_run.count }}</strong>
+            &mdash; oldest queued {{ counts.pending_run.oldest_age_display }} ago
+            ({{ counts.pending_run.oldest_correlation_id }})
+          {% else %}
+            <em>None</em>
+          {% endif %}
+        </td>
+      </tr>
     </table>
   </div>
 
@@ -86,10 +98,10 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
         </td>
       </tr>
       <tr>
-        <td>Active run / overlap</td>
+        <td>Active or queued run / overlap</td>
         <td>
           {% if gates.active_run %}
-            <span style="color: orange;">&#x26A0; Running ({{ gates.active_run_status }})</span>
+            <span style="color: orange;">&#x26A0; {{ gates.active_run_status }}</span>
           {% else %}
             <span style="color: green;">&#x2705; Idle</span>
           {% endif %}

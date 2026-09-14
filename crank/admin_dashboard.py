@@ -87,6 +87,36 @@ def _aggregate_counts():
             "correlation_id": str(latest_run.correlation_id),
         }
 
+    # Queued (PENDING) pipeline runs awaiting a consumer (issue #462). A
+    # queued run is not proof of work: surface the count and the age of the
+    # oldest queued row so staff can see missing consumption instead of
+    # indefinite pending work.
+    pending_qs = AgentRun.objects.filter(
+        run_type=AgentRun.RunType.JOB_PIPELINE,
+        status=AgentRun.Status.PENDING,
+    ).order_by("created")
+    pending_count = pending_qs.count()
+    pending_run_info = None
+    oldest_pending = pending_qs.first()
+    if oldest_pending is not None and oldest_pending.created is not None:
+        age_seconds = max(
+            0, int((timezone.now() - oldest_pending.created).total_seconds())
+        )
+        hours, remainder = divmod(age_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        if hours:
+            age_display = f"{hours}h {minutes}m"
+        elif minutes:
+            age_display = f"{minutes}m {seconds}s"
+        else:
+            age_display = f"{seconds}s"
+        pending_run_info = {
+            "count": pending_count,
+            "oldest_age_seconds": age_seconds,
+            "oldest_age_display": age_display,
+            "oldest_correlation_id": str(oldest_pending.correlation_id),
+        }
+
     return {
         "configured": configured,
         "approved": approved,
@@ -96,6 +126,7 @@ def _aggregate_counts():
         "unresolved_employers": unresolved_count,
         "matches": match_count,
         "latest_run": latest_run_info,
+        "pending_run": pending_run_info,
     }
 
 
@@ -116,8 +147,8 @@ def _readiness_gates():
 
     active_run = AgentRun.objects.filter(
         run_type=AgentRun.RunType.JOB_PIPELINE,
-        status=AgentRun.Status.RUNNING,
-    ).first()
+        status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING],
+    ).order_by("id").first()
 
     return {
         "adapter_registered": adapter_count > 0,
