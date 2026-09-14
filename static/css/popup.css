@@ -340,15 +340,13 @@ html, body {
 }
 
 .app-content {
-    margin-left: 240px;
     min-width: 0;
-    max-width: calc(100vw - 240px);
+    max-width: 100%;
     outline: none;
     padding: 2rem 2rem 3rem;
 }
 
 .app-messages {
-    margin-left: 240px;
     padding: 1rem 2rem;
 }
 
@@ -563,6 +561,19 @@ body.app-nav-drawer-open {
         max-width: 100%;
         overflow-wrap: anywhere;
     }
+
+    /* Desktop: the fixed nav rail occupies the left 240px, so the content
+       column offsets and caps to the remaining viewport width. These
+       deductions are scoped here (issue #456) so collapsed-navigation
+       viewports reflow to the full container width. */
+    .app-content {
+        margin-left: 240px;
+        max-width: calc(100vw - 240px);
+    }
+
+    .app-messages {
+        margin-left: 240px;
+    }
 }
 
 @media (max-width: 767.98px) {
@@ -580,12 +591,10 @@ body.app-nav-drawer-open {
     }
 
     .app-content {
-        margin-left: 0;
         padding: 1.25rem 1rem 2.5rem 4.5rem;
     }
 
     .app-messages {
-        margin-left: 0;
         padding: 1rem 1rem 1rem 4.5rem;
     }
 
