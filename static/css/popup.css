@@ -702,6 +702,177 @@ body.app-nav-drawer-open {
     overflow-wrap: break-word;
     word-break: break-word;
 }
+/* Job-search chat message surfaces and controls (issue #458, round 2).
+   Additive block: chat-side only, does not alter other rule groups. Colors
+   follow the visual-review spec — high-contrast bubbles, semantic failure
+   (red) and retry-in-progress (amber) panels, ≥44px touch targets, and a
+   consistent visible keyboard-focus ring. */
+.chat-bubble {
+    border-radius: 0.75rem; /* rounded-xl */
+    padding: 0.5rem 0.75rem; /* px-3 py-2 */
+    font-size: 1rem; /* text-base */
+    line-height: 1.5rem; /* leading-6 */
+}
+
+.chat-bubble-user {
+    background-color: #1d4ed8; /* blue-700 */
+    color: #ffffff; /* text-white */
+}
+
+.chat-bubble-assistant {
+    background-color: #334155; /* slate-700 */
+    color: #f8fafc; /* slate-50 */
+}
+
+.chat-status-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+
+.chat-status-icon {
+    width: 1rem; /* h-4 w-4 */
+    height: 1rem;
+    flex-shrink: 0;
+    margin-top: 0.125rem; /* mt-0.5 */
+}
+
+.chat-failure-panel {
+    border-radius: 0.5rem; /* rounded-lg */
+    border: 1px solid rgba(248, 113, 113, 0.5); /* border-red-400/50 */
+    background-color: #450a0a; /* bg-red-950 */
+    padding: 0.5rem 0.75rem; /* px-3 py-2 */
+    color: #fee2e2; /* text-red-100 */
+}
+
+.chat-retry-panel {
+    border-radius: 0.5rem;
+    border: 1px solid rgba(251, 191, 36, 0.5); /* border-amber-400/50 */
+    background-color: #451a03; /* bg-amber-950 */
+    padding: 0.5rem 0.75rem;
+    color: #fef3c7; /* text-amber-100 */
+}
+
+.chat-status-detail {
+    font-size: 0.875rem; /* text-sm */
+    line-height: 1.25rem; /* leading-5 */
+    margin-top: 0.25rem;
+}
+
+.chat-actions {
+    display: flex;
+    flex-direction: column; /* flex-col, sm:flex-row below */
+    gap: 0.5rem; /* gap-2 */
+}
+
+@media (min-width: 576px) {
+    .chat-actions {
+        flex-direction: row;
+    }
+}
+
+.chat-btn {
+    min-height: 2.75rem; /* min-h-11: ≥44px touch target */
+    border-radius: 0.375rem; /* rounded-md */
+    padding: 0.5rem 0.75rem; /* px-3 py-2 */
+    font-size: 0.875rem; /* text-sm */
+    line-height: 1.25rem;
+    font-weight: 500; /* font-medium */
+}
+
+.chat-btn-primary {
+    background-color: #ffffff; /* bg-white */
+    color: #1e40af; /* text-blue-800 */
+    border: 1px solid #ffffff;
+}
+
+.chat-btn-secondary {
+    background-color: transparent; /* bg-transparent */
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.6); /* border-white/60 */
+}
+
+/* Stable muted disabled treatment for retry/edit controls while a retry is
+   in flight — clearly unavailable, not hover-like. */
+.chat-btn:disabled,
+.chat-btn-retry:disabled {
+    background-color: #334155 !important; /* disabled:bg-slate-700 */
+    color: #cbd5e1 !important; /* disabled:text-slate-300 */
+    border-color: #64748b !important; /* disabled:border-slate-500 */
+    cursor: not-allowed; /* disabled:cursor-not-allowed */
+}
+
+.chat-send {
+    display: inline-flex;
+    min-height: 2.75rem; /* min-h-11 */
+    min-width: 2.75rem; /* min-w-11 */
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding-left: 0.75rem; /* px-3 */
+    padding-right: 0.75rem;
+    flex-shrink: 0;
+}
+
+.chat-stop {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    min-height: 2.75rem;
+}
+
+/* Visible, consistent keyboard-focus ring on chat controls. */
+.chat-focus:focus-visible {
+    outline: 2px solid #93c5fd; /* blue-300 ring */
+    outline-offset: 2px;
+}
+
+/* Compacted data note: one muted row (~≤64px) by default so the
+   conversation owns the viewport; details expand in place. */
+.chat-note {
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background-color: rgba(15, 23, 42, 0.6);
+    color: #cbd5e1;
+    border-radius: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.8125rem;
+    line-height: 1.25rem;
+    margin-bottom: 0.75rem;
+}
+
+.chat-note-row {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    min-height: 2rem;
+}
+
+.chat-note-text {
+    flex: 1 1 auto;
+}
+
+.chat-note-toggle {
+    flex-shrink: 0;
+    background-color: transparent;
+    border: 1px solid rgba(148, 163, 184, 0.5);
+    color: #e2e8f0;
+    border-radius: 0.375rem;
+    padding: 0.125rem 0.5rem;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    min-height: 2rem;
+}
+
+.chat-note-details {
+    margin-top: 0.25rem;
+}
+
+@media (max-width: 390px) {
+    .chat-note {
+        font-size: 0.75rem;
+        line-height: 1.125rem;
+    }
+}
 
 .job-card a, .org-card a {
     word-break: break-all;

@@ -215,6 +215,9 @@ describe('JobSearchChat', () => {
             const input = screen.getByLabelText('Message');
             expect(input).toBeInTheDocument();
             expect(screen.getByRole('button', {name: 'Send message'})).toBeInTheDocument();
+            // Round 2: the send control is a labeled ≥44px target, not a narrow strip.
+            expect(screen.getByRole('button', {name: 'Send message'})).toHaveClass('chat-send');
+            expect(screen.getByRole('button', {name: 'Send message'})).toHaveTextContent('Send');
             expect(screen.getByRole('region', {name: 'Conversation'})).toBeInTheDocument();
             expect(screen.getByRole('note')).toHaveTextContent(/automated and can be wrong/i);
             expect(screen.getByRole('note')).toHaveTextContent(/saved to your account/i);
@@ -231,6 +234,39 @@ describe('JobSearchChat', () => {
             expect(screen.getByRole('article', {name: 'Your message'})).toHaveTextContent('hello');
             expect(screen.getByRole('article', {name: 'Assistant message'})).toHaveTextContent('hi there');
             expect(screen.queryByTestId('empty-history')).not.toBeInTheDocument();
+        });
+
+        test('renders high-contrast message bubbles with semantic surfaces', async () => {
+            await renderChat([userMessage('hello'), assistantMessage(2, 'hi there')]);
+            const userBubble = screen.getByRole('article', {name: 'Your message'}).firstElementChild as HTMLElement;
+            const assistantBubble = screen.getByRole('article', {name: 'Assistant message'}).firstElementChild as HTMLElement;
+            expect(userBubble).toHaveClass('chat-bubble', 'chat-bubble-user');
+            expect(assistantBubble).toHaveClass('chat-bubble', 'chat-bubble-assistant');
+        });
+
+        test('compacts the data note behind a details toggle', async () => {
+            await renderChat();
+            const toggle = screen.getByTestId('data-note-toggle');
+            expect(toggle).toHaveAttribute('aria-expanded', 'false');
+            const note = screen.getByRole('note');
+            // Collapsed: the details are still available to assistive tech.
+            expect(note).toHaveTextContent(/saved to your account/i);
+            const details = document.getElementById('job-search-data-note-details')!;
+            expect(details).toHaveClass('visually-hidden');
+            fireEvent.click(toggle);
+            expect(toggle).toHaveAttribute('aria-expanded', 'true');
+            expect(toggle).toHaveTextContent('Hide details');
+            expect(document.getElementById('job-search-data-note-details')!).not.toHaveClass('visually-hidden');
+            fireEvent.click(toggle);
+            expect(toggle).toHaveAttribute('aria-expanded', 'false');
+        });
+
+        test('exposes a consistent keyboard-focus ring class on chat controls', async () => {
+            await renderChat([userTurn('failed question', '123e4567-e89b-42d3-a456-426614174000', 'failed')]);
+            expect(screen.getByTestId('retry-response-button')).toHaveClass('chat-focus');
+            expect(screen.getByTestId('edit-as-new-button')).toHaveClass('chat-focus');
+            expect(screen.getByRole('button', {name: 'Send message'})).toHaveClass('chat-focus');
+            expect(screen.getByTestId('data-note-toggle')).toHaveClass('chat-focus');
         });
 
         test('submit is gated on a conversation and non-empty input', async () => {
@@ -669,9 +705,12 @@ describe('additional JobSearchChat coverage', () => {
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             await screen.findByText(/request failed \(500\)/i);
             // Issue #458: the server persists the user turn before failing, so
-            // the question stays visible as a failed turn with retry actions.
+            // the question stays visible as a failed turn with retry actions
+            // in a distinct failure panel (round 2), not an ordinary bubble.
             expect(screen.getByText('boom')).toBeInTheDocument();
-            expect(screen.getByTestId('failed-turn')).toHaveTextContent(/message saved; response unavailable/i);
+            expect(screen.getByTestId('failed-turn')).toHaveTextContent(/response failed/i);
+            expect(screen.getByTestId('failed-turn')).toHaveTextContent(/your message is saved/i);
+            expect(screen.getByTestId('failed-turn')).toHaveClass('chat-failure-panel');
             expect(screen.getByTestId('retry-response-button')).toBeInTheDocument();
             expect(screen.getByTestId('edit-as-new-button')).toBeInTheDocument();
         });
@@ -1226,7 +1265,9 @@ describe('durable turn state (issue #458)', () => {
         test('a server-loaded failed user turn renders the saved-question notice with actions', async () => {
             await renderChat([userTurn('saved question', KEY_A, 'failed')]);
             expect(screen.getByTestId('failed-turn')).toBeInTheDocument();
-            expect(screen.getByTestId('failed-turn')).toHaveTextContent(/message saved; response unavailable/i);
+            expect(screen.getByTestId('failed-turn')).toHaveTextContent(/response failed/i);
+            expect(screen.getByTestId('failed-turn')).toHaveTextContent(/your message is saved/i);
+            expect(screen.getByTestId('failed-turn')).toHaveClass('chat-failure-panel');
             expect(screen.getByRole('button', {name: 'Retry response'})).toBeInTheDocument();
             expect(screen.getByRole('button', {name: 'Edit as new message'})).toBeInTheDocument();
             expect(screen.getByRole('group', {name: 'Failed turn actions'})).toBeInTheDocument();
@@ -1236,6 +1277,58 @@ describe('durable turn state (issue #458)', () => {
             await renderChat([userTurn('done', KEY_A, 'completed'), userTurn('running', KEY_B, 'pending', 2)]);
             expect(screen.queryByTestId('failed-turn')).not.toBeInTheDocument();
             expect(screen.queryByRole('button', {name: 'Retry response'})).not.toBeInTheDocument();
+        });
+
+        test('retry-in-progress replaces the failure treatment with amber state and disabled controls', async () => {
+            await renderChat([userTurn('saved question', KEY_A, 'failed')]);
+            let resolvePost: ((r: Response) => void) | undefined;
+            (global.fetch as jest.Mock).mockImplementationOnce(
+                () => new Promise<Response>((resolve) => { resolvePost = resolve; }),
+            );
+            fireEvent.click(screen.getByTestId('retry-response-button'));
+            // The red failure panel is REPLACED (not retained) by the amber retry panel.
+            await screen.findByTestId('retrying-turn');
+            expect(screen.queryByTestId('failed-turn')).not.toBeInTheDocument();
+            expect(screen.getByTestId('retrying-turn')).toHaveClass('chat-retry-panel');
+            expect(screen.getByTestId('retrying-turn')).toHaveTextContent(/retrying response…/i);
+            // Retry control: stable muted disabled treatment with the primary label.
+            const retryBtn = screen.getByTestId('retry-response-button');
+            expect(retryBtn).toBeDisabled();
+            expect(retryBtn).toHaveTextContent('Retrying…');
+            expect(screen.getByTestId('edit-as-new-button')).toBeDisabled();
+            // Stop stays clearly available while the retry is in flight.
+            const stop = screen.getByTestId('stop-button');
+            expect(stop).toBeEnabled();
+            expect(stop).toHaveTextContent('Stop');
+            expect(stop).toHaveClass('chat-stop');
+
+            resolvePost!(jsonResponse({message: assistantMessage(12, 'recovered'), preferences_changed: false}, 201));
+            await screen.findByText('recovered');
+            expect(screen.queryByTestId('retrying-turn')).not.toBeInTheDocument();
+        });
+
+        test('alert retry control disappears while a retry is in flight; bubble shows the amber state', async () => {
+            await renderChat();
+            (global.fetch as jest.Mock)
+                .mockResolvedValueOnce(
+                    jsonResponse({error: {type: 'service_error', message: 'down'}}, 500),
+                )
+                .mockImplementationOnce(
+                    () => new Promise<Response>(() => {}),
+                );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'again'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const retryBtn = await screen.findByTestId('retry-button');
+            expect(retryBtn).toBeEnabled();
+            fireEvent.click(retryBtn);
+            // The typed error alert yields to the in-progress treatment on the
+            // bubble: amber panel, disabled "Retrying…" control, Stop available.
+            await screen.findByTestId('retrying-turn');
+            expect(screen.queryByTestId('retry-button')).not.toBeInTheDocument();
+            const bubbleRetry = screen.getByTestId('retry-response-button');
+            expect(bubbleRetry).toBeDisabled();
+            expect(bubbleRetry).toHaveTextContent('Retrying…');
+            expect(screen.getByTestId('stop-button')).toBeEnabled();
         });
 
         test('retrying a server-loaded failed turn resends the same key without duplicating history', async () => {

@@ -292,6 +292,13 @@ const JobSearchChat: React.FC = () => {
     const [error, setError] = React.useState<string | null>(null);
     const [errorType, setErrorType] = React.useState<string | null>(null);
     const [retrying, setRetrying] = React.useState(false);
+    // Idempotency key of the turn currently being retried (issue #458 round 2):
+    // flips that message's failure treatment to the in-progress amber state.
+    const [retryKey, setRetryKey] = React.useState<string | null>(null);
+    // Data note is collapsed by default so the conversation owns the viewport;
+    // the details stay available to sighted users via the toggle and to screen
+    // readers via the visually-hidden fallback.
+    const [dataNoteOpen, setDataNoteOpen] = React.useState(false);
     const [preferencesChanged, setPreferencesChanged] = React.useState(false);
     const [prefDismissed, setPrefDismissed] = React.useState(false);
 
@@ -633,6 +640,7 @@ const JobSearchChat: React.FC = () => {
         setError(null);
         setErrorType(null);
         setRetrying(false);
+        setRetryKey(null);
 
         // Record the in-flight turn durably before the request resolves, so a
         // reload/navigation during the wait cannot lose it (issue #458).
@@ -655,9 +663,9 @@ const JobSearchChat: React.FC = () => {
             delivery_state: 'pending',
         };
         if (existingUser) {
-            // Retry of a persisted turn: it stays in place (still rendered as
-            // failed until the outcome lands); the global pending indicator
-            // shows the retry in flight.
+            // Retry of a persisted turn: it stays in place and its failure
+            // treatment is REPLACED by the retry-in-progress state (round 2).
+            setRetryKey(key);
         } else {
             setMessages((prev) => [...prev, optimisticUser]);
         }
@@ -745,6 +753,7 @@ const JobSearchChat: React.FC = () => {
         } finally {
             abortRef.current = null;
             pendingRef.current = false;
+            setRetryKey(null);
             setPending(false);
             setInput('');
             // Defer refocus until React flushes the re-render (the submit button
@@ -882,9 +891,20 @@ const JobSearchChat: React.FC = () => {
             </div>
 
             <div className="card-body d-flex flex-column" style={{minHeight: 0}}>
-                <div id="job-search-data-note" className="alert alert-info" role="note">
-                    The assistant is automated and can be wrong. Check important details yourself. Your messages
-                    and preference updates are saved to your account; use Export, Reset, or Delete above to manage them.
+                <div id="job-search-data-note" className="chat-note" role="note">
+                    <div className="chat-note-row">
+                        <i className="fa-solid fa-circle-info chat-status-icon" aria-hidden="true"></i>
+                        <span className="chat-note-text">The assistant is automated and can be wrong. Check important details yourself.</span>
+                        <button type="button" className="chat-note-toggle chat-focus" aria-expanded={dataNoteOpen}
+                                aria-controls="job-search-data-note-details" onClick={() => setDataNoteOpen((o) => !o)}
+                                data-testid="data-note-toggle">
+                            {dataNoteOpen ? 'Hide details' : 'Details'}
+                        </button>
+                    </div>
+                    <div id="job-search-data-note-details" className={dataNoteOpen ? 'chat-note-details' : 'visually-hidden'}>
+                        Your messages and preference updates are saved to your account; use Export, Reset, or Delete
+                        above to manage them.
+                    </div>
                 </div>
 
                 {revealingPrefs && (
@@ -931,26 +951,48 @@ const JobSearchChat: React.FC = () => {
                         {messages.map((m) => (
                             <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
                                      className={`d-flex ${m.role === 'user' ? 'justify-content-end' : 'justify-content-start'} mb-2`}>
-                                <div className={`rounded p-2 ${m.role === 'user' ? 'bg-primary' : 'bg-secondary'}`}
-                                     style={{maxWidth: '80%', whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>
-                                    {m.content}
+                                <div className={`chat-bubble ${m.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}
+                                     style={{maxWidth: '80%'}}>
+                                    <div style={{whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>{m.content}</div>
                                     {m.role === 'assistant' && m.results && (
                                         <ResultCards results={m.results} />
                                     )}
-                                    {m.role === 'user' && m.delivery_state === 'failed' && (
-                                        <div className="mt-1 pt-1 border-top border-light-subtle" data-testid="failed-turn">
-                                            <div className="small" role="status">
-                                                <i className="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>
-                                                Message saved; response unavailable.
+                                    {m.role === 'user' && m.delivery_state === 'failed' && retryKey !== m.idempotency_key && (
+                                        <div className="chat-failure-panel mt-2" data-testid="failed-turn">
+                                            <div className="chat-status-row" role="status">
+                                                <i className="fa-solid fa-triangle-exclamation chat-status-icon" aria-hidden="true"></i>
+                                                <div>
+                                                    <div>Response failed. Your message is saved.</div>
+                                                </div>
                                             </div>
-                                            <div className="btn-group btn-group-sm mt-1" role="group" aria-label="Failed turn actions">
-                                                <button type="button" className="btn btn-outline-light"
+                                            <div className="chat-actions mt-3" role="group" aria-label="Failed turn actions">
+                                                <button type="button" className="chat-btn chat-btn-primary chat-focus"
                                                         onClick={() => handleRetryMessage(m)}
                                                         aria-label="Retry response" data-testid="retry-response-button">
                                                     Retry response
                                                 </button>
-                                                <button type="button" className="btn btn-outline-light"
+                                                <button type="button" className="chat-btn chat-btn-secondary chat-focus"
                                                         onClick={() => handleEditAsNew(m)}
+                                                        aria-label="Edit as new message" data-testid="edit-as-new-button">
+                                                    Edit as new message
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                    {m.role === 'user' && retryKey !== null && m.idempotency_key === retryKey && m.delivery_state !== 'completed' && (
+                                        <div className="chat-retry-panel mt-2" data-testid="retrying-turn">
+                                            <div className="chat-status-row" role="status">
+                                                <i className="fa-solid fa-spinner fa-spin chat-status-icon" aria-hidden="true"></i>
+                                                <div>
+                                                    <div>Retrying response…</div>
+                                                </div>
+                                            </div>
+                                            <div className="chat-actions mt-3" role="group" aria-label="Failed turn actions">
+                                                <button type="button" className="chat-btn chat-btn-primary" disabled
+                                                        aria-label="Retrying response" data-testid="retry-response-button">
+                                                    Retrying…
+                                                </button>
+                                                <button type="button" className="chat-btn chat-btn-secondary" disabled
                                                         aria-label="Edit as new message" data-testid="edit-as-new-button">
                                                     Edit as new message
                                                 </button>
@@ -981,8 +1023,9 @@ const JobSearchChat: React.FC = () => {
                              role="alert" data-testid="chat-error" data-error-type={errorType || undefined}>
                             <span className="flex-grow-1 me-2">{error}</span>
                             {retrying && (
-                                <button type="button" className="btn btn-sm btn-outline-danger ms-2 flex-shrink-0 text-nowrap"
-                                        onClick={handleRetry} data-testid="retry-button">
+                                <button type="button"
+                                        className="btn btn-sm btn-outline-danger ms-2 flex-shrink-0 text-nowrap chat-focus"
+                                        onClick={handleRetry} disabled={pending} data-testid="retry-button">
                                     Retry
                                 </button>
                             )}
@@ -993,7 +1036,7 @@ const JobSearchChat: React.FC = () => {
                         <div className="input-group">
                             <textarea
                                 ref={composerRef}
-                                className="form-control"
+                                className="form-control chat-focus"
                                 placeholder="Type your message…"
                                 aria-label="Message"
                                 value={input}
@@ -1007,14 +1050,16 @@ const JobSearchChat: React.FC = () => {
                                 rows={1}
                                 style={{resize: 'none', overflowY: 'hidden'}}
                             />
-                            <button type="submit" className="btn btn-primary" disabled={!conversationId || pending || !input.trim()}
+                            <button type="submit" className="btn btn-primary chat-send chat-focus" disabled={!conversationId || pending || !input.trim()}
                                     aria-label="Send message">
-                                <i className="fa-solid fa-paper-plane"></i>
+                                <i className="fa-solid fa-paper-plane" aria-hidden="true"></i>
+                                <span>Send</span>
                             </button>
                             {pending && (
-                                <button type="button" className="btn btn-outline-secondary" onClick={handleStopWaiting}
+                                <button type="button" className="btn btn-outline-light chat-stop chat-focus" onClick={handleStopWaiting}
                                         aria-label="Stop waiting for response" data-testid="stop-button">
-                                    Stop
+                                    <i className="fa-solid fa-circle-stop" aria-hidden="true"></i>
+                                    <span>Stop</span>
                                 </button>
                             )}
                         </div>
