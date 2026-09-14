@@ -69,12 +69,20 @@ def _parse_results_json(raw: str):
     return parsed
 
 
-def serialize_message(message):
-    """Return the stable JSON shape for a single message."""
+def serialize_message(message, assistant_keys=None):
+    """Return the stable JSON shape for a single message.
+
+    User messages additionally carry ``idempotency_key`` and ``delivery_state``
+    (issue #458). The key is an owner-scoped random UUID the client needs to
+    retry a failed turn without duplicating it; the delivery state drives the
+    failed-turn UI. For rows written before ``delivery_state`` existed the
+    state is derived at read time from the presence of a matching assistant
+    reply, which keeps legacy semantics identical to the pre-#458 behavior.
+    """
     results = None
     if getattr(message, "results_json", ""):
         results = _parse_results_json(message.results_json)
-    return {
+    data = {
         "id": message.pk,
         "role": message.role,
         "content": message.content,
@@ -82,6 +90,28 @@ def serialize_message(message):
         "created": message.created.isoformat() if message.created else None,
         "results": results,
     }
+    if message.role == "user":
+        data["idempotency_key"] = message.idempotency_key
+        data["delivery_state"] = _user_delivery_state(message, assistant_keys)
+    return data
+
+
+def _user_delivery_state(message, assistant_keys):
+    """Return a user turn's delivery state, deriving it for legacy rows.
+
+    Rows persisted before ``delivery_state`` existed have an empty value;
+    they derive ``completed`` when an assistant reply with the same key
+    exists, else ``failed`` — matching the implicit pre-#458 semantics.
+    User rows without an idempotency key predate key-based turns and are
+    reported as ``completed`` (there is nothing retriable for them).
+    """
+    if message.delivery_state:
+        return message.delivery_state
+    if not message.idempotency_key:
+        return "completed"
+    if assistant_keys and message.idempotency_key in assistant_keys:
+        return "completed"
+    return "failed"
 
 
 def serialize_conversation(conversation):
@@ -92,12 +122,17 @@ def serialize_conversation(conversation):
             list(conversation.messages.order_by("-created", "-id")[:retention])
         )
     )
+    assistant_keys = {
+        m.idempotency_key
+        for m in messages
+        if m.role == "assistant" and m.idempotency_key
+    }
     return {
         "id": conversation.pk,
         "active": conversation.active,
         "created": conversation.created.isoformat() if conversation.created else None,
         "modified": conversation.modified.isoformat() if conversation.modified else None,
-        "messages": [serialize_message(m) for m in messages],
+        "messages": [serialize_message(m, assistant_keys) for m in messages],
         "preferences_changed": any(m.preferences_changed for m in messages),
     }
 

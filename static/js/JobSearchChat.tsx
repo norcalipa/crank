@@ -40,6 +40,9 @@ export interface ChatMessage {
     preferences_changed: boolean;
     created: string | null;
     results: StructuredResults | null;
+    // Turn delivery state (issue #458): present on user messages only.
+    idempotency_key?: string;
+    delivery_state?: 'pending' | 'completed' | 'failed';
 }
 
 interface Conversation {
@@ -63,6 +66,67 @@ interface ApiError {
 function getCookie(name: string): string {
     const match = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
     return match ? decodeURIComponent(match[2]) : '';
+}
+
+// Durable in-flight turn marker (issue #458). Written before a submission
+// resolves so a request that never received a response survives reload and
+// navigation, and reconciled against the server on the next load: the server
+// is the single source of truth, the marker only covers the window it cannot
+// see. Keyed by conversation id so a late reply can never attach to a
+// different conversation.
+interface InFlightTurn {conversationId: number; content: string; key: string}
+
+const INFLIGHT_STORAGE_KEY = 'crank:jobsearch:inflight';
+
+function draftKey(conversationId: number): string {
+    return `crank:jobsearch:draft:${conversationId}`;
+}
+
+function readInflightTurn(): InFlightTurn | null {
+    try {
+        const raw = window.localStorage.getItem(INFLIGHT_STORAGE_KEY);
+        return raw ? (JSON.parse(raw) as InFlightTurn) : null;
+    } catch {
+        return null;
+    }
+}
+
+function writeInflightTurn(turn: InFlightTurn): void {
+    try {
+        window.localStorage.setItem(INFLIGHT_STORAGE_KEY, JSON.stringify(turn));
+    } catch {
+        // Storage unavailable (private mode/quota); the turn still works,
+        // it just is not durable across reloads.
+    }
+}
+
+function clearInflightTurn(): void {
+    try {
+        window.localStorage.removeItem(INFLIGHT_STORAGE_KEY);
+    } catch {
+        // Storage unavailable; nothing durable to clear.
+    }
+}
+
+function readComposerDraft(conversationId: number): string {
+    try {
+        return window.localStorage.getItem(draftKey(conversationId)) || '';
+    } catch {
+        return '';
+    }
+}
+
+function writeComposerDraft(conversationId: number | null, text: string): void {
+    if (conversationId === null) return;
+    try {
+        if (text) {
+            window.localStorage.setItem(draftKey(conversationId), text);
+        } else {
+            window.localStorage.removeItem(draftKey(conversationId));
+        }
+    } catch {
+        // Storage unavailable; the draft stays memory-only.
+    }
 }
 
 function newId(): string {
@@ -233,6 +297,13 @@ const JobSearchChat: React.FC = () => {
 
     // Ref to the last submitted turn so Retry replays the same content + idempotency key.
     const lastSent = React.useRef<{content: string; key: string} | null>(null);
+    // Synchronous pending mirror so double clicks and concurrent retries cannot
+    // start a second in-flight turn (apply-once, client side; the server's
+    // 409 turn_in_progress is the backstop).
+    const pendingRef = React.useRef(false);
+    // Abort controller for the in-flight submission: stopping only stops the
+    // client's wait; the server may still complete and is reconciled via GET.
+    const abortRef = React.useRef<AbortController | null>(null);
     const statusRef = React.useRef<HTMLDivElement>(null);
     const historyRef = React.useRef<HTMLDivElement>(null);
 
@@ -447,6 +518,7 @@ const JobSearchChat: React.FC = () => {
                         if (cancelled) return;
                         setConversationId(createData.id);
                         setMessages(createData.messages);
+                        reconcileDurableState(createData);
                         setLoading(false);
                         composerRef.current?.focus();
                     } catch {
@@ -464,6 +536,7 @@ const JobSearchChat: React.FC = () => {
                 setConversationId(data.id);
                 setMessages(data.messages);
                 setPreferencesChanged(data.preferences_changed);
+                reconcileDurableState(data);
                 setLoading(false);
                 composerRef.current?.focus();
             })
@@ -489,6 +562,55 @@ const JobSearchChat: React.FC = () => {
 
     const isReady = conversationId !== null && !pending && !loading;
 
+    // Reconcile durable client state against the server after a (re)load:
+    // the server is the single source of truth. A recorded in-flight turn
+    // that the server knows adopts the server state (the reply may even have
+    // arrived late); one the server never received is restored as an unsent
+    // draft. Never overwrites a newer composer draft. Markers are keyed per
+    // conversation, so they are dropped on 404 instead of resurrecting a
+    // deleted/reset conversation.
+    const reconcileDurableState = (conversation: Conversation) => {
+        const marker = readInflightTurn();
+        if (marker && marker.conversationId === conversation.id) {
+            const known = conversation.messages.some(
+                (m) => m.role === 'user' && m.idempotency_key === marker.key,
+            );
+            clearInflightTurn();
+            if (!known && !input) {
+                // The server never received the request: keep the text as an
+                // unsent draft instead of a fake sent message.
+                setInput(marker.content);
+                writeComposerDraft(conversation.id, marker.content);
+            }
+        }
+        const draft = readComposerDraft(conversation.id);
+        if (draft && !input) {
+            setInput(draft);
+        }
+    };
+
+    // Re-fetch the conversation and adopt the server state: used after a 409
+    // (another tab is running the turn) and after a client-side stop, so a
+    // late completion or failure lands without waiting for a reload.
+    const reconcileWithServer = async (targetId: number) => {
+        try {
+            const res = await csrfFetch(`/api/agent/conversations/${targetId}/`);
+            if (res.status === 404) {
+                // The conversation was deleted/reset elsewhere; drop any
+                // marker for it rather than resurrecting it.
+                clearInflightTurn();
+                return;
+            }
+            if (!res.ok) return;
+            const data = (await res.json()) as Conversation;
+            setMessages(data.messages);
+            setPreferencesChanged(data.preferences_changed);
+            clearInflightTurn();
+        } catch {
+            // Network hiccup: the marker stays and the next load reconciles.
+        }
+    };
+
     const ensureConversation = async (createNew: boolean): Promise<number> => {
         const body = createNew ? {create_new: true} : {};
         const res = await csrfFetch('/api/agent/conversations/', {
@@ -505,13 +627,23 @@ const JobSearchChat: React.FC = () => {
     };
 
     const sendTurn = async (content: string, key: string) => {
-        if (!conversationId) return;
+        if (!conversationId || pendingRef.current) return;
+        pendingRef.current = true;
         setPending(true);
         setError(null);
         setErrorType(null);
         setRetrying(false);
 
-        // Optimistically append the user's turn so the UI reflects it immediately.
+        // Record the in-flight turn durably before the request resolves, so a
+        // reload/navigation during the wait cannot lose it (issue #458).
+        writeInflightTurn({conversationId, content, key});
+
+        // Optimistically reflect the user's turn: appended when this is a new
+        // turn; for a retry the persisted user message is already in history
+        // and is flipped back to pending in place instead.
+        const existingUser = messages.find(
+            (m) => m.role === 'user' && m.idempotency_key === key,
+        );
         const optimisticUser: ChatMessage = {
             id: -Date.now(),
             role: 'user',
@@ -519,13 +651,26 @@ const JobSearchChat: React.FC = () => {
             preferences_changed: false,
             created: new Date().toISOString(),
             results: null,
+            idempotency_key: key,
+            delivery_state: 'pending',
         };
-        setMessages((prev) => [...prev, optimisticUser]);
+        if (existingUser) {
+            // Retry of a persisted turn: it stays in place (still rendered as
+            // failed until the outcome lands); the global pending indicator
+            // shows the retry in flight.
+        } else {
+            setMessages((prev) => [...prev, optimisticUser]);
+        }
+        const shownUser = existingUser || optimisticUser;
+
+        const controller = new AbortController();
+        abortRef.current = controller;
 
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/`, {
                 method: 'POST',
                 body: JSON.stringify({content, idempotency_key: key}),
+                signal: controller.signal,
             });
             if (!res.ok) {
                 let serverMsg = `Request failed (${res.status})`;
@@ -539,25 +684,67 @@ const JobSearchChat: React.FC = () => {
                 } catch {
                     // non-JSON error; keep the generic message
                 }
+                if (serverType === 'turn_in_progress') {
+                    // Another request is already running this turn. Surface
+                    // the honest status and adopt the server state.
+                    setError(serverMsg);
+                    setErrorType(serverType);
+                    await reconcileWithServer(conversationId);
+                    return;
+                }
+                // The server persisted the user turn before failing (stable
+                // typed envelope): keep the question visible as a failed turn
+                // instead of rolling it back, so retry survives reload.
                 setErrorType(serverType || null);
-                throw new Error(serverMsg);
+                setError(serverMsg);
+                lastSent.current = {content, key};
+                setRetrying(true);
+                setMessages((prev) => prev.map(
+                    (m) => (m === shownUser
+                        ? {...m, delivery_state: 'failed'}
+                        : m),
+                ));
+                return;
             }
             const data = (await res.json()) as SubmitResponse;
-            // Keep the optimistic user turn; append the persisted assistant reply.
-            setMessages((prev) => [...prev, data.message]);
+            // Keep the (optimistic or retried) user turn, mark it completed,
+            // and append the persisted assistant reply. Filter by key so the
+            // retried turn is replaced exactly once wherever it lives.
+            setMessages((prev) => {
+                const base = prev.filter(
+                    (m) => !(m.role === 'user' && m.idempotency_key === key),
+                );
+                return [...base, {...shownUser, delivery_state: 'completed'}, data.message];
+            });
             if (data.preferences_changed) {
                 setPreferencesChanged(true);
                 setPrefDismissed(false);
             }
+            clearInflightTurn();
+            writeComposerDraft(conversationId, '');
             lastSent.current = null;
         } catch (e) {
-            // Roll back the optimistic user turn; the server persisted nothing we
-            // should double-render. Retry replays the same content + idempotency key.
-            setMessages((prev) => prev.filter((m) => m !== optimisticUser));
+            if (controller.signal.aborted) {
+                // Honest cancel semantics: stopping only stops the client's
+                // wait. The server may still complete; the durable marker
+                // stands and the state is reconciled on the next GET/reload.
+                setError('Stopped waiting. The response may still arrive; retry or reload to check.');
+                lastSent.current = {content, key};
+                setRetrying(true);
+                return;
+            }
+            // Network-level failure: unknown whether the server received the
+            // request. Keep the turn visible and the marker; reconciliation
+            // on the next load resolves which state is true.
             setError(e instanceof Error ? e.message : 'Something went wrong.');
             lastSent.current = {content, key};
             setRetrying(true);
+            setMessages((prev) => prev.map(
+                (m) => (m === shownUser ? {...m, delivery_state: 'failed'} : m),
+            ));
         } finally {
+            abortRef.current = null;
+            pendingRef.current = false;
             setPending(false);
             setInput('');
             // Defer refocus until React flushes the re-render (the submit button
@@ -571,6 +758,21 @@ const JobSearchChat: React.FC = () => {
         const content = input.trim();
         if (!content || !isReady) return;
         await sendTurn(content, newId());
+    };
+
+    const handleRetryMessage = async (message: ChatMessage) => {
+        if (!message.idempotency_key) return;
+        await sendTurn(message.content, message.idempotency_key);
+    };
+
+    const handleEditAsNew = (message: ChatMessage) => {
+        setInput(message.content);
+        writeComposerDraft(conversationId, message.content);
+        composerRef.current?.focus();
+    };
+
+    const handleStopWaiting = () => {
+        abortRef.current?.abort();
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -633,6 +835,8 @@ const JobSearchChat: React.FC = () => {
             setPreferencesChanged(false);
             setPrefDismissed(false);
             setError(null);
+            clearInflightTurn();
+            writeComposerDraft(conversationId, '');
             composerRef.current?.focus();
         } catch {
             setError('Could not reset the conversation.');
@@ -645,6 +849,8 @@ const JobSearchChat: React.FC = () => {
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/delete/`, {method: 'POST'});
             if (!res.ok) throw new Error('delete-failed');
+            clearInflightTurn();
+            writeComposerDraft(conversationId, '');
             setConversationId(null);
             setMessages([]);
             setPreferencesChanged(false);
@@ -722,18 +928,38 @@ const JobSearchChat: React.FC = () => {
                                 </p>
                             </div>
                         )}
-                            {messages.map((m) => (
-                                <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
-                                         className={`d-flex ${m.role === 'user' ? 'justify-content-end' : 'justify-content-start'} mb-2`}>
-                                    <div className={`rounded p-2 ${m.role === 'user' ? 'bg-primary' : 'bg-secondary'}`}
-                                         style={{maxWidth: '80%', whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>
-                                        {m.content}
-                                        {m.role === 'assistant' && m.results && (
-                                            <ResultCards results={m.results} />
-                                        )}
-                                    </div>
-                                </article>
-                            ))}
+                        {messages.map((m) => (
+                            <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
+                                     className={`d-flex ${m.role === 'user' ? 'justify-content-end' : 'justify-content-start'} mb-2`}>
+                                <div className={`rounded p-2 ${m.role === 'user' ? 'bg-primary' : 'bg-secondary'}`}
+                                     style={{maxWidth: '80%', whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>
+                                    {m.content}
+                                    {m.role === 'assistant' && m.results && (
+                                        <ResultCards results={m.results} />
+                                    )}
+                                    {m.role === 'user' && m.delivery_state === 'failed' && (
+                                        <div className="mt-1 pt-1 border-top border-light-subtle" data-testid="failed-turn">
+                                            <div className="small" role="status">
+                                                <i className="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>
+                                                Message saved; response unavailable.
+                                            </div>
+                                            <div className="btn-group btn-group-sm mt-1" role="group" aria-label="Failed turn actions">
+                                                <button type="button" className="btn btn-outline-light"
+                                                        onClick={() => handleRetryMessage(m)}
+                                                        aria-label="Retry response" data-testid="retry-response-button">
+                                                    Retry response
+                                                </button>
+                                                <button type="button" className="btn btn-outline-light"
+                                                        onClick={() => handleEditAsNew(m)}
+                                                        aria-label="Edit as new message" data-testid="edit-as-new-button">
+                                                    Edit as new message
+                                                </button>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </article>
+                        ))}
                         {pending && (
                             <div className="text-muted" role="status" aria-live="polite" data-testid="pending-status">
                                 <i className="fa-solid fa-spinner fa-spin me-1"></i>Assistant is typing…
@@ -771,7 +997,10 @@ const JobSearchChat: React.FC = () => {
                                 placeholder="Type your message…"
                                 aria-label="Message"
                                 value={input}
-                                onChange={(e) => setInput(e.target.value)}
+                                onChange={(e) => {
+                                    setInput(e.target.value);
+                                    writeComposerDraft(conversationId, e.target.value);
+                                }}
                                 onKeyDown={handleKeyDown}
                                 disabled={!conversationId || pending}
                                 autoComplete="off"
@@ -782,6 +1011,12 @@ const JobSearchChat: React.FC = () => {
                                     aria-label="Send message">
                                 <i className="fa-solid fa-paper-plane"></i>
                             </button>
+                            {pending && (
+                                <button type="button" className="btn btn-outline-secondary" onClick={handleStopWaiting}
+                                        aria-label="Stop waiting for response" data-testid="stop-button">
+                                    Stop
+                                </button>
+                            )}
                         </div>
                     </form>
                 </div>

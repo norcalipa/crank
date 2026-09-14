@@ -76,6 +76,43 @@ class JobSearchMessage(TimeStampedModel):
                   "persisted so history renders identically on reload.",
     )
 
+    class DeliveryState(models.TextChoices):
+        """Delivery state of a *user* turn (issue #458)."""
+
+        PENDING = "pending", _("Pending")
+        COMPLETED = "completed", _("Completed")
+        FAILED = "failed", _("Failed")
+
+    class FailureCode(models.TextChoices):
+        """Stable failure codes; mirror the transport's typed error envelope."""
+
+        ASSISTANT_UNAVAILABLE = "assistant_unavailable", _("Assistant unavailable")
+        PROVIDER_TIMEOUT = "provider_timeout", _("Provider timeout")
+        COST_LIMIT = "cost_limit", _("Cost limit")
+        INVALID_OUTPUT = "invalid_output", _("Invalid output")
+        SERVICE_ERROR = "service_error", _("Service error")
+        UNEXPECTED_ERROR = "unexpected_error", _("Unexpected error")
+
+    delivery_state = models.CharField(
+        max_length=16,
+        choices=DeliveryState.choices,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="Delivery state of a user turn: pending (in flight), completed "
+                  "(assistant reply exists), or failed. Rows written before this "
+                  "column existed are NULL and derive their state at read time "
+                  "from the presence of a matching assistant reply.",
+    )
+    failure_code = models.CharField(
+        max_length=32,
+        choices=FailureCode.choices,
+        blank=True,
+        default="",
+        help_text="Stable failure code recorded when a user turn ends failed; "
+                  "matches the typed error envelope's ``error.type``.",
+    )
+
     class Meta:
         app_label = "crank"
         ordering = ["created", "id"]
