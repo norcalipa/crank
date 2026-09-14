@@ -71,6 +71,18 @@ class IndexView(generic.ListView):
             return self.object_list
 
         def fetch_results():
+            # Active-read predicates mirror the single documented definition in
+            # crank.services.scores.active_score_summary_rows: only active score
+            # rows (cs.status = 1), of active score types (ct.status = 1),
+            # joined through active algorithm weights (cw.status = 1) -- an
+            # inactive weight row would otherwise duplicate the join and skew
+            # the weighted SUM. Raw SQL cannot call the ORM helper without a
+            # rewrite, so keep this predicate set in sync with it.
+            #
+            # Missing dimensions: profile_completeness counts active types
+            # with at least one active score (numerator) over ALL active
+            # types (denominator), so an active type with no active score
+            # counts as a missing dimension and completeness stays <= 100.
             query = '''
             SELECT id, name, type, rto_policy, funding_round, accelerated_vesting, avg_score, profile_completeness, RANK() OVER (ORDER BY avg_score desc) as ranking
             FROM (
@@ -84,16 +96,17 @@ class IndexView(generic.ListView):
                     JOIN crank_score AS cs ON co.id = cs.target_id
                     JOIN crank_scoretype AS ct ON cs.type_id = ct.id
                     JOIN crank_scorealgorithmweight AS cw ON cs.type_id = cw.type_id
-                    WHERE co.status = 1 AND cw.algorithm_id = %s
+                    WHERE co.status = 1 AND cs.status = 1 AND ct.status = 1 AND cw.status = 1 AND cw.algorithm_id = %s
                     GROUP BY co.id, co.name, co.type, co.rto_policy, co.funding_round, co.accelerated_vesting, cw.weight, ct.name
                 ) orgs
                 JOIN (
                     SELECT target_id, count(*) AS score_type_count
                     FROM (
-                        SELECT target_id, type_id, COUNT(type_id)
-                        FROM crank_score
-                        WHERE status = 1
-                        GROUP BY target_id, type_id
+                        SELECT cs2.target_id, cs2.type_id, COUNT(cs2.type_id)
+                        FROM crank_score AS cs2
+                        JOIN crank_scoretype AS ct2 ON cs2.type_id = ct2.id
+                        WHERE cs2.status = 1 AND ct2.status = 1
+                        GROUP BY cs2.target_id, cs2.type_id
                     ) score_counts
                     GROUP BY score_counts.target_id
                 ) score_types ON score_types.target_id = orgs.id

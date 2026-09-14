@@ -598,3 +598,104 @@ class ScoreCacheKeyTests(TestCase):
         score_services.invalidate_score_caches(self.target.id, None)
         for key in keys:
             self.assertIsNone(cache.get(key))
+
+
+@override_settings(
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "active-score-summary-tests",
+        }
+    }
+)
+class ActiveScoreSummaryRowsTests(TestCase):
+    """Read-side helper tests: active scores of active types only."""
+
+    def setUp(self):
+        self.source = Organization.objects.create(name="Source Org", gives_ratings=True)
+        self.target = Organization.objects.create(name="Target Org")
+        self.other_target = Organization.objects.create(name="Other Target")
+        self.type_a = ScoreType.objects.create(name="Culture")
+        self.type_b = ScoreType.objects.create(name="Compensation")
+        self.retired_type = ScoreType.objects.create(name="Legacy", status=0)
+
+    def _target_scores(self, **overrides):
+        defaults = {
+            "source": self.source,
+            "target": self.target,
+            "type": self.type_a,
+        }
+        defaults.update(overrides)
+        return Score.objects.create(**defaults)
+
+    def test_excludes_superseded_rows_and_inactive_types(self):
+        self._target_scores(score=1.0, status=0)  # superseded
+        self._target_scores(score=5.0)  # active replacement
+        self._target_scores(score=4.0, type=self.retired_type)  # retired type
+        rows = score_services.active_score_summary_rows(target_ids=[self.target.id])
+        self.assertEqual(
+            list(rows),
+            [{"target_id": self.target.id, "type__name": "Culture", "avg_score": 5.0}],
+        )
+
+    def test_multiple_active_scores_of_one_type_averaged(self):
+        self._target_scores(score=4.0)
+        # A second active row from a different source (the partial unique
+        # constraint allows only one active row per type/source/target).
+        other_source = Organization.objects.create(
+            name="Second Source", gives_ratings=True
+        )
+        self._target_scores(score=6.0, source=other_source)
+        rows = score_services.active_score_summary_rows(target_ids=[self.target.id])
+        self.assertEqual(rows[0]["avg_score"], 5.0)
+
+    def test_filters_by_target_ids(self):
+        self._target_scores(score=5.0)
+        Score.objects.create(
+            source=self.source, target=self.other_target, type=self.type_a, score=1.0
+        )
+        rows = score_services.active_score_summary_rows(target_ids=[self.target.id])
+        self.assertEqual([row["target_id"] for row in rows], [self.target.id])
+
+    def test_score_types_filter_restricts_to_named_active_types(self):
+        self._target_scores(score=5.0)
+        self._target_scores(score=2.0, type=self.type_b)
+        self._target_scores(score=3.0, type=self.retired_type)
+        rows = score_services.active_score_summary_rows(
+            target_ids=[self.target.id], score_types=["Compensation"]
+        )
+        self.assertEqual(
+            [row["type__name"] for row in rows], ["Compensation"]
+        )
+        self.assertEqual(rows[0]["avg_score"], 2.0)
+
+    def test_empty_score_set_yields_no_rows(self):
+        self.assertEqual(list(score_services.active_score_summary_rows()), [])
+        self.assertEqual(
+            list(score_services.active_score_summary_rows(target_ids=[self.target.id])),
+            [],
+        )
+
+    def test_replacement_through_write_path_recomputes_summary(self):
+        """Superseded-then-active recompute via the real persistence path."""
+        with self.captureOnCommitCallbacks(execute=True):
+            score_services.persist_score_observation(
+                source=self.source,
+                target=self.target,
+                score_type=self.type_a,
+                value=1.0,
+            )
+            result = score_services.persist_score_observation(
+                source=self.source,
+                target=self.target,
+                score_type=self.type_a,
+                value=5.0,
+            )
+        self.assertEqual(result.outcome, "changed")
+        self.assertEqual(self.target.scores.filter(status=1).count(), 1)
+        rows = score_services.active_score_summary_rows(target_ids=[self.target.id])
+        # The historical 1.0 must never average in: 5.0, not 3.0.
+        self.assertEqual(
+            list(rows),
+            [{"target_id": self.target.id, "type__name": "Culture", "avg_score": 5.0}],
+        )
