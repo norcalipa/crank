@@ -368,7 +368,7 @@ test.describe('company details dialog layering (issue #464) — mobile', () => {
         await expect(page.locator('.organization-card').first()).toBeFocused();
     });
 
-    test('background is inert and document scrolling is locked at mobile width', async ({page}) => {
+    test('background is inert and document scrolling is locked at mobile width', async ({page, browserName}) => {
         await page.goto(POPUP_FIXTURE);
 
         // Review r2: the mobile test previously checked only the computed
@@ -412,9 +412,17 @@ test.describe('company details dialog layering (issue #464) — mobile', () => {
         expect(state.overflow.body).toBe('hidden');
         expect(state.overflow.root).toBe('hidden');
 
-        await page.mouse.wheel(0, 600);
-        await page.waitForTimeout(100);
-        expect(await page.evaluate(() => window.scrollY), 'wheel over the backdrop must not move the document at mobile width').toBe(0);
+        // Review r3 follow-up: Playwright cannot dispatch a synthetic mouse
+        // wheel in mobile WebKit, so the wheel probe is Chromium/Firefox-only
+        // at this width — desktop WebKit still exercises the same
+        // wheel-over-backdrop scroll-chaining contract in the desktop test
+        // above. The lock itself stays asserted in every engine via the
+        // computed root/body overflow and the inert state above.
+        if (browserName !== 'webkit') {
+            await page.mouse.wheel(0, 600);
+            await page.waitForTimeout(100);
+            expect(await page.evaluate(() => window.scrollY), 'wheel over the backdrop must not move the document at mobile width').toBe(0);
+        }
 
         await page.keyboard.press('Escape');
         await expect(page.getByRole('dialog')).toHaveCount(0);
