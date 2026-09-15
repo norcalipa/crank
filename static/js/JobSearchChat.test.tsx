@@ -495,6 +495,78 @@ describe('JobSearchChat', () => {
             await screen.findByText('ok');
             expect(screen.queryByRole('alert')).not.toBeInTheDocument();
         });
+
+        test('recovers a conversation_closed turn onto the new active conversation with the same key (issue #487)', async () => {
+            await renderChat();
+            const mockFetch = global.fetch as jest.Mock;
+            mockFetch
+                .mockResolvedValueOnce(
+                    jsonResponse({
+                        error: {
+                            type: 'conversation_closed',
+                            message: 'This conversation was reset or deleted while the assistant was responding.',
+                            request_id: 'rid-409',
+                        },
+                    }, 409),
+                )
+                // Recovery: switch to the user's active conversation (the
+                // reset's fresh one, or a newly created one after delete).
+                .mockResolvedValueOnce(jsonResponse(emptyConversation(43)))
+                // The retained turn replays onto the new conversation.
+                .mockResolvedValueOnce(
+                    jsonResponse(
+                        {message: assistantMessage(8, 'Recovered reply.'), preferences_changed: false},
+                        201,
+                    ),
+                );
+
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'retained turn'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+
+            // The turn is retried transparently onto the fresh conversation:
+            // the reply arrives and no error is surfaced.
+            const reply = await screen.findByText('Recovered reply.');
+            expect(reply).toBeInTheDocument();
+            expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+
+            const originalPosts = mockFetch.mock.calls.filter(([url, init]) =>
+                String(url) === messageUrl() && init && (init as RequestInit).method === 'POST');
+            const retryPosts = mockFetch.mock.calls.filter(([url, init]) =>
+                String(url) === '/api/agent/conversations/43/' && init && (init as RequestInit).method === 'POST');
+            expect(originalPosts).toHaveLength(1);
+            expect(retryPosts).toHaveLength(1);
+            const firstBody = JSON.parse((originalPosts[0][1] as RequestInit).body as string);
+            const retryBody = JSON.parse((retryPosts[0][1] as RequestInit).body as string);
+            // Same retained turn: same content, same idempotency key.
+            expect(retryBody.idempotency_key).toBe(firstBody.idempotency_key);
+            expect(retryBody.content).toBe('retained turn');
+        });
+
+        test('surfaces the error when conversation_closed recovery fails', async () => {
+            await renderChat();
+            const mockFetch = global.fetch as jest.Mock;
+            mockFetch
+                .mockResolvedValueOnce(
+                    jsonResponse({
+                        error: {
+                            type: 'conversation_closed',
+                            message: 'This conversation was reset or deleted while the assistant was responding.',
+                            request_id: 'rid-409b',
+                        },
+                    }, 409),
+                )
+                .mockRejectedValueOnce(new Error('start-failed'));
+
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'unlucky turn'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+
+            const alert = await screen.findByRole('alert');
+            expect(alert).toHaveTextContent(
+                'This conversation was reset or deleted while the assistant was responding.',
+            );
+            // The manual Retry offer remains so the user can resend.
+            expect(screen.getByTestId('retry-button')).toBeInTheDocument();
+        });
     });
 
     describe('reset / delete controls', () => {

@@ -599,10 +599,19 @@ class OrchestratorJobSearchProvider:
         """Build the per-turn lifecycle guard for a persisted conversation.
 
         The guard is invoked by the orchestrator inside the same transaction
-        as the preference-patch write (issue #487 review, MAJOR-2): it locks the
-        conversation row — the same serialization boundary the reset/delete
-        endpoints use — and raises :class:`ConversationClosedError` when the
-        conversation was reset or deleted mid-turn, aborting the patch.
+        as the preference-patch write AND the reply persistence (issue #487
+        review, MAJOR-2; review round 2, MAJOR-1). It uses the repo's
+        **write-first conditional claim** — ``UPDATE ... WHERE pk AND owner
+        AND active=True`` — deliberately NOT ``select_for_update``: FOR
+        UPDATE is a no-op on SQLite (a bare read there cannot serialize with
+        a concurrent reset/delete and the later write fails the SHARED→
+        RESERVED upgrade with ``database is locked``), while the conditional
+        UPDATE takes the conversation row's write lock on every backend. This
+        is the same serialization boundary the reset/delete/create-new
+        endpoints and the reply-persist claim use, so a mid-turn lifecycle
+        change either commits before the claim — the claim matches no active
+        row and the turn aborts with :class:`ConversationClosedError` — or
+        blocks until the turn's single commit; it can never interleave.
 
         Returns ``None`` for non-persisted conversations (no ``JobSearchConversation``
         row, e.g. test doubles): without a row there is no lifecycle state to
@@ -618,12 +627,10 @@ class OrchestratorJobSearchProvider:
         owner_id = conversation.owner_id
 
         def _guard() -> None:
-            locked = (
-                JobSearchConversation.objects.select_for_update()
-                .filter(pk=pk, owner_id=owner_id, active=True)
-                .first()
-            )
-            if locked is None:
+            claimed = JobSearchConversation.objects.filter(
+                pk=pk, owner_id=owner_id, active=True
+            ).update(active=True)
+            if not claimed:
                 raise ConversationClosedError(
                     "conversation was reset or deleted while the "
                     "assistant was responding"
@@ -631,13 +638,17 @@ class OrchestratorJobSearchProvider:
 
         return _guard
 
-    def generate_reply(self, *, conversation, user_message):
+    def generate_reply(self, *, conversation, user_message, persist_reply=None):
         """Return ``(reply_text, preferences_changed, results)`` for a turn.
 
         Passes ``conversation.owner`` through to the orchestrator so saved
-        preferences are loaded and matches are preference-grounded. Raises
-        :class:`~crank.agents.job_search.demo.JobSearchServiceError` for
-        configuration errors so the view returns a friendly message.
+        preferences are loaded and matches are preference-grounded. When
+        ``persist_reply`` is given it is forwarded to the orchestrator and
+        invoked INSIDE the guarded commit transaction, so the lifecycle
+        guard's row claim, the preference patch, and the assistant reply
+        share one commit boundary (issue #487 review round 2, MAJOR-1).
+        Raises :class:`~crank.agents.job_search.demo.JobSearchServiceError`
+        for configuration errors so the view returns a friendly message.
         """
         user = self._resolve_user(conversation)
         orchestrator = self._ensure_orchestrator(user)
@@ -661,6 +672,7 @@ class OrchestratorJobSearchProvider:
                 preference_markdown=preference_markdown,
                 expected_modified=expected_modified,
                 lifecycle_guard=self._make_lifecycle_guard(conversation),
+                persist_reply=persist_reply,
             )
         except (ProviderError, ProviderTimeoutError, CostLimitError) as exc:
             logger.error(

@@ -132,15 +132,21 @@ lands — implemented-before-documented rule, per #463's registry).
   documented no-op returning `False` — may proceed without a baseline. Any
   other port without the capability defaults to being treated as a writer
   and fails closed.
-- **Lifecycle ordering (review round 2, MAJOR-2):** a proposed patch is
-  committed only after a per-turn **lifecycle guard** verifies the
-  conversation is still active **inside the same database transaction as the
-  preference write** (the guard locks the conversation row — the same
-  serialization boundary the reset/delete endpoints use). A reset or delete
-  landing mid-turn therefore aborts the patch (`ConversationClosedError` →
-  409 `conversation_closed`) before any preference change or reply is
-  persisted; a reset/delete committing after the patch transaction blocks on
-  the same row lock and is caught by the reply-persist guard below.
+- **Lifecycle ordering (review round 2, MAJOR-2; single-commit window closed
+  in the fix-verification round):** a proposed patch is committed only after
+  a per-turn **lifecycle guard** verifies the conversation is still active
+  **inside the same database transaction as the preference write**. The guard
+  uses the repo's write-first conditional claim (`UPDATE ... WHERE pk AND
+  owner AND active=True`) — deliberately not `select_for_update`, which is a
+  no-op on SQLite — so the claim takes the conversation row's write lock on
+  every backend. That claim, the patch write, and the reply persistence
+  share ONE commit boundary (see "Late replies" below): a mid-turn
+  reset/delete therefore either aborts the patch before the single commit
+  (`ConversationClosedError` → 409 `conversation_closed`, nothing persisted)
+  or blocks on the row lock until the whole turn commits. Backend lock
+  contention (SQLite single-writer fail-fast, MySQL lock-wait/deadlock) maps
+  to the same retryable 409 envelopes — `conversation_closed` for lifecycle
+  writes, `preference_stale` for the patch write — never a 500.
 - **Tests:** `crank/tests/views/test_job_search.py`
   (`StalePreferenceAndLateReplyTests` — stale 409 + no overwrite + retry,
   matching-version applies, adapter mapping, reset/delete-with-patch changing
@@ -190,29 +196,44 @@ lands — implemented-before-documented rule, per #463's registry).
 ### Late replies
 
 - **Status: implemented (this change; serialization boundary hardened in
-  review round 2).**
+  review round 2, and the guard→patch→reply window closed into a single
+  commit boundary in the fix-verification round, with the retry contract
+  made real).**
 - **Abuse case:** a slow/cancelled provider reply completing after the
   conversation was reset or deleted mid-turn — previously it could attach an
   assistant message to a closed conversation.
-- **Control:** `agent_conversation_detail` persists the assistant message in
-  ONE transactional step: it locks the conversation row
-  (`select_for_update`, owner-scoped, `active=True`), re-checks existence and
-  active state under that lock, inserts the assistant message, and re-verifies
-  active state inside the same transaction before commit — so even a
-  lifecycle flip landing between the locked read and the insert rolls the
-  insert back. The reset, delete, and fresh-conversation endpoints take the
-  **same conversation row lock** inside their own transactions, giving the
-  re-check + insert and the reset/delete writers a shared serialization
-  boundary: on locking backends a concurrent reset/delete either commits
-  before the locked re-check (reply discarded, stable **409
-  `conversation_closed`**) or blocks on the row lock until the insert commits —
-  it can never interleave between the two. On backends where FOR UPDATE is a
-  no-op (SQLite), the in-transaction re-verify still fails closed for any
-  lifecycle state visible inside the transaction, and a vanished conversation
-  row surfaces as an FK `IntegrityError` that is likewise mapped to the 409
-  with nothing persisted. Combined with the stale-patch guard and the patch
-  lifecycle guard, a late reply can neither reapply an obsolete preference
-  change nor attach to a dead conversation.
+- **Control:** the whole persistence tail of a turn — the lifecycle guard's
+  write-first conversation-row claim (`UPDATE ... WHERE pk AND owner AND
+  active=True`), the optional preference-patch write, and the assistant-
+  message insert — runs in **ONE database transaction** with a single commit
+  boundary (`OrchestratorJobSearchProvider` → orchestrator `_commit_turn_writes`
+  invoking the view's reply-persistence hook; issue #487 review round 2,
+  MAJOR-1). The claim is write-first, not `select_for_update`, so it takes
+  the conversation row's write lock on every backend including SQLite. The
+  reset, delete, and fresh-conversation endpoints use the **same write-first
+  claim** inside their own transactions, giving every lifecycle writer and
+  the guarded turn one shared serialization boundary: a reset/delete either
+  commits before the claim — the claim matches no active row and the whole
+  turn aborts with nothing persisted (stable **409 `conversation_closed`**)
+  — or it blocks on the row lock until the turn's single commit lands the
+  patch and the reply together, and only then closes the conversation; it
+  can never interleave between the patch write and the reply insert, so a
+  committed patch can never be stranded on a closed conversation. Inside the
+  transaction a re-verify fails closed if lifecycle state flips in-window,
+  and a vanished row surfaces as an FK `IntegrityError` — both discard the
+  whole turn (patch included) and map to the 409. On SQLite the single-
+  writer lock makes a contending lifecycle write fail fast with
+  `database is locked` (deadlock avoidance) rather than block; the lifecycle
+  endpoints therefore retry that transient contention in place (bounded),
+  and any residual contention maps to the retryable 409 envelopes — never a
+  500 (MAJOR-2 two-connection probe pinned).
+- **Retryability (issue #487):** a `conversation_closed` turn stays retryable
+  with the same idempotency key: the transport's Retry recovers by switching
+  to the user's active conversation — the reset's fresh one, or a newly
+  created one after delete — and replaying the retained user turn (same
+  content, same key) there. The original user row is retained on the closed
+  conversation; end-to-end retry-after-reset and retry-after-delete tests
+  prove the retained turn is recoverable and completes with a 201.
 
 ```mermaid
 sequenceDiagram
@@ -225,35 +246,41 @@ sequenceDiagram
     C->>V: POST message (idempotency_key)
     V->>DB: persist user turn (get_or_create)
     V->>DB: read preference snapshot + modified (ONE read, turn start)
-    V->>O: run_turn(expected_modified, lifecycle_guard)
+    V->>O: run_turn(expected_modified, lifecycle_guard, persist_reply)
     O->>P: complete(...)
     Note over P: slow reply in flight;<br/>concurrent user edit bumps preference version<br/>or resets/deletes the conversation
     P-->>O: reply with proposed patch
-    O->>DB: transaction: lock conversation row + apply_patch(expected_modified)
+    O->>DB: ONE transaction: write-first row claim + apply_patch(expected_modified) + insert reply
     alt preference changed mid-turn
         DB-->>O: StalePreferenceError (not applied)
         O-->>V: PreferenceStaleError
         V-->>C: 409 preference_stale (user turn retryable)
-    else conversation reset/deleted mid-turn
-        O-->>V: ConversationClosedError (patch + reply discarded)
+    else conversation reset/deleted before the claim (or in-window flip/vanish)
+        O-->>V: ConversationClosedError (patch + reply discarded, single rollback)
         V-->>C: 409 conversation_closed (nothing persisted)
+    else lock contention with a concurrent writer
+        O-->>V: ConversationClosedError / PreferenceStaleError (retryable)
+        V-->>C: 409 (user turn retryable; lifecycle endpoint retries in place)
     else version matches, conversation active
-        O-->>V: reply
-        V->>DB: transaction: lock conversation row, re-check active, insert, re-verify
-        alt conversation reset/deleted at or inside the persist window
-            V-->>C: 409 conversation_closed (no assistant message persisted)
-        else still active
-            V-->>C: 201 reply
-        end
+        O->>DB: COMMIT (patch + reply together, single boundary)
+        V-->>C: 201 reply; a reset blocked on the row lock lands after the commit
     end
 ```
 
 - **Tests:** `StalePreferenceAndLateReplyTests` (reset and delete mid-turn
   with a provider that mutates lifecycle state; preferences unchanged;
-  reset/delete landing between the locked re-check and the insert —
-  the insert is discarded and rolls back; retry works), plus the real
-  orchestrator/store integration tests covering reset/delete-with-proposed
-  patch (both persistence domains unchanged).
+  reset/delete landing between the locked re-check and the insert — the
+  insert is discarded and rolls back), `GuardedTurnCommitTests` (hook-path
+  patch+reply rolling back together, database-locked contention mapping to
+  the retryable 409 envelopes, end-to-end retry-after-reset and
+  retry-after-delete recovery of the retained turn with the same
+  idempotency key), and `GuardedTurnCommitConcurrencyTests` (two-connection
+  probes: reset landing between the guard claim and the patch write, and
+  after the patch write, both landing after the single commit with the turn
+  returning 201 — the reviewer's post-patch/pre-reply repro; plus a reset
+  fully completing before the claim yielding the 409 with nothing
+  persisted), plus the real orchestrator/store integration tests covering
+  reset/delete-with-proposed patch (both persistence domains unchanged).
 - **Residual risk:** the hard row-lock boundary exists on locking backends
   (MySQL/PostgreSQL); the opt-in MySQL variants below assert it under real
   concurrency, and SQLite CI runs assert the in-transaction re-verify

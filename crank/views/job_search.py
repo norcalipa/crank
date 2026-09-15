@@ -27,6 +27,7 @@ Behavior contract (mirrored by the test suite):
 """
 import json
 import logging
+import time
 import uuid
 
 from django.conf import settings
@@ -34,6 +35,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from django.http import JsonResponse
+from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
@@ -49,6 +51,7 @@ from crank.agents.job_search.demo import (
     ServicePreferenceVersionUnavailable,
     ServiceTimeout,
 )
+from crank.agents.job_search.errors import ConversationClosedError, is_database_locked
 from crank.models import JobSearchConversation, JobSearchMessage
 from crank.services import monitoring
 from crank.serializers.job_search import (
@@ -69,6 +72,50 @@ class _ReplyDiscarded(Exception):
     (including any just-inserted assistant message) rolls back; the view maps
     it to the stable 409 ``conversation_closed`` envelope.
     """
+
+
+def _results_json(results) -> str:
+    """Serialize structured results for persistence (bounded JSON)."""
+    if results is None:
+        return ""
+    try:
+        payload = json.dumps(results.to_json_dict(), separators=(",", ":"))
+        # Enforce a size cap to prevent unbounded persistence.
+        max_results_bytes = getattr(settings, "JOB_SEARCH_RESULTS_MAX_BYTES", 65536)
+        if len(payload.encode("utf-8")) > max_results_bytes:
+            logger.warning(
+                "results_json exceeds %d bytes, truncating", max_results_bytes
+            )
+            return ""
+        return payload
+    except Exception:
+        logger.error("failed to serialize results for persistence", exc_info=True)
+        return ""
+
+
+def _run_lifecycle_write(action):
+    """Run a lifecycle write, retrying transient backend lock contention.
+
+    Issue #487 review round 2 (MAJOR-2): the guarded turn section claims the
+    conversation row's write lock for the whole single-commit window, which is
+    milliseconds long. On SQLite the single-writer lock makes a concurrent
+    lifecycle write fail fast with ``OperationalError: database is locked``
+    (deadlock avoidance) instead of blocking; a short bounded retry then lands
+    the reset/delete after the turn commits — the documented "blocks until
+    commit" outcome — instead of surfacing a 500 to the user. On locking
+    backends (MySQL/PostgreSQL) the write simply blocks on the row lock and no
+    retry ever fires.
+    """
+    last_exc = None
+    for attempt in range(6):
+        try:
+            return action()
+        except Exception as exc:
+            if not is_database_locked(exc):
+                raise
+            last_exc = exc
+            time.sleep(0.25)
+    raise last_exc
 
 
 def _request_id(request):
@@ -206,14 +253,19 @@ def agent_conversation_list(request):
 
     # A fresh conversation is the new resume target: close any prior active
     # one under the shared late-reply serialization boundary (issue #487) —
-    # the row lock taken here is the same boundary
-    # ``agent_conversation_detail``'s persist step uses, so a reset can never
-    # interleave between that re-check and the assistant-message insert.
-    with transaction.atomic():
-        JobSearchConversation.objects.select_for_update().filter(
-            owner=request.user, active=True
-        ).update(active=False)
-        conversation = JobSearchConversation.objects.create(owner=request.user)
+    # the write-first conditional UPDATE takes the same conversation-row
+    # write lock ``agent_conversation_detail``'s guarded commit uses, so a
+    # reset can never interleave between that claim and the assistant-message
+    # insert. The bounded retry covers SQLite's single-writer fail-fast when
+    # a guarded turn holds the lock (issue #487 review round 2, MAJOR-2).
+    def _create_new_conversation():
+        with transaction.atomic():
+            JobSearchConversation.objects.filter(
+                owner=request.user, active=True
+            ).update(active=False)
+            return JobSearchConversation.objects.create(owner=request.user)
+
+    conversation = _run_lifecycle_write(_create_new_conversation)
     return JsonResponse(
         serialize_conversation(conversation),
         status=201,
@@ -293,10 +345,63 @@ def agent_conversation_detail(request, conversation_id):
             defaults={"content": message_text},
         )
 
+    # Guarded reply persistence (issue #487 review round 2, MAJOR-1): the
+    # hook below is invoked by the orchestrator INSIDE the same database
+    # transaction as the lifecycle guard's write-first row claim and the
+    # preference-patch write, so the patch and the assistant reply share ONE
+    # commit boundary. A reset/delete landing in the old post-patch/pre-reply
+    # window can no longer leave a committed patch on a closed conversation:
+    # it either blocks on the row lock until the single commit (then closes
+    # the conversation) or aborts the whole turn with nothing persisted (409
+    # ``conversation_closed``). The hook raises ConversationClosedError for
+    # both in-window discard paths; the transport maps it to the 409.
+    persisted: dict = {}
+
+    def _persist_reply(*, reply_text, results, preferences_changed):
+        try:
+            claimed = JobSearchConversation.objects.filter(
+                pk=conversation.pk, owner=request.user, active=True
+            ).update(active=True)
+            if not claimed:
+                # Reset or deleted mid-turn: attach nothing.
+                raise ConversationClosedError(
+                    "conversation was reset or deleted while the assistant "
+                    "was responding"
+                )
+            assistant_message, _created = JobSearchMessage.objects.get_or_create(
+                conversation=conversation,
+                idempotency_key=idempotency_key,
+                role=JobSearchMessage.Role.ASSISTANT,
+                defaults={
+                    "content": reply_text,
+                    "preferences_changed": preferences_changed,
+                    "results_json": _results_json(results),
+                },
+            )
+            if not JobSearchConversation.objects.filter(
+                pk=conversation.pk, owner=request.user, active=True
+            ).exists():
+                # Lifecycle state flipped inside the window: discard.
+                raise ConversationClosedError(
+                    "conversation was reset or deleted while the assistant "
+                    "was responding"
+                )
+        except IntegrityError:
+            # The conversation row vanished inside the guarded window
+            # (concurrent delete): the FK insert fails and nothing persists.
+            raise ConversationClosedError(
+                "conversation was reset or deleted while the assistant was "
+                "responding"
+            )
+        persisted["message"] = assistant_message
+        persisted["changed"] = preferences_changed
+
     try:
         service = JobSearchService()
         reply_text, changed, results = service.run_turn(
-            conversation=conversation, user_message=user_message.content
+            conversation=conversation,
+            user_message=user_message.content,
+            persist_reply=_persist_reply,
         )
     except AssistantUnavailable:
         monitoring.record_event("interactive_call", {
@@ -416,92 +521,85 @@ def agent_conversation_detail(request, conversation_id):
             request_id,
         )
 
-    # Serialize structured results for persistence (bounded JSON). Pure
-    # computation, kept outside the persistence transaction below.
-    results_json_str = ""
-    if results is not None:
+    if persisted.get("message") is not None:
+        # Guarded hook path: the orchestrator's single transaction already
+        # persisted the reply together with any preference patch (one commit
+        # boundary, issue #487 review round 2, MAJOR-1).
+        assistant_message = persisted["message"]
+    else:
+        # Legacy provider without the guarded-persistence hook (demo path):
+        # persist here in a self-contained transaction as before.
+        #
+        # Late-reply lifecycle guard (issue #487): the conversation may have
+        # been reset (active=False) or deleted by a concurrent request while
+        # the turn was in flight. The re-check and the assistant-message
+        # insert are ONE transactional step using an atomic conditional-
+        # persistence scheme: a **write-first conditional claim** —
+        # ``UPDATE ... WHERE active=True`` — takes the conversation row's
+        # write lock on every backend (including SQLite, where FOR UPDATE is
+        # a no-op and a read-first transaction fails the SHARED->RESERVED
+        # upgrade under concurrent writers). The claim and the
+        # reset/delete/create-new endpoints therefore share one serialization
+        # boundary: a concurrent reset/delete either commits before the claim
+        # — it matches no active row and the reply is discarded — or blocks on
+        # the row's write lock until the insert commits; it can never
+        # interleave between the two. The in-transaction re-verify below
+        # fails closed if the row went inactive inside the window; a vanished
+        # row surfaces as an FK IntegrityError — both roll the insert back
+        # and map to the stable 409.
+        results_json_str = _results_json(results)
         try:
-            import json as _json
-            results_json_str = _json.dumps(results.to_json_dict(), separators=(",", ":"))
-            # Enforce a size cap to prevent unbounded persistence.
-            max_results_bytes = getattr(settings, "JOB_SEARCH_RESULTS_MAX_BYTES", 65536)
-            if len(results_json_str.encode("utf-8")) > max_results_bytes:
-                logger.warning(
-                    "results_json exceeds %d bytes, truncating",
-                    max_results_bytes,
+            with transaction.atomic():
+                claimed = JobSearchConversation.objects.filter(
+                    pk=conversation.pk, owner=request.user, active=True
+                ).update(active=True)
+                if not claimed:
+                    # Reset or deleted mid-turn: attach nothing.
+                    raise _ReplyDiscarded()
+                assistant_message, _created = JobSearchMessage.objects.get_or_create(
+                    conversation=conversation,
+                    idempotency_key=idempotency_key,
+                    role=JobSearchMessage.Role.ASSISTANT,
+                    defaults={
+                        "content": reply_text,
+                        "preferences_changed": changed,
+                        "results_json": results_json_str,
+                    },
                 )
-                results_json_str = ""
-        except Exception:
-            logger.error("failed to serialize results for persistence", exc_info=True)
-            results_json_str = ""
-
-    # Late-reply lifecycle guard (issue #487): the conversation may have been
-    # reset (active=False) or deleted by a concurrent request while the turn
-    # was in flight. The re-check and the assistant-message insert are ONE
-    # transactional step using an atomic conditional-persistence scheme: a
-    # **write-first conditional claim** — ``UPDATE ... WHERE active=True`` —
-    # takes the conversation row's write lock on every backend (including
-    # SQLite, where FOR UPDATE is a no-op and a read-first transaction fails
-    # the SHARED->RESERVED upgrade under concurrent writers). The claim and
-    # the reset/delete/create-new endpoints therefore share one serialization
-    # boundary: a concurrent reset/delete either commits before the claim —
-    # it matches no active row and the reply is discarded — or blocks on the
-    # row's write lock until the insert commits; it can never interleave
-    # between the two. The in-transaction re-verify below fails closed if the
-    # row went inactive inside the window; a vanished row surfaces as an FK
-    # IntegrityError — both roll the insert back and map to the stable 409.
-    try:
-        with transaction.atomic():
-            claimed = JobSearchConversation.objects.filter(
-                pk=conversation.pk, owner=request.user, active=True
-            ).update(active=True)
-            if not claimed:
-                # Reset or deleted mid-turn: attach nothing.
-                raise _ReplyDiscarded()
-            assistant_message, _created = JobSearchMessage.objects.get_or_create(
-                conversation=conversation,
-                idempotency_key=idempotency_key,
-                role=JobSearchMessage.Role.ASSISTANT,
-                defaults={
-                    "content": reply_text,
-                    "preferences_changed": changed,
-                    "results_json": results_json_str,
-                },
+                if not JobSearchConversation.objects.filter(
+                    pk=conversation.pk, owner=request.user, active=True
+                ).exists():
+                    # Lifecycle state flipped inside the window: discard.
+                    raise _ReplyDiscarded()
+        except _ReplyDiscarded:
+            monitoring.record_event("interactive_call", {
+                "status": "error",
+                "reason_code": "conversation_closed",
+                "correlation_id": request_id,
+            })
+            return _error(
+                request, 409, "conversation_closed",
+                "This conversation was reset or deleted while the assistant was "
+                "responding.",
+                request_id,
             )
-            if not JobSearchConversation.objects.filter(
-                pk=conversation.pk, owner=request.user, active=True
-            ).exists():
-                # Lifecycle state flipped inside the window: discard.
-                raise _ReplyDiscarded()
-    except _ReplyDiscarded:
-        monitoring.record_event("interactive_call", {
-            "status": "error",
-            "reason_code": "conversation_closed",
-            "correlation_id": request_id,
-        })
-        return _error(
-            request, 409, "conversation_closed",
-            "This conversation was reset or deleted while the assistant was "
-            "responding.",
-            request_id,
-        )
-    except IntegrityError:
-        # The conversation row vanished (concurrent delete) between the locked
-        # re-check and the insert; the FK insert fails and nothing persists.
-        logger.info(
-            "job_search assistant insert failed: conversation closed mid-persist"
-        )
-        monitoring.record_event("interactive_call", {
-            "status": "error",
-            "reason_code": "conversation_closed",
-            "correlation_id": request_id,
-        })
-        return _error(
-            request, 409, "conversation_closed",
-            "This conversation was reset or deleted while the assistant was "
-            "responding.",
-            request_id,
-        )
+        except IntegrityError:
+            # The conversation row vanished (concurrent delete) between the locked
+            # re-check and the insert; the FK insert fails and nothing persists.
+            logger.info(
+                "job_search assistant insert failed: conversation closed mid-persist"
+            )
+            monitoring.record_event("interactive_call", {
+                "status": "error",
+                "reason_code": "conversation_closed",
+                "correlation_id": request_id,
+            })
+            return _error(
+                request, 409, "conversation_closed",
+                "This conversation was reset or deleted while the assistant was "
+                "responding.",
+                request_id,
+            )
 
     # Helpfulness-gap telemetry (issue #397): size conversations that keep
     # engaging the assistant but never produce a result card. Scalar counts
@@ -568,28 +666,33 @@ def agent_conversation_export(request, conversation_id):
 def agent_conversation_reset(request, conversation_id):
     """Close the current conversation and start a fresh one (fresh history)."""
     request_id = _request_id(request)
-    # Share the late-reply serialization boundary (issue #487): the row lock
-    # taken here is the same one ``agent_conversation_detail``'s persist step
-    # takes, so a reset can never interleave between that re-check and the
-    # assistant-message insert on backends with FOR UPDATE.
-    new_conversation = None
-    with transaction.atomic():
-        conversation = (
-            JobSearchConversation.objects.select_for_update()
-            .filter(pk=conversation_id, owner=request.user, active=True)
-            .first()
-        )
-        if conversation is not None:
-            conversation.active = False
-            conversation.save(update_fields=["active", "modified"])
-            new_conversation = JobSearchConversation.objects.create(owner=request.user)
-    if conversation is None:
+    # Share the late-reply serialization boundary (issue #487): the
+    # write-first conditional UPDATE takes the same conversation-row write
+    # lock ``agent_conversation_detail``'s guarded commit uses, so a reset
+    # either commits before that claim (the reply is discarded with a 409) or
+    # lands after the turn's single commit — it can never interleave. The
+    # bounded retry covers SQLite's single-writer fail-fast while a guarded
+    # turn holds the lock (issue #487 review round 2, MAJOR-2).
+    outcome: dict = {"conversation": None}
+
+    def _reset():
+        with transaction.atomic():
+            claimed = JobSearchConversation.objects.filter(
+                pk=conversation_id, owner=request.user, active=True
+            ).update(active=False, modified=timezone.now())
+            if claimed:
+                outcome["conversation"] = JobSearchConversation.objects.create(
+                    owner=request.user
+                )
+
+    _run_lifecycle_write(_reset)
+    if outcome["conversation"] is None:
         return _error(
             request, 404, "not_found",
             "Conversation not found or not owned by this user.", request_id,
         )
     return JsonResponse(
-        serialize_conversation(new_conversation),
+        serialize_conversation(outcome["conversation"]),
         status=201,
         headers={"X-Request-ID": request_id},
     )
@@ -600,22 +703,25 @@ def agent_conversation_reset(request, conversation_id):
 def agent_conversation_delete(request, conversation_id):
     """Permanently delete the user's conversation and its messages."""
     request_id = _request_id(request)
-    # Share the late-reply serialization boundary (issue #487): the row lock
-    # taken here is the same one ``agent_conversation_detail``'s persist step
-    # takes, so a delete can never interleave between that re-check and the
-    # assistant-message insert on backends with FOR UPDATE.
-    deleted = False
-    with transaction.atomic():
-        conversation = (
-            JobSearchConversation.objects.select_for_update()
-            .filter(pk=conversation_id, owner=request.user)
-            .first()
-        )
-        if conversation is not None:
-            conversation.messages.all().delete()
-            conversation.delete()
-            deleted = True
-    if not deleted:
+    # Share the late-reply serialization boundary (issue #487): the
+    # write-first DELETE takes the same conversation-row write lock the
+    # guarded commit uses; the bounded retry covers SQLite's single-writer
+    # fail-fast while a guarded turn holds the lock (issue #487 review round
+    # 2, MAJOR-2).
+    outcome: dict = {"deleted": False}
+
+    def _delete():
+        with transaction.atomic():
+            conversation = JobSearchConversation.objects.filter(
+                pk=conversation_id, owner=request.user
+            ).first()
+            if conversation is not None:
+                conversation.messages.all().delete()
+                conversation.delete()
+                outcome["deleted"] = True
+
+    _run_lifecycle_write(_delete)
+    if not outcome["deleted"]:
         return _error(
             request, 404, "not_found",
             "Conversation not found or not owned by this user.", request_id,

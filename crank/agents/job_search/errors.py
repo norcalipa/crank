@@ -75,6 +75,31 @@ class ConversationClosedError(JobSearchError):
     """
 
 
+def is_database_locked(exc: BaseException) -> bool:
+    """Return True for transient backend lock-contention errors.
+
+    Issue #487 review round 2 (MAJOR-2): on SQLite the guarded turn section
+    and a concurrent lifecycle writer serialize at the single-writer lock;
+    SQLite's deadlock avoidance fails one side fast with
+    ``OperationalError: database is locked`` (MySQL equivalents: lock-wait
+    timeout, deadlock detected). These are transient and retryable — the
+    guarded turn maps them to the stable retryable 409 envelopes instead of
+    a 500, and the lifecycle endpoints retry them in place.
+    """
+    try:
+        from django.db import OperationalError
+    except Exception:  # pragma: no cover - Django always available at runtime
+        return False
+    if not isinstance(exc, OperationalError):
+        return False
+    text = str(exc).lower()
+    return (
+        "locked" in text
+        or "lock wait timeout" in text
+        or "deadlock" in text
+    )
+
+
 class InvalidScoreSummaryRowError(JobSearchError):
     """A score-summary datasource returned a malformed/untyped row.
 

@@ -504,12 +504,19 @@ const JobSearchChat: React.FC = () => {
         return data.id;
     };
 
-    const sendTurn = async (content: string, key: string) => {
-        if (!conversationId) return;
+    const sendTurn = async (
+        content: string,
+        key: string,
+        opts?: {conversationId?: number | null; retriedAfterClose?: boolean},
+    ) => {
+        const convId = opts && 'conversationId' in opts ? opts.conversationId : conversationId;
+        if (convId == null) return;
         setPending(true);
         setError(null);
         setErrorType(null);
         setRetrying(false);
+        let errType: string | null = null;
+        let errMsg = `Request failed`;
 
         // Optimistically append the user's turn so the UI reflects it immediately.
         const optimisticUser: ChatMessage = {
@@ -523,24 +530,23 @@ const JobSearchChat: React.FC = () => {
         setMessages((prev) => [...prev, optimisticUser]);
 
         try {
-            const res = await csrfFetch(`/api/agent/conversations/${conversationId}/`, {
+            const res = await csrfFetch(`/api/agent/conversations/${convId}/`, {
                 method: 'POST',
                 body: JSON.stringify({content, idempotency_key: key}),
             });
             if (!res.ok) {
-                let serverMsg = `Request failed (${res.status})`;
-                let serverType: string | undefined;
+                errMsg = `Request failed (${res.status})`;
                 try {
                     const body = (await res.json()) as ApiError;
                     if (body.error) {
-                        if (body.error.message) serverMsg = body.error.message;
-                        if (body.error.type) serverType = body.error.type;
+                        if (body.error.message) errMsg = body.error.message;
+                        if (body.error.type) errType = body.error.type;
                     }
                 } catch {
                     // non-JSON error; keep the generic message
                 }
-                setErrorType(serverType || null);
-                throw new Error(serverMsg);
+                setErrorType(errType);
+                throw new Error(errMsg);
             }
             const data = (await res.json()) as SubmitResponse;
             // Keep the optimistic user turn; append the persisted assistant reply.
@@ -554,6 +560,24 @@ const JobSearchChat: React.FC = () => {
             // Roll back the optimistic user turn; the server persisted nothing we
             // should double-render. Retry replays the same content + idempotency key.
             setMessages((prev) => prev.filter((m) => m !== optimisticUser));
+            // conversation_closed (issue #487): the conversation was reset or
+            // deleted while the turn was in flight, but the user turn stays
+            // retryable with the SAME idempotency key. Recover by switching to
+            // the user's active conversation — the reset's fresh one, or a
+            // newly created one after delete — and replaying the retained turn
+            // there exactly once.
+            if (errType === 'conversation_closed' && !opts?.retriedAfterClose) {
+                try {
+                    const newId = await ensureConversation(false);
+                    await sendTurn(content, key, {
+                        conversationId: newId,
+                        retriedAfterClose: true,
+                    });
+                    return;
+                } catch {
+                    // Recovery failed; surface the original error below.
+                }
+            }
             setError(e instanceof Error ? e.message : 'Something went wrong.');
             lastSent.current = {content, key};
             setRetrying(true);

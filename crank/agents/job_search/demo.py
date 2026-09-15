@@ -204,17 +204,40 @@ class JobSearchService:
     def __init__(self, provider=None):
         self.provider = provider or _build_provider()
 
-    def run_turn(self, *, conversation, user_message):
+    def run_turn(self, *, conversation, user_message, persist_reply=None):
         """Run one turn; returns ``(reply_text, preferences_changed, results)``.
 
         ``results`` is an optional :class:`StructuredResults` (or ``None``).
+        ``persist_reply``, when given, is forwarded to the provider so the
+        assistant reply is persisted INSIDE the same database transaction as
+        the lifecycle guard's row claim and the preference patch (issue #487
+        review round 2, MAJOR-1) — one commit boundary for the whole turn.
+        Providers whose ``generate_reply`` does not accept the hook (legacy
+        or demo providers) are called without it, and the view persists the
+        reply itself in a self-contained transaction as before.
+
         Raises :class:`JobSearchServiceError` when the provider fails so the
         view can return a stable 500 without persisting a duplicate message.
         """
         try:
-            reply_text, changed, results = self.provider.generate_reply(
-                conversation=conversation, user_message=user_message
+            import inspect
+
+            params = inspect.signature(self.provider.generate_reply).parameters
+            accepts_hook = "persist_reply" in params or any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
             )
+            if accepts_hook:
+                reply_text, changed, results = self.provider.generate_reply(
+                    conversation=conversation,
+                    user_message=user_message,
+                    persist_reply=persist_reply,
+                )
+            else:
+                # Legacy provider signature: no guarded persistence hook; the
+                # view's post-turn transaction handles the reply.
+                reply_text, changed, results = self.provider.generate_reply(
+                    conversation=conversation, user_message=user_message
+                )
         except JobSearchServiceError:
             # Already a typed service error (e.g. from generate_reply);
             # let it propagate without re-wrapping.
