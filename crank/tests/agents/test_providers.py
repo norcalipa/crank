@@ -948,6 +948,53 @@ class JobSearchServiceOrchestratorTests(TestCase):
                 type(_build_provider()).__name__, "DemoJobSearchProvider"
             )
 
+    # -- MAJOR-1 (adversarial review): the failure hook must be inert outside dev --
+
+    @override_settings(
+        JOB_SEARCH_PROVIDER="orchestrator",
+        LLM_PROVIDER="crank.agents.llm:FakeLLMProvider",
+        INTERACTIVE_AGENT_ENABLED=True,
+        ENV="prod",
+    )
+    def test_e2e_failure_hook_inert_in_prod_with_env_var_set(self):
+        """MAJOR-1: a stray CRANK_E2E_PROVIDER_FAILURE=1 in production must
+        NOT force an outage — a fully configured orchestrator provider builds
+        normally, proving the hook never runs outside dev."""
+        from crank.agents.job_search.demo import _build_provider
+        with patch.dict("os.environ", {"CRANK_E2E_PROVIDER_FAILURE": "1"}):
+            self.assertIsInstance(
+                _build_provider(), OrchestratorJobSearchProvider
+            )
+
+    @override_settings(
+        JOB_SEARCH_PROVIDER="orchestrator",
+        LLM_PROVIDER="crank.agents.llm:FakeLLMProvider",
+        INTERACTIVE_AGENT_ENABLED=True,
+        ENV="staging",
+    )
+    def test_e2e_failure_hook_inert_in_staging_with_env_var_set(self):
+        """MAJOR-1: same proof for staging — the env var cannot force an
+        outage there either."""
+        from crank.agents.job_search.demo import _build_provider
+        with patch.dict("os.environ", {"CRANK_E2E_PROVIDER_FAILURE": "1"}):
+            self.assertIsInstance(
+                _build_provider(), OrchestratorJobSearchProvider
+            )
+
+    @override_settings(JOB_SEARCH_PROVIDER="demo", ENV="prod")
+    def test_e2e_failure_hook_does_not_shadow_prod_disable(self):
+        """MAJOR-1: in prod on the demo path, the disable is the ordinary
+        non-dev refusal — the raised message is the prod-disable text, not the
+        hook's outage text, proving the hook branch did not run."""
+        from crank.agents.job_search.demo import AssistantUnavailable, _build_provider
+        with patch.dict("os.environ", {"CRANK_E2E_PROVIDER_FAILURE": "1"}):
+            with self.assertRaises(AssistantUnavailable) as ctx:
+                _build_provider()
+        self.assertIn(
+            "The job-search assistant is not available", str(ctx.exception)
+        )
+        self.assertNotIn("right now", str(ctx.exception))
+
     def test_demo_echo_reply_is_rejected_by_service(self):
         """Anti-echo guard applies to the configured demo path (issue #423)."""
         from crank.agents.job_search.demo import (

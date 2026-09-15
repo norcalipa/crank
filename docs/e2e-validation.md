@@ -32,42 +32,67 @@ localhost:6379.
 | Command | Result |
 | --- | --- |
 | `npx webpack` | compiled successfully (webpack 5.95.0, both `main` and `jobsearch`/`jobmatch` bundles) |
-| `npx playwright test --config=playwright.django.config.ts --project=chromium` | **32 passed, 8 skipped (35.3s)** — every skip carries an explicit named reason (pending #500/#496/#471/#464 merges, outage-pass-only, capture-pass-only) |
-| `CRANK_E2E_PROVIDER_FAILURE=1 npx playwright test --config=playwright.django.config.ts --project=chromium --grep '@outage'` | **1 passed, 1 skipped (9.5s)** — the server-persistence assertion passes against the real outage server (stable `AssistantUnavailable` via the env-gated hook); the retry-flow assertion stays skipped pending #496 |
-| `npx playwright test` (fixture tier, unchanged) | chromium + firefox: **93 passed, 0 failed**; 130 skipped (all named-reason skips: Django-tier specs collected by the fixture config, outage-pass-only, pending-ticket, Chromium-only zoom). The 44 webkit "failures" in this local run are `browserType.launch` environment errors (host missing system libraries for WebKit); they are unrelated to this change — the fixture tier's files are untouched by this branch |
+| `npx playwright test --config=playwright.django.config.ts --project=chromium --grep-invert '@outage'` | **32 passed, 12 skipped (40.3s)** — every skip carries an explicit named reason (pending #500/#496/#471/#464 merges, the eight AC7 ticket-owned skips, capture-pass-only) |
+| `CRANK_E2E_PROVIDER_FAILURE=1 npx playwright test --config=playwright.django.config.ts --project=chromium --grep '@outage'` | **1 passed, 3 skipped (8.6s)** — the server-persistence assertion passes against the real outage server (stable `AssistantUnavailable` via the env-gated, **dev-only** hook); the cancel/direct-edit and retry-flow assertions stay skipped pending #496/#501 |
+| `npx playwright test --project=chromium` (fixture tier, unchanged files) | **49 passed, 0 failed**; 48 skipped (all named-reason skips: Django-tier specs collected by the fixture config, including the 8 new AC7 specs). Full-run webkit `browserType.launch` errors remain host environment issues (missing system libraries for WebKit), unrelated to this branch |
 | `npx jest` | **180 passed (7 suites)** |
-| `ENV=dev DJANGO_SETTINGS_MODULE=crank.settings SECRET_KEY=… REDIS_MASTER_URL=redis://localhost:6379/0 python3 -m pytest -q` | **1886 passed, 36 subtests passed in 164.84s** |
+| `ENV=dev DJANGO_SETTINGS_MODULE=crank.settings SECRET_KEY=… REDIS_MASTER_URL=redis://localhost:6379/0 python3 -m pytest -q` | **1891 passed, 36 subtests passed in 169.17s** (review-round delta: +5 — two seeder determinism tests, three provider-hook inertness tests) |
+| `.github/workflows/playwright-django.yml` YAML lint | `pull_request` trigger mirrors `push` paths exactly (parsed + asserted via PyYAML `safe_load`) |
 | `git diff --check` | clean |
 | trailing-newline / license-header check on all new files | clean |
 
 New backend tests introduced by this branch (subset of the pytest run):
 `crank/tests/management/test_seed_e2e.py` (dev guard for prod/staging, bounded dataset
-shape, idempotency, password rotation, bounded secret-free summary) and
-`crank/tests/agents/test_providers.py` #491 cases (hook default-off, exact-value
-arming, fires before provider selection, non-`1` values inert).
+shape, idempotency, rerun-twice identical state, deliberate-drift repair, password
+rotation, bounded secret-free summary) and `crank/tests/agents/test_providers.py`
+#491 cases (hook default-off, exact-value arming, fires before provider selection,
+non-`1` values inert, and **prod/staging inertness**: with the env var set, a fully
+configured orchestrator still builds in prod/staging and the demo path raises the
+ordinary non-dev disable message — the hook branch never runs outside dev).
 
 ## CI
 
 `.github/workflows/playwright-django.yml` runs the same two passes on
 `ubuntu-latest` (Node 20 / Python 3.12 / Redis service): normal pass with
 `--grep-invert '@outage'`, then `CRANK_E2E_PROVIDER_FAILURE=1 --grep '@outage'`, then a
-best-effort sanitized-capture pass. Artifacts: `playwright-report/` (on failure) and
+best-effort sanitized-capture pass. It is triggered both by pushes to `main`
+and by **pull requests targeting `main`** (same path filter), so the Django tier
+is an actual PR merge gate — a regression in these files cannot merge before
+the workflow executes. Artifacts: `playwright-report/` (on failure) and
 `e2e/artifacts/captures/` (always).
 
 ## Skip ledger (named, greppable)
 
-| Surface | Reason | Where |
-| --- | --- | --- |
-| #500 dialog z-order vs nav rail/toggle | `pending #500 merge: the dialog paints under the nav rail…` | `e2e/django/regression.spec.ts` |
-| #496 failed-turn immediate-visibility + Retry | `pending #496 merge: the optimistic turn is rolled back on failure…` | `e2e/django/regression.spec.ts` |
-| #471/#477 assistant sidebar open/closed | `pending #471 merge: the desktop assistant sidebar…` | `e2e/django/viewport-zoom.spec.ts` |
-| #464 SuggestCompanyModal Escape hardening | `pending #464 merge: SuggestCompanyModal Escape/focus-return hardening…` | `e2e/django/a11y-keyboard.spec.ts` |
-| Non-outage pass outage specs | `provider-outage pass only: run with CRANK_E2E_PROVIDER_FAILURE=1…` | `e2e/django/regression.spec.ts` |
-| Fixture-tier collection of Django specs | `Django tier only: requires the seeded Django server…` | `e2e/django/support.ts` (`requireDjangoTier`) |
-| Non-Chromium zoom matrix | `CSS zoom emulation is Chromium-only` | `e2e/django/viewport-zoom.spec.ts` |
-| Capture pass in normal runs | `evidence capture pass only: set PW_CAPTURE_DIR…` | `e2e/django/captures.spec.ts` |
+Every skip names its owning ticket. Tickets with an in-flight PR carry that PR's
+number (review-disposition round: PRs #496, #497, #500, #501, #502, #503, #504);
+#471 (shared request form) and #490 (comparison) are owning tickets whose PRs have
+not been opened yet. **Unskip mechanism:** each skip is a single
+`pendingTicketMerge(ticket, …)` call in the spec file listed below — delete that
+call when the owning PR merges and the executable assertions turn on. The
+implementation behind every skip is already written; nothing passes silently.
 
-Each skip text names its owning ticket so it can be deleted when that ticket merges.
+| Surface | Owning ticket / PR | Reason (greppable) | Where |
+| --- | --- | --- | --- |
+| #500 dialog z-order vs nav rail/toggle | #500 | `pending #500 merge: the dialog paints under the nav rail…` | `e2e/django/regression.spec.ts` |
+| #496 failed-turn immediate-visibility + Retry | #496 | `pending #496 merge: the optimistic turn is rolled back on failure…` | `e2e/django/regression.spec.ts` |
+| #471/#477 assistant sidebar open/closed | #471 | `pending #471 merge: the desktop assistant sidebar…` | `e2e/django/viewport-zoom.spec.ts` |
+| #464 SuggestCompanyModal Escape hardening | #500 (fixes #464) | `pending #464 merge: SuggestCompanyModal Escape/focus-return hardening…` | `e2e/django/a11y-keyboard.spec.ts` |
+| AC7: failed-turn cancel | #496 | `pending #496 merge: cancel/delivery-state actions ship with #496…` | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: direct preference editing during outage | #501 | `pending #501 merge: the direct editor's typed-action fail-closed…` | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: shared request form from every Suggest action | #471 (PR pending) | `pending #471 merge: the shared company-request form…` | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: company comparison vs saved priorities | #490 (PR pending) | `pending #490 merge: the 2–4 company comparison surface…` | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: jobs availability states (unavailable/partial/zero) | #502 | `pending #502 merge: inventory-unavailability explanations…` | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: availability exposed before submission | #503 | `pending #503 merge: pre-submission availability disclosure…` | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: ingestion outcome visibility (queued runs) | #497 | `pending #497 merge: single-owner ingestion with queued-run consumption…` | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: update-revision race (post-commit cache) | #504 | `pending #504 merge: post-commit cache invalidation / update-revision visibility…` | `e2e/django/ac7-surfaces.spec.ts` |
+| Non-outage pass outage specs | — | `provider-outage pass only: run with CRANK_E2E_PROVIDER_FAILURE=1…` | `e2e/django/regression.spec.ts`, `e2e/django/ac7-surfaces.spec.ts` |
+| Fixture-tier collection of Django specs | — | `Django tier only: requires the seeded Django server…` | `e2e/django/support.ts` (`requireDjangoTier`) |
+| Capture pass in normal runs | — | `evidence capture pass only: set PW_CAPTURE_DIR…` | `e2e/django/captures.spec.ts` |
+
+The zoom scenarios are no longer skipped for non-Chromium browsers: the 200%
+text-zoom scenario uses root font-size scaling and the 400% browser-zoom
+scenario uses a dedicated 320 CSS px / deviceScaleFactor 4 context — both are
+cross-browser mechanisms (this tier's project matrix is Chromium regardless).
 
 ## Historical note
 

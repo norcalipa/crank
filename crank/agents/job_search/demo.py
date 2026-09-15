@@ -135,8 +135,15 @@ def _build_provider():
     """
     # E2E failure hook (issue #491): deterministic, default-off injection point
     # so the browser suite can exercise the provider-outage recovery contract
-    # against a real server. Opt in only by exporting CRANK_E2E_PROVIDER_FAILURE=1.
-    if os.environ.get("CRANK_E2E_PROVIDER_FAILURE") == "1":
+    # against a real server. Double-gated: it only arms when the operator
+    # exports CRANK_E2E_PROVIDER_FAILURE=1 *and* the process is running in a
+    # dev environment (``is_non_dev_environment`` is False), so a stray env var
+    # can never force an outage in staging or production. Prod/staging cases
+    # proving the env var is inert there live in crank/tests/agents/test_providers.py.
+    if (
+        os.environ.get("CRANK_E2E_PROVIDER_FAILURE") == "1"
+        and not is_non_dev_environment()
+    ):
         raise AssistantUnavailable(
             "The assistant is not available right now. Please try again later."
         )

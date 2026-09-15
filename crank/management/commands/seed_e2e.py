@@ -13,9 +13,20 @@ suite can exercise every journey state against a real Django server:
 - an approved+enabled ``JobSourceCatalog`` fixture source (never one of the
   curated ``seed_job_sources`` rows) with active ``JobListing`` rows.
 
-The command is idempotent (``get_or_create`` everywhere) and refuses to run
-in a non-dev environment, so synthetic E2E data can never reach staging or
+The command is strongly idempotent: every seeded row is created via
+``get_or_create`` and then **reconciled** to its canonical fixture fields
+(``_sync_fields`` writes only drifted fields, so a re-run over canonical
+data is a true no-op — rows, ids, and timestamps stay byte-identical between
+runs). Its own synthetic rows are also de-duplicated (drifted duplicates
+under the E2E source/score keys are deleted), so a re-run always produces the
+identical dataset even from a drifted database. It refuses to run in a
+non-dev environment, so synthetic E2E data can never reach staging or
 production. It prints a bounded summary and never prints secrets.
+
+Creation-scoped timestamps (``activate_date``, ``first_seen_at``/``last_seen_at``,
+``observed_at``) are set at first creation and deliberately preserved on
+re-runs: they are not fixture fields the journey asserts on, and pinning
+them to "now" on every run would make reruns non-identical.
 
 The ``seeds/*.yaml`` files have no runtime loader in this repository (they
 are loaded out-of-band); this command intentionally reuses the code-owned
@@ -68,6 +79,25 @@ ACTIVE_LISTING_URL = "https://www.usajobs.gov/Job/e2e-seed-active-1"
 ACTIVE_LISTING_TITLE = "E2E Seed Software Engineer"
 
 
+def _sync_fields(instance, values: dict) -> bool:
+    """Reconcile ``instance`` to the canonical fixture ``values``.
+
+    Assigns only the drifted fields and saves with ``update_fields`` (plus
+    ``modified``), so a re-run over already-canonical rows performs no writes
+    at all — strong idempotency: a rerun produces the identical state even
+    from a deliberately drifted dataset. Returns True when a save happened.
+    """
+    changed = [name for name, value in values.items() if getattr(instance, name) != value]
+    if not changed:
+        return False
+    for name, value in values.items():
+        setattr(instance, name, value)
+    if hasattr(instance, "modified"):
+        changed.append("modified")
+    instance.save(update_fields=changed)
+    return True
+
+
 class Command(BaseCommand):
     help = (
         "Seed the dev-only Playwright E2E dataset (test account, bounded "
@@ -113,15 +143,21 @@ class Command(BaseCommand):
                 "description_content": "culture-focused.md",
             },
         )
-        # Self-heal databases that saw an earlier seed revision.
-        if algorithm.description_content != "culture-focused.md":
-            algorithm.description_content = "culture-focused.md"
-            algorithm.save(update_fields=["description_content", "modified"])
-        ScoreAlgorithmWeight.objects.get_or_create(
+        # Reconcile (self-heal databases that saw an earlier seed revision, or
+        # drifted local rows) — no writes when already canonical. Only the
+        # content pointer is reconciled: the algorithm row itself is the shared
+        # DEFAULT_ALGORITHM_ID singleton (also created by seed_staging_baseline
+        # with its own name), so its name must not be clobbered.
+        _sync_fields(
+            algorithm,
+            {"description_content": "culture-focused.md"},
+        )
+        weight, _ = ScoreAlgorithmWeight.objects.get_or_create(
             algorithm=algorithm,
             type=score_type,
             defaults={"weight": 1.0},
         )
+        _sync_fields(weight, {"weight": 1.0})
 
         # -- Rating source + bounded target organizations --------------------
         rating_source, _ = Organization.objects.get_or_create(
@@ -133,6 +169,18 @@ class Command(BaseCommand):
                 "public": True,
                 "funding_round": Organization.FundingRound.PUBLIC,
                 "rto_policy": Organization.RTOPolicy.HYBRID,
+            },
+        )
+        _sync_fields(
+            rating_source,
+            {
+                "type": Organization.Type.COMPANY,
+                "url": "https://e2e.example.test/ratings",
+                "gives_ratings": True,
+                "public": True,
+                "funding_round": Organization.FundingRound.PUBLIC,
+                "rto_policy": Organization.RTOPolicy.HYBRID,
+                "status": 1,
             },
         )
         orgs: dict[str, Organization] = {}
@@ -148,8 +196,20 @@ class Command(BaseCommand):
                     "rto_policy": Organization.RTOPolicy.HYBRID,
                 },
             )
+            _sync_fields(
+                org,
+                {
+                    "type": Organization.Type.COMPANY,
+                    "url": "https://e2e.example.test/",
+                    "gives_ratings": False,
+                    "public": True,
+                    "funding_round": Organization.FundingRound.PUBLIC,
+                    "rto_policy": Organization.RTOPolicy.HYBRID,
+                    "status": 1,
+                },
+            )
             orgs[name] = org
-            Score.objects.get_or_create(
+            score, _ = Score.objects.get_or_create(
                 type=score_type,
                 source=rating_source,
                 target=org,
@@ -162,6 +222,21 @@ class Command(BaseCommand):
                     "deactivate_date": None,
                 },
             )
+            # Reconcile the fields the journey depends on; activate/deactivate
+            # dates are creation-scoped (see module docstring).
+            _sync_fields(
+                score,
+                {"score": score_value, "low_threshold": 0.0, "high_threshold": 5.0},
+            )
+            # Strong idempotency: a drifted status change can push the
+            # canonical row out of the (type, source, target, status=1) key,
+            # leaving a duplicate behind. These rows are this command's own
+            # synthetic records (Culture score from the E2E rating source for
+            # an E2E org), so removing every non-canonical duplicate restores
+            # the identical dataset.
+            Score.objects.filter(
+                type=score_type, source=rating_source, target=org
+            ).exclude(pk=score.pk).delete()
         created["organizations"] = Organization.objects.filter(
             name__startswith="E2E "
         ).count()
@@ -183,10 +258,25 @@ class Command(BaseCommand):
                 },
             },
         )
+        # Reconcile the policy fields the jobs journey depends on: a drifted
+        # disabled/unapproved source (or wrong adapter/base URL) silently
+        # starves the match pipeline of its required data.
+        _sync_fields(
+            fixture_source,
+            {
+                "adapter_key": usajobs["adapter_key"],
+                "base_url": usajobs["base_url"],
+                "approval_state": JobSourceCatalog.ApprovalState.APPROVED,
+                "enabled": True,
+                "catalog_metadata": {
+                    "description": "E2E fixture source (approved+enabled, dev only).",
+                },
+            },
+        )
         alpha = orgs[TARGET_ORGS[0][0]]
 
         # -- Accepted company-profile observation (evidence section) ---------
-        CompanyProfileObservation.objects.get_or_create(
+        observation, _ = CompanyProfileObservation.objects.get_or_create(
             fingerprint="e2e-accepted",
             defaults={
                 "organization": alpha,
@@ -199,7 +289,19 @@ class Command(BaseCommand):
                 "description": "Fresh accepted E2E profile evidence.",
             },
         )
-        JobListing.all_objects.get_or_create(
+        _sync_fields(
+            observation,
+            {
+                "organization": alpha,
+                "source_url": "https://e2e.example.test/alpha/profile",
+                "observed_domain": "e2e.example.test",
+                "observed_name": alpha.name,
+                "extraction_version": "e2e-seed-1",
+                "status": CompanyProfileObservation.Status.ACCEPTED,
+                "description": "Fresh accepted E2E profile evidence.",
+            },
+        )
+        listing, _ = JobListing.all_objects.get_or_create(
             source=fixture_source,
             canonical_url=ACTIVE_LISTING_URL,
             defaults={
@@ -219,6 +321,32 @@ class Command(BaseCommand):
                 "organization": alpha,
             },
         )
+        # Reconcile the fields the ranked-match journey asserts on (status,
+        # employer, remote flag, canonical org link); first_seen/last_seen are
+        # creation-scoped (see module docstring).
+        _sync_fields(
+            listing,
+            {
+                "external_id": "e2e-seed-active-1",
+                "employer_name": alpha.name,
+                "employer_domain": "e2e.example.test",
+                "title": ACTIVE_LISTING_TITLE,
+                "location_text": "Remote",
+                "is_remote": True,
+                "compensation_min": 120000,
+                "compensation_max": 160000,
+                "compensation_currency": "USD",
+                "compensation_interval": "year",
+                "status": JobListing.Status.ACTIVE,
+                "organization": alpha,
+            },
+        )
+        # Strong idempotency: rows under this command's own synthetic source
+        # that are not the canonical listing (e.g. a drifted canonical_url)
+        # are torn down so a re-run always produces the identical dataset.
+        JobListing.all_objects.filter(source=fixture_source).exclude(
+            pk=listing.pk
+        ).delete()
         created["active_listings"] = JobListing.objects.filter(
             source=fixture_source
         ).count()
@@ -229,9 +357,16 @@ class Command(BaseCommand):
             username=E2E_USERNAME,
             defaults={"email": "e2e_user@example.test", "first_name": "E2E"},
         )
-        user.set_password(password)
-        user.is_staff = False
-        user.save()
+        _sync_fields(
+            user,
+            {"email": "e2e_user@example.test", "first_name": "E2E", "is_staff": False},
+        )
+        # Only rotate the password when it does not already verify: hashing is
+        # salted, so an unconditional set_password would change the stored
+        # hash on every re-run and break identical-state reruns.
+        if not user.check_password(password):
+            user.set_password(password)
+            user.save(update_fields=["password"])
         preferences = default_preferences()
         # One non-default dimension: a remote-work preference that the seeded
         # active listing satisfies, so match_jobs returns a live ranked result
@@ -241,8 +376,6 @@ class Command(BaseCommand):
             user=user,
             defaults={"preferences": preferences},
         )
-        if not preference.preferences.get("work_location", {}).get("modes"):
-            preference.preferences = preferences
-            preference.save(update_fields=["preferences", "modified"])
+        _sync_fields(preference, {"preferences": preferences})
         created["users"] = 1
         return created

@@ -8,6 +8,15 @@ export const E2E_USERNAME = 'e2e_user';
 export const E2E_PASSWORD = 'e2e-throwaway-password';
 
 /**
+ * Base URL of the seeded Django dev server. Mirrors playwright.django.config.ts
+ * (`baseURL`); only the 400%-browser-zoom scenario needs it, because that
+ * scenario builds its own browser context at a 320 CSS px layout viewport
+ * with a 4x device scale factor, and manually created contexts do not inherit
+ * the config's `use.baseURL`.
+ */
+export const DJANGO_BASE_URL = 'http://local.crank.fyi:4174';
+
+/**
  * Skip rule for the fixture tier: the fixture-tier config (playwright.config.ts)
  * scans all of ./e2e and has no Django backend or seeded data. Specs collected
  * there skip with an explicit named reason instead of failing or silently

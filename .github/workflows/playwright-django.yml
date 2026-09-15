@@ -11,6 +11,14 @@ on:
       - 'crank/management/commands/seed_e2e.py'
       - 'crank/agents/job_search/demo.py'
       - '.github/workflows/playwright-django.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'playwright.django.config.ts'
+      - 'e2e/django/**'
+      - 'crank/management/commands/seed_e2e.py'
+      - 'crank/agents/job_search/demo.py'
+      - '.github/workflows/playwright-django.yml'
   workflow_dispatch:
 
 jobs:
