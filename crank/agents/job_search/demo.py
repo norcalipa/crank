@@ -26,9 +26,11 @@ from django.conf import settings
 
 from crank.agents.job_search import quality
 from crank.agents.job_search.errors import (
+    ConversationClosedError as _OrchestratorConversationClosed,
     CostLimitError as _OrchestratorCostLimit,
     InvalidModelOutputError as _OrchestratorInvalidOutput,
     PreferenceStaleError as _OrchestratorPreferenceStale,
+    PreferenceVersionUnavailableError as _OrchestratorPreferenceVersionUnavailable,
     ProviderTimeoutError as _OrchestratorTimeout,
 )
 from crank.checks import is_non_dev_environment
@@ -40,9 +42,11 @@ __all__ = [
     "DemoJobSearchProvider",
     "JobSearchService",
     "JobSearchServiceError",
+    "ServiceConversationClosed",
     "ServiceCostLimit",
     "ServiceInvalidOutput",
     "ServicePreferenceStale",
+    "ServicePreferenceVersionUnavailable",
     "ServiceTimeout",
 ]
 
@@ -74,6 +78,26 @@ class ServicePreferenceStale(JobSearchServiceError):
     or reset preferences, or another request patched them), so the patch was
     NOT applied. The view maps this to a stable 409 ``preference_stale``
     envelope; the persisted user turn remains retryable (issue #487).
+    """
+
+
+class ServicePreferenceVersionUnavailable(JobSearchServiceError):
+    """The preference baseline could not be captured at turn start.
+
+    Fail-closed guard (issue #487 review, MAJOR-4): a writer preference port
+    without a captured ``expected_modified`` baseline never applies a proposed
+    patch. The view maps this to the same stable, retryable 409
+    ``preference_stale`` envelope; the persisted user turn remains retryable.
+    """
+
+
+class ServiceConversationClosed(JobSearchServiceError):
+    """The conversation was reset or deleted while the turn was in flight.
+
+    Raised when the lifecycle guard aborts a proposed preference patch whose
+    conversation is no longer active (issue #487 review, MAJOR-2). The view
+    maps this to the stable 409 ``conversation_closed`` envelope; the
+    persisted user turn remains retryable.
     """
 
 
@@ -229,6 +253,24 @@ class JobSearchService:
             raise ServicePreferenceStale(
                 "Your preferences changed while the assistant was responding. "
                 "Please retry."
+            ) from exc
+        except _OrchestratorConversationClosed as exc:
+            logger.info(
+                "job_search conversation closed mid-turn conversation=%s",
+                getattr(conversation, "pk", None),
+            )
+            raise ServiceConversationClosed(
+                "This conversation was reset or deleted while the assistant "
+                "was responding."
+            ) from exc
+        except _OrchestratorPreferenceVersionUnavailable as exc:
+            logger.error(
+                "job_search preference baseline unavailable conversation=%s",
+                getattr(conversation, "pk", None),
+            )
+            raise ServicePreferenceVersionUnavailable(
+                "Your preferences could not be verified while the assistant "
+                "was responding. Please retry."
             ) from exc
         except Exception as exc:  # provider failure -> stable service error
             logger.error(

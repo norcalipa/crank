@@ -30,6 +30,7 @@ from collections.abc import Callable
 from typing import Any, TypeAlias, Union
 
 from crank.agents.job_search.errors import (
+    ConversationClosedError,
     CostLimitError,
     InvalidModelOutputError,
     InvalidOrganizationReferenceError,
@@ -198,22 +199,16 @@ class _PreferenceServiceAdapter:
     version-1 schema and persisted for the conversation owner.
     ``apply_patch`` returns whether the stored document actually changed, so
     ``preferences_changed`` accurately reflects persistence.
+
+    ``writable`` marks this as a writer port: the orchestrator's fail-closed
+    guard (issue #487 review, MAJOR-4) requires a captured ``expected_modified``
+    baseline for every writer port before a proposed patch may apply.
     """
+
+    writable = True
 
     def __init__(self, user: Any) -> None:
         self._user = user
-
-    def current_modified(self) -> Any:
-        """Return the owner's current preference version, or None when absent.
-
-        The orchestrator captures this at turn start and passes it back as
-        ``expected_modified`` so a late reply cannot overwrite a preference
-        change made while the turn was in flight (issue #487).
-        """
-        from crank.models.preference import UserPreference
-
-        row = UserPreference.objects.filter(user=self._user).first()
-        return row.modified if row is not None else None
 
     def validate_patch(self, patch: dict[str, Any]) -> None:
         from crank.services.preferences import validate_patch
@@ -241,16 +236,19 @@ class _NullPreferenceService:
     user to persist to). ``apply_patch`` returns ``False`` to signal nothing
     was applied, so ``preferences_changed`` accurately reports degradation
     rather than silently claiming a change persisted.
+
+    ``writable = False`` is the documented, demonstrable no-writer assertion:
+    this port can never persist a preference change, so it is the one port the
+    orchestrator allows to apply a patch without a captured version baseline
+    (the call is a no-op; issue #487 review, MAJOR-4).
     """
+
+    writable = False
 
     def validate_patch(self, patch: dict[str, Any]) -> None:
         # No user is available to persist to, so there is nothing meaningful
         # to validate against. The orchestrator already bounds the patch shape.
         pass
-
-    def current_modified(self) -> Any:
-        # No user row exists to version; the stale check degrades to a no-op.
-        return None
 
     def apply_patch(self, patch: dict[str, Any], expected_modified: Any = None) -> bool:
         return False
@@ -596,6 +594,43 @@ class OrchestratorJobSearchProvider:
         """Return the conversation owner, or ``None`` when unavailable."""
         return getattr(conversation, "owner", None)
 
+    @staticmethod
+    def _make_lifecycle_guard(conversation) -> Callable[[], None] | None:
+        """Build the per-turn lifecycle guard for a persisted conversation.
+
+        The guard is invoked by the orchestrator inside the same transaction
+        as the preference-patch write (issue #487 review, MAJOR-2): it locks the
+        conversation row — the same serialization boundary the reset/delete
+        endpoints use — and raises :class:`ConversationClosedError` when the
+        conversation was reset or deleted mid-turn, aborting the patch.
+
+        Returns ``None`` for non-persisted conversations (no ``JobSearchConversation``
+        row, e.g. test doubles): without a row there is no lifecycle state to
+        guard and no reset/delete writer to race against.
+        """
+        from crank.models.job_search import JobSearchConversation
+
+        if not isinstance(conversation, JobSearchConversation):
+            return None
+        pk = conversation.pk
+        if pk is None:
+            return None
+        owner_id = conversation.owner_id
+
+        def _guard() -> None:
+            locked = (
+                JobSearchConversation.objects.select_for_update()
+                .filter(pk=pk, owner_id=owner_id, active=True)
+                .first()
+            )
+            if locked is None:
+                raise ConversationClosedError(
+                    "conversation was reset or deleted while the "
+                    "assistant was responding"
+                )
+
+        return _guard
+
     def generate_reply(self, *, conversation, user_message):
         """Return ``(reply_text, preferences_changed, results)`` for a turn.
 
@@ -608,7 +643,9 @@ class OrchestratorJobSearchProvider:
         orchestrator = self._ensure_orchestrator(user)
         try:
             history = self._build_conversation_history(conversation)
-            preference_markdown = self._get_preference_markdown(conversation)
+            preference_markdown, expected_modified = self._read_preference_snapshot(
+                conversation
+            )
         except Exception as exc:
             logger.error(
                 "orchestrator provider history error conversation=%s error_type=%s",
@@ -622,6 +659,8 @@ class OrchestratorJobSearchProvider:
                 user_prompt=user_message or "",
                 conversation=history,
                 preference_markdown=preference_markdown,
+                expected_modified=expected_modified,
+                lifecycle_guard=self._make_lifecycle_guard(conversation),
             )
         except (ProviderError, ProviderTimeoutError, CostLimitError) as exc:
             logger.error(
@@ -672,17 +711,39 @@ class OrchestratorJobSearchProvider:
         return messages
 
     @staticmethod
-    def _get_preference_markdown(conversation) -> str:
-        """Fetch the user's preference markdown, if available."""
+    def _read_preference_snapshot(conversation) -> tuple[str, Any]:
+        """Read the owner's preference markdown AND row version in ONE read.
+
+        The pair is captured at turn start, before any turn work, so the
+        prompt snapshot and the optimistic-concurrency baseline can never
+        drift apart: a mid-turn edit cannot pair a stale prompt with a fresh
+        version (or vice versa) and slip past the stale check (issue #487
+        review, MAJOR-3).
+
+        Returns ``(markdown, version)`` where ``version`` is:
+
+        * the row's ``modified`` timestamp when a preference row exists;
+        * :data:`crank.services.preferences.PREFERENCE_ABSENT` when the owner
+          has no row yet (the patch then applies only if the row is still
+          absent at commit time);
+        * ``None`` when the read failed — writer ports fail closed on a
+          proposed patch in that case (MAJOR-4), no-writer ports proceed.
+        """
         try:
             from crank.models.preference import UserPreference
-            pref = UserPreference.objects.filter(user_id=conversation.owner_id).first()
-            if pref:
-                return pref.preferences_markdown or ""
+            from crank.services.preferences import PREFERENCE_ABSENT
+
+            pref = UserPreference.objects.filter(
+                user_id=conversation.owner_id
+            ).first()
+            if pref is None:
+                return "", PREFERENCE_ABSENT
+            return pref.preferences_markdown or "", pref.modified
         except Exception:  # noqa: BLE001
-            # Preference model/table may not be ready in test contexts.
+            # Preference model/table may not be ready in test contexts; the
+            # missing baseline fails closed at patch time for writer ports.
             logger.debug(
                 "Preference lookup unavailable for user=%s",
                 getattr(conversation, "owner_id", None),
             )
-        return ""
+            return "", None

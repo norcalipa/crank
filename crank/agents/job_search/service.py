@@ -23,6 +23,7 @@ from crank.agents.job_search import quality
 from crank.agents.job_search import system_prompt as prompt
 from crank.agents.job_search import tools
 from crank.agents.job_search.errors import (
+    ConversationClosedError,
     CostLimitError,
     EchoReplyError,
     InvalidJobListingReferenceError,
@@ -30,6 +31,7 @@ from crank.agents.job_search.errors import (
     InvalidPreferencePatchError,
     JobSearchError,
     PreferenceStaleError,
+    PreferenceVersionUnavailableError,
     ProviderError,
     ProviderTimeoutError,
 )
@@ -61,17 +63,6 @@ class PreferenceService(Protocol):
     def validate_patch(self, patch: dict[str, Any]) -> None:
         ...  # pragma: no cover - structural Protocol stub, never called directly
 
-    def current_modified(self) -> Any:
-        """Return the owner's current preference version (``modified``), or None.
-
-        Captured by the orchestrator at turn start and passed back to
-        :meth:`apply_patch` as ``expected_modified`` so a patch proposed by a
-        slow reply cannot overwrite a preference change (or reset) that
-        happened while the turn was in flight. Ports without version tracking
-        may omit this method; the orchestrator then degrades to no check.
-        """
-        ...  # pragma: no cover - structural Protocol stub, never called directly
-
     def apply_patch(
         self, patch: dict[str, Any], expected_modified: Any = None
     ) -> bool:
@@ -79,9 +70,27 @@ class PreferenceService(Protocol):
 
         Raises :class:`PreferenceStaleError` when ``expected_modified`` is
         given and the preference row changed since the turn captured it. The
-        parameter is optional so existing mock ports remain compatible.
+        ``expected_modified`` baseline is captured at **turn start** by the
+        transport provider (one read, alongside the preference markdown
+        snapshot) and passed through :meth:`JobSearchOrchestrator.run`.
+
+        Ports that can never persist a change may declare ``writable = False``
+        (e.g. the no-owner null service); such no-writer ports are the only
+        ports allowed to apply a patch without a captured baseline (issue #487
+        review, MAJOR-4). Writer ports without a baseline abort fail-closed
+        with :class:`PreferenceVersionUnavailableError`.
         """
         ...  # pragma: no cover - structural Protocol stub, never called directly
+
+
+def _is_writer_port(service: Any) -> bool:
+    """Return True unless the port explicitly asserts it can never persist.
+
+    Ports are presumed writers (fail closed, issue #487 review MAJOR-4): only
+    a port declaring ``writable = False`` — e.g. the no-owner null preference
+    service, which demonstrably has no writer — may skip the version check.
+    """
+    return bool(getattr(service, "writable", True))
 
 
 @dataclass(frozen=True)
@@ -163,16 +172,29 @@ class JobSearchOrchestrator:
         user_prompt: str,
         conversation: list[dict[str, str]],
         preference_markdown: str,
+        expected_modified: Any = None,
+        lifecycle_guard: Callable[[], None] | None = None,
         token_budget: int | None = None,
         max_tokens: int | None = None,
     ) -> OrchestratorResult:
-        """Run one turn and emit only bounded interactive-call telemetry."""
+        """Run one turn and emit only bounded interactive-call telemetry.
+
+        ``expected_modified`` is the preference baseline captured at turn
+        start (alongside the ``preference_markdown`` snapshot, before any turn
+        work); a proposed patch is applied only if the preference row still
+        carries that version at commit time. ``lifecycle_guard``, when given,
+        runs inside the same transaction as the preference write and raises
+        :class:`ConversationClosedError` to abort when the conversation was
+        reset or deleted mid-turn (issue #487 review, MAJOR-2).
+        """
         started = time.monotonic()
         try:
             result = self._run(
                 user_prompt=user_prompt,
                 conversation=conversation,
                 preference_markdown=preference_markdown,
+                expected_modified=expected_modified,
+                lifecycle_guard=lifecycle_guard,
                 token_budget=token_budget,
                 max_tokens=max_tokens,
             )
@@ -220,6 +242,8 @@ class JobSearchOrchestrator:
         user_prompt: str,
         conversation: list[dict[str, str]],
         preference_markdown: str,
+        expected_modified: Any = None,
+        lifecycle_guard: Callable[[], None] | None = None,
         token_budget: int | None = None,
         max_tokens: int | None = None,
     ) -> OrchestratorResult:
@@ -300,13 +324,11 @@ class JobSearchOrchestrator:
             matches=match_data,
         )
 
-        # 2a. Capture the preference version at turn start (issue #487). A
-        # slow provider reply must never overwrite a preference change or a
-        # reset the user made while the turn was in flight, so the patch is
-        # later applied only if the row still carries this version.
-        expected_modified = self._capture_expected_modified()
-
         # 3. Provider call (maps provider failures to typed errors).
+        # (The preference ``expected_modified`` baseline was captured at turn
+        # start alongside the markdown snapshot — before any turn work — so a
+        # slow reply can never pair fresh prompt data with a stale version
+        # check, and vice versa; issue #487 review, MAJOR-3.)
         response = self._invoke_gateway(model_context, token_budget, max_tokens)
 
         # 4. Schema-validate the raw output.
@@ -330,12 +352,14 @@ class JobSearchOrchestrator:
             inventory_nonempty=inventory_nonempty,
         )
 
-        # 6. Validate + apply the optional preference patch.
+        # 6. Validate + apply the optional preference patch. The guard and the
+        # write share one transaction, and the version check inside the port
+        # makes the patch fail closed whenever it is stale (issue #487).
         preferences_changed = False
         applied_patch: dict[str, Any] | None = None
         if completion.has_preference_patch:
             applied_patch, preferences_changed = self._apply_preference_patch(
-                completion.preference_patch, expected_modified
+                completion.preference_patch, expected_modified, lifecycle_guard
             )
 
         # 7. Build citation-validated structured results from server data.
@@ -582,42 +606,82 @@ class JobSearchOrchestrator:
             organizations=tuple(org_results),
         )
 
-    def _capture_expected_modified(self) -> Any:
-        """Capture the preference row version at turn start (best effort).
-
-        Ports without ``current_modified`` (or one that fails) degrade to
-        ``None``, which disables the stale check and reproduces the previous
-        behavior; the concrete production port always implements it.
-        """
-        reader = getattr(self._preference_service, "current_modified", None)
-        if reader is None:
-            return None
-        try:
-            return reader()
-        except Exception:  # pragma: no cover - defensive port boundary
-            logger.warning(
-                "preference version capture failed; continuing without stale check"
-            )
-            return None
-
     def _apply_preference_patch(
-        self, patch: dict[str, Any], expected_modified: Any = None
+        self,
+        patch: dict[str, Any],
+        expected_modified: Any = None,
+        lifecycle_guard: Callable[[], None] | None = None,
     ) -> tuple:
+        """Validate and apply a proposed patch under the turn's guarantees.
+
+        Fail-closed ordering (issue #487 review):
+
+        1. ``validate_patch`` gates shape/schema first.
+        2. A writer port without a captured baseline aborts with
+           :class:`PreferenceVersionUnavailableError` — the check is never
+           silently skipped (MAJOR-4).
+        3. The lifecycle guard (when provided) and the preference write run
+           inside ONE database transaction; the guard locks the conversation
+           row so a mid-turn reset/delete either aborts the patch here or
+           blocks on the row lock until the write commits (MAJOR-2).
+        """
         try:
             self._preference_service.validate_patch(patch)
         except InvalidPreferencePatchError:
             raise
         except Exception as exc:  # defensive: port must raise typed error
             raise InvalidPreferencePatchError(str(exc)) from exc
-        try:
-            changed = self._apply_patch_with_version(patch, expected_modified)
-        except PreferenceStaleError:
-            # Fail closed: a stale patch is never applied and never retried
-            # silently inside the turn. The transport maps this to a stable
-            # 409 ``preference_stale`` envelope; the user turn stays retryable.
-            raise
-        except Exception as exc:  # defensive: port must raise typed error
-            raise InvalidPreferencePatchError(str(exc)) from exc
+        if expected_modified is None and _is_writer_port(self._preference_service):
+            # Fail closed: the baseline could not be captured at turn start, so
+            # applying the patch would silently disable the stale check the
+            # ticket exists to enforce. No-writer ports are the only exception.
+            logger.warning(
+                "preference version baseline missing; aborting patch path fail-closed"
+            )
+            raise PreferenceVersionUnavailableError(
+                "preference version could not be captured at turn start; "
+                "patch rejected"
+            )
+        # Lazy import keeps this module importable without Django configured;
+        # every runtime path (including tests) runs under Django settings.
+        from django.db import transaction
+
+        if lifecycle_guard is not None:
+            # The lifecycle guard and the preference write share ONE database
+            # transaction: the guard locks the conversation row (the same
+            # serialization boundary the reset/delete endpoints use) so a
+            # mid-turn reset/delete either aborts the patch here or blocks on
+            # the row lock until the write commits (MAJOR-2).
+            with transaction.atomic():
+                # Guard failures abort the transaction (and the patch); the
+                # guard is trusted server-side code, so its typed error
+                # (ConversationClosedError) propagates unwrapped.
+                lifecycle_guard()
+                try:
+                    changed = self._apply_patch_with_version(patch, expected_modified)
+                except PreferenceStaleError:
+                    # Fail closed: a stale patch is never applied and never
+                    # retried silently inside the turn. The transport maps
+                    # this to a stable 409 ``preference_stale`` envelope; the
+                    # user turn stays retryable.
+                    raise
+                except PreferenceVersionUnavailableError:
+                    # Fail-closed abort (MAJOR-4) propagates as its own typed
+                    # error, not as a malformed patch.
+                    raise
+                except Exception as exc:  # defensive: port must raise typed error
+                    raise InvalidPreferencePatchError(str(exc)) from exc
+        else:
+            # No persisted conversation to guard: the port's own transactional
+            # apply (select_for_update + stale check) is the commit boundary.
+            try:
+                changed = self._apply_patch_with_version(patch, expected_modified)
+            except PreferenceStaleError:
+                raise
+            except PreferenceVersionUnavailableError:
+                raise
+            except Exception as exc:  # defensive: port must raise typed error
+                raise InvalidPreferencePatchError(str(exc)) from exc
         return patch, bool(changed)
 
     def _apply_patch_with_version(
@@ -625,9 +689,13 @@ class JobSearchOrchestrator:
     ) -> bool:
         """Call the port's ``apply_patch``, passing the version when supported.
 
-        Mock ports written before the ``expected_modified`` parameter (and the
-        production null port) accept only ``(patch)``; for those the version
-        is dropped and the previous behavior is preserved.
+        Fail closed (issue #487 review, MAJOR-4): a port whose ``apply_patch``
+        does not accept the ``expected_modified`` parameter is a legacy port.
+        A legacy port is only allowed when it demonstrably has no writer
+        (``writable = False``, e.g. the no-owner null service); for any writer
+        port the patch path aborts with
+        :class:`PreferenceVersionUnavailableError` instead of silently
+        dropping the version and disabling the stale check.
         """
         import inspect
 
@@ -642,4 +710,9 @@ class JobSearchOrchestrator:
             return self._preference_service.apply_patch(
                 patch, expected_modified=expected_modified
             )
-        return self._preference_service.apply_patch(patch)
+        if not _is_writer_port(self._preference_service):
+            # Demonstrably no writer: the call is a documented no-op.
+            return self._preference_service.apply_patch(patch)
+        raise PreferenceVersionUnavailableError(
+            "preference port cannot enforce the version check; patch rejected"
+        )

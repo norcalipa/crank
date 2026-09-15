@@ -8,15 +8,21 @@ late-reply deletion cascade against a MySQL backend, where FOR UPDATE actually
 serializes writers (SQLite treats it as a no-op, so CI's SQLite runs only
 prove the timestamp check, not the row lock).
 
-Skipped by default (SQLite CI); opt in with a MySQL settings target:
+Skipped by default (SQLite CI); opt in with the MySQL settings target shipped
+as ``crank.settings_mysql`` (a thin settings module that inherits the default
+settings and points ``DATABASES`` at an operator-provisioned MySQL server via
+the ``CRANK_MYSQL_*`` environment variables — all credentials stay in the
+environment, none are committed):
 
     export CRANK_MYSQL_TEST=1
-    export DJANGO_SETTINGS_MODULE=crank.settings_mysql   # MySQL-configured settings module
+    export DJANGO_SETTINGS_MODULE=crank.settings_mysql
     export ENV=dev SECRET_KEY=... REDIS_MASTER_URL=redis://localhost:6379/0
+    export CRANK_MYSQL_NAME=crank_test CRANK_MYSQL_USER=... CRANK_MYSQL_PASSWORD=...
 
-    # Two concurrent patch writers, one stale: exactly one wins, the stale
-    # writer gets StalePreferenceError and nothing is overwritten.
-    python -m pytest crank/tests/security/test_mysql_concurrency_variants.py::MySqlConcurrencyVariants::test_two_writers_one_stale -v
+    # Two writers start from the SAME current version behind a barrier:
+    # exactly one applies, the loser receives StalePreferenceError, and no
+    # write is silently overwritten.
+    python -m pytest crank/tests/security/test_mysql_concurrency_variants.py::MySqlConcurrencyVariants::test_two_same_version_writers_exactly_one_applies -v
 
     # Conversation deleted mid-turn: no assistant message row survives.
     python -m pytest crank/tests/security/test_mysql_concurrency_variants.py::MySqlConcurrencyVariants::test_delete_during_turn -v
@@ -28,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
@@ -61,37 +68,48 @@ class MySqlConcurrencyVariants(TransactionTestCase):
         super().tearDownClass()
         connections.close_all()
 
-    def test_two_writers_one_stale(self):
-        """Two writers race apply_patch_to_user; the stale writer loses cleanly."""
+    def test_two_same_version_writers_exactly_one_applies(self):
+        """Two writers start from the SAME current version behind a barrier.
+
+        The outcome depends on the lock race itself (issue #487 review
+        MINOR-3): ``apply_patch_to_user`` serializes both writers on the row
+        lock (``select_for_update``), so the first commit bumps ``modified``
+        and the second writer — holding the same, now-stale baseline — is
+        rejected with ``StalePreferenceError``. Exactly one applies; no write
+        is silently overwritten.
+        """
         from crank.services.preferences import StalePreferenceError
 
         version = UserPreference.objects.get(user=self.alice).modified
         results = {}
+        barrier = threading.Barrier(2)
 
-        def writer(name, expected):
+        def writer(name):
+            # Both writers begin from the same current version; the barrier
+            # guarantees neither starts before both have captured it.
+            barrier.wait()
             try:
                 result = preferences.apply_patch_to_user(
-                    self.alice, {"set": {"notes": name}}, expected_modified=expected
+                    self.alice, {"set": {"notes": name}}, expected_modified=version
                 )
                 results[name] = ("applied", result["changed"])
             except StalePreferenceError:
                 results[name] = ("stale", None)
 
-        writer("writer-current", version)
-        stale_version = UserPreference.objects.get(user=self.alice).modified
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = [
-                pool.submit(writer, "writer-a", version),
-                pool.submit(writer, "writer-b", stale_version),
+                pool.submit(writer, "writer-a"),
+                pool.submit(writer, "writer-b"),
             ]
             for future in futures:
                 future.result()
-        # At least one writer observed the stale rejection; the row holds a
-        # single consistent value and no write was silently overwritten.
-        outcomes = [results["writer-a"][0], results["writer-b"][0]]
-        assert "stale" in outcomes
+
+        outcomes = sorted(outcome for outcome, _ in results.values())
+        assert outcomes == ["applied", "stale"], results
+        # The row holds exactly the winner's value at a single new version.
         stored = UserPreference.objects.get(user=self.alice)
         assert stored.preferences["notes"] in {"writer-a", "writer-b"}
+        assert stored.modified != version
 
     def test_delete_during_turn(self):
         """A conversation deleted mid-turn leaves no assistant message row."""

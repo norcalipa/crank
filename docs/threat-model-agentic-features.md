@@ -105,18 +105,50 @@ lands — implemented-before-documented rule, per #463's registry).
   `apply_patch_to_user(user, patch, expected_modified)` under
   `select_for_update` with the optimistic `modified` check (`_check_stale`) →
   owner-scoped persistence → contents-free audit rows.
-- **Wiring (#487):** the orchestrator captures the preference row's `modified`
-  at turn start (`PreferenceService.current_modified()`) and passes it as
-  `expected_modified` through `PreferenceService.apply_patch`; a row changed
-  mid-turn (user edit or reset while a slow reply was in flight) raises
-  `StalePreferenceError`, mapped to the typed `PreferenceStaleError` and then
-  to a stable **409 `preference_stale`** envelope. The stale patch is never
-  applied; the persisted user turn remains retryable with the same
+- **Wiring (#487):** the transport provider captures the preference row's
+  `modified` **at turn start, in the same single read as the preference
+  markdown snapshot** (`OrchestratorJobSearchProvider._read_preference_snapshot`),
+  and passes it through the turn as `expected_modified`; the prompt snapshot
+  and the concurrency baseline can therefore never drift apart. A row
+  changed mid-turn (user edit or reset while a slow reply was in flight)
+  raises `StalePreferenceError`, mapped to the typed `PreferenceStaleError`
+  and then to a stable **409 `preference_stale`** envelope. The stale patch
+  is never applied; the persisted user turn remains retryable with the same
   idempotency key.
+- **Baseline semantics:** a turn that starts with no preference row carries
+  the `PREFERENCE_ABSENT` sentinel instead of a timestamp — the patch applies
+  only if the row is *still* absent at commit time. A row created mid-turn
+  makes the patch stale (no overwrite), and a row *deleted* mid-turn makes
+  the patch stale too (the patch never re-creates/resurrects deleted
+  preference state).
+- **Fail-closed baseline (review round 2, MAJOR-4):** when the baseline
+  cannot be captured at turn start — or a writer port cannot carry it — the
+  patch path **aborts** with a typed `PreferenceVersionUnavailableError` mapped
+  to the same stable, retryable 409 `preference_stale` envelope (monitoring
+  reason code `preference_version_unavailable`). The stale check is never
+  silently skipped for a writer port. **The only legacy allowance** is a port
+  that demonstrably has no writer: ports declaring `writable = False` — today
+  only the no-owner `_NullPreferenceService`, whose `apply_patch` is a
+  documented no-op returning `False` — may proceed without a baseline. Any
+  other port without the capability defaults to being treated as a writer
+  and fails closed.
+- **Lifecycle ordering (review round 2, MAJOR-2):** a proposed patch is
+  committed only after a per-turn **lifecycle guard** verifies the
+  conversation is still active **inside the same database transaction as the
+  preference write** (the guard locks the conversation row — the same
+  serialization boundary the reset/delete endpoints use). A reset or delete
+  landing mid-turn therefore aborts the patch (`ConversationClosedError` →
+  409 `conversation_closed`) before any preference change or reply is
+  persisted; a reset/delete committing after the patch transaction blocks on
+  the same row lock and is caught by the reply-persist guard below.
 - **Tests:** `crank/tests/views/test_job_search.py`
   (`StalePreferenceAndLateReplyTests` — stale 409 + no overwrite + retry,
-  matching-version applies, adapter mapping),
-  `crank/tests/security/test_phase4_security.py` (`MalformedActionPayloadTests`).
+  matching-version applies, adapter mapping, reset/delete-with-patch changing
+  neither persistence domain, baseline-capture failure failing closed),
+  `crank/tests/agents/test_service.py` (`TestPreferenceBaselineGuards` —
+  turn-start capture, fail-closed writer ports, legacy no-writer allowance),
+  `crank/tests/security/test_phase4_security.py`
+  (`MalformedActionPayloadTests`).
 - **Residual risk:** a valid-but-undesirable user-requested patch still
   depends on schema policy, not on this check; owner: preference/agent
   maintainers.
@@ -132,8 +164,24 @@ lands — implemented-before-documented rule, per #463's registry).
   identical for different authenticated accounts and contain no username,
   preference, or conversation content; rate-limit keys (`job_search_rl:*`)
   and session keys never contain message content — counters only.
-- **Tests:** `PublicCacheSeparationTests` and
-  `test_no_message_content_in_any_cache_key_or_value` in
+- **Review round 2 finding (MINOR-1), fixed:** exercising the previously
+  untested `algo/<id>/` IndexView against two accounts proved the shared
+  `cache_page` entry served the first authenticated requester's **username**
+  to every later visitor (the shared navigation chrome renders
+  `{{ user.username }}`). The page cache for that view is now
+  **anonymous-only**, using the established `cache_page_if_anonymous_method`
+  pattern: anonymous traffic keeps the page cache, and authenticated
+  requests render fresh — they neither read another account's cached chrome
+  nor poison the shared entry with their own. The funding/RTO choice JSON
+  and organization API caches carry no account data (pinned: account B is
+  served the warmed entry even after the backing data changes, and the
+  payload stays bounded to public fields).
+- **Tests:** `PublicCacheSeparationTests` —
+  `test_algo_index_view_page_cache_is_anonymous_only_and_public`,
+  `test_funding_choices_second_account_served_from_cache`,
+  `test_rto_choices_second_account_served_from_cache`,
+  `test_organization_api_second_account_served_from_cache`, and
+  `test_no_message_content_in_any_cache_key_or_value` (keys AND values) in
   `crank/tests/security/test_phase4_security.py`.
 - **Residual risk:** page-cache poisoning via shared-cache key collisions is
   an infrastructure concern (`CACHE_MIDDLEWARE_KEY_PREFIX` deployment
@@ -141,16 +189,30 @@ lands — implemented-before-documented rule, per #463's registry).
 
 ### Late replies
 
-- **Status: implemented (this change).**
+- **Status: implemented (this change; serialization boundary hardened in
+  review round 2).**
 - **Abuse case:** a slow/cancelled provider reply completing after the
   conversation was reset or deleted mid-turn — previously it could attach an
   assistant message to a closed conversation.
-- **Control:** `agent_conversation_detail` re-checks conversation active state
-  AND existence after `run_turn` and before persisting the assistant message
-  (owner-scoped, `active=True`); a closed/deleted conversation yields a
-  stable **409 `conversation_closed`** and no assistant message row is
-  written. Combined with the stale-patch guard, a late reply can neither
-  reapply an obsolete preference change nor attach to a dead conversation.
+- **Control:** `agent_conversation_detail` persists the assistant message in
+  ONE transactional step: it locks the conversation row
+  (`select_for_update`, owner-scoped, `active=True`), re-checks existence and
+  active state under that lock, inserts the assistant message, and re-verifies
+  active state inside the same transaction before commit — so even a
+  lifecycle flip landing between the locked read and the insert rolls the
+  insert back. The reset, delete, and fresh-conversation endpoints take the
+  **same conversation row lock** inside their own transactions, giving the
+  re-check + insert and the reset/delete writers a shared serialization
+  boundary: on locking backends a concurrent reset/delete either commits
+  before the locked re-check (reply discarded, stable **409
+  `conversation_closed`**) or blocks on the row lock until the insert commits —
+  it can never interleave between the two. On backends where FOR UPDATE is a
+  no-op (SQLite), the in-transaction re-verify still fails closed for any
+  lifecycle state visible inside the transaction, and a vanished conversation
+  row surfaces as an FK `IntegrityError` that is likewise mapped to the 409
+  with nothing persisted. Combined with the stale-patch guard and the patch
+  lifecycle guard, a late reply can neither reapply an obsolete preference
+  change nor attach to a dead conversation.
 
 ```mermaid
 sequenceDiagram
@@ -162,35 +224,41 @@ sequenceDiagram
 
     C->>V: POST message (idempotency_key)
     V->>DB: persist user turn (get_or_create)
-    V->>O: run_turn
-    O->>DB: capture preference modified (turn start)
+    V->>DB: read preference snapshot + modified (ONE read, turn start)
+    V->>O: run_turn(expected_modified, lifecycle_guard)
     O->>P: complete(...)
-    Note over P: slow reply in flight;<br/>concurrent user edit/reset bumps preference version<br/>or resets/deletes the conversation
+    Note over P: slow reply in flight;<br/>concurrent user edit bumps preference version<br/>or resets/deletes the conversation
     P-->>O: reply with proposed patch
-    O->>DB: apply_patch(expected_modified=captured)
+    O->>DB: transaction: lock conversation row + apply_patch(expected_modified)
     alt preference changed mid-turn
         DB-->>O: StalePreferenceError (not applied)
         O-->>V: PreferenceStaleError
         V-->>C: 409 preference_stale (user turn retryable)
-    else version matches
-        DB-->>O: applied
+    else conversation reset/deleted mid-turn
+        O-->>V: ConversationClosedError (patch + reply discarded)
+        V-->>C: 409 conversation_closed (nothing persisted)
+    else version matches, conversation active
         O-->>V: reply
-        V->>DB: re-check conversation active+owner
-        alt conversation reset/deleted mid-turn
+        V->>DB: transaction: lock conversation row, re-check active, insert, re-verify
+        alt conversation reset/deleted at or inside the persist window
             V-->>C: 409 conversation_closed (no assistant message persisted)
         else still active
-            V->>DB: persist assistant message
             V-->>C: 201 reply
         end
     end
 ```
 
-- **Tests:** `StalePreferenceAndLateReplyTests` (reset and delete mid-turn,
-  provider mutates lifecycle state; preferences unchanged; retry works).
-- **Residual risk:** the lifecycle re-check is best-effort (read-then-write,
-  not serialized with reset/delete); a true serialization point would need a
-  per-conversation lock, rejected as an availability regression; owner:
-  web/API maintainers.
+- **Tests:** `StalePreferenceAndLateReplyTests` (reset and delete mid-turn
+  with a provider that mutates lifecycle state; preferences unchanged;
+  reset/delete landing between the locked re-check and the insert —
+  the insert is discarded and rolls back; retry works), plus the real
+  orchestrator/store integration tests covering reset/delete-with-proposed
+  patch (both persistence domains unchanged).
+- **Residual risk:** the hard row-lock boundary exists on locking backends
+  (MySQL/PostgreSQL); the opt-in MySQL variants below assert it under real
+  concurrency, and SQLite CI runs assert the in-transaction re-verify
+  semantics. Lock behavior under production load is operational evidence;
+  owner: web/API maintainers.
 
 ### Evidence status
 
@@ -207,19 +275,24 @@ sequenceDiagram
 ### MySQL concurrency/deletion variants (opt-in)
 
 The default suite runs on SQLite, where `select_for_update` is a no-op: the
-optimistic `modified` check is exercised, the row lock is not.
-Backend-specific variants live in
+optimistic `modified` check and the in-transaction re-verify are exercised,
+the row lock is not. Backend-specific variants live in
 `crank/tests/security/test_mysql_concurrency_variants.py` and are
-**skipped unless `CRANK_MYSQL_TEST=1`** with a MySQL-configured settings
-target:
+**skipped unless `CRANK_MYSQL_TEST=1`** with the MySQL settings target
+shipped as `crank.settings_mysql` (it inherits the default settings and
+points `DATABASES` at an operator-provisioned MySQL server via the
+`CRANK_MYSQL_*` environment variables — credentials stay in the environment,
+never in the repository):
 
 ```bash
 export CRANK_MYSQL_TEST=1
-export DJANGO_SETTINGS_MODULE=crank.settings_mysql   # MySQL-configured settings module
+export DJANGO_SETTINGS_MODULE=crank.settings_mysql
 export ENV=dev SECRET_KEY=... REDIS_MASTER_URL=redis://localhost:6379/0
-# Two concurrent patch writers, one stale: exactly one wins; the stale
-# writer receives StalePreferenceError and nothing is overwritten.
-python -m pytest crank/tests/security/test_mysql_concurrency_variants.py::MySqlConcurrencyVariants::test_two_writers_one_stale -v
+export CRANK_MYSQL_NAME=crank_test CRANK_MYSQL_USER=... CRANK_MYSQL_PASSWORD=...
+# Two concurrent patch writers starting from the SAME current version behind
+# a barrier: exactly one applies, the loser receives StalePreferenceError,
+# and no write is silently overwritten.
+python -m pytest crank/tests/security/test_mysql_concurrency_variants.py::MySqlConcurrencyVariants::test_two_same_version_writers_exactly_one_applies -v
 # Conversation deleted mid-turn: no assistant message row survives.
 python -m pytest crank/tests/security/test_mysql_concurrency_variants.py::MySqlConcurrencyVariants::test_delete_during_turn -v
 ```

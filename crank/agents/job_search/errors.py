@@ -53,6 +53,28 @@ class PreferenceStaleError(JobSearchError):
     """
 
 
+class PreferenceVersionUnavailableError(JobSearchError):
+    """The preference baseline could not be captured at turn start.
+
+    Fail-closed guard (issue #487): a writer preference port without a
+    captured ``expected_modified`` baseline must never apply a proposed
+    patch — doing so would silently restore the overwrite behavior the
+    optimistic-concurrency check exists to prevent. The patch path aborts with
+    this stable error instead; the transport maps it to the retryable 409
+    ``preference_stale`` envelope.
+    """
+
+
+class ConversationClosedError(JobSearchError):
+    """The conversation was reset or deleted while the turn was in flight.
+
+    Raised by the per-turn lifecycle guard when a proposed preference patch
+    is about to commit against a conversation that is no longer active (or no
+    longer exists): the patch and the reply are both discarded. The transport
+    maps this to the stable 409 ``conversation_closed`` envelope.
+    """
+
+
 class InvalidScoreSummaryRowError(JobSearchError):
     """A score-summary datasource returned a malformed/untyped row.
 

@@ -32,6 +32,7 @@ import uuid
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
+from django.db import IntegrityError, transaction
 from django.http import JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
@@ -41,9 +42,11 @@ from crank.agents.job_search.demo import (
     AssistantUnavailable,
     JobSearchService,
     JobSearchServiceError,
+    ServiceConversationClosed,
     ServiceCostLimit,
     ServiceInvalidOutput,
     ServicePreferenceStale,
+    ServicePreferenceVersionUnavailable,
     ServiceTimeout,
 )
 from crank.models import JobSearchConversation, JobSearchMessage
@@ -57,6 +60,15 @@ from crank.serializers.job_search import (
 )
 
 logger = logging.getLogger("crank.job_search")
+
+
+class _ReplyDiscarded(Exception):
+    """Internal sentinel: the late-reply guard discarded this assistant reply.
+
+    Raised inside the persistence transaction so the whole transaction
+    (including any just-inserted assistant message) rolls back; the view maps
+    it to the stable 409 ``conversation_closed`` envelope.
+    """
 
 
 def _request_id(request):
@@ -192,9 +204,16 @@ def agent_conversation_list(request):
                 headers={"X-Request-ID": request_id},
             )
 
-    # A fresh conversation is the new resume target: close any prior active one.
-    JobSearchConversation.objects.filter(owner=request.user, active=True).update(active=False)
-    conversation = JobSearchConversation.objects.create(owner=request.user)
+    # A fresh conversation is the new resume target: close any prior active
+    # one under the shared late-reply serialization boundary (issue #487) —
+    # the row lock taken here is the same boundary
+    # ``agent_conversation_detail``'s persist step uses, so a reset can never
+    # interleave between that re-check and the assistant-message insert.
+    with transaction.atomic():
+        JobSearchConversation.objects.select_for_update().filter(
+            owner=request.user, active=True
+        ).update(active=False)
+        conversation = JobSearchConversation.objects.create(owner=request.user)
     return JsonResponse(
         serialize_conversation(conversation),
         status=201,
@@ -341,6 +360,38 @@ def agent_conversation_detail(request, conversation_id):
             "Please retry.",
             request_id,
         )
+    except ServicePreferenceVersionUnavailable:
+        monitoring.record_event("interactive_call", {
+            "status": "error",
+            "reason_code": "preference_version_unavailable",
+            "correlation_id": request_id,
+        })
+        # Fail-closed guard (issue #487 review, MAJOR-4): the preference
+        # baseline could not be captured at turn start, so a proposed patch
+        # was rejected instead of silently applied without the stale check.
+        # The user turn remains persisted; the client can retry.
+        return _error(
+            request, 409, "preference_stale",
+            "Your preferences could not be verified while the assistant was "
+            "responding. Please retry.",
+            request_id,
+        )
+    except ServiceConversationClosed:
+        monitoring.record_event("interactive_call", {
+            "status": "error",
+            "reason_code": "conversation_closed",
+            "correlation_id": request_id,
+        })
+        # The lifecycle guard aborted a proposed preference patch because the
+        # conversation was reset or deleted mid-turn (issue #487 review,
+        # MAJOR-2): neither the patch nor the reply persists; the user turn
+        # remains retryable with the same idempotency key.
+        return _error(
+            request, 409, "conversation_closed",
+            "This conversation was reset or deleted while the assistant was "
+            "responding.",
+            request_id,
+        )
     except JobSearchServiceError:
         monitoring.record_event("interactive_call", {
             "status": "error",
@@ -365,28 +416,8 @@ def agent_conversation_detail(request, conversation_id):
             request_id,
         )
 
-    # Late-reply lifecycle guard (issue #487): the conversation may have been
-    # reset (active=False) or deleted by a concurrent request while the turn
-    # was in flight. Re-check ownership AND active state before persisting the
-    # assistant message so a late reply can never attach to a closed or
-    # deleted conversation.
-    conversation = JobSearchConversation.objects.filter(
-        pk=conversation.pk, owner=request.user, active=True
-    ).first()
-    if conversation is None:
-        monitoring.record_event("interactive_call", {
-            "status": "error",
-            "reason_code": "conversation_closed",
-            "correlation_id": request_id,
-        })
-        return _error(
-            request, 409, "conversation_closed",
-            "This conversation was reset or deleted while the assistant was "
-            "responding.",
-            request_id,
-        )
-
-    # Serialize structured results for persistence (bounded JSON).
+    # Serialize structured results for persistence (bounded JSON). Pure
+    # computation, kept outside the persistence transaction below.
     results_json_str = ""
     if results is not None:
         try:
@@ -404,16 +435,73 @@ def agent_conversation_detail(request, conversation_id):
             logger.error("failed to serialize results for persistence", exc_info=True)
             results_json_str = ""
 
-    assistant_message, _created = JobSearchMessage.objects.get_or_create(
-        conversation=conversation,
-        idempotency_key=idempotency_key,
-        role=JobSearchMessage.Role.ASSISTANT,
-        defaults={
-            "content": reply_text,
-            "preferences_changed": changed,
-            "results_json": results_json_str,
-        },
-    )
+    # Late-reply lifecycle guard (issue #487): the conversation may have been
+    # reset (active=False) or deleted by a concurrent request while the turn
+    # was in flight. The re-check and the assistant-message insert are ONE
+    # transactional step using an atomic conditional-persistence scheme: a
+    # **write-first conditional claim** — ``UPDATE ... WHERE active=True`` —
+    # takes the conversation row's write lock on every backend (including
+    # SQLite, where FOR UPDATE is a no-op and a read-first transaction fails
+    # the SHARED->RESERVED upgrade under concurrent writers). The claim and
+    # the reset/delete/create-new endpoints therefore share one serialization
+    # boundary: a concurrent reset/delete either commits before the claim —
+    # it matches no active row and the reply is discarded — or blocks on the
+    # row's write lock until the insert commits; it can never interleave
+    # between the two. The in-transaction re-verify below fails closed if the
+    # row went inactive inside the window; a vanished row surfaces as an FK
+    # IntegrityError — both roll the insert back and map to the stable 409.
+    try:
+        with transaction.atomic():
+            claimed = JobSearchConversation.objects.filter(
+                pk=conversation.pk, owner=request.user, active=True
+            ).update(active=True)
+            if not claimed:
+                # Reset or deleted mid-turn: attach nothing.
+                raise _ReplyDiscarded()
+            assistant_message, _created = JobSearchMessage.objects.get_or_create(
+                conversation=conversation,
+                idempotency_key=idempotency_key,
+                role=JobSearchMessage.Role.ASSISTANT,
+                defaults={
+                    "content": reply_text,
+                    "preferences_changed": changed,
+                    "results_json": results_json_str,
+                },
+            )
+            if not JobSearchConversation.objects.filter(
+                pk=conversation.pk, owner=request.user, active=True
+            ).exists():
+                # Lifecycle state flipped inside the window: discard.
+                raise _ReplyDiscarded()
+    except _ReplyDiscarded:
+        monitoring.record_event("interactive_call", {
+            "status": "error",
+            "reason_code": "conversation_closed",
+            "correlation_id": request_id,
+        })
+        return _error(
+            request, 409, "conversation_closed",
+            "This conversation was reset or deleted while the assistant was "
+            "responding.",
+            request_id,
+        )
+    except IntegrityError:
+        # The conversation row vanished (concurrent delete) between the locked
+        # re-check and the insert; the FK insert fails and nothing persists.
+        logger.info(
+            "job_search assistant insert failed: conversation closed mid-persist"
+        )
+        monitoring.record_event("interactive_call", {
+            "status": "error",
+            "reason_code": "conversation_closed",
+            "correlation_id": request_id,
+        })
+        return _error(
+            request, 409, "conversation_closed",
+            "This conversation was reset or deleted while the assistant was "
+            "responding.",
+            request_id,
+        )
 
     # Helpfulness-gap telemetry (issue #397): size conversations that keep
     # engaging the assistant but never produce a result card. Scalar counts
@@ -480,15 +568,26 @@ def agent_conversation_export(request, conversation_id):
 def agent_conversation_reset(request, conversation_id):
     """Close the current conversation and start a fresh one (fresh history)."""
     request_id = _request_id(request)
-    conversation = _get_active_conversation(request.user, conversation_id)
-    if not conversation:
+    # Share the late-reply serialization boundary (issue #487): the row lock
+    # taken here is the same one ``agent_conversation_detail``'s persist step
+    # takes, so a reset can never interleave between that re-check and the
+    # assistant-message insert on backends with FOR UPDATE.
+    new_conversation = None
+    with transaction.atomic():
+        conversation = (
+            JobSearchConversation.objects.select_for_update()
+            .filter(pk=conversation_id, owner=request.user, active=True)
+            .first()
+        )
+        if conversation is not None:
+            conversation.active = False
+            conversation.save(update_fields=["active", "modified"])
+            new_conversation = JobSearchConversation.objects.create(owner=request.user)
+    if conversation is None:
         return _error(
             request, 404, "not_found",
             "Conversation not found or not owned by this user.", request_id,
         )
-    conversation.active = False
-    conversation.save(update_fields=["active", "modified"])
-    new_conversation = JobSearchConversation.objects.create(owner=request.user)
     return JsonResponse(
         serialize_conversation(new_conversation),
         status=201,
@@ -501,16 +600,26 @@ def agent_conversation_reset(request, conversation_id):
 def agent_conversation_delete(request, conversation_id):
     """Permanently delete the user's conversation and its messages."""
     request_id = _request_id(request)
-    conversation = JobSearchConversation.objects.filter(
-        pk=conversation_id, owner=request.user
-    ).first()
-    if not conversation:
+    # Share the late-reply serialization boundary (issue #487): the row lock
+    # taken here is the same one ``agent_conversation_detail``'s persist step
+    # takes, so a delete can never interleave between that re-check and the
+    # assistant-message insert on backends with FOR UPDATE.
+    deleted = False
+    with transaction.atomic():
+        conversation = (
+            JobSearchConversation.objects.select_for_update()
+            .filter(pk=conversation_id, owner=request.user)
+            .first()
+        )
+        if conversation is not None:
+            conversation.messages.all().delete()
+            conversation.delete()
+            deleted = True
+    if not deleted:
         return _error(
             request, 404, "not_found",
             "Conversation not found or not owned by this user.", request_id,
         )
-    conversation.messages.all().delete()
-    conversation.delete()
     return JsonResponse(
         {"deleted": True}, status=200, headers={"X-Request-ID": request_id}
     )

@@ -51,7 +51,7 @@ class _PreferencePort:
     def validate_patch(self, patch):
         self.validated.append(patch)
 
-    def apply_patch(self, patch):
+    def apply_patch(self, patch, expected_modified=None):
         self.applied.append(patch)
         return True
 
@@ -658,9 +658,142 @@ class PublicCacheSeparationTests(TestCase):
             content_type="application/json",
         )
         assert resp.status_code == 201
-        for raw_key in cache._cache:
+        raw_keys = list(cache._cache.keys())
+        assert raw_keys, "expected at least one cache entry"
+        for raw_key in raw_keys:
             # Rate-limit keys must be counters; nothing keyed on content exists.
             assert secret not in raw_key
+            # No cached VALUE carries message content either (the test name's
+            # "key or value" promise; issue #487 review MINOR).
+            value = cache.get(raw_key.replace(":1:", "", 1))
+            assert secret not in repr(value)
+
+    def test_algo_index_view_page_cache_is_anonymous_only_and_public(self):
+        """The ``algo/<id>/`` IndexView page cache never carries account chrome.
+
+        Issue #487 review, MINOR-1: warming this surface and requesting as a
+        second account proved the shared ``cache_page`` entry previously
+        served the first requester's username to every later visitor (the nav
+        chrome renders ``{{ user.username }}``). The page cache is therefore
+        anonymous-only (``cache_page_if_anonymous_method``): anonymous visits
+        share one public entry (the fetch counter pins the hit), while
+        authenticated accounts render fresh and see only their own chrome —
+        never each other's.
+        """
+        from crank.views.index import IndexView
+
+        calls = {"fetches": 0}
+        real_get_queryset = IndexView.get_queryset
+
+        def counting_get_queryset(self):
+            calls["fetches"] += 1
+            return real_get_queryset(self)
+
+        url = reverse("index", args=[5])
+        # The class setUp logs in alice; the page cache is anonymous-only now,
+        # so start from a clean anonymous session.
+        self.client.logout()
+        with patch.object(IndexView, "get_queryset", counting_get_queryset):
+            # Anonymous visit warms the shared page cache.
+            first = self.client.get(url)
+            assert first.status_code == 200
+            assert calls["fetches"] == 1
+            again = self.client.get(url)
+            assert again.status_code == 200
+            assert calls["fetches"] == 1  # cache hit for the second anonymous visit
+            assert first.content == again.content
+
+            # Authenticated accounts render fresh: they never read the shared
+            # entry (which would serve someone else's chrome) and never
+            # poison it with their own.
+            self._login(self.alice)
+            alice_resp = self.client.get(url)
+            assert alice_resp.status_code == 200
+            assert calls["fetches"] == 2
+            self._login(self.bob)
+            bob_resp = self.client.get(url)
+            assert bob_resp.status_code == 200
+            assert calls["fetches"] == 3
+
+            # The shared entry is still the anonymous, username-free payload.
+            self.client.logout()
+            replay = self.client.get(url)
+            assert replay.status_code == 200
+            assert calls["fetches"] == 3  # still the warmed entry
+            assert replay.content == first.content
+
+        # Each account sees only its own chrome; no cross-account leakage.
+        assert b"cachealice" in alice_resp.content
+        assert b"cachebob" not in alice_resp.content
+        assert b"cachebob" in bob_resp.content
+        assert b"cachealice" not in bob_resp.content
+        # The shared public cache entry contains no username at all.
+        assert b"cachealice" not in first.content
+        assert b"cachebob" not in first.content
+        assert b"cachealice" not in replay.content
+        assert b"cachebob" not in replay.content
+
+    def test_funding_choices_second_account_served_from_cache(self):
+        """Funding choices: account B receives the warmed public entry even
+        when the backing fetch would now produce different data."""
+        first = self.client.get(reverse("funding_round_choices"))
+        assert first.status_code == 200
+        self._login(self.bob)
+        with patch.object(
+            Organization,
+            "get_funding_round_choices",
+            return_value={"injected": "backing changed"},
+        ):
+            second = self.client.get(reverse("funding_round_choices"))
+        assert second.status_code == 200
+        # Byte-identical to the warmed entry: account B hit the cache.
+        assert first.content == second.content
+        assert json.loads(second.content) != {"injected": "backing changed"}
+        assert "cachealice" not in second.content.decode()
+
+    def test_rto_choices_second_account_served_from_cache(self):
+        """RTO choices: account B receives the warmed public entry even when
+        the backing fetch would now produce different data."""
+        first = self.client.get(reverse("rto_policy_choices"))
+        assert first.status_code == 200
+        self._login(self.bob)
+        with patch.object(
+            Organization,
+            "get_rto_policy_choices",
+            return_value={"injected": "backing changed"},
+        ):
+            second = self.client.get(reverse("rto_policy_choices"))
+        assert second.status_code == 200
+        assert first.content == second.content
+        assert json.loads(second.content) != {"injected": "backing changed"}
+        assert "cachealice" not in second.content.decode()
+
+    def test_organization_api_second_account_served_from_cache(self):
+        """Organization API: after a DB mutation, account B still receives the
+        warmed (stale) public entry — proving the cache hit — and the payload
+        stays bounded to public fields."""
+        org = Organization.objects.create(
+            name="Cache Org", public=True, status=1,
+            url="https://cache.example.test", funding_round="A", rto_policy="H",
+        )
+        allowed_keys = {
+            "id", "name", "type", "url", "gives_ratings", "public",
+            "accelerated_vesting", "funding_round", "rto_policy",
+        }
+        first = self.client.get(f"/api/organizations/{org.pk}/")
+        assert first.status_code == 200
+        self._login(self.bob)
+        # Backing data changed AFTER the warm: account B must see the cached
+        # (pre-mutation) payload, not a fresh render.
+        Organization.objects.filter(pk=org.pk).update(name="Mutated Org")
+        second = self.client.get(f"/api/organizations/{org.pk}/")
+        assert second.status_code == 200
+        assert first.content == second.content
+        body = json.loads(second.content)
+        assert set(body) == allowed_keys
+        assert body["name"] == "Cache Org"
+        assert "cachealice" not in second.content.decode()
+        assert "cachebob" not in second.content.decode()
 
 
 @override_settings(
@@ -786,6 +919,65 @@ class ScopePinningTests(TestCase):
         assert conv.active
         assert conv.messages.count() == 2
         assert UserPreference.objects.get(pk=pref_id).preferences["notes"] == "mine"
+
+    def test_match_state_changing_endpoints_fail_closed_for_second_account(self):
+        """Issue #487 review MINOR-2: every state-changing match endpoint is
+        owner-pinned. A second account's ``seen`` and ``dismiss`` attempts on a
+        guessed match id 404, and the owner row's ``seen_at``/``dismissed``
+        remain unchanged — completing the synthetic-account endpoint matrix
+        (detail/dismiss were already covered; ``seen`` is pinned here too).
+        """
+        now = timezone.now()
+        source = JobSourceCatalog.objects.create(
+            name="Scope Match Source",
+            adapter_key="fixture.v1",
+            base_url="https://jobs.example.test",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+        )
+        organization = Organization.objects.create(
+            name="Scope Match Org", public=True, status=1
+        )
+        listing = JobListing.all_objects.create(
+            source=source,
+            external_id="scope-match-1",
+            canonical_url="https://scope.example.test/scope-match-1",
+            employer_name=organization.name,
+            title="Engineer",
+            first_seen_at=now - timedelta(days=1),
+            last_seen_at=now,
+            organization=organization,
+        )
+        match = JobMatch.objects.create(
+            user=self.alice,
+            listing=listing,
+            organization=organization,
+            preference_version=1,
+            ranker_version="1",
+            score=1,
+            first_matched_at=now,
+            last_matched_at=now,
+        )
+
+        self._login(self.bob)
+        assert (
+            self.client.post(reverse("job-match-seen", args=[match.pk])).status_code == 404
+        )
+        assert (
+            self.client.post(reverse("job-match-dismiss", args=[match.pk])).status_code == 404
+        )
+
+        # The owner's row is unchanged by every second-account attempt.
+        match.refresh_from_db()
+        assert match.seen_at is None
+        assert match.dismissed is False
+
+        # Positive control: the owner's own seen endpoint mutates only hers.
+        self._login(self.alice)
+        assert self.client.post(reverse("job-match-seen", args=[match.pk])).status_code == 200
+        match.refresh_from_db()
+        assert match.seen_at is not None
+        assert match.dismissed is False
 
 
 @override_settings(

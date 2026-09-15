@@ -81,7 +81,7 @@ class RecordingPreferenceService:
     def validate_patch(self, patch) -> None:
         self.validate_calls += 1
 
-    def apply_patch(self, patch) -> bool:
+    def apply_patch(self, patch, expected_modified=None) -> bool:
         self.apply_calls += 1
         return self.apply_result
 
@@ -169,6 +169,7 @@ class TestPreferenceElicitation:
             user_prompt="I mainly want remote seed-stage startups.",
             conversation=[],
             preference_markdown="",
+            expected_modified="2026-09-14T00:00:00Z",
         )
         # Structure: the patch was validated and applied (saved).
         assert pref.validate_calls == 1
