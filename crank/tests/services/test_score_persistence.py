@@ -659,7 +659,9 @@ class ScoreCacheKeyTests(TestCase):
             f"{version}:organization_scores_api_{self.target.id}",
             f"organization_provenance_api_{self.target.id}",
             f"{version}:algorithm_{self.algo.id}_results",
+            f"algorithm_{self.algo.id}_page",
             f"{version}:algorithm_{self.algo2.id}_results",
+            f"algorithm_{self.algo2.id}_page",
         }
         self.assertEqual(set(keys), expected)
         # Algorithms weighted on a different type are not invalidated by this
@@ -688,10 +690,22 @@ class ScoreCacheKeyTests(TestCase):
                 f"{version}:organization_scores_api_{self.target.id}",
                 f"organization_provenance_api_{self.target.id}",
                 f"{version}:algorithm_{self.algo.id}_results",
+                f"algorithm_{self.algo.id}_page",
                 f"{version}:algorithm_{self.algo2.id}_results",
+                f"algorithm_{self.algo2.id}_page",
                 f"{version}:algorithm_{self.algo3.id}_results",
+                f"algorithm_{self.algo3.id}_page",
             },
         )
+
+    def test_invalidate_clears_full_page_cache_key(self):
+        """The full-page shell cache for /algo/<id>/ is invalidated together
+        with the result keys, so a published score change clears the rendered
+        ranking page (review finding: uninvalidated full-page cache)."""
+        page_key = f"algorithm_{self.algo.id}_page"
+        cache.set(page_key, {"html": "stale ranking"})
+        score_services.invalidate_score_caches(self.target.id, self.score_type.id)
+        self.assertIsNone(cache.get(page_key))
 
     def test_invalidate_clears_every_known_key(self):
         keys = score_services.affected_cache_keys(self.target.id, self.score_type.id)

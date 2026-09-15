@@ -141,6 +141,11 @@ def organization_provenance_api_cache_key(target_id):
     return f"organization_provenance_api_{target_id}"
 
 
+def algorithm_page_cache_key(algorithm_id):
+    """Cache key for the /algo/<id>/ full-page shell (issue #487)."""
+    return f"algorithm_{algorithm_id}_page"
+
+
 # --- Cache invalidation ---------------------------------------------------------
 
 
@@ -148,10 +153,15 @@ def affected_cache_keys(target_id, score_type_id=None):
     """Return every cache key a score for ``target_id`` can invalidate.
 
     Covers the centralized average-score key, the organization detail/scores/
-    provenance API keys, and the algorithm-result keys for every algorithm
-    that weights the changed score type. This is the single source of truth
-    for score cache invalidation, built from the same key constructors every
-    read site uses (the publication outbox sweeps delegate here).
+    provenance API keys, and both the algorithm-result key and the
+    full-page page key for every algorithm that weights the changed score
+    type. This is the single source of truth for score cache invalidation,
+    built from the same key constructors every read site uses (the
+    publication outbox sweeps delegate here). The ``algorithm_{id}_page``
+    keys back the explicitly cached ``/algo/<id>/`` shell
+    (``crank.views.index.algo_page``), so score publication clears the
+    rendered ranking together with the result keys instead of leaving stale
+    HTML until TTL expiry.
     """
     keys = [
         organization_avg_scores_cache_key(target_id),
@@ -168,6 +178,10 @@ def affected_cache_keys(target_id, score_type_id=None):
     keys.extend(
         algorithm_results_cache_key(algorithm_id) for algorithm_id in algorithm_ids
     )
+    keys.extend(
+        algorithm_page_cache_key(algorithm_id) for algorithm_id in algorithm_ids
+    )
+
     return keys
 
 

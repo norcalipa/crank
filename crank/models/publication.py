@@ -43,6 +43,13 @@ class PublicationEvent(models.Model):
             models.Index(
                 fields=["processed_at", "id"], name="crank_pubevent_sweep_idx"
             ),
+            # Documented contract: revision lookups by target (the #462
+            # recompute consumers) index (target_type, target_id) instead of
+            # scanning the outbox.
+            models.Index(
+                fields=["target_type", "target_id"],
+                name="crank_pubevent_target_idx",
+            ),
         ]
 
     def __str__(self):

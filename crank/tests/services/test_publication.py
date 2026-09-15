@@ -84,7 +84,7 @@ class RecordEventTests(TestCase):
         )
         self.assertEqual(event.payload, {})
 
-    def test_record_event_bounds_strings_counts_and_lists(self):
+    def test_record_event_bounds_strings_and_drops_unknown_keys(self):
         event = publication.record_event(
             target_type=PublicationEvent.TargetType.LISTING,
             target_id=1,
@@ -93,15 +93,43 @@ class RecordEventTests(TestCase):
                 "source_key": "x" * 1000,
                 "outcome": "y" * 1000,
                 "ingested": "5",
-                "organization_ids": list(range(1000)),
                 "extra": "dropped",
             },
         )
         self.assertEqual(len(event.payload["source_key"]), 255)
         self.assertEqual(len(event.payload["outcome"]), 255)
         self.assertNotIn("ingested", event.payload)  # string, not int: dropped
+        self.assertNotIn("extra", event.payload)
+
+    def test_record_event_never_truncates_organization_ids(self):
+        """Payload lists are bounded by construction, never silently
+        truncated: an oversized list fails loudly so the caller emits chunked
+        events instead of dropping organization invalidations (review
+        finding: truncated listing targets)."""
+        with self.assertRaises(ValueError):
+            publication.record_event(
+                target_type=PublicationEvent.TargetType.LISTING,
+                target_id=1,
+                event_kind="ingested",
+                payload={
+                    "organization_ids": list(
+                        range(publication.MAX_PAYLOAD_ORGANIZATION_IDS + 1)
+                    )
+                },
+            )
+        event = publication.record_event(
+            target_type=PublicationEvent.TargetType.LISTING,
+            target_id=1,
+            event_kind="ingested",
+            payload={
+                "organization_ids": list(
+                    range(publication.MAX_PAYLOAD_ORGANIZATION_IDS)
+                )
+            },
+        )
         self.assertEqual(
-            event.payload["organization_ids"], list(range(200))
+            len(event.payload["organization_ids"]),
+            publication.MAX_PAYLOAD_ORGANIZATION_IDS,
         )
 
     def test_record_event_rejects_bools_and_non_list_org_ids(self):
@@ -129,7 +157,7 @@ class SweepTests(TestCase):
         for key in keys:
             cache.set(key, {"stale": True})
 
-    def test_sweep_dedupes_to_max_id_and_deletes_union_once(self):
+    def test_sweep_dedupes_keys_and_deletes_each_once(self):
         events = [
             publication.record_event(
                 target_type=PublicationEvent.TargetType.SCORE,
@@ -158,6 +186,81 @@ class SweepTests(TestCase):
         self.assertEqual(
             PublicationEvent.objects.filter(processed_at__isnull=True).count(), 0
         )
+
+    def test_sweep_unions_keys_across_same_target_events(self):
+        """Pending events for the same target can carry different
+        affected-key sets; the sweep must union keys across every selected
+        event so no required invalidation is lost (review finding: lossy
+        sweep deduplication)."""
+        other_type = ScoreType.objects.create(name="Pay")
+        pay_algorithm = ScoreAlgorithm.objects.create(name="Pay Algo")
+        ScoreAlgorithmWeight.objects.create(
+            type=other_type, algorithm=pay_algorithm, weight=1.0
+        )
+        publication.record_event(
+            target_type=PublicationEvent.TargetType.SCORE,
+            target_id=self.org.id,
+            event_kind="changed",
+            payload={"score_type_id": self.score_type.id, "outcome": "changed"},
+        )
+        publication.record_event(
+            target_type=PublicationEvent.TargetType.SCORE,
+            target_id=self.org.id,
+            event_kind="changed",
+            payload={"score_type_id": other_type.id, "outcome": "changed"},
+        )
+        culture_keys = set(
+            score_services.affected_cache_keys(self.org.id, self.score_type.id)
+        )
+        pay_keys = set(score_services.affected_cache_keys(self.org.id, other_type.id))
+        self.assertNotIn(f"algorithm_{pay_algorithm.id}_results", culture_keys)
+        self._seed_keys(culture_keys | pay_keys)
+        counts = publication.sweep_pending()
+        self.assertEqual(counts["scanned"], 2)
+        self.assertEqual(counts["processed"], 2)
+        for key in culture_keys | pay_keys:
+            self.assertIsNone(cache.get(key))
+
+    def test_sweep_unions_listing_chunks_for_same_source(self):
+        """Chunked listing events for one source each contribute their own
+        organization ids; the sweep must invalidate every chunk's
+        organizations (review finding: truncated listing targets)."""
+        org_b = Organization.objects.create(name="Chunk B")
+        org_c = Organization.objects.create(name="Chunk C")
+        for chunk_index, ids in enumerate(([self.org.id, org_b.id], [org_c.id])):
+            publication.record_event(
+                target_type=PublicationEvent.TargetType.LISTING,
+                target_id=99,
+                event_kind="ingested",
+                payload={
+                    "organization_ids": ids,
+                    "chunk_index": chunk_index,
+                    "chunk_count": 2,
+                },
+            )
+        keys = set()
+        for organization_id in (self.org.id, org_b.id, org_c.id):
+            keys.update(score_services.affected_cache_keys(organization_id, None))
+        self._seed_keys(keys)
+        counts = publication.sweep_pending()
+        self.assertEqual(counts["processed"], 2)
+        for key in keys:
+            self.assertIsNone(cache.get(key))
+
+    def test_score_event_sweep_clears_full_page_cache_key(self):
+        """The full-page shell cache for /algo/<id>/ is an affected key, so
+        a score publication sweep clears the rendered ranking page together
+        with the result keys (review finding: uninvalidated full-page cache)."""
+        page_key = f"algorithm_{self.algorithm.id}_page"
+        cache.set(page_key, {"html": "stale ranking"})
+        publication.record_event(
+            target_type=PublicationEvent.TargetType.SCORE,
+            target_id=self.org.id,
+            event_kind="changed",
+            payload={"score_type_id": self.score_type.id, "outcome": "changed"},
+        )
+        publication.sweep_pending()
+        self.assertIsNone(cache.get(page_key))
 
     def test_sweep_rerun_is_noop(self):
         publication.record_event(
@@ -229,6 +332,7 @@ class SweepTests(TestCase):
         keys = publication.affected_keys(event)
         self.assertIn(f"organization_provenance_api_{self.org.id}", keys)
         self.assertIn(f"algorithm_{self.algorithm.id}_results", keys)
+        self.assertIn(f"algorithm_{self.algorithm.id}_page", keys)
 
     def test_affected_keys_for_organization_event_include_provenance_key(self):
         event = publication.record_event(

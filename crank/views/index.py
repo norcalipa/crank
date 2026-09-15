@@ -137,6 +137,14 @@ class IndexView(generic.ListView):
 
         context['top_organization_list'] = list(self.object_list)
 
+        # The /algo/<id>/ route is full-page cached and shared across every
+        # account (issue #470): its shell renders auth-neutral (nav auth
+        # controls present but hidden, auth dataset attributes neutral) and
+        # app-nav.js hydrates auth-dependent state per request from the
+        # uncached whoami endpoint. Server-rendered pages keep the
+        # user-specific branches.
+        context['auth_neutral_shell'] = 'algorithm_id' in self.kwargs
+
         return context
 
     def get_algorithm_details(self):
@@ -154,3 +162,30 @@ class IndexView(generic.ListView):
             self.algorithm.html_description_content = cache.get_or_set(
                 f'algorithm_{self.algorithm_id}_description', get_html_content(), timeout=settings.CACHE_MIDDLEWARE_SECONDS)
         return self.algorithm
+
+
+def algo_page(request, algorithm_id):
+    """Explicitly keyed full-page cache for the /algo/<algorithm_id>/ shell.
+
+    ``cache_page`` derives its key from the request (URL, Vary headers,
+    cookies), so the publication outbox cannot invalidate the rendered page;
+    issue #470 publishes score changes as events whose affected keys must
+    clear the full-page HTML together with the algorithm result keys. This
+    view caches the rendered shell under ``algorithm_{algorithm_id}_page`` —
+    a key listed in ``scores.affected_cache_keys`` — so both the
+    ``on_commit`` fast path and the publication sweep clear it. The shell is
+    auth-neutral (see ``_navigation.html``), so one entry safely serves every
+    account; POST (filter submissions) is never cached.
+    """
+    cache_key = f'algorithm_{algorithm_id}_page'
+    if request.method == 'GET':
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+    response = IndexView.as_view()(request, algorithm_id=algorithm_id)
+    if request.method == 'GET' and response.status_code == 200:
+        # TemplateResponse must be rendered before it can be cached.
+        if hasattr(response, 'render') and getattr(response, 'is_rendered', None) is False:
+            response.render()
+        cache.set(cache_key, response, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
+    return response

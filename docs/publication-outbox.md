@@ -37,11 +37,17 @@ Rejected alternatives (see the issue plan for full reasoning):
 - `id` — auto-increment PK; **the data revision identity**.
 - `target_type` — `organization` | `score` | `listing`.
 - `target_id` — indexed integer id of the changed row (no FK; events survive
-  target deletion).
+  target deletion). Indexed via `(target_type, target_id)`
+  (`crank_pubevent_target_idx`) so revision lookups by target (#462
+  consumers) never scan the outbox.
 - `event_kind` — `created` | `changed` | `observed` | `ingested`.
 - `payload` — bounded, allowlisted JSON (`score_type_id`, `source_id`,
-  `observation_id`, counters, `organization_ids` capped at 200). No user
-  content, no credentials; strings are truncated.
+  `observation_id`, counters, `chunk_index`/`chunk_count`, and
+  `organization_ids` chunked at ≤200 per event). Payload lists are bounded
+  by construction and never silently truncated: a writer that needs more ids
+  emits multiple chunk events, and an oversized list fails loudly instead of
+  dropping invalidations. No user content, no credentials; strings are
+  truncated.
 - `created_at`, `processed_at` (null until swept; indexed, plus a
   `(processed_at, id)` index for the sweep query).
 
@@ -52,9 +58,15 @@ Writers (all in the same transaction as the accepted change):
 - `crank/services/company_crawler.py` — one organization event per
   `CompanyProfileObservation` create with a resolved organization (any
   non-rejected observation changes the public provenance payload).
-- `crank/services/job_pipeline.py` — one bounded listing event per
-  successfully ingested source per run (payload = that source's employer
-  organization ids); failed sources record none.
+- `crank/services/job_pipeline.py` — listing events for each source stage,
+  recorded **inside the same transaction as the source's accepted writes**:
+  the events commit exactly when the writes commit, an outbox insert failure
+  (or any crash in the block) rolls the writes back, and a source with
+  partial row failures still publishes the rows it accepted. The payload
+  carries the source's deduplicated employer organization ids split into
+  bounded chunks (`chunk_index`/`chunk_count`), so every organization is
+  published even when a source maps to more organizations than one payload
+  chunk holds.
 
 ## Consumer
 
@@ -66,11 +78,17 @@ Per sweep, bounded by `--limit` (default `PUBLICATION_SWEEP_BATCH_SIZE`,
 500):
 
 1. Select pending events (`processed_at IS NULL`) ordered by `id`.
-2. Collapse duplicates per `(target_type, target_id)` to the max id — the
-   latest payload carries the same or broader invalidation information.
-3. Delete the union of affected cache keys **once** (keys computed by
-   `scores.affected_cache_keys`, the centralized function, which includes the
-   `organization_provenance_api_{pk}` key).
+2. Union the affected cache keys across **every** selected event — pending
+   events for the same `(target_type, target_id)` can carry different
+   affected-key sets (score events with different `score_type_id`s weight
+   different algorithms; chunked listing events carry different
+   organization ids), so collapsing to the latest payload would drop
+   required invalidations.
+3. Delete the deduplicated key set **once** (keys computed by
+   `scores.affected_cache_keys`, the centralized function, which includes
+   the `organization_provenance_api_{pk}` key and both the
+   `algorithm_{id}_results` key and the full-page `algorithm_{id}_page`
+   shell key backing the `/algo/<id>/` cached view).
 4. Mark the swept rows processed with a conditional
    `processed_at IS NULL` update.
 

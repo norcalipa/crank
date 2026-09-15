@@ -27,8 +27,12 @@
                     </li>
                 {% endfor %}
 
-                {% if user.is_authenticated %}
-                    <li>
+                {% if user.is_authenticated or auth_neutral_shell %}
+                    {# The full-page-cached /algo/ shell renders auth-neutral
+                       for every account (issue #470): auth-dependent controls
+                       are always present but hidden, and app-nav.js reveals
+                       them per request from the uncached whoami endpoint. #}
+                    <li {% if auth_neutral_shell %}hidden data-nav-auth-only{% endif %}>
                         <a href="/admin/"
                            id="nav-admin"
                            class="app-nav-link{% if nav_is_admin %} app-nav-link--active{% endif %}"
@@ -41,36 +45,44 @@
             </ul>
 
             <div class="app-nav-footer">
-                {% if user.is_authenticated %}
-                    {# The shared page cache serves this shell to every account
-                       (issue #470), so it embeds no username or session-bound
-                       CSRF token; app-nav.js fills the label per request. #}
-                    <div class="app-nav-user" id="nav-account">
-                        <i class="fa-solid fa-user-circle" aria-hidden="true"></i>
-                        <span class="app-nav-label" data-nav-user-label>Account</span>
+                {% if user.is_authenticated or auth_neutral_shell %}
+                    <div class="app-nav-user-group"{% if auth_neutral_shell %} hidden data-nav-auth-only{% endif %}>
+                        {# The shell embeds no username (issue #470): app-nav.js
+                           fills the label per request from whoami. Server-rendered
+                           pages embed a per-session CSRF token in the logout
+                           form; the shared cached shell stays token-free and
+                           app-nav.js submits it with the CSRF cookie. #}
+                        <div class="app-nav-user" id="nav-account">
+                            <i class="fa-solid fa-user-circle" aria-hidden="true"></i>
+                            <span class="app-nav-label" data-nav-user-label>Account</span>
+                        </div>
+                        <form method="post" action="{% url 'account_logout' %}" class="app-nav-logout-form"{% if auth_neutral_shell %} data-nav-js-logout{% endif %}>
+                            {% if not auth_neutral_shell %}{% csrf_token %}{% endif %}
+                            <button type="submit" class="app-nav-link app-nav-link--logout">
+                                <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
+                                <span class="app-nav-label">Logout</span>
+                            </button>
+                        </form>
                     </div>
-                    <form method="post" action="{% url 'account_logout' %}" class="app-nav-logout-form">
-                        <button type="submit" class="app-nav-link app-nav-link--logout">
-                            <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
-                            <span class="app-nav-label">Logout</span>
-                        </button>
-                    </form>
-                {% else %}
-                    <a href="{% url 'account_login' %}"
-                       id="nav-login"
-                       class="app-nav-link{% if request.path == '/accounts/login/' %} app-nav-link--active{% endif %}"
-                       {% if request.path == '/accounts/login/' %}aria-current="page"{% endif %}>
-                        <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i>
-                        <span class="app-nav-label">Login</span>
-                    </a>
-                    {% get_cached_social_app 'google' as social_app %}
-                    {% if social_app %}
-                        <a href="{% provider_login_url 'google' %}"
-                           class="app-nav-link app-nav-link--google">
-                            <i class="fab fa-google" aria-hidden="true"></i>
-                            <span class="app-nav-label">Google</span>
+                {% endif %}
+                {% if not user.is_authenticated or auth_neutral_shell %}
+                    <div class="app-nav-anon-group"{% if auth_neutral_shell %} hidden data-nav-anon-only{% endif %}>
+                        <a href="{% url 'account_login' %}"
+                           id="nav-login"
+                           class="app-nav-link{% if request.path == '/accounts/login/' %} app-nav-link--active{% endif %}"
+                           {% if request.path == '/accounts/login/' %}aria-current="page"{% endif %}>
+                            <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i>
+                            <span class="app-nav-label">Login</span>
                         </a>
-                    {% endif %}
+                        {% get_cached_social_app 'google' as social_app %}
+                        {% if social_app %}
+                            <a href="{% provider_login_url 'google' %}"
+                               class="app-nav-link app-nav-link--google">
+                                <i class="fab fa-google" aria-hidden="true"></i>
+                                <span class="app-nav-label">Google</span>
+                            </a>
+                        {% endif %}
+                    </div>
                 {% endif %}
             </div>
         </nav>
@@ -114,8 +126,8 @@
                     </li>
                 {% endfor %}
 
-                {% if user.is_authenticated %}
-                    <li>
+                {% if user.is_authenticated or auth_neutral_shell %}
+                    <li {% if auth_neutral_shell %}hidden data-nav-auth-only{% endif %}>
                         <a href="/admin/"
                            class="app-nav-link{% if nav_is_admin %} app-nav-link--active{% endif %}"
                            {% if nav_is_admin %}aria-current="page"{% endif %}>
@@ -127,32 +139,38 @@
             </ul>
 
             <div class="app-nav-footer">
-                {% if user.is_authenticated %}
-                    <div class="app-nav-user">
-                        <i class="fa-solid fa-user-circle" aria-hidden="true"></i>
-                        <span class="app-nav-label" data-nav-user-label>Account</span>
+                {% if user.is_authenticated or auth_neutral_shell %}
+                    <div class="app-nav-user-group"{% if auth_neutral_shell %} hidden data-nav-auth-only{% endif %}>
+                        <div class="app-nav-user">
+                            <i class="fa-solid fa-user-circle" aria-hidden="true"></i>
+                            <span class="app-nav-label" data-nav-user-label>Account</span>
+                        </div>
+                        <form method="post" action="{% url 'account_logout' %}" class="app-nav-logout-form"{% if auth_neutral_shell %} data-nav-js-logout{% endif %}>
+                            {% if not auth_neutral_shell %}{% csrf_token %}{% endif %}
+                            <button type="submit" class="app-nav-link app-nav-link--logout">
+                                <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
+                                <span class="app-nav-label">Logout</span>
+                            </button>
+                        </form>
                     </div>
-                    <form method="post" action="{% url 'account_logout' %}" class="app-nav-logout-form">
-                        <button type="submit" class="app-nav-link app-nav-link--logout">
-                            <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
-                            <span class="app-nav-label">Logout</span>
-                        </button>
-                    </form>
-                {% else %}
-                    <a href="{% url 'account_login' %}"
-                       class="app-nav-link{% if request.path == '/accounts/login/' %} app-nav-link--active{% endif %}"
-                       {% if request.path == '/accounts/login/' %}aria-current="page"{% endif %}>
-                        <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i>
-                        <span class="app-nav-label">Login</span>
-                    </a>
-                    {% get_cached_social_app 'google' as social_app %}
-                    {% if social_app %}
-                        <a href="{% provider_login_url 'google' %}"
-                           class="app-nav-link app-nav-link--google">
-                            <i class="fab fa-google" aria-hidden="true"></i>
-                            <span class="app-nav-label">Google</span>
+                {% endif %}
+                {% if not user.is_authenticated or auth_neutral_shell %}
+                    <div class="app-nav-anon-group"{% if auth_neutral_shell %} hidden data-nav-anon-only{% endif %}>
+                        <a href="{% url 'account_login' %}"
+                           class="app-nav-link{% if request.path == '/accounts/login/' %} app-nav-link--active{% endif %}"
+                           {% if request.path == '/accounts/login/' %}aria-current="page"{% endif %}>
+                            <i class="fa-solid fa-right-to-bracket" aria-hidden="true"></i>
+                            <span class="app-nav-label">Login</span>
                         </a>
-                    {% endif %}
+                        {% get_cached_social_app 'google' as social_app %}
+                        {% if social_app %}
+                            <a href="{% provider_login_url 'google' %}"
+                               class="app-nav-link app-nav-link--google">
+                                <i class="fab fa-google" aria-hidden="true"></i>
+                                <span class="app-nav-label">Google</span>
+                            </a>
+                        {% endif %}
+                    </div>
                 {% endif %}
             </div>
         </nav>

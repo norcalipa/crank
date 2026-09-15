@@ -393,6 +393,9 @@ class ApiViewsTestCase(TestCase):
         response = self.client.get(reverse('account-whoami'))
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.content), {"authenticated": False})
+        # Non-cacheable so account switching can never replay a stale
+        # identity (issue #470 review).
+        self.assertEqual(response["Cache-Control"], "private, no-store")
 
     def test_account_whoami_returns_only_callers_own_username(self):
         user = User.objects.create_user(
@@ -405,3 +408,11 @@ class ApiViewsTestCase(TestCase):
         self.assertEqual(
             data, {"authenticated": True, "username": "whoami-user"}
         )
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+
+    def test_account_whoami_sets_csrf_cookie_for_cached_shell_logout(self):
+        """@ensure_csrf_cookie: the token-free cached shell's JS logout can
+        pass the CSRF check with the cookie this response guarantees."""
+        response = self.client.get(reverse('account-whoami'))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("csrftoken", response.cookies)

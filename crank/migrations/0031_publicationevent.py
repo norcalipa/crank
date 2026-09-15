@@ -29,7 +29,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'ordering': ['id'],
-                'indexes': [models.Index(fields=['processed_at', 'id'], name='crank_pubevent_sweep_idx')],
+                'indexes': [models.Index(fields=['processed_at', 'id'], name='crank_pubevent_sweep_idx'), models.Index(fields=['target_type', 'target_id'], name='crank_pubevent_target_idx')],
             },
         ),
     ]

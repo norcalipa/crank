@@ -221,11 +221,9 @@ class IndexViewTests(TestCase):
         self.assertContains(response, 'data-can-suggest-company="false"')
 
     def test_cached_algo_page_identical_across_accounts_and_user_free(self):
-        """The cache_page'd algo view serves every account the same payload.
-
-        Public cached pages (issue #470 AC6) must never contain another
-        account's private shell/history/preferences.
-        """
+        """The full-page-cached algo view serves every account the same
+        auth-neutral payload, including across cookie differences (issue
+        #470 AC6; review finding: auth-dependent cached shell)."""
         self.setup_scores()
         user_a = User.objects.create_user(
             "cache-user-a", "cache-user-a@example.com", "pw12345"
@@ -234,19 +232,70 @@ class IndexViewTests(TestCase):
             "cache-user-b", "cache-user-b@example.com", "pw12345"
         )
         algo_url = f"/algo/{DEFAULT_ALGORITHM_ID}/"
+        anonymous = self.client.get(algo_url)
+        self.assertEqual(anonymous.status_code, 200)
         self.client.force_login(user_a)
         first = self.client.get(algo_url)
         self.assertEqual(first.status_code, 200)
         self.client.force_login(user_b)
         second = self.client.get(algo_url)
         self.assertEqual(second.status_code, 200)
+        # A different session cookie and CSRF cookie must not change the
+        # served payload either.
+        varied_cookies = self.client.get(
+            algo_url,
+            HTTP_COOKIE="sessionid=bogus; csrftoken=bogus",
+        )
+        self.assertEqual(varied_cookies.status_code, 200)
         self.assertEqual(first.content, second.content)
-        for marker in (b"cache-user-a", b"cache-user-b", b"@example.com"):
+        self.assertEqual(anonymous.content, second.content)
+        self.assertEqual(varied_cookies.content, second.content)
+        for marker in (
+            b"cache-user-a",
+            b"cache-user-b",
+            b"@example.com",
+            b"csrfmiddlewaretoken",
+        ):
             self.assertNotIn(marker, second.content)
+        # The cached shell renders auth-neutral: both auth control groups
+        # are present but hidden and revealed client-side from whoami, and
+        # the React list's auth flags default to anonymous until hydration.
+        self.assertContains(second, "data-nav-auth-only")
+        self.assertContains(second, "data-nav-anon-only")
+        self.assertContains(second, 'data-authenticated="false"')
+        self.assertContains(second, 'data-can-suggest-company="false"')
         # No per-user surface (rate-limit keys job_search_rl:*) is ever
         # written into the public cache by these page requests.
         for key in cache._cache:
             self.assertNotIn("job_search_rl", str(key))
+
+    def test_algo_page_cache_uses_invalidatable_key_and_score_events_clear_it(self):
+        """The algo shell caches under algorithm_<id>_page — a key listed in
+        scores.affected_cache_keys — instead of cache_page's request-derived
+        key, so score publication clears the rendered page together with the
+        result keys (review finding: uninvalidated full-page cache)."""
+        self.setup_scores()
+        from crank.services import publication
+
+        algo_url = f"/algo/{DEFAULT_ALGORITHM_ID}/"
+        page_key = f"algorithm_{DEFAULT_ALGORITHM_ID}_page"
+        first = self.client.get(algo_url)
+        self.assertEqual(first.status_code, 200)
+        self.assertIsNotNone(cache.get(page_key))
+
+        publication.record_event(
+            target_type="score",
+            target_id=self.organization1.id,
+            event_kind="changed",
+            payload={"score_type_id": 1, "outcome": "changed"},
+        )
+        publication.sweep_pending()
+        self.assertIsNone(cache.get(page_key))
+
+        # The next request re-primes the cache and is served from it after.
+        second = self.client.get(algo_url)
+        self.assertEqual(second.status_code, 200)
+        self.assertIsNotNone(cache.get(page_key))
 
     def test_template_else_branch_shows_message_when_no_algorithm(self):
         ScoreAlgorithm.objects.all().delete()

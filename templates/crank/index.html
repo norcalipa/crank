@@ -36,10 +36,14 @@
                 </div>
                 <div class="col-12 col-md-8">
                     <div class="align-content-end">
-                        <div id="organization-list" data-authenticated="{{ user.is_authenticated|yesno:'true,false' }}"></div>
+                        {# The full-page-cached shell renders auth-neutral for
+                           every account (issue #470); app-nav.js hydrates these
+                           flags per request from the uncached whoami endpoint. #}
+                        <div id="organization-list"
+                             data-authenticated="{% if auth_neutral_shell %}false{% else %}{{ user.is_authenticated|yesno:'true,false' }}{% endif %}"></div>
                         {{ top_organization_list|json_script:"organization-data" }}
                         <span id="organization-list-config"
-                              data-can-suggest-company="{{ user.is_authenticated|yesno:'true,false' }}"></span>
+                              data-can-suggest-company="{% if auth_neutral_shell %}false{% else %}{{ user.is_authenticated|yesno:'true,false' }}{% endif %}"></span>
                     </div>
                 </div>
             </div>

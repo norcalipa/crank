@@ -31,3 +31,27 @@ class LogoutViewTests(TestCase):
         self.client.post(reverse('account_logout'))
         _ = self.client.get(reverse('index'))
         self.assertNotIn('_auth_user_id', self.client.session)
+
+    def test_logout_post_requires_csrf_token(self):
+        """The global csrf_exempt was removed (issue #470 review): a
+        cross-origin POST without a token can no longer force-logout a
+        signed-in user."""
+        client = Client(enforce_csrf_checks=True)
+        client.login(username='testuser', password='testpassword')
+        response = client.post(reverse('account_logout'))
+        self.assertEqual(response.status_code, 403)
+
+    def test_logout_post_with_token_succeeds(self):
+        """The whoami hydration endpoint guarantees a CSRF cookie, so the
+        token-free cached shell's JS logout passes the same check."""
+        client = Client(enforce_csrf_checks=True)
+        client.login(username='testuser', password='testpassword')
+        client.get(reverse('account-whoami'))
+        token = client.cookies['csrftoken'].value
+        response = client.post(
+            reverse('account_logout'),
+            data={'csrfmiddlewaretoken': token},
+        )
+        self.assertRedirects(response, reverse('index'))
+        _ = client.get(reverse('index'))
+        self.assertNotIn('_auth_user_id', client.session)

@@ -6,12 +6,13 @@ Write side: ``record_event`` inserts one bounded ``PublicationEvent`` inside
 the caller's transaction, in the same transaction as the accepted change it
 describes, so the event commits exactly when the data commits and a
 rolled-back batch leaves no event. Consume side: ``sweep_pending`` processes
-pending events ordered by id, collapses duplicates per
-``(target_type, target_id)`` to the max id, deletes each affected cache key
-once, and marks processed. It is idempotent and crash-safe: cache keys are
-deleted *before* ``processed_at`` is set, so a crash at any point only ever
-re-runs idempotent deletions. Redis is strictly a cache; this table is the
-durable record of required publication work.
+pending events ordered by id, unions the affected cache keys across every
+selected event (pending events for the same target can carry different
+affected-key sets, e.g. score types or id chunks), deletes the deduplicated
+key set once, and marks processed. It is idempotent and crash-safe: cache
+keys are deleted *before* ``processed_at`` is set, so a crash at any point
+only ever re-runs idempotent deletions. Redis is strictly a cache; this
+table is the durable record of required publication work.
 """
 
 import logging
@@ -37,13 +38,20 @@ _PAYLOAD_INT_KEYS = frozenset(
         "updated",
         "resolved",
         "unresolved",
+        "chunk_index",
+        "chunk_count",
     }
 )
 _PAYLOAD_STRING_KEYS = frozenset({"outcome", "source_key", "status"})
 _PAYLOAD_LIST_KEYS = frozenset({"organization_ids"})
 _PAYLOAD_STRING_MAX_LENGTH = 255
 _MAX_PAYLOAD_KEYS = 8
-_MAX_PAYLOAD_ORGANIZATION_IDS = 200
+# Per-event bound for ``organization_ids``. Payload lists are bounded by
+# construction, never silently truncated: writers that need more ids emit
+# chunked events (``chunk_index``/``chunk_count``) so every organization is
+# published. An oversized list fails loudly instead of dropping
+# invalidations.
+MAX_PAYLOAD_ORGANIZATION_IDS = 200
 
 
 def _clean_payload(payload):
@@ -51,9 +59,11 @@ def _clean_payload(payload):
 
     Non-dict input yields ``{}``. Unknown keys are dropped, ints are kept only
     under integer keys (bools are rejected), strings are truncated, and
-    ``organization_ids`` keeps only the first
-    ``_MAX_PAYLOAD_ORGANIZATION_IDS`` integers. The result is JSON-friendly
-    and never carries user content or credentials.
+    ``organization_ids`` keeps every valid int but raises ``ValueError`` when
+    the list exceeds ``MAX_PAYLOAD_ORGANIZATION_IDS`` — a list larger than one
+    payload chunk must be split into chunked events by the writer, never
+    silently truncated here. The result is JSON-friendly and never carries
+    user content or credentials.
     """
     if not isinstance(payload, dict):
         return {}
@@ -68,10 +78,14 @@ def _clean_payload(payload):
         elif key in _PAYLOAD_LIST_KEYS and isinstance(value, (list, tuple)):
             ids = []
             for item in value:
-                if len(ids) >= _MAX_PAYLOAD_ORGANIZATION_IDS:
-                    break
                 if isinstance(item, int) and not isinstance(item, bool):
                     ids.append(item)
+            if len(ids) > MAX_PAYLOAD_ORGANIZATION_IDS:
+                raise ValueError(
+                    "organization_ids exceeds the per-event bound of "
+                    f"{MAX_PAYLOAD_ORGANIZATION_IDS}; emit chunked events "
+                    "instead of dropping organization invalidations"
+                )
             cleaned[key] = ids
     return cleaned
 
@@ -128,12 +142,15 @@ def affected_keys(event):
 def sweep_pending(limit=None):
     """Process pending publication events; return bounded counts.
 
-    Orders pending events by id, collapses duplicates per
-    ``(target_type, target_id)`` to the max id (the latest payload carries the
-    same or broader invalidation information), deletes the union of affected
-    cache keys once, then marks the swept rows processed with a conditional
-    update so a concurrent sweep can neither double-count nor un-process rows.
-    A crash before the update leaves rows pending; the next sweep re-runs the
+    Orders pending events by id, unions the affected cache keys across every
+    selected event — pending events for the same ``(target_type, target_id)``
+    can carry different affected-key sets (score events with different
+    ``score_type_id``s weight different algorithms; chunked listing events
+    carry different organization ids), so collapsing to the latest payload
+    would drop required invalidations — deletes the deduplicated key set
+    once, then marks the swept rows processed with a conditional update so a
+    concurrent sweep can neither double-count nor un-process rows. A crash
+    before the update leaves rows pending; the next sweep re-runs the
     idempotent cache deletions.
     """
     limit = max(
@@ -147,11 +164,11 @@ def sweep_pending(limit=None):
     counts = {"scanned": len(batch), "processed": 0, "keys_deleted": 0}
     if not batch:
         return counts
-    survivors = {}
-    for event in batch:
-        survivors[(event["target_type"], event["target_id"])] = event
+    # Union the affected keys of every selected event: keeping only the
+    # latest payload per target would lose required invalidations when
+    # events for the same target carry different key dimensions.
     keys = set()
-    for event in survivors.values():
+    for event in batch:
         keys.update(
             affected_keys(
                 PublicationEvent(
@@ -194,4 +211,10 @@ def consumer_enabled():
     return monitoring.capability_enabled("publication_consumer", default=True)
 
 
-__all__ = ["affected_keys", "consumer_enabled", "record_event", "sweep_pending"]
+__all__ = [
+    "MAX_PAYLOAD_ORGANIZATION_IDS",
+    "affected_keys",
+    "consumer_enabled",
+    "record_event",
+    "sweep_pending",
+]
