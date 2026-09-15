@@ -1,10 +1,22 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from unittest import skipUnless
 from unittest.mock import patch
 
 from django.core.cache import cache
-from django.db import IntegrityError, transaction
-from django.test import TestCase, override_settings
+from django.db import (
+    IntegrityError,
+    connection,
+    connections,
+    transaction,
+)
+from django.test import (
+    TestCase,
+    TransactionTestCase,
+    override_settings,
+)
 from django.utils import timezone
 
 from crank.models.agent_run import AgentRun
@@ -13,6 +25,7 @@ from crank.models.score import (
     Score,
     ScoreAlgorithm,
     ScoreAlgorithmWeight,
+    ScoreTupleAnchor,
     ScoreType,
 )
 from crank.services import scores as score_services
@@ -551,33 +564,42 @@ class ScoreCacheKeyTests(TestCase):
 
     def test_every_known_cache_key(self):
         keys = score_services.affected_cache_keys(self.target.id, self.score_type.id)
+        version = score_services.SCORE_CACHE_KEY_VERSION
         expected = {
-            f"organization_{self.target.id}_avg_scores",
+            f"{version}:organization_{self.target.id}_avg_scores",
             f"organization_api_{self.target.id}",
-            f"organization_scores_api_{self.target.id}",
-            f"algorithm_{self.algo.id}_results",
-            f"algorithm_{self.algo2.id}_results",
+            f"{version}:organization_scores_api_{self.target.id}",
+            f"{version}:algorithm_{self.algo.id}_results",
+            f"{version}:algorithm_{self.algo2.id}_results",
         }
         self.assertEqual(set(keys), expected)
         # Algorithms weighted on a different type are not invalidated by this
         # type's writes, and inactive algorithms are excluded.
-        self.assertNotIn(f"algorithm_{self.algo3.id}_results", keys)
-        self.assertNotIn(f"algorithm_{self.inactive_algo.id}_results", keys)
+        self.assertNotIn(f"{version}:algorithm_{self.algo3.id}_results", keys)
+        self.assertNotIn(f"{version}:algorithm_{self.inactive_algo.id}_results", keys)
+        # Every score-derived key is versioned away from its pre-#461 name, so
+        # a deploy can never serve a stale pre-fix cache entry (the
+        # organization-detail key serves attributes only and intentionally
+        # stays unversioned).
+        self.assertNotIn(f"organization_{self.target.id}_avg_scores", keys)
+        self.assertNotIn(f"organization_scores_api_{self.target.id}", keys)
+        self.assertNotIn(f"algorithm_{self.algo.id}_results", keys)
 
     def test_without_type_invalidates_all_active_algorithm_results(self):
         # When the changed type is unknown we cannot narrow the affected set, so
         # every active algorithm's result key is invalidated (none of the
         # algorithm-result keys are served for inactive algorithms).
+        version = score_services.SCORE_CACHE_KEY_VERSION
         result = score_services.affected_cache_keys(self.target.id, None)
         self.assertEqual(
             set(result),
             {
-                f"organization_{self.target.id}_avg_scores",
+                f"{version}:organization_{self.target.id}_avg_scores",
                 f"organization_api_{self.target.id}",
-                f"organization_scores_api_{self.target.id}",
-                f"algorithm_{self.algo.id}_results",
-                f"algorithm_{self.algo2.id}_results",
-                f"algorithm_{self.algo3.id}_results",
+                f"{version}:organization_scores_api_{self.target.id}",
+                f"{version}:algorithm_{self.algo.id}_results",
+                f"{version}:algorithm_{self.algo2.id}_results",
+                f"{version}:algorithm_{self.algo3.id}_results",
             },
         )
 
@@ -698,4 +720,331 @@ class ActiveScoreSummaryRowsTests(TestCase):
         self.assertEqual(
             list(rows),
             [{"target_id": self.target.id, "type__name": "Culture", "avg_score": 5.0}],
+        )
+
+
+@override_settings(
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "score-cache-versioning-tests",
+        }
+    }
+)
+class ScoreCacheVersioningTests(TestCase):
+    """Post-deploy rollout regression (issue #461 review, finding 1).
+
+    A deploy swaps the code while the shared cache keeps whatever the
+    previous build wrote. The pre-#461 keys held values whose semantics
+    changed in #461 (they can average superseded rows), so the versioned key
+    builders must make those entries unreachable without any deploy-time
+    purge.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.source = Organization.objects.create(
+            name="Source Org", gives_ratings=True
+        )
+        self.target = Organization.objects.create(name="Target Org")
+        self.type_a = ScoreType.objects.create(name="Culture")
+        # The exact history #461 is about: a superseded 1.0 replaced by 5.0.
+        Score.objects.create(
+            source=self.source,
+            target=self.target,
+            type=self.type_a,
+            score=1.0,
+            status=Score.INACTIVE_STATUS,
+        )
+        Score.objects.create(
+            source=self.source, target=self.target, type=self.type_a, score=5.0
+        )
+        # What a pre-#461 deployment cached for this target: the superseded
+        # row averaged in ((1.0 + 5.0) / 2 == 3.0).
+        self.pre_fix_rows = [{"type__name": "Culture", "avg_score": 3.0}]
+        cache.set(f"organization_{self.target.id}_avg_scores", self.pre_fix_rows)
+
+    def test_score_read_keys_carry_the_version_prefix(self):
+        version = score_services.SCORE_CACHE_KEY_VERSION
+        self.assertEqual(
+            score_services.organization_avg_scores_cache_key(7),
+            f"{version}:organization_7_avg_scores",
+        )
+        self.assertEqual(
+            score_services.organization_scores_api_cache_key(7),
+            f"{version}:organization_scores_api_7",
+        )
+        self.assertEqual(
+            score_services.algorithm_results_cache_key(3),
+            f"{version}:algorithm_3_results",
+        )
+        # The organization-detail response carries attributes only; #461 did
+        # not change its values, so pre-deploy entries stay valid and its key
+        # is intentionally NOT rotated.
+        self.assertEqual(
+            score_services.organization_api_cache_key(7), "organization_api_7"
+        )
+
+    def test_avg_scores_never_serves_the_pre_fix_entry(self):
+        self.assertEqual(
+            self.target.avg_scores(),
+            [{"type__name": "Culture", "avg_score": 5.0}],
+        )
+
+    def test_avg_scores_populates_only_the_versioned_key(self):
+        self.target.avg_scores()
+        versioned_rows = [{"type__name": "Culture", "avg_score": 5.0}]
+        self.assertEqual(
+            cache.get(
+                score_services.organization_avg_scores_cache_key(self.target.id)
+            ),
+            versioned_rows,
+        )
+        # The pre-fix entry is abandoned in place: never read again, it ages
+        # out via TTL.
+        self.assertEqual(
+            cache.get(f"organization_{self.target.id}_avg_scores"),
+            self.pre_fix_rows,
+        )
+
+    def test_persisting_invalidates_only_the_versioned_key(self):
+        versioned_key = score_services.organization_avg_scores_cache_key(
+            self.target.id
+        )
+        cache.set(versioned_key, "stale")
+        with self.captureOnCommitCallbacks(execute=True):
+            score_services.persist_score_observation(
+                source=self.source,
+                target=self.target,
+                score_type=self.type_a,
+                value=5.0,
+                provenance={
+                    "external_id": "ext-versioning",
+                    "source_url": "https://ratings.example.com/org/target",
+                    "adapter_version": "v1",
+                    "observed_at": "2026-09-14T00:00:00Z",
+                    "raw_value": "5.0",
+                },
+            )
+        self.assertIsNone(cache.get(versioned_key))
+        # The pre-fix entry still sits under the legacy key, unread.
+        self.assertEqual(
+            cache.get(f"organization_{self.target.id}_avg_scores"),
+            self.pre_fix_rows,
+        )
+
+
+class ScoreTupleAnchorTests(TestCase):
+    """The per-tuple anchor row that makes an empty tuple lockable (finding 2).
+
+    MySQL cannot emit the partial unique constraint on Score (W036) and
+    select_for_update cannot lock rows that do not exist, so the anchor's
+    full unique constraint is the portable guard behind
+    ``_persist_locked``'s serialization.
+    """
+
+    def setUp(self):
+        self.source = Organization.objects.create(
+            name="Source Org", gives_ratings=True
+        )
+        self.target = Organization.objects.create(name="Target Org")
+        self.score_type = ScoreType.objects.create(name="Culture")
+
+    def test_get_or_create_is_idempotent_per_tuple(self):
+        anchor, created = ScoreTupleAnchor.objects.get_or_create(
+            type_id=self.score_type.id,
+            source_id=self.source.id,
+            target_id=self.target.id,
+        )
+        self.assertTrue(created)
+        same, created_again = ScoreTupleAnchor.objects.get_or_create(
+            type_id=self.score_type.id,
+            source_id=self.source.id,
+            target_id=self.target.id,
+        )
+        self.assertFalse(created_again)
+        self.assertEqual(same.pk, anchor.pk)
+        self.assertEqual(ScoreTupleAnchor.objects.count(), 1)
+
+    def test_full_unique_constraint_enforces_one_anchor_per_tuple(self):
+        ScoreTupleAnchor.objects.create(
+            type_id=self.score_type.id,
+            source_id=self.source.id,
+            target_id=self.target.id,
+        )
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                ScoreTupleAnchor.objects.create(
+                    type_id=self.score_type.id,
+                    source_id=self.source.id,
+                    target_id=self.target.id,
+                )
+        self.assertEqual(ScoreTupleAnchor.objects.count(), 1)
+
+    def test_anchor_str_identifies_the_tuple(self):
+        anchor = ScoreTupleAnchor.objects.create(
+            type_id=self.score_type.id,
+            source_id=self.source.id,
+            target_id=self.target.id,
+        )
+        self.assertEqual(
+            str(anchor),
+            "anchor: {} -> {} [{}]".format(
+                self.target.id, self.score_type.id, self.source.id
+            ),
+        )
+
+    def test_persistence_creates_one_anchor_per_distinct_tuple(self):
+        other_target = Organization.objects.create(name="Other Target")
+        for target in (self.target, other_target):
+            score_services.persist_score_observation(
+                source=self.source,
+                target=target,
+                score_type=self.score_type,
+                value=4.0,
+                provenance={
+                    "external_id": f"ext-{target.id}",
+                    "source_url": "https://ratings.example.com/org/target",
+                    "adapter_version": "v1",
+                    "observed_at": "2026-09-14T00:00:00Z",
+                    "raw_value": "4.0",
+                },
+            )
+        self.assertEqual(ScoreTupleAnchor.objects.count(), 2)
+
+
+@override_settings(
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "score-first-write-race-tests",
+        }
+    }
+)
+class ScoreFirstWriteRaceTests(TransactionTestCase):
+    """Genuine two-connection first-write race for one empty score tuple.
+
+    On MySQL the production race is real: the partial unique constraint on
+    Score is not emitted there (W036) and select_for_update cannot lock an
+    absent row, so serialization comes from the ScoreTupleAnchor parent row
+    -- racing first writers collide on the anchor's full unique constraint
+    and then hold select_for_update on it, and the loser reconciles against
+    the winner's committed row (exactly one winner, no duplicate active row,
+    no error surfaced to either writer).
+
+    SQLite cannot host two concurrent writer transactions (they deadlock at
+    the file level, raising "database is locked"; the same documented caveat
+    as ConcurrentDoubleSubmitTests), so the default run serializes the same
+    two-connection sequence through a harness gate: both writers still use
+    genuinely separate connections and the loser's full reconciliation path
+    is exercised. To run the genuinely concurrent race against MySQL:
+
+        # one-time, against a disposable MySQL server:
+        mysql -e "CREATE DATABASE crank_test CHARACTER SET utf8mb4;"
+        SECRET_KEY=test REDIS_MASTER_URL=redis://localhost:6379/0 \\
+        DB_NAME=crank_test DB_USER=... DB_PASS=... DB_HOST=127.0.0.1 \\
+        python -m pytest crank/tests/services/test_score_persistence.py \\
+            --ds crank.settings.mysql_test --create-db -k FirstWriteRace -v
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.source = Organization.objects.create(
+            name="Source Org", gives_ratings=True
+        )
+        self.target = Organization.objects.create(name="Target Org")
+        self.score_type = ScoreType.objects.create(name="Race Culture")
+        # SQLite needs the harness gate (see docstring); MySQL serializes
+        # genuinely through the anchor row lock.
+        self.gate = (
+            threading.Lock() if connection.vendor != "mysql" else None
+        )
+
+    @staticmethod
+    def _race_provenance(value):
+        return {
+            "external_id": "race-461",
+            "source_url": "https://ratings.example.com/org/race",
+            "adapter_version": "v1",
+            "observed_at": "2026-09-14T00:00:00Z",
+            "raw_value": str(value),
+        }
+
+    def _persist_once(self, value):
+        return score_services.persist_score_observation(
+            source=self.source,
+            target=self.target,
+            score_type=self.score_type,
+            value=value,
+            provenance=self._race_provenance(value),
+        ).outcome
+
+    def _write_once(self, barrier, value):
+        """One writer on its own dedicated DB connection."""
+        try:
+            connections.close_all()
+            barrier.wait(timeout=30)
+            if self.gate is not None:
+                # Two SQLite writer transactions deadlock at the file level;
+                # serialize the write region (see class docstring).
+                with self.gate:
+                    outcome = self._persist_once(value)
+            else:
+                outcome = self._persist_once(value)
+            return ("ok", outcome)
+        except Exception as exc:
+            return ("error", exc)
+        finally:
+            connections.close_all()
+
+    def _run_race(self, values):
+        barrier = threading.Barrier(2, timeout=30)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(self._write_once, barrier, value)
+                for value in values
+            ]
+            return [future.result(timeout=60) for future in futures]
+
+    def _tuple_scores(self):
+        return Score.objects.filter(
+            type=self.score_type, source=self.source, target=self.target
+        )
+
+    def test_two_connection_first_write_race_yields_exactly_one_active(self):
+        results = self._run_race([4.5, 4.5])
+        # Neither connection may surface an error (the API-layer "no 500"):
+        # a losing writer must reconcile, never crash.
+        self.assertEqual(
+            [status for status, _ in results],
+            ["ok", "ok"],
+            f"first-write race surfaced an error: {results}",
+        )
+        outcomes = sorted(payload for _, payload in results)
+        # Exactly one winner created the row; the loser reconciled to a noop
+        # (identical observation re-read against the winner's committed row).
+        self.assertEqual(outcomes, ["created", "noop"])
+        # No duplicate active row and no duplicate history row.
+        self.assertEqual(self._tuple_scores().count(), 1)
+        self.assertEqual(
+            self._tuple_scores().filter(status=Score.ACTIVE_STATUS).count(), 1
+        )
+
+    @skipUnless(connection.vendor == "mysql", "genuine concurrency needs MySQL")
+    def test_mysql_race_with_distinct_values_supersedes_exactly_once(self):
+        # Two genuinely concurrent writers with different values: the loser
+        # takes over the anchor after the winner commits, supersedes the
+        # winner's row exactly once, and leaves a single active row.
+        results = self._run_race([3.0, 5.0])
+        self.assertEqual(
+            [status for status, _ in results],
+            ["ok", "ok"],
+            f"MySQL first-write race surfaced an error: {results}",
+        )
+        self.assertEqual(
+            sorted(payload for _, payload in results), ["changed", "created"]
+        )
+        self.assertEqual(self._tuple_scores().count(), 2)
+        self.assertEqual(
+            self._tuple_scores().filter(status=Score.ACTIVE_STATUS).count(), 1
         )

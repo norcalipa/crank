@@ -6,6 +6,7 @@ from django.core.cache import cache
 from django.conf import settings
 from crank.models.organization import Organization
 from crank.models.company_profile import CompanyProfileObservation
+from crank.models.score import Score, ScoreType
 from crank.views import api
 import json
 from unittest.mock import patch
@@ -221,6 +222,48 @@ class ApiViewsTestCase(TestCase):
         # Request for an inactive organization should return 404
         response = self.client.get(reverse('organization-scores', args=[inactive_org.id]))
         self.assertEqual(response.status_code, 404)
+
+    def test_organization_scores_ignores_pre_fix_cache_entry(self):
+        """Post-deploy rollout regression (issue #461 review, finding 1).
+
+        A deploy swaps the code while the shared cache keeps whatever the
+        previous build wrote. Seed both unversioned keys (view-level and
+        model-level) with what the pre-#461 build cached -- a payload that
+        averages the superseded row -- and prove the endpoint recomputes
+        active-only rows from the versioned keys instead.
+        """
+        score_type = ScoreType.objects.create(name='Rollout Culture')
+        Score.objects.create(
+            source=self.org, target=self.org, type=score_type,
+            score=1.0, status=Score.INACTIVE_STATUS,
+        )
+        Score.objects.create(
+            source=self.org, target=self.org, type=score_type, score=5.0
+        )
+        pre_fix_rows = [{'type__name': 'Rollout Culture', 'avg_score': 3.0}]
+        cache.set(f'organization_scores_api_{self.org.id}', pre_fix_rows)
+        cache.set(f'organization_{self.org.id}_avg_scores', pre_fix_rows)
+
+        response = self.client.get(reverse('organization-scores', args=[self.org.id]))
+
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        # Only the active replacement row is served; the pre-fix entries that
+        # averaged the superseded 1.0 row are never reachable.
+        self.assertEqual(data, [{'type__name': 'Rollout Culture', 'avg_score': 5.0}])
+        # The recomputed payload is cached under the versioned key, and the
+        # pre-fix entries remain untouched under their legacy keys (they age
+        # out via TTL; no post-deploy reader ever consults them).
+        self.assertEqual(
+            cache.get(api.organization_scores_api_cache_key(self.org.id)),
+            [{'type__name': 'Rollout Culture', 'avg_score': 5.0}],
+        )
+        self.assertEqual(
+            cache.get(f'organization_scores_api_{self.org.id}'), pre_fix_rows
+        )
+        self.assertEqual(
+            cache.get(f'organization_{self.org.id}_avg_scores'), pre_fix_rows
+        )
 
     # --- Provenance endpoint tests ---
 

@@ -56,11 +56,15 @@ class Organization(TimeStampedModel, ActivatorModel):
     def avg_scores(self):
         # Only active scores of active score types may enter an average; the
         # predicate set is centralized in
-        # crank.services.scores.active_score_summary_rows (local import avoids a
-        # circular import with the service layer).
-        from crank.services.scores import active_score_summary_rows
+        # crank.services.scores.active_score_summary_rows and the cache key in
+        # crank.services.scores.organization_avg_scores_cache_key (local import
+        # avoids a circular import with the service layer).
+        from crank.services.scores import (
+            active_score_summary_rows,
+            organization_avg_scores_cache_key,
+        )
 
-        cache_key = f'organization_{self.pk}_avg_scores'
+        cache_key = organization_avg_scores_cache_key(self.pk)
         return cache.get_or_set(
             cache_key,
             lambda: [

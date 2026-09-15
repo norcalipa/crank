@@ -8,6 +8,7 @@ from django.views import generic
 from django.core.cache import cache
 from django.conf import settings
 from crank.models.score import ScoreAlgorithm
+from crank.services.scores import algorithm_results_cache_key
 from crank.settings.base import CONTENT_DIR, DEFAULT_ALGORITHM_ID
 from crank.forms.organization_filter import OrganizationFilterForm
 
@@ -121,7 +122,7 @@ class IndexView(generic.ListView):
 
             return object_list
 
-        cache_key = f'algorithm_{self.algorithm_id}_results'
+        cache_key = algorithm_results_cache_key(self.algorithm_id)
         self.object_list = cache.get_or_set(cache_key, fetch_results, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
         return self.object_list
 
