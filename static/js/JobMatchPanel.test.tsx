@@ -643,3 +643,100 @@ describe('JobMatchPanel combined states (#476)', () => {
         expect(screen.queryByTestId('relaxation-preview')).not.toBeInTheDocument();
     });
 });
+
+describe('JobMatchPanel round-2 visual fixes (contrast + icons)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    test('panel pins the dark-surface contrast system (r2 contrast fix)', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {
+                title: 'No matches for your current requirements',
+                message: 'Jobs are available, but none meet your saved requirements yet.',
+                actions: ['chat', 'suggest_company', 'help'],
+                active_constraints: ['Work location: Remote'],
+                inventory: {active_listings: 3, last_success_at: '2026-09-14T10:00:00Z', age_hours: 2.5},
+            },
+        });
+        const section = screen.getByTestId('job-match-panel');
+        // The panel is a dark surface, so it must opt into Bootstrap's dark
+        // theme tokens: the light-theme body foreground computed to
+        // rgb(33,37,41) on the rgb(33,37,41) card in round 2.
+        expect(section).toHaveAttribute('data-bs-theme', 'dark');
+        expect(section).toHaveClass('bg-dark');
+        // Every phase (loading, error, results, empty states) uses the same
+        // dark-themed section.
+        expect(section.className).toContain('card');
+        // Muted copy inside the panel is scoped to the light-muted token so
+        // it stays legible on the dark surface (popup.css pins the color).
+        expect(section.querySelector('.text-muted')).not.toBeNull();
+        // State copy carries a visible heading and body, not DOM-only text.
+        expect(screen.getByTestId('empty-state-no_matches').textContent).toContain(
+            'No matches for your current requirements',
+        );
+    });
+
+    test('header refresh control renders a visible inline glyph (r2 icon fix)', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [sampleJobMatch]});
+        const refresh = screen.getByTestId('job-match-refresh');
+        const glyph = refresh.querySelector('svg[data-icon]');
+        expect(glyph).not.toBeNull();
+        expect(glyph).toHaveAttribute('data-icon', 'refresh-cw');
+        expect(glyph).toHaveAttribute('aria-hidden', 'true');
+        // Accessible name is preserved on the control itself.
+        expect(refresh).toHaveAttribute('aria-label', 'Refresh match status');
+    });
+
+    test('empty states render a visible inline status glyph', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {
+                title: 'No matches',
+                message: 'Test',
+                actions: ['chat'],
+            },
+        });
+        const empty = screen.getByTestId('empty-state-no_matches');
+        const glyph = empty.querySelector('svg[data-icon]');
+        expect(glyph).not.toBeNull();
+        expect(glyph?.getAttribute('data-icon')).toBe('search');
+    });
+});
+
+describe('JobMatchPanel inline icons (r2 icon fix)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    test('no panel markup depends on the FontAwesome webfont', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {
+                title: 'Test',
+                message: 'Test',
+                actions: ['chat', 'explore_companies', 'suggest_company', 'help'],
+                active_constraints: ['Work location: Remote'],
+                inventory: {active_listings: 3, last_success_at: null, age_hours: 2},
+                relaxation_preview: {field: 'work_location', label: 'Broadening work location', added_count: 4},
+            },
+        });
+        // Every glyph is an inline SVG with a data-icon name; no <i class="fa-...">
+        // references remain anywhere in the panel.
+        const section = screen.getByTestId('job-match-panel');
+        expect(section.querySelectorAll('svg[data-icon]').length).toBeGreaterThan(0);
+        expect(section.querySelectorAll('.fa-solid, i[class*="fa-"]').length).toBe(0);
+        // All action glyphs resolve to real inline icons (never the fallback
+        // missing for a mistyped name).
+        for (const action of ['chat', 'explore_companies', 'suggest_company', 'help']) {
+            const btn = screen.getByTestId(`action-${action}`);
+            expect(btn.querySelector('svg[data-icon]')).not.toBeNull();
+        }
+    });
+});

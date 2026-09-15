@@ -15,6 +15,12 @@ import JobMatchPanel from '../JobMatchPanel';
 // payloads mirror the canonical copy produced by crank/empty_state.py so the
 // fixtures stay aligned with the backend contract.
 const PANEL_STATUS_PAYLOADS: Record<string, Record<string, unknown>> = {
+    healthy: {
+        state: 'ok',
+        title: 'Matches ready',
+        message: 'You have job matches ready to review.',
+        actions: [],
+    },
     refreshing_with_results: {
         state: 'ok',
         title: 'Matches ready',
@@ -122,7 +128,11 @@ const PANEL_RANKED_ORGS = [
 
 function stubPanelApis(stateKey: string): void {
     const status = PANEL_STATUS_PAYLOADS[stateKey] || PANEL_STATUS_PAYLOADS.no_matches;
-    const withResults = stateKey === 'refreshing_with_results' || stateKey === 'partial_coverage';
+    const withResults = (
+        stateKey === 'refreshing_with_results'
+        || stateKey === 'partial_coverage'
+        || stateKey === 'healthy'
+    );
     window.fetch = ((input: RequestInfo | URL): Promise<Response> => {
         const url = typeof input === 'string' ? input : input.toString();
         const json = (payload: unknown) => Promise.resolve(new Response(
