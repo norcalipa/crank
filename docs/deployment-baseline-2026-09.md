@@ -32,17 +32,22 @@ Record shape (staff-only evidence; not a public contract):
 | `source_version` | Backend git SHA / image identifier | `crank.release.git_sha()` (reads `GIT_SHA`, `SOURCE_VERSION`, …) |
 | `frontend_build_id` | Webpack contenthash of the served bundle | `crank.release.frontend_build_id()` |
 | `migrations` | `{applied_count, pending_count, status}`; `pending` ⇒ missing schema | `crank.release.migration_status_summary()` |
+| `migration_leaves` | Exact deployed revision: bounded per-app applied leaf migrations plus the exact pending leaves (`{applied, applied_count, pending, pending_count, truncated, status}`) | `readiness_baseline.migration_leaves()` (bounded by 25 identifiers per list) |
+| `fixtures` | `{present, revision}` — whether the staging fixture set is loaded (detected via its unique marker rows) and its revision (`staging-baseline-1`) | `readiness_baseline.fixture_set()` |
+| `readiness_gates` | Individually named, non-secret gate booleans: `adapter_registered`, `adapter_count`, `adapters`, `usajobs_adapter_registered`, `firecrawl_adapter_registered`, `credentials_configured`, `usajobs_credentials_configured`, `firecrawl_credentials_configured`, `pipeline_enabled`, `scheduler_enabled` | `readiness_baseline.readiness_gates()` (mirrors `crank.admin_dashboard._readiness_gates()`; reads the code-owned job adapter registry, never credential values) |
 | `job_search_provider` | Selected job-search provider token (safe-token validated) | `crank.release._safe_job_search_provider()` |
 | `capabilities` | Non-secret capability configuration (enabled flags + issues; secrets reduced to presence booleans) | `crank.capability.capability_report().to_dict()` |
 | `inventory` | Bounded inventory health signals + violations | `crank.services.inventory_health.check_inventory_health()` |
 | `latest_runs` | Latest `AgentRun` per run type: `{run_type, status, terminal, created, finished_at, error_summary}` | `crank.models.agent_run.AgentRun` |
 | `source_counts` | `{configured, approved, enabled}` job sources | mirrors `crank.admin_dashboard._aggregate_counts()` |
 
-Secret hygiene: configured values of `SECRET_KEY`, `LLM_API_KEY`,
-`USAJOBS_AUTH_KEY`, `FIRECRAWL_API_KEY`, and `YELP_API_KEY` are scrubbed from
-any free-text field (e.g. `error_summary`) before serialization, and tests in
-`crank/tests/management/test_readiness_baseline.py` assert the values never
-appear in the output.
+Secret hygiene: every non-empty configured value of `SECRET_KEY`,
+`LLM_API_KEY`, `USAJOBS_AUTH_KEY`, `FIRECRAWL_API_KEY`, and `YELP_API_KEY`
+is scrubbed from any free-text field before serialization — unconditionally,
+with no minimum length (short staging/test values are scrubbed just like
+production ones, longest-first so overlapping values scrub correctly). Tests
+in `crank/tests/management/test_readiness_baseline.py` assert configured
+values — including short and overlapping ones — never appear in the output.
 
 ## 2. The three distinguishable failure conditions
 
@@ -51,7 +56,12 @@ confused:
 
 1. **Disabled provider/source** → `capabilities.capabilities[].enabled` flags
    and `capabilities.capabilities[].issues` (e.g. "LLM_API_KEY is missing"),
-   plus `source_counts.approved` / `source_counts.enabled` = 0.
+   plus `source_counts.approved` / `source_counts.enabled` = 0. Unmet
+   adapter/credential gates are recorded separately and unconditionally in
+   `readiness_gates` (e.g. `usajobs_credentials_configured: false`,
+   `firecrawl_credentials_configured: false`), because a disabled capability
+   is considered OK by `capability_report()` and would otherwise hide the
+   missing credential.
 2. **Missing schema** → `migrations.status == "pending"` with
    `migrations.pending_count > 0` (or `status == "error"` when the loader
    cannot read migration state at all).
@@ -89,16 +99,24 @@ of the target checkout with deployed contracts:
 
 ## 4. Staging fixture set
 
-`seed_staging_baseline` (dev/staging only; refuses `ENV=prod`, idempotent)
-loads the acceptance fixtures:
+`seed_staging_baseline` (dev/staging only; refuses `ENV=prod`, idempotent,
+fixture-set revision `staging-baseline-1` — reported by `readiness_baseline`
+under `fixtures.revision`) loads the acceptance fixtures:
 
+- **Rankings dependencies** — the default `ScoreAlgorithm`
+  (`DEFAULT_ALGORITHM_ID`) and its `ScoreAlgorithmWeight` for the fixture
+  score type, because `IndexView` resolves `DEFAULT_ALGORITHM_ID` and its
+  ranking SQL inner-joins `crank_scorealgorithmweight`. Without these rows a
+  fresh database renders empty rankings regardless of the scores.
 - **Companies and scores** — `Staging Example Corp` (target) and
   `Staging Rating Source` (rating giver) with one **active** `crank_score`
   row (`status=1`) and one **superseded** (`status=0`, deactivated) for the
   same type/source/target.
 - **Company evidence** — three `CompanyProfileObservation` rows on
-  `Staging Example Corp`: `accepted` (fresh), `stale` (`accepted` but
-  `observed_at` 45 days old), `conflicted` (`conflict_fields=["rto_evidence"]`).
+  `Staging Example Corp`: `accepted` (fresh, strictly the latest), `stale`
+  (`accepted` but `observed_at` 45 days old), `conflicted`
+  (`conflict_fields=["rto_evidence"]`, one hour older than the accepted row so
+  the ordinary provenance surface returns the accepted row).
 - **Jobs** — `Staging Baseline Source` (approved + enabled, usajobs adapter)
   with one `active` and one `expired` `JobListing`.
 - **Match cases** — two `JobMatch` rows for the ordinary test account: one
@@ -106,11 +124,14 @@ loads the acceptance fixtures:
   **unknown-requirement** case whose factor names a requirement with no
   `JobCriteria` projection (`requirement:quantum_fluency`). Matching and UI
   code must treat unknown-requirement factors as neutral data.
-- **Accounts** — `staging_user` (ordinary) and `staging_staff`
-  (`is_staff=True`), both with the throwaway password
-  `staging-baseline-throwaway` (override with `--password`). These are
-  staging-only fixtures, never real credentials. The **signed-out** case is
-  simply performing the replay without authenticating.
+- **Accounts** — `staging_user` (ordinary, non-privileged) with the throwaway
+  password `staging-baseline-throwaway` (override with `--password`), and
+  `staging_staff` (`is_staff=True`). The staff account is created with an
+  **unusable** password: it only ever receives a password through the
+  explicit `--staff-password` provisioning flag (a secure operator-supplied
+  value, never a repo-known default), and re-running the command without the
+  flag never resets an already-provisioned password. The **signed-out** case
+  is simply performing the replay without authenticating.
 
 ```bash
 python manage.py seed_staging_baseline            # or: --password 'custom-throwaway'
@@ -137,15 +158,28 @@ From a **fresh** staging database (no fixtures loaded):
 
 ### 5b. Replay rankings → company details → chat → jobs as an ordinary test account
 
-1. `python manage.py seed_staging_baseline` — load the acceptance fixtures.
+1. `python manage.py seed_staging_baseline` — load the acceptance fixtures
+   (the command also seeds the default `ScoreAlgorithm` and its
+   `ScoreAlgorithmWeight`; provision the staff account's password separately
+   with `--staff-password <secure-value>` only if a staff sign-in is needed).
 2. Sign in as `staging_user` (throwaway password above; use an incognito
    profile — never a real user conversation).
 3. Replay in order, recording outcomes at each step:
-   - **rankings** — org rankings render from the active/superseded scores;
-     confirm superseded scores do not appear as current.
-   - **company details** — company profile shows the accepted observation;
-     the stale and conflicted observations are distinguishable in review
-     surfaces.
+   - **rankings** — org rankings render from the seeded scores: the command
+     now seeds the `ScoreAlgorithm`/`ScoreAlgorithmWeight` rows the rankings
+     consumer (`IndexView`) requires, so the target organization actually
+     appears on a fresh database. Note the current consumer averages every
+     score of a type for a target (its SQL does not filter `crank_score.status`),
+     so the fixture's active and superseded rows both feed the average; the
+     active/superseded distinction itself is fixture data, verified by the
+     seed and reflected in the baseline record, not by this replay step.
+   - **company details** — the ordinary provenance surface
+     (`GET /api/organizations/<id>/provenance/`) returns the **accepted**
+     observation as the latest one (the conflicted row is seeded strictly
+     older). Distinguishing stale vs. conflicting evidence from one another
+     requires the multi-row staff-only admin review surface; an
+     ordinary-account surface for that comparison does not exist today —
+     see the open question in §6.
    - **chat** — send one scripted prompt; the reply uses the configured LLM
      capability (or surfaces the capability issue when unset).
    - **jobs** — job matches list the active listing; the expired listing is
@@ -155,14 +189,35 @@ From a **fresh** staging database (no fixtures loaded):
 
 ## 6. Owners
 
-Named at review time per the plan's open question; placeholders until then:
+AC-4 requires named frontend, backend, data, and release owners in this
+document. **This criterion is not yet met and is explicitly recorded as an
+open question for the maintainer** rather than silently deferred:
+
+- Option A — the maintainer supplies the four owner names in the PR review;
+   they are added here in a one-line doc update before merge.
+- Option B — the criterion is renegotiated (e.g. the named owners move to the
+   #453 activation runbook or the rollout review), and this section records
+   the renegotiated decision.
+
+Until one of those happens, the table stays explicitly unconfirmed:
 
 | Area | Owner |
 | --- | --- |
-| Frontend | _TBD at review_ |
-| Backend | _TBD at review_ |
-| Data | _TBD at review_ |
-| Release | _TBD at review_ |
+| Frontend | *unconfirmed — open question (see PR review thread)* |
+| Backend | *unconfirmed — open question (see PR review thread)* |
+| Data | *unconfirmed — open question (see PR review thread)* |
+| Release | *unconfirmed — open question (see PR review thread)* |
+
+### Open questions recorded from review
+
+1. **AC-4 owners** — supply or renegotiate the four named owners (above).
+2. **Ordinary-visible evidence surface** — distinguishing stale vs.
+   conflicting company-profile evidence requires the multi-row staff-only
+   admin review surface; no ordinary-account surface exposes it today. If
+   the ordinary replay must verify that distinction end-to-end, that is a
+   product decision to add an ordinary-visible evidence consumer (UI work
+   outside this issue's scope per the plan's non-goals); until then, the
+   replay in §5b records only what existing surfaces can show.
 
 ## 7. Boundaries
 

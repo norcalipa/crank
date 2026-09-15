@@ -10,6 +10,13 @@ The command is a thin composition of the existing safe helpers:
 - ``crank.capability``: the non-secret capability configuration report
   (secret presence is reduced to booleans; values are never serialized);
 - ``crank.services.inventory_health``: bounded, read-only inventory signals;
+- the operations dashboard's safe adapter/credential/pipeline/scheduler
+  readiness gates, so an unmet gate is recorded even when the matching
+  capability is disabled (and therefore considered OK by the capability
+  report);
+- the exact per-app migration leaf identifiers (applied and pending, bounded)
+  and the staging fixture-set revision, so the record names the deployed
+  schema revision and the loaded fixture set rather than aggregate counts;
 - latest ``AgentRun`` per run type with its terminal status and a sanitized
   error summary;
 - source counts mirroring ``crank.admin_dashboard._aggregate_counts()``.
@@ -26,11 +33,14 @@ import json
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
 from django.utils import timezone
 
 from crank.capability import capability_report
 from crank.models.agent_run import AgentRun
 from crank.models.job import JobSourceCatalog
+from crank.models.organization import Organization
 from crank.release import (
     UNKNOWN,
     _safe_job_search_provider,
@@ -49,9 +59,10 @@ _SECRET_SETTING_NAMES = (
     "YELP_API_KEY",
 )
 
-#: Minimum length for a settings value to be treated as a scrub-able secret.
-#: Short values would mangle output text without adding protection.
-_SECRET_MIN_LENGTH = 6
+#: Bound on the number of per-app migration leaf identifiers emitted per list.
+#: Leaf counts grow with the app count, not the migration count; the bound is
+#: defense-in-depth so the record stays bounded no matter how apps grow.
+_MIGRATION_LEAF_BOUND = 25
 
 #: Error summaries are already bounded/sanitized at write time; this is
 #: defense-in-depth for the baseline record itself.
@@ -64,13 +75,20 @@ _TERMINAL_RUN_STATUSES = frozenset(
 
 
 def _configured_secrets() -> list[str]:
-    """Return non-empty configured secret values long enough to scrub."""
-    values = []
-    for name in _SECRET_SETTING_NAMES:
-        value = str(getattr(settings, name, "") or "")
-        if len(value) >= _SECRET_MIN_LENGTH:
-            values.append(value)
-    return values
+    """Return every non-empty configured secret value, longest first.
+
+    The guarantee is unconditional: there is no minimum length below which a
+    configured value may appear in the output, so short staging/test values
+    are scrubbed just like production ones. Longest-first ordering (with
+    duplicates removed) makes overlapping values scrub correctly (e.g.
+    ``abc`` and ``abcdef``).
+    """
+    values = {
+        str(getattr(settings, name, "") or "")
+        for name in _SECRET_SETTING_NAMES
+    }
+    values.discard("")
+    return sorted(values, key=len, reverse=True)
 
 
 def _scrub(text: object) -> str:
@@ -80,6 +98,102 @@ def _scrub(text: object) -> str:
         if secret in text:
             text = text.replace(secret, "[redacted]")
     return text[:_ERROR_SUMMARY_MAX_CHARS]
+
+
+def migration_leaves() -> dict:
+    """Return bounded, exact per-app migration leaf identifiers.
+
+    ``migration_status_summary()`` is aggregate-only; this names the exact
+    deployed revision (the applied per-app leaves) and the exact pending
+    leaves so the record can say which schema the database actually has.
+    Both lists are bounded by ``_MIGRATION_LEAF_BOUND``.
+    """
+    try:
+        executor = MigrationExecutor(connection)
+        applied = executor.loader.applied_migrations
+        leaves = executor.loader.graph.leaf_nodes()
+        applied_leaves = sorted(
+            f"{app}.{name}" for app, name in leaves if (app, name) in applied
+        )
+        pending_leaves = sorted(
+            f"{app}.{name}" for app, name in leaves if (app, name) not in applied
+        )
+    except Exception:  # noqa: BLE001 - fail closed on any DB/loader error
+        return {
+            "applied": None,
+            "applied_count": None,
+            "pending": None,
+            "pending_count": None,
+            "truncated": False,
+            "status": "error",
+        }
+    return {
+        "applied": applied_leaves[:_MIGRATION_LEAF_BOUND],
+        "applied_count": len(applied_leaves),
+        "pending": pending_leaves[:_MIGRATION_LEAF_BOUND],
+        "pending_count": len(pending_leaves),
+        "truncated": (
+            len(applied_leaves) > _MIGRATION_LEAF_BOUND
+            or len(pending_leaves) > _MIGRATION_LEAF_BOUND
+        ),
+        "status": "ok",
+    }
+
+
+def fixture_set() -> dict:
+    """Report whether the staging fixture set is loaded, and its revision.
+
+    Presence is detected via the fixture set's unique marker rows (the fixture
+    target organization or the fixture job source); the revision is the
+    ``FIXTURE_REVISION`` constant owned by ``seed_staging_baseline``, bumped
+    whenever the fixture set changes.
+    """
+    from crank.management.commands.seed_staging_baseline import (
+        FIXTURE_REVISION,
+        FIXTURE_SOURCE_NAME,
+        TARGET_ORG_NAME,
+    )
+
+    present = (
+        Organization.objects.filter(name=TARGET_ORG_NAME).exists()
+        or JobSourceCatalog.objects.filter(name=FIXTURE_SOURCE_NAME).exists()
+    )
+    return {
+        "revision": FIXTURE_REVISION if present else None,
+        "present": present,
+    }
+
+
+def readiness_gates() -> dict:
+    """Mirror the operations dashboard's safe adapter/credential gates.
+
+    Every gate is an individually named, non-secret boolean so an unmet gate
+    is always recorded — even when the matching capability is disabled and
+    therefore considered OK by ``capability_report()``. Adapter registration
+    is read from the same code-owned job adapter registry that
+    ``inventory_health`` uses; no network or credential value is ever touched.
+    """
+    from crank.agents.jobs.registry import REGISTRY
+
+    usajobs_configured = bool(
+        str(getattr(settings, "USAJOBS_AUTH_KEY", "") or "").strip()
+    )
+    firecrawl_configured = bool(
+        str(getattr(settings, "FIRECRAWL_API_KEY", "") or "").strip()
+    )
+    adapters = set(REGISTRY.keys())
+    return {
+        "adapter_registered": len(adapters) > 0,
+        "adapter_count": len(adapters),
+        "adapters": sorted(adapters),
+        "usajobs_adapter_registered": "usajobs" in adapters,
+        "firecrawl_adapter_registered": "firecrawl-careers" in adapters,
+        "credentials_configured": usajobs_configured or firecrawl_configured,
+        "usajobs_credentials_configured": usajobs_configured,
+        "firecrawl_credentials_configured": firecrawl_configured,
+        "pipeline_enabled": bool(getattr(settings, "JOB_PIPELINE_ENABLED", False)),
+        "scheduler_enabled": bool(getattr(settings, "CRAWL_CRON_ENABLED", False)),
+    }
 
 
 def latest_runs() -> list[dict]:
@@ -130,6 +244,9 @@ def baseline_record() -> dict:
         "source_version": git_sha(),
         "frontend_build_id": frontend_build_id(),
         "migrations": migration_status_summary(),
+        "migration_leaves": migration_leaves(),
+        "fixtures": fixture_set(),
+        "readiness_gates": readiness_gates(),
         "job_search_provider": _safe_job_search_provider(),
         "capabilities": capability_report().to_dict(),
         "inventory": check_inventory_health(),
@@ -141,8 +258,8 @@ def baseline_record() -> dict:
 class Command(BaseCommand):
     help = (
         "Emit a single readiness-baseline record (JSON) describing deployment, "
-        "migration, capability, inventory, run, and source state. Staff-only "
-        "evidence; never includes secret values."
+        "migration, capability, inventory, readiness-gate, run, and source "
+        "state. Staff-only evidence; never includes secret values."
     )
 
     def add_arguments(self, parser):
