@@ -289,3 +289,58 @@ class RolloutGateDocumentTests(TestCase):
     def test_rollout_doc_references_drill_command(self):
         content = ROLLOUT_DOC.read_text(encoding="utf-8")
         self.assertIn("rollback_drill", content)
+
+
+class RolloutGateRegistryTests(TestCase):
+    """Epic #454 capability registry contract (issue #463).
+
+    Every epic capability ships with its own independently controlled switch,
+    default off, added to ALLOWED_CAPABILITY_KEYS by its owning ticket before
+    its code path is enabled. Planned names are documented as planned only.
+    The drill exercises every registered key in lockstep with the registry.
+    """
+
+    def test_every_registered_key_is_exercised_by_the_drill(self):
+        """The drill output covers every ALLOWED_CAPABILITY_KEYS entry.
+
+        This is the enforcement test for the registry/drill lockstep: if a
+        key is registered but missing from the drill, this fails.
+        """
+        import json
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        stdout = StringIO()
+        call_command("rollback_drill", "--json", stdout=stdout)
+        report = json.loads(stdout.getvalue())
+        drilled = {cap["key"] for cap in report["capabilities"]}
+        self.assertEqual(drilled, set(ALLOWED_CAPABILITY_KEYS))
+
+    def test_rollout_doc_has_capability_registry_section(self):
+        """docs/rollout-gates.md documents the epic #454 registry."""
+        content = ROLLOUT_DOC.read_text(encoding="utf-8")
+        self.assertIn("Capability Registry", content)
+        for key in ALLOWED_CAPABILITY_KEYS:
+            self.assertIn(key, content)
+
+    def test_planned_keys_are_documented_as_planned(self):
+        """Reserved-but-unimplemented names are labeled planned.
+
+        Per #463: new flag names must be implemented before being documented
+        as available. publication_consumer (#470), assistant_shell (#471),
+        and the recompute phase switches (#462) must not appear as available.
+        """
+        content = ROLLOUT_DOC.read_text(encoding="utf-8")
+        for key in ("publication_consumer", "assistant_shell"):
+            self.assertIn(key, content)
+        self.assertIn("planned", content)
+        self.assertIn("#470", content)
+        self.assertIn("#471", content)
+        self.assertIn("#462", content)
+        # Normalize whitespace: the doc wraps lines at ~79 columns, so the
+        # phrase may span a newline.
+        normalized = " ".join(content.split())
+        self.assertIn(
+            "must be implemented before being documented as available", normalized
+        )

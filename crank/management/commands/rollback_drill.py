@@ -16,6 +16,11 @@ This command rehearses the rollback procedure documented in
 5. Emits a monitoring event for the rollback drill.
 6. Reports a JSON or human-readable summary without sensitive data.
 
+The drilled capability list is derived in lockstep from
+``ALLOWED_CAPABILITY_KEYS`` (``crank/models/monitoring.py``): every registered
+switch key is exercised, so a key added to the registry by its owning ticket
+is drilled automatically (enforced by tests).
+
 Scope: the drill does **not** call ``AgentRunCommand.get_enabled()`` and does
 **not** snapshot or assert ``AgentRun`` row counts, so it cannot by itself
 prove that new runs are blocked; the rollout gate's operator
@@ -31,20 +36,44 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from crank.models.agent_run import AgentRun
-from crank.models.monitoring import CapabilitySwitch, OperationalChangeAudit
+from crank.models.monitoring import (
+    ALLOWED_CAPABILITY_KEYS,
+    CapabilitySwitch,
+    OperationalChangeAudit,
+)
 from crank.services import monitoring
 
-# Capabilities exercised by the drill. Each entry maps the CapabilitySwitch
-# key to its corresponding AgentRun.RunType. When the key and run_type match
-# (gather_scores, job_pipeline), the kill switch directly blocks
-# ``get_enabled()``. When they differ (interactive_agent vs noop), the
-# settings flags provide the primary gate and the switch is an additional
-# defense documented in the rollout checklist.
-DRILL_CAPABILITIES = (
-    {"key": "interactive_agent", "run_type": "noop"},
-    {"key": "gather_scores", "run_type": "gather_scores"},
-    {"key": "job_pipeline", "run_type": "job_pipeline"},
-)
+# RunType override for switches whose key does not name an AgentRun run type.
+# interactive_agent's gate is the ``noop`` run type; for that pairing the
+# settings flags are the primary gate and the switch is an additional defense
+# (documented in docs/rollout-gates.md). Keys without a matching run type
+# (existing ``agent_noop`` and future capability-only keys such as
+# ``publication_consumer``) drill with ``run_type=None``: the switch itself is
+# the control and there is no run-type gate to re-check.
+DRILL_RUN_TYPE_OVERRIDES = {
+    "interactive_agent": "noop",
+}
+
+
+def drill_capabilities():
+    """Derive the drilled capability list from ``ALLOWED_CAPABILITY_KEYS``.
+
+    The drill must exercise every registered switch key in lockstep with the
+    registry, so adding a key there automatically extends the drill (the
+    registry/drill lockstep is asserted by the rollout-gate tests).
+    ``run_type`` is the ``AgentRun.RunType`` whose gate the switch blocks when
+    the key names a run type; keys without a matching run type report
+    ``run_type=None``.
+    """
+    run_type_values = set(AgentRun.RunType.values)
+    capabilities = []
+    for key in sorted(ALLOWED_CAPABILITY_KEYS):
+        run_type = DRILL_RUN_TYPE_OVERRIDES.get(key, key)
+        if run_type not in run_type_values:
+            run_type = None
+        capabilities.append({"key": key, "run_type": run_type})
+    return capabilities
+
 
 STALE_TTL_SECONDS = getattr(settings, "AGENT_RUN_STALE_AFTER_SECONDS", 3600)
 
@@ -81,10 +110,11 @@ class Command(BaseCommand):
 
     def _run_drill(self):
         """Execute the rollback drill and return a report dict."""
+        capabilities = drill_capabilities()
         results = []
         overall_passed = True
 
-        for cap in DRILL_CAPABILITIES:
+        for cap in capabilities:
             result = self._drill_capability(cap)
             results.append(result)
             if not result["passed"]:
@@ -141,10 +171,14 @@ class Command(BaseCommand):
         cap_blocked = not cap_enabled
 
         # Verify capability_enabled() also returns False for the run_type
-        # when it matches the switch key (gather_scores, job_pipeline).
-        # For interactive_agent/noop mismatch, the settings flags are the
-        # primary gate; the switch is an additional defense.
-        run_type_blocked = not monitoring.capability_enabled(run_type, default=True)
+        # when the key names a run type (gather_scores, job_pipeline,
+        # crawl_schedule, crawl). For interactive_agent/noop the settings
+        # flags are the primary gate; the switch is an additional defense.
+        # Keys without a matching run type report None (not applicable).
+        if run_type is None:
+            run_type_blocked = None
+        else:
+            run_type_blocked = not monitoring.capability_enabled(run_type, default=True)
 
         passed = cap_blocked
         return {

@@ -12,7 +12,11 @@ from django.utils import timezone
 from datetime import timedelta
 
 from crank.models.agent_run import AgentRun
-from crank.models.monitoring import CapabilitySwitch, OperationalChangeAudit
+from crank.models.monitoring import (
+    ALLOWED_CAPABILITY_KEYS,
+    CapabilitySwitch,
+    OperationalChangeAudit,
+)
 
 
 class RollbackDrillCommandTests(TestCase):
@@ -42,7 +46,7 @@ class RollbackDrillCommandTests(TestCase):
         self.assertIn("capabilities", report)
         self.assertIn("data_consistency", report)
         self.assertIn("drilled_at", report)
-        self.assertEqual(len(report["capabilities"]), 3)
+        self.assertEqual(len(report["capabilities"]), len(ALLOWED_CAPABILITY_KEYS))
 
     def test_json_capabilities_have_required_fields(self):
         """Each capability result has the expected fields."""
@@ -195,10 +199,77 @@ class RollbackDrillCommandTests(TestCase):
         """Running the drill twice does not duplicate switches or audits."""
         self._call()
         self._call()
-        self.assertEqual(CapabilitySwitch.objects.count(), 3)
+        self.assertEqual(CapabilitySwitch.objects.count(), len(ALLOWED_CAPABILITY_KEYS))
         self.assertEqual(
             OperationalChangeAudit.objects.filter(
                 target_type="rollback_drill"
             ).count(),
             2,
         )
+
+    def test_drill_exercises_every_registered_key(self):
+        """Lockstep contract: the drill covers every ALLOWED_CAPABILITY_KEYS
+        entry, so a key registered by its owning ticket cannot be skipped by
+        the drill."""
+        code, _, _ = self._call(as_json=True)
+        self.assertEqual(code, 0)
+        _, stdout, _ = self._call(as_json=True)
+        report = json.loads(stdout.getvalue())
+        drilled = {cap["key"] for cap in report["capabilities"]}
+        self.assertEqual(drilled, set(ALLOWED_CAPABILITY_KEYS))
+
+    def test_new_registry_key_is_drilled_automatically(self):
+        """A key added to the registry is picked up by the drill without any
+        drill-side change: the drill derives its list from the registry."""
+        from unittest.mock import patch
+
+        extended = frozenset(ALLOWED_CAPABILITY_KEYS | {"publication_consumer"})
+        with patch(
+            "crank.models.monitoring.ALLOWED_CAPABILITY_KEYS", extended
+        ), patch(
+            "crank.management.commands.rollback_drill.ALLOWED_CAPABILITY_KEYS",
+            extended,
+        ):
+            code, stdout, _ = self._call(as_json=True)
+        self.assertEqual(code, 0)
+        report = json.loads(stdout.getvalue())
+        drilled = {cap["key"] for cap in report["capabilities"]}
+        self.assertIn("publication_consumer", drilled)
+        switch = CapabilitySwitch.objects.get(key="publication_consumer")
+        self.assertFalse(switch.enabled)
+
+    def test_run_type_matches_key_for_run_type_named_keys(self):
+        """Keys that name an AgentRun run type map to themselves."""
+        _, stdout, _ = self._call(as_json=True)
+        report = json.loads(stdout.getvalue())
+        by_key = {cap["key"]: cap for cap in report["capabilities"]}
+        for key in ("crawl", "crawl_schedule", "gather_scores", "job_pipeline"):
+            self.assertEqual(by_key[key]["run_type"], key)
+            self.assertTrue(by_key[key]["run_type_blocked"])
+
+    def test_interactive_agent_drills_the_noop_run_type(self):
+        """interactive_agent overrides to the noop run type (settings flags
+        are the primary gate for that pairing)."""
+        _, stdout, _ = self._call(as_json=True)
+        report = json.loads(stdout.getvalue())
+        by_key = {cap["key"]: cap for cap in report["capabilities"]}
+        self.assertEqual(by_key["interactive_agent"]["run_type"], "noop")
+
+    def test_keys_without_matching_run_type_drill_with_none(self):
+        """A registered key without a matching run type (agent_noop) drills
+        with run_type=None and run_type_blocked=None; the switch alone is the
+        control and this is not a drill failure."""
+        code, stdout, _ = self._call(as_json=True)
+        self.assertEqual(code, 0)
+        report = json.loads(stdout.getvalue())
+        by_key = {cap["key"]: cap for cap in report["capabilities"]}
+        self.assertIsNone(by_key["agent_noop"]["run_type"])
+        self.assertIsNone(by_key["agent_noop"]["run_type_blocked"])
+        self.assertTrue(by_key["agent_noop"]["passed"])
+
+    def test_drill_disabled_switches_cover_every_registered_key(self):
+        """After the drill, every registered key has a disabled switch."""
+        self._call()
+        for key in ALLOWED_CAPABILITY_KEYS:
+            switch = CapabilitySwitch.objects.get(key=key)
+            self.assertFalse(switch.enabled)
