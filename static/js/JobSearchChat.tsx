@@ -952,7 +952,7 @@ const JobSearchChat: React.FC = () => {
                             <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
                                      className={`d-flex ${m.role === 'user' ? 'justify-content-end' : 'justify-content-start'} mb-2`}>
                                 <div className={`chat-bubble ${m.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}
-                                     style={{maxWidth: '80%'}}>
+                                     style={{maxWidth: '80%', wordBreak: 'break-word'}}>
                                     <div style={{whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>{m.content}</div>
                                     {m.role === 'assistant' && m.results && (
                                         <ResultCards results={m.results} />
