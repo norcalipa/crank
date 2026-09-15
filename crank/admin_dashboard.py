@@ -11,6 +11,7 @@ performed inside the HTTP request.
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from urllib.parse import urlsplit
 
 from django.conf import settings
@@ -29,12 +30,330 @@ from crank.models.employer import UnresolvedEmployer
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.monitoring import OperationalChangeAudit
-from crank.services import monitoring
+from crank.services import agent_runs, monitoring
 
 logger = logging.getLogger(__name__)
 
 # How stale (in hours) a listing must be before we consider it stale.
 _STALE_HOURS = int(getattr(settings, "JOB_LISTING_STALE_HOURS", 24 * 7))
+
+
+# ── Operator-facing status presentation (visual critique round 1) ──
+# Stable mappings so the template's badge classes are contract-testable.
+RUN_STATUS_LABELS = {
+    "pending": "Queued",
+    "running": "Running",
+    "succeeded": "Succeeded",
+    "failed": "Failed",
+    "skipped": "Skipped",
+}
+RUN_STATUS_TONES = {
+    "pending": "info",
+    "running": "info",
+    "succeeded": "success",
+    "failed": "danger",
+    "skipped": "warning",
+}
+RUN_STATUS_ICONS = {
+    "pending": "⏳",
+    "running": "▶",
+    "succeeded": "✓",
+    "failed": "✖",
+    "skipped": "↻",
+}
+PIPELINE_STATE_TONES = {
+    "idle": "success",
+    "queued": "info",
+    "claimed": "info",
+    "conflict": "warning",
+    "reclaimed": "warning",
+    "expired": "danger",
+    "failed": "danger",
+}
+PIPELINE_STATE_ICONS = {
+    "idle": "✓",
+    "queued": "⏳",
+    "claimed": "▶",
+    "conflict": "⚠",
+    "reclaimed": "↻",
+    "expired": "✖",
+    "failed": "✖",
+}
+
+
+def _relative_time(dt, now=None):
+    """Friendly relative time like ``12m ago`` (primary metadata display)."""
+    if dt is None:
+        return ""
+    now = now or timezone.now()
+    seconds = max(0, int((now - dt).total_seconds()))
+    if seconds < 45:
+        return "just now"
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes}m ago"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h ago"
+
+
+def _duration(seconds):
+    """Compact duration like ``2h 59m`` for countdown/age display."""
+    seconds = max(0, int(seconds))
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {sec}s"
+    return f"{sec}s"
+
+
+def _abbrev_id(value):
+    """Abbreviate a long correlation id like ``99a1f02e…2f15b``."""
+    text = str(value)
+    if len(text) <= 16:
+        return text
+    return f"{text[:8]}…{text[-5:]}"
+
+
+def _pipeline_ownership_state():
+    """Derive the operator-facing pipeline ownership & queue state.
+
+    One consolidated, truthful presentation (issue #462 visual critique):
+    who owns the run slot, when ownership began, what the queue holds, what
+    happens next, and explicit conflict/reclaim/expired presentations. All
+    derivations come from persisted ``AgentRun`` rows — never guesses.
+    """
+    now = timezone.now()
+    stale_after = timedelta(
+        seconds=int(getattr(settings, "AGENT_RUN_STALE_AFTER_SECONDS", 3600))
+    )
+    runs = AgentRun.objects.filter(run_type=AgentRun.RunType.JOB_PIPELINE)
+    active = runs.filter(
+        status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING]
+    ).order_by("id").first()
+    latest = runs.order_by("-created", "-id").first()
+
+    pending_qs = runs.filter(status=AgentRun.Status.PENDING)
+    pending_count = pending_qs.count()
+    oldest_pending = pending_qs.order_by("created").first()
+
+    # A skip attempt recorded after the current holder claimed the slot is
+    # persisted evidence of an ownership conflict (a second invocation tried
+    # to claim while this run holds the slot).
+    conflict_skip = None
+    if active is not None:
+        conflict_skip = (
+            runs.filter(
+                status=AgentRun.Status.SKIPPED, created__gte=active.created
+            )
+            .order_by("-id")
+            .first()
+        )
+
+    state = {
+        "state": "idle",
+        "tone": PIPELINE_STATE_TONES["idle"],
+        "icon": PIPELINE_STATE_ICONS["idle"],
+        "label": "Idle — no active or queued pipeline run",
+        "explanation": (
+            "Nothing is claimed or queued. The next scheduled pipeline tick "
+            "(or a manual run) will pick up approved+enabled sources."
+        ),
+        "blocking": False,
+        "owner": None,
+        "owned_since_relative": None,
+        "owned_since_iso": None,
+        "queue_count": pending_count,
+        "oldest_wait_relative": None,
+        "oldest_reclaim_remaining": None,
+        "oldest_correlation_id": None,
+        "oldest_correlation_abbrev": None,
+        "consumption": "Not running",
+        "next_consumer": "Next scheduled pipeline tick or a manual run_job_pipeline invocation",
+        "next_action": None,
+        "alert_short": None,
+        "correlation_id": None,
+        "correlation_abbrev": None,
+        "started_iso": None,
+        "created_iso": None,
+        "progress": None,
+    }
+
+    if oldest_pending is not None and oldest_pending.created is not None:
+        age = max(0, int((now - oldest_pending.created).total_seconds()))
+        state["oldest_wait_relative"] = _duration(age)
+        state["oldest_reclaim_remaining"] = _duration(
+            (stale_after - timedelta(seconds=age)).total_seconds()
+        )
+        state["oldest_correlation_id"] = str(oldest_pending.correlation_id)
+        state["oldest_correlation_abbrev"] = _abbrev_id(
+            oldest_pending.correlation_id
+        )
+
+    def _queue_suffix():
+        if pending_count and state["oldest_wait_relative"]:
+            return (
+                f"Queue: {pending_count} run(s) waiting; oldest queued "
+                f"{state['oldest_wait_relative']} ago."
+            )
+        return ""
+
+    if active is not None:
+        state["correlation_id"] = str(active.correlation_id)
+        state["correlation_abbrev"] = _abbrev_id(active.correlation_id)
+        state["created_iso"] = active.created.isoformat() if active.created else None
+        state["started_iso"] = (
+            active.started_at.isoformat() if active.started_at else None
+        )
+        if active.status == AgentRun.Status.PENDING:
+            state.update(
+                state="queued",
+                tone=PIPELINE_STATE_TONES["queued"],
+                icon=PIPELINE_STATE_ICONS["queued"],
+                label="Queued — waiting for pipeline consumer",
+                explanation=(
+                    "The run is queued but not yet claimed. It is consumed by "
+                    "the next scheduled pipeline tick or a manual "
+                    "run_job_pipeline invocation. If no consumer adopts it "
+                    f"within the staleness TTL (~{state['oldest_reclaim_remaining']} "
+                    "remaining), it is reclaimed as failed."
+                ),
+                owner="Unclaimed — awaiting consumer",
+                consumption="Waiting for consumer",
+                next_consumer=(
+                    "Next scheduled pipeline tick or a manual run_job_pipeline "
+                    "invocation"
+                ),
+                next_action=(
+                    "No action needed yet; if the TTL expires, queue the run again "
+                    "after confirming the pipeline CronJob is unsuspended."
+                ),
+            )
+        else:  # RUNNING
+            adopted = bool(
+                active.created
+                and active.started_at
+                and (active.started_at - active.created).total_seconds() > 5
+            )
+            progress = None
+            if isinstance(active.counts, dict) and active.counts:
+                progress = ", ".join(
+                    f"{key.replace('items_', '').replace('_', ' ')}: {value}"
+                    for key, value in sorted(active.counts.items())
+                    if isinstance(value, (int, float, bool))
+                )
+            state.update(
+                tone=PIPELINE_STATE_TONES["claimed"],
+                icon=PIPELINE_STATE_ICONS["claimed"],
+                owner="Job pipeline worker (claimed via the run-type slot)",
+                owned_since_relative=_relative_time(active.started_at, now),
+                consumption=(
+                    f"Running — {progress}" if progress else "Running — no progress counters recorded yet"
+                ),
+                next_consumer="The running consumer finalizes this run (success/failure)",
+            )
+            if conflict_skip is not None:
+                state.update(
+                    state="conflict",
+                    tone=PIPELINE_STATE_TONES["conflict"],
+                    icon=PIPELINE_STATE_ICONS["conflict"],
+                    label="Ownership conflict — another invocation was skipped",
+                    explanation=(
+                        "Another invocation attempted to claim the run slot while "
+                        "this run holds it and was recorded as skipped. The current "
+                        "owner keeps the slot; no operator action is required unless "
+                        "the run goes stale."
+                    ),
+                    blocking=True,
+                    alert_short=(
+                        "Blocking status: a second consumer attempted to claim "
+                        "this run's slot and was recorded as skipped."
+                    ),
+                    next_action=(
+                        "Wait for the current owner to finalize. If it goes stale, "
+                        "the next consumer reclaims the slot and retries."
+                    ),
+                )
+            else:
+                state.update(
+                    state="claimed",
+                    label="Claimed — owned by the Job pipeline worker",
+                    explanation=(
+                        "The run is owned by the deployed pipeline consumer"
+                        + (
+                            f" since {state['owned_since_relative']}"
+                            if state["owned_since_relative"]
+                            else ""
+                        )
+                        + (
+                            " (adopted from the queue, correlation id preserved)."
+                            if adopted
+                            else "."
+                        )
+                    ),
+                )
+    else:
+        reclaim_summary = (latest.error_summary or "") if latest else ""
+        if latest is not None and latest.status == AgentRun.Status.FAILED:
+            summary_lower = reclaim_summary.lower()
+            state["correlation_id"] = str(latest.correlation_id)
+            state["correlation_abbrev"] = _abbrev_id(latest.correlation_id)
+            state["created_iso"] = latest.created.isoformat() if latest.created else None
+            if "stale run reclaimed" in summary_lower:
+                state.update(
+                    state="reclaimed",
+                    tone=PIPELINE_STATE_TONES["reclaimed"],
+                    icon=PIPELINE_STATE_ICONS["reclaimed"],
+                    label="Reclaimed — stale owner released",
+                    explanation=(
+                        "The previous owner was stale (started but never finalized, "
+                        "likely a crash) and its slot was reclaimed. Queued work "
+                        "will be retried by the next consumer."
+                        + (f" {_queue_suffix()}" if pending_count else "")
+                    ),
+                    next_action=(
+                        "Verify the pipeline CronJob is running; the next tick retries "
+                        "automatically."
+                    ),
+                    consumption="Previous owner reclaimed",
+                )
+            elif "queued run reclaimed" in summary_lower:
+                state.update(
+                    state="expired",
+                    tone=PIPELINE_STATE_TONES["expired"],
+                    icon=PIPELINE_STATE_ICONS["expired"],
+                    label="Failed — queued but never consumed within TTL",
+                    explanation=(
+                        "A queued run was never adopted by a consumer before the "
+                        "staleness TTL expired and was reclaimed as failed."
+                        + (f" {_queue_suffix()}" if pending_count else "")
+                    ),
+                    next_action=(
+                        "Confirm the pipeline CronJob is unsuspended and the consumer "
+                        "is deployed, then queue the run again."
+                    ),
+                    consumption="Timed out in queue",
+                )
+            else:
+                state.update(
+                    state="failed",
+                    tone=PIPELINE_STATE_TONES["failed"],
+                    icon=PIPELINE_STATE_ICONS["failed"],
+                    label="Failed — last pipeline run failed",
+                    explanation=(
+                        "The most recent pipeline run failed."
+                        + (f" {_queue_suffix()}" if pending_count else "")
+                    ),
+                    next_action="Inspect the sanitized summary below, then retry from Actions.",
+                    consumption="Last run failed",
+                    progress=reclaim_summary[:300] or None,
+                )
+
+    return state
 
 
 def _host(url: str) -> str:
@@ -83,8 +402,14 @@ def _aggregate_counts():
     if latest_run is not None:
         latest_run_info = {
             "status": latest_run.status,
+            "label": RUN_STATUS_LABELS.get(latest_run.status, latest_run.status),
+            "tone": RUN_STATUS_TONES.get(latest_run.status, "info"),
+            "icon": RUN_STATUS_ICONS.get(latest_run.status, "•"),
             "created": latest_run.created.isoformat() if latest_run.created else None,
+            "created_relative": _relative_time(latest_run.created),
             "correlation_id": str(latest_run.correlation_id),
+            "correlation_abbrev": _abbrev_id(latest_run.correlation_id),
+            "error_summary": (latest_run.error_summary or "")[:300],
         }
 
     # Queued (PENDING) pipeline runs awaiting a consumer (issue #462). A
@@ -114,7 +439,9 @@ def _aggregate_counts():
             "count": pending_count,
             "oldest_age_seconds": age_seconds,
             "oldest_age_display": age_display,
+            "oldest_age_relative": _relative_time(oldest_pending.created),
             "oldest_correlation_id": str(oldest_pending.correlation_id),
+            "oldest_correlation_abbrev": _abbrev_id(oldest_pending.correlation_id),
         }
 
     return {
@@ -296,6 +623,7 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
             "title": "Job Retrieval Operations",
             "counts": _aggregate_counts(),
             "gates": _readiness_gates(),
+            "pipeline": _pipeline_ownership_state(),
             "opts": self.model._meta,
             "admin_links": self._admin_links(),
         }
@@ -468,6 +796,17 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
             # Non-create IntegrityError — re-raise instead of masking.
             raise
         if skip_reason:
+            # Persist the skip as a SKIPPED AgentRun row so the dashboard can
+            # present a truthful ownership-conflict state ("another invocation
+            # was skipped while this run holds the slot"), not just a flash
+            # message. Bounded: only rows of status SKIPPED are created (never
+            # counted by the active-run overlap guard).
+            try:
+                agent_runs.record_skipped(
+                    AgentRun.RunType.JOB_PIPELINE, reason=skip_reason
+                )
+            except Exception:  # pragma: no cover - defensive
+                logger.warning("failed to record overlap skip row", exc_info=True)
             monitoring.record_event(
                 "scheduled_run",
                 {
@@ -635,6 +974,12 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
             raise
 
         if skip_reason:
+            try:
+                agent_runs.record_skipped(
+                    AgentRun.RunType.JOB_PIPELINE, reason=skip_reason
+                )
+            except Exception:  # pragma: no cover - defensive
+                logger.warning("failed to record overlap skip row", exc_info=True)
             monitoring.record_event(
                 "scheduled_run",
                 {

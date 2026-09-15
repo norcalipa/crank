@@ -5,171 +5,423 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
 {% endcomment %}
 {% load i18n admin_urls %}
 
-{% block title %}Job Retrieval Operations{{ block.super }}{% endblock %}
+{% block extrahead %}{{ block.super }}
+<style>
+  /* Scoped operator-dashboard styles (issue #462). Admin shell has no
+     Bootstrap bundle; every var() carries an AA-contrast fallback token. */
+  :root {
+    --jro-warning: var(--bs-warning, #ffc107);
+  }
+  .jro-section { margin: 0 0 1.5rem; }
+  .jro-card {
+    background: #fff;
+    border: 1px solid var(--jro-border, #d0d0d0);
+    border-radius: 4px;
+    padding: 12px 14px;
+    margin: 8px 0 0;
+  }
+  .jro-card--blocking { border-color: var(--jro-warning); box-shadow: 0 0 0 1px var(--jro-warning); }
+  .jro-alert {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+    border: 1px solid #d9a400;
+    border-left: 4px solid #d9a400;
+    background: #fff8e1;
+    color: #6a4b00;
+    border-radius: 4px;
+    padding: 10px 12px;
+    margin: 0 0 10px;
+  }
+  .jro-status-line { margin: 0 0 6px; }
+  .jro-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-weight: 600;
+    border: 1px solid transparent;
+    max-width: 100%;
+  }
+  .jro-badge--success { background: #dcfce7; color: #14532d; border-color: #86efac; }
+  .jro-badge--warning { background: #fef3c7; color: #713f12; border-color: #d9a400; }
+  .jro-badge--danger { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
+  .jro-badge--info { background: #dbeafe; color: #1e3a8a; border-color: #93c5fd; }
+  .jro-icon { font-style: normal; line-height: 1; }
+  .jro-explanation { margin: 0 0 10px; color: #333; }
+  .jro-fields {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 6px 18px;
+    margin: 0 0 10px;
+  }
+  .jro-fields dt { font-weight: 600; color: #444; margin: 0; }
+  .jro-fields dd { margin: 0; min-width: 0; }
+  .jro-meta {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    vertical-align: middle;
+  }
+  .jro-relative { color: #333; }
+  .jro-monospace {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    color: #555;
+    overflow-wrap: anywhere; /* fallback only; metadata is abbreviated first */
+  }
+  .jro-details-secondary {
+    display: block;
+    margin: 6px 0 0;
+    color: #555;
+  }
+  details.jro-details > summary {
+    cursor: pointer;
+    color: #417690;
+  }
+  details.jro-details > summary:focus-visible {
+    outline: 3px solid var(--jro-warning);
+    outline-offset: 2px;
+  }
+  .jro-copy {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 8px 10px;
+    border: 1px solid #b0b6bb;
+    border-radius: 4px;
+    background: #f1f3f5;
+    color: #1f2933;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .jro-copy:hover { background: #e4e8eb; }
+  .jro-btn {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 10px 16px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .jro-btn--primary { background: #1d6f8c; color: #fff; border-color: #155a72; }
+  .jro-btn--primary:hover { background: #175a72; }
+  .jro-btn--secondary { background: #f1f3f5; color: #1f2933; border-color: #adb5bd; }
+  .jro-btn--secondary:hover { background: #e4e8eb; }
+  .jro-btn--warning { background: #ffc107; color: #4a3200; border-color: #d9a400; }
+  .jro-btn--warning:hover { background: #e6ae06; }
+  .jro-btn--danger { background: #b02a37; color: #fff; border-color: #8c2230; }
+  .jro-btn--danger:hover { background: #98242f; }
+  .jro-btn:focus-visible,
+  .jro-copy:focus-visible,
+  .jro-card a:focus-visible {
+    outline: 3px solid var(--jro-warning);
+    outline-offset: 2px;
+  }
+  .jro-action-box {
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    padding: 12px;
+    margin-bottom: 1rem;
+  }
+  .jro-table-wrap { overflow-x: auto; }
+  @media (max-width: 480px) {
+    .jro-fields { grid-template-columns: 1fr; gap: 2px 0; }
+    .jro-fields dd { margin-bottom: 8px; }
+    .jro-action-box { padding: 10px; }
+    .jro-action-box form { margin-top: 8px; }
+  }
+</style>
+<script>
+  (function () {
+    'use strict';
+    // Correlation-ID copy affordance (issue #462): 44px-min target with a
+    // full accessible label; decorative states never rely on color alone.
+    document.addEventListener('click', function (event) {
+      var button = event.target.closest('.jro-copy');
+      if (!button) { return; }
+      var value = button.getAttribute('data-copy') || '';
+      var previous = button.textContent;
+      var done = function () {
+        button.textContent = 'Copied!';
+        button.setAttribute('aria-label', 'Correlation ID copied');
+        window.setTimeout(function () {
+          button.textContent = previous;
+          button.setAttribute(
+            'aria-label',
+            button.getAttribute('data-aria-label') || previous
+          );
+        }, 2000);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(value).then(done, done);
+      } else {
+        done();
+      }
+    });
+  })();
+</script>
+{% endblock %}
 
 {% block branding %}
-<h1 id="site-name"><a href="{% url 'admin:index' %}">Crank Admin</a></h1>
+{# Shell brand is not a heading: the page h1 is the content title below. #}
+<div id="site-name"><a href="{% url 'admin:index' %}">Crank Admin</a></div>
 {% endblock %}
 
 {% block content %}
 <div id="content-main">
-  <h1>Job Retrieval Operations</h1>
 
-  {# ── Aggregate Counts ── #}
-  <div class="module">
-    <h2>Aggregate Counts</h2>
+  {# ── Pipeline ownership & queue (primary operator status) ── #}
+  <section class="module jro-section" aria-labelledby="jro-ownership-heading">
+    <h2 id="jro-ownership-heading">Pipeline ownership &amp; queue</h2>
+    {% if pipeline %}
+    <div class="jro-card{% if pipeline.blocking %} jro-card--blocking{% endif %}" data-state="{{ pipeline.state }}">
+      {% if pipeline.blocking %}
+      <div class="jro-alert" role="alert">
+        <span class="jro-icon" aria-hidden="true">{{ pipeline.icon }}</span>
+        <strong>{{ pipeline.label }}</strong>
+        <span>{{ pipeline.alert_short }}</span>
+      </div>
+      {% endif %}
+      <div role="status" aria-live="polite" aria-atomic="true" aria-labelledby="jro-state-label" aria-describedby="jro-state-explanation">
+        <p class="jro-status-line">
+          <span class="jro-badge jro-badge--{{ pipeline.tone }}">
+            <span class="jro-icon" aria-hidden="true">{{ pipeline.icon }}</span>
+            <span id="jro-state-label">{{ pipeline.label }}</span>
+          </span>
+        </p>
+        <p id="jro-state-explanation" class="jro-explanation">{{ pipeline.explanation }}</p>
+        <dl class="jro-fields">
+          <dt>Owner</dt>
+          <dd>{{ pipeline.owner|default:"Unclaimed — awaiting consumer" }}</dd>
+          {% if pipeline.owned_since_relative %}
+          <dt>Owned since</dt>
+          <dd>{{ pipeline.owned_since_relative }}{% if pipeline.started_iso %} <span class="jro-monospace">({{ pipeline.started_iso }})</span>{% endif %}</dd>
+          {% endif %}
+          <dt>Queue</dt>
+          <dd>
+            {{ pipeline.queue_count }} run{{ pipeline.queue_count|pluralize }}
+            {% if pipeline.oldest_wait_relative %}
+              — oldest queued {{ pipeline.oldest_wait_relative }} ago
+              {% if pipeline.oldest_reclaim_remaining %}(reclaims in ~{{ pipeline.oldest_reclaim_remaining }} if no consumer arrives){% endif %}
+            {% endif %}
+          </dd>
+          <dt>Consumption</dt>
+          <dd>{{ pipeline.consumption }}{% if pipeline.progress %} — {{ pipeline.progress }}{% endif %}</dd>
+          <dt>Next consumer</dt>
+          <dd>{{ pipeline.next_consumer }}</dd>
+          {% if pipeline.next_action %}
+          <dt>Next step</dt>
+          <dd>{{ pipeline.next_action }}</dd>
+          {% endif %}
+        </dl>
+        {% if pipeline.correlation_id %}
+        <div class="jro-meta">
+          <span class="jro-relative">{{ pipeline.owned_since_relative|default:"" }}{% if pipeline.correlation_abbrev %} · run {{ pipeline.correlation_abbrev }}{% endif %}</span>
+          <button type="button" class="jro-copy" data-copy="{{ pipeline.correlation_id }}" data-aria-label="Copy correlation ID {{ pipeline.correlation_id }}" title="Copy correlation ID {{ pipeline.correlation_id }}" aria-label="Copy correlation ID {{ pipeline.correlation_id }}">Copy ID</button>
+        </div>
+        <details class="jro-details">
+          <summary>Timestamps &amp; IDs</summary>
+          <div class="jro-details-secondary jro-monospace">
+            created {{ pipeline.created_iso|default:"—" }}{% if pipeline.started_iso %} · started {{ pipeline.started_iso }}{% endif %}<br>
+            correlation {{ pipeline.correlation_id }}
+          </div>
+        </details>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+  </section>
+
+  {# ── Inventory aggregates ── #}
+  <section class="module jro-section" aria-labelledby="jro-aggregates-heading">
+    <h2 id="jro-aggregates-heading">Inventory aggregates</h2>
+    <div class="jro-table-wrap">
     <table>
-      <tr><td>Configured job sources</td><td><strong>{{ counts.configured }}</strong></td></tr>
-      <tr><td>Approved job sources</td><td><strong>{{ counts.approved }}</strong></td></tr>
-      <tr><td>Enabled job sources</td><td><strong>{{ counts.enabled }}</strong></td></tr>
-      <tr><td>Active listings</td><td><strong>{{ counts.active_listings }}</strong></td></tr>
-      <tr><td>Stale listings (&gt;7d)</td><td><strong>{{ counts.stale_listings }}</strong></td></tr>
-      <tr><td>Unresolved employers</td><td><strong>{{ counts.unresolved_employers }}</strong></td></tr>
-      <tr><td>Job matches</td><td><strong>{{ counts.matches }}</strong></td></tr>
+      <tr><th scope="row">Configured job sources</th><td><strong>{{ counts.configured }}</strong></td></tr>
+      <tr><th scope="row">Approved job sources</th><td><strong>{{ counts.approved }}</strong></td></tr>
+      <tr><th scope="row">Enabled job sources</th><td><strong>{{ counts.enabled }}</strong></td></tr>
+      <tr><th scope="row">Active listings</th><td><strong>{{ counts.active_listings }}</strong></td></tr>
+      <tr><th scope="row">Stale listings (&gt;7d)</th><td><strong>{{ counts.stale_listings }}</strong></td></tr>
+      <tr><th scope="row">Unresolved employers</th><td><strong>{{ counts.unresolved_employers }}</strong></td></tr>
+      <tr><th scope="row">Job matches</th><td><strong>{{ counts.matches }}</strong></td></tr>
       <tr>
-        <td>Latest pipeline run</td>
+        <th scope="row">Latest pipeline run</th>
         <td>
           {% if counts.latest_run %}
-            <strong>{{ counts.latest_run.status }}</strong>
-            &mdash; {{ counts.latest_run.created }}
-            ({{ counts.latest_run.correlation_id }})
+            <span class="jro-badge jro-badge--{{ counts.latest_run.tone }}" data-state-class="run-{{ counts.latest_run.status }}">
+              <span class="jro-icon" aria-hidden="true">{{ counts.latest_run.icon }}</span>
+              {{ counts.latest_run.label }}
+            </span>
+            <span class="jro-meta">
+              <span class="jro-relative">{{ counts.latest_run.created_relative }}</span>
+              <span class="jro-monospace">{{ counts.latest_run.correlation_abbrev }}</span>
+              <button type="button" class="jro-copy" data-copy="{{ counts.latest_run.correlation_id }}" data-aria-label="Copy correlation ID {{ counts.latest_run.correlation_id }}" title="Copy correlation ID {{ counts.latest_run.correlation_id }}" aria-label="Copy correlation ID {{ counts.latest_run.correlation_id }}">Copy ID</button>
+            </span>
+            {% if counts.latest_run.error_summary %}
+              <span class="jro-details-secondary">Sanitized reason: {{ counts.latest_run.error_summary }}</span>
+            {% endif %}
+            <details class="jro-details">
+              <summary>Timestamps &amp; IDs</summary>
+              <div class="jro-details-secondary jro-monospace">
+                created {{ counts.latest_run.created }}<br>
+                correlation {{ counts.latest_run.correlation_id }}
+              </div>
+            </details>
           {% else %}
             <em>None</em>
           {% endif %}
         </td>
       </tr>
       <tr>
-        <td>Queued runs awaiting consumer</td>
+        <th scope="row">Queued runs awaiting consumer</th>
         <td>
           {% if counts.pending_run %}
-            <strong>{{ counts.pending_run.count }}</strong>
-            &mdash; oldest queued {{ counts.pending_run.oldest_age_display }} ago
-            ({{ counts.pending_run.oldest_correlation_id }})
+            <span class="jro-badge jro-badge--info">
+              <span class="jro-icon" aria-hidden="true">⏳</span>
+              {{ counts.pending_run.count }} queued
+            </span>
+            <span class="jro-meta">
+              <span class="jro-relative">oldest queued {{ counts.pending_run.oldest_age_display }} ago</span>
+              <span class="jro-monospace">{{ counts.pending_run.oldest_correlation_abbrev }}</span>
+              <button type="button" class="jro-copy" data-copy="{{ counts.pending_run.oldest_correlation_id }}" data-aria-label="Copy correlation ID {{ counts.pending_run.oldest_correlation_id }}" title="Copy correlation ID {{ counts.pending_run.oldest_correlation_id }}" aria-label="Copy correlation ID {{ counts.pending_run.oldest_correlation_id }}">Copy ID</button>
+            </span>
+            <details class="jro-details">
+              <summary>Timestamps &amp; IDs</summary>
+              <div class="jro-details-secondary jro-monospace">correlation {{ counts.pending_run.oldest_correlation_id }}</div>
+            </details>
           {% else %}
             <em>None</em>
           {% endif %}
         </td>
       </tr>
     </table>
-  </div>
+    </div>
+  </section>
 
   {# ── Readiness Gates ── #}
-  <div class="module">
-    <h2>Readiness Gates</h2>
+  <section class="module jro-section" aria-labelledby="jro-gates-heading">
+    <h2 id="jro-gates-heading">Readiness gates</h2>
+    <div class="jro-table-wrap">
     <table>
       <tr>
-        <td>Adapter registered</td>
+        <th scope="row">Adapter registered</th>
         <td>
           {% if gates.adapter_registered %}
-            <span style="color: green;">&#x2705; Yes ({{ gates.adapter_count }} registered)</span>
+            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes ({{ gates.adapter_count }} registered)</span>
           {% else %}
-            <span style="color: red;">&#x274C; No</span>
+            <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No</span>
           {% endif %}
         </td>
       </tr>
       <tr>
-        <td>Credentials configured</td>
+        <th scope="row">Credentials configured</th>
         <td>
           {% if gates.credentials_configured %}
-            <span style="color: green;">&#x2705; Yes</span>
+            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes</span>
           {% else %}
-            <span style="color: red;">&#x274C; No</span>
+            <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No</span>
           {% endif %}
         </td>
       </tr>
       <tr>
-        <td>Pipeline enabled</td>
+        <th scope="row">Pipeline enabled</th>
         <td>
           {% if gates.pipeline_enabled %}
-            <span style="color: green;">&#x2705; Yes</span>
+            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes</span>
           {% else %}
-            <span style="color: red;">&#x274C; No</span>
+            <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No</span>
           {% endif %}
         </td>
       </tr>
       <tr>
-        <td>Scheduler enabled</td>
+        <th scope="row">Scheduler enabled</th>
         <td>
           {% if gates.scheduler_enabled %}
-            <span style="color: green;">&#x2705; Yes</span>
+            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes</span>
           {% else %}
-            <span style="color: red;">&#x274C; No</span>
+            <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No</span>
           {% endif %}
         </td>
       </tr>
       <tr>
-        <td>Active or queued run / overlap</td>
+        <th scope="row">Active or queued run / overlap</th>
         <td>
           {% if gates.active_run %}
-            <span style="color: orange;">&#x26A0; {{ gates.active_run_status }}</span>
+            <span class="jro-badge jro-badge--warning"><span class="jro-icon" aria-hidden="true">⚠</span> Active — {{ gates.active_run_status|title }}; see Pipeline ownership &amp; queue</span>
           {% else %}
-            <span style="color: green;">&#x2705; Idle</span>
+            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Idle</span>
           {% endif %}
         </td>
       </tr>
     </table>
-  </div>
+    </div>
+  </section>
 
   {# ── Admin Links ── #}
-  <div class="module">
-    <h2>Related Admin Sections</h2>
+  <section class="module jro-section" aria-labelledby="jro-links-heading">
+    <h2 id="jro-links-heading">Related admin sections</h2>
     <ul>
       {% for link in admin_links %}
         <li><a href="{{ link.url }}">{{ link.label }}</a></li>
       {% endfor %}
     </ul>
-  </div>
+  </section>
 
   {# ── Bounded Audited Actions ── #}
-  <div class="module">
-    <h2>Actions</h2>
+  <section class="module jro-section" aria-labelledby="jro-actions-heading">
+    <h2 id="jro-actions-heading">Actions</h2>
 
-    <p style="color: #666;">All actions require explicit confirmation on a dedicated page before execution.</p>
+    <p class="jro-explanation">All actions require explicit confirmation on a dedicated page before execution.</p>
 
-    <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
+    <div class="jro-action-box">
       <h3>Seed Curated Job Sources (dry-run)</h3>
       <p>Preview seed_job_sources without writing to the database.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_seed_preview' %}">
         {% csrf_token %}
-        <input type="submit" value="Preview Seed" class="button" style="background: #79aec8;">
+        <input type="submit" value="Preview Seed" class="button jro-btn jro-btn--secondary">
       </form>
     </div>
 
-    <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
+    <div class="jro-action-box">
       <h3>Seed Curated Job Sources</h3>
       <p>Create/update approved+enabled curated sources. Only allowlisted domains are seeded. Existing operator-set policy (approval/enabled) is preserved.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_seed_execute' %}">
         {% csrf_token %}
-        <input type="submit" value="Execute Seed" class="button" style="background: #ba2121;">
+        <input type="submit" value="Execute Seed" class="button jro-btn jro-btn--danger">
       </form>
     </div>
 
-    <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
+    <div class="jro-action-box">
       <h3>Queue Retrieval for Approved+Enabled Sources</h3>
-      <p>Creates a pending pipeline run for all approved+enabled job sources. Work is performed asynchronously. Skipped if a run is already active or queued.</p>
+      <p>Creates a pending pipeline run for all approved+enabled job sources. Work is consumed by the next scheduled pipeline tick (or a manual run). Skipped if a run is already active or queued.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_queue_retrieval' %}">
         {% csrf_token %}
-        <input type="submit" value="Queue Retrieval" class="button" style="background: #ba2121;">
+        <input type="submit" value="Queue Retrieval" class="button jro-btn jro-btn--primary">
       </form>
     </div>
 
-    <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
+    <div class="jro-action-box">
       <h3>Queue Job Pipeline Run</h3>
-      <p>Creates a pending pipeline run. Work is performed asynchronously. Skipped if a run is already active or queued.</p>
+      <p>Creates a pending pipeline run that the next deployed consumer adopts (correlation id preserved). Skipped if a run is already active or queued.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_queue_pipeline' %}">
         {% csrf_token %}
-        <input type="submit" value="Queue Pipeline Run" class="button" style="background: #ba2121;">
+        <input type="submit" value="Queue Pipeline Run" class="button jro-btn jro-btn--primary">
       </form>
     </div>
 
-    <div style="border: 1px solid #ccc; padding: 1rem; margin-bottom: 1rem;">
+    <div class="jro-action-box">
       <h3>Retry Eligible Failed Run</h3>
       <p>Retries the most recent failed pipeline run by creating a new pending run. Skipped if a run is already active or queued.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_retry_failed' %}">
         {% csrf_token %}
-        <input type="submit" value="Retry Failed Run" class="button" style="background: #ba2121;">
+        <input type="submit" value="Retry Failed Run" class="button jro-btn jro-btn--warning">
       </form>
     </div>
-  </div>
+  </section>
 </div>
 {% endblock %}

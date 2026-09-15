@@ -14,6 +14,7 @@ Covers:
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from unittest.mock import Mock, patch
 
 from django.contrib.admin.sites import AdminSite
@@ -84,8 +85,9 @@ class JobRetrievalOpsAdminTests(TestCase):
         self.assertEqual(response.status_code, 200)
         content = response.render().content.decode()
         self.assertIn("Job Retrieval Operations", content)
-        self.assertIn("Aggregate Counts", content)
-        self.assertIn("Readiness Gates", content)
+        self.assertIn("Inventory aggregates", content)
+        self.assertIn("Readiness gates", content)
+        self.assertIn("Pipeline ownership &amp; queue", content)
 
     def test_dashboard_shows_aggregate_counts(self):
         self._make_data()
@@ -1350,3 +1352,239 @@ class ConcurrentDoubleSubmitTests(TransactionTestCase):
             },
         )()
         return request
+
+
+class JobRetrievalDashboardVisualContractTests(TestCase):
+    """UI contract tests for the round-1 visual critique fixes (issue #462).
+
+    Locks the staff-only boundary, the consolidated operator status region
+    (roles, semantic copy, icon + text pairs), the stable status-class
+    mappings, the metadata-density contract (abbreviated ids, relative time,
+    44px copy targets), and the 375px overflow/target-size CSS guarantees.
+    Layout-level 375px evidence is additionally produced by the render script.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.staff = User.objects.create_user(
+            username="contract-staff", password="pw", is_staff=True
+        )
+
+    def setUp(self):
+        AgentRun.objects.all().delete()
+        self.client.force_login(self.staff)
+        self.url = reverse("admin:crank_jobretrievalops_changelist")
+        self.response = self.client.get(self.url)
+        self.content = self.response.content.decode()
+
+    # ── Staff-only boundary ──
+
+    def test_dashboard_requires_staff(self):
+        self.client.logout()
+        anon = User.objects.create_user(username="anon", password="pw")
+        self.client.force_login(anon)
+        response = self.client.get(self.url)
+        self.assertNotEqual(response.status_code, 200)
+
+    # ── Heading structure ──
+
+    def test_exactly_one_h1_and_section_order(self):
+        self.assertEqual(self.content.count("<h1>"), 1)
+        self.assertIn("<h1>Job Retrieval Operations</h1>", self.content)
+        self.assertNotIn("<h2>Job Retrieval Operations</h2>", self.content)
+        ownership = self.content.index("Pipeline ownership &amp; queue")
+        aggregates = self.content.index("Inventory aggregates")
+        self.assertLess(
+            ownership, aggregates,
+            "Pipeline ownership & queue must precede inventory aggregates",
+        )
+        headings = {
+            "Inventory aggregates": "jro-aggregates-heading",
+            "Readiness gates": "jro-gates-heading",
+            "Related admin sections": "jro-links-heading",
+            "Actions": "jro-actions-heading",
+        }
+        for heading, dom_id in headings.items():
+            self.assertIn(
+                f'id="{dom_id}">{heading}</h2>',
+                self.content,
+            )
+
+    # ── Accessible status region ──
+
+    def test_status_region_roles_present(self):
+        self.assertIn('role="status"', self.content)
+        self.assertIn('aria-live="polite"', self.content)
+        self.assertIn('aria-atomic="true"', self.content)
+        self.assertIn("data-state=\"idle\"", self.content)
+        self.assertNotIn('role="alert"', self.content)
+
+    # ── Stable status class mappings ──
+
+    def test_status_class_mappings_match_module_constants(self):
+        from crank.admin_dashboard import RUN_STATUS_TONES
+
+        for status, tone in RUN_STATUS_TONES.items():
+            AgentRun.objects.all().delete()
+            AgentRun.objects.create(
+                run_type=AgentRun.RunType.JOB_PIPELINE,
+                status=status,
+                created=timezone.now() - timedelta(minutes=1),
+            )
+            content = self.client.get(self.url).content.decode()
+            self.assertIn(
+                f'data-state-class="run-{status}"',
+                content,
+                f"status {status} missing its stable data-state-class",
+            )
+            self.assertIn(
+                f"jro-badge--{tone}\" data-state-class=\"run-{status}\"",
+                content,
+                f"tone class jro-badge--{tone} missing for status {status}",
+            )
+
+    # ── Semantic state copy: queued / claimed / conflict / reclaimed / expired ──
+
+    def _render_with(self, **run_kwargs):
+        AgentRun.objects.all().delete()
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE, **run_kwargs
+        )
+        content = self.client.get(self.url).content.decode()
+        return content
+
+    def test_queued_state_semantic_copy(self):
+        AgentRun.objects.all().delete()
+        run = AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.PENDING,
+        )
+        # ``created`` is auto_now_add; backdate it directly.
+        AgentRun.objects.filter(pk=run.pk).update(
+            created=timezone.now() - timedelta(minutes=40)
+        )
+        content = self.client.get(self.url).content.decode()
+        self.assertIn("Queued — waiting for pipeline consumer", content)
+        self.assertIn('data-state="queued"', content)
+        self.assertIn("jro-badge--info", content)
+        self.assertIn("40m 0s ago", content)
+
+    def test_claimed_state_semantic_copy(self):
+        content = self._render_with(
+            status=AgentRun.Status.RUNNING,
+            created=timezone.now() - timedelta(minutes=13),
+            started_at=timezone.now() - timedelta(minutes=12),
+            counts={"items_seen": 3, "items_created": 2},
+        )
+        self.assertIn("Claimed — owned by the Job pipeline worker", content)
+        self.assertIn('data-state="claimed"', content)
+        self.assertIn("Job pipeline worker", content)
+        self.assertIn("12m ago", content)
+        self.assertNotIn('role="alert"', content)
+
+    def test_conflict_state_alert_with_icon_and_text(self):
+        holder = AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.RUNNING,
+            created=timezone.now() - timedelta(hours=1),
+            started_at=timezone.now() - timedelta(minutes=10),
+        )
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.SKIPPED,
+            created=holder.created + timedelta(seconds=5),
+        )
+        content = self.client.get(self.url).content.decode()
+        self.assertIn("Ownership conflict — another invocation was skipped", content)
+        self.assertIn('data-state="conflict"', content)
+        self.assertIn('role="alert"', content)
+        # The alert is a distinct blocking notice, not a duplicate of the
+        # status region's explanation.
+        self.assertIn("Blocking status: a second consumer", content)
+        # Icon + text pairing, never color alone.
+        self.assertIn('class="jro-icon" aria-hidden="true">⚠', content)
+        self.assertIn("jro-badge--warning", content)
+
+    def test_reclaimed_state_semantic_copy(self):
+        content = self._render_with(
+            status=AgentRun.Status.FAILED,
+            created=timezone.now() - timedelta(minutes=10),
+            finished_at=timezone.now() - timedelta(minutes=9),
+            error_summary=(
+                "Stale run reclaimed: started but never finalized before "
+                "the staleness TTL (possible crash)."
+            ),
+        )
+        self.assertIn("Reclaimed — stale owner released", content)
+        self.assertIn('data-state="reclaimed"', content)
+        self.assertIn("jro-badge--warning", content)
+        self.assertIn("Queued work will be retried", content)
+
+    def test_expired_state_semantic_copy_with_sanitized_reason(self):
+        content = self._render_with(
+            status=AgentRun.Status.FAILED,
+            created=timezone.now() - timedelta(hours=2),
+            finished_at=timezone.now() - timedelta(hours=1),
+            error_summary=(
+                "Queued run reclaimed: queued but never consumed within "
+                "the staleness TTL (no consumer adopted it)."
+            ),
+        )
+        self.assertIn("Failed — queued but never consumed within TTL", content)
+        self.assertIn('data-state="expired"', content)
+        self.assertIn("jro-badge--danger", content)
+        self.assertIn("queue the run again", content)
+
+    # ── Metadata density ──
+
+    def test_metadata_density_abbreviated_id_relative_time_details(self):
+        run = AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.RUNNING,
+            created=timezone.now() - timedelta(minutes=5),
+            started_at=timezone.now() - timedelta(minutes=5),
+        )
+        content = self.client.get(self.url).content.decode()
+        abbrev = f"{str(run.correlation_id)[:8]}…{str(run.correlation_id)[-5:]}"
+        self.assertIn(abbrev, content)
+        self.assertIn("Copy ID", content)
+        self.assertIn(f'data-copy="{run.correlation_id}"', content)
+        self.assertIn(f'aria-label="Copy correlation ID {run.correlation_id}"', content)
+        self.assertIn("Timestamps &amp; IDs", content)
+        self.assertIn(str(run.correlation_id), content)
+        self.assertIn("ago", content)
+
+    # ── Action affordances: 44px targets + semantic button classes ──
+
+    def test_action_targets_and_semantic_button_classes(self):
+        content = self.content
+        self.assertIn("min-height: 44px", content)
+        self.assertIn("min-width: 44px", content)
+        for value, tone in (
+            ("Queue Retrieval", "jro-btn--primary"),
+            ("Queue Pipeline Run", "jro-btn--primary"),
+            ("Retry Failed Run", "jro-btn--warning"),
+            ("Execute Seed", "jro-btn--danger"),
+            ("Preview Seed", "jro-btn--secondary"),
+        ):
+            self.assertIn(f'value="{value}"', content)
+            self.assertIn(tone, content)
+        self.assertNotIn("style=\"background:", content)
+
+    # ── 375px guarantees (CSS contract; behavior proven by render script) ──
+
+    def test_375px_css_contract(self):
+        content = self.content
+        self.assertIn(".jro-table-wrap { overflow-x: auto; }", content)
+        self.assertIn("@media (max-width: 480px)", content)
+        self.assertIn("grid-template-columns: 1fr;", content)
+        self.assertIn("overflow-wrap: anywhere", content)
+        self.assertIn("outline: 3px solid", content)
+
+    def test_readiness_gates_use_badge_classes(self):
+        content = self.content
+        self.assertNotIn('style="color: green;"', content)
+        self.assertNotIn('style="color: red;"', content)
+        self.assertNotIn('style="color: orange;"', content)
+        self.assertIn("jro-badge--success", content)
+        self.assertIn("jro-badge--danger", content)
