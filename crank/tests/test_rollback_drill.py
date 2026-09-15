@@ -11,6 +11,7 @@ from django.test import TestCase
 from django.utils import timezone
 from datetime import timedelta
 
+from crank.management.commands import rollback_drill
 from crank.models.agent_run import AgentRun
 from crank.models.monitoring import (
     ALLOWED_CAPABILITY_KEYS,
@@ -58,8 +59,9 @@ class RollbackDrillCommandTests(TestCase):
             self.assertIn("run_type", cap)
             self.assertIn("switch_enabled", cap)
             self.assertIn("capability_blocked", cap)
-            self.assertIn("run_type_blocked", cap)
+            self.assertIn("gate_blocked", cap)
             self.assertIn("passed", cap)
+            self.assertIn("reason", cap)
 
     def test_drill_creates_disabled_switches(self):
         """The drill creates CapabilitySwitch entries with enabled=False."""
@@ -164,7 +166,7 @@ class RollbackDrillCommandTests(TestCase):
         self.assertIn("Data consistency:", output)
 
     def test_capability_blocked_is_true_for_all_drilled_switches(self):
-        """All three capability switches are blocked after the drill."""
+        """All capability switches are blocked after the drill."""
         code, stdout, _ = self._call(as_json=True)
         self.assertEqual(code, 0)
         report = json.loads(stdout.getvalue())
@@ -172,17 +174,18 @@ class RollbackDrillCommandTests(TestCase):
             self.assertTrue(cap["capability_blocked"])
             self.assertTrue(cap["passed"])
 
-    def test_run_type_blocked_for_matching_keys(self):
-        """For gather_scores and job_pipeline, run_type_blocked is True."""
+    def test_real_gate_blocked_is_true_for_all_drilled_switches(self):
+        """Every registered key's real production gate blocks with its
+        switch disabled; that (not a switch-row read-back alone) is the pass
+        criterion."""
         code, stdout, _ = self._call(as_json=True)
         self.assertEqual(code, 0)
         report = json.loads(stdout.getvalue())
+        self.assertEqual(len(report["capabilities"]), len(ALLOWED_CAPABILITY_KEYS))
         for cap in report["capabilities"]:
-            if cap["key"] in ("gather_scores", "job_pipeline"):
-                self.assertTrue(
-                    cap["run_type_blocked"],
-                    f"run_type_blocked should be True for {cap['key']}",
-                )
+            self.assertTrue(cap["gate_blocked"], cap)
+            self.assertTrue(cap["passed"], cap)
+            self.assertIsNone(cap["reason"])
 
     def test_drill_fails_when_capability_not_blocked(self):
         """The drill reports failure when a capability switch fails to block."""
@@ -218,10 +221,13 @@ class RollbackDrillCommandTests(TestCase):
         drilled = {cap["key"] for cap in report["capabilities"]}
         self.assertEqual(drilled, set(ALLOWED_CAPABILITY_KEYS))
 
-    def test_new_registry_key_is_drilled_automatically(self):
-        """A key added to the registry is picked up by the drill without any
-        drill-side change: the drill derives its list from the registry."""
-        from unittest.mock import patch
+    def test_unverified_registry_key_cannot_report_passed(self):
+        """A key added to the registry without a wired real gate makes the
+        drill FAIL: the drill covers it, but reports passed=False with a
+        no-verifier reason instead of claiming a rollback control that gates
+        nothing. (Replaces the old expectation that an unverified key passes
+        with run_type=None.)"""
+        from django.core.management.base import CommandError
 
         extended = frozenset(ALLOWED_CAPABILITY_KEYS | {"publication_consumer"})
         with patch(
@@ -230,42 +236,66 @@ class RollbackDrillCommandTests(TestCase):
             "crank.management.commands.rollback_drill.ALLOWED_CAPABILITY_KEYS",
             extended,
         ):
-            code, stdout, _ = self._call(as_json=True)
-        self.assertEqual(code, 0)
-        report = json.loads(stdout.getvalue())
-        drilled = {cap["key"] for cap in report["capabilities"]}
-        self.assertIn("publication_consumer", drilled)
+            with self.assertRaises(CommandError):
+                self._call(as_json=True)
+        # The unverified key was drilled (switch row exists) but did not pass.
         switch = CapabilitySwitch.objects.get(key="publication_consumer")
         self.assertFalse(switch.enabled)
 
-    def test_run_type_matches_key_for_run_type_named_keys(self):
-        """Keys that name an AgentRun run type map to themselves."""
+    def test_drill_fails_when_real_gate_not_enforced(self):
+        """A registered key whose real gate stays open with the switch
+        disabled cannot report passed: the drill fails overall."""
+        from django.core.management.base import CommandError
+
+        verifiers = rollback_drill.gate_verifiers()
+        verifiers["crawl"] = lambda: True  # gate ignores the disabled switch
+        with patch(
+            "crank.management.commands.rollback_drill.gate_verifiers",
+            return_value=verifiers,
+        ):
+            with self.assertRaises(CommandError):
+                self._call(as_json=True)
+
+    def test_drill_fails_when_real_gate_raises(self):
+        """A gate verifier that raises counts as unproven, not passed."""
+        from django.core.management.base import CommandError
+
+        verifiers = rollback_drill.gate_verifiers()
+
+        def _exploding():
+            raise RuntimeError("boom")
+
+        verifiers["gather_scores"] = _exploding
+        with patch(
+            "crank.management.commands.rollback_drill.gate_verifiers",
+            return_value=verifiers,
+        ):
+            with self.assertRaises(CommandError):
+                self._call(as_json=True)
+
+    def test_run_type_mapping_is_informational(self):
+        """Keys that name a run type map to themselves; agent_noop's command
+        runs the noop run type; interactive_agent is not an agent-run
+        command (its gate is the interactive-LLM path), so run_type=None.
+        The mapping never determines passed."""
         _, stdout, _ = self._call(as_json=True)
         report = json.loads(stdout.getvalue())
         by_key = {cap["key"]: cap for cap in report["capabilities"]}
         for key in ("crawl", "crawl_schedule", "gather_scores", "job_pipeline"):
             self.assertEqual(by_key[key]["run_type"], key)
-            self.assertTrue(by_key[key]["run_type_blocked"])
+            self.assertTrue(by_key[key]["gate_blocked"])
+            self.assertTrue(by_key[key]["passed"])
+        self.assertEqual(by_key["agent_noop"]["run_type"], "noop")
+        self.assertIsNone(by_key["interactive_agent"]["run_type"])
+        self.assertTrue(by_key["interactive_agent"]["passed"])
 
-    def test_interactive_agent_drills_the_noop_run_type(self):
-        """interactive_agent overrides to the noop run type (settings flags
-        are the primary gate for that pairing)."""
-        _, stdout, _ = self._call(as_json=True)
-        report = json.loads(stdout.getvalue())
-        by_key = {cap["key"]: cap for cap in report["capabilities"]}
-        self.assertEqual(by_key["interactive_agent"]["run_type"], "noop")
-
-    def test_keys_without_matching_run_type_drill_with_none(self):
-        """A registered key without a matching run type (agent_noop) drills
-        with run_type=None and run_type_blocked=None; the switch alone is the
-        control and this is not a drill failure."""
-        code, stdout, _ = self._call(as_json=True)
-        self.assertEqual(code, 0)
-        report = json.loads(stdout.getvalue())
-        by_key = {cap["key"]: cap for cap in report["capabilities"]}
-        self.assertIsNone(by_key["agent_noop"]["run_type"])
-        self.assertIsNone(by_key["agent_noop"]["run_type_blocked"])
-        self.assertTrue(by_key["agent_noop"]["passed"])
+    def test_every_registered_key_has_a_real_gate_verifier(self):
+        """Lockstep: the real-gate map covers exactly the registry, so a
+        registered key always corresponds to a wired production path."""
+        verifiers = rollback_drill.gate_verifiers()
+        self.assertEqual(set(verifiers), set(ALLOWED_CAPABILITY_KEYS))
+        for verifier in verifiers.values():
+            self.assertTrue(callable(verifier))
 
     def test_drill_disabled_switches_cover_every_registered_key(self):
         """After the drill, every registered key has a disabled switch."""

@@ -328,19 +328,98 @@ class RolloutGateRegistryTests(TestCase):
         """Reserved-but-unimplemented names are labeled planned.
 
         Per #463: new flag names must be implemented before being documented
-        as available. publication_consumer (#470), assistant_shell (#471),
-        and the recompute phase switches (#462) must not appear as available.
+        as available. The planned owners are verified against each issue's
+        scope: publication consumer (#470), assistant shell (#472 — "Build
+        the shared responsive workspace with a right assistant sidebar"),
+        and the recompute phase switches (#475 — "Recompute versioned
+        matches"). None may appear as available.
         """
         content = ROLLOUT_DOC.read_text(encoding="utf-8")
         for key in ("publication_consumer", "assistant_shell"):
             self.assertIn(key, content)
         self.assertIn("planned", content)
         self.assertIn("#470", content)
-        self.assertIn("#471", content)
-        self.assertIn("#462", content)
+        self.assertIn("#472", content)
+        self.assertIn("#475", content)
+        # Owners that do NOT own these capabilities must not be credited.
+        # #462 is the ingestion owner and #471 is the suggest-a-company form
+        # ticket; neither owns a recompute phase or the assistant shell.
+        self.assertNotIn("| #462 |", content)
+        self.assertNotIn("| #471 |", content)
         # Normalize whitespace: the doc wraps lines at ~79 columns, so the
         # phrase may span a newline.
         normalized = " ".join(content.split())
         self.assertIn(
             "must be implemented before being documented as available", normalized
         )
+
+
+class RegisteredGateWiringTests(TestCase):
+    """Every registered switch key gates the path the registry claims.
+
+    The drill's pass criterion (rollback_drill.gate_verifiers) proves these
+    gates at drill time; these tests pin the production wiring directly so
+    a registry row can never drift from the path it actually controls.
+    """
+
+    @override_settings(AGENT_RUN_ENABLED=True, AGENT_NOOP_ENABLED=True)
+    def test_agent_noop_switch_blocks_the_noop_command(self):
+        """With both settings flags on, the agent_noop switch alone blocks
+        the noop run path (the switch, not just the run type, is the
+        control)."""
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        from crank.management.commands.agent_noop import Command
+
+        CapabilitySwitch.objects.create(key="agent_noop", enabled=False, note="t")
+        self.assertFalse(Command().get_enabled())
+        stdout = StringIO()
+        code = call_command("agent_noop", stdout=stdout)
+        self.assertEqual(code, 0)
+        self.assertIn("disabled", stdout.getvalue())
+        self.assertEqual(AgentRun.objects.count(), 0)
+
+    def test_crawl_switch_blocks_on_demand_crawl(self):
+        """The crawl switch gates trigger_crawl before any source lookup,
+        so no CrawlRun/AgentRun rows are created when it is off."""
+        from crank.services.crawl_runs import CrawlRequestError, trigger_crawl
+
+        CapabilitySwitch.objects.create(key="crawl", enabled=False, note="t")
+        with self.assertRaises(CrawlRequestError) as ctx:
+            trigger_crawl(source_key="anything", source_type="job")
+        self.assertIn("disabled", str(ctx.exception))
+        self.assertEqual(AgentRun.objects.count(), 0)
+
+    @override_settings(INTERACTIVE_AGENT_ENABLED=True)
+    def test_interactive_agent_switch_blocks_the_llm_path(self):
+        """With the feature flag on, the interactive_agent switch alone
+        blocks the interactive chat gate."""
+        from crank.agents.llm import is_interactive_agent_enabled
+
+        CapabilitySwitch.objects.create(key="interactive_agent", enabled=False, note="t")
+        self.assertFalse(is_interactive_agent_enabled())
+
+    @override_settings(
+        AGENT_RUN_ENABLED=True,
+        GATHER_SCORES_ENABLED=True,
+        JOB_PIPELINE_ENABLED=True,
+        CRAWL_CRON_ENABLED=True,
+    )
+    def test_run_type_commands_blocked_by_their_switches(self):
+        """gather_scores/job_pipeline/crawl_schedule switches block their
+        commands even with every settings flag on."""
+        from crank.management.commands import (
+            gather_scores,
+            run_job_pipeline,
+            schedule_crawls,
+        )
+
+        for module, key in (
+            (gather_scores, "gather_scores"),
+            (run_job_pipeline, "job_pipeline"),
+            (schedule_crawls, "crawl_schedule"),
+        ):
+            CapabilitySwitch.objects.create(key=key, enabled=False, note="t")
+            self.assertFalse(module.Command().get_enabled(), key)

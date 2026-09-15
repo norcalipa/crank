@@ -6,8 +6,15 @@ These tests are the contract that every later epic schema PR keeps green:
 existing schema-v2 preference documents, conversation idempotency keys, and
 stored ``JobMatch`` rows must survive deployment and additive backfill
 without change, and a bounded backfill must be resumable (a second run is a
-no-op). No new schema is introduced here; this module only proves the
-existing shapes remain servable when future additive fields are absent.
+no-op). No new schema is introduced here; this module proves the existing
+shapes remain servable when future additive fields are absent, AND that
+additive fields written by a newer schema version survive old-pod writes:
+patch/reset preserve the unknown portion verbatim while rejecting patches
+that target it (the mixed-version write contract is documented in
+``docs/deployment-migrations.md``). Turn replay goes through the real
+production write path (``crank.views.job_search.persist_idempotent_message``
+``crank/views/job_search.py``); the MySQL two-connection race for that path
+is proven separately by ``crank/tests/test_mysql_concurrency.py``.
 """
 from datetime import timedelta
 from decimal import Decimal
@@ -24,6 +31,11 @@ from crank.models.job_search import JobSearchConversation, JobSearchMessage
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference, default_preferences
 from crank.services import preferences as preferences_service
+from crank.services.preferences import (
+    UnknownFieldError,
+    to_markdown,
+)
+from crank.views.job_search import persist_idempotent_message
 
 User = get_user_model()
 
@@ -92,21 +104,116 @@ class PreferenceSchemaCompatTests(TestCase):
         exported = preferences_service.export(user=self.user)
         self.assertEqual(exported["preferences"], doc)
 
+    def test_mixed_version_patch_write_succeeds_and_preserves_additive_fields(self):
+        """Old-shape write on a new-shape document: during a rolling deploy a
+        new pod writes additive fields, then an old pod must still be able
+        to patch the fields it knows without rejecting the document and
+        without dropping or corrupting the additive fields. This is the
+        write-path half of the mixed-version contract (the read/export half
+        is covered above)."""
+        doc = default_preferences()
+        doc["notifications"] = {"channel": "email", "quiet_hours": "22:00-07:00"}
+        doc["compensation"]["future_salary_band"] = "staff"
+        UserPreference.objects.create(user=self.user, preferences=doc)
+
+        patched = preferences_service.apply_patch_to_user(
+            self.user, {"set": {"notes": "prefers public transit"}}
+        )
+        self.assertTrue(patched["changed"])
+        self.assertEqual(patched["preferences"]["notes"], "prefers public transit")
+        # Additive fields survive the old-pod write verbatim (top level…)
+        self.assertEqual(
+            patched["preferences"]["notifications"],
+            {"channel": "email", "quiet_hours": "22:00-07:00"},
+        )
+        # …and nested inside a known section.
+        self.assertEqual(patched["preferences"]["compensation"]["future_salary_band"], "staff")
+
+        reread = preferences_service.read(user=self.user)
+        self.assertEqual(reread["preferences"]["notifications"],
+                         {"channel": "email", "quiet_hours": "22:00-07:00"})
+        self.assertEqual(reread["preferences"]["compensation"]["future_salary_band"], "staff")
+        self.assertEqual(reread["preferences"]["notes"], "prefers public transit")
+
+    def test_patch_cannot_target_additive_fields(self):
+        """Strict-patch rule (pinned): an old pod may write only the fields it
+        knows. Patches that target unknown paths — set, whole-section set, or
+        remove — are rejected with UnknownFieldError, so an old pod can
+        never create or corrupt a newer schema version's fields."""
+        doc = default_preferences()
+        doc["notifications"] = {"channel": "email"}
+        UserPreference.objects.create(user=self.user, preferences=doc)
+
+        with self.assertRaises(UnknownFieldError):
+            preferences_service.apply_patch_to_user(
+                self.user, {"set": {"notifications.channel": "sms"}}
+            )
+        with self.assertRaises(UnknownFieldError):
+            preferences_service.apply_patch_to_user(
+                self.user, {"set": {"notifications": {"channel": "sms"}}}
+            )
+        with self.assertRaises(UnknownFieldError):
+            preferences_service.apply_patch_to_user(
+                self.user, {"remove": {"notifications": None}}
+            )
+        # Nothing was modified by the rejected patches.
+        reread = preferences_service.read(user=self.user)
+        self.assertEqual(reread["preferences"]["notifications"], {"channel": "email"})
+        self.assertEqual(reread["preferences"], doc)
+
+    def test_markdown_projection_excludes_additive_fields(self):
+        """Markdown is a projection of the known fields only: an additive
+        section never renders (and never leaks into an LLM prompt), but its
+        presence does not break rendering of the rest of the document."""
+        doc = default_preferences()
+        doc["notifications"] = {"channel": "email", "quiet_hours": "22:00-07:00"}
+        rendered = to_markdown(doc)
+        self.assertNotIn("notifications", rendered)
+        self.assertNotIn("quiet_hours", rendered)
+        self.assertIn("# Career Preferences", rendered)
+
+    def test_reset_preserves_additive_fields(self):
+        """Reset returns the known fields to defaults but preserves additive
+        fields owned by a newer schema version verbatim: resetting what this
+        pod knows must never delete data it cannot interpret."""
+        doc = default_preferences()
+        doc["compensation"]["minimum_salary"] = 250000
+        doc["notifications"] = {"channel": "email"}
+        doc["compensation"]["future_salary_band"] = "staff"
+        UserPreference.objects.create(user=self.user, preferences=doc)
+
+        result = preferences_service.reset(user=self.user)
+        self.assertTrue(result["changed"])
+        # Known fields are back to defaults.
+        self.assertIsNone(result["preferences"]["compensation"]["minimum_salary"])
+        # Additive fields survive.
+        self.assertEqual(result["preferences"]["notifications"], {"channel": "email"})
+        self.assertEqual(result["preferences"]["compensation"]["future_salary_band"], "staff")
+        reread = preferences_service.read(user=self.user)
+        self.assertEqual(reread["preferences"]["notifications"], {"channel": "email"})
+
 
 class ConversationIdempotencyCompatTests(TestCase):
-    """Conversation replay via idempotency_key stays duplicate-free."""
+    """Conversation replay via idempotency_key stays duplicate-free.
+
+    These tests submit through the REAL production write path
+    (``crank.views.job_search.persist_idempotent_message``) rather than a
+    mirror, so the harness cannot drift from the view. The concurrent
+    (two-connection) guarantee on production MySQL is proven separately by
+    ``crank/tests/test_mysql_concurrency.py``.
+    """
 
     def setUp(self):
         self.user = User.objects.create_user("chatcompat", password="secret")
         self.conversation = JobSearchConversation.objects.create(owner=self.user)
 
     def _submit_user_message(self, key, content="hello"):
-        """Mirror the view's get_or_create replay path for one user turn."""
-        message, _ = JobSearchMessage.objects.get_or_create(
-            conversation=self.conversation,
-            idempotency_key=key,
-            role=JobSearchMessage.Role.USER,
-            defaults={"content": content},
+        """Submit one user turn through the production write path."""
+        message, _ = persist_idempotent_message(
+            self.conversation,
+            key,
+            JobSearchMessage.Role.USER,
+            {"content": content},
         )
         return message
 

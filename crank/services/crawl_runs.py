@@ -32,6 +32,18 @@ class CrawlRequestError(ValueError):
     """Raised when a crawl request cannot safely be accepted."""
 
 
+def crawl_enabled() -> bool:
+    """On-demand crawl gate: the ``crawl`` ``CapabilitySwitch`` key.
+
+    This is the real execution gate for one-shot crawls
+    (``trigger_crawl``): with the switch row disabled the crawl path is
+    blocked even though the manual command was confirmed, giving the
+    ``crawl`` registry key a path it actually controls. ``rollback_drill``
+    verifies this function blocks when the switch is off.
+    """
+    return monitoring.capability_enabled("crawl", default=True)
+
+
 def _validate_key(source_key: str) -> str:
     if not isinstance(source_key, str) or not SOURCE_KEY_RE.fullmatch(source_key.strip()):
         raise CrawlRequestError("source key is invalid")
@@ -135,6 +147,8 @@ def trigger_crawl(*, source_key: str, source_type: str, requested_by=None) -> Cr
     The provider result is reduced to allowlisted counters immediately. No
     response body, credential, or provider payload is retained or emitted.
     """
+    if not crawl_enabled():
+        raise CrawlRequestError("on-demand crawl capability is disabled")
     source = resolve_source(source_key, source_type)
     _policy_check(source, source_type)
     canonical_key = str(source.adapter_key)[:64]

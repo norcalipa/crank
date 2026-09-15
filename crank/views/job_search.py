@@ -26,6 +26,7 @@ import uuid
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
+from django.db import connection, transaction
 from django.http import JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
@@ -50,6 +51,41 @@ from crank.serializers.job_search import (
 )
 
 logger = logging.getLogger("crank.job_search")
+
+
+def persist_idempotent_message(conversation, idempotency_key, role, defaults):
+    """Persist one turn message first-write-wins, duplicate-free.
+
+    Replay guarantee: at most one message per (conversation,
+    idempotency_key, role) exists after concurrent retries of the same
+    submission. On backends that support partial indexes (SQLite,
+    PostgreSQL) the conditional ``unique_jobsearch_message_idempotency``
+    constraint enforces it. Production MySQL does not create partial
+    unique indexes (Django's W036 warnings are expected; see
+    ``docs/deployment-migrations.md``), so writers are serialized on the
+    parent conversation row with ``select_for_update`` before the
+    get-or-create — the same MySQL-safe pattern as
+    ``crank/services/scores.py`` ``_persist_locked``. The winner commits
+    first; the loser then acquires the lock, finds the winner's row, and
+    replays it instead of inserting. Backends without ``FOR UPDATE`` (SQLite,
+    where the row lock is a no-op anyway and a wrapping transaction would
+    only contend SQLite's database-wide lock across threads) keep the plain
+    get-or-create: there the conditional unique constraint enforces
+    first-write-wins. The MySQL two-connection race is proven by
+    ``crank/tests/test_mysql_concurrency.py``.
+    """
+    if connection.features.has_select_for_update:
+        with transaction.atomic():
+            # Serialize concurrent writers for this conversation (MySQL-safe).
+            JobSearchConversation.objects.select_for_update().get(
+                pk=conversation.pk
+            )
+    return JobSearchMessage.objects.get_or_create(
+        conversation=conversation,
+        idempotency_key=idempotency_key,
+        role=role,
+        defaults=defaults,
+    )
 
 
 def _request_id(request):
@@ -255,16 +291,17 @@ def agent_conversation_detail(request, conversation_id):
         )
 
     # Persist the user turn once (even across failed provider calls).
-    # ``get_or_create`` is used with a DB-level ``UniqueConstraint`` so
-    # concurrent requests with the same key cannot create duplicates.
+    # ``persist_idempotent_message`` replays the stored row for retries and
+    # keeps concurrent submissions of the same key duplicate-free on both
+    # SQLite (partial unique constraint) and MySQL (conversation-row lock).
     if existing_user:
         user_message = existing_user
     else:
-        user_message, _user_created = JobSearchMessage.objects.get_or_create(
-            conversation=conversation,
-            idempotency_key=idempotency_key,
-            role=JobSearchMessage.Role.USER,
-            defaults={"content": message_text},
+        user_message, _user_created = persist_idempotent_message(
+            conversation,
+            idempotency_key,
+            JobSearchMessage.Role.USER,
+            {"content": message_text},
         )
 
     try:
@@ -360,11 +397,11 @@ def agent_conversation_detail(request, conversation_id):
             logger.error("failed to serialize results for persistence", exc_info=True)
             results_json_str = ""
 
-    assistant_message, _created = JobSearchMessage.objects.get_or_create(
-        conversation=conversation,
-        idempotency_key=idempotency_key,
-        role=JobSearchMessage.Role.ASSISTANT,
-        defaults={
+    assistant_message, _created = persist_idempotent_message(
+        conversation,
+        idempotency_key,
+        JobSearchMessage.Role.ASSISTANT,
+        {
             "content": reply_text,
             "preferences_changed": changed,
             "results_json": results_json_str,

@@ -5,12 +5,14 @@
 This command rehearses the rollback procedure documented in
 ``docs/rollout-gates.md``. It is a diagnostic that:
 
-1. Disables each capability switch and verifies ``monitoring.capability_enabled()``
-   returns False.
-2. Re-checks the capability gate for the drill run type where it matches the
-   switch key (``gather_scores``, ``job_pipeline``); for the
-   ``interactive_agent``/``noop`` pairing the settings flags are the primary
-   gate and the switch is an additional defense.
+1. Disables each capability switch and verifies the switch reads back
+   disabled (``monitoring.capability_enabled()``).
+2. Invokes the **real execution gate** that each registered key's
+   production path consults (``gate_verifiers()``), with the settings
+   flags forced on so the switch is the only variable, and requires that
+   gate to block. ``passed`` requires both checks: a registered key with
+   no mapped real gate, or whose real gate does not block, **fails** the
+   drill instead of reporting success.
 3. Checks for orphaned RUNNING runs beyond the stale-lock TTL.
 4. Records an ``OperationalChangeAudit`` entry for the drill.
 5. Emits a monitoring event for the rollback drill.
@@ -21,18 +23,19 @@ The drilled capability list is derived in lockstep from
 switch key is exercised, so a key added to the registry by its owning ticket
 is drilled automatically (enforced by tests).
 
-Scope: the drill does **not** call ``AgentRunCommand.get_enabled()`` and does
-**not** snapshot or assert ``AgentRun`` row counts, so it cannot by itself
-prove that new runs are blocked; the rollout gate's operator
-"Confirm new-run blocking" step covers that guarantee. The drill only reads
-``AgentRun`` rows (orphan check) — it does not create or modify them, does
-not call external providers, and does not touch source catalogs.
+Scope: the drill invokes gate functions (pure settings/switch readers such
+as ``AgentRunCommand.get_enabled()`` and ``crawl_runs.crawl_enabled()``)
+but never runs command payloads, never creates or modifies ``AgentRun``
+rows (the orphan check only reads them), does not call external providers,
+and does not touch source catalogs. End-to-end "no new runs are created"
+remains the rollout gate's operator "Confirm new-run blocking" step.
 """
 import json
 from datetime import timedelta
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
+from django.test import override_settings
 from django.utils import timezone
 
 from crank.models.agent_run import AgentRun
@@ -43,16 +46,66 @@ from crank.models.monitoring import (
 )
 from crank.services import monitoring
 
-# RunType override for switches whose key does not name an AgentRun run type.
-# interactive_agent's gate is the ``noop`` run type; for that pairing the
-# settings flags are the primary gate and the switch is an additional defense
-# (documented in docs/rollout-gates.md). Keys without a matching run type
-# (existing ``agent_noop`` and future capability-only keys such as
-# ``publication_consumer``) drill with ``run_type=None``: the switch itself is
-# the control and there is no run-type gate to re-check.
+# Informational ``AgentRun.RunType`` mapping for switches whose key does not
+# name a run type. ``agent_noop`` commands the ``noop`` run type (its
+# ``AgentRunCommand`` claims and records that type); ``interactive_agent`` is
+# not an agent-run command at all (its gate is the interactive-LLM path,
+# ``crank/agents/llm.py``), so it reports ``run_type=None``. The pass
+# criterion never depends on this mapping — it depends on the real-gate
+# verification in ``gate_verifiers()``.
 DRILL_RUN_TYPE_OVERRIDES = {
-    "interactive_agent": "noop",
+    "agent_noop": "noop",
 }
+
+# Settings flags forced on while the drill verifies each real execution
+# gate, so the disabled ``CapabilitySwitch`` row is the only variable that
+# can block the path. If the switch alone blocks the path, the rollback
+# control is real; if the path stays open with the switch off, the drill
+# fails the key.
+GATE_FORCED_SETTINGS = {
+    "AGENT_RUN_ENABLED": True,
+    "AGENT_NOOP_ENABLED": True,
+    "GATHER_SCORES_ENABLED": True,
+    "JOB_PIPELINE_ENABLED": True,
+    "CRAWL_CRON_ENABLED": True,
+    "INTERACTIVE_AGENT_ENABLED": True,
+}
+
+
+def gate_verifiers():
+    """Map each registered switch key to its **real** production gate.
+
+    Each verifier is the actual function the capability's execution path
+    consults — never a drill-side reimplementation — so a switch row that no
+    path reads cannot pass the drill:
+    ``interactive_agent`` → ``crank.agents.llm.is_interactive_agent_enabled``
+    (the interactive chat path); ``gather_scores``/``job_pipeline``/
+    ``crawl_schedule``/``agent_noop`` → their ``AgentRunCommand.get_enabled()``
+    (the scheduled-run path, keyed by the registry key); ``crawl`` →
+    ``crank.services.crawl_runs.crawl_enabled`` (the on-demand crawl path).
+
+    A key registered in ``ALLOWED_CAPABILITY_KEYS`` without an entry here
+    fails the drill with ``reason="no real-gate verifier registered"``: the
+    owning ticket must wire (and map) the gate together with the registry
+    key, keeping registry rows aligned with the paths they actually control.
+    """
+    from crank.agents import llm as llm_gates
+    from crank.management.commands import (
+        agent_noop,
+        gather_scores,
+        run_job_pipeline,
+        schedule_crawls,
+    )
+    from crank.services import crawl_runs
+
+    return {
+        "interactive_agent": llm_gates.is_interactive_agent_enabled,
+        "gather_scores": gather_scores.Command().get_enabled,
+        "job_pipeline": run_job_pipeline.Command().get_enabled,
+        "agent_noop": agent_noop.Command().get_enabled,
+        "crawl_schedule": schedule_crawls.Command().get_enabled,
+        "crawl": crawl_runs.crawl_enabled,
+    }
 
 
 def drill_capabilities():
@@ -61,9 +114,10 @@ def drill_capabilities():
     The drill must exercise every registered switch key in lockstep with the
     registry, so adding a key there automatically extends the drill (the
     registry/drill lockstep is asserted by the rollout-gate tests).
-    ``run_type`` is the ``AgentRun.RunType`` whose gate the switch blocks when
-    the key names a run type; keys without a matching run type report
-    ``run_type=None``.
+    ``run_type`` is informational: the ``AgentRun.RunType`` the capability's
+    path exercises when the key names one (or is overridden to one); keys
+    that are not agent-run commands report ``run_type=None``. The pass
+    criterion is the real-gate verification, not this mapping.
     """
     run_type_values = set(AgentRun.RunType.values)
     capabilities = []
@@ -154,7 +208,7 @@ class Command(BaseCommand):
         }
 
     def _drill_capability(self, cap):
-        """Disable a capability switch and verify kill-switch effectiveness."""
+        """Disable a capability switch and verify its real gate blocks."""
         key = cap["key"]
         run_type = cap["run_type"]
 
@@ -170,24 +224,40 @@ class Command(BaseCommand):
         cap_enabled = monitoring.capability_enabled(key, default=True)
         cap_blocked = not cap_enabled
 
-        # Verify capability_enabled() also returns False for the run_type
-        # when the key names a run type (gather_scores, job_pipeline,
-        # crawl_schedule, crawl). For interactive_agent/noop the settings
-        # flags are the primary gate; the switch is an additional defense.
-        # Keys without a matching run type report None (not applicable).
-        if run_type is None:
-            run_type_blocked = None
+        # Verify the REAL execution gate the capability's path consults
+        # blocks with the switch disabled. The settings flags are forced on
+        # (GATE_FORCED_SETTINGS) so the switch is the only variable: if the
+        # gate still allows the path, the switch does not control it and the
+        # drill fails the key instead of reporting a successful rollback
+        # control. A key with no mapped verifier cannot report passed.
+        verifier = gate_verifiers().get(key)
+        reason = None
+        if verifier is None:
+            gate_blocked = None
+            reason = "no real-gate verifier registered"
         else:
-            run_type_blocked = not monitoring.capability_enabled(run_type, default=True)
+            with override_settings(**GATE_FORCED_SETTINGS):
+                try:
+                    gate_blocked = not bool(verifier())
+                except Exception as exc:  # defensive: report, never crash
+                    gate_blocked = False
+                    reason = "real gate raised {}: {}".format(
+                        type(exc).__name__, str(exc)[:80]
+                    )
+            if not gate_blocked and reason is None:
+                reason = "real gate did not block with the switch disabled"
 
-        passed = cap_blocked
+        passed = bool(cap_blocked and gate_blocked)
+        if not passed and reason is None:
+            reason = "switch row did not read back as disabled"
         return {
             "key": key,
             "run_type": run_type,
             "switch_enabled": switch.enabled,
             "capability_blocked": cap_blocked,
-            "run_type_blocked": run_type_blocked,
+            "gate_blocked": gate_blocked,
             "passed": passed,
+            "reason": reason,
         }
 
     def _check_data_consistency(self):
@@ -221,9 +291,9 @@ class Command(BaseCommand):
             self.stdout.write(
                 "    capability_blocked: {}".format(cap["capability_blocked"])
             )
-            self.stdout.write(
-                "    run_type_blocked: {}".format(cap["run_type_blocked"])
-            )
+            self.stdout.write("    gate_blocked: {}".format(cap["gate_blocked"]))
+            if cap.get("reason"):
+                self.stdout.write("    reason: {}".format(cap["reason"]))
         dc = report["data_consistency"]
         self.stdout.write("")
         self.stdout.write("Data consistency:")

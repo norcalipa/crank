@@ -133,14 +133,18 @@ Verified at commit `d62183acd4a7f93c662c1368f9aec6aeb1f839b8` (2026-09-14):
 1. New epic schema files start at **0030**. **One owning ticket per file**;
    a file is created only by its owning ticket, at implementation time,
    against the latest `main`.
-2. Assignments recorded so far:
-   - **0030 → #458** — already claimed on that ticket's branch; the number
-     must not be reused.
-   - **0031 → #470** — `PublicationEvent` outbox table, parent
+2. Assignments recorded so far. Owners are verified against each
+   issue's own scope (checked 2026-09-14), not guessed:
+   - **0030 → #458** (UX-05, turn delivery state) —
+     `0030_jobsearch_turn_state` already exists on the `fix/issue-458`
+     branch; the number must not be reused.
+   - **0031 → #470** (UX-28) — `PublicationEvent` outbox table, parent
      `0029_merge_20260815_1645` (per controller resolution).
-   - **0032+** — remaining schema tickets (#457 preference fields, #459 turn
-     lifecycle, #462 versioned recompute, #479 result revisions) take numbers
-     in controller merge order at implementation time.
+   - **0032+** — remaining schema tickets take numbers in controller merge
+     order at implementation time:
+     **#459** (UX-14, versioned preference schema), **#460** (UX-18,
+     accepted field-level evidence model), **#467** (UX-17, result
+     revisions), **#475** (UX-29, versioned recompute fields).
 3. Cross-branch numbering collisions are resolved with a **numbered merge
    migration** following the `0029` precedent. Never renumber or rewrite an
    applied migration.
@@ -159,16 +163,41 @@ bounded reviewed backfill, and contract only after all old pods are gone.
 
 | Field group | Owning ticket | Migration slot | Rollout sequence |
 |---|---|---|---|
-| Preference fields | #457 | 0032+ (assigned at implementation) | Add nullable/defaulted JSON keys and columns first; deploy code that serves both document shapes; bounded resumable backfill of existing v2 documents; no removal in the same release. |
-| Turn lifecycle | #459 | 0032+ | Additive turn/status columns; code tolerates missing values on old rows; backfill lifecycle timestamps separately; old conversations stay replayable via `idempotency_key`. |
-| Evidence / publication outbox | #470 | 0031 | Create `PublicationEvent` additively; the consumer is gated by its own switch (see the capability registry in `docs/rollout-gates.md`); pending work survives restart; an incompatible consumer rollback is addressed before enablement. |
-| Result revisions | #479 | 0032+ | Additive revision rows/fields; readers fall back to the un-revised result; bounded backfill of revisions for existing matches. |
+| Preference fields | #459 (UX-14, "Version the preference schema") | 0032+ (assigned at implementation) | Add nullable/defaulted JSON keys and columns first; deploy code that serves both document shapes; bounded resumable backfill of existing v2 documents; no removal in the same release. |
+| Turn lifecycle | #458 (UX-05, "Persist turn delivery state") | 0030 (claimed on `fix/issue-458`) | Additive turn/status columns; code tolerates missing values on old rows; backfill lifecycle timestamps separately; old conversations stay replayable via `idempotency_key`. |
+| Accepted field-level evidence | #460 (UX-18, "Model accepted field-level evidence, scope and freshness timestamps") | 0032+ | Additive evidence model/rows; accepted evidence is resolved per field, never by blanket latest-row; pending/rejected/conflicting observations stay inspectable. |
+| Publication outbox | #470 (UX-28, publication after commit) | 0031 | Create `PublicationEvent` additively; the consumer is gated by its own switch (see the capability registry in `docs/rollout-gates.md`); pending work survives restart; an incompatible consumer rollback is addressed before enablement. |
+| Result revisions | #467 (UX-17, "Unify deterministic eligibility, match reasons and result revisions") | 0032+ | Additive revision rows/fields; readers fall back to the un-revised result; bounded backfill of revisions for existing matches. |
+| Versioned recomputation | #475 (UX-29, "Recompute versioned matches") | 0032+ | Additive revision-tag fields on match work/results (preference revision, accepted-data revision, ranking version); obsolete-run rejection via compare-and-swap; preserve seen/dismissed across upserts. |
+
+Tickets that do **not** own schema in this epic (verified scopes): #457
+(UX-04) is assistant/inventory availability exposure, #462 (UX-24) is the
+ingestion owner, and #479 (UX-11) is navigation-state sharing — none of
+them appears in the table above.
 
 Existing v1/v2 preference meanings, conversations, idempotency keys, and
 seen/dismissed state must survive deployment and backfill.
 `crank/tests/test_schema_compat.py` is the compatibility harness those PRs
 keep green; its bounded-backfill test demonstrates the resumable pattern
 (a second run is a no-op).
+
+Mixed-version preference writes are covered on both sides of a rolling
+deploy: `read`/`export` serve additive shapes unchanged, and the old
+`apply_patch`/`reset` paths validate and rewrite only the fields their
+schema version knows, preserving unknown additive fields verbatim — never
+validating, modifying, dropping, or projecting them into markdown. Patches
+that target unknown fields are rejected (`UnknownFieldError`), so an old
+pod can never corrupt a newer pod's fields.
+
+Idempotent turn replay is guaranteed on both backends: the conditional
+`unique_jobsearch_message_idempotency` constraint enforces first-write-wins
+where partial indexes exist (SQLite), and on production MySQL — which does
+not create partial unique indexes (W036 expected) — writers are serialized
+on the parent conversation row (`persist_idempotent_message` in
+`crank/views/job_search.py`, following `crank/services/scores.py`
+`_persist_locked`). The MySQL two-connection race is proven by the
+operator-run variant `crank/tests/test_mysql_concurrency.py` (skipped by
+default on SQLite; exact run commands are in its docstring).
 
 ### Independent rollback controls
 
