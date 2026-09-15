@@ -28,6 +28,7 @@ from crank.views.api import (
     organization_provenance,
     organization_scores,
 )
+from crank.views.assistant_status import assistant_status
 from crank.views.company_requests import company_requests
 from crank.views.fundinground import FundingRoundChoicesView
 from crank.views.health import readiness
@@ -67,6 +68,7 @@ urlpatterns = [
     path('api/company-requests/', company_requests, name='company-request-list'),
     path('api/company-requests/<int:pk>/', company_requests, name='company-request-detail'),
     path('chat/', login_required_with_expiry(TemplateView.as_view(template_name='crank/job_search.html')), name='job_search'),
+    path('api/agent/assistant-status/', assistant_status, name='agent-assistant-status'),
     path('api/agent/conversations/', agent_conversation_list, name='agent-conversation-list'),
     path('api/agent/conversations/<int:conversation_id>/', agent_conversation_detail, name='agent-conversation-detail'),
     path('api/agent/conversations/<int:conversation_id>/export/', agent_conversation_export, name='agent-conversation-export'),

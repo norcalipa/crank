@@ -339,6 +339,12 @@ INTERACTIVE_AGENT_ENABLED = os.environ.get("INTERACTIVE_AGENT_ENABLED", "false")
     "1", "true", "yes", "on"
 )
 
+# Advisory assistant-status endpoint cache TTL in seconds (issue #457). The
+# view clamps this to <= 60 regardless; zero disables caching entirely.
+ASSISTANT_STATUS_CACHE_SECONDS = int(
+    os.environ.get("ASSISTANT_STATUS_CACHE_SECONDS", "30")
+)
+
 def _env_bool(name, default=False):
     """Parse a boolean environment variable, defaulting when unset."""
     return os.environ.get(name, "1" if default else "0").strip().lower() in (

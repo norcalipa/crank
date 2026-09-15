@@ -80,6 +80,18 @@ async function mockJobSearchApi(page: Page, scenario: 'empty' | 'populated'): Pr
         const method = request.method();
         const pathname = new URL(request.url()).pathname;
 
+        if (method === 'GET' && pathname === '/api/agent/assistant-status/') {
+            // Advisory assistant-status endpoint (issue #457): the fixture
+            // renders the healthy baseline; per-state scenarios stub this route
+            // explicitly.
+            await route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({state: 'ready', actions: [], checked_at: '2026-08-20T00:00:00Z'}),
+            });
+            return;
+        }
+
         if (method === 'GET' && pathname === '/api/agent/conversations/') {
             if (scenario === 'populated') {
                 await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(populatedConversation)});
