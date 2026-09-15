@@ -1,3 +1,6 @@
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
+
 # E2E Validation Record — Django-backed Playwright tier (#491)
 
 Date: 2026-09-15 (implementation run)
