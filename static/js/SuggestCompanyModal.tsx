@@ -85,8 +85,9 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
     componentDidUpdate(prevProps: SuggestCompanyModalProps, _prevState: Readonly<SuggestCompanyModalState>, focusWasInside: boolean) {
         if (this.props.visible && !prevProps.visible) {
             // On open, isolate the background (inert/aria-hidden app shell +
-            // document scroll lock) for the modal's lifetime, capture the
-            // trigger element, then move focus into the dialog (WAI-ARIA
+            // main content + modal-external skip link, and a scroll lock on
+            // the actual document scroller) for the modal's lifetime, capture
+            // the trigger element, then move focus into the dialog (WAI-ARIA
             // dialog pattern, issue #464).
             lockBackground();
             this.pendingRestoreFocus = false;

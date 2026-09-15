@@ -946,7 +946,9 @@ describe('OrganizationDetailsPopup', () => {
 
         beforeEach(() => {
             // Stand up the page structure the isolation module targets: the
-            // application shell (navigation chrome) and the main content area.
+            // application shell (navigation chrome), the main content area,
+            // and the modal-external skip link (review r2: it used to stay a
+            // focusable page-level target while the dialog was open).
             const shell = document.createElement('aside');
             shell.className = 'app-shell';
             shell.innerHTML = '<a href="/">Nav link</a>';
@@ -954,8 +956,13 @@ describe('OrganizationDetailsPopup', () => {
             const content = document.createElement('main');
             content.className = 'app-content';
             document.body.appendChild(content);
-            backgroundRoots = [shell, content];
+            const skipLink = document.createElement('a');
+            skipLink.className = 'skip-to-content';
+            skipLink.href = '#main-content';
+            document.body.appendChild(skipLink);
+            backgroundRoots = [shell, content, skipLink];
             document.body.style.overflow = 'auto';
+            document.documentElement.style.overflow = 'auto';
         });
 
         afterEach(() => {
@@ -963,6 +970,7 @@ describe('OrganizationDetailsPopup', () => {
                 root.remove();
             }
             document.body.style.overflow = '';
+            document.documentElement.style.overflow = '';
         });
 
         test('locks document scrolling and inert-hides the background while the dialog is open', () => {
@@ -975,6 +983,10 @@ describe('OrganizationDetailsPopup', () => {
             );
 
             expect(document.body.style.overflow).toBe('hidden');
+            // The root element carries the viewport overflow under the
+            // stylesheet's `html, body { overflow-x: hidden }` rule — locking
+            // body alone leaves the actual document scroller free (review r2).
+            expect(document.documentElement.style.overflow).toBe('hidden');
             for (const root of backgroundRoots) {
                 expect(root).toHaveAttribute('inert');
                 expect(root).toHaveAttribute('aria-hidden', 'true');
@@ -990,6 +1002,7 @@ describe('OrganizationDetailsPopup', () => {
             rerender(<OrganizationDetailsPopup organization={mockOrganization} visible={false} onClose={() => {}} />);
 
             expect(document.body.style.overflow).toBe('auto');
+            expect(document.documentElement.style.overflow).toBe('auto');
             for (const root of backgroundRoots) {
                 expect(root).not.toHaveAttribute('inert');
                 expect(root).not.toHaveAttribute('aria-hidden');

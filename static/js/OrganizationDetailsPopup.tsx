@@ -147,10 +147,13 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         }
     };
 
-    // Background isolation (issue #464): while the dialog is open, the app
-    // shell and page content behind it are inert/aria-hidden and document
-    // scrolling is locked, so keyboard focus, assistive-technology virtual
-    // navigation, programmatic focus and wheel/touch scrolling cannot reach
+    // Background isolation (issue #464): while the dialog is open, everything
+    // outside it — the app shell, the page content and the modal-external
+    // skip link — is inert/aria-hidden, and the actual document scroller
+    // (the root element, which carries the viewport overflow under the
+    // stylesheet's `html, body { overflow-x: hidden }` rule) is locked along
+    // with body. Keyboard focus, assistive-technology virtual navigation,
+    // programmatic focus and wheel/touch scrolling therefore cannot reach
     // the page behind the blocking dialog. On close the isolation is released
     // BEFORE focus returns to the opener: the trigger element lives in the
     // (currently inert) background, so restoring earlier would silently

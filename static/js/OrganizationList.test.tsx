@@ -1109,4 +1109,99 @@ describe('OrganizationList', () => {
             expect(screen.getByText('https://org1.example.com')).toBeInTheDocument();
         });
     });
+
+    describe('background isolation across the dialog handoff (issue #464 review r2)', () => {
+        // The details→suggest mutual-exclusion handoff replaces one blocking
+        // dialog with another across a single render commit. The isolation
+        // must hold without a gap (no interaction window over the background)
+        // and without a leak (the page must not stay inert/locked after the
+        // last dialog closes). Includes the modal-external skip link.
+        let backgroundRoots: HTMLElement[];
+
+        beforeEach(() => {
+            const shell = document.createElement('aside');
+            shell.className = 'app-shell';
+            document.body.appendChild(shell);
+            const content = document.createElement('main');
+            content.className = 'app-content';
+            document.body.appendChild(content);
+            const skipLink = document.createElement('a');
+            skipLink.className = 'skip-to-content';
+            skipLink.href = '#main-content';
+            document.body.appendChild(skipLink);
+            backgroundRoots = [shell, content, skipLink];
+            // Defensive: start from a clean isolation baseline even if an
+            // earlier test leaked inline overflow styles.
+            document.body.style.overflow = '';
+            document.documentElement.style.overflow = '';
+        });
+
+        afterEach(() => {
+            for (const root of backgroundRoots) {
+                root.remove();
+            }
+            document.body.style.overflow = '';
+            document.documentElement.style.overflow = '';
+        });
+
+        test('isolation persists through the details→suggest handoff and releases on final close', async () => {
+            const org1 = {
+                promise: new Promise<{json: () => Promise<unknown>}>((resolve) => {
+                    resolve({json: () => Promise.resolve({id: 1, name: 'Organization 1', type: 'C', url: 'https://org1.example.com'})});
+                }),
+            };
+            global.fetch = jest.fn().mockImplementation((url) => {
+                if (url === '/api/funding-round-choices/' || url === '/api/rto-policy-choices/') {
+                    return Promise.resolve({json: () => Promise.resolve({})});
+                }
+                if (url.endsWith('/scores/')) {
+                    return Promise.resolve({json: () => Promise.resolve([])});
+                }
+                if (url.endsWith('/provenance/')) {
+                    return Promise.resolve({json: () => Promise.resolve(null)});
+                }
+                if (url === '/api/organizations/1/') {
+                    return org1.promise;
+                }
+                return Promise.reject(new Error('Fetch not mocked for this URL'));
+            });
+
+            render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+
+            // Details dialog opens: background isolated (shell, content, skip
+            // link) and the actual document scroller locked.
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            expect(await screen.findByRole('dialog', {name: 'Organization 1'})).toBeInTheDocument();
+            expect(document.documentElement.style.overflow).toBe('hidden');
+            expect(document.body.style.overflow).toBe('hidden');
+            for (const root of backgroundRoots) {
+                expect(root).toHaveAttribute('inert');
+                expect(root).toHaveAttribute('aria-hidden', 'true');
+            }
+
+            // Handoff: opening the suggest modal closes the details dialog in
+            // the same commit — the isolation must survive it uninterrupted.
+            fireEvent.click(screen.getByTestId('suggest-company-btn'));
+            expect(await screen.findByTestId('suggest-company-modal')).toBeInTheDocument();
+            expect(screen.queryByRole('dialog', {name: 'Organization 1'})).not.toBeInTheDocument();
+            expect(document.documentElement.style.overflow).toBe('hidden');
+            expect(document.body.style.overflow).toBe('hidden');
+            for (const root of backgroundRoots) {
+                expect(root).toHaveAttribute('inert');
+                expect(root).toHaveAttribute('aria-hidden', 'true');
+            }
+
+            // Final close releases everything: no inert leak, no scroll lock.
+            fireEvent.keyDown(document, {key: 'Escape'});
+            await waitFor(() => {
+                expect(screen.queryByTestId('suggest-company-modal')).not.toBeInTheDocument();
+            });
+            expect(document.documentElement.style.overflow).toBe('');
+            expect(document.body.style.overflow).toBe('');
+            for (const root of backgroundRoots) {
+                expect(root).not.toHaveAttribute('inert');
+                expect(root).not.toHaveAttribute('aria-hidden');
+            }
+        });
+    });
 });

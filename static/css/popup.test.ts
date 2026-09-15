@@ -56,6 +56,39 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         return match ? parseInt(match[1], 10) : null;
     };
 
+    // The complete shared layer-token contract: every page-level stacking
+    // layer. Seven layers, all defined as :root custom properties, all
+    // asserted by exact value below and all swept for adoption above
+    // (review r2).
+    const LAYER_TOKENS = [
+        'z-mobile-topbar',
+        'z-nav-rail',
+        'z-nav-toggle',
+        'z-nav-overlay',
+        'z-nav-drawer',
+        'z-blocking-dialog',
+        'z-skip-link',
+    ] as const;
+
+    // Z-index declarations intentionally NOT on the token contract: local
+    // stacking contexts inside a dialog card. Each entry pins both the
+    // selector and the exact value — any other raw z-index in the stylesheet
+    // fails the sweep.
+    const LOCAL_STACKING_CONTEXTS: Array<{selector: RegExp; value: string}> = [
+        // The sticky dialog header's z-index: 1 stacks the header above the
+        // card body content inside the dialog's own stacking context only.
+        {selector: /^\.popup-details \.card-header$/, value: '1'},
+    ];
+
+    // Splits a stylesheet into (selector, declarations) rules. Pairing both
+    // braces keeps @media preludes out of inner selectors, and stripping
+    // comments first keeps commented-out braces from confusing the parse.
+    const cssRules = (css: string): Array<{selector: string; declarations: string}> => {
+        const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
+        return Array.from(stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g),
+            (match) => ({selector: match[1].trim(), declarations: match[2]}));
+    };
+
     it('defines the shared layer tokens as :root custom properties', () => {
         expect(tokenValue('z-nav-rail')).toBe(1100);
         expect(tokenValue('z-nav-toggle')).toBe(1200);
@@ -76,20 +109,39 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         expect(tokenValue('z-nav-toggle')!).toBeGreaterThan(tokenValue('z-mobile-topbar')!);
     });
 
-    it('every page-level stacking layer consumes the tokens instead of hard-coded numbers', () => {
-        // Page-level stacking layers are the fixed-, absolute- and
-        // sticky-position rules (the skip link is absolute; the mobile
-        // topbar is sticky — review r1). Local stacking contexts inside a
-        // dialog card (e.g. the sticky header's z-index: 1) are deliberately
-        // excluded.
-        const zRules = (popupCss.match(/[^{}]+\{[^}]*z-index:[^}]*\}/g) ?? [])
-            .filter((rule) => /position:\s*(fixed|absolute|sticky)/.test(rule))
-            .filter((rule) => !/\.popup-details\b/.test(rule));
-        expect(zRules.length).toBeGreaterThanOrEqual(7);
-        for (const rule of zRules) {
-            expect(rule).toMatch(/z-index:\s*var\(--z-/);
+    it('every z-index declaration consumes a shared layer token instead of a hard-coded number', () => {
+        // Review r2: the previous sweep only inspected rules declaring
+        // `position` and `z-index` in the same block and skipped any matched
+        // text mentioning `.popup-details`, so raw later overrides (a
+        // follow-up `.app-mobile-topbar { z-index: 1500 }` block with no
+        // `position` declaration) and other page-level positioned layers
+        // (`.app-messages { position: relative; z-index: 1500 }`) escaped it
+        // while the suite reported complete token adoption. Sweep EVERY rule
+        // that declares z-index — whatever its `position` — and require a
+        // shared token or an explicitly whitelisted dialog-local stacking
+        // context with its exact value.
+        const rules = cssRules(popupCss).filter((rule) => /z-index:/.test(rule.declarations));
+        expect(rules.length).toBeGreaterThanOrEqual(9);
+
+        const tokenPattern = `z-index:\\s*var\\(--(?:${LAYER_TOKENS.join('|')})\\)`;
+        for (const rule of rules) {
+            const whitelisted = LOCAL_STACKING_CONTEXTS.some((context) =>
+                context.selector.test(rule.selector)
+                && new RegExp(`z-index:\\s*${context.value}\\s*;`).test(rule.declarations));
+            if (whitelisted) {
+                continue;
+            }
+            expect(rule.declarations).toMatch(new RegExp(tokenPattern));
         }
-        // The known background-chrome and dialog rules all use tokens.
+
+        // Every one of the seven layer tokens is actually consumed, so the
+        // contract cannot drift: removing a consumer breaks the sweep just
+        // like adding a raw value does.
+        for (const token of LAYER_TOKENS) {
+            expect(popupCss).toMatch(new RegExp(`var\\(--${token}\\)`));
+        }
+
+        // The known background-chrome and dialog rules map to their tokens.
         expect(popupCss).toMatch(/\.app-nav-rail\s*\{[^}]*z-index:\s*var\(--z-nav-rail\)/);
         expect(popupCss).toMatch(/\.app-nav-toggle\s*\{[^}]*z-index:\s*var\(--z-nav-toggle\)/);
         expect(popupCss).toMatch(/\.app-nav-overlay\s*\{[^}]*z-index:\s*var\(--z-nav-overlay\)/);

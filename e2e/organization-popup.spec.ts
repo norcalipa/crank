@@ -102,6 +102,14 @@ test.describe('company details dialog layering (issue #464) — desktop', () => 
         expect(scrollInfo.overflowY).toBe('auto');
         expect(scrollInfo.scrollHeight, 'card body must actually overflow').toBeGreaterThan(scrollInfo.clientHeight);
 
+        // The pinned-header contract (review r2): the header is a flex SIBLING
+        // of the .card-body scroll container, so sibling geometry alone cannot
+        // detect a `position: sticky` regression — removing sticky leaves the
+        // header in place while the body scrolls beneath it. Pin the contract
+        // itself, then prove the header is a real on-screen hit target.
+        const headerPosition = await header.evaluate((el) => getComputedStyle(el).position);
+        expect(headerPosition, 'the pinned header must keep position: sticky').toBe('sticky');
+
         // Record the pinned header's position, then scroll the body to its
         // maximum and prove the scroll actually advanced.
         const headerBoxBefore = await header.boundingBox();
@@ -114,69 +122,131 @@ test.describe('company details dialog layering (issue #464) — desktop', () => 
         // The header keeps its exact position while the body scrolls beneath it.
         const headerBoxAfter = await header.boundingBox();
         expect(headerBoxAfter!.y).toBe(headerBoxBefore!.y);
+        expect(headerBoxAfter!.x).toBe(headerBoxBefore!.x);
         const dialogBox = await dialog.boundingBox();
         expect(headerBoxAfter!.y).toBeGreaterThanOrEqual(dialogBox!.y - 1);
         expect(headerBoxAfter!.y + headerBoxAfter!.height)
             .toBeLessThanOrEqual(dialogBox!.y + dialogBox!.height + 1);
+
+        // Viewport-relative bounds and hit target (review r2): the pinned
+        // header must be a real, visible on-screen target after the scroll —
+        // Playwright `toBeVisible()` does not require viewport intersection,
+        // and dialog-relative bounds alone would pass an off-screen header.
+        const viewport = page.viewportSize()!;
+        expect(headerBoxAfter!.x).toBeGreaterThanOrEqual(0);
+        expect(headerBoxAfter!.y).toBeGreaterThanOrEqual(0);
+        expect(headerBoxAfter!.x + headerBoxAfter!.width).toBeLessThanOrEqual(viewport.width);
+        expect(headerBoxAfter!.y + headerBoxAfter!.height).toBeLessThanOrEqual(viewport.height);
+        const headerOnTop = await page.evaluate((box) => {
+            const el = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+            return Boolean(el && el.closest('.card-header'));
+        }, headerBoxAfter!);
+        expect(headerOnTop, 'the pinned header must remain the topmost hit target at its center').toBe(true);
         await expect(header).toBeVisible();
     });
 
     test('background content is unreachable and document scrolling is locked while the dialog is open', async ({page}) => {
         await page.goto(POPUP_FIXTURE);
-        const overflowBefore = await page.evaluate(() => getComputedStyle(document.body).overflow);
+
+        // Review r2: the checked-in fixture is exactly viewport-high, so the
+        // old wheel probe passed vacuously. Make the document provably tall
+        // first and prove it actually scrolls before the dialog opens.
+        await page.evaluate(() => {
+            const filler = document.createElement('div');
+            filler.setAttribute('data-testid', 'document-filler');
+            filler.setAttribute('aria-hidden', 'true');
+            filler.style.cssText = 'height: 2400px;';
+            document.querySelector('main.app-content')!.appendChild(filler);
+        });
+        await page.evaluate(() => window.scrollTo(0, 300));
+        expect(await page.evaluate(() => window.scrollY), 'sanity: the tall document scrolls before the dialog opens').toBe(300);
+        await page.evaluate(() => window.scrollTo(0, 0));
+
+        const overflowBefore = await page.evaluate(() => ({
+            body: getComputedStyle(document.body).overflow,
+            root: getComputedStyle(document.documentElement).overflow,
+        }));
         await openDetailsDialog(page);
 
         const dialog = page.getByRole('dialog');
 
         // Background isolation (issue #464 "prevent background interaction"):
-        // the app shell and page content behind the dialog are inert and
-        // hidden from the accessibility tree while it is open.
+        // everything outside the dialog — app shell, page content and the
+        // modal-external skip link (review r2) — is inert and hidden from
+        // the accessibility tree while it is open.
         const backgroundState = await page.evaluate(() => {
-            const roots = Array.from(document.querySelectorAll<HTMLElement>('.app-shell, main.app-content'));
+            const roots = Array.from(document.querySelectorAll<HTMLElement>('.app-shell, main.app-content, .skip-to-content'));
             return roots.map((el) => ({
+                cls: el.className,
                 inert: el.hasAttribute('inert'),
                 ariaHidden: el.getAttribute('aria-hidden'),
             }));
         });
-        expect(backgroundState.length).toBeGreaterThan(0);
+        expect(backgroundState.length).toBeGreaterThanOrEqual(3);
         for (const state of backgroundState) {
-            expect(state.inert).toBe(true);
-            expect(state.ariaHidden).toBe('true');
+            expect(state.inert, `${state.cls} must be inert while the dialog is open`).toBe(true);
+            expect(state.ariaHidden, `${state.cls} must be aria-hidden while the dialog is open`).toBe('true');
         }
 
-        // Document scroll lock: the body cannot scroll while the dialog is open.
-        const overflowWhileOpen = await page.evaluate(() => getComputedStyle(document.body).overflow);
-        expect(overflowWhileOpen).toBe('hidden');
+        // Document scroll lock (review r2): under the stylesheet's
+        // `html, body { overflow-x: hidden }` rule the ROOT element carries
+        // the viewport overflow, so locking body alone left the actual
+        // viewport scroller free. Both the root element and body must be
+        // locked while the dialog is open.
+        const overflowWhileOpen = await page.evaluate(() => ({
+            body: getComputedStyle(document.body).overflow,
+            root: getComputedStyle(document.documentElement).overflow,
+        }));
+        expect(overflowWhileOpen.body).toBe('hidden');
+        expect(overflowWhileOpen.root).toBe('hidden');
+
+        // Wheel input over the backdrop cannot move the (provably tall)
+        // document behind the blocking dialog.
         await page.mouse.wheel(0, 600);
         await page.waitForTimeout(100);
         const scrollYWhileOpen = await page.evaluate(() => window.scrollY);
         expect(scrollYWhileOpen, 'wheel scrolling over the backdrop must not move the document').toBe(0);
 
-        // Programmatic focus on background elements is a no-op while inert.
-        const focusStayedInDialog = await page.evaluate(() => {
-            const navLink = document.getElementById('nav-rankings');
-            navLink?.focus();
+        // Programmatic focus on background elements is a no-op while inert —
+        // including the modal-external skip link, which used to remain a
+        // reachable page-level focus target (review r2).
+        const focusProbes = await page.evaluate(() => {
             const dialogEl = document.querySelector('[role="dialog"]');
-            return Boolean(dialogEl && dialogEl.contains(document.activeElement));
+            const results: Record<string, boolean> = {};
+            for (const id of ['nav-rankings']) {
+                document.getElementById(id)?.focus();
+                results[id] = Boolean(dialogEl && dialogEl.contains(document.activeElement));
+            }
+            (document.querySelector('.skip-to-content') as HTMLElement | null)?.focus();
+            results['skip-to-content'] = Boolean(dialogEl && dialogEl.contains(document.activeElement));
+            return results;
         });
-        expect(focusStayedInDialog, 'focus must stay inside the dialog while the background is inert').toBe(true);
+        expect(focusProbes['nav-rankings'], 'nav focus probe must stay inside the dialog').toBe(true);
+        expect(focusProbes['skip-to-content'], 'skip-link focus probe must stay inside the dialog').toBe(true);
 
-        // Keyboard walk: Tab never leaves the dialog for the page behind it.
+        // Keyboard walk: Tab never leaves the dialog for the page behind it —
+        // not for the nav rail and not for the skip link.
         for (let i = 0; i < 8; i++) {
             await page.keyboard.press('Tab');
             const inside = await dialog.evaluate((el) => el.contains(document.activeElement));
             expect(inside, `Tab #${i + 1} must stay inside the dialog`).toBe(true);
         }
 
-        // Closing the dialog releases the isolation.
+        // Closing the dialog releases the isolation and the document
+        // scrolls again.
         await page.keyboard.press('Escape');
         await expect(dialog).toHaveCount(0);
-        const overflowAfter = await page.evaluate(() => getComputedStyle(document.body).overflow);
-        expect(overflowAfter).toBe(overflowBefore);
+        const overflowAfter = await page.evaluate(() => ({
+            body: getComputedStyle(document.body).overflow,
+            root: getComputedStyle(document.documentElement).overflow,
+        }));
+        expect(overflowAfter).toEqual(overflowBefore);
         const stillInert = await page.evaluate(() =>
-            Array.from(document.querySelectorAll('.app-shell, main.app-content'))
+            Array.from(document.querySelectorAll('.app-shell, main.app-content, .skip-to-content'))
                 .some((el) => el.hasAttribute('inert')));
         expect(stillInert).toBe(false);
+        await page.evaluate(() => window.scrollTo(0, 150));
+        expect(await page.evaluate(() => window.scrollY), 'sanity: the document scrolls again after the close').toBe(150);
     });
 
     test('Tab cycles inside the dialog and Escape restores focus to the opener row', async ({page}) => {
@@ -223,6 +293,17 @@ test.describe('company details dialog layering (issue #464) — desktop', () => 
         await page.getByTestId('suggest-company-btn').click();
         await expect(page.getByTestId('suggest-company-modal')).toBeVisible();
         await expect(page.getByRole('dialog', {name: /Acme Robotics/})).toHaveCount(0);
+
+        // The suggest modal is the topmost (and only) blocking dialog: the
+        // background stays fully isolated while it is open — including the
+        // modal-external skip link and the actual document scroller (r2).
+        const suggestIsolation = await page.evaluate(() => ({
+            anyNotInert: Array.from(document.querySelectorAll<HTMLElement>('.app-shell, main.app-content, .skip-to-content'))
+                .some((el) => !el.hasAttribute('inert')),
+            rootOverflow: getComputedStyle(document.documentElement).overflow,
+        }));
+        expect(suggestIsolation.anyNotInert).toBe(false);
+        expect(suggestIsolation.rootOverflow).toBe('hidden');
 
         // Escape again, then reopen the details dialog: the suggest modal
         // stays closed — at most one blocking dialog is ever active.
@@ -272,29 +353,66 @@ test.describe('company details dialog layering (issue #464) — mobile', () => {
 
     test('background is inert and document scrolling is locked at mobile width', async ({page}) => {
         await page.goto(POPUP_FIXTURE);
-        const overflowBefore = await page.evaluate(() => getComputedStyle(document.body).overflow);
+
+        // Review r2: the mobile test previously checked only the computed
+        // overflow string and never wheeled. Make the document provably tall,
+        // prove it scrolls, and wheel over the backdrop at this width too.
+        await page.evaluate(() => {
+            const filler = document.createElement('div');
+            filler.setAttribute('data-testid', 'document-filler');
+            filler.setAttribute('aria-hidden', 'true');
+            filler.style.cssText = 'height: 2400px;';
+            document.querySelector('main.app-content')!.appendChild(filler);
+        });
+        await page.evaluate(() => window.scrollTo(0, 300));
+        expect(await page.evaluate(() => window.scrollY), 'sanity: the tall document scrolls before the dialog opens').toBe(300);
+        await page.evaluate(() => window.scrollTo(0, 0));
+
+        const overflowBefore = await page.evaluate(() => ({
+            body: getComputedStyle(document.body).overflow,
+            root: getComputedStyle(document.documentElement).overflow,
+        }));
         await openDetailsDialog(page);
 
-        // Same isolation contract as desktop, asserted at the narrow width.
+        // Same isolation contract as desktop, asserted at the narrow width:
+        // every non-dialog focus target — shell, content, skip link — is
+        // inert, and the actual document scroller (root element) is locked.
         const state = await page.evaluate(() => {
-            const roots = Array.from(document.querySelectorAll<HTMLElement>('.app-shell, main.app-content'));
+            const roots = Array.from(document.querySelectorAll<HTMLElement>('.app-shell, main.app-content, .skip-to-content'));
             return {
+                count: roots.length,
                 inert: roots.map((el) => el.hasAttribute('inert')),
-                overflow: getComputedStyle(document.body).overflow,
+                ariaHidden: roots.map((el) => el.getAttribute('aria-hidden')),
+                overflow: {
+                    body: getComputedStyle(document.body).overflow,
+                    root: getComputedStyle(document.documentElement).overflow,
+                },
             };
         });
-        expect(state.inert.length).toBeGreaterThan(0);
+        expect(state.count).toBeGreaterThanOrEqual(3);
         expect(state.inert).not.toContain(false);
-        expect(state.overflow).toBe('hidden');
+        expect(state.ariaHidden).not.toContain(null);
+        expect(state.ariaHidden).not.toContain('false');
+        expect(state.overflow.body).toBe('hidden');
+        expect(state.overflow.root).toBe('hidden');
+
+        await page.mouse.wheel(0, 600);
+        await page.waitForTimeout(100);
+        expect(await page.evaluate(() => window.scrollY), 'wheel over the backdrop must not move the document at mobile width').toBe(0);
 
         await page.keyboard.press('Escape');
         await expect(page.getByRole('dialog')).toHaveCount(0);
         const released = await page.evaluate(() => ({
-            inert: Array.from(document.querySelectorAll('.app-shell, main.app-content'))
+            inert: Array.from(document.querySelectorAll('.app-shell, main.app-content, .skip-to-content'))
                 .some((el) => el.hasAttribute('inert')),
-            overflow: getComputedStyle(document.body).overflow,
+            overflow: {
+                body: getComputedStyle(document.body).overflow,
+                root: getComputedStyle(document.documentElement).overflow,
+            },
         }));
         expect(released.inert).toBe(false);
-        expect(released.overflow).toBe(overflowBefore);
+        expect(released.overflow).toEqual(overflowBefore);
+        await page.evaluate(() => window.scrollTo(0, 150));
+        expect(await page.evaluate(() => window.scrollY), 'sanity: the document scrolls again after the close').toBe(150);
     });
 });
