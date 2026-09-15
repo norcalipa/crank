@@ -101,3 +101,16 @@ The Python workflow runs `python manage.py makemigrations --check --dry-run`
 and migrates a fresh SQLite database, then verifies that the migration plan is
 empty. The trigger no longer ignores `crank/migrations/**`; migration changes
 must run these checks instead of being silently skipped.
+
+## Sibling migration leaves (PR #495 / PR #496)
+
+`0030_jobsearch_turn_state` (PR #496) and `0032_score_tuple_anchor`
+(PR #495) are sibling leaves: both declare `0029_merge_20260815_1645` as
+their only parent, so the migration graph forks into two parallel heads. The
+agreed ordering contract: **whoever merges second adds a dependency/merge
+migration** on top of both leaves so the graph returns to a single truthful
+head — `makemigrations --check` (and the CI gate above) fails loudly on the
+forked graph until that merge migration exists. Do not renumber or rewrite an
+already-applied leaf to fake a linear history; add the merge node instead,
+and record the resulting ordering in the deployment record for the release
+that carries both changes.

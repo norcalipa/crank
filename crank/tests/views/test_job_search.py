@@ -31,6 +31,7 @@ from crank.agents.job_search.demo import (
     ServiceTimeout,
 )
 from crank.models import JobSearchConversation, JobSearchMessage, JobSearchTurn
+from crank.views import job_search as job_search_views
 
 
 LOCMEM = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
@@ -2036,8 +2037,9 @@ class TurnDeliveryStateTests(TestCase):
     # -- late-reply guard (adversarial review: reset/delete mid-turn) -------
 
     def test_reset_mid_turn_discards_late_reply(self):
-        """A reply completing after the conversation was reset is discarded:
-        404, no assistant message persisted, turn quarantined."""
+        """A reply completing after the conversation was already reset is
+        discarded: retryable 409, no assistant message persisted, turn
+        quarantined."""
         conv_id = self._start_conversation()
         key = str(uuid.uuid4())
 
@@ -2051,8 +2053,8 @@ class TurnDeliveryStateTests(TestCase):
             side_effect=reset_then_reply,
         ):
             resp = self._submit(conv_id, "reply to nowhere", key)
-        self.assertEqual(resp.status_code, 404)
-        self.assertEqual(resp.json()["error"]["type"], "not_found")
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "conversation_changed")
         conv = JobSearchConversation.objects.get(pk=conv_id)
         self.assertFalse(conv.active)
         # The late reply was NOT attached to the (now archived) conversation.
@@ -2063,9 +2065,48 @@ class TurnDeliveryStateTests(TestCase):
             turn.failure_code, JobSearchTurn.FailureCode.CONVERSATION_GONE
         )
 
+    def test_reset_at_exact_attach_moment_discards_late_reply_409(self):
+        """A reset landing at the EXACT attach moment — after the attach
+        transaction's write-first claim matched, before the reply persisted,
+        the TOCTOU window the round-2 review hooked — still discards the
+        reply: no assistant row in the archived conversation, anchor not
+        completed, retryable 409."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        real_reattach = job_search_views._reattach_locked_conversation
+
+        def reset_between_read_and_persist(conversation_id, user):
+            # The reset lands between the attach claim and the persist.
+            JobSearchConversation.objects.filter(pk=conversation_id).update(
+                active=False
+            )
+            return real_reattach(conversation_id, user)
+
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True,
+            side_effect=lambda *args, **kwargs: ("late reply", False, None),
+        ), patch(
+            "crank.views.job_search._reattach_locked_conversation",
+            side_effect=reset_between_read_and_persist,
+        ):
+            resp = self._submit(conv_id, "reply to nowhere", key)
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "conversation_changed")
+        conv = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertFalse(conv.active)
+        # The late reply was NOT attached to the (now archived) conversation.
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+        # The anchor was quarantined, never completed.
+        turn = JobSearchTurn.objects.get(conversation_id=conv_id, turn_key=key)
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.FAILED)
+        self.assertEqual(
+            turn.failure_code, JobSearchTurn.FailureCode.CONVERSATION_GONE
+        )
+
     def test_delete_mid_turn_discards_late_reply(self):
-        """A reply completing after the conversation was deleted is discarded
-        without raising: 404, nothing persisted, cascades cleaned up."""
+        """A reply completing after the conversation was already deleted is
+        discarded without raising: retryable 409, nothing persisted, cascades
+        cleaned up."""
         conv_id = self._start_conversation()
         key = str(uuid.uuid4())
 
@@ -2078,7 +2119,8 @@ class TurnDeliveryStateTests(TestCase):
             side_effect=delete_then_reply,
         ):
             resp = self._submit(conv_id, "reply to nowhere", key)
-        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "conversation_changed")
         self.assertFalse(JobSearchConversation.objects.filter(pk=conv_id).exists())
         # The late reply was not persisted anywhere.
         self.assertEqual(
@@ -2088,6 +2130,40 @@ class TurnDeliveryStateTests(TestCase):
             0,
         )
         # The anchor was removed by the cascade; finalizing it is a no-op.
+        self.assertEqual(JobSearchTurn.objects.filter(turn_key=key).count(), 0)
+
+    def test_delete_at_exact_attach_moment_discards_late_reply_409(self):
+        """A delete landing at the EXACT attach moment — after the attach
+        transaction's write-first claim matched, before the reply persisted
+        — still discards the reply: nothing persisted, cascade removed the
+        anchor, retryable 409."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        real_reattach = job_search_views._reattach_locked_conversation
+
+        def delete_between_read_and_persist(conversation_id, user):
+            # The delete lands between the attach claim and the persist.
+            JobSearchConversation.objects.filter(pk=conversation_id).delete()
+            return real_reattach(conversation_id, user)
+
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True,
+            side_effect=lambda *args, **kwargs: ("late reply", False, None),
+        ), patch(
+            "crank.views.job_search._reattach_locked_conversation",
+            side_effect=delete_between_read_and_persist,
+        ):
+            resp = self._submit(conv_id, "reply to nowhere", key)
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "conversation_changed")
+        self.assertFalse(JobSearchConversation.objects.filter(pk=conv_id).exists())
+        self.assertEqual(
+            JobSearchMessage.objects.filter(
+                role="assistant", content="late reply"
+            ).count(),
+            0,
+        )
+        # The cascade removed the anchor; finalizing it was a safe no-op.
         self.assertEqual(JobSearchTurn.objects.filter(turn_key=key).count(), 0)
 
     # -- stable ordering (adversarial review: retry reordering) -------------

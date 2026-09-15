@@ -1463,7 +1463,9 @@ describe('durable turn state (issue #458)', () => {
             );
             await renderChat([]);
             expect(screen.getByLabelText('Message')).toHaveValue('never arrived');
-            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).toBeNull();
+            // The marker stays durable until an explicit send/discard (issue
+            // #458 r2): a scan never silently deletes unsent content.
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).not.toBeNull();
             expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('never arrived');
         });
 
@@ -1562,6 +1564,131 @@ describe('durable turn state (issue #458)', () => {
         });
     });
 
+    describe('multi-marker reconciliation (issue #458 r2)', () => {
+        test('two unsent markers are both preserved; only the newest surfaces', async () => {
+            // Round-2 review data-loss edge: eager clearing kept only the newest
+            // unsent marker and silently deleted the older one. Both must survive
+            // the scan — never silently delete unsent content.
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_A),
+                JSON.stringify({conversationId: 42, content: 'older unsent', key: KEY_A, ts: Date.now() - 5000}),
+            );
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_B),
+                JSON.stringify({conversationId: 42, content: 'newer unsent', key: KEY_B, ts: Date.now()}),
+            );
+            await renderChat([]);
+            // The newest unsent turn surfaces as the composer draft...
+            expect(screen.getByLabelText('Message')).toHaveValue('newer unsent');
+            expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('newer unsent');
+            // ...while BOTH markers stay durable in storage.
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).not.toBeNull();
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_B))).not.toBeNull();
+        });
+
+        test('one confirmed + one unsent marker: only the unsent one is kept', async () => {
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_A),
+                JSON.stringify({conversationId: 42, content: 'confirmed unsent', key: KEY_A, ts: Date.now() - 5000}),
+            );
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_B),
+                JSON.stringify({conversationId: 42, content: 'still unsent', key: KEY_B, ts: Date.now()}),
+            );
+            await renderChat([userTurn('confirmed unsent', KEY_A, 'completed')]);
+            // The server-confirmed marker is resolved...
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).toBeNull();
+            // ...the unsent one stays recoverable and surfaces as the draft.
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_B))).not.toBeNull();
+            expect(screen.getByLabelText('Message')).toHaveValue('still unsent');
+        });
+
+        test('explicit send resolves only the surfaced marker; the older unsent one survives', async () => {
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_A),
+                JSON.stringify({conversationId: 42, content: 'older unsent', key: KEY_A, ts: Date.now() - 5000}),
+            );
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_B),
+                JSON.stringify({conversationId: 42, content: 'newer unsent', key: KEY_B, ts: Date.now()}),
+            );
+            await renderChat([]);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse({message: assistantMessage(5, 'sent it'), preferences_changed: false}, 201),
+            );
+            // Sending the surfaced draft is the explicit resolution of that
+            // unsent turn — and only that one.
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('sent it');
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_B))).toBeNull();
+            // The older unsent turn stays recoverable for its conversation view.
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).not.toBeNull();
+            expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBeNull();
+        });
+
+        test('explicit discard (emptying the composer) resolves only the surfaced marker', async () => {
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_A),
+                JSON.stringify({conversationId: 42, content: 'older unsent', key: KEY_A, ts: Date.now() - 5000}),
+            );
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_B),
+                JSON.stringify({conversationId: 42, content: 'newer unsent', key: KEY_B, ts: Date.now()}),
+            );
+            await renderChat([]);
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: ''}});
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_B))).toBeNull();
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).not.toBeNull();
+            expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBeNull();
+        });
+
+        test('the older unsent marker surfaces on the next load after the newer one was sent', async () => {
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_A),
+                JSON.stringify({conversationId: 42, content: 'older unsent', key: KEY_A, ts: Date.now() - 5000}),
+            );
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_B),
+                JSON.stringify({conversationId: 42, content: 'newer unsent', key: KEY_B, ts: Date.now()}),
+            );
+            const first = await renderChatAs([]);
+            expect(screen.getByLabelText('Message')).toHaveValue('newer unsent');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse({message: assistantMessage(5, 'sent it'), preferences_changed: false}, 201),
+            );
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('sent it');
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_B))).toBeNull();
+            first.unmount();
+
+            // Next load: the server never received the older turn either, so it
+            // is restored on its conversation view (one at a time, newest first).
+            const second = await renderChatAs([]);
+            expect(screen.getByLabelText('Message')).toHaveValue('older unsent');
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).not.toBeNull();
+            second.unmount();
+        });
+
+        test('a composer draft edited after the failed send wins over the marker; the marker stays recoverable', async () => {
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_B),
+                JSON.stringify({conversationId: 42, content: 'never arrived', key: KEY_B, ts: Date.now()}),
+            );
+            const first = await renderChatAs([]);
+            expect(screen.getByLabelText('Message')).toHaveValue('never arrived');
+            // The user edits the restored text after the failure.
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'edited after the failure'}});
+            first.unmount();
+
+            // Reload: the newer draft wins — surfacing never clobbers the user's
+            // latest typing — and the marker is still recoverable in storage.
+            const second = await renderChatAs([]);
+            expect(screen.getByLabelText('Message')).toHaveValue('edited after the failure');
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_B))).not.toBeNull();
+            second.unmount();
+        });
+    });
+
     describe('composer draft persistence', () => {
         test('typing persists a per-conversation draft; loading restores it without clobbering', async () => {
             const first = await renderChatAs([]);
@@ -1603,7 +1730,9 @@ describe('durable turn state (issue #458)', () => {
             await screen.findByLabelText('Message');
             await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
             expect(screen.getByLabelText('Message')).toHaveValue('ghost turn');
-            expect(window.localStorage.getItem(inflightKeyFor(7, KEY_A))).toBeNull();
+            // The unsent turn stays recoverable in storage (issue #458 r2);
+            // only an explicit send/discard resolves it.
+            expect(window.localStorage.getItem(inflightKeyFor(7, KEY_A))).not.toBeNull();
         });
     });
 
@@ -1661,6 +1790,31 @@ describe('durable turn state (issue #458)', () => {
             await screen.findByRole('alert');
             const key = lastPostedKey(mock);
             expect(window.localStorage.getItem(inflightKeyFor(42, key))).not.toBeNull();
+        });
+
+        test('a mid-flight reset/delete (conversation_changed) re-syncs and shows the honest state', async () => {
+            // The server's transactional late-reply guard (issue #458 r2) refuses to
+            // attach a reply when the conversation was reset/deleted mid-flight.
+            await renderChat();
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(
+                jsonResponse({
+                    error: {
+                        type: 'conversation_changed',
+                        message: 'This conversation was reset or deleted while your message was being processed.',
+                    },
+                }, 409),
+            );
+            // The re-sync GET finds the conversation gone (archived/deleted).
+            mock.mockResolvedValueOnce(jsonResponse({detail: 'gone'}, 404));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'late turn'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const alert = await screen.findByRole('alert');
+            expect(alert).toHaveAttribute('data-error-type', 'conversation_changed');
+            expect(alert).toHaveTextContent('no longer available');
+            // The re-sync cleared the conversation's markers (it is gone).
+            const key = lastPostedKey(mock);
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
         });
     });
 

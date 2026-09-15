@@ -92,6 +92,23 @@ function draftKey(conversationId: number): string {
     return `crank:jobsearch:draft:${conversationId}`;
 }
 
+// Timestamp of the last composer-draft write (issue #458 r2): lets
+// reconciliation tell a marker written at a failed send apart from a draft
+// the user typed/edited afterwards, so surfacing a recovered marker never
+// clobbers the user's latest typing. A draft stored without a timestamp
+// (legacy) counts as older than any marker.
+function draftTsKey(conversationId: number): string {
+    return `crank:jobsearch:draftts:${conversationId}`;
+}
+
+function readComposerDraftTs(conversationId: number): number {
+    try {
+        return Number(window.localStorage.getItem(draftTsKey(conversationId))) || 0;
+    } catch {
+        return 0;
+    }
+}
+
 function writeInflightTurn(turn: InFlightTurn): void {
     try {
         window.localStorage.setItem(
@@ -198,8 +215,10 @@ function writeComposerDraft(conversationId: number | null, text: string): void {
     try {
         if (text) {
             window.localStorage.setItem(draftKey(conversationId), text);
+            window.localStorage.setItem(draftTsKey(conversationId), String(Date.now()));
         } else {
             window.localStorage.removeItem(draftKey(conversationId));
+            window.localStorage.removeItem(draftTsKey(conversationId));
         }
     } catch {
         // Storage unavailable; the draft stays memory-only.
@@ -391,6 +410,20 @@ const JobSearchChat: React.FC = () => {
     // Set when honest pre-persistence handling restores the composer draft:
     // the finally block must not wipe it again (issue #458).
     const keepDraftRef = React.useRef(false);
+
+    // The recovery draft currently surfaced in the composer (issue #458 r2):
+    // a marker reconciled into the composer stays durable in storage until
+    // the user explicitly sends or discards it — a scan or another turn's
+    // reconciliation never silently deletes unsent content.
+    const surfacedDraftRef = React.useRef<{conversationId: number; key: string} | null>(null);
+
+    // Resolve the surfaced recovery draft (explicit send/discard only).
+    const clearSurfacedDraft = () => {
+        const surfaced = surfacedDraftRef.current;
+        if (!surfaced || surfaced.conversationId !== conversationId) return;
+        clearInflightTurn(surfaced.conversationId, surfaced.key);
+        surfacedDraftRef.current = null;
+    };
 
     // Ref to the last submitted turn so Retry replays the same content + idempotency key.
     const lastSent = React.useRef<{content: string; key: string} | null>(null);
@@ -660,12 +693,17 @@ const JobSearchChat: React.FC = () => {
     const isReady = conversationId !== null && !pending && !loading;
 
     // Reconcile durable client state against the server after a (re)load:
-    // the server is the single source of truth. Recorded in-flight turns the
-    // server knows about adopt the server state (the reply may even have
-    // arrived late); ones the server never received are restored as unsent
-    // drafts. Markers are stored per turn, so resolving one turn can never
-    // clear another turn's marker, and a newer composer draft is never
-    // overwritten.
+    // the server is the single source of truth. Markers are reconciled per
+    // turn, independently (issue #458 r2): a turn the server confirms is
+    // resolved (its content is server-side); a turn the server never received
+    // is NEVER silently deleted — eager clearing permanently lost unsent
+    // content whenever more than one marker existed. Unsent markers stay
+    // durable in storage: the newest surfaces as the composer draft, and
+    // older ones surface on later loads of this conversation view once the
+    // newer ones are explicitly sent or discarded. Markers only clear when
+    // the server confirms the turn, on an explicit send/discard of the
+    // surfaced draft, or when the conversation is reset/deleted — never on
+    // a scan.
     const reconcileDurableState = (conversation: Conversation) => {
         const markers = readInflightTurns(conversation.id);
         const serverKeys = new Set(
@@ -675,25 +713,30 @@ const JobSearchChat: React.FC = () => {
         );
         let restoreDraft: InFlightTurn | null = null;
         for (const marker of markers) {
-            clearInflightTurn(conversation.id, marker.key);
-            if (!serverKeys.has(marker.key) && (!restoreDraft || marker.ts > restoreDraft.ts)) {
+            if (serverKeys.has(marker.key)) {
+                // The server knows this turn: the marker is resolved and its
+                // content is represented in the conversation history.
+                clearInflightTurn(conversation.id, marker.key);
+                continue;
+            }
+            // The server never received this turn: keep the marker as a
+            // recoverable draft candidate (the newest wins the composer).
+            if (!restoreDraft || marker.ts > restoreDraft.ts) {
                 restoreDraft = marker;
             }
         }
-        if (restoreDraft) {
-            // The server never received this request: keep the text as an
-            // unsent draft instead of a fake sent message. The in-flight
-            // content is the user's most recent send attempt and wins over a
-            // stale stored draft (which normally holds the same text anyway).
-            if (!input) {
-                setInput(restoreDraft.content);
-                writeComposerDraft(conversation.id, restoreDraft.content);
-            }
-        } else {
-            const draft = readComposerDraft(conversation.id);
-            if (draft && !input) {
-                setInput(draft);
-            }
+        const draft = readComposerDraft(conversation.id);
+        if (restoreDraft && !input && (!draft || restoreDraft.ts > readComposerDraftTs(conversation.id))) {
+            // Surface the newest unsent turn as the unsent draft instead of a
+            // fake sent message. The marker stays durable until the user
+            // explicitly sends or discards it. A composer draft edited after
+            // the failed send is newer (timestamped) and wins instead —
+            // surfacing never clobbers the user's latest typing.
+            surfacedDraftRef.current = {conversationId: conversation.id, key: restoreDraft.key};
+            setInput(restoreDraft.content);
+            writeComposerDraft(conversation.id, restoreDraft.content);
+        } else if (!input && draft) {
+            setInput(draft);
         }
     };
 
@@ -853,6 +896,20 @@ const JobSearchChat: React.FC = () => {
                     await reconcileWithServer(turnConversationId, key);
                     return;
                 }
+                if (serverType === 'conversation_changed') {
+                    // The server's transactional late-reply guard refused to
+                    // attach: the conversation was reset or deleted mid-flight
+                    // (another tab). The turn is quarantined server-side; sync
+                    // with the server instead of guessing — the refetch decides
+                    // whether the conversation is gone and clears its markers.
+                    setError(serverMsg);
+                    setErrorType(serverType);
+                    const outcome = await reconcileWithServer(turnConversationId, key);
+                    if (outcome === 'gone') {
+                        setError('This conversation is no longer available.');
+                    }
+                    return;
+                }
                 if (parsed && serverType && PRE_PERSISTENCE_ERROR_TYPES.has(serverType)) {
                     // Validation/budget/gone-conversation failures happen
                     // before persistence: not saved, nothing to retry.
@@ -995,6 +1052,10 @@ const JobSearchChat: React.FC = () => {
         e.preventDefault();
         const content = input.trim();
         if (!content || !isReady) return;
+        // Explicit send resolves the surfaced recovery draft (issue #458 r2):
+        // its content is being dealt with now, so it is no longer an unsent
+        // turn to recover. Other unsent markers stay untouched.
+        clearSurfacedDraft();
         await sendTurn(content, newId());
     };
 
@@ -1020,6 +1081,9 @@ const JobSearchChat: React.FC = () => {
             e.preventDefault();
             const content = input.trim();
             if (content && isReady) {
+                // Explicit send resolves the surfaced recovery draft (see
+                // handleSubmit).
+                clearSurfacedDraft();
                 sendTurn(content, newId());
             }
         }
@@ -1075,6 +1139,7 @@ const JobSearchChat: React.FC = () => {
             // conversation's in-flight turns are untouched (issue #458).
             clearInflightTurns(conversationId);
             writeComposerDraft(conversationId, '');
+            surfacedDraftRef.current = null;
             setConversationId(data.id);
             setMessages([]);
             setPreferencesChanged(false);
@@ -1094,6 +1159,7 @@ const JobSearchChat: React.FC = () => {
             if (!res.ok) throw new Error('delete-failed');
             clearInflightTurns(conversationId);
             writeComposerDraft(conversationId, '');
+            surfacedDraftRef.current = null;
             setConversationId(null);
             setMessages([]);
             setPreferencesChanged(false);
@@ -1312,6 +1378,13 @@ const JobSearchChat: React.FC = () => {
                                 onChange={(e) => {
                                     setInput(e.target.value);
                                     writeComposerDraft(conversationId, e.target.value);
+                                    // Explicit discard (issue #458 r2): emptying the
+                                    // composer throws the surfaced recovery draft
+                                    // away for good — other unsent turns stay
+                                    // recoverable in storage.
+                                    if (e.target.value === '') {
+                                        clearSurfacedDraft();
+                                    }
                                 }}
                                 onKeyDown={handleKeyDown}
                                 disabled={!conversationId || pending}
