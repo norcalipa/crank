@@ -10,6 +10,7 @@ from django.core.management import CommandError, call_command
 from django.test import TestCase, override_settings
 
 from crank.management.commands.seed_e2e import (
+    ACTIVE_LISTING_EXTERNAL_ID,
     ACTIVE_LISTING_URL,
     DEFAULT_E2E_PASSWORD,
     E2E_USERNAME,
@@ -281,6 +282,89 @@ class SeedE2ECommandTests(TestCase):
         self.assertFalse(user.is_staff)
         self.assertTrue(user.check_password(DEFAULT_E2E_PASSWORD))
         self.assertFalse(user.check_password("drifted-password"))
+
+    # -- Canonical-key drift (fix-verification round 2) --------------------
+
+    def test_rerun_repairs_drifted_canonical_url(self):
+        """A re-run must reconcile the synthetic-keyed listing row when only
+        its canonical_url has drifted. The previous implementation looked the
+        row up by URL first while creating with the unchanged synthetic
+        external_id, so a URL-only drift made the next run attempt an INSERT
+        that died on ``UNIQUE (source, external_id)`` inside the command's
+        transaction."""
+        call_command("seed_e2e", stdout=StringIO())
+        listing = JobListing.all_objects.get(canonical_url=ACTIVE_LISTING_URL)
+        listing.canonical_url = "https://www.usajobs.gov/Job/e2e-seed-drifted-url"
+        listing.save()
+
+        # Must not raise IntegrityError; the drifted row is repaired in place.
+        call_command("seed_e2e", stdout=StringIO())
+
+        self.assertEqual(
+            JobListing.all_objects.filter(source__name=FIXTURE_SOURCE_NAME).count(),
+            1,
+        )
+        repaired = JobListing.all_objects.get(
+            source__name=FIXTURE_SOURCE_NAME, external_id=ACTIVE_LISTING_EXTERNAL_ID
+        )
+        self.assertEqual(repaired.pk, listing.pk)
+        self.assertEqual(repaired.canonical_url, ACTIVE_LISTING_URL)
+        self.assertEqual(repaired.status, JobListing.Status.ACTIVE)
+        self.assertEqual(repaired.title, "E2E Seed Software Engineer")
+
+    def test_rerun_repairs_drifted_external_id(self):
+        """When the synthetic external_id itself has drifted (no row carries
+        it), the drifted leftover under the fixture source is torn down and
+        the canonical listing is rebuilt on the synthetic key — the dataset
+        ends identical either way, and the URL-keyed leftover can never trip
+        ``UNIQUE (source, external_id)`` with an INSERT."""
+        call_command("seed_e2e", stdout=StringIO())
+        listing = JobListing.all_objects.get(canonical_url=ACTIVE_LISTING_URL)
+        listing.external_id = "e2e-seed-drifted-key"
+        listing.save()
+
+        call_command("seed_e2e", stdout=StringIO())
+
+        rows = JobListing.all_objects.filter(source__name=FIXTURE_SOURCE_NAME)
+        self.assertEqual(rows.count(), 1)
+        repaired = rows.get()
+        self.assertNotEqual(repaired.pk, listing.pk)
+        self.assertEqual(repaired.external_id, ACTIVE_LISTING_EXTERNAL_ID)
+        self.assertEqual(repaired.canonical_url, ACTIVE_LISTING_URL)
+        self.assertEqual(repaired.status, JobListing.Status.ACTIVE)
+
+    def test_rerun_repairs_keys_split_across_two_drifted_rows(self):
+        """The nastiest drift shape: one row holds the canonical URL under a
+        foreign external_id while another holds the synthetic external_id
+        under a drifted URL. The synthetic-keyed row must be reconciled (and
+        the foreign-keyed one torn down) without tripping either UNIQUE
+        (source, external_id) or UNIQUE (source, canonical_url)."""
+        call_command("seed_e2e", stdout=StringIO())
+        source = JobSourceCatalog.objects.get(name=FIXTURE_SOURCE_NAME)
+        url_holder = JobListing.all_objects.get(canonical_url=ACTIVE_LISTING_URL)
+        url_holder.external_id = "e2e-seed-split-url-holder"
+        url_holder.save()
+        key_holder = JobListing.all_objects.create(
+            source=source,
+            canonical_url="https://www.usajobs.gov/Job/e2e-seed-split-drifted",
+            external_id=ACTIVE_LISTING_EXTERNAL_ID,
+            employer_name="E2E Split Key Holder",
+            title="E2E Split Key Holder",
+            first_seen_at=url_holder.first_seen_at,
+            last_seen_at=url_holder.last_seen_at,
+            status=JobListing.Status.ACTIVE,
+        )
+
+        call_command("seed_e2e", stdout=StringIO())
+
+        rows = JobListing.all_objects.filter(source=source)
+        self.assertEqual(rows.count(), 1)
+        repaired = rows.get()
+        self.assertEqual(repaired.pk, key_holder.pk)
+        self.assertEqual(repaired.external_id, ACTIVE_LISTING_EXTERNAL_ID)
+        self.assertEqual(repaired.canonical_url, ACTIVE_LISTING_URL)
+        self.assertEqual(repaired.title, "E2E Seed Software Engineer")
+        self.assertEqual(repaired.status, JobListing.Status.ACTIVE)
 
     def test_password_override_is_applied_on_rerun(self):
         call_command("seed_e2e", stdout=StringIO())

@@ -19,7 +19,13 @@ The command is strongly idempotent: every seeded row is created via
 data is a true no-op — rows, ids, and timestamps stay byte-identical between
 runs). Its own synthetic rows are also de-duplicated (drifted duplicates
 under the E2E source/score keys are deleted), so a re-run always produces the
-identical dataset even from a drifted database. It refuses to run in a
+identical dataset even from a drifted database — including drift of the
+seeded listing's identity keys: the canonical listing is keyed on its
+synthetic (source, external_id) identity, never on a URL lookup, so a
+drifted canonical_url repairs in place while a fully drifted key set is
+rebuilt on the synthetic keys — either way without tripping the
+UNIQUE (source, external_id) / UNIQUE (source, canonical_url) constraints.
+It refuses to run in a
 non-dev environment, so synthetic E2E data can never reach staging or
 production. It prints a bounded summary and never prints secrets.
 
@@ -76,6 +82,12 @@ TARGET_ORGS: list[tuple[str, float]] = [
 ]
 
 ACTIVE_LISTING_URL = "https://www.usajobs.gov/Job/e2e-seed-active-1"
+
+#: The seeded listing's stable synthetic key. Reconciliation is keyed on
+#: (source, external_id), never on canonical_url: the URL is operator-editable
+#: data, the synthetic external_id is this command's own key.
+ACTIVE_LISTING_EXTERNAL_ID = "e2e-seed-active-1"
+
 ACTIVE_LISTING_TITLE = "E2E Seed Software Engineer"
 
 
@@ -301,33 +313,62 @@ class Command(BaseCommand):
                 "description": "Fresh accepted E2E profile evidence.",
             },
         )
-        listing, _ = JobListing.all_objects.get_or_create(
-            source=fixture_source,
-            canonical_url=ACTIVE_LISTING_URL,
-            defaults={
-                "external_id": "e2e-seed-active-1",
-                "employer_name": alpha.name,
-                "employer_domain": "e2e.example.test",
-                "title": ACTIVE_LISTING_TITLE,
-                "location_text": "Remote",
-                "is_remote": True,
-                "compensation_min": 120000,
-                "compensation_max": 160000,
-                "compensation_currency": "USD",
-                "compensation_interval": "year",
-                "first_seen_at": now - timedelta(days=2),
-                "last_seen_at": now,
-                "status": JobListing.Status.ACTIVE,
-                "organization": alpha,
-            },
-        )
+        # Key the canonical listing on its own synthetic (source, external_id)
+        # identity FIRST — never on canonical_url. A URL-first lookup here made
+        # the next run attempt an INSERT with the unchanged synthetic
+        # external_id whenever only the seeded listing's canonical_url had
+        # drifted, dying on UNIQUE (source, external_id) before cleanup could
+        # run. The synthetic-keyed row is reconciled instead, whatever its URL
+        # says.
+        listing = JobListing.all_objects.filter(
+            source=fixture_source, external_id=ACTIVE_LISTING_EXTERNAL_ID
+        ).first()
+        if listing is None:
+            # No row carries the synthetic key: every remaining row under this
+            # command's own fixture source is a drifted leftover (possibly
+            # holding the canonical URL under a foreign key). Clear them
+            # before the insert so neither UNIQUE (source, external_id) nor
+            # UNIQUE (source, canonical_url) can trip on our own synthetic
+            # rows.
+            JobListing.all_objects.filter(source=fixture_source).delete()
+            listing = JobListing.all_objects.create(
+                source=fixture_source,
+                canonical_url=ACTIVE_LISTING_URL,
+                external_id=ACTIVE_LISTING_EXTERNAL_ID,
+                employer_name=alpha.name,
+                employer_domain="e2e.example.test",
+                title=ACTIVE_LISTING_TITLE,
+                location_text="Remote",
+                is_remote=True,
+                compensation_min=120000,
+                compensation_max=160000,
+                compensation_currency="USD",
+                compensation_interval="year",
+                first_seen_at=now - timedelta(days=2),
+                last_seen_at=now,
+                status=JobListing.Status.ACTIVE,
+                organization=alpha,
+            )
+        else:
+            # Strong idempotency: rows under this command's own synthetic
+            # source that are not the canonical listing (a drifted
+            # canonical_url or foreign key) are torn down BEFORE the canonical
+            # URL is repaired, so repairing it cannot collide with a
+            # foreign-keyed row still holding the canonical URL under
+            # UNIQUE (source, canonical_url).
+            JobListing.all_objects.filter(source=fixture_source).exclude(
+                pk=listing.pk
+            ).delete()
         # Reconcile the fields the ranked-match journey asserts on (status,
-        # employer, remote flag, canonical org link); first_seen/last_seen are
-        # creation-scoped (see module docstring).
+        # employer, remote flag, canonical org link) plus both identity keys
+        # themselves — a drifted canonical_url or external_id is repaired on
+        # the synthetic-keyed row; first_seen/last_seen are creation-scoped
+        # (see module docstring).
         _sync_fields(
             listing,
             {
-                "external_id": "e2e-seed-active-1",
+                "canonical_url": ACTIVE_LISTING_URL,
+                "external_id": ACTIVE_LISTING_EXTERNAL_ID,
                 "employer_name": alpha.name,
                 "employer_domain": "e2e.example.test",
                 "title": ACTIVE_LISTING_TITLE,
@@ -341,12 +382,6 @@ class Command(BaseCommand):
                 "organization": alpha,
             },
         )
-        # Strong idempotency: rows under this command's own synthetic source
-        # that are not the canonical listing (e.g. a drifted canonical_url)
-        # are torn down so a re-run always produces the identical dataset.
-        JobListing.all_objects.filter(source=fixture_source).exclude(
-            pk=listing.pk
-        ).delete()
         created["active_listings"] = JobListing.objects.filter(
             source=fixture_source
         ).count()

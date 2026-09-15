@@ -56,7 +56,12 @@ ordinary non-dev disable message — the hook branch never runs outside dev).
 `ubuntu-latest` (Node 20 / Python 3.12 / Redis service): normal pass with
 `--grep-invert '@outage'`, then `CRANK_E2E_PROVIDER_FAILURE=1 --grep '@outage'`, then a
 best-effort sanitized-capture pass. It is triggered both by pushes to `main`
-and by **pull requests targeting `main`** (same path filter), so the Django tier
+and by **pull requests targeting `main`** (same path filter — exact parity
+between the two triggers is asserted by `crank/tests/test_django_e2e_workflow.py`),
+and the filter covers the system under test as well as the harness
+(`static/js/**`, `static/css/**`, `templates/**`, `crank/views/**`, the webpack
+configs, `package-lock.json`), so a UI-only regression cannot merge without
+starting this workflow. The Django tier
 is an actual PR merge gate — a regression in these files cannot merge before
 the workflow executes. Artifacts: `playwright-report/` (on failure) and
 `e2e/artifacts/captures/` (always).
@@ -77,14 +82,14 @@ implementation behind every skip is already written; nothing passes silently.
 | #496 failed-turn immediate-visibility + Retry | #496 | `pending #496 merge: the optimistic turn is rolled back on failure…` | `e2e/django/regression.spec.ts` |
 | #471/#477 assistant sidebar open/closed | #471 | `pending #471 merge: the desktop assistant sidebar…` | `e2e/django/viewport-zoom.spec.ts` |
 | #464 SuggestCompanyModal Escape hardening | #500 (fixes #464) | `pending #464 merge: SuggestCompanyModal Escape/focus-return hardening…` | `e2e/django/a11y-keyboard.spec.ts` |
-| AC7: failed-turn cancel | #496 | `pending #496 merge: cancel/delivery-state actions ship with #496…` | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: direct preference editing during outage | #501 | `pending #501 merge: the direct editor's typed-action fail-closed…` | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: shared request form from every Suggest action | #471 (PR pending) | `pending #471 merge: the shared company-request form…` | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: failed-turn cancel | #496 | `pending #496 merge: the persisted failed-turn delivery state…` (selectors verified at head fa8714d — Retry / "Edit as new message" / Stop; no `cancel-button`) | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: independent direct action during outage | #501 | `pending #501 merge: the typed-action fail-closed and stale-patch/late-reply guards…` (head eec6baf ships no preference-editor UI; the test pins that an independent direct action never clobbers a failed turn) | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: shared request form from the rankings Suggest action | #471 (PR pending) | `pending #471 merge: the shared company-request form…` (pins the rankings entry point; extend to the remaining Suggest actions when the form lands) | `e2e/django/ac7-surfaces.spec.ts` |
 | AC7: company comparison vs saved priorities | #490 (PR pending) | `pending #490 merge: the 2–4 company comparison surface…` | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: jobs availability states (unavailable/partial/zero) | #502 | `pending #502 merge: inventory-unavailability explanations…` | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: availability exposed before submission | #503 | `pending #503 merge: pre-submission availability disclosure…` | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: ingestion outcome visibility (queued runs) | #497 | `pending #497 merge: single-owner ingestion with queued-run consumption…` | `e2e/django/ac7-surfaces.spec.ts` |
-| AC7: update-revision race (post-commit cache) | #504 | `pending #504 merge: post-commit cache invalidation / update-revision visibility…` | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: jobs availability states (refresh progress + honest result states) | #502 | `pending #502 merge: the distinct match-panel availability states…` (selectors verified at head c971eb9: job-match-refresh / refresh-notice / empty-state-*; the genuine-zero and partial-coverage variants need data-dependent fixtures) | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: assistant availability disclosed before submission (healthy + outage) | #503 | `pending #503 merge: pre-submission availability disclosure…` (selectors verified at head 96390aa: assistant-status-notice / assistant-status-retry) | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: ingestion outcome visibility (queued runs) | #497 | `pending #497 merge: single-owner ingestion with queued-run consumption…` (head ed4ee0e: job-match-refresh, job-reasons-<listing_id>) | `e2e/django/ac7-surfaces.spec.ts` |
+| AC7: update-revision race (post-commit cache) | #504 | `pending #504 merge: post-commit cache invalidation…` — **explicitly non-executable from the browser harness**: no browser-reachable seam can create a score revision (head 2f130e8 has no Score-mutating view), so deleting the skip without wiring a real revision trigger fails loudly instead of passing vacuously | `e2e/django/ac7-surfaces.spec.ts` |
 | Non-outage pass outage specs | — | `provider-outage pass only: run with CRANK_E2E_PROVIDER_FAILURE=1…` | `e2e/django/regression.spec.ts`, `e2e/django/ac7-surfaces.spec.ts` |
 | Fixture-tier collection of Django specs | — | `Django tier only: requires the seeded Django server…` | `e2e/django/support.ts` (`requireDjangoTier`) |
 | Capture pass in normal runs | — | `evidence capture pass only: set PW_CAPTURE_DIR…` | `e2e/django/captures.spec.ts` |

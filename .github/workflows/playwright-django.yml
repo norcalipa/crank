@@ -6,19 +6,38 @@ on:
   push:
     branches: [main]
     paths:
+      # Harness: the tier itself, its config, seeder, outage hook, workflow.
       - 'playwright.django.config.ts'
       - 'e2e/django/**'
       - 'crank/management/commands/seed_e2e.py'
       - 'crank/agents/job_search/demo.py'
       - '.github/workflows/playwright-django.yml'
+      # System under test: the application files the journeys render. Without
+      # these, a UI-only regression merges without ever starting django-e2e.
+      - 'static/js/**'
+      - 'static/css/**'
+      - 'templates/**'
+      - 'crank/views/**'
+      - 'webpack.config.js'
+      - 'webpack.e2e.config.js'
+      - 'package-lock.json'
   pull_request:
     branches: [main]
     paths:
+      # Must stay in exact parity with the push trigger; asserted by
+      # crank/tests/test_django_e2e_workflow.py.
       - 'playwright.django.config.ts'
       - 'e2e/django/**'
       - 'crank/management/commands/seed_e2e.py'
       - 'crank/agents/job_search/demo.py'
       - '.github/workflows/playwright-django.yml'
+      - 'static/js/**'
+      - 'static/css/**'
+      - 'templates/**'
+      - 'crank/views/**'
+      - 'webpack.config.js'
+      - 'webpack.e2e.config.js'
+      - 'package-lock.json'
   workflow_dispatch:
 
 jobs:

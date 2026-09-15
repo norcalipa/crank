@@ -3,33 +3,40 @@
 // AC7 (issue #491): every action from rankings, details, jobs, Help and the
 // assistant has a visible, asserted outcome.
 //
-// The surfaces below are NOT yet on main — each is fully implemented here and
+// The surfaces below are NOT yet on main — each is implemented here and
 // gated behind an explicit, named skip whose reason names the owning ticket.
-// The ticket → PR mapping is documented in docs/e2e-validation.md (skip
-// ledger): #496, #497, #501, #502, #503 and #504 have in-flight PRs of the
-// same number; #471 (shared request form) and #490 (comparison) are owning
-// tickets whose PRs have not been opened yet. When a PR merges, delete its
-// `pendingTicketMerge` call to turn the executable assertions on; a merged
-// surface with a leftover skip is caught by the ledger review in
-// docs/e2e-validation.md.
+// Every selector below is aligned with the owning PR's ACTUAL head (verified
+// against the head trees: #496 fa8714d, #497 ed4ee0e, #501 eec6baf,
+// #502 c971eb9, #503 96390aa, #504 2f130e8), so deleting a skip after the
+// owning PR merges yields the intended contract, not deterministic failures
+// against selectors that never existed. The ticket → PR mapping is
+// documented in docs/e2e-validation.md (skip ledger): #496, #497, #501,
+// #502, #503 and #504 have in-flight PRs of the same number; #471 (shared
+// request form) and #490 (comparison) are owning tickets whose PRs have not
+// been opened yet. When a PR merges, delete its `pendingTicketMerge` call to
+// turn the executable assertions on; a merged surface with a leftover skip
+// is caught by the ledger review in docs/e2e-validation.md.
 import {expect, test} from '@playwright/test';
-import {expectNoHorizontalOverflow, login, pendingTicketMerge, rectOf, requireDjangoTier} from './support';
+import {expectNoHorizontalOverflow, login, pendingTicketMerge, requireDjangoTier} from './support';
 
 requireDjangoTier();
 
+const OUTAGE_SKIP_REASON =
+    'provider-outage pass only: run with CRANK_E2E_PROVIDER_FAILURE=1 ' +
+    '(see playwright.django.config.ts and docs/e2e-validation.md)';
+
 // -- Failed-turn recovery: cancel (#496 / issue #458) -------------------------
 test.describe('failed-turn cancel @outage', () => {
-    test.skip(
-        process.env.CRANK_E2E_PROVIDER_FAILURE !== '1',
-        'provider-outage pass only: run with CRANK_E2E_PROVIDER_FAILURE=1 ' +
-        '(see playwright.django.config.ts and docs/e2e-validation.md)',
-    );
+    test.skip(process.env.CRANK_E2E_PROVIDER_FAILURE !== '1', OUTAGE_SKIP_REASON);
 
     test('cancel abandons the failed turn with a visible outcome and no duplicate reply', async ({page}) => {
         pendingTicketMerge(
             496,
-            'cancel/delivery-state actions ship with #496 (persist turn delivery ' +
-            'state, retry/cancel/reload recovery); delete this skip when #496 merges',
+            'the persisted failed-turn delivery state (failed-turn panel with ' +
+            'Retry / "Edit as new message" — the cancel affordance; the in-flight ' +
+            'variant is Stop) ships with #496; delete this skip when #496 merges. ' +
+            'Selectors verified at the #496 head fa8714d (no cancel-button exists ' +
+            'there: delivery-state Retry/Edit/Stop)',
         );
         await login(page);
         await page.goto('/chat/');
@@ -43,69 +50,91 @@ test.describe('failed-turn cancel @outage', () => {
         await expect(error).toBeVisible();
         await expect(error).toHaveAttribute('data-error-type', 'assistant_unavailable');
 
-        // Cancel has a visible outcome: the error clears, the composer is
-        // re-enabled, and no assistant reply is persisted for the abandoned turn.
-        await page.getByTestId('cancel-button').click();
-        await expect(error).toBeHidden();
-        await expect(page.locator('textarea[aria-label="Message"]')).toBeEnabled();
+        // The turn is persisted server-side as failed: the failed-turn panel
+        // exposes the delivery-state recovery actions.
+        await expect(page.getByTestId('failed-turn')).toBeVisible();
+
+        // Cancel has a visible outcome: "Edit as new message" abandons the
+        // failed delivery and hands the content back to a focused composer,
+        // while no assistant reply is persisted for the abandoned turn.
+        await page.getByTestId('edit-as-new-button').click();
+        const composer = page.locator('textarea[aria-label="Message"]');
+        await expect(composer).toHaveValue(probe);
+        await expect(composer).toBeFocused();
+        await expect(
+            page.locator('article[aria-label="Assistant message"]', {hasText: probe}),
+        ).toHaveCount(0);
+
+        // The failed turn itself survives the reload (persisted delivery
+        // state), still without any assistant reply.
         await page.reload();
+        await expect(page.getByTestId('failed-turn')).toBeVisible();
         await expect(
             page.locator('article[aria-label="Assistant message"]', {hasText: probe}),
         ).toHaveCount(0);
     });
 });
 
-// -- Direct preference editing during a provider outage (#501 / issue #487) ---
-test.describe('direct preference editing during outage @outage', () => {
-    test.skip(
-        process.env.CRANK_E2E_PROVIDER_FAILURE !== '1',
-        'provider-outage pass only: run with CRANK_E2E_PROVIDER_FAILURE=1 ' +
-        '(see playwright.django.config.ts and docs/e2e-validation.md)',
-    );
+// -- Independent direct actions during a provider outage (#501 / issue #487) --
+test.describe('direct action during outage @outage', () => {
+    test.skip(process.env.CRANK_E2E_PROVIDER_FAILURE !== '1', OUTAGE_SKIP_REASON);
 
-    test('direct preference edits persist during an outage without clobbering the failed turn', async ({page}) => {
+    test('an independent direct action leaves the failed turn honest and unclobbered', async ({page}) => {
         pendingTicketMerge(
             501,
-            'the direct editor\'s typed-action fail-closed and stale-patch/late-reply ' +
-            'guards ship with #501 (sidebar ownership boundaries); delete this skip when #501 merges',
+            'the typed-action fail-closed and stale-patch/late-reply guards ship ' +
+            'with #501 (issue #487); delete this skip when #501 merges. Selectors ' +
+            'verified at the #501 head eec6baf: that PR ships no direct ' +
+            'preference-editor UI (no preference-editor/chip/review/apply test ' +
+            'IDs), so the browser-observable contract pinned here is that an ' +
+            'independent direct action (the jobs panel refresh) never clobbers, ' +
+            'clears, or answers a failed turn',
         );
         await login(page);
         await page.goto('/chat/');
 
         // Open a turn that fails while the provider is down…
-        await page.locator('textarea[aria-label="Message"]').fill('E2E direct-edit outage probe');
+        await page.locator('textarea[aria-label="Message"]').fill('E2E direct-action outage probe');
         await page.getByLabel('Send message').click();
         const error = page.getByTestId('chat-error');
         await expect(error).toBeVisible();
         await expect(error).toHaveAttribute('data-error-type', 'assistant_unavailable');
 
-        // …then edit preferences directly. The edit is typed-action
-        // fail-closed: it must persist on its own and never be clobbered by a
-        // stale late reply from the failed turn.
-        const editor = page.getByTestId('preference-editor');
-        await expect(editor).toBeVisible();
-        await editor.getByTestId('preference-chip-remote').click();
-        await expect(editor.getByTestId('preference-review')).toBeVisible();
-        await editor.getByTestId('apply-preferences').click();
-        await expect(page.getByTestId('preference-applied-notice')).toBeVisible();
+        // …then perform an independent direct action in the sibling jobs
+        // panel. The action is fail-closed: it must succeed on its own and
+        // never clobber the failed turn's error or conjure a late reply.
+        await page.getByTestId('job-match-refresh').click();
+        await expect(page.getByTestId('ranked-job-matches')).toBeVisible();
 
         // The failed turn's error stays honest and no reply arrives late.
         await expect(error).toBeVisible();
-        await expect(page.locator('article[aria-label="Assistant message"]', {hasText: 'direct-edit outage probe'})).toHaveCount(0);
+        await expect(error).toHaveAttribute('data-error-type', 'assistant_unavailable');
+        await expect(
+            page.locator('article[aria-label="Assistant message"]', {hasText: 'direct-action outage probe'}),
+        ).toHaveCount(0);
 
-        // The preference edit survived server-side.
+        // The failed turn is still recoverable after the direct action.
         await page.reload();
-        await expect(page.getByTestId('preference-editor')).toContainText('Remote');
+        await expect(page.getByTestId('chat-error')).toBeVisible();
+        await expect(page.getByTestId('chat-error')).toHaveAttribute(
+            'data-error-type',
+            'assistant_unavailable',
+        );
+        await expect(
+            page.locator('article[aria-label="Assistant message"]', {hasText: 'direct-action outage probe'}),
+        ).toHaveCount(0);
     });
 });
 
-// -- Shared request form from every "Suggest a company" action (#471) --------
+// -- Shared request form from the rankings "Suggest a company" action (#471) --
 test.describe('shared request form', () => {
-    test('every Suggest a company action opens the shared request form with a visible outcome', async ({page}) => {
+    test('the rankings "Suggest a company" action opens the shared request form with a visible outcome', async ({page}) => {
         pendingTicketMerge(
             471,
-            'the shared company-request form (every Suggest a company action opens ' +
-            'it, contextual review form included) ships with #471; delete this skip when its PR merges',
+            'the shared company-request form ships with #471; this test pins the ' +
+            'rankings entry point only — extend it to the remaining Suggest ' +
+            'actions (chat correction link, help surface) when the form lands. ' +
+            'delete this skip when its PR merges',
         );
         await login(page);
         await page.goto('/');
@@ -151,59 +180,99 @@ test.describe('company comparison', () => {
     });
 });
 
-// -- Jobs availability states: source available / partial / genuine zero (#502 / issue #476)
+// -- Jobs availability states: refresh progress and honest result states (#502 / issue #476)
 test.describe('jobs availability states', () => {
-    test('unavailability, refresh progress and genuine zero matches are distinct visible states', async ({page}) => {
+    test('refresh progress is a distinct visible state and result states stay honest', async ({page}) => {
         pendingTicketMerge(
             502,
-            'inventory-unavailability explanations, refresh progress and genuine-zero ' +
-            'match states ship with #502 (issue #476); delete this skip when #502 merges',
+            'the distinct match-panel availability states (refresh-notice, ' +
+            'coverage-notice for partial source coverage, inventory-facts, and ' +
+            'the empty-state-* variants for genuine zero) ship with #502 ' +
+            '(issue #476); delete this skip when #502 merges. Selectors verified ' +
+            'at the #502 head c971eb9 (no edit-preferences/preference-editor or ' +
+            'zero-matches/inventory-unavailable IDs exist there; the genuine-zero ' +
+            'and partial-coverage variants additionally need data-dependent ' +
+            'fixtures — a disabled source or non-matching preferences — so extend ' +
+            'them when driving fixtures land)',
         );
         await login(page);
         await page.goto('/chat/');
+        await expect(page.getByTestId('job-match-panel')).toBeVisible();
 
-        // Genuine zero: a preference set matching none of the seeded listings
-        // shows an explicit zero-matches state — visibly distinct from an
-        // inventory outage (never an error or an empty-looking panel).
-        await page.getByTestId('job-match-panel').getByTestId('edit-preferences').click();
-        await page.getByTestId('preference-editor').getByTestId('preference-chip-in-office').click();
-        await page.getByTestId('apply-preferences').click();
-        await expect(page.getByTestId('zero-matches')).toBeVisible();
-        await expect(page.getByTestId('inventory-unavailable')).toHaveCount(0);
+        // The seeded remote preference matches the seeded listing: results
+        // render as ranked matches, not an empty state — an explicit empty
+        // state must never masquerade as "no results" when matches exist.
+        const matches = page.getByTestId('ranked-job-matches');
+        await expect(matches).toBeVisible();
+        await expect(page.getByTestId(/empty-state-/)).toHaveCount(0);
 
-        // Inventory unavailability (source disabled mid-journey) is explained
-        // with a refresh affordance, never rendered as "no results".
-        await expect(page.getByTestId('job-availability')).toContainText(/available|unavailable/i);
+        // Refresh progress is a visible, distinct state (role=status,
+        // aria-live=polite) while the refresh runs; the current results stay
+        // up instead of collapsing into an empty state.
+        await page.getByTestId('job-match-refresh').click();
+        const notice = page.getByTestId('refresh-notice');
+        await expect(notice).toBeVisible();
+        await expect(notice).toHaveAttribute('role', 'status');
+        await expect(notice).toHaveAttribute('aria-live', 'polite');
+        await expect(matches).toBeVisible();
 
-        // Refresh progress is a visible, distinct state.
-        await page.getByTestId('refresh-matches').click();
-        await expect(page.getByTestId('refresh-progress')).toBeVisible();
-        await expect(page.getByTestId('ranked-job-matches')).toBeVisible();
+        // The refresh completes back into ranked results.
+        await expect(notice).toBeHidden();
+        await expect(matches).toBeVisible();
     });
 });
 
-// -- Assistant/inventory availability exposed before submission (#503 / issue #457)
-test.describe('availability before submission', () => {
-    test('assistant and inventory availability are exposed before a turn is submitted', async ({page}) => {
+// -- Assistant availability disclosed before submission (#503 / issue #457) --
+test.describe('availability before submission (healthy)', () => {
+    test('the composer is usable and unblocked before submitting when the assistant is up', async ({page}) => {
         pendingTicketMerge(
             503,
-            'pre-submission availability disclosure (user-safe assistant and inventory ' +
-            'status shown before sending) ships with #503 (issue #457); delete this skip when #503 merges',
+            'pre-submission availability disclosure ships with #503 (issue #457); ' +
+            'delete this skip when #503 merges. Selectors verified at the #503 ' +
+            'head 96390aa (assistant-status-notice / assistant-status-retry; no ' +
+            'assistant-availability or inventory-availability IDs exist there)',
         );
         await login(page);
         await page.goto('/chat/');
         await expect(page.getByTestId('job-search-chat')).toBeVisible();
 
-        // Availability is visible before any text is entered…
-        await expect(page.getByTestId('assistant-availability')).toBeVisible();
-        await expect(page.getByTestId('inventory-availability')).toBeVisible();
-
-        // …and stays visible while composing, so a user knows the service
-        // state before they submit the turn.
-        await page.locator('textarea[aria-label="Message"]').fill('E2E availability probe');
-        await expect(page.getByTestId('assistant-availability')).toBeVisible();
+        // Healthy state discloses readiness by NOT blocking: the advisory
+        // notice does not render for a ready assistant (the component returns
+        // null), and the composer is usable before any text is entered.
+        await expect(page.getByTestId('assistant-status-notice')).toHaveCount(0);
+        const composer = page.locator('textarea[aria-label="Message"]');
+        await composer.fill('E2E availability probe');
+        await expect(composer).toBeEnabled();
         await page.getByLabel('Send message').click();
         await expect(page.locator('article[aria-label="Assistant message"]').last()).toBeVisible();
+    });
+});
+
+test.describe('availability before submission @outage', () => {
+    test.skip(process.env.CRANK_E2E_PROVIDER_FAILURE !== '1', OUTAGE_SKIP_REASON);
+
+    test('degraded assistant availability is disclosed before a turn is submitted', async ({page}) => {
+        pendingTicketMerge(
+            503,
+            'pre-submission availability disclosure ships with #503 (issue #457); ' +
+            'delete this skip when #503 merges. Selectors verified at the #503 ' +
+            'head 96390aa (assistant-status-notice / assistant-status-retry)',
+        );
+        await login(page);
+        await page.goto('/chat/');
+
+        // Before ANY text is entered, the advisory notice is visible as a
+        // polite status region, so the user knows the service state first.
+        const notice = page.getByTestId('assistant-status-notice');
+        await expect(notice).toBeVisible();
+        await expect(notice).toHaveAttribute('role', 'status');
+        await expect(notice).toHaveAttribute('aria-label', 'Assistant availability');
+        await expect(notice).toContainText(/unavailable/i);
+
+        // …and it stays visible while composing, so a user never submits a
+        // message into a dead assistant unknowingly.
+        await page.locator('textarea[aria-label="Message"]').fill('E2E availability probe');
+        await expect(notice).toBeVisible();
     });
 });
 
@@ -213,7 +282,9 @@ test.describe('ingestion outcome visibility', () => {
         pendingTicketMerge(
             497,
             'single-owner ingestion with queued-run consumption ships with #497 ' +
-            '(issue #462); delete this skip when #497 merges',
+            '(issue #462); delete this skip when #497 merges. Selectors verified ' +
+            'at the #497 head ed4ee0e: the refresh affordance is job-match-refresh ' +
+            '(not refresh-matches) and per-match reasons are job-reasons-<listing_id>',
         );
         await login(page);
         await page.goto('/chat/');
@@ -221,8 +292,10 @@ test.describe('ingestion outcome visibility', () => {
 
         // A queued run that has been consumed by the single owner surfaces as
         // a fresh, attributable job card (never silently dropped).
-        await page.getByTestId('refresh-matches').click();
-        const card = page.getByTestId('ranked-job-matches').locator('a', {hasText: 'E2E Seed Software Engineer'});
+        await page.getByTestId('job-match-refresh').click();
+        const matches = page.getByTestId('ranked-job-matches');
+        await expect(matches).toBeVisible();
+        const card = matches.locator('a', {hasText: 'E2E Seed Software Engineer'});
         await expect(card).toBeVisible();
         await expect(card).toHaveAttribute('href', /usajobs\.gov/);
         await expect(page.getByTestId(/job-reasons-\d+/).first()).toBeVisible();
@@ -233,33 +306,27 @@ test.describe('ingestion outcome visibility', () => {
 // -- Update-revision race: post-commit visibility (#504 / issue #470) --------
 test.describe('update-revision race', () => {
     test('a mid-session score update invalidates caches and appears only on refresh', async ({page}) => {
+        // NON-EXECUTABLE from the browser harness (fix-verification round 2,
+        // named per the skip ledger). #504's contract is server-side
+        // publication and invalidation: the outbox clears the
+        // algorithm_<id>_page full-page key and the algorithm result keys on
+        // commit. No browser-reachable seam can create a score revision —
+        // verified at the #504 head 2f130e8, where no view mutates Score —
+        // so a browser-only flow cannot exercise the race. Deleting this
+        // skip without wiring a real revision trigger fails loudly below
+        // instead of passing vacuously on rectangle bookkeeping.
         pendingTicketMerge(
             504,
-            'post-commit cache invalidation / update-revision visibility (outbox ' +
-            'publication, no stale or mixed-revision reads) ships with #504 (issue #470, ' +
-            'with #485\'s non-disruptive refresh); delete this skip when #504 merges',
+            'post-commit cache invalidation / update-revision visibility ships ' +
+            'with #504 (issue #470, with #485\'s non-disruptive refresh); the ' +
+            'browser harness cannot drive the server-side revision/publication ' +
+            'path, so wire a real revision trigger (or move the contract to the ' +
+            'Django unit tier) when deleting this skip',
         );
-        await login(page);
-        await page.goto('/');
-        await expect(page.locator('#organization-list')).toBeVisible();
-        const before = await rectOf(page, '#organization-list');
-
-        // A synthetic revision lands out-of-band (a second E2E-only row update
-        // through the publication path). The already-loaded page must keep its
-        // reading position (no disruptive live repaint)…
-        await page.evaluate(() => {
-            // The revision is applied server-side in the real flow; the
-            // invariant under test here is that the client does not observe a
-            // mixed revision: the loaded list stays stable…
-            return document.querySelector('#organization-list')!.getBoundingClientRect().top;
-        });
-        await expect(page.locator('#organization-list')).toContainText('E2E Alpha Corp');
-
-        // …and after an explicit refresh, the new revision is served — the
-        // post-commit cache invalidation made it visible, never a stale read.
-        await page.reload();
-        await expect(page.locator('#organization-list')).toBeVisible();
-        const after = await rectOf(page, '#organization-list');
-        expect(after.width).toBe(before.width);
+        throw new Error(
+            'non-executable: the #504 update-revision race has no browser-reachable ' +
+            'revision trigger; wire the real publication flow (or move the contract ' +
+            'to the Django unit tier) before unskipping this test',
+        );
     });
 });
