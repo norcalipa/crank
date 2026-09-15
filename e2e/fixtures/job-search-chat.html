@@ -10,13 +10,42 @@
     <link rel="stylesheet" href="/static/css/popup.css">
 </head>
 <body>
-    <div class="container py-4 page-container">
-        <div class="row">
-            <div class="col-12 col-lg-8">
-                <div id="job-search-chat"></div>
+    <a href="#main-content" class="skip-to-content" data-skip-to-content>Skip to content</a>
+    <div class="app-shell">
+        <aside class="app-nav-rail" aria-label="Application navigation" data-nav-rail>
+            <nav class="app-nav" aria-label="Main navigation">
+                <a href="/" class="app-nav-brand" aria-label="CRank home">
+                    <span aria-hidden="true">★</span>
+                    <span class="app-nav-brand-text">CRank</span>
+                </a>
+                <ul class="app-nav-list" role="list">
+                    <li><a href="/" id="nav-rankings" class="app-nav-link"><span aria-hidden="true">★</span><span class="app-nav-label">Company Rankings</span></a></li>
+                    <li><a href="/chat/" id="nav-job-search" class="app-nav-link app-nav-link--active" aria-current="page"><span aria-hidden="true">💬</span><span class="app-nav-label">Job Search</span></a></li>
+                    <li><a href="/help/" id="nav-help" class="app-nav-link"><span aria-hidden="true">?</span><span class="app-nav-label">Help</span></a></li>
+                    <li><a href="/admin/" id="nav-admin" class="app-nav-link"><span aria-hidden="true">⚙</span><span class="app-nav-label">Admin</span></a></li>
+                </ul>
+            </nav>
+        </aside>
+        <header class="app-mobile-topbar">
+            <button class="app-nav-toggle" type="button" aria-expanded="false" aria-controls="mobile-nav" aria-label="Open navigation menu" data-nav-toggle>
+                <span aria-hidden="true">≡</span>
+            </button>
+        </header>
+        <div class="app-nav-drawer" id="mobile-nav" data-nav-drawer hidden></div>
+        <div class="app-nav-overlay" data-nav-overlay hidden></div>
+    </div>
+    <div class="container mt-3 app-messages" role="status" aria-live="polite">
+        <div class="alert alert-info" role="alert">Welcome back — your conversation was restored.</div>
+    </div>
+    <main id="main-content" class="app-content" tabindex="-1">
+        <div class="container py-4 page-container">
+            <div class="row">
+                <div class="col-12 col-lg-8">
+                    <div id="job-search-chat"></div>
+                </div>
             </div>
         </div>
-    </div>
+    </main>
     <script src="/static/dist/e2e.js"></script>
 </body>
 </html>
