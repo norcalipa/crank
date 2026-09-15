@@ -6,10 +6,19 @@ Loads the acceptance fixtures described in
 ``docs/deployment-baseline-2026-09.md`` into the current database:
 
 - active + superseded company scores (``crank_score`` rows with status 1/0);
-- accepted / stale / conflicting ``CompanyProfileObservation`` evidence;
+- the ``ScoreAlgorithm``/``ScoreAlgorithmWeight`` rows the rankings consumer
+  requires (``IndexView`` resolves ``DEFAULT_ALGORITHM_ID`` and its ranking
+  SQL inner-joins ``crank_scorealgorithmweight``);
+- accepted / stale / conflicting ``CompanyProfileObservation`` evidence, with
+  the accepted observation strictly the latest so the ordinary provenance
+  surface returns it;
 - active / expired ``JobListing`` rows under an approved+enabled source;
 - ordinary and unknown-requirement ``JobMatch`` cases for a test account;
-- ordinary and staff test accounts (throwaway credentials, never real ones).
+- an ordinary test account (throwaway credential, documented in the baseline
+  doc) and a staff test account. The staff account is created with an
+  **unusable** password and its password is only ever set through an
+  explicit ``--staff-password`` provisioning flag, so no privileged
+  credential is ever repo-known or reset implicitly.
 
 The command is idempotent (``get_or_create`` everywhere), refuses to run with
 ``ENV=prod``, and never touches approval policy of pre-existing sources other
@@ -35,11 +44,19 @@ from crank.models.company_profile import CompanyProfileObservation
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
-from crank.models.score import Score, ScoreType
+from crank.models.score import Score, ScoreAlgorithm, ScoreAlgorithmWeight, ScoreType
+from crank.settings.base import DEFAULT_ALGORITHM_ID
 
-#: Throwaway staging credentials. Never a real credential; documented in the
-#: baseline doc. Operators may override with ``--password``.
-DEFAULT_TEST_PASSWORD = "staging-baseline-throwaway"
+#: Revision of this fixture set. Emitted by ``readiness_baseline`` as the
+#: fixture-set revision whenever the fixture markers are present; bump when
+#: the fixture rows below change shape or meaning.
+FIXTURE_REVISION = "staging-baseline-1"
+
+#: Throwaway staging credential for the *ordinary* (non-privileged) test
+#: account only. Never a real credential; documented in the baseline doc.
+#: Operators may override with ``--password``. The staff account has no
+#: default password at all — see ``--staff-password``.
+DEFAULT_ORDINARY_PASSWORD = "staging-baseline-throwaway"
 
 ORDINARY_USERNAME = "staging_user"
 STAFF_USERNAME = "staging_staff"
@@ -55,6 +72,11 @@ FIXTURE_SOURCE_NAME = "Staging Baseline Source"
 STALE_OBSERVATION_DAYS = 45
 EXPIRED_LISTING_DAYS = 30
 
+#: The conflicted observation is older than the accepted one so the ordinary
+#: ``organization_provenance`` surface (latest observation only) returns the
+#: accepted row, as the documented ordinary replay claims.
+CONFLICTED_OBSERVATION_HOURS_AGO = 1
+
 
 class Command(BaseCommand):
     help = (
@@ -65,8 +87,19 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
             "--password",
-            default=DEFAULT_TEST_PASSWORD,
-            help="Throwaway password for both staging test accounts.",
+            default=DEFAULT_ORDINARY_PASSWORD,
+            help="Throwaway password for the ordinary staging test account.",
+        )
+        parser.add_argument(
+            "--staff-password",
+            default=None,
+            help=(
+                "Explicitly provision the staff test account's password "
+                "(secure operator-supplied value; never a repo default). "
+                "Without this flag the staff account is created with an "
+                "unusable password and an existing account's password is "
+                "never reset."
+            ),
         )
 
     def handle(self, *args, **options):
@@ -76,7 +109,10 @@ class Command(BaseCommand):
                 "seed_staging_baseline refuses to run with ENV=prod; "
                 "staging fixtures must never enter production."
             )
-        created = self._load(password=options["password"])
+        created = self._load(
+            password=options["password"],
+            staff_password=options["staff_password"],
+        )
         self.stdout.write(
             self.style.SUCCESS(
                 "Staging baseline fixtures ready: "
@@ -85,7 +121,7 @@ class Command(BaseCommand):
         )
 
     @transaction.atomic
-    def _load(self, *, password: str) -> dict:
+    def _load(self, *, password: str, staff_password: str | None) -> dict:
         now = timezone.now()
         created: dict[str, int] = {}
 
@@ -113,8 +149,27 @@ class Command(BaseCommand):
             },
         )
 
-        # ── Active + superseded scores (status 1/0) ──
+        # ── Rankings dependencies: default algorithm + its Culture weight ──
+        # IndexView resolves DEFAULT_ALGORITHM_ID and its ranking SQL
+        # inner-joins crank_scorealgorithmweight, so a fresh database without
+        # these rows renders empty rankings regardless of the scores below.
+        # get_or_create keeps this idempotent whether or not the repository
+        # base seeds (seeds/crank.scorealgorithm*.yaml) were also loaded.
         score_type, _ = ScoreType.objects.get_or_create(name="Culture")
+        algorithm, created["algorithm"] = ScoreAlgorithm.objects.get_or_create(
+            id=DEFAULT_ALGORITHM_ID,
+            defaults={
+                "name": "Staging Baseline Algorithm",
+                "description_content": "staging-baseline.md",
+            },
+        )
+        _, created["algorithm_weight"] = ScoreAlgorithmWeight.objects.get_or_create(
+            algorithm=algorithm,
+            type=score_type,
+            defaults={"weight": 1.0},
+        )
+
+        # ── Active + superseded scores (status 1/0) ──
         _, created["score_superseded"] = Score.objects.get_or_create(
             type=score_type,
             source=rating_source_org,
@@ -174,7 +229,10 @@ class Command(BaseCommand):
             defaults={
                 **obs_defaults,
                 "source_url": "https://jobs.example.test/profile-conflict",
-                "observed_at": now,
+                # Strictly older than the accepted observation so the ordinary
+                # provenance surface (latest observation only) returns the
+                # accepted row, as the documented ordinary replay claims.
+                "observed_at": now - timedelta(hours=CONFLICTED_OBSERVATION_HOURS_AGO),
                 "status": CompanyProfileObservation.Status.CONFLICTED,
                 "conflict_fields": ["rto_evidence"],
                 "rto_evidence": "One source says remote; another says in-office.",
@@ -234,7 +292,7 @@ class Command(BaseCommand):
             },
         )
 
-        # ── Test accounts (throwaway) ──
+        # ── Test accounts ──
         user_model = get_user_model()
         ordinary, created["user_ordinary"] = user_model.objects.get_or_create(
             username=ORDINARY_USERNAME,
@@ -243,11 +301,23 @@ class Command(BaseCommand):
         ordinary.set_password(password)
         ordinary.is_staff = False
         ordinary.save()
+        # The staff account is privileged (StaffOnlyAdminMixin grants broad
+        # admin access from is_staff alone), so it never gets a repo-known
+        # default password: it is created with an unusable password and only
+        # ever receives one through the explicit --staff-password flag.
+        # Re-running without the flag never resets an already-provisioned
+        # password.
         staff, created["user_staff"] = user_model.objects.get_or_create(
             username=STAFF_USERNAME,
             defaults={"email": "staging_staff@example.test", "first_name": "Staging"},
         )
-        staff.set_password(password)
+        if staff_password is not None:
+            staff.set_password(staff_password)
+        elif not staff.password or not staff.has_usable_password():
+            # Newly created accounts carry an empty password string, which
+            # Django still calls "usable"; make it explicitly unusable. An
+            # already-provisioned usable password is never reset.
+            staff.set_unusable_password()
         staff.is_staff = True
         staff.save()
 
