@@ -81,3 +81,40 @@ class Score(TimeStampedModel, ActivatorModel):
                              condition=Q(status=1),
                              violation_error_message="There is already an active score of this type")
         ]
+
+
+class ScoreTupleAnchor(TimeStampedModel):
+    """Stable parent row for one (type, source, target) score tuple.
+
+    Serializes concurrent writers for a tuple -- including its *first* write,
+    when no score row exists yet for ``select_for_update`` to lock -- because
+    MySQL cannot emit the partial unique constraint on ``Score`` (W036) and
+    cannot lock absent rows. The full unique constraint below is emitted on
+    every backend, so ``get_or_create`` is race-safe (racing creators collide
+    on the constraint and the loser re-reads the winner's row with a locking
+    read); writers then hold ``select_for_update`` on the anchor for their
+    whole transaction, so a loser always reconciles against the winner's
+    committed state. Row locks live exactly as long as the transaction, which
+    keeps the guarantee even when the service call is nested inside a
+    caller's larger atomic block.
+
+    Rows are never deleted on purpose (they anchor one bounded row per scored
+    tuple) and cascade with their referenced rows.
+    """
+    type = models.ForeignKey(ScoreType, on_delete=models.CASCADE,
+                             related_name="score_tuple_anchors")
+    source = models.ForeignKey(Organization, on_delete=models.CASCADE,
+                               related_name="score_tuple_anchors_given")
+    target = models.ForeignKey(Organization, on_delete=models.CASCADE,
+                               related_name="score_tuple_anchors_received")
+
+    class Meta:
+        app_label = 'crank'
+        constraints = [
+            UniqueConstraint(name="unique_score_tuple_anchor",
+                             fields=["type", "source", "target"],
+                             violation_error_message="There is already an anchor for this score tuple")
+        ]
+
+    def __str__(self):
+        return "anchor: {} -> {} [{}]".format(self.target_id, self.type_id, self.source_id)
