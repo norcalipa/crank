@@ -907,6 +907,47 @@ class JobSearchServiceOrchestratorTests(TestCase):
             type(_build_provider()).__name__, "DemoJobSearchProvider"
         )
 
+    @override_settings(JOB_SEARCH_PROVIDER="demo", ENV="dev")
+    def test_e2e_failure_hook_default_off_leaves_demo_path_untouched(self):
+        """Without CRANK_E2E_PROVIDER_FAILURE the default path is unchanged (#491)."""
+        from crank.agents.job_search.demo import _build_provider
+        with patch.dict("os.environ", {}, clear=False):
+            import os
+            os.environ.pop("CRANK_E2E_PROVIDER_FAILURE", None)
+            self.assertEqual(
+                type(_build_provider()).__name__, "DemoJobSearchProvider"
+            )
+
+    @override_settings(JOB_SEARCH_PROVIDER="demo", ENV="dev")
+    def test_e2e_failure_hook_raised_for_demo(self):
+        """CRANK_E2E_PROVIDER_FAILURE=1 makes the builder fail closed in dev."""
+        from crank.agents.job_search.demo import AssistantUnavailable, _build_provider
+        with patch.dict("os.environ", {"CRANK_E2E_PROVIDER_FAILURE": "1"}):
+            with self.assertRaises(AssistantUnavailable):
+                _build_provider()
+
+    @override_settings(
+        JOB_SEARCH_PROVIDER="orchestrator",
+        LLM_PROVIDER="crank.agents.llm:FakeLLMProvider",
+        INTERACTIVE_AGENT_ENABLED=True,
+        ENV="dev",
+    )
+    def test_e2e_failure_hook_fires_before_provider_selection(self):
+        """The hook precedes provider selection so the outage is deterministic."""
+        from crank.agents.job_search.demo import AssistantUnavailable, _build_provider
+        with patch.dict("os.environ", {"CRANK_E2E_PROVIDER_FAILURE": "1"}):
+            with self.assertRaises(AssistantUnavailable):
+                _build_provider()
+
+    @override_settings(JOB_SEARCH_PROVIDER="demo", ENV="dev")
+    def test_e2e_failure_hook_non_one_value_is_off(self):
+        """Only the exact value '1' arms the hook; anything else is default-off."""
+        from crank.agents.job_search.demo import _build_provider
+        with patch.dict("os.environ", {"CRANK_E2E_PROVIDER_FAILURE": "0"}):
+            self.assertEqual(
+                type(_build_provider()).__name__, "DemoJobSearchProvider"
+            )
+
     def test_demo_echo_reply_is_rejected_by_service(self):
         """Anti-echo guard applies to the configured demo path (issue #423)."""
         from crank.agents.job_search.demo import (
