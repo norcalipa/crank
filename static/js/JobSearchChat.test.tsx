@@ -417,6 +417,32 @@ describe('JobSearchChat', () => {
             fireEvent.submit(screen.getByRole('textbox', {name: 'Message'}));
             await screen.findByText('Enter works');
         });
+
+        test('marks the composer row pending while the Stop control is rendered', async () => {
+            await renderChat();
+            let resolveReply: (v: unknown) => void = () => {};
+            (global.fetch as jest.Mock).mockImplementationOnce(
+                () => new Promise((r) => { resolveReply = r; }),
+            );
+
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hold on'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+
+            // While Stop is present the row carries chat-composer-pending; CSS
+            // compacts Send to an icon-only ≥44px target on narrow screens,
+            // and the button keeps its accessible name throughout.
+            const row = screen.getByLabelText('Message').closest('.input-group');
+            expect(row).toHaveClass('chat-composer-pending');
+            expect(screen.getByTestId('stop-button')).toBeInTheDocument();
+            expect(screen.getByRole('button', {name: 'Send message'})).toBeInTheDocument();
+
+            resolveReply(jsonResponse({message: assistantMessage(5, 'Replied'), preferences_changed: false}, 201));
+            await screen.findByText('Replied');
+            expect(row).not.toHaveClass('chat-composer-pending');
+            expect(screen.queryByTestId('stop-button')).not.toBeInTheDocument();
+            // Ordinary states restore the visible Send label.
+            expect(screen.getByRole('button', {name: 'Send message'})).toHaveTextContent('Send');
+        });
     });
 
     describe('error & retry', () => {

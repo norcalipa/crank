@@ -1033,7 +1033,10 @@ const JobSearchChat: React.FC = () => {
                     )}
 
                     <form onSubmit={handleSubmit} aria-busy={pending}>
-                        <div className="input-group">
+                        {/* chat-composer-pending (round-2 critique): while the Stop
+                            control renders, compact Send to an icon-only 44px target on
+                            narrow screens so the row never clips the placeholder. */}
+                        <div className={`input-group${pending ? ' chat-composer-pending' : ''}`}>
                             <textarea
                                 ref={composerRef}
                                 className="form-control chat-focus"
