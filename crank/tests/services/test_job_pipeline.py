@@ -317,6 +317,81 @@ class JobPipelineServiceTests(TestCase):
         )
 
     @override_settings(JOB_PIPELINE_DEADLINE_SECONDS=300)
+    def test_reassigned_listing_publishes_former_organization_too(self):
+        """A listing that moves from organization A to B during resolution
+        makes A affected as well: the publication event must carry the
+        union of the pre-stage and post-stage organization ids so the former
+        organization's caches are invalidated too (review finding: former
+        org omitted from invalidation events)."""
+        source = self.source("good")
+        former = Organization.objects.create(
+            name="Former Employer", url="https://former.test"
+        )
+        current = Organization.objects.create(
+            name="Current Employer", url="https://current.test"
+        )
+        self._listing(source, former, "ext-1")
+        self._listing(source, current, "ext-2")
+
+        def reassign(*args, **kwargs):
+            # Simulate resolution moving ext-1 from the former org to the
+            # current one, as an operator-alias change can.
+            listing = JobListing.all_objects.get(source=source, external_id="ext-1")
+            listing.organization = current
+            listing.save(update_fields=["organization"])
+            return (1, 0)
+
+        with patch(
+            "crank.services.job_pipeline.ingest_jobs",
+            return_value=JobIngestResult(ingested=1),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings",
+            side_effect=reassign,
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            run_job_pipeline(self.run)
+
+        events = PublicationEvent.objects.all()
+        self.assertEqual(events.count(), 1)
+        self.assertEqual(
+            sorted(events.get().payload["organization_ids"]),
+            sorted([former.id, current.id]),
+        )
+
+    @override_settings(JOB_PIPELINE_DEADLINE_SECONDS=300)
+    def test_unresolved_listing_publishes_former_organization_too(self):
+        """A listing that becomes unresolved leaves its former organization
+        affected even though no listing maps to it afterward: the pre-stage
+        snapshot must keep it in the publication event (review finding:
+        former org omitted from invalidation events)."""
+        source = self.source("good")
+        former = Organization.objects.create(
+            name="Former Employer", url="https://former.test"
+        )
+        self._listing(source, former, "ext-1")
+
+        def unresolved(*args, **kwargs):
+            listing = JobListing.all_objects.get(source=source, external_id="ext-1")
+            listing.organization = None
+            listing.save(update_fields=["organization"])
+            return (0, 1)
+
+        with patch(
+            "crank.services.job_pipeline.ingest_jobs",
+            return_value=JobIngestResult(ingested=1),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings",
+            side_effect=unresolved,
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            run_job_pipeline(self.run)
+
+        events = PublicationEvent.objects.all()
+        self.assertEqual(events.count(), 1)
+        self.assertEqual(
+            events.get().payload["organization_ids"],
+            [former.id],
+        )
+
+    @override_settings(JOB_PIPELINE_DEADLINE_SECONDS=300)
     def test_source_event_commits_with_accepted_writes(self):
         """The listing event commits in the same transaction as the
         source's accepted writes (review finding: non-transactional listing

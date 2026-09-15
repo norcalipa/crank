@@ -515,5 +515,4 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) {
         console.error('Error parsing organization data:', error);
     }
-    }
 });

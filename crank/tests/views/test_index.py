@@ -18,6 +18,7 @@ from django.contrib.sites.models import Site
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 from crank.views.index import IndexView
 from crank.settings import DEFAULT_ALGORITHM_ID
+from crank.auth import SESSION_EXPIRED_MESSAGE
 from crank.services.scores import SCORE_CACHE_KEY_VERSION, algorithm_results_cache_key
 from django.core.cache import cache
 
@@ -296,6 +297,92 @@ class IndexViewTests(TestCase):
         second = self.client.get(algo_url)
         self.assertEqual(second.status_code, 200)
         self.assertIsNotNone(cache.get(page_key))
+
+    def test_cached_algo_shell_excludes_flash_messages(self):
+        """The full-page-cached algo shell is shared across every account,
+        so per-session flash messages must never render into it: a queued
+        message would otherwise be baked into the shared entry and served to
+        every later caller (review finding: messages leak through the shared
+        page cache)."""
+        self.setup_scores()
+        algo_url = f"/algo/{DEFAULT_ALGORITHM_ID}/"
+        page_key = f"algorithm_{DEFAULT_ALGORITHM_ID}_page"
+
+        # An anonymous request to a protected page queues the
+        # session-expired flash message (crank.auth.login_required_with_expiry).
+        expired = self.client.get("/chat/")
+        self.assertEqual(expired.status_code, 302)
+
+        first = self.client.get(algo_url)
+        self.assertEqual(first.status_code, 200)
+        self.assertNotContains(first, SESSION_EXPIRED_MESSAGE)
+        self.assertNotIn(b"app-messages", first.content)
+
+        # The cached entry itself is message-free, so an independent second
+        # account is never poisoned by the first client's queued message.
+        self.assertIsNotNone(cache.get(page_key))
+        self.assertNotIn(SESSION_EXPIRED_MESSAGE.encode(), cache.get(page_key).content)
+        second_client = Client()
+        second = second_client.get(algo_url)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.content, first.content)
+        self.assertNotContains(second, SESSION_EXPIRED_MESSAGE)
+
+        # Excluding the message from the cached shell never drops it: it
+        # stays queued and renders on the next uncached page.
+        uncached = self.client.get(self.index_url)
+        self.assertEqual(uncached.status_code, 200)
+        self.assertContains(uncached, SESSION_EXPIRED_MESSAGE)
+
+    def test_invalid_algo_ids_are_never_full_page_cached(self):
+        """A bad algorithm id falls back to the default algorithm, but that
+        response must never enter the page cache under the *requested* id:
+        no score publication clears algorithm_<bad_id>_page, so it would
+        serve stale default-algorithm content until TTL (review finding:
+        invalid-ID fallback cached under an uninvalidatable key)."""
+        self.setup_scores()
+        from crank.services import publication
+
+        bad_url = "/algo/99999/"
+        bad_page_key = "algorithm_99999_page"
+        first = self.client.get(bad_url)
+        self.assertEqual(first.status_code, 200)
+        # The fallback still renders the default algorithm's content, but
+        # never under a key no score event touches.
+        self.assertContains(first, "Test Algorithm")
+        self.assertIsNone(cache.get(bad_page_key))
+
+        # Repeated fallback requests keep working and keep staying uncached.
+        second = self.client.get(bad_url)
+        self.assertEqual(second.status_code, 200)
+        self.assertIsNone(cache.get(bad_page_key))
+
+        # A changed score for the default algorithm is visible on the next
+        # fallback render: nothing stale survives a publication sweep.
+        Score.objects.filter(target_id=self.organization2.id).update(score=9.0)
+        publication.record_event(
+            target_type="score",
+            target_id=self.organization2.id,
+            event_kind="changed",
+            payload={"score_type_id": 1, "outcome": "changed"},
+        )
+        publication.sweep_pending()
+        fresh = self.client.get(bad_url)
+        self.assertEqual(fresh.status_code, 200)
+        fresh_content = fresh.content.decode()
+        self.assertLess(
+            fresh_content.index("Org 2"),
+            fresh_content.index("Org 1"),
+            "Org 2 outranks Org 1 after the changed score, so a stale "
+            "cached fallback would still show Org 1 first",
+        )
+
+        # Valid ids keep using the explicitly invalidatable cache key.
+        valid = self.client.get(f"/algo/{DEFAULT_ALGORITHM_ID}/")
+        self.assertEqual(valid.status_code, 200)
+        self.assertIsNotNone(
+            cache.get(f"algorithm_{DEFAULT_ALGORITHM_ID}_page")
+        )
 
     def test_template_else_branch_shows_message_when_no_algorithm(self):
         ScoreAlgorithm.objects.all().delete()

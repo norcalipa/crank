@@ -63,10 +63,13 @@ Writers (all in the same transaction as the accepted change):
   the events commit exactly when the writes commit, an outbox insert failure
   (or any crash in the block) rolls the writes back, and a source with
   partial row failures still publishes the rows it accepted. The payload
-  carries the source's deduplicated employer organization ids split into
-  bounded chunks (`chunk_index`/`chunk_count`), so every organization is
-  published even when a source maps to more organizations than one payload
-  chunk holds.
+  carries the **union of the source's pre-stage and post-stage**
+  deduplicated organization ids split into bounded chunks
+  (`chunk_index`/`chunk_count`), so every organization is published even
+  when a source maps to more organizations than one payload chunk holds,
+  and a listing reassigned to (or unresolved away from) another
+  organization still publishes its *former* organization — the before-side
+  ids are otherwise invisible to the post-ingestion query.
 
 ## Consumer
 

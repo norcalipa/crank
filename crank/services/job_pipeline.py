@@ -156,19 +156,23 @@ def _resolve_source_listings(source: Any, before_ids: set[int]) -> tuple[int, in
     return resolved, unresolved
 
 
-def _record_source_publication(source, result, resolved, unresolved):
+def _record_source_publication(source, result, resolved, unresolved, before_org_ids):
     """Record bounded listing publication events for one ingested source.
 
-    One event per bounded chunk of the source's deduplicated employer
-    organization ids (never per listing): the sweep unions affected keys
-    across pending events, so a source mapped to more organizations than one
-    payload chunk holds still publishes every organization — no id is ever
-    silently dropped — and downstream recompute (#462) can consume the
-    events without per-row event explosion. Must run inside the same
-    transaction as the source's accepted writes so the events commit exactly
-    when the writes commit.
+    One event per bounded chunk of the deduplicated affected organization
+    ids (never per listing): the sweep unions affected keys across pending
+    events, so a source mapped to more organizations than one payload chunk
+    holds still publishes every organization — no id is ever silently
+    dropped — and downstream recompute (#462) can consume the events without
+    per-row event explosion. The affected set is the union of the source's
+    pre-stage organization ids and its post-stage ones: a listing reassigned
+    from organization A to B (or unresolved away from A) makes A affected
+    even though it no longer maps to any of the source's listings, and its
+    caches would otherwise keep serving stale listing-derived data. Must run
+    inside the same transaction as the source's accepted writes so the
+    events commit exactly when the writes commit.
     """
-    organization_ids = list(
+    organization_ids = set(
         JobListing.all_objects.filter(
             source=source, organization__isnull=False
         )
@@ -178,6 +182,8 @@ def _record_source_publication(source, result, resolved, unresolved):
         .values_list("organization_id", flat=True)
         .distinct()
     )
+    organization_ids.update(before_org_ids)
+    organization_ids = sorted(organization_ids)
     bound = publication.MAX_PAYLOAD_ORGANIZATION_IDS
     chunks = [
         organization_ids[index : index + bound]
@@ -286,6 +292,18 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
         before_ids = set(
             JobListing.all_objects.filter(source=source).values_list("pk", flat=True)
         )
+        # Snapshot the source's pre-stage organization ids too: a listing
+        # reassigned or unresolved during this stage makes its *former*
+        # organization affected, and only the union of the before/after ids
+        # covers every organization whose caches need invalidation.
+        before_org_ids = set(
+            JobListing.all_objects.filter(
+                source=source, organization__isnull=False
+            )
+            .order_by()
+            .values_list("organization_id", flat=True)
+            .distinct()
+        )
         try:
             result, resolved, unresolved, skipped = _ingest_source(
                 source, options, before_ids
@@ -300,7 +318,9 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
             # with partial row failures still publishes the rows it accepted.
             with transaction.atomic():
                 if int(result.ingested) or int(result.updated) or resolved or unresolved:
-                    _record_source_publication(source, result, resolved, unresolved)
+                    _record_source_publication(
+                        source, result, resolved, unresolved, before_org_ids
+                    )
             counts["listings_ingested"] += int(result.ingested)
             counts["listings_updated"] += int(result.updated)
             counts["employers_resolved"] += resolved

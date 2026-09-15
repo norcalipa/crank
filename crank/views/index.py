@@ -164,6 +164,20 @@ class IndexView(generic.ListView):
         return self.algorithm
 
 
+def _algorithm_id_is_cacheable(algorithm_id):
+    """Return whether ``algorithm_id`` resolves to a published algorithm.
+
+    ``IndexView._check_algorithm_id`` falls back to ``DEFAULT_ALGORITHM_ID``
+    for any id that does not resolve, so a fallback response renders the
+    default algorithm while the URL still names the bad id. Caching that
+    response under ``algorithm_<bad_id>_page`` would park default-algorithm
+    content under a key no score publication ever clears — ``affected_cache_keys``
+    only emits ``algorithm_<resolved_id>_*`` — so such responses must never
+    enter the shared page cache (issue #470 review finding).
+    """
+    return ScoreAlgorithm.objects.filter(id=algorithm_id, status=1).exists()
+
+
 def algo_page(request, algorithm_id):
     """Explicitly keyed full-page cache for the /algo/<algorithm_id>/ shell.
 
@@ -175,15 +189,20 @@ def algo_page(request, algorithm_id):
     a key listed in ``scores.affected_cache_keys`` — so both the
     ``on_commit`` fast path and the publication sweep clear it. The shell is
     auth-neutral (see ``_navigation.html``), so one entry safely serves every
-    account; POST (filter submissions) is never cached.
+    account; POST (filter submissions) is never cached. Unresolvable
+    algorithm ids are never served from or written to the cache: the view
+    falls back to the default algorithm for them, and caching that content
+    under the requested id would store default-algorithm content under a key
+    score publication never invalidates.
     """
     cache_key = f'algorithm_{algorithm_id}_page'
-    if request.method == 'GET':
+    cacheable = _algorithm_id_is_cacheable(algorithm_id)
+    if request.method == 'GET' and cacheable:
         cached = cache.get(cache_key)
         if cached is not None:
             return cached
     response = IndexView.as_view()(request, algorithm_id=algorithm_id)
-    if request.method == 'GET' and response.status_code == 200:
+    if request.method == 'GET' and response.status_code == 200 and cacheable:
         # TemplateResponse must be rendered before it can be cached.
         if hasattr(response, 'render') and getattr(response, 'is_rendered', None) is False:
             response.render()
