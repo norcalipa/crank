@@ -18,6 +18,11 @@ interface EmptyStatePayload {
     message: string;
     actions: string[];
     staff_detail?: string;
+    refreshing?: boolean;
+    coverage?: {enabled_sources: number; failing_sources: number};
+    active_constraints?: string[];
+    inventory?: {active_listings: number; last_success_at: string | null; age_hours: number | null};
+    relaxation_preview?: {field: string; label: string; added_count: number} | null;
 }
 
 interface RankedJobMatch {
@@ -56,6 +61,7 @@ const ACTION_LABELS: Record<string, string> = {
     retry: 'Refresh',
     chat: 'Chat with the assistant',
     complete_profile: 'Complete your profile',
+    explore_companies: 'Explore company rankings',
 };
 
 const ACTION_ICONS: Record<string, string> = {
@@ -64,6 +70,7 @@ const ACTION_ICONS: Record<string, string> = {
     retry: 'fa-solid fa-rotate',
     chat: 'fa-solid fa-comments',
     complete_profile: 'fa-solid fa-user-pen',
+    explore_companies: 'fa-solid fa-ranking-star',
 };
 
 const RTO_LABELS: Record<string, string> = {
@@ -91,6 +98,46 @@ function fundingLabel(code: string): string {
 
 function rtoLabel(code: string): string {
     return RTO_LABELS[code] || code || 'Unknown';
+}
+
+function inventoryText(inventory: NonNullable<EmptyStatePayload['inventory']>): string {
+    const parts: string[] = [`${inventory.active_listings} active listing${inventory.active_listings === 1 ? '' : 's'} checked`];
+    if (inventory.last_success_at) {
+        const refreshed = new Date(inventory.last_success_at);
+        if (!isNaN(refreshed.getTime())) {
+            parts.push(`inventory last refreshed ${refreshed.toLocaleDateString()}`);
+        } else if (inventory.age_hours !== null && inventory.age_hours !== undefined) {
+            parts.push(`inventory last refreshed ${inventory.age_hours}h ago`);
+        }
+    }
+    return parts.join(' · ');
+}
+
+/** Refresh/coverage notices rendered *alongside* results, never instead. */
+function ResultNotices({emptyState}: {emptyState: EmptyStatePayload}) {
+    return (
+        <>
+            {emptyState.refreshing && (
+                <div className="alert alert-info py-2 small d-flex align-items-center mb-2"
+                     role="status" aria-live="polite" data-testid="refresh-notice">
+                    <i className="fa-solid fa-spinner fa-spin me-2" aria-hidden="true"></i>
+                    A refresh is in progress — these are your current results; new listings may appear shortly.
+                </div>
+            )}
+            {emptyState.state === 'partial_coverage' && emptyState.coverage && (
+                <div className="alert alert-warning py-2 small mb-2"
+                     role="status" aria-live="polite" data-testid="coverage-notice">
+                    <i className="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>
+                    Coverage is limited: {emptyState.coverage.failing_sources} of
+                    {' '}{emptyState.coverage.enabled_sources} job sources aren’t returning
+                    listings right now, so some openings may be missing.
+                    {emptyState.inventory && (
+                        <div className="text-muted mt-1">{inventoryText(emptyState.inventory)}</div>
+                    )}
+                </div>
+            )}
+        </>
+    );
 }
 
 const JobMatchPanel: React.FC = () => {
@@ -162,6 +209,10 @@ const JobMatchPanel: React.FC = () => {
                 }
                 break;
             }
+            case 'explore_companies': {
+                window.location.href = '/';
+                break;
+            }
             default:
                 break;
         }
@@ -229,6 +280,7 @@ const JobMatchPanel: React.FC = () => {
                     </button>
                 </div>
                 <div className="card-body">
+                    <ResultNotices emptyState={emptyState!} />
                     {jobs.length > 0 && (
                         <div data-testid="ranked-job-matches" className="mb-3">
                             <h3 className="h6 mb-2">Ranked Job Listings</h3>
@@ -320,6 +372,7 @@ const JobMatchPanel: React.FC = () => {
                     </button>
                 </div>
                 <div className="card-body">
+                    <ResultNotices emptyState={emptyState!} />
                     <p className="mb-0" role="status" aria-live="polite">
                         <i className="fa-solid fa-circle-check text-success me-1"></i>
                         You have <strong>{matchCount}</strong> job match{matchCount === 1 ? '' : 'es'} ready to review.
@@ -340,6 +393,7 @@ const JobMatchPanel: React.FC = () => {
         crawl_empty: 'fa-solid fa-inbox',
         no_preferences: 'fa-solid fa-clipboard-list',
         no_matches: 'fa-solid fa-magnifying-glass',
+        partial_coverage: 'fa-solid fa-layer-group',
     };
     const icon = stateIcons[state.state] || 'fa-solid fa-circle-info';
 
@@ -355,7 +409,9 @@ const JobMatchPanel: React.FC = () => {
                 </button>
             </div>
             <div className="card-body">
-                <div className="d-flex align-items-start mb-2" data-testid={`empty-state-${state.state}`}>
+                <ResultNotices emptyState={state} />
+                <div className="d-flex align-items-start mb-2" role="status" aria-live="polite"
+                     data-testid={`empty-state-${state.state}`}>
                     <i className={`${icon} fa-lg me-3 mt-1 text-info`} aria-hidden="true"></i>
                     <div className="flex-grow-1">
                         <h3 className="h6 mb-1">{state.title}</h3>
@@ -365,6 +421,31 @@ const JobMatchPanel: React.FC = () => {
                                 <i className="fa-solid fa-shield-halved me-1"></i>
                                 {state.staff_detail}
                             </p>
+                        )}
+                        {state.active_constraints && state.active_constraints.length > 0 && (
+                            <div className="mt-2" data-testid="active-constraints">
+                                <h4 className="small text-muted mb-1">Your active requirements</h4>
+                                <ul className="mb-0 ps-3 small text-muted">
+                                    {state.active_constraints.map((constraint, idx) => (
+                                        <li key={idx}>{constraint}</li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+                        {state.inventory && (
+                            <p className="text-muted small mt-2 mb-0" data-testid="inventory-facts">
+                                <i className="fa-solid fa-boxes-stacked me-1" aria-hidden="true"></i>
+                                {inventoryText(state.inventory)}
+                            </p>
+                        )}
+                        {state.relaxation_preview && (
+                            <div className="alert alert-info small mt-2 mb-0" role="status" aria-live="polite"
+                                 data-testid="relaxation-preview">
+                                <i className="fa-solid fa-lightbulb me-1" aria-hidden="true"></i>
+                                {state.relaxation_preview.label} would surface about
+                                {' '}<strong>{state.relaxation_preview.added_count}</strong> more
+                                listing{state.relaxation_preview.added_count === 1 ? '' : 's'}.
+                            </div>
                         )}
                     </div>
                 </div>

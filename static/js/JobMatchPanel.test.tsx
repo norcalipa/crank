@@ -18,13 +18,20 @@ function statusPayload(state: string, overrides: Partial<{
     message: string;
     actions: string[];
     staff_detail: string;
-}> = {}) {
+}> & Record<string, unknown> = {}) {
+    const known = ['state', 'title', 'message', 'actions', 'staff_detail'];
+    const extra = Object.fromEntries(
+        Object.entries(overrides).filter(([key]) => !known.includes(key)),
+    );
     return {
         state,
         title: overrides.title ?? 'Test title',
         message: overrides.message ?? 'Test message',
         actions: overrides.actions ?? [],
         ...(overrides.staff_detail ? {staff_detail: overrides.staff_detail} : {}),
+        // Additive #476 fields (refreshing, coverage, active_constraints,
+        // inventory, relaxation_preview) pass through untouched.
+        ...extra,
     };
 }
 
@@ -59,6 +66,38 @@ const sampleOrgMatch = {
     reasons: ['Public company', 'Remote', 'Score 4.2'],
 };
 
+// Helper: mock all three API calls and wait for ready phase.
+// Hoisted to module scope so every describe block in this file can reuse it.
+async function renderPanel(
+    statusState: string = 'ok',
+    opts: { count?: number; staffDetail?: string; statusOverrides?: Record<string, unknown>; rankedJobs?: any[]; rankedOrgs?: any[]; rankedStatus?: number } = {},
+) {
+    const count = opts.count ?? 0;
+    const rankedJobs = opts.rankedJobs ?? [];
+    const rankedOrgs = opts.rankedOrgs ?? [];
+    const rankedStatus = opts.rankedStatus ?? 200;
+    const mock = global.fetch as jest.Mock;
+    mock.mockImplementation((url: string) => {
+        if (url.includes('/api/job-matches/status/')) {
+            return Promise.resolve(jsonResponse(
+                statusPayload(statusState, {
+                    ...(opts.staffDetail ? { staff_detail: opts.staffDetail } : {}),
+                    ...(opts.statusOverrides || {}),
+                }),
+            ));
+        }
+        if (url.includes('/api/job-matches/ranked/')) {
+            return Promise.resolve(jsonResponse(rankedPayload(rankedJobs, rankedOrgs), rankedStatus));
+        }
+        if (url.includes('/api/job-matches/')) {
+            return Promise.resolve(jsonResponse(matchPayload(count)));
+        }
+        return Promise.resolve(jsonResponse({}));
+    });
+    render(<JobMatchPanel/>);
+    await waitFor(() => expect(screen.getByTestId('job-match-panel')).not.toHaveTextContent('Loading'));
+}
+
 describe('JobMatchPanel', () => {
     beforeEach(() => {
         global.fetch = jest.fn();
@@ -67,37 +106,6 @@ describe('JobMatchPanel', () => {
     afterEach(() => {
         jest.restoreAllMocks();
     });
-
-    // Helper: mock all three API calls and wait for ready phase
-    async function renderPanel(
-        statusState: string = 'ok',
-        opts: { count?: number; staffDetail?: string; statusOverrides?: Record<string, unknown>; rankedJobs?: any[]; rankedOrgs?: any[]; rankedStatus?: number } = {},
-    ) {
-        const count = opts.count ?? 0;
-        const rankedJobs = opts.rankedJobs ?? [];
-        const rankedOrgs = opts.rankedOrgs ?? [];
-        const rankedStatus = opts.rankedStatus ?? 200;
-        const mock = global.fetch as jest.Mock;
-        mock.mockImplementation((url: string) => {
-            if (url.includes('/api/job-matches/status/')) {
-                return Promise.resolve(jsonResponse(
-                    statusPayload(statusState, {
-                        ...(opts.staffDetail ? { staff_detail: opts.staffDetail } : {}),
-                        ...(opts.statusOverrides || {}),
-                    }),
-                ));
-            }
-            if (url.includes('/api/job-matches/ranked/')) {
-                return Promise.resolve(jsonResponse(rankedPayload(rankedJobs, rankedOrgs), rankedStatus));
-            }
-            if (url.includes('/api/job-matches/')) {
-                return Promise.resolve(jsonResponse(matchPayload(count)));
-            }
-            return Promise.resolve(jsonResponse({}));
-        });
-        render(<JobMatchPanel/>);
-        await waitFor(() => expect(screen.getByTestId('job-match-panel')).not.toHaveTextContent('Loading'));
-    }
 
     describe('loading state', () => {
         test('shows a loading indicator while fetching', () => {
@@ -510,5 +518,113 @@ describe('JobMatchPanel', () => {
             document.body.removeChild(container);
             jest.dontMock('react-dom/client');
         });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #476: combined states, refresh/coverage notices, zero-match context
+// ---------------------------------------------------------------------------
+
+describe('JobMatchPanel combined states (#476)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    test('shows refresh notice alongside ranked matches when refreshing', async () => {
+        await renderPanel('ok', {
+            count: 3,
+            statusOverrides: {refreshing: true},
+            rankedJobs: [sampleJobMatch],
+            rankedOrgs: [sampleOrgMatch],
+        });
+        expect(screen.getByTestId('refresh-notice')).toBeInTheDocument();
+        expect(screen.getByTestId('ranked-job-matches')).toBeInTheDocument();
+        expect(screen.getByTestId('ranked-org-matches')).toBeInTheDocument();
+        expect(screen.getByRole('status')).toBeInTheDocument();
+    });
+
+    test('shows coverage notice with numbers alongside results for partial_coverage', async () => {
+        await renderPanel('partial_coverage', {
+            count: 2,
+            statusOverrides: {
+                coverage: {enabled_sources: 2, failing_sources: 1},
+                inventory: {active_listings: 4, last_success_at: null, age_hours: null},
+            },
+            rankedJobs: [sampleJobMatch],
+        });
+        const notice = screen.getByTestId('coverage-notice');
+        expect(notice).toBeInTheDocument();
+        expect(notice).toHaveTextContent('1 of 2');
+        expect(screen.getByTestId('ranked-job-matches')).toBeInTheDocument();
+    });
+
+    test('partial_coverage is a recognized empty-state with icon when no matches', async () => {
+        await renderPanel('partial_coverage', {
+            statusOverrides: {coverage: {enabled_sources: 3, failing_sources: 2}},
+        });
+        expect(screen.getByTestId('empty-state-partial_coverage')).toBeInTheDocument();
+    });
+
+    test('no_matches renders active constraints, inventory facts, and preview', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {
+                actions: ['chat', 'explore_companies', 'suggest_company', 'help'],
+                active_constraints: ['Minimum salary 150,000', 'Excluded companies: acme'],
+                inventory: {active_listings: 3, last_success_at: '2026-09-14T10:00:00Z', age_hours: 2.5},
+                relaxation_preview: {field: 'exclusions', label: 'Removing exclusions', added_count: 3},
+            },
+        });
+        expect(screen.getByTestId('empty-state-no_matches')).toBeInTheDocument();
+        const constraints = screen.getByTestId('active-constraints');
+        expect(constraints).toHaveTextContent('Minimum salary 150,000');
+        expect(constraints).toHaveTextContent('Excluded companies: acme');
+        expect(screen.getByTestId('inventory-facts')).toHaveTextContent('3 active listings checked');
+        expect(screen.getByTestId('relaxation-preview')).toHaveTextContent(
+            'Removing exclusions would surface about 3 more listings.',
+        );
+    });
+
+    test('explore_companies action renders with label and navigates to rankings', async () => {
+        const originalHref = window.location;
+        // jsdom location is read-only; replace it to observe navigation.
+        Object.defineProperty(window, 'location', {
+            configurable: true,
+            writable: true,
+            value: {href: 'https://crank.test/jobs/'},
+        });
+        try {
+            await renderPanel('no_matches', {
+                statusOverrides: {actions: ['explore_companies']},
+            });
+            const button = screen.getByTestId('action-explore_companies');
+            expect(button).toHaveTextContent('Explore company rankings');
+            fireEvent.click(button);
+            expect(window.location.href).toBe('/');
+        } finally {
+            Object.defineProperty(window, 'location', {
+                configurable: true,
+                writable: true,
+                value: originalHref,
+            });
+        }
+    });
+
+    test('empty states expose an accessible live region', async () => {
+        await renderPanel('no_matches');
+        const region = screen.getByTestId('empty-state-no_matches');
+        expect(region).toHaveAttribute('role', 'status');
+        expect(region).toHaveAttribute('aria-live', 'polite');
+    });
+
+    test('no active constraints renders no constraints block', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {active_constraints: [], relaxation_preview: null},
+        });
+        expect(screen.queryByTestId('active-constraints')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('relaxation-preview')).not.toBeInTheDocument();
     });
 });

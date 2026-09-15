@@ -42,6 +42,14 @@ export interface ChatMessage {
     results: StructuredResults | null;
 }
 
+/** Canonical availability payload from /api/job-matches/status/ (issue #476). */
+export interface AvailabilityPayload {
+    state: string;
+    title: string;
+    message: string;
+    refreshing?: boolean;
+}
+
 interface Conversation {
     id: number;
     active: boolean;
@@ -218,6 +226,22 @@ function ResultCards({results}: {results: StructuredResults}) {
     );
 }
 
+function hasResults(results: StructuredResults | null): boolean {
+    if (!results) return false;
+    return (results.jobs?.length || 0) + (results.organizations?.length || 0) > 0;
+}
+
+/** Compact availability notice so an empty reply is never silently unexplained. */
+function AvailabilityNotice({availability}: {availability: AvailabilityPayload}) {
+    return (
+        <div className="availability-notice border rounded p-2 mt-2 small"
+             role="status" aria-live="polite" data-testid="availability-notice">
+            <i className="fa-solid fa-circle-info me-1" aria-hidden="true"></i>
+            <strong>{availability.title}</strong> — {availability.message}
+        </div>
+    );
+}
+
 const JobSearchChat: React.FC = () => {
     const [conversationId, setConversationId] = React.useState<number | null>(null);
     const [messages, setMessages] = React.useState<ChatMessage[]>([]);
@@ -230,6 +254,11 @@ const JobSearchChat: React.FC = () => {
     const [retrying, setRetrying] = React.useState(false);
     const [preferencesChanged, setPreferencesChanged] = React.useState(false);
     const [prefDismissed, setPrefDismissed] = React.useState(false);
+    // Availability state (issue #476): fetched lazily, best-effort, so an
+    // assistant reply without results can carry a compact availability notice
+    // from the same canonical contract as the job-match panel.
+    const [availability, setAvailability] = React.useState<AvailabilityPayload | null>(null);
+    const availabilityRequested = React.useRef(false);
 
     // Ref to the last submitted turn so Retry replays the same content + idempotency key.
     const lastSent = React.useRef<{content: string; key: string} | null>(null);
@@ -262,6 +291,39 @@ const JobSearchChat: React.FC = () => {
     React.useEffect(() => {
         adjustComposerHeight();
     }, [adjustComposerHeight, input]);
+
+    const loadAvailability = React.useCallback(async () => {
+        if (availabilityRequested.current) return;
+        availabilityRequested.current = true;
+        try {
+            const res = await fetch('/api/job-matches/status/');
+            if (!res || !res.ok) return;
+            const data = await res.json();
+            if (data && typeof data.state === 'string' && typeof data.title === 'string') {
+                setAvailability(data as AvailabilityPayload);
+            }
+        } catch {
+            // Best-effort notice only; never blocks or breaks the chat.
+        }
+    }, []);
+
+    // Fetch availability once when the latest assistant reply carries no
+    // results — exactly the situation the notice exists to explain.
+    React.useEffect(() => {
+        const last = messages[messages.length - 1];
+        if (last && last.role === 'assistant' && !hasResults(last.results)) {
+            loadAvailability();
+        }
+    }, [messages, loadAvailability]);
+
+    // The notice explains the most recent reply only; historical messages
+    // without results stay quiet.
+    const lastAssistantId = React.useMemo(() => {
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === 'assistant') return messages[i].id;
+        }
+        return null;
+    }, [messages]);
 
     // Register the long-lived listeners exactly once: window/viewport resize plus
     // a one-shot document.fonts.ready hook so the height is re-measured once web
@@ -730,6 +792,9 @@ const JobSearchChat: React.FC = () => {
                                         {m.content}
                                         {m.role === 'assistant' && m.results && (
                                             <ResultCards results={m.results} />
+                                        )}
+                                        {m.role === 'assistant' && m.id === lastAssistantId && !hasResults(m.results) && availability && availability.state !== 'ok' && (
+                                            <AvailabilityNotice availability={availability} />
                                         )}
                                     </div>
                                 </article>

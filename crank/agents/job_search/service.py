@@ -47,6 +47,25 @@ OrganizationDatasource = Callable[[dict[str, Any], int], list[Any]]
 ScoreDatasource = Callable[[list[int], list[str] | None, int], list[Any]]
 JobListingDatasource = Callable[[dict[str, Any], int], list[Any]]
 JobListingDetailDatasource = Callable[[int], Any | None]
+AvailabilityDatasource = Callable[[Any], dict[str, Any] | None]
+
+
+def _default_availability_service(user) -> dict[str, Any] | None:
+    """Derive the canonical availability state for *user* (issue #476).
+
+    Read-only; staff-only details are never included in model context.
+    Returns ``None`` when the user cannot be resolved (e.g. a stand-in object
+    in tests), so availability stays absent rather than failing the turn.
+    """
+    if getattr(user, "pk", None) is None:
+        return None
+    try:
+        from crank.empty_state import derive_state
+
+        return derive_state(user=user).to_dict(include_staff=False)
+    except Exception:  # pragma: no cover - availability is best-effort
+        logger.exception("availability derivation failed; continuing without it")
+        return None
 
 
 class PreferenceService(Protocol):
@@ -109,6 +128,7 @@ class JobSearchOrchestrator:
         job_listing_datasource: JobListingDatasource | None = None,
         job_listing_detail_datasource: JobListingDetailDatasource | None = None,
         match_service: callable | None = None,
+        availability_service: AvailabilityDatasource | None = None,
         max_organization_results: int = tools.MAX_ORGANIZATION_RESULTS,
         max_score_summary_results: int = tools.MAX_SCORE_SUMMARY_RESULTS,
         max_job_listing_results: int = tools.MAX_JOB_LISTING_RESULTS,
@@ -128,6 +148,7 @@ class JobSearchOrchestrator:
             job_listing_detail_datasource or tools.default_job_listing_detail_datasource
         )
         self._match_service = match_service
+        self._availability_service = availability_service or _default_availability_service
         self._max_organization_results = max_organization_results
         self._max_score_summary_results = max_score_summary_results
         self._max_job_listing_results = max_job_listing_results
@@ -392,6 +413,12 @@ class JobSearchOrchestrator:
             max_job_listings=self._max_job_listing_results,
             max_match_results=self._max_match_results,
         )
+        # Availability state for honesty about inventory/matches (issue #476).
+        # Only derived for a persisted user; stand-in objects in tests keep it
+        # absent so no database is touched.
+        availability = kwargs.get("availability")
+        if availability is None and self._user is not None:
+            availability = self._availability_service(self._user)
         return ctx.build_model_context(
             prompt_id=prompt.prompt_id(version),
             system=system,
@@ -406,6 +433,7 @@ class JobSearchOrchestrator:
             job_listings=kwargs.get("job_listings", []),
             max_job_listing_rows=self._max_job_listing_results,
             matches=kwargs.get("matches"),
+            availability=availability,
         )
 
     def _invoke_gateway(

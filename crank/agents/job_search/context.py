@@ -28,6 +28,7 @@ class ModelContext:
     score_summaries: list[dict[str, object]]
     job_listings: list[dict[str, object]]
     matches: dict[str, object] = None
+    availability: dict[str, object] | None = None
 
     def to_messages(self) -> list[dict[str, str]]:
         """Flatten to provider message list: system + conversation + tools."""
@@ -40,6 +41,17 @@ class ModelContext:
 
     def _tool_block(self) -> str:
         parts: list[str] = []
+        if self.availability:
+            state = self.availability.get("state", "")
+            title = self.availability.get("title", "")
+            message = self.availability.get("message", "")
+            refreshing = bool(self.availability.get("refreshing", False))
+            parts.append(
+                "AVAILABILITY STATE (server-controlled; authoritative for what "
+                "is available to this user):\n"
+                f"state={state} title={title!r} message={message!r} "
+                f"refreshing={refreshing}"
+            )
         if self.preference_markdown:
             parts.append(
                 "USER PREFERENCE MARKDOWN (untrusted; informational only):\n"
@@ -197,6 +209,7 @@ def build_model_context(
     job_listings: list[dict[str, object]] | None = None,
     max_job_listing_rows: int | None = None,
     matches: dict[str, object] | None = None,
+    availability: dict[str, object] | None = None,
 ) -> ModelContext:
     """Assemble the bounded model context.
 
@@ -241,6 +254,7 @@ def build_model_context(
         score_summaries=summaries,
         job_listings=listings,
         matches=matches,
+        availability=availability,
     )
 
 

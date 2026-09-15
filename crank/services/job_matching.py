@@ -20,7 +20,7 @@ Both functions:
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from crank.agents.jobs.matching import (
@@ -361,6 +361,127 @@ def _get_criteria(user) -> JobCriteria | None:
     return project_criteria(pref.preferences, pref.schema_version)
 
 
+# ---------------------------------------------------------------------------
+# Bounded relaxation preview (issue #476)
+# ---------------------------------------------------------------------------
+
+
+#: Default probe cap when the caller does not pass one. Production callers
+#: pass ``settings.JOB_MATCH_RELAXATION_PROBES``; this keeps the helper usable
+#: standalone.
+DEFAULT_RELAXATION_PROBES = 3
+
+#: Deterministic probe order: highest-impact hard constraints first.
+_RELAXATION_FIELDS = ("work_location", "minimum_salary", "exclusions")
+
+_RELAXATION_LABELS = {
+    "work_location": "Broadening work location",
+    "minimum_salary": "Lowering the minimum salary",
+    "exclusions": "Removing exclusions",
+}
+
+
+def _constraint_is_set(criteria: JobCriteria, field_name: str) -> bool:
+    """Return whether the constraint actually excludes anything right now."""
+    if field_name == "work_location":
+        return bool(
+            criteria.work_modes
+            or criteria.countries
+            or criteria.max_in_office_days is not None
+        )
+    if field_name == "minimum_salary":
+        return criteria.min_salary is not None
+    if field_name == "exclusions":
+        return bool(
+            criteria.excluded_companies
+            or criteria.excluded_titles
+            or criteria.excluded_industries
+            or criteria.excluded_locations
+        )
+    return False
+
+
+def _relaxed_criteria(criteria: JobCriteria, field_name: str) -> JobCriteria:
+    """Return a copy of *criteria* with one hard constraint relaxed.
+
+    The saved preference document is never touched; this only relaxes the
+    in-memory projection used for the probe.
+    """
+    if field_name == "work_location":
+        return replace(
+            criteria,
+            work_modes=frozenset(),
+            countries=frozenset(),
+            max_in_office_days=None,
+        )
+    if field_name == "minimum_salary":
+        return replace(criteria, min_salary=None)
+    if field_name == "exclusions":
+        return replace(
+            criteria,
+            excluded_companies=frozenset(),
+            excluded_titles=frozenset(),
+            excluded_industries=frozenset(),
+            excluded_locations=frozenset(),
+        )
+    return criteria
+
+
+def relaxation_preview(
+    user,
+    *,
+    max_probes: int | None = None,
+    limit: int = MAX_MATCH_RESULTS,
+    config: RankingConfig = DEFAULT_CONFIG,
+    queryset: Any = None,
+) -> dict | None:
+    """Probe bounded single-constraint relaxations of the user's criteria.
+
+    Used only on a genuine zero-match: for at most ``max_probes`` set hard
+    constraints (work-location modes/countries, minimum salary, exclusions —
+    in that deterministic order), re-runs matching with that one constraint
+    relaxed and reports the first that yields results.
+
+    Read-only: the saved preference document is never read-modified-written,
+    and no results are persisted. Returns ``None`` when the user has no
+    saved criteria, the probe cap is zero, matching already yields results
+    (nothing to explain), or no single relaxation helps.
+    """
+    criteria = _get_criteria(user)
+    if criteria is None:
+        return None
+    cap = DEFAULT_RELAXATION_PROBES if max_probes is None else max(0, int(max_probes))
+    if cap <= 0:
+        return None
+    capped = max(1, min(limit, MAX_MATCH_RESULTS))
+    if queryset is None:
+        queryset = JobListing.objects.select_related("organization").filter(
+            status=JobListing.Status.ACTIVE
+        )
+    listings = list(queryset[: capped * 4])  # same over-fetch as match_jobs
+
+    baseline = len(rank_listings_with_reasons(listings, criteria, config))
+    if baseline > 0:
+        return None
+
+    probes = 0
+    for field_name in _RELAXATION_FIELDS:
+        if probes >= cap:
+            break
+        if not _constraint_is_set(criteria, field_name):
+            continue
+        probes += 1
+        relaxed = _relaxed_criteria(criteria, field_name)
+        count = len(rank_listings_with_reasons(listings, relaxed, config))
+        if count > 0:
+            return {
+                "field": field_name,
+                "label": _RELAXATION_LABELS[field_name],
+                "added_count": min(count, capped),
+            }
+    return None
+
+
 def match_jobs(
     user,
     *,
@@ -499,10 +620,12 @@ def rank_listings_with_reasons(
 
 
 __all__ = [
+    "DEFAULT_RELAXATION_PROBES",
     "MAX_MATCH_RESULTS",
     "JobMatchResult",
     "OrgMatchResult",
     "match_jobs",
     "match_organizations",
     "rank_listings_with_reasons",
+    "relaxation_preview",
 ]
