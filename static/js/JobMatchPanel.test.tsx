@@ -252,14 +252,19 @@ describe('JobMatchPanel', () => {
                 statusOverrides: {
                     title: 'No job sources configured',
                     message: "CRank hasn't been connected to any job sources yet.",
-                    actions: ['suggest_company', 'help'],
+                    actions: ['explore_companies', 'suggest_company', 'help'],
                 },
             });
             const el = screen.getByTestId('empty-state-no_source');
             expect(el).toHaveTextContent('No job sources configured');
             expect(el).toHaveTextContent("hasn't been connected");
-            expect(screen.getByTestId('action-suggest_company')).toBeInTheDocument();
-            expect(screen.getByTestId('action-help')).toBeInTheDocument();
+            // AC-4: explore_companies is the recommended (primary) recovery
+            // path where openings can't be confirmed; the rest are secondary.
+            const explore = screen.getByTestId('action-explore_companies');
+            expect(explore).toBeInTheDocument();
+            expect(explore).toHaveClass('btn-primary');
+            expect(screen.getByTestId('action-suggest_company')).toHaveClass('btn-outline-info');
+            expect(screen.getByTestId('action-help')).toHaveClass('btn-outline-info');
         });
 
         test('source_disabled: shows appropriate copy and actions', async () => {
@@ -575,7 +580,11 @@ describe('JobMatchPanel combined states (#476)', () => {
                 actions: ['chat', 'explore_companies', 'suggest_company', 'help'],
                 active_constraints: ['Minimum salary 150,000', 'Excluded companies: acme'],
                 inventory: {active_listings: 3, last_success_at: '2026-09-14T10:00:00Z', age_hours: 2.5},
-                relaxation_preview: {field: 'exclusions', label: 'Removing exclusions', added_count: 3},
+                relaxation_preview: {
+                    field: 'work_location',
+                    label: 'Broadening work location (currently Remote)',
+                    added_count: 4,
+                },
             },
         });
         expect(screen.getByTestId('empty-state-no_matches')).toBeInTheDocument();
@@ -583,9 +592,15 @@ describe('JobMatchPanel combined states (#476)', () => {
         expect(constraints).toHaveTextContent('Minimum salary 150,000');
         expect(constraints).toHaveTextContent('Excluded companies: acme');
         expect(screen.getByTestId('inventory-facts')).toHaveTextContent('3 active listings checked');
+        // Round-1 visual critique: the preview names the concrete dimension
+        // and carries an exact bounded count — no vague "about".
         expect(screen.getByTestId('relaxation-preview')).toHaveTextContent(
-            'Removing exclusions would surface about 3 more listings.',
+            'Broadening work location (currently Remote) would surface 4 more listings.',
         );
+        expect(screen.getByTestId('relaxation-preview').textContent).not.toContain('about');
+        // The recommended first action is primary; the rest are secondary.
+        expect(screen.getByTestId('action-chat')).toHaveClass('btn-primary');
+        expect(screen.getByTestId('action-explore_companies')).toHaveClass('btn-outline-info');
     });
 
     test('explore_companies action renders with label and navigates to rankings', async () => {

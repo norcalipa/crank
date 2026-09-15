@@ -374,7 +374,71 @@ DEFAULT_RELAXATION_PROBES = 3
 #: Deterministic probe order: highest-impact hard constraints first.
 _RELAXATION_FIELDS = ("work_location", "minimum_salary", "exclusions")
 
-_RELAXATION_LABELS = {
+#: Exclusion subsets probed for the concrete exclusions label, most common
+#: first.  Values shown in the label are the user's own saved entries.
+_EXCLUSION_TYPES = (
+    ("excluded_companies", "companies"),
+    ("excluded_titles", "job titles"),
+    ("excluded_industries", "industries"),
+    ("excluded_locations", "locations"),
+)
+
+_MODE_LABELS = {"remote": "Remote", "hybrid": "Hybrid", "in-office": "In-office"}
+
+
+def _bounded_join(values: Any, limit: int = 3) -> str:
+    """Bounded, human-readable list of the user's own saved values."""
+    shown = [str(v) for v in list(values)[:limit]]
+    text = ", ".join(shown)
+    if len(values) > limit:
+        text += f" and {len(values) - limit} more"
+    return text
+
+def _concrete_label(field_name: str, criteria: JobCriteria) -> str:
+    """Name the concrete dimension being relaxed, with the current values.
+
+    The contract requires a *specific* relaxation preview (e.g. "Broadening
+    work location (currently Remote)"), never a generic "Removing
+    exclusions".  Values come straight from the user's own saved criteria and
+    are bounded in count and length.
+    """
+    if field_name == "work_location":
+        label = "Broadening work location"
+        parts: list[str] = []
+        if criteria.work_modes:
+            parts.append(
+                ", ".join(
+                    _MODE_LABELS.get(mode, str(mode).title())
+                    for mode in sorted(criteria.work_modes)
+                )
+            )
+        if criteria.countries:
+            parts.append(_bounded_join(sorted(criteria.countries)))
+        if parts:
+            label += f" (currently {' · '.join(parts)})"
+        if criteria.max_in_office_days is not None:
+            label += f" (at most {criteria.max_in_office_days} in-office days)"
+        return label
+    if field_name == "minimum_salary" and criteria.min_salary is not None:
+        try:
+            return f"Lowering the {int(criteria.min_salary):,} minimum salary"
+        except (TypeError, ValueError):
+            return "Lowering the minimum salary"
+    if field_name == "exclusions":
+        for attr, type_label in _EXCLUSION_TYPES:
+            values = getattr(criteria, attr, None)
+            if values:
+                return (
+                    f"Removing excluded {type_label} "
+                    f"(currently {_bounded_join(sorted(values))})"
+                )
+        return "Removing exclusions"
+    return _RELAXATION_LABELS_FALLBACK.get(field_name, "Broadening your requirements")
+
+
+#: Last-resort labels; reached only when a field has no concrete values to
+#: name.  The probes above always produce concrete labels in practice.
+_RELAXATION_LABELS_FALLBACK = {
     "work_location": "Broadening work location",
     "minimum_salary": "Lowering the minimum salary",
     "exclusions": "Removing exclusions",
@@ -476,7 +540,7 @@ def relaxation_preview(
         if count > 0:
             return {
                 "field": field_name,
-                "label": _RELAXATION_LABELS[field_name],
+                "label": _concrete_label(field_name, criteria),
                 "added_count": min(count, capped),
             }
     return None

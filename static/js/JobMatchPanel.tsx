@@ -118,21 +118,27 @@ function ResultNotices({emptyState}: {emptyState: EmptyStatePayload}) {
     return (
         <>
             {emptyState.refreshing && (
-                <div className="alert alert-info py-2 small d-flex align-items-center mb-2"
+                <div className="alert alert-info py-2 small d-flex align-items-start gap-2 mb-2"
                      role="status" aria-live="polite" data-testid="refresh-notice">
-                    <i className="fa-solid fa-spinner fa-spin me-2" aria-hidden="true"></i>
-                    A refresh is in progress — these are your current results; new listings may appear shortly.
+                    <i className="fa-solid fa-spinner fa-spin flex-shrink-0 mt-1" aria-hidden="true"></i>
+                    <span className="flex-grow-1">
+                        A refresh is in progress — these are your current results; new listings may appear shortly.
+                    </span>
                 </div>
             )}
             {emptyState.state === 'partial_coverage' && emptyState.coverage && (
                 <div className="alert alert-warning py-2 small mb-2"
                      role="status" aria-live="polite" data-testid="coverage-notice">
-                    <i className="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>
-                    Coverage is limited: {emptyState.coverage.failing_sources} of
-                    {' '}{emptyState.coverage.enabled_sources} job sources aren’t returning
-                    listings right now, so some openings may be missing.
+                    <div className="d-flex align-items-start gap-2">
+                        <i className="fa-solid fa-triangle-exclamation flex-shrink-0 mt-1" aria-hidden="true"></i>
+                        <span className="flex-grow-1">
+                            Coverage is limited: {emptyState.coverage.failing_sources} of
+                            {' '}{emptyState.coverage.enabled_sources} job sources aren’t returning
+                            listings right now, so some openings may be missing.
+                        </span>
+                    </div>
                     {emptyState.inventory && (
-                        <div className="text-muted mt-1">{inventoryText(emptyState.inventory)}</div>
+                        <div className="text-muted mt-1 ms-4">{inventoryText(emptyState.inventory)}</div>
                     )}
                 </div>
             )}
@@ -425,11 +431,13 @@ const JobMatchPanel: React.FC = () => {
                         {state.active_constraints && state.active_constraints.length > 0 && (
                             <div className="mt-2" data-testid="active-constraints">
                                 <h4 className="small text-muted mb-1">Your active requirements</h4>
-                                <ul className="mb-0 ps-3 small text-muted">
+                                <div className="d-flex flex-wrap gap-2">
                                     {state.active_constraints.map((constraint, idx) => (
-                                        <li key={idx}>{constraint}</li>
+                                        <span key={idx} className="badge bg-secondary fw-normal px-2 py-1">
+                                            {constraint}
+                                        </span>
                                     ))}
-                                </ul>
+                                </div>
                             </div>
                         )}
                         {state.inventory && (
@@ -441,19 +449,24 @@ const JobMatchPanel: React.FC = () => {
                         {state.relaxation_preview && (
                             <div className="alert alert-info small mt-2 mb-0" role="status" aria-live="polite"
                                  data-testid="relaxation-preview">
-                                <i className="fa-solid fa-lightbulb me-1" aria-hidden="true"></i>
-                                {state.relaxation_preview.label} would surface about
-                                {' '}<strong>{state.relaxation_preview.added_count}</strong> more
-                                listing{state.relaxation_preview.added_count === 1 ? '' : 's'}.
+                                <div className="d-flex align-items-start gap-2">
+                                    <i className="fa-solid fa-lightbulb flex-shrink-0 mt-1" aria-hidden="true"></i>
+                                    <span className="flex-grow-1">
+                                        {state.relaxation_preview.label} would surface
+                                        {' '}<strong>{state.relaxation_preview.added_count}</strong> more
+                                        listing{state.relaxation_preview.added_count === 1 ? '' : 's'}.
+                                    </span>
+                                </div>
                             </div>
                         )}
                     </div>
                 </div>
                 {state.actions.length > 0 && (
-                    <div className="d-flex flex-wrap gap-2 mt-3" role="group" aria-label="Recovery actions">
-                        {state.actions.map((action) => (
+                    <div className="job-match-actions d-flex flex-wrap gap-2 mt-3" role="group"
+                         aria-label="Recovery actions">
+                        {state.actions.map((action, idx) => (
                             <button key={action} type="button"
-                                    className="btn btn-sm btn-outline-info"
+                                    className={`btn ${idx === 0 ? 'btn-primary' : 'btn-outline-info'}`}
                                     onClick={() => handleAction(action)}
                                     data-testid={`action-${action}`}
                                     aria-label={ACTION_LABELS[action] || action}>

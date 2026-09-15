@@ -1080,7 +1080,7 @@ class RelaxationPreviewTests(TestCase):
         preview = relaxation_preview(self.user, queryset=listings)
         assert preview is not None
         assert preview["field"] == "exclusions"
-        assert preview["label"] == "Removing exclusions"
+        assert preview["label"] == "Removing excluded companies (currently acme)"
         assert preview["added_count"] == 3
 
     def test_first_beneficial_constraint_is_work_location(self):
@@ -1097,7 +1097,7 @@ class RelaxationPreviewTests(TestCase):
         preview = relaxation_preview(self.user, queryset=listings)
         assert preview is not None
         assert preview["field"] == "work_location"
-        assert preview["label"] == "Broadening work location"
+        assert preview["label"] == "Broadening work location (at most 0 in-office days)"
         assert preview["added_count"] == 2
 
     def test_probe_cap_limits_probes(self):

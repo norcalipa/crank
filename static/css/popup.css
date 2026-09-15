@@ -750,6 +750,13 @@ body.app-nav-drawer-open {
     #job-search-chat .input-group {
         align-items: stretch;
     }
+
+    /* Recovery actions stack full-width on phones so the primary action is
+       prominent and every secondary action stays a >=44px target. */
+    #job-match-panel .job-match-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
 }
 
 /* The chat card is a dark surface; the default danger red is hard to read
@@ -768,6 +775,15 @@ body.app-nav-drawer-open {
 #job-search-chat .btn-outline-danger:disabled {
     color: rgba(255, 155, 163, .65);
     border-color: rgba(255, 155, 163, .65);
+}
+
+/* Issue #476 round-2 visual fixes: match-panel recovery controls and the
+   header refresh control keep >=44x44px interactive targets at every
+   viewport; visual size stays compact via padding. The action group keeps
+   at least an 8px gap between adjacent targets (gap-2). */
+#job-match-panel .btn {
+    min-height: 44px;
+    min-width: 44px;
 }
 
 @media (max-width: 390px) {

@@ -67,6 +67,8 @@ class JobMatchStatusViewTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["state"], "no_source")
         self.assertIn("suggest_company", payload["actions"])
+        # AC-4: explore_companies is offered where openings can't be confirmed.
+        self.assertIn("explore_companies", payload["actions"])
         self.assertNotIn("staff_detail", payload)
 
     def test_source_disabled_state(self):
@@ -586,7 +588,10 @@ class NoMatchesExplanationTests(TestCase):
         preview = payload["relaxation_preview"]
         self.assertIsNotNone(preview)
         self.assertEqual(preview["field"], "exclusions")
-        self.assertEqual(preview["label"], "Removing exclusions")
+        # Round-1 visual critique: the preview names the concrete dimension.
+        self.assertEqual(
+            preview["label"], "Removing excluded companies (currently acme)"
+        )
         self.assertEqual(preview["added_count"], 3)
 
     def test_preview_disabled_by_setting(self):

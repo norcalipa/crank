@@ -300,10 +300,12 @@ def derive_state(
             state=NO_SOURCE,
             title="No job sources configured",
             message=(
-                "CRank hasn't been connected to any job sources yet. "
-                "You can suggest a company for evaluation, or check back later."
+                "CRank hasn't been connected to any job sources yet, so job "
+                "openings can't be confirmed right now. You can explore the "
+                "company rankings in the meantime, or suggest a company for "
+                "evaluation."
             ),
-            actions=["suggest_company", "help"],
+            actions=["explore_companies", "suggest_company", "help"],
             staff_detail="No JobSourceCatalog rows exist in the database.",
             staff_only=True,
         )
