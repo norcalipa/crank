@@ -238,3 +238,52 @@ class NavigationShellTests(TestCase):
         with open(css_path) as f:
             css = f.read()
         self.assertIn("prefers-reduced-motion", css)
+
+    # --- Mobile topbar contract (issue #456 audit follow-up) -------------
+    # The post-merge audit on PR #494 found the mobile topbar existed only in
+    # the e2e fixtures: the live template rendered the hamburger directly in
+    # .app-shell, so it floated `position: fixed` over rankings headings and
+    # chat alerts at phone widths. These tests assert the live template
+    # directly (not fixtures) and keep the e2e nav fixture in lockstep.
+
+    def _rendered_index_html(self):
+        response = self.client.get(reverse("index"))
+        return response.content.decode()
+
+    def test_mobile_topbar_header_wraps_hamburger(self):
+        html = self._rendered_index_html()
+        self.assertIn('<header class="app-mobile-topbar">', html)
+        start = html.index('<header class="app-mobile-topbar">')
+        end = html.index("</header>", start)
+        topbar = html[start:end]
+        self.assertIn("data-nav-toggle", topbar)
+        self.assertIn('class="app-nav-toggle"', topbar)
+        self.assertIn('aria-controls="mobile-nav"', topbar)
+
+    def test_hamburger_rendered_once_and_precedes_main_content(self):
+        html = self._rendered_index_html()
+        # Exactly one toggle, inside the topbar (not a free-floating direct
+        # child of .app-shell, which was the audit finding).
+        self.assertEqual(html.count("data-nav-toggle"), 1)
+        # The sticky band must precede messages/main content in the flow so
+        # it reserves vertical space above headings and alerts.
+        topbar_index = html.index('<header class="app-mobile-topbar">')
+        main_index = html.index('<main id="main-content"')
+        self.assertLess(topbar_index, main_index)
+
+    def test_e2e_navigation_fixture_mirrors_live_topbar_contract(self):
+        import os
+        fixture_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+            "e2e", "fixtures", "navigation.html",
+        )
+        with open(fixture_path) as f:
+            fixture = f.read()
+        self.assertIn('<header class="app-mobile-topbar">', fixture)
+        start = fixture.index('<header class="app-mobile-topbar">')
+        end = fixture.index("</header>", start)
+        self.assertIn(
+            "data-nav-toggle",
+            fixture[start:end],
+            "e2e nav fixture must wrap the toggle in the topbar like the live template",
+        )

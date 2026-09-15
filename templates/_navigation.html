@@ -74,14 +74,19 @@
         </nav>
     </aside>
 
-    <button class="app-nav-toggle"
-            type="button"
-            aria-expanded="false"
-            aria-controls="mobile-nav"
-            aria-label="Open navigation menu"
-            data-nav-toggle>
-        <i class="fa-solid fa-bars" aria-hidden="true"></i>
-    </button>
+    <!-- Mobile top bar: reserved sticky band so the hamburger never overlays
+         page content (headings, alerts) at phone widths. Mirrors the e2e
+         fixture contract (e2e/fixtures/{navigation,organization-list,job-search-chat}.html). -->
+    <header class="app-mobile-topbar">
+        <button class="app-nav-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="mobile-nav"
+                aria-label="Open navigation menu"
+                data-nav-toggle>
+            <i class="fa-solid fa-bars" aria-hidden="true"></i>
+        </button>
+    </header>
 
     <div class="app-nav-drawer"
          id="mobile-nav"

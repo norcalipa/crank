@@ -34,6 +34,13 @@ test.describe('navigation shell — desktop', () => {
         await expect(page.locator('[data-nav-toggle]')).toBeHidden();
     });
 
+    test('mobile topbar band is hidden on desktop', async ({page}) => {
+        await page.goto(NAV_FIXTURE);
+        // The reserved band must not consume vertical space while the rail is
+        // visible (desktop layout unchanged, audit follow-up on #456).
+        await expect(page.locator('.app-mobile-topbar')).toBeHidden();
+    });
+
     test('active route has aria-current', async ({page}) => {
         await page.goto(NAV_FIXTURE);
         const activeLink = page.locator('[data-nav-rail] .app-nav-link--active');
@@ -89,6 +96,66 @@ test.describe('navigation shell — mobile', () => {
         const toggle = page.locator('[data-nav-toggle]');
         await expect(toggle).toBeVisible();
         await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    test('hamburger sits in its own reserved topbar band on mobile', async ({page}) => {
+        await page.goto(NAV_FIXTURE);
+        // Audit follow-up on #456: the shell must render the toggle inside a
+        // sticky `.app-mobile-topbar` band so it participates in normal flow
+        // instead of floating fixed over page content.
+        const topbar = page.locator('.app-mobile-topbar');
+        await expect(topbar).toBeVisible();
+        const toggle = page.locator('[data-nav-toggle]');
+        await expect(toggle).toBeVisible();
+
+        const data = await page.evaluate(() => {
+            const topbar = document.querySelector<HTMLElement>('.app-mobile-topbar');
+            const toggle = document.querySelector<HTMLElement>('[data-nav-toggle]');
+            if (!topbar || !toggle) return null;
+            const topbarRect = topbar.getBoundingClientRect();
+            const toggleRect = toggle.getBoundingClientRect();
+            return {
+                topbarPosition: getComputedStyle(topbar).position,
+                togglePosition: getComputedStyle(toggle).position,
+                toggleInTopbar: toggle.closest('.app-mobile-topbar') === topbar,
+                topbarHeight: topbarRect.height,
+                toggleTop: toggleRect.top,
+                toggleBottom: toggleRect.bottom,
+                topbarTop: topbarRect.top,
+                topbarBottom: topbarRect.bottom,
+            };
+        });
+        expect(data, 'topbar and toggle must exist').not.toBeNull();
+        expect(data!.topbarPosition).toBe('sticky');
+        expect(data!.togglePosition, 'toggle is not a fixed overlay').toBe('static');
+        expect(data!.toggleInTopbar).toBe(true);
+        expect(data!.topbarHeight).toBeGreaterThanOrEqual(48);
+        // The toggle stays inside the band's vertical extent.
+        expect(data!.toggleTop).toBeGreaterThanOrEqual(data!.topbarTop - 1);
+        expect(data!.toggleBottom).toBeLessThanOrEqual(data!.topbarBottom + 1);
+    });
+
+    test('topbar band pushes content below it without overlap', async ({page}) => {
+        await page.goto(NAV_FIXTURE);
+        const data = await page.evaluate(() => {
+            const topbar = document.querySelector<HTMLElement>('.app-mobile-topbar');
+            const toggle = document.querySelector<HTMLElement>('[data-nav-toggle]');
+            const content = document.getElementById('main-content');
+            if (!topbar || !toggle || !content) return null;
+            const topbarRect = topbar.getBoundingClientRect();
+            const toggleRect = toggle.getBoundingClientRect();
+            const contentRect = content.getBoundingClientRect();
+            return {
+                topbarBottom: topbarRect.bottom,
+                contentTop: contentRect.top,
+                toggleBottom: toggleRect.bottom,
+                toggleRight: toggleRect.right,
+                contentLeft: contentRect.left,
+            };
+        });
+        expect(data, 'topbar, toggle and main content must exist').not.toBeNull();
+        expect(data!.contentTop, 'main content starts below the reserved band').toBeGreaterThanOrEqual(data!.topbarBottom - 1);
+        expect(data!.toggleBottom).toBeLessThanOrEqual(data!.contentTop + 1);
     });
 
     test('drawer opens on toggle click', async ({page}) => {
@@ -218,5 +285,49 @@ test.describe('navigation shell — landmarks and semantics', () => {
         const rankingsLink = page.locator('#nav-rankings');
         await expect(rankingsLink).toBeVisible();
         await expect(rankingsLink).toContainText('Company Rankings');
+    });
+});
+
+// Audit follow-up on #456: the mobile topbar contract previously existed only
+// in the e2e fixtures while the live template kept rendering the hamburger as a
+// fixed overlay. These tests assert the *live* template file itself (served
+// raw by the static webServer), so fixture-only markup can no longer mask a
+// template regression.
+test.describe('navigation shell — live template topbar contract', () => {
+    test('live _navigation.html wraps the hamburger in the mobile topbar', async ({request}) => {
+        const response = await request.get('/templates/_navigation.html');
+        expect(response.ok(), 'live template must be reachable from the static server').toBe(true);
+        const template = await response.text();
+
+        const topbarStart = template.indexOf('<header class="app-mobile-topbar">');
+        expect(topbarStart, 'live template must render the mobile topbar header').toBeGreaterThanOrEqual(0);
+        const topbarEnd = template.indexOf('</header>', topbarStart);
+        expect(topbarEnd).toBeGreaterThan(topbarStart);
+        const topbarMarkup = template.slice(topbarStart, topbarEnd);
+        expect(topbarMarkup, 'topbar header must contain the nav toggle').toContain('data-nav-toggle');
+        expect(topbarMarkup, 'topbar header must contain the nav toggle button class').toContain('app-nav-toggle');
+        expect(topbarMarkup).toContain('aria-controls="mobile-nav"');
+
+        // The toggle must exist exactly once — inside the topbar, not repeated
+        // as a free-floating direct child of .app-shell (the audit finding).
+        expect(template.split('data-nav-toggle').length - 1, 'live template renders exactly one toggle').toBe(1);
+    });
+
+    test('e2e navigation fixture mirrors the live topbar contract', async ({request}) => {
+        const [liveResponse, fixtureResponse] = await Promise.all([
+            request.get('/templates/_navigation.html'),
+            request.get(NAV_FIXTURE),
+        ]);
+        expect(liveResponse.ok()).toBe(true);
+        expect(fixtureResponse.ok()).toBe(true);
+        const live = await liveResponse.text();
+        const fixture = await fixtureResponse.text();
+
+        for (const [source, markup] of [['live template', live], ['e2e fixture', fixture]] as Array<[string, string]>) {
+            const start = markup.indexOf('<header class="app-mobile-topbar">');
+            expect(start, `${source} must contain the mobile topbar header`).toBeGreaterThanOrEqual(0);
+            const header = markup.slice(start, markup.indexOf('</header>', start));
+            expect(header, `${source} topbar must wrap the nav toggle`).toContain('data-nav-toggle');
+        }
     });
 });
