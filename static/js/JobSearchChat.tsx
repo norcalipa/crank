@@ -745,9 +745,12 @@ const JobSearchChat: React.FC = () => {
     // any uncertain failure — the server is the single source of truth. Only
     // the given turn's marker is resolved, so one turn's reconciliation can
     // never clear another in-flight turn's marker (issue #458). Returns where
-    // the turn ended up: 'present' (the server knows it), 'absent' (the
-    // server never received it), 'gone' (the conversation disappeared), or
-    // 'unknown' (the check itself failed — markers stay for the next load).
+    // the turn ended up: 'present' (the server knows it — the marker is
+    // cleared), 'absent' (the server never received it — the marker stays
+    // durable exactly like the load-time contract; the caller surfaces the
+    // kept marker instead of dropping it), 'gone' (the conversation
+    // disappeared), or 'unknown' (the check itself failed — markers stay for
+    // the next load).
     const reconcileWithServer = async (
         targetId: number,
         turnKey: string,
@@ -767,11 +770,33 @@ const JobSearchChat: React.FC = () => {
             const known = data.messages.some(
                 (m) => m.role === 'user' && m.idempotency_key === turnKey,
             );
-            clearInflightTurn(targetId, turnKey);
+            if (known) {
+                // The server holds this turn: its marker is resolved — its
+                // content is represented in the conversation history.
+                clearInflightTurn(targetId, turnKey);
+            }
+            // Absent does NOT clear: the marker stays durable so two tabs
+            // both confirmed absent cannot silently delete each other's
+            // unsent turn (issue #458 r3). The caller surfaces the kept
+            // marker newest-wins, exactly like the load-time path.
             return known ? 'present' : 'absent';
         } catch {
             // Network hiccup: the marker stays and the next load reconciles.
             return 'unknown';
+        }
+    };
+
+    // Surface a kept unsent-turn marker in the composer exactly like the
+    // load-time path: the newest unsent content wins, and a draft the user
+    // edited after the send is newer still and wins instead — surfacing
+    // never clobbers the user's latest typing. The marker stays durable
+    // either way until it is explicitly sent or discarded.
+    const keepUnsentTurn = (targetId: number, marker: InFlightTurn) => {
+        const draft = readComposerDraft(targetId);
+        if (!draft || marker.ts > readComposerDraftTs(targetId)) {
+            surfacedDraftRef.current = {conversationId: targetId, key: marker.key};
+            setInput(marker.content);
+            writeComposerDraft(targetId, marker.content);
         }
     };
 
@@ -805,7 +830,8 @@ const JobSearchChat: React.FC = () => {
         // reload/navigation during the wait cannot lose it (issue #458). The
         // marker is stored per turn (conversation + key): concurrent turns or
         // tabs never clobber each other's recovery state.
-        writeInflightTurn({conversationId: turnConversationId, content, key, ts: Date.now()});
+        const markerTs = Date.now();
+        writeInflightTurn({conversationId: turnConversationId, content, key, ts: markerTs});
 
         // Optimistically reflect the user's turn: appended when this is a new
         // turn; for a retry the persisted user message is already in history
@@ -849,6 +875,25 @@ const JobSearchChat: React.FC = () => {
                 setInput(content);
                 writeComposerDraft(turnConversationId, content);
             }
+        };
+
+        // The server confirmed it never received this turn (issue #458 r3):
+        // the marker stays durable — only a server-present confirmation, an
+        // explicit send/discard of the surfaced draft, or a gone conversation
+        // clears it — and the kept marker is surfaced newest-wins like the
+        // load-time path, so two concurrent absent reconciliations can no
+        // longer collapse two unsent turns into the single shared draft slot.
+        const handleConfirmedUnsent = (message: string, type: string | null) => {
+            lastSent.current = null;
+            keepDraftRef.current = true;
+            setErrorType(type);
+            setError(message);
+            if (!existingUser) {
+                setMessages((prev) => prev.filter((m) => m !== optimisticUser));
+            }
+            keepUnsentTurn(turnConversationId, {
+                conversationId: turnConversationId, content, key, ts: markerTs,
+            });
         };
 
         try {
@@ -938,7 +983,7 @@ const JobSearchChat: React.FC = () => {
                 // the source of truth — reconcile now instead of guessing.
                 const outcome = await reconcileWithServer(turnConversationId, key);
                 if (outcome === 'absent') {
-                    handleNotSent(
+                    handleConfirmedUnsent(
                         'Your message may not have been sent. It has been kept as a draft below.',
                         serverType || null,
                     );
@@ -994,7 +1039,7 @@ const JobSearchChat: React.FC = () => {
                 // wait. Ask the server what actually happened to the turn.
                 const outcome = await reconcileWithServer(turnConversationId, key);
                 if (outcome === 'absent') {
-                    handleNotSent(
+                    handleConfirmedUnsent(
                         'Stopped before the message was sent. It has been kept as a draft below.',
                         null,
                     );
@@ -1018,7 +1063,7 @@ const JobSearchChat: React.FC = () => {
             // is unknown; reconcile against the server instead of guessing.
             const outcome = await reconcileWithServer(turnConversationId, key);
             if (outcome === 'absent') {
-                handleNotSent(
+                handleConfirmedUnsent(
                     'Your message may not have been sent. It has been kept as a draft below.',
                     null,
                 );
@@ -1074,6 +1119,23 @@ const JobSearchChat: React.FC = () => {
 
     const handleStopWaiting = () => {
         abortRef.current?.abort();
+    };
+
+    const handleCheckResponse = async (message: ChatMessage) => {
+        if (!conversationId || !message.idempotency_key) return;
+        const targetId = conversationId;
+        const turnKey = message.idempotency_key;
+        const outcome = await reconcileWithServer(targetId, turnKey);
+        if (outcome === 'absent') {
+            // Confirmed unsent (issue #458 r3): the marker stays durable and
+            // the kept content surfaces newest-wins, like the load-time path;
+            // the optimistic pending bubble stops posing as in-flight.
+            setError('Your message may not have been sent. It has been kept as a draft below.');
+            setErrorType(null);
+            const marker = readInflightTurns(targetId).find((mk) => mk.key === turnKey);
+            if (marker) keepUnsentTurn(targetId, marker);
+            setMessages((prev) => prev.filter((mm) => !(mm === message && mm.id < 0)));
+        }
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1300,11 +1362,7 @@ const JobSearchChat: React.FC = () => {
                                             </div>
                                             <div className="chat-actions mt-3" role="group" aria-label="Pending turn actions">
                                                 <button type="button" className="chat-btn chat-btn-primary chat-focus"
-                                                        onClick={() => {
-                                                            if (conversationId && m.idempotency_key) {
-                                                                void reconcileWithServer(conversationId, m.idempotency_key);
-                                                            }
-                                                        }}
+                                                        onClick={() => void handleCheckResponse(m)}
                                                         aria-label="Check for response" data-testid="check-response-button">
                                                     Check for response
                                                 </button>

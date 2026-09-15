@@ -1743,10 +1743,12 @@ describe('durable turn state (issue #458)', () => {
             mock.mockResolvedValueOnce(
                 jsonResponse({error: {type: 'turn_in_progress', message: 'Still generating.'}}, 409),
             );
-            // The follow-up reconcile GET returns the turn completed.
+            // The follow-up reconcile GET returns the turn completed — the
+            // server holds the POSTED turn (turn_in_progress means exactly
+            // that), so the mocked history echoes the posted key.
             mock.mockImplementationOnce(async () => jsonResponse(
                 emptyConversation(42, [
-                    userTurn('concurrent', KEY_A, 'completed'),
+                    userTurn('concurrent', lastPostedKey(mock), 'completed'),
                     assistantMessage(3, 'finished elsewhere'),
                 ]),
             ));
@@ -1903,10 +1905,19 @@ describe('durable turn state (issue #458)', () => {
             // The reconcile GET succeeds and shows no trace of the key.
             mock.mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
             fireEvent.click(await screen.findByTestId('stop-button'));
-            // Honest outcome: stopped before delivery, kept as a draft.
+            // Honest outcome: stopped before delivery, kept as a draft. The
+            // marker stays durable (r3): only an explicit send/discard or a
+            // present confirmation clears it now.
             await screen.findByText(/stopped before the message was sent/i);
             expect(screen.getByLabelText('Message')).toHaveValue('never sent');
             expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('never sent');
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).not.toBeNull();
+            // Explicitly sending the surfaced draft resolves the marker.
+            mock.mockResolvedValueOnce(
+                jsonResponse({message: assistantMessage(2, 'delivered now'), preferences_changed: false}, 201),
+            );
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('delivered now');
             expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
         });
 
@@ -2121,7 +2132,13 @@ describe('durable turn state (issue #458)', () => {
             expect(screen.queryByTestId('failed-turn')).not.toBeInTheDocument();
             expect(screen.queryByTestId('pending-turn')).not.toBeInTheDocument();
             expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('maybe lost');
-            expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
+            // Durable contract (r3): the marker stands until the user
+            // explicitly sends or discards the surfaced draft.
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).not.toBeNull();
+            // Emptying the composer is an explicit discard: the surfaced
+            // marker is resolved for good.
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: ''}});
+            await waitFor(() => expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull());
         });
 
         test('a network failure the server did receive adopts the server state', async () => {
@@ -2154,7 +2171,58 @@ describe('durable turn state (issue #458)', () => {
             await screen.findByText(/kept as a draft/i);
             expect(screen.getByLabelText('Message')).toHaveValue('uncertain text');
             expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('uncertain text');
-            expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
+            // Durable contract (r3): the marker stands; only an explicit
+            // send/discard or a present confirmation clears it.
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).not.toBeNull();
+        });
+
+        test('two tabs confirmed absent keep both unsent markers; the newest surfaces', async () => {
+            await renderChat([]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'from this tab'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const key = lastPostedKey(mock);
+            // The other tab sends its own turn while this one is waiting.
+            const otherKey = '22222222-2222-4222-8222-222222222222';
+            window.localStorage.setItem(
+                inflightKeyFor(42, otherKey),
+                JSON.stringify({conversationId: 42, content: 'from the other tab', key: otherKey, ts: Date.now()}),
+            );
+            // This tab's reconcile GET shows the server never received it.
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
+            await screen.findByText(/kept as a draft/i);
+            // Both unsent markers survive: this tab's absent reconciliation
+            // no longer deletes its own marker nor destroys the other tab's
+            // recovery state through the single shared draft slot.
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).not.toBeNull();
+            expect(window.localStorage.getItem(inflightKeyFor(42, otherKey))).not.toBeNull();
+            // The newest unsent content is the one surfaced in the composer.
+            expect(screen.getByLabelText('Message')).toHaveValue('from this tab');
+            expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('from this tab');
+        });
+
+        test('a later check that confirms absence keeps the marker and surfaces the draft', async () => {
+            await renderChat([]);
+            const mock = global.fetch as jest.Mock;
+            // The send and the immediate reconcile both fail to reach the
+            // server: the turn stays pending with a Check action.
+            mock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+            mock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'check me'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const key = lastPostedKey(mock);
+            await screen.findByTestId('pending-turn');
+            // The check now reaches the server and it never received the turn.
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
+            fireEvent.click(screen.getByTestId('check-response-button'));
+            await screen.findByText(/may not have been sent/i);
+            // The kept marker surfaces in the composer; the optimistic
+            // pending bubble stops posing as in-flight.
+            expect(screen.queryByTestId('pending-turn')).not.toBeInTheDocument();
+            expect(screen.getByLabelText('Message')).toHaveValue('check me');
+            expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('check me');
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).not.toBeNull();
         });
 
         test('a non-JSON error against a conversation deleted elsewhere reports it honestly', async () => {
