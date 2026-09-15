@@ -322,7 +322,7 @@ lockstep from `ALLOWED_CAPABILITY_KEYS`
 `crank/tests/test_rollback_drill.py` plus `crank/tests/test_rollout_gates.py`
 fail if a registered key is missing from the drill. The drill also maps
 every registered key to the **real execution gate its production path
-consults** (`rollback_drill.GATE_VERIFIERS`): with the switch disabled, the
+consults** (`rollback_drill.gate_verifiers()`): with the switch disabled, the
 drill invokes that production gate (settings flags forced on, so the switch
 is the only variable) and requires it to block. A registered key whose
 real gate is missing or not enforced **cannot report `passed`** — it fails

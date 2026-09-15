@@ -25,23 +25,28 @@ race is instead guarded by the partial unique constraint exercised in
 
 To run this module against a real MySQL server (InnoDB required):
 
-    # 1. Start MySQL 8 (InnoDB) and create a test database:
-    #      mysql -u root -e "CREATE DATABASE crank_test CHARACTER SET utf8mb4;"
+    # 1. Start a Django-supported MySQL (8.4+, InnoDB) and make sure the
+    #    runner can create the ``test_<DB_NAME>`` database (CREATE/DROP
+    #    rights). A disposable local instance suffices — it never touches
+    #    the production database.
     #
-    # 2. Point the Django settings at it (staging settings read these env
-    #    variables; see crank/settings/staging.py):
-    #      export SECRET_KEY=dev-test-secret
-    #      export DB_NAME=crank_test DB_HOST=127.0.0.1 DB_PORT=3306 \
-    #             DB_USER=root DB_PASS=<password>
-    #
-    #    Requirements: pymysql (requirements.txt), the
-    #    dj-db-conn-pip pool backend (requirements.txt), and CREATE/DROP
-    #    rights for the runner's ``test_<DB_NAME>`` database.
+    # 2. Point Django at it via the test-only MySQL target
+    #    ``crank/settings_mysql.py`` (credentials come from the
+    #    ``CRANK_MYSQL_*`` environment, never from committed files):
+    #      export ENV=dev SECRET_KEY=dev-test-secret \
+    #             REDIS_MASTER_URL=redis://localhost:6379/0
+    #      export DJANGO_SETTINGS_MODULE=crank.settings_mysql
+    #      export CRANK_MYSQL_NAME=crank_test CRANK_MYSQL_USER=root \
+    #             CRANK_MYSQL_PASSWORD=... CRANK_MYSQL_HOST=127.0.0.1 \
+    #             CRANK_MYSQL_PORT=3306
     #
     # 3. Run only this module (the env var takes precedence over the
     #    pytest.ini default of crank.settings):
-    #      ENV=dev DJANGO_SETTINGS_MODULE=crank.settings.staging \
-    #        python -m pytest crank/tests/test_mysql_concurrency.py -v
+    #      python -m pytest crank/tests/test_mysql_concurrency.py -v
+    #
+    #    Alternatively, the staging settings read DB_NAME/DB_HOST/DB_PORT/
+    #    DB_USER/DB_PASS (see ``crank/settings/staging.py``); they require
+    #    the dj-db-conn-pip pool backend (requirements.txt).
     #
     # CI (run-tests.yml) intentionally runs the default SQLite suite; this
     # module is the operator-run MySQL variant. The full pytest run stays
