@@ -450,6 +450,12 @@ class ScorePersistenceServiceTests(TestCase):
 
     # --- uniqueness / concurrency ---
 
+    @skipUnless(
+        connection.vendor == "sqlite",
+        "the partial unique constraint is emitted only on SQLite (W036); "
+        "on MySQL single-active is guaranteed by ScoreTupleAnchor + "
+        "select_for_update, proven in test_score_mysql_race.py",
+    )
     def test_model_partial_unique_constraint_enforces_single_active(self):
         score_services.persist_score_observation(
             source=self.source,
@@ -937,14 +943,11 @@ class ScoreFirstWriteRaceTests(TransactionTestCase):
     as ConcurrentDoubleSubmitTests), so the default run serializes the same
     two-connection sequence through a harness gate: both writers still use
     genuinely separate connections and the loser's full reconciliation path
-    is exercised. To run the genuinely concurrent race against MySQL:
-
-        # one-time, against a disposable MySQL server:
-        mysql -e "CREATE DATABASE crank_test CHARACTER SET utf8mb4;"
-        SECRET_KEY=test REDIS_MASTER_URL=redis://localhost:6379/0 \\
-        DB_NAME=crank_test DB_USER=... DB_PASS=... DB_HOST=127.0.0.1 \\
-        python -m pytest crank/tests/services/test_score_persistence.py \\
-            --ds crank.settings.mysql_test --create-db -k FirstWriteRace -v
+    is exercised. The genuinely concurrent MySQL races live in the dedicated
+    module ``crank/tests/services/test_score_mysql_race.py``
+    (skip-by-default on SQLite; run commands in its docstring); under the
+    MySQL test settings this test also races genuinely, because the harness
+    gate is MySQL-aware.
     """
 
     def setUp(self):
@@ -1026,25 +1029,6 @@ class ScoreFirstWriteRaceTests(TransactionTestCase):
         self.assertEqual(outcomes, ["created", "noop"])
         # No duplicate active row and no duplicate history row.
         self.assertEqual(self._tuple_scores().count(), 1)
-        self.assertEqual(
-            self._tuple_scores().filter(status=Score.ACTIVE_STATUS).count(), 1
-        )
-
-    @skipUnless(connection.vendor == "mysql", "genuine concurrency needs MySQL")
-    def test_mysql_race_with_distinct_values_supersedes_exactly_once(self):
-        # Two genuinely concurrent writers with different values: the loser
-        # takes over the anchor after the winner commits, supersedes the
-        # winner's row exactly once, and leaves a single active row.
-        results = self._run_race([3.0, 5.0])
-        self.assertEqual(
-            [status for status, _ in results],
-            ["ok", "ok"],
-            f"MySQL first-write race surfaced an error: {results}",
-        )
-        self.assertEqual(
-            sorted(payload for _, payload in results), ["changed", "created"]
-        )
-        self.assertEqual(self._tuple_scores().count(), 2)
         self.assertEqual(
             self._tuple_scores().filter(status=Score.ACTIVE_STATUS).count(), 1
         )

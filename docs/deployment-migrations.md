@@ -46,6 +46,51 @@ served by an old replica. Migrations are forward-only in production; do not
 rewrite an applied migration or roll the database schema backward as part of
 an application rollback.
 
+## Cross-branch migration numbering and ordering
+
+Concurrent PRs regularly ship migrations at the same time. Two rules keep
+the graph deployable:
+
+1. **A number claim is not an ordering.** Migration numbers avoid file
+   collisions, but the dependency graph — not the filename — decides the
+   deploy order. Every merged branch must leave exactly **one head**.
+2. **Never create another branch's migration.** Only the owning ticket
+   writes its own migration file, against the latest landed `main` head.
+
+A migration that depends on the same parent as a migration on another open
+branch creates **sibling leaves**; merging both heads would leave the graph
+with no single deployable head, so whichever PR merges second must repair
+the graph **before merging**:
+
+- rebase its migration onto the newly landed head (a one-line dependency
+  change; the number stays with its owning ticket), or
+- add the next numbered merge migration following the `0029` precedent.
+
+Never renumber or rewrite an applied migration.
+
+### Current allocations and ordering assumptions
+
+- `0029_merge_20260815_1645` is the landed `main` head (verified
+  2026-09-15: `makemigrations --check --dry-run` clean, single head).
+- **0030 → #458** (turn delivery state), carried by PR #496
+  (`0030_jobsearch_turn_state`, parent `0029`).
+- **0031 → #470** (PublicationEvent outbox), reserved from parent `0029`
+  per the epic numbering contract recorded by PR #499.
+- **0032 → #461** (ScoreTupleAnchor), carried by this branch
+  (`0032_score_tuple_anchor`, parent `0029`).
+
+PR #495 and PR #496 both sit on parent `0029`, so exactly one ordering
+assumption is recorded here: **#495 (#461) is expected to merge first**
+(it is in fix-verification while #496 is still in round-1 review). When
+#495 lands, `0032` becomes the head; #496 must then rebase
+`0030_jobsearch_turn_state` onto the landed `0032` (one-line dependency
+change) or add the next numbered merge migration before merging. If the
+order reverses and #496 lands first, this branch's rule applies in the
+mirror direction: `0032_score_tuple_anchor` must be rebased onto the
+landed `0030` (or paired with a numbered merge migration) before #495
+merges. Whichever PR merges second owns that repair; the other side is
+not modified by the first PR's branch.
+
 ## Readiness and liveness
 
 `/healthz/ready/` uses Django's read-only `MigrationExecutor` plan to check for
