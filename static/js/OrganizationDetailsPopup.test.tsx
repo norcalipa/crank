@@ -304,6 +304,149 @@ describe('OrganizationDetailsPopup', () => {
         expect(onCloseMock).not.toHaveBeenCalled();
     });
 
+    describe('focus trap (issue #464)', () => {
+        test('Tab from the last focusable element wraps to the first', () => {
+            render(
+                <OrganizationDetailsPopup
+                    organization={mockOrganization}
+                    visible={true}
+                    onClose={() => {}}
+                />
+            );
+
+            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
+            const focusables = Array.from(
+                dialog.querySelectorAll<HTMLElement>(
+                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                )
+            );
+            expect(focusables.length).toBeGreaterThan(1);
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+
+            last.focus();
+            expect(document.activeElement).toBe(last);
+
+            fireEvent.keyDown(document, {key: 'Tab'});
+
+            expect(document.activeElement).toBe(first);
+        });
+
+        test('Shift+Tab from the first focusable element wraps to the last', () => {
+            render(
+                <OrganizationDetailsPopup
+                    organization={mockOrganization}
+                    visible={true}
+                    onClose={() => {}}
+                />
+            );
+
+            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
+            const focusables = Array.from(
+                dialog.querySelectorAll<HTMLElement>(
+                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                )
+            );
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+
+            first.focus();
+            expect(document.activeElement).toBe(first);
+
+            fireEvent.keyDown(document, {key: 'Tab', shiftKey: true});
+
+            expect(document.activeElement).toBe(last);
+        });
+
+        test('Tab with focus outside the dialog moves focus into it (never behind it)', () => {
+            render(
+                <OrganizationDetailsPopup
+                    organization={mockOrganization}
+                    visible={true}
+                    onClose={() => {}}
+                />
+            );
+
+            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
+            const focusables = Array.from(
+                dialog.querySelectorAll<HTMLElement>(
+                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                )
+            );
+            const first = focusables[0];
+
+            // Park focus on a background element outside the dialog.
+            const outside = document.createElement('button');
+            document.body.appendChild(outside);
+            outside.focus();
+            expect(document.activeElement).toBe(outside);
+
+            fireEvent.keyDown(document, {key: 'Tab'});
+
+            expect(dialog.contains(document.activeElement)).toBe(true);
+            expect(document.activeElement).toBe(first);
+
+            document.body.removeChild(outside);
+        });
+
+        test('Shift+Tab with focus outside the dialog moves focus to its last element', () => {
+            render(
+                <OrganizationDetailsPopup
+                    organization={mockOrganization}
+                    visible={true}
+                    onClose={() => {}}
+                />
+            );
+
+            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
+            const focusables = Array.from(
+                dialog.querySelectorAll<HTMLElement>(
+                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                )
+            );
+            const last = focusables[focusables.length - 1];
+
+            const outside = document.createElement('button');
+            document.body.appendChild(outside);
+            outside.focus();
+
+            fireEvent.keyDown(document, {key: 'Tab', shiftKey: true});
+
+            expect(document.activeElement).toBe(last);
+
+            document.body.removeChild(outside);
+        });
+
+        test('Tab cycling ignores disabled buttons inside the dialog', () => {
+            render(
+                <OrganizationDetailsPopup
+                    organization={mockOrganization}
+                    visible={true}
+                    onClose={() => {}}
+                />
+            );
+
+            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
+            // The only anchor and button remain the cycle bounds; adding a
+            // disabled button must not affect the cycle.
+            const disabled = document.createElement('button');
+            disabled.disabled = true;
+            dialog.appendChild(disabled);
+
+            const focusables = Array.from(
+                dialog.querySelectorAll<HTMLElement>(
+                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                )
+            );
+            expect(focusables).not.toContain(disabled);
+
+            fireEvent.keyDown(document, {key: 'Tab'});
+            expect(dialog.contains(document.activeElement)).toBe(true);
+
+            dialog.removeChild(disabled);
+        });
+    });
+
     test('removes event listener on unmount', () => {
         const onCloseMock = jest.fn();
         const documentAddEventListenerSpy = jest.spyOn(document, 'addEventListener');

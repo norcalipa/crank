@@ -204,7 +204,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     };
 
     handleOrganizationClick = (organization: Organization) => {
-        // Get organization details if not already fetched
+        // Get organization details if not already fetched. Opening the details
+        // dialog closes the suggest modal: only one blocking dialog may be
+        // active at a time (issue #464).
         if (!organization.url || !organization.type) {
             fetch(`/api/organizations/${organization.id}/`)
                 .then(response => response.json())
@@ -216,26 +218,31 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     this.setState({
                         organizations: updatedOrganizations,
                         selectedOrganization: updatedOrg,
-                        showPopup: true
+                        showPopup: true,
+                        showSuggestModal: false
                     });
                 })
                 .catch(error => {
                     console.error('Error fetching organization details:', error);
                     this.setState({
                         selectedOrganization: organization,
-                        showPopup: true
+                        showPopup: true,
+                        showSuggestModal: false
                     });
                 });
         } else {
             this.setState({
                 selectedOrganization: organization,
-                showPopup: true
+                showPopup: true,
+                showSuggestModal: false
             });
         }
     };
 
     handleOpenSuggestModal = () => {
-        this.setState({showSuggestModal: true});
+        // Opening the suggest modal closes the details dialog: only one
+        // blocking dialog may be active at a time (issue #464).
+        this.setState({showSuggestModal: true, showPopup: false, selectedOrganization: null});
     };
 
     handleCloseSuggestModal = () => {

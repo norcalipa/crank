@@ -431,6 +431,51 @@ describe('OrganizationList', () => {
         }
     });
 
+    test('opening the suggest modal closes the details dialog (#464)', async () => {
+        render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+
+        await waitFor(() => {
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+        });
+
+        // Open the details dialog first.
+        fireEvent.click(screen.getAllByText('Organization 1')[0]);
+        await waitFor(() => {
+            expect(screen.getByText('Company (for profit)')).toBeInTheDocument();
+        });
+        expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+        // Opening the suggest modal must close the details dialog.
+        fireEvent.click(screen.getByTestId('suggest-company-btn'));
+
+        await waitFor(() => {
+            expect(screen.getByTestId('suggest-company-modal')).toBeInTheDocument();
+        });
+        expect(screen.queryByText('Company (for profit)')).not.toBeInTheDocument();
+        expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    });
+
+    test('opening the details dialog closes the suggest modal (#464)', async () => {
+        render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+
+        await waitFor(() => {
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+        });
+
+        fireEvent.click(screen.getByTestId('suggest-company-btn'));
+        await waitFor(() => {
+            expect(screen.getByTestId('suggest-company-modal')).toBeInTheDocument();
+        });
+
+        fireEvent.click(screen.getAllByText('Organization 1')[0]);
+
+        await waitFor(() => {
+            expect(screen.getByText('Company (for profit)')).toBeInTheDocument();
+        });
+        expect(screen.queryByTestId('suggest-company-modal')).not.toBeInTheDocument();
+        expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    });
+
     test('handles error when fetching organization details', async () => {
         // Override the fetch mock to simulate an error for organization details
         global.fetch = jest.fn().mockImplementation((url) => {

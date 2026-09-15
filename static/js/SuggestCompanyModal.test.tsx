@@ -127,4 +127,114 @@ describe('SuggestCompanyModal', () => {
             expect(screen.getByTestId('suggest-success')).toBeInTheDocument();
         });
     });
+
+    describe('blocking dialog behavior (issue #464)', () => {
+        test('renders with the blocking-modal class above navigation', () => {
+            render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+            const modal = screen.getByTestId('suggest-company-modal');
+            expect(modal).toHaveClass('blocking-modal');
+        });
+
+        test('moves focus to the close button when it opens', () => {
+            const { rerender } = render(<SuggestCompanyModal visible={false} onClose={jest.fn()} />);
+            rerender(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+            expect(screen.getByTestId('suggest-close-btn')).toHaveFocus();
+        });
+
+        test('Escape closes the modal and returns focus to the opener', () => {
+            const onClose = jest.fn();
+            const opener = document.createElement('button');
+            document.body.appendChild(opener);
+            opener.focus();
+
+            const { rerender } = render(<SuggestCompanyModal visible={false} onClose={onClose} />);
+            rerender(<SuggestCompanyModal visible={true} onClose={onClose} />);
+
+            fireEvent.keyDown(document, {key: 'Escape'});
+
+            expect(onClose).toHaveBeenCalledTimes(1);
+            expect(document.activeElement).toBe(opener);
+
+            document.body.removeChild(opener);
+        });
+
+        test('close button returns focus to the opener', () => {
+            const onClose = jest.fn();
+            const opener = document.createElement('button');
+            document.body.appendChild(opener);
+            opener.focus();
+
+            const { rerender } = render(<SuggestCompanyModal visible={false} onClose={onClose} />);
+            rerender(<SuggestCompanyModal visible={true} onClose={onClose} />);
+
+            fireEvent.click(screen.getByTestId('suggest-close-btn'));
+
+            expect(onClose).toHaveBeenCalledTimes(1);
+            expect(document.activeElement).toBe(opener);
+
+            document.body.removeChild(opener);
+        });
+
+        test('returns focus when the parent closes the modal while focus is inside it', () => {
+            const onClose = jest.fn();
+            const opener = document.createElement('button');
+            document.body.appendChild(opener);
+            opener.focus();
+
+            const { rerender } = render(<SuggestCompanyModal visible={false} onClose={onClose} />);
+            rerender(<SuggestCompanyModal visible={true} onClose={onClose} />);
+            expect(screen.getByTestId('suggest-close-btn')).toHaveFocus();
+
+            // Parent closes the modal directly (no handleClose call).
+            rerender(<SuggestCompanyModal visible={false} onClose={onClose} />);
+
+            expect(document.activeElement).toBe(opener);
+
+            document.body.removeChild(opener);
+        });
+
+        test('Tab from the last focusable element wraps to the first', () => {
+            render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+
+            const modal = screen.getByTestId('suggest-company-modal');
+            const focusables = Array.from(
+                modal.querySelectorAll<HTMLElement>(
+                    'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                )
+            );
+            expect(focusables.length).toBeGreaterThan(1);
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+
+            last.focus();
+            fireEvent.keyDown(document, {key: 'Tab'});
+
+            expect(document.activeElement).toBe(first);
+        });
+
+        test('Shift+Tab from the first focusable element wraps to the last', () => {
+            render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+
+            const modal = screen.getByTestId('suggest-company-modal');
+            const focusables = Array.from(
+                modal.querySelectorAll<HTMLElement>(
+                    'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                )
+            );
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+
+            first.focus();
+            fireEvent.keyDown(document, {key: 'Tab', shiftKey: true});
+
+            expect(document.activeElement).toBe(last);
+        });
+
+        test('Escape does nothing when the modal is not visible', () => {
+            const onClose = jest.fn();
+            render(<SuggestCompanyModal visible={false} onClose={onClose} />);
+            fireEvent.keyDown(document, {key: 'Escape'});
+            expect(onClose).not.toHaveBeenCalled();
+        });
+    });
 });

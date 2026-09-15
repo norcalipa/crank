@@ -38,6 +38,100 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
         };
     }
 
+    private closeButtonRef = React.createRef<HTMLButtonElement>();
+    private modalRef = React.createRef<HTMLDivElement>();
+    // Element that had focus when the dialog opened (the trigger). Restored on
+    // close so keyboard and pointer users return to where they left off.
+    private openerRef: HTMLElement | null = null;
+
+    componentDidMount() {
+        // Guard against a stale keydown listener after the modal closes.
+        document.addEventListener('keydown', this.handleDocumentKeyDown);
+    }
+
+    componentWillUnmount() {
+        document.removeEventListener('keydown', this.handleDocumentKeyDown);
+    }
+
+    getSnapshotBeforeUpdate(prevProps: SuggestCompanyModalProps): boolean {
+        // Runs before the DOM update: record whether keyboard focus is inside
+        // the modal while it is about to close. Once the modal unmounts the
+        // browser resets focus to <body>, so this is the only reliable place
+        // to detect it (issue #464).
+        return Boolean(
+            prevProps.visible && this.modalRef.current
+            && document.activeElement instanceof HTMLElement
+            && this.modalRef.current.contains(document.activeElement)
+        );
+    }
+
+    componentDidUpdate(prevProps: SuggestCompanyModalProps, _prevState: Readonly<SuggestCompanyModalState>, focusWasInside: boolean) {
+        if (this.props.visible && !prevProps.visible) {
+            // On open, capture the trigger element, then move focus into the
+            // dialog (WAI-ARIA dialog pattern, issue #464).
+            this.openerRef = document.activeElement instanceof HTMLElement
+                ? document.activeElement : null;
+            this.closeButtonRef.current?.focus();
+        } else if (!this.props.visible && prevProps.visible && focusWasInside) {
+            // The parent closed the modal while focus was inside it: return
+            // focus to the opener so it never lingers on a removed node.
+            this.restoreFocusToOpener();
+        }
+    }
+
+    // Restore focus to the trigger element on close (WAI-ARIA dialog pattern).
+    // If the opener is no longer in the document, defensively blur the active
+    // element so focus never lingers on a now-hidden node.
+    private restoreFocusToOpener = () => {
+        if (this.openerRef && this.openerRef.isConnected) {
+            this.openerRef.focus();
+        } else if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+        }
+    };
+
+    private getFocusableElements = (): HTMLElement[] => {
+        const dialog = this.modalRef.current;
+        if (!dialog) return [];
+        return Array.from(dialog.querySelectorAll<HTMLElement>(
+            'a[href], button:not([disabled]), input:not([disabled]), '
+            + 'select:not([disabled]), textarea:not([disabled]), '
+            + '[tabindex]:not([tabindex="-1"])'
+        ));
+    };
+
+    private handleDocumentKeyDown = (event: KeyboardEvent) => {
+        if (!this.props.visible) return;
+        if (event.key === 'Escape') {
+            // WAI-ARIA dialog pattern: return focus to the trigger element
+            // before closing (issue #464).
+            this.restoreFocusToOpener();
+            this.handleClose();
+            return;
+        }
+        if (event.key === 'Tab') {
+            // WAI-ARIA focus trap (issue #464): cycle Tab/Shift+Tab among the
+            // dialog's own focusable elements so keyboard focus can never move
+            // behind the modal into the page background.
+            const focusables = this.getFocusableElements();
+            if (focusables.length === 0) return;
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+            const active = document.activeElement;
+            const insideDialog = active instanceof HTMLElement
+                && this.modalRef.current?.contains(active);
+            if (event.shiftKey) {
+                if (!insideDialog || active === first) {
+                    event.preventDefault();
+                    last.focus();
+                }
+            } else if (!insideDialog || active === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        }
+    };
+
     handleChange = (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
         const {name, value} = event.target;
         this.setState(prevState => ({...prevState, [name]: value}));
@@ -79,6 +173,9 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
     };
 
     handleClose = () => {
+        // Return focus to the trigger element before close (WAI-ARIA dialog
+        // pattern, issue #464).
+        this.restoreFocusToOpener();
         this.setState({
             companyName: '',
             websiteUrl: '',
@@ -98,13 +195,13 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
         }
         const {companyName, websiteUrl, careersUrl, reason, submitting, error, fieldErrors, success} = this.state;
         return (
-            <div className="modal d-block" tabIndex={-1} role="dialog" aria-modal="true"
+            <div ref={this.modalRef} className="modal d-block blocking-modal" tabIndex={-1} role="dialog" aria-modal="true"
                  data-testid="suggest-company-modal">
                 <div className="modal-dialog" role="document">
                     <div className="modal-content">
                         <div className="modal-header">
                             <h5 className="modal-title">Suggest a company</h5>
-                            <button type="button" className="btn-close" aria-label="Close"
+                            <button ref={this.closeButtonRef} type="button" className="btn-close" aria-label="Close"
                                     onClick={this.handleClose} data-testid="suggest-close-btn"></button>
                         </div>
                         <div className="modal-body">
