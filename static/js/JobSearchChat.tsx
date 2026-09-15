@@ -860,24 +860,17 @@ const JobSearchChat: React.FC = () => {
         const controller = new AbortController();
         abortRef.current = controller;
 
-        // Honest pre-persistence handling (issue #458): some failures happen
-        // before the turn is stored. The turn is NOT saved in that case — keep
-        // the text as an unsent draft instead of claiming it was delivered.
-        const handleNotSent = (message: string, type: string | null) => {
-            clearInflightTurn(turnConversationId, key);
-            lastSent.current = null;
-            keepDraftRef.current = true;
-            setErrorType(type);
-            setError(message);
-            if (!existingUser) {
-                // Remove the optimistic bubble; the server has no trace of it.
-                setMessages((prev) => prev.filter((m) => m !== optimisticUser));
-                setInput(content);
-                writeComposerDraft(turnConversationId, content);
-            }
-        };
-
-        // The server confirmed it never received this turn (issue #458 r3):
+        // The server confirmed it never received this turn (issue #458 r3/r4):
+        // this covers uncertain responses reconciled to `absent` AND the
+        // definitive pre-persistence typed failures (rate_limited,
+        // invalid_message, not_found, ...). The marker stays durable — only a
+        // server-present confirmation, an explicit send/discard of the
+        // surfaced draft, or a gone conversation clears it — and the kept
+        // marker is surfaced newest-wins like the load-time path, so two
+        // concurrent absent tabs can no longer collapse two unsent turns into
+        // the single shared draft slot. The error copy stays honest: the
+        // caller decides whether it reads the server's typed message or the
+        // generic "may not have been sent" text.
         // the marker stays durable — only a server-present confirmation, an
         // explicit send/discard of the surfaced draft, or a gone conversation
         // clears it — and the kept marker is surfaced newest-wins like the
@@ -957,8 +950,12 @@ const JobSearchChat: React.FC = () => {
                 }
                 if (parsed && serverType && PRE_PERSISTENCE_ERROR_TYPES.has(serverType)) {
                     // Validation/budget/gone-conversation failures happen
-                    // before persistence: not saved, nothing to retry.
-                    handleNotSent(serverMsg, serverType || null);
+                    // before persistence: not saved, nothing to retry. The
+                    // honest server copy surfaces, and the per-turn marker
+                    // stays durable like every other confirmed-absent path
+                    // (issue #458 r4) — the draft is only ever resolved
+                    // explicitly by the user.
+                    handleConfirmedUnsent(serverMsg, serverType || null);
                     return;
                 }
                 if (parsed && serverType && POST_PERSISTENCE_ERROR_TYPES.has(serverType)) {

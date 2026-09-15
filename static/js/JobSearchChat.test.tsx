@@ -1996,12 +1996,12 @@ describe('durable turn state (issue #458)', () => {
         });
     });
 
-    describe('pre-persistence failures render an honest unsent draft (adversarial review)', () => {
+    describe('pre-persistence failures keep a durable unsent draft (issue #458 r4)', () => {
         test.each([
             ['rate_limited', 429, 'Too many messages. Try again shortly.'],
             ['invalid_message', 400, 'Message content is required.'],
             ['not_found', 404, 'Conversation not found or not owned by this user.'],
-        ])('%s never claims the message is saved', async (type, status, message) => {
+        ])('%s keeps the per-turn marker until explicit resolution', async (type, status, message) => {
             await renderChat([]);
             const mock = global.fetch as jest.Mock;
             mock.mockResolvedValueOnce(
@@ -2016,11 +2016,90 @@ describe('durable turn state (issue #458)', () => {
             // and no "your message is saved" copy appears anywhere.
             expect(screen.queryByTestId('failed-turn')).not.toBeInTheDocument();
             expect(screen.queryByText(/your message is saved/i)).not.toBeInTheDocument();
-            // The content returns as an unsent draft instead.
+            // The content surfaces as an unsent draft.
             expect(screen.getByLabelText('Message')).toHaveValue('never persisted');
             expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('never persisted');
+            // The per-turn marker stays durable: a definitive confirmed-absent
+            // response never deletes unsent content (issue #458 r4). Only a
+            // server-present confirmation, an explicit send/discard, or a gone
+            // conversation clears it.
             const key = lastPostedKey(mock);
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).not.toBeNull();
+        });
+
+        test('the surfaced pre-persistence draft resolves only on explicit send or discard', async () => {
+            const type = 'rate_limited';
+            const status = 429;
+            const message = 'Too many messages. Try again shortly.';
+            await renderChat([]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(
+                jsonResponse({error: {type, message}}, status),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'kept turn'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByRole('alert');
+            const key = lastPostedKey(mock);
+            // Explicit discard (emptying the composer) is the only way the
+            // surfaced marker goes away — a scan or a later reconciliation
+            // never deletes it silently.
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: ''}});
             expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
+            expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBeNull();
+
+            // And an explicit send of a surfaced draft resolves it too.
+            mock.mockResolvedValueOnce(
+                jsonResponse({error: {type, message}}, status),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'kept again'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findAllByRole('alert');
+            const key2 = lastPostedKey(mock);
+            expect(key2).not.toBe(key);
+            expect(window.localStorage.getItem(inflightKeyFor(42, key2))).not.toBeNull();
+            mock.mockResolvedValueOnce(
+                jsonResponse({message: assistantMessage(5, 'sent it'), preferences_changed: false}, 201),
+            );
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('sent it');
+            expect(window.localStorage.getItem(inflightKeyFor(42, key2))).toBeNull();
+        });
+
+        test('two concurrent definitive-absent responses keep both markers; the resolving tab surfaces newest-wins', async () => {
+            // Round-4 review data-loss edge: two tabs each receiving a
+            // definitive pre-persistence response must not collapse both
+            // unsent turns into the single shared draft slot. Each tab keeps
+            // its own per-turn marker; nothing is deleted on confirmation.
+            await renderChat([]);
+            let resolvePost: ((r: Response) => void) | undefined;
+            (global.fetch as jest.Mock).mockImplementationOnce(
+                () => new Promise<Response>((resolve) => { resolvePost = resolve; }),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'turn a'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const keyA = lastPostedKey(global.fetch as jest.Mock);
+            await waitFor(() => expect(window.localStorage.getItem(inflightKeyFor(42, keyA))).not.toBeNull());
+            // While turn A is in flight, another tab starts turn B: its
+            // marker lands next to A's.
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_B),
+                JSON.stringify({conversationId: 42, content: 'turn b', key: KEY_B, ts: Date.now()}),
+            );
+
+            // This tab's request comes back with a definitive pre-persistence
+            // failure: the turn was never stored, but nothing may be deleted.
+            resolvePost!(jsonResponse(
+                {error: {type: 'rate_limited', message: 'Too many messages. Try again shortly.'}}, 429,
+            ));
+            const alert = await screen.findByRole('alert');
+            expect(alert).toHaveTextContent(/too many messages/i);
+            // Both markers coexist: the confirmed-absent turn stays durable
+            // and the other tab's in-flight marker is untouched.
+            expect(window.localStorage.getItem(inflightKeyFor(42, keyA))).not.toBeNull();
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_B))).not.toBeNull();
+            // The confirmed-absent turn surfaces as the draft, newest-wins.
+            expect(screen.getByLabelText('Message')).toHaveValue('turn a');
+            expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('turn a');
         });
     });
 
