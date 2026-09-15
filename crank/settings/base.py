@@ -172,6 +172,13 @@ JOB_SEARCH_RESPONSE_MAX_LEN = int(os.environ.get("JOB_SEARCH_RESPONSE_MAX_LEN", 
 JOB_SEARCH_REQUEST_MAX_BYTES = int(os.environ.get("JOB_SEARCH_REQUEST_MAX_BYTES", "65536"))
 JOB_SEARCH_MESSAGES_RETENTION = int(os.environ.get("JOB_SEARCH_MESSAGES_RETENTION", "50"))
 JOB_SEARCH_RATE_LIMIT_PER_HOUR = int(os.environ.get("JOB_SEARCH_RATE_LIMIT_PER_HOUR", "120"))
+# Turn retry/claim policy (issue #458). Retries run the provider, so they are
+# rate limited like fresh sends and additionally capped per turn.
+JOB_SEARCH_TURN_MAX_ATTEMPTS = int(os.environ.get("JOB_SEARCH_TURN_MAX_ATTEMPTS", "5"))
+# Lease for an in-flight turn claim. Must comfortably exceed the longest
+# legitimate provider run; an expired lease lets the next read/retry recover
+# a turn whose worker was interrupted (crash/kill).
+JOB_SEARCH_TURN_LEASE_SECONDS = int(os.environ.get("JOB_SEARCH_TURN_LEASE_SECONDS", "300"))
 COMPANY_REQUEST_RATE_LIMIT_PER_HOUR = int(os.environ.get("COMPANY_REQUEST_RATE_LIMIT_PER_HOUR", "5"))
 JOB_SEARCH_PROVIDER = os.environ.get("JOB_SEARCH_PROVIDER", "demo")
 REDIS_MASTER_URL = os.environ.get("REDIS_MASTER_URL", "redis://redis-master:6379/0")

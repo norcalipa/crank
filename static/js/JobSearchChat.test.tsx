@@ -32,11 +32,15 @@ function userMessage(content: string): ChatMessage {
     return {id: 1, role: 'user', content, preferences_changed: false, created: null, results: null};
 }
 
-function userTurn(content: string, key: string, deliveryState: ChatMessage['delivery_state'], id = 1): ChatMessage {
-    return {id, role: 'user', content, preferences_changed: false, created: null, results: null, idempotency_key: key, delivery_state: deliveryState};
+function userTurn(content: string, key: string, deliveryState: ChatMessage['delivery_state'], id = 1, retryAvailable?: boolean): ChatMessage {
+    return {id, role: 'user', content, preferences_changed: false, created: null, results: null, idempotency_key: key, delivery_state: deliveryState, retry_available: retryAvailable};
 }
 
-const INFLIGHT_STORAGE_KEY = 'crank:jobsearch:inflight';
+// In-flight markers are stored per turn (conversation id + turn key) so
+// concurrent turns/tabs cannot overwrite each other's recovery state.
+function inflightKeyFor(conversationId: number, key: string): string {
+    return `crank:jobsearch:inflight:${conversationId}:${key}`;
+}
 
 async function renderChat(existingMessages: ChatMessage[] = []) {
     // Resume the user's most recent conversation on mount.
@@ -72,7 +76,8 @@ function messageUrl() {
 function postBodies(fetchMock: jest.Mock, urlPrefix: string) {
     return fetchMock.mock.calls
         .filter(([url]) => String(url).startsWith(urlPrefix))
-        .map(([url, init]) => JSON.parse((init as RequestInit).body as string));
+        .filter(([, init]) => typeof (init as RequestInit)?.body === 'string')
+        .map(([, init]) => JSON.parse((init as RequestInit).body as string));
 }
 
 const originalResizeObserver = globalThis.ResizeObserver;
@@ -720,25 +725,31 @@ describe('additional JobSearchChat coverage', () => {
     });
 
     describe('optimistic rollback & preference disclosure', () => {
-        test('keeps the question visible as a failed turn on a non-JSON error', async () => {
+        test('treats a non-JSON error as uncertain: question stays, check offered, no saved claim', async () => {
+            window.localStorage.clear();
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse(emptyConversation(42, [assistantMessage(0, 'ready')])),
             );
             render(<JobSearchChat/>);
             await screen.findByText('ready');
-            (global.fetch as jest.Mock).mockResolvedValueOnce(new Response('plain text error', {status: 500}));
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(new Response('plain text error', {status: 500}));
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'boom'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             await screen.findByText(/request failed \(500\)/i);
-            // Issue #458: the server persists the user turn before failing, so
-            // the question stays visible as a failed turn with retry actions
-            // in a distinct failure panel (round 2), not an ordinary bubble.
+            // Issue #458 (adversarial review): a proxy/gateway error is
+            // uncertain — the server may or may not have the turn. The
+            // question stays visible with an honest "not arrived yet"
+            // panel and a Check action, never a false "your message is
+            // saved" claim, and the marker stands for reconciliation.
             expect(screen.getByText('boom')).toBeInTheDocument();
-            expect(screen.getByTestId('failed-turn')).toHaveTextContent(/response failed/i);
-            expect(screen.getByTestId('failed-turn')).toHaveTextContent(/your message is saved/i);
-            expect(screen.getByTestId('failed-turn')).toHaveClass('chat-failure-panel');
-            expect(screen.getByTestId('retry-response-button')).toBeInTheDocument();
-            expect(screen.getByTestId('edit-as-new-button')).toBeInTheDocument();
+            expect(screen.getByTestId('pending-turn')).toBeInTheDocument();
+            expect(screen.getByTestId('pending-turn')).toHaveTextContent(/has not arrived/i);
+            expect(screen.getByTestId('check-response-button')).toBeInTheDocument();
+            expect(screen.queryByTestId('failed-turn')).not.toBeInTheDocument();
+            const key = lastPostedKey(mock);
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).not.toBeNull();
+            window.localStorage.clear();
         });
 
         test('dismisses the preference-update notice', async () => {
@@ -1411,8 +1422,8 @@ describe('durable turn state (issue #458)', () => {
         });
     });
 
-    describe('durable in-flight marker', () => {
-        test('writes the marker before the POST resolves and clears it on success', async () => {
+    describe('durable in-flight markers', () => {
+        test('writes the per-turn marker before the POST resolves and clears it on success', async () => {
             await renderChat();
             let resolvePost: ((r: Response) => void) | undefined;
             (global.fetch as jest.Mock).mockImplementationOnce(
@@ -1420,49 +1431,109 @@ describe('durable turn state (issue #458)', () => {
             );
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'held turn'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            await waitFor(() => expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).not.toBeNull());
-            const marker = JSON.parse(window.localStorage.getItem(INFLIGHT_STORAGE_KEY) || '{}');
-            expect(marker).toEqual({conversationId: 42, content: 'held turn', key: expect.any(String)});
+            const key = lastPostedKey(global.fetch as jest.Mock);
+            const markerKey = inflightKeyFor(42, key);
+            await waitFor(() => expect(window.localStorage.getItem(markerKey)).not.toBeNull());
+            const marker = JSON.parse(window.localStorage.getItem(markerKey) || '{}');
+            expect(marker).toEqual({conversationId: 42, content: 'held turn', key, ts: expect.any(Number)});
 
             resolvePost!(jsonResponse({message: assistantMessage(5, 'arrived'), preferences_changed: false}, 201));
             await screen.findByText('arrived');
-            expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).toBeNull();
+            expect(window.localStorage.getItem(markerKey)).toBeNull();
             // The composer draft is cleared once the turn is sent.
             expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBeNull();
         });
 
         test('adopts server state on load when the server knows the in-flight key (late reply included)', async () => {
             window.localStorage.setItem(
-                INFLIGHT_STORAGE_KEY,
-                JSON.stringify({conversationId: 42, content: 'in flight', key: KEY_A}),
+                inflightKeyFor(42, KEY_A),
+                JSON.stringify({conversationId: 42, content: 'in flight', key: KEY_A, ts: Date.now()}),
             );
             await renderChat([userTurn('in flight', KEY_A, 'completed'), assistantMessage(2, 'late reply')]);
             expect(screen.getByText('late reply')).toBeInTheDocument();
-            expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).toBeNull();
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).toBeNull();
             // No phantom draft: the server received the turn.
             expect(screen.getByLabelText('Message')).toHaveValue('');
         });
 
         test('restores the content as an unsent draft when the server never received the key', async () => {
             window.localStorage.setItem(
-                INFLIGHT_STORAGE_KEY,
-                JSON.stringify({conversationId: 42, content: 'never arrived', key: KEY_A}),
+                inflightKeyFor(42, KEY_A),
+                JSON.stringify({conversationId: 42, content: 'never arrived', key: KEY_A, ts: Date.now()}),
             );
             await renderChat([]);
             expect(screen.getByLabelText('Message')).toHaveValue('never arrived');
-            expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).toBeNull();
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).toBeNull();
             expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('never arrived');
         });
 
         test('ignores markers belonging to a different conversation', async () => {
             window.localStorage.setItem(
-                INFLIGHT_STORAGE_KEY,
-                JSON.stringify({conversationId: 7, content: 'other convo', key: KEY_A}),
+                inflightKeyFor(7, KEY_A),
+                JSON.stringify({conversationId: 7, content: 'other convo', key: KEY_A, ts: Date.now()}),
             );
             await renderChat([]);
             expect(screen.getByLabelText('Message')).toHaveValue('');
             // The marker belongs to conversation 7 and stays for its resume.
-            expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).not.toBeNull();
+            expect(window.localStorage.getItem(inflightKeyFor(7, KEY_A))).not.toBeNull();
+        });
+
+        test('two concurrent turns keep separate markers; resolving one never clears the other', async () => {
+            // Adversarial review (issue #458): a single global slot lost one of
+            // two concurrent turns' recovery state. Markers are per turn now.
+            await renderChat([]);
+            let resolvePost: ((r: Response) => void) | undefined;
+            (global.fetch as jest.Mock).mockImplementationOnce(
+                () => new Promise<Response>((resolve) => { resolvePost = resolve; }),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'turn a'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const keyA = lastPostedKey(global.fetch as jest.Mock);
+            await waitFor(() => expect(window.localStorage.getItem(inflightKeyFor(42, keyA))).not.toBeNull());
+            // While turn A is in flight, another tab starts turn B in the same
+            // conversation: its marker lands next to A's.
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_B),
+                JSON.stringify({conversationId: 42, content: 'turn b', key: KEY_B, ts: Date.now()}),
+            );
+            // Both markers coexist.
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_B))).not.toBeNull();
+
+            resolvePost!(jsonResponse({message: assistantMessage(6, 'a done'), preferences_changed: false}, 201));
+            await screen.findByText('a done');
+            // Resolving turn A clears only its own marker; turn B survives.
+            expect(window.localStorage.getItem(inflightKeyFor(42, keyA))).toBeNull();
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_B))).not.toBeNull();
+        });
+
+        test('prunes corrupt and aged markers on load without touching valid ones', async () => {
+            const otherConvKey = inflightKeyFor(7, KEY_B);
+            window.localStorage.setItem(
+                inflightKeyFor(42, 'corrupt-not-json'),
+                '{not json',
+            );
+            window.localStorage.setItem(
+                inflightKeyFor(42, 'no-conversation-id'),
+                JSON.stringify({content: 'shape mismatch'}),
+            );
+            const aged = Date.now() - (25 * 60 * 60 * 1000);
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_A),
+                JSON.stringify({conversationId: 42, content: 'stale', key: KEY_A, ts: aged}),
+            );
+            window.localStorage.setItem(
+                otherConvKey,
+                JSON.stringify({conversationId: 7, content: 'fine', key: KEY_B, ts: Date.now()}),
+            );
+            await renderChat([]);
+            // Corrupt, shape-mismatched, and day-old markers are pruned.
+            expect(window.localStorage.getItem(inflightKeyFor(42, 'corrupt-not-json'))).toBeNull();
+            expect(window.localStorage.getItem(inflightKeyFor(42, 'no-conversation-id'))).toBeNull();
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).toBeNull();
+            // A valid other-conversation marker survives untouched.
+            expect(window.localStorage.getItem(otherConvKey)).not.toBeNull();
+            // Nothing restorable was restored as a draft.
+            expect(screen.getByLabelText('Message')).toHaveValue('');
         });
 
         test('a marker after a failed (typed) send still reconciles against the server on reload', async () => {
@@ -1476,8 +1547,8 @@ describe('durable turn state (issue #458)', () => {
             // The turn shows failed in place and the marker survives for reload
             // reconciliation (the server has the user message).
             expect(screen.getByTestId('failed-turn')).toBeInTheDocument();
-            expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).not.toBeNull();
             const key = lastPostedKey(global.fetch as jest.Mock);
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).not.toBeNull();
             first.unmount();
 
             // Reload: server has the failed turn; adopt it and drop the marker.
@@ -1486,7 +1557,7 @@ describe('durable turn state (issue #458)', () => {
             );
             const instance = await renderChatAs([userTurn('retry me', key, 'failed')]);
             expect(screen.getByTestId('failed-turn')).toBeInTheDocument();
-            expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).toBeNull();
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
             instance.unmount();
         });
     });
@@ -1510,8 +1581,8 @@ describe('durable turn state (issue #458)', () => {
             // A new load restores the draft only when present.
             window.localStorage.setItem('crank:jobsearch:draft:42', 'restored draft');
             window.localStorage.setItem(
-                INFLIGHT_STORAGE_KEY,
-                JSON.stringify({conversationId: 42, content: 'never arrived', key: KEY_A}),
+                inflightKeyFor(42, KEY_A),
+                JSON.stringify({conversationId: 42, content: 'never arrived', key: KEY_A, ts: Date.now()}),
             );
             const third = await renderChatAs([]);
             // The unreceived in-flight content wins over the stale draft.
@@ -1521,8 +1592,8 @@ describe('durable turn state (issue #458)', () => {
 
         test('a conversation restored via auto-create also reconciles its marker', async () => {
             window.localStorage.setItem(
-                INFLIGHT_STORAGE_KEY,
-                JSON.stringify({conversationId: 7, content: 'ghost turn', key: KEY_A}),
+                inflightKeyFor(7, KEY_A),
+                JSON.stringify({conversationId: 7, content: 'ghost turn', key: KEY_A, ts: Date.now()}),
             );
             const mock = global.fetch as jest.Mock;
             mock.mockResolvedValueOnce(jsonResponse({}, 404));
@@ -1532,7 +1603,7 @@ describe('durable turn state (issue #458)', () => {
             await screen.findByLabelText('Message');
             await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
             expect(screen.getByLabelText('Message')).toHaveValue('ghost turn');
-            expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).toBeNull();
+            expect(window.localStorage.getItem(inflightKeyFor(7, KEY_A))).toBeNull();
         });
     });
 
@@ -1557,7 +1628,8 @@ describe('durable turn state (issue #458)', () => {
             expect(alert).toHaveTextContent('Still generating.');
             // Reconciled: the late reply shows and the marker is cleared.
             await screen.findByText('finished elsewhere');
-            expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).toBeNull();
+            const key = lastPostedKey(mock);
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
             expect(screen.getByLabelText('Message')).toHaveValue('');
         });
 
@@ -1571,7 +1643,8 @@ describe('durable turn state (issue #458)', () => {
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'doomed'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             await screen.findByRole('alert');
-            expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).toBeNull();
+            const key = lastPostedKey(mock);
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
             // History unchanged (no reconcile payload adopted).
             expect(screen.queryByText('finished elsewhere')).not.toBeInTheDocument();
         });
@@ -1586,14 +1659,16 @@ describe('durable turn state (issue #458)', () => {
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'flaky'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             await screen.findByRole('alert');
-            expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).not.toBeNull();
+            const key = lastPostedKey(mock);
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).not.toBeNull();
         });
     });
 
     describe('stop waiting (honest cancel semantics)', () => {
-        test('stop aborts the wait, keeps the marker, and offers retry', async () => {
+        test('stop aborts the wait, asks the server, and keeps the marker when the check fails', async () => {
             await renderChat();
-            (global.fetch as jest.Mock).mockImplementationOnce(
+            const mock = global.fetch as jest.Mock;
+            mock.mockImplementationOnce(
                 (_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
                     init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
                 }),
@@ -1606,21 +1681,96 @@ describe('durable turn state (issue #458)', () => {
             await screen.findByText(/stopped waiting/i);
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-busy', 'false');
             expect(screen.getByTestId('retry-button')).toBeInTheDocument();
-            // Marker stands so a reload reconciles the late completion.
-            expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).not.toBeNull();
+            // The reconcile check also failed (no queued response), so the
+            // marker stands for load-time reconciliation.
+            const key = lastPostedKey(mock);
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).not.toBeNull();
         });
 
-        test('a network-level failure keeps the turn visible as failed with retry', async () => {
+        test('stop with a pending server turn shows the honest not-arrived panel with a check action', async () => {
             await renderChat();
-            (global.fetch as jest.Mock).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+            const mock = global.fetch as jest.Mock;
+            mock.mockImplementationOnce(
+                (_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+                    init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+                }),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'slow turn'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            // The POST is issued synchronously: capture its key, then queue the
+            // reconcile GET showing the turn persisted and still pending.
+            const key = lastPostedKey(mock);
+            mock.mockResolvedValueOnce(
+                jsonResponse(emptyConversation(42, [userTurn('slow turn', key, 'pending')])),
+            );
+            fireEvent.click(await screen.findByTestId('stop-button'));
+            await screen.findByText(/stopped waiting/i);
+            // The server owns the turn: the honest pending panel replaces
+            // the optimistic bubble, and a follow-up check adopts the reply.
+            await screen.findByTestId('pending-turn');
+            mock.mockResolvedValueOnce(
+                jsonResponse(emptyConversation(42, [
+                    userTurn('slow turn', key, 'completed'),
+                    assistantMessage(9, 'arrived after stop'),
+                ])),
+            );
+            fireEvent.click(screen.getByTestId('check-response-button'));
+            await screen.findByText('arrived after stop');
+        });
+
+        test('a network-level failure is uncertain: the turn stays with a check action and the marker', async () => {
+            await renderChat();
+            const mock = global.fetch as jest.Mock;
+            mock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'unstable'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             const alert = await screen.findByText(/failed to fetch/i);
             expect(alert).toBeInTheDocument();
-            // The question stays visible as a failed turn and the marker
-            // stands for load-time reconciliation.
-            expect(screen.getByTestId('failed-turn')).toBeInTheDocument();
-            expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).not.toBeNull();
+            // Whether the server received the request is unknown: the turn
+            // stays visible with the honest "not arrived yet" panel — never
+            // a false "your message is saved" claim — and the marker stands.
+            expect(screen.getByText('unstable')).toBeInTheDocument();
+            expect(screen.getByTestId('pending-turn')).toBeInTheDocument();
+            const key = lastPostedKey(mock);
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).not.toBeNull();
+        });
+
+        test('stop before the server received the turn restores it as a draft', async () => {
+            await renderChat([]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockImplementationOnce(
+                (_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+                    init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+                }),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'never sent'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const key = lastPostedKey(mock);
+            // The reconcile GET succeeds and shows no trace of the key.
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
+            fireEvent.click(await screen.findByTestId('stop-button'));
+            // Honest outcome: stopped before delivery, kept as a draft.
+            await screen.findByText(/stopped before the message was sent/i);
+            expect(screen.getByLabelText('Message')).toHaveValue('never sent');
+            expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('never sent');
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
+        });
+
+        test('stop against a conversation deleted elsewhere reports it honestly', async () => {
+            await renderChat([]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockImplementationOnce(
+                (_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+                    init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+                }),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'doomed'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const key = lastPostedKey(mock);
+            mock.mockResolvedValueOnce(jsonResponse({detail: 'gone'}, 404));
+            fireEvent.click(await screen.findByTestId('stop-button'));
+            await screen.findByText(/this conversation is no longer available/i);
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
         });
 
         test('no stop button while idle', async () => {
@@ -1630,28 +1780,251 @@ describe('durable turn state (issue #458)', () => {
     });
 
     describe('reset / delete clear durable state', () => {
-        test('reset clears the in-flight marker and the conversation draft', async () => {
+        test('reset clears the in-flight markers and the conversation draft', async () => {
             await renderChat([userTurn('before reset', KEY_A, 'completed')]);
-            window.localStorage.setItem(INFLIGHT_STORAGE_KEY, JSON.stringify({conversationId: 42, content: 'x', key: KEY_A}));
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_A),
+                JSON.stringify({conversationId: 42, content: 'x', key: KEY_A, ts: Date.now()}),
+            );
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_B),
+                JSON.stringify({conversationId: 42, content: 'y', key: KEY_B, ts: Date.now()}),
+            );
+            window.localStorage.setItem(
+                inflightKeyFor(7, '11111111-1111-4111-8111-111111111111'),
+                JSON.stringify({
+                    conversationId: 7,
+                    content: 'other conversation',
+                    key: '11111111-1111-4111-8111-111111111111',
+                    ts: Date.now(),
+                }),
+            );
             window.localStorage.setItem('crank:jobsearch:draft:42', 'pending text');
             window.confirm = jest.fn().mockReturnValue(true);
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(43), 201));
             fireEvent.click(screen.getByRole('button', {name: 'Reset chat'}));
             await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
-            expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).toBeNull();
+            // Every marker of THIS conversation is cleared...
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).toBeNull();
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_B))).toBeNull();
+            // ...but another conversation's marker survives (issue #458
+            // adversarial review: per-turn markers cannot clobber each other).
+            expect(
+                window.localStorage.getItem(inflightKeyFor(7, '11111111-1111-4111-8111-111111111111'))
+            ).not.toBeNull();
             expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBeNull();
         });
 
-        test('delete clears the in-flight marker and the conversation draft', async () => {
+        test('delete clears the in-flight markers and the conversation draft', async () => {
             await renderChat([userTurn('before delete', KEY_A, 'completed')]);
-            window.localStorage.setItem(INFLIGHT_STORAGE_KEY, JSON.stringify({conversationId: 42, content: 'x', key: KEY_A}));
+            window.localStorage.setItem(
+                inflightKeyFor(42, KEY_A),
+                JSON.stringify({conversationId: 42, content: 'x', key: KEY_A, ts: Date.now()}),
+            );
             window.localStorage.setItem('crank:jobsearch:draft:42', 'pending text');
             window.confirm = jest.fn().mockReturnValue(true);
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({deleted: true}));
             fireEvent.click(screen.getByRole('button', {name: 'Delete conversation'}));
             await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
-            expect(window.localStorage.getItem(INFLIGHT_STORAGE_KEY)).toBeNull();
+            expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).toBeNull();
             expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBeNull();
+        });
+    });
+
+    describe('pre-persistence failures render an honest unsent draft (adversarial review)', () => {
+        test.each([
+            ['rate_limited', 429, 'Too many messages. Try again shortly.'],
+            ['invalid_message', 400, 'Message content is required.'],
+            ['not_found', 404, 'Conversation not found or not owned by this user.'],
+        ])('%s never claims the message is saved', async (type, status, message) => {
+            await renderChat([]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(
+                jsonResponse({error: {type, message}}, status),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'never persisted'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            // The typed alert speaks the server's message...
+            const alert = await screen.findByRole('alert');
+            expect(alert).toHaveTextContent(message);
+            // ...but the question is NOT presented as a saved failed turn,
+            // and no "your message is saved" copy appears anywhere.
+            expect(screen.queryByTestId('failed-turn')).not.toBeInTheDocument();
+            expect(screen.queryByText(/your message is saved/i)).not.toBeInTheDocument();
+            // The content returns as an unsent draft instead.
+            expect(screen.getByLabelText('Message')).toHaveValue('never persisted');
+            expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('never persisted');
+            const key = lastPostedKey(mock);
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
+        });
+    });
+
+    describe('retry cap (adversarial review: bounded, honest retries)', () => {
+        test('a server-loaded exhausted turn disables Retry and points to Edit', async () => {
+            await renderChat([userTurn('gave up retrying', KEY_A, 'failed', 1, false)]);
+            expect(screen.getByTestId('failed-turn')).toHaveTextContent(/after several retries/i);
+            const retryBtn = screen.getByTestId('retry-response-button');
+            expect(retryBtn).toBeDisabled();
+            expect(retryBtn).toHaveTextContent(/retry limit reached/i);
+            expect(screen.getByTestId('edit-as-new-button')).toBeEnabled();
+        });
+
+        test('clicking the exhausted turn retry control sends nothing', async () => {
+            await renderChat([userTurn('gave up retrying', KEY_A, 'failed', 1, false)]);
+            fireEvent.click(screen.getByTestId('retry-response-button'));
+            await waitFor(() => {
+                expect(postBodies(global.fetch as jest.Mock, messageUrl())).toHaveLength(0);
+            });
+        });
+
+        test('a retry_limit_reached response reconciles to the exhausted state and documents the cap', async () => {
+            await renderChat([]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(
+                jsonResponse({error: {type: 'assistant_unavailable', message: 'down'}}, 503),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'poisoned'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByTestId('failed-turn');
+            const key = lastPostedKey(mock);
+            // Retry hits the server-side cap.
+            mock.mockResolvedValueOnce(
+                jsonResponse({
+                    error: {
+                        type: 'retry_limit_reached',
+                        message: "This response couldn't be delivered after 5 attempts. Please edit the message and send it again as a new message.",
+                    },
+                }, 429),
+            );
+            // The reconcile GET returns the turn failed and exhausted.
+            mock.mockResolvedValueOnce(
+                jsonResponse(emptyConversation(42, [userTurn('poisoned', key, 'failed', 1, false)])),
+            );
+            fireEvent.click(screen.getByTestId('retry-response-button'));
+            const retryBtn = await screen.findByRole('button', {name: 'Retry limit reached'});
+            expect(retryBtn).toBeDisabled();
+            expect(screen.getByTestId('failed-turn')).toHaveTextContent(/after several retries/i);
+            // The cap is documented in the surfaced server copy.
+            expect(await screen.findByRole('alert')).toHaveTextContent(/after 5 attempts/i);
+        });
+    });
+
+    describe('retry ordering (adversarial review: stable transcript)', () => {
+        test('a successful retry inserts its reply after the original turn, never at the end', async () => {
+            // Server history: turn 1 failed; a newer turn 2 completed after it.
+            await renderChat([
+                userTurn('first question', KEY_A, 'failed', 1),
+                userTurn('second question', KEY_B, 'completed', 2),
+                assistantMessage(3, 'second answer'),
+            ]);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse({message: assistantMessage(4, 'first answer'), preferences_changed: false}, 201),
+            );
+            fireEvent.click(screen.getByTestId('retry-response-button'));
+            await screen.findByText('first answer');
+            // The reply lands immediately after its original question — the
+            // order stays user1, assistant1, user2, assistant2 on screen and,
+            // because the server pins replies the same way, after reload too.
+            const bubbles = Array.from(
+                screen.getByLabelText('Message history').querySelectorAll('.chat-bubble'),
+            ).map((el) => el.textContent || '');
+            expect(bubbles).toEqual([
+                expect.stringContaining('first question'),
+                expect.stringContaining('first answer'),
+                expect.stringContaining('second question'),
+                expect.stringContaining('second answer'),
+            ]);
+        });
+    });
+
+    describe('reset / delete guarded mid-flight (adversarial review)', () => {
+        test('reset and delete are disabled while a turn is in flight', async () => {
+            await renderChat();
+            (global.fetch as jest.Mock).mockImplementationOnce(
+                () => new Promise<Response>(() => {}),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'in flight'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByTestId('stop-button');
+            expect(screen.getByRole('button', {name: 'Reset chat'})).toBeDisabled();
+            expect(screen.getByRole('button', {name: 'Delete conversation'})).toBeDisabled();
+        });
+    });
+
+    describe('uncertain failures reconcile against the server (adversarial review)', () => {
+        test('a network failure the server never received is restored as a draft', async () => {
+            await renderChat([]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'maybe lost'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const key = lastPostedKey(mock);
+            // The reconcile GET succeeds and shows no trace of the key.
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
+            // The turn is restored as a draft; nothing pretends it was sent.
+            await screen.findByText(/kept as a draft/i);
+            expect(screen.getByLabelText('Message')).toHaveValue('maybe lost');
+            expect(screen.queryByTestId('failed-turn')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('pending-turn')).not.toBeInTheDocument();
+            expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('maybe lost');
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
+        });
+
+        test('a network failure the server did receive adopts the server state', async () => {
+            await renderChat([]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'arrived anyway'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const key = lastPostedKey(mock);
+            // The reconcile GET shows the turn failed server-side.
+            mock.mockResolvedValueOnce(
+                jsonResponse(emptyConversation(42, [userTurn('arrived anyway', key, 'failed')])),
+            );
+            // The server state wins: the turn renders as failed (saved), not
+            // as a draft.
+            await screen.findByTestId('failed-turn');
+            expect(screen.getByTestId('failed-turn')).toHaveTextContent(/your message is saved/i);
+            expect(screen.getByLabelText('Message')).toHaveValue('');
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
+        });
+
+        test('a non-JSON error reconciles to an unsent draft when the server never received it', async () => {
+            await renderChat([]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(new Response('plain text error', {status: 500}));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'uncertain text'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const key = lastPostedKey(mock);
+            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
+            await screen.findByText(/kept as a draft/i);
+            expect(screen.getByLabelText('Message')).toHaveValue('uncertain text');
+            expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('uncertain text');
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
+        });
+
+        test('a non-JSON error against a conversation deleted elsewhere reports it honestly', async () => {
+            await renderChat([]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(new Response('plain text error', {status: 502}));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'gateway doomed'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const key = lastPostedKey(mock);
+            mock.mockResolvedValueOnce(jsonResponse({detail: 'gone'}, 404));
+            await screen.findByText(/this conversation is no longer available/i);
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
+        });
+
+        test('a network failure against a conversation deleted elsewhere reports it honestly', async () => {
+            await renderChat([]);
+            const mock = global.fetch as jest.Mock;
+            mock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'doomed'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            const key = lastPostedKey(mock);
+            mock.mockResolvedValueOnce(jsonResponse({detail: 'gone'}, 404));
+            await screen.findByText(/this conversation is no longer available/i);
+            expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
         });
     });
 

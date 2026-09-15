@@ -12,12 +12,15 @@ import unittest
 import uuid
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
+from django.db import IntegrityError
 from django.test import Client, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from crank.agents.job_search.demo import (
     AssistantUnavailable,
@@ -27,7 +30,7 @@ from crank.agents.job_search.demo import (
     ServiceInvalidOutput,
     ServiceTimeout,
 )
-from crank.models import JobSearchConversation, JobSearchMessage
+from crank.models import JobSearchConversation, JobSearchMessage, JobSearchTurn
 
 
 LOCMEM = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
@@ -336,16 +339,16 @@ class JobSearchApiTestCase(TestCase):
         self.assertEqual(retry.json()["message"]["content"], first.json()["message"]["content"])
 
     @override_settings(JOB_SEARCH_RATE_LIMIT_PER_HOUR=1)
-    def test_idempotent_retry_after_service_error_does_not_consume_rate_limit(self):
-        """A retry after a transient service error (500) must not consume
-        the rate-limit budget, even though the first submission consumed it.
-        The retry is idempotent and must be free."""
+    def test_retry_after_service_error_consumes_rate_limit_budget(self):
+        """A failed-turn retry runs the provider again, so it consumes the
+        rate-limit budget exactly like a fresh send (adversarial review:
+        same-key retries were previously a free, unbounded provider path).
+        Only the completed-turn replay stays free."""
         conversation_id = self._start_conversation()
         key = self._uuid(99)
-
         real_run_turn = JobSearchService().run_turn.__func__
 
-        # First call: service fails, consumes the budget slot.
+        # First attempt fails the provider but consumes the only budget slot.
         with patch.object(
             JobSearchService, "run_turn", autospec=True,
             side_effect=JobSearchServiceError("boom"),
@@ -353,17 +356,55 @@ class JobSearchApiTestCase(TestCase):
             resp = self._submit(conversation_id, "fails once", key)
         self.assertEqual(resp.status_code, 500)
 
-        # A new key would be throttled.
-        throttled = self._submit(conversation_id, "new", self._uuid(100))
-        self.assertEqual(throttled.status_code, 429)
+        # The same-key retry would invoke the provider again, so it must be
+        # throttled without a provider call and without persisting anything.
+        run_calls = {"n": 0}
 
-        # Retry with the same key: idempotent replay runs before rate limit.
+        def counting_run_turn(*args, **kwargs):
+            run_calls["n"] += 1
+            return real_run_turn(*args, **kwargs)
+
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True,
+            side_effect=counting_run_turn,
+        ):
+            retry = self._submit(conversation_id, "fails once", key)
+        self.assertEqual(retry.status_code, 429)
+        self.assertEqual(retry.json()["error"]["type"], "rate_limited")
+        self.assertEqual(run_calls["n"], 0)
+        # The persisted failed turn is untouched and still retryable.
+        turn = JobSearchTurn.objects.get(
+            conversation_id=conversation_id, turn_key=key
+        )
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.FAILED)
+        self.assertEqual(turn.attempt_count, 1)
+
+    @override_settings(JOB_SEARCH_RATE_LIMIT_PER_HOUR=2)
+    def test_retry_after_service_error_succeeds_within_budget(self):
+        """With budget for both attempts the same-key retry succeeds and
+        consumes the second slot; the next provider-bound request throttles."""
+        conversation_id = self._start_conversation()
+        key = self._uuid(101)
+        real_run_turn = JobSearchService().run_turn.__func__
+
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True,
+            side_effect=JobSearchServiceError("boom"),
+        ):
+            first = self._submit(conversation_id, "fails then works", key)
+        self.assertEqual(first.status_code, 500)
+
         with patch.object(
             JobSearchService, "run_turn", autospec=True,
             side_effect=real_run_turn,
         ):
-            retry = self._submit(conversation_id, "fails once", key)
+            retry = self._submit(conversation_id, "fails then works", key)
         self.assertEqual(retry.status_code, 201)
+
+        # Both budget slots are consumed: the next send is throttled.
+        throttled = self._submit(conversation_id, "new", self._uuid(102))
+        self.assertEqual(throttled.status_code, 429)
+        self.assertEqual(throttled.json()["error"]["type"], "rate_limited")
 
     @override_settings(JOB_SEARCH_RATE_LIMIT_PER_HOUR=1)
     def test_rate_limit_consumed_on_first_attempt_not_retry(self):
@@ -1508,19 +1549,17 @@ class TurnDeliveryStateTests(TestCase):
         )
 
     def test_new_user_message_persists_pending_then_completed(self):
-        """A first submission records the completed delivery outcome; the
-        serialized user message exposes its key and final state."""
+        """A first submission records the completed delivery outcome on the
+        turn anchor; the serialized user message exposes its key and state."""
         conv_id = self._start_conversation()
         key = str(uuid.uuid4())
         resp = self._submit(conv_id, "durable turn", key)
         self.assertEqual(resp.status_code, 201)
-        user_msg = JobSearchMessage.objects.get(
-            conversation_id=conv_id, role="user", idempotency_key=key
-        )
-        self.assertEqual(
-            user_msg.delivery_state, JobSearchMessage.DeliveryState.COMPLETED
-        )
-        self.assertEqual(user_msg.failure_code, "")
+        turn = JobSearchTurn.objects.get(conversation_id=conv_id, turn_key=key)
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.COMPLETED)
+        self.assertEqual(turn.failure_code, "")
+        self.assertEqual(turn.attempt_count, 1)
+        self.assertIsNone(turn.lease_expires_at)
 
         # The user message serialization exposes the key and delivery state.
         history = self.client.get(
@@ -1530,6 +1569,7 @@ class TurnDeliveryStateTests(TestCase):
         self.assertEqual(len(user_entries), 1)
         self.assertEqual(user_entries[0]["idempotency_key"], key)
         self.assertEqual(user_entries[0]["delivery_state"], "completed")
+        self.assertFalse(user_entries[0]["retry_available"])
         # Assistant messages stay unchanged: no turn-state fields.
         assistant_entries = [
             m for m in history["messages"] if m["role"] == "assistant"
@@ -1537,6 +1577,7 @@ class TurnDeliveryStateTests(TestCase):
         self.assertEqual(len(assistant_entries), 1)
         self.assertNotIn("idempotency_key", assistant_entries[0])
         self.assertNotIn("delivery_state", assistant_entries[0])
+        self.assertNotIn("retry_available", assistant_entries[0])
 
     def test_failed_turn_records_state_and_failure_code(self):
         """A provider failure persists delivery_state=failed plus the stable
@@ -1549,15 +1590,12 @@ class TurnDeliveryStateTests(TestCase):
         ):
             resp = self._submit(conv_id, "fails", key)
         self.assertEqual(resp.status_code, 504)
-        user_msg = JobSearchMessage.objects.get(
-            conversation_id=conv_id, role="user", idempotency_key=key
-        )
+        turn = JobSearchTurn.objects.get(conversation_id=conv_id, turn_key=key)
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.FAILED)
         self.assertEqual(
-            user_msg.delivery_state, JobSearchMessage.DeliveryState.FAILED
+            turn.failure_code, JobSearchTurn.FailureCode.PROVIDER_TIMEOUT
         )
-        self.assertEqual(
-            user_msg.failure_code, JobSearchMessage.FailureCode.PROVIDER_TIMEOUT
-        )
+        self.assertEqual(turn.attempt_count, 1)
 
         # A reloaded client sees the failed turn and can retry it by key.
         history = self.client.get(
@@ -1566,6 +1604,7 @@ class TurnDeliveryStateTests(TestCase):
         user_entries = [m for m in history["messages"] if m["role"] == "user"]
         self.assertEqual(user_entries[0]["delivery_state"], "failed")
         self.assertEqual(user_entries[0]["idempotency_key"], key)
+        self.assertTrue(user_entries[0]["retry_available"])
 
         # Retry with the same key recovers: one assistant reply, completed.
         real_run = JobSearchService().run_turn.__func__
@@ -1577,20 +1616,19 @@ class TurnDeliveryStateTests(TestCase):
         conv = JobSearchConversation.objects.get(pk=conv_id)
         self.assertEqual(conv.messages.filter(role="user").count(), 1)
         self.assertEqual(conv.messages.filter(role="assistant").count(), 1)
-        user_msg.refresh_from_db()
-        self.assertEqual(
-            user_msg.delivery_state, JobSearchMessage.DeliveryState.COMPLETED
-        )
-        self.assertEqual(user_msg.failure_code, "")
+        turn.refresh_from_db()
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.COMPLETED)
+        self.assertEqual(turn.failure_code, "")
+        self.assertEqual(turn.attempt_count, 2)
 
     def test_every_failure_category_persists_its_failure_code(self):
         """Each mapped service exception records its matching failure_code."""
         cases = [
-            (AssistantUnavailable("down"), JobSearchMessage.FailureCode.ASSISTANT_UNAVAILABLE),
-            (ServiceTimeout("slow"), JobSearchMessage.FailureCode.PROVIDER_TIMEOUT),
-            (ServiceCostLimit("budget"), JobSearchMessage.FailureCode.COST_LIMIT),
-            (ServiceInvalidOutput("bad"), JobSearchMessage.FailureCode.INVALID_OUTPUT),
-            (JobSearchServiceError("boom"), JobSearchMessage.FailureCode.SERVICE_ERROR),
+            (AssistantUnavailable("down"), JobSearchTurn.FailureCode.ASSISTANT_UNAVAILABLE),
+            (ServiceTimeout("slow"), JobSearchTurn.FailureCode.PROVIDER_TIMEOUT),
+            (ServiceCostLimit("budget"), JobSearchTurn.FailureCode.COST_LIMIT),
+            (ServiceInvalidOutput("bad"), JobSearchTurn.FailureCode.INVALID_OUTPUT),
+            (JobSearchServiceError("boom"), JobSearchTurn.FailureCode.SERVICE_ERROR),
         ]
         for i, (exc, expected_code) in enumerate(cases):
             conv_id = self._start_conversation()
@@ -1598,24 +1636,29 @@ class TurnDeliveryStateTests(TestCase):
             with patch.object(JobSearchService, "run_turn", side_effect=exc):
                 resp = self._submit(conv_id, "turn {}".format(i), key)
             self.assertIn(resp.status_code, (429, 500, 503, 504))
-            user_msg = JobSearchMessage.objects.get(
-                conversation_id=conv_id, role="user", idempotency_key=key
-            )
-            self.assertEqual(user_msg.delivery_state, JobSearchMessage.DeliveryState.FAILED)
-            self.assertEqual(user_msg.failure_code, expected_code)
+            turn = JobSearchTurn.objects.get(conversation_id=conv_id, turn_key=key)
+            self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.FAILED)
+            self.assertEqual(turn.failure_code, expected_code)
 
     def test_pending_turn_returns_409_without_provider_call(self):
         """A turn left pending (in flight elsewhere) gets a stable 409 with no
         provider call and no preference application."""
         conv_id = self._start_conversation()
         key = str(uuid.uuid4())
-        # Simulate another request holding the turn.
+        # Simulate another request holding the turn: a live pending claim
+        # (lease still valid) plus its persisted user message.
         JobSearchMessage.objects.create(
             conversation_id=conv_id,
             role="user",
             content="in flight",
             idempotency_key=key,
-            delivery_state=JobSearchMessage.DeliveryState.PENDING,
+        )
+        JobSearchTurn.objects.create(
+            conversation_id=conv_id,
+            turn_key=key,
+            delivery_state=JobSearchTurn.DeliveryState.PENDING,
+            attempt_count=1,
+            lease_expires_at=timezone.now() + timedelta(seconds=300),
         )
         run_calls = {"n": 0}
 
@@ -1631,15 +1674,12 @@ class TurnDeliveryStateTests(TestCase):
         body = resp.json()
         self.assertEqual(body["error"]["type"], "turn_in_progress")
         self.assertTrue(body["error"].get("request_id"))
-        # No provider call happened, and the pending row is untouched.
+        # No provider call happened, and the live claim is untouched.
         self.assertEqual(run_calls["n"], 0)
-        user_msg = JobSearchMessage.objects.get(
-            conversation_id=conv_id, role="user", idempotency_key=key
-        )
-        self.assertEqual(
-            user_msg.delivery_state, JobSearchMessage.DeliveryState.PENDING
-        )
-        self.assertEqual(user_msg.failure_code, "")
+        turn = JobSearchTurn.objects.get(conversation_id=conv_id, turn_key=key)
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.PENDING)
+        self.assertEqual(turn.failure_code, "")
+        self.assertEqual(turn.attempt_count, 1)
         self.assertEqual(
             JobSearchMessage.objects.filter(
                 conversation_id=conv_id, role="assistant"
@@ -1648,29 +1688,29 @@ class TurnDeliveryStateTests(TestCase):
         )
 
     def test_pending_turn_via_get_or_create_race_returns_409(self):
-        """Losing the create race against a pending same-key turn also 409s
+        """Losing the anchor create race against a pending same-key turn 409s
         instead of re-running the provider."""
         conv_id = self._start_conversation()
         key = str(uuid.uuid4())
 
-        real_get_or_create = JobSearchMessage.objects.get_or_create
+        real_get_or_create = JobSearchTurn.objects.get_or_create
 
         def racing_get_or_create(*args, **kwargs):
-            # The concurrent winner created the row (pending) between our
-            # existence check and our create.
+            # The concurrent winner claimed the anchor (pending, live lease)
+            # between our existence check and our create.
             real_get_or_create(
                 conversation_id=conv_id,
-                role="user",
-                idempotency_key=key,
+                turn_key=key,
                 defaults={
-                    "content": "winner",
-                    "delivery_state": JobSearchMessage.DeliveryState.PENDING,
+                    "delivery_state": JobSearchTurn.DeliveryState.PENDING,
+                    "attempt_count": 1,
+                    "lease_expires_at": timezone.now() + timedelta(seconds=300),
                 },
             )
             return real_get_or_create(*args, **kwargs)
 
         with patch.object(
-            JobSearchMessage.objects, "get_or_create", side_effect=racing_get_or_create
+            JobSearchTurn.objects, "get_or_create", side_effect=racing_get_or_create
         ):
             resp = self._submit(conv_id, "racer", key)
         self.assertEqual(resp.status_code, 409)
@@ -1680,6 +1720,10 @@ class TurnDeliveryStateTests(TestCase):
                 conversation_id=conv_id, role="assistant"
             ).count(),
             0,
+        )
+        # The anchor row is unique: the loser adopted the winner's row.
+        self.assertEqual(
+            JobSearchTurn.objects.filter(conversation_id=conv_id).count(), 1
         )
 
     def test_legacy_rows_derive_delivery_state_at_read_time(self):
@@ -1715,9 +1759,11 @@ class TurnDeliveryStateTests(TestCase):
         by_content = {m["content"]: m for m in history["messages"] if m["role"] == "user"}
         # Empty-state rows with a matching assistant reply derive completed.
         self.assertEqual(by_content["answered legacy"]["delivery_state"], "completed")
+        self.assertFalse(by_content["answered legacy"]["retry_available"])
         # Empty-state rows without one derive failed (retriable).
         self.assertEqual(by_content["unanswered legacy"]["delivery_state"], "failed")
         self.assertEqual(by_content["unanswered legacy"]["idempotency_key"], unanswered_key)
+        self.assertTrue(by_content["unanswered legacy"]["retry_available"])
         # Pre-key rows have nothing retriable and report completed.
         self.assertEqual(by_content["pre-key era"]["delivery_state"], "completed")
         self.assertEqual(by_content["pre-key era"]["idempotency_key"], "")
@@ -1777,8 +1823,8 @@ class TurnDeliveryStateTests(TestCase):
         self.assertEqual(self._submit(new_id, "orphan key", key).status_code, 404)
 
     def test_rate_limited_new_key_does_not_persist_a_turn(self):
-        """A rate-limited new key leaves no user row behind (the claim happens
-        only after the budget check)."""
+        """A rate-limited new key leaves no user row or anchor behind (the
+        budget check happens before any persistence)."""
         conv_id = self._start_conversation()
         with override_settings(JOB_SEARCH_RATE_LIMIT_PER_HOUR=0):
             resp = self._submit(conv_id, "throttled", str(uuid.uuid4()))
@@ -1786,14 +1832,357 @@ class TurnDeliveryStateTests(TestCase):
         self.assertEqual(
             JobSearchMessage.objects.filter(conversation_id=conv_id).count(), 0
         )
+        self.assertEqual(
+            JobSearchTurn.objects.filter(conversation_id=conv_id).count(), 0
+        )
+
+    # -- attempt cap (adversarial review: unbounded poisoned retries) --------
+
+    @override_settings(JOB_SEARCH_TURN_MAX_ATTEMPTS=2)
+    def test_retry_limit_reached_after_attempt_cap(self):
+        """Retries are bounded per turn: after the cap, the same key is
+        rejected with a stable envelope that documents the cap, and no
+        further provider call runs."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        run_calls = {"n": 0}
+
+        def always_fails(*args, **kwargs):
+            run_calls["n"] += 1
+            raise ServiceInvalidOutput("bad output")
+
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True, side_effect=always_fails
+        ):
+            first = self._submit(conv_id, "poisoned turn", key)
+            self.assertEqual(first.status_code, 500)
+            retry = self._submit(conv_id, "poisoned turn", key)
+            self.assertEqual(retry.status_code, 500)
+            # The third attempt is rejected at the cap — no provider call.
+            capped = self._submit(conv_id, "poisoned turn", key)
+            capped_again = self._submit(conv_id, "poisoned turn", key)
+        self.assertEqual(capped.status_code, 429)
+        self.assertEqual(capped.json()["error"]["type"], "retry_limit_reached")
+        self.assertIn("2 attempts", capped.json()["error"]["message"])
+        self.assertEqual(capped_again.status_code, 429)
+        self.assertEqual(
+            capped_again.json()["error"]["type"], "retry_limit_reached"
+        )
+        self.assertEqual(run_calls["n"], 2)
+        turn = JobSearchTurn.objects.get(conversation_id=conv_id, turn_key=key)
+        self.assertEqual(turn.attempt_count, 2)
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.FAILED)
+        # The GET tells the client the turn is not retriable anymore.
+        history = self.client.get(
+            reverse("agent-conversation-detail", args=[conv_id])
+        ).json()
+        user_entry = [m for m in history["messages"] if m["role"] == "user"][0]
+        self.assertEqual(user_entry["delivery_state"], "failed")
+        self.assertFalse(user_entry["retry_available"])
+
+    @override_settings(JOB_SEARCH_TURN_MAX_ATTEMPTS=3)
+    def test_retry_within_cap_succeeds_after_transient_failures(self):
+        """A turn that fails transiently can be retried up to (not past) the
+        cap; the successful retry marks the turn completed."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        real_run_turn = JobSearchService().run_turn.__func__
+        failures = {"n": 0}
+
+        def flaky(*args, **kwargs):
+            failures["n"] += 1
+            if failures["n"] <= 2:
+                raise ServiceTimeout("slow")
+            return real_run_turn(*args, **kwargs)
+
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True, side_effect=flaky
+        ):
+            first = self._submit(conv_id, "eventually works", key)
+            self.assertEqual(first.status_code, 504)
+            second = self._submit(conv_id, "eventually works", key)
+            self.assertEqual(second.status_code, 504)
+            third = self._submit(conv_id, "eventually works", key)
+        self.assertEqual(third.status_code, 201)
+        turn = JobSearchTurn.objects.get(conversation_id=conv_id, turn_key=key)
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.COMPLETED)
+        self.assertEqual(turn.attempt_count, 3)
+        history = self.client.get(
+            reverse("agent-conversation-detail", args=[conv_id])
+        ).json()
+        user_entry = [m for m in history["messages"] if m["role"] == "user"][0]
+        self.assertEqual(user_entry["delivery_state"], "completed")
+        self.assertFalse(user_entry["retry_available"])
+
+    # -- lease recovery (adversarial review: interrupted workers) -----------
+
+    def _stale_claim(self, conv_id, key, attempt_count=1):
+        JobSearchMessage.objects.create(
+            conversation_id=conv_id,
+            role="user",
+            content="interrupted",
+            idempotency_key=key,
+        )
+        JobSearchTurn.objects.create(
+            conversation_id=conv_id,
+            turn_key=key,
+            delivery_state=JobSearchTurn.DeliveryState.PENDING,
+            attempt_count=attempt_count,
+            lease_expires_at=timezone.now() - timedelta(seconds=1),
+        )
+
+    def test_get_reaps_stale_pending_turns(self):
+        """Recovery-on-read: a pending claim whose lease expired is marked
+        failed-and-retryable, never stuck at turn_in_progress forever."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        self._stale_claim(conv_id, key)
+        history = self.client.get(
+            reverse("agent-conversation-detail", args=[conv_id])
+        ).json()
+        user_entry = [m for m in history["messages"] if m["role"] == "user"][0]
+        self.assertEqual(user_entry["delivery_state"], "failed")
+        self.assertTrue(user_entry["retry_available"])
+        turn = JobSearchTurn.objects.get(conversation_id=conv_id, turn_key=key)
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.FAILED)
+        self.assertEqual(
+            turn.failure_code, JobSearchTurn.FailureCode.WORKER_INTERRUPTED
+        )
+        self.assertIsNone(turn.lease_expires_at)
+
+    def test_stale_pending_claim_is_taken_over_on_retry(self):
+        """A retry against an expired claim takes the turn over and runs the
+        provider, so an interrupted worker never strands the turn."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        self._stale_claim(conv_id, key)
+        real_run_turn = JobSearchService().run_turn.__func__
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True, side_effect=real_run_turn
+        ):
+            resp = self._submit(conv_id, "interrupted", key)
+        self.assertEqual(resp.status_code, 201)
+        turn = JobSearchTurn.objects.get(conversation_id=conv_id, turn_key=key)
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.COMPLETED)
+        self.assertEqual(turn.attempt_count, 2)
+        conv = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 1)
+
+    def test_live_pending_claim_is_not_reaped(self):
+        """A pending claim with a valid lease serializes as pending on GET
+        and a same-key retry still gets the stable 409."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        JobSearchMessage.objects.create(
+            conversation_id=conv_id,
+            role="user",
+            content="in flight",
+            idempotency_key=key,
+        )
+        JobSearchTurn.objects.create(
+            conversation_id=conv_id,
+            turn_key=key,
+            delivery_state=JobSearchTurn.DeliveryState.PENDING,
+            attempt_count=1,
+            lease_expires_at=timezone.now() + timedelta(seconds=300),
+        )
+        history = self.client.get(
+            reverse("agent-conversation-detail", args=[conv_id])
+        ).json()
+        user_entry = [m for m in history["messages"] if m["role"] == "user"][0]
+        self.assertEqual(user_entry["delivery_state"], "pending")
+
+        run_calls = {"n": 0}
+
+        def counting_run_turn(*args, **kwargs):
+            run_calls["n"] += 1
+            return JobSearchService().run_turn(*args, **kwargs)
+
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True,
+            side_effect=counting_run_turn,
+        ):
+            resp = self._submit(conv_id, "in flight", key)
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(run_calls["n"], 0)
+
+    @override_settings(JOB_SEARCH_TURN_MAX_ATTEMPTS=2)
+    def test_stale_pending_at_attempt_cap_is_finalized_not_retriable(self):
+        """A stale claim already at the attempt cap is finalized as
+        interrupted and rejected, instead of looping provider calls."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        self._stale_claim(conv_id, key, attempt_count=2)
+        run_calls = {"n": 0}
+
+        def counting_run_turn(*args, **kwargs):
+            run_calls["n"] += 1
+            return JobSearchService().run_turn(*args, **kwargs)
+
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True,
+            side_effect=counting_run_turn,
+        ):
+            resp = self._submit(conv_id, "interrupted", key)
+        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(resp.json()["error"]["type"], "retry_limit_reached")
+        self.assertEqual(run_calls["n"], 0)
+        turn = JobSearchTurn.objects.get(conversation_id=conv_id, turn_key=key)
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.FAILED)
+        self.assertEqual(
+            turn.failure_code, JobSearchTurn.FailureCode.WORKER_INTERRUPTED
+        )
+
+    # -- late-reply guard (adversarial review: reset/delete mid-turn) -------
+
+    def test_reset_mid_turn_discards_late_reply(self):
+        """A reply completing after the conversation was reset is discarded:
+        404, no assistant message persisted, turn quarantined."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+
+        def reset_then_reply(*args, **kwargs):
+            # The reset lands while the provider is still running.
+            JobSearchConversation.objects.filter(pk=conv_id).update(active=False)
+            return ("late reply", False, None)
+
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True,
+            side_effect=reset_then_reply,
+        ):
+            resp = self._submit(conv_id, "reply to nowhere", key)
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["error"]["type"], "not_found")
+        conv = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertFalse(conv.active)
+        # The late reply was NOT attached to the (now archived) conversation.
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+        turn = JobSearchTurn.objects.get(conversation_id=conv_id, turn_key=key)
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.FAILED)
+        self.assertEqual(
+            turn.failure_code, JobSearchTurn.FailureCode.CONVERSATION_GONE
+        )
+
+    def test_delete_mid_turn_discards_late_reply(self):
+        """A reply completing after the conversation was deleted is discarded
+        without raising: 404, nothing persisted, cascades cleaned up."""
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+
+        def delete_then_reply(*args, **kwargs):
+            JobSearchConversation.objects.filter(pk=conv_id).delete()
+            return ("late reply", False, None)
+
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True,
+            side_effect=delete_then_reply,
+        ):
+            resp = self._submit(conv_id, "reply to nowhere", key)
+        self.assertEqual(resp.status_code, 404)
+        self.assertFalse(JobSearchConversation.objects.filter(pk=conv_id).exists())
+        # The late reply was not persisted anywhere.
+        self.assertEqual(
+            JobSearchMessage.objects.filter(
+                role="assistant", content="late reply"
+            ).count(),
+            0,
+        )
+        # The anchor was removed by the cascade; finalizing it is a no-op.
+        self.assertEqual(JobSearchTurn.objects.filter(turn_key=key).count(), 0)
+
+    # -- stable ordering (adversarial review: retry reordering) -------------
+
+    def test_retry_reply_keeps_original_transcript_order(self):
+        """A successful retry's reply is serialized immediately after the
+        original turn, not appended after newer turns."""
+        conv_id = self._start_conversation()
+        first_key = str(uuid.uuid4())
+        second_key = str(uuid.uuid4())
+        real_run_turn = JobSearchService().run_turn.__func__
+
+        # First turn fails; a newer turn completes while it is failed.
+        with patch.object(
+            JobSearchService, "run_turn", side_effect=ServiceTimeout("slow")
+        ):
+            self._submit(conv_id, "first question", first_key)
+        self._submit(conv_id, "second question", second_key)
+
+        # The retry's reply row is created LAST but must not render last.
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True, side_effect=real_run_turn
+        ):
+            retry = self._submit(conv_id, "first question", first_key)
+        self.assertEqual(retry.status_code, 201)
+
+        history = self.client.get(
+            reverse("agent-conversation-detail", args=[conv_id])
+        ).json()
+        roles = [m["role"] for m in history["messages"]]
+        self.assertEqual(roles, ["user", "assistant", "user", "assistant"])
+        user_contents = [
+            m["content"] for m in history["messages"] if m["role"] == "user"
+        ]
+        self.assertEqual(user_contents, ["first question", "second question"])
+        # The retried reply is pinned directly after the original question.
+        self.assertEqual(history["messages"][0]["content"], "first question")
+        self.assertEqual(history["messages"][1]["role"], "assistant")
+
+
+class JobSearchTurnAnchorModelTests(TestCase):
+    """The turn anchor's unconditional unique constraint (issue #458).
+
+    The constraint must exist on every backend — MySQL included, where the
+    message-level partial unique constraint is never emitted — because the
+    anchor row is what makes apply-once hold in production. It is exercised
+    directly here rather than via a conditional constraint.
+    """
+
+    def test_duplicate_turn_anchor_rejected(self):
+        user = User.objects.create_user("anchormodel", "am@example.com", "pw")
+        conversation = JobSearchConversation.objects.create(owner=user)
+        JobSearchTurn.objects.create(
+            conversation=conversation, turn_key="turn-key-a"
+        )
+        with self.assertRaises(IntegrityError):
+            JobSearchTurn.objects.create(
+                conversation=conversation, turn_key="turn-key-a"
+            )
+
+    def test_same_key_allowed_across_conversations(self):
+        user = User.objects.create_user("anchormodel2", "am2@example.com", "pw")
+        first = JobSearchConversation.objects.create(owner=user)
+        second = JobSearchConversation.objects.create(owner=user)
+        JobSearchTurn.objects.create(conversation=first, turn_key="shared")
+        JobSearchTurn.objects.create(conversation=second, turn_key="shared")
+        self.assertEqual(JobSearchTurn.objects.filter(turn_key="shared").count(), 2)
+
+    def test_str_does_not_expose_turn_key(self):
+        user = User.objects.create_user("anchormodel3", "am3@example.com", "pw")
+        conversation = JobSearchConversation.objects.create(owner=user)
+        turn = JobSearchTurn.objects.create(
+            conversation=conversation, turn_key="secret-key"
+        )
+        rendered = str(turn)
+        self.assertIn("pending", rendered)
+        self.assertNotIn("secret-key", rendered)
+
+    def test_delete_conversation_cascades_to_turns(self):
+        user = User.objects.create_user("anchormodel4", "am4@example.com", "pw")
+        conversation = JobSearchConversation.objects.create(owner=user)
+        JobSearchTurn.objects.create(conversation=conversation, turn_key="k")
+        conversation.delete()
+        self.assertEqual(JobSearchTurn.objects.count(), 0)
 
 
 class TurnClaimConcurrencyTests(TransactionTestCase):
-    """Concurrency of the turn claim (issue #458).
+    """Two-connection race for the turn claim (issue #458, adversarial review).
 
-    Two same-key submissions race: exactly one runs the provider and applies
-    the outcome; the other observes the ``pending`` claim and gets the stable
-    409 without duplicating history or preference side effects.
+    Two threads with their own clients — and therefore their own database
+    connections — submit the same key simultaneously, synchronized by a
+    barrier at the POST. The winner's provider call is held open until the
+    loser has responded, so exactly one request can win the anchor claim:
+    exactly one provider execution, one user row, one assistant row, one
+    anchor; the loser observes the live ``pending`` claim and gets 409.
     """
 
     def setUp(self):
@@ -1806,7 +2195,6 @@ class TurnClaimConcurrencyTests(TransactionTestCase):
         alice = User.objects.create_user("claimrace", "cr@example.com", "pw")
         client = Client()
         client.force_login(alice)
-        cache.clear()
 
         create = client.post(
             reverse("agent-conversation-list"),
@@ -1819,51 +2207,54 @@ class TurnClaimConcurrencyTests(TransactionTestCase):
 
         run_calls = {"n": 0}
         real_run_turn = JobSearchService().run_turn.__func__
-        gate = threading.Event()
+        release = threading.Event()
+        barrier = threading.Barrier(2)
 
         def slow_run_turn(*args, **kwargs):
             run_calls["n"] += 1
-            # Hold the provider call open so the second request must observe
-            # the pending claim (or block on the row lock) rather than run.
-            gate.wait(timeout=10)
+            # Hold the winner's provider call open until the loser has
+            # observed the pending claim and responded.
+            release.wait(timeout=10)
             return real_run_turn(*args, **kwargs)
+
+        def submit_once():
+            # Two connections: each thread authenticates its own client, so
+            # the two submissions run on separate database connections.
+            local_client = Client()
+            local_client.force_login(alice)
+            barrier.wait(timeout=10)
+            resp = local_client.post(
+                reverse("agent-conversation-detail", args=[conversation_id]),
+                data=json.dumps({"content": "once", "idempotency_key": key}),
+                content_type="application/json",
+            )
+            # The loser releases the winner's provider call after its 409.
+            release.set()
+            return resp
 
         with patch.object(
             JobSearchService, "run_turn", autospec=True, side_effect=slow_run_turn
         ):
             with ThreadPoolExecutor(max_workers=2) as pool:
-                first = pool.submit(
-                    lambda: client.post(
-                        reverse("agent-conversation-detail", args=[conversation_id]),
-                        data=json.dumps({"content": "once", "idempotency_key": key}),
-                        content_type="application/json",
-                    )
-                )
-                # Ensure the winner claims first.
-                deadline = __import__("time").time() + 5
-                while run_calls["n"] == 0 and __import__("time").time() < deadline:
-                    __import__("time").sleep(0.05)
-                second = pool.submit(
-                    lambda: client.post(
-                        reverse("agent-conversation-detail", args=[conversation_id]),
-                        data=json.dumps({"content": "once", "idempotency_key": key}),
-                        content_type="application/json",
-                    )
-                )
-                first_resp = first.result()
-                gate.set()
-                second_resp = second.result()
+                futures = [pool.submit(submit_once) for _ in range(2)]
+                responses = [f.result() for f in futures]
 
-        statuses = sorted([first_resp.status_code, second_resp.status_code])
-        self.assertEqual(statuses, [201, 409])
+        self.assertEqual(
+            sorted(r.status_code for r in responses), [201, 409]
+        )
         self.assertEqual(run_calls["n"], 1)
         conv = JobSearchConversation.objects.get(pk=conversation_id)
         self.assertEqual(conv.messages.filter(role="user").count(), 1)
         self.assertEqual(conv.messages.filter(role="assistant").count(), 1)
-        user_msg = conv.messages.get(role="user", idempotency_key=key)
+        # Exactly one anchor row exists and it completed.
         self.assertEqual(
-            user_msg.delivery_state, JobSearchMessage.DeliveryState.COMPLETED
+            JobSearchTurn.objects.filter(conversation_id=conversation_id).count(), 1
         )
+        turn = JobSearchTurn.objects.get(
+            conversation_id=conversation_id, turn_key=key
+        )
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.COMPLETED)
+        self.assertEqual(turn.attempt_count, 1)
 
 
 def _mysql_available():
@@ -1874,16 +2265,21 @@ def _mysql_available():
 
 @unittest.skipUnless(
     _mysql_available(),
-    "requires a MySQL connection (production backend); validated via the "
-    "documented staging two-process drill when CI lacks a MySQL service",
+    "requires a MySQL connection (production backend). Run it with the "
+    "crank.settings.mysql_test module (same pattern as the score race tests): "
+    "SECRET_KEY=test REDIS_MASTER_URL=redis://localhost:6379/0 "
+    "DB_NAME=crank_test DB_USER=... DB_PASS=... DB_HOST=127.0.0.1 "
+    "python -m pytest crank/tests/views/test_job_search.py -k mysql "
+    "--ds crank.settings.mysql_test --create-db. CI has no MySQL service, so "
+    "this proof runs there via the documented two-process staging drill.",
 )
 class TurnClaimMySQLConcurrencyTests(TransactionTestCase):
-    """MySQL-backed apply-once proof for the turn claim (issue #458).
+    """MySQL-backed apply-once proof for the turn anchor (issue #458).
 
-    Mirrors the write-side guard pattern used by
-    ``crank/tests/services/test_score_persistence.py``: real cross-connection
-    contention against MySQL's default REPEATABLE READ isolation, exercising
-    the ``select_for_update`` claim on the user row.
+    Real cross-connection contention against MySQL's default REPEATABLE READ
+    isolation: the anchor's *unconditional* unique constraint plus the row
+    lock serialize the submissions even though MySQL never emitted the
+    message-level partial unique constraint (W036).
     """
 
     def test_concurrent_same_key_submissions_apply_outcome_once(self):
@@ -1936,7 +2332,11 @@ class TurnClaimMySQLConcurrencyTests(TransactionTestCase):
         conv = JobSearchConversation.objects.get(pk=conversation_id)
         self.assertEqual(conv.messages.filter(role="user").count(), 1)
         self.assertEqual(conv.messages.filter(role="assistant").count(), 1)
-        user_msg = conv.messages.get(role="user", idempotency_key=key)
         self.assertEqual(
-            user_msg.delivery_state, JobSearchMessage.DeliveryState.COMPLETED
+            JobSearchTurn.objects.filter(conversation_id=conversation_id).count(), 1
         )
+        turn = JobSearchTurn.objects.get(
+            conversation_id=conversation_id, turn_key=key
+        )
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.COMPLETED)
+        self.assertEqual(turn.attempt_count, 1)
