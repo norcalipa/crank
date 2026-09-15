@@ -76,26 +76,107 @@ test.describe('company details dialog layering (issue #464) — desktop', () => 
         expect(overlayZ, 'popup overlay must stack above the nav rail').toBeGreaterThan(railZ);
     });
 
-    test('large content scrolls inside the card body while the header stays visible', async ({page}) => {
+    test('large content scrolls inside the card body while the header stays pinned', async ({page}) => {
         await page.goto(POPUP_FIXTURE);
         await openDetailsDialog(page);
 
-        const body = page.getByRole('dialog').locator('.card-body');
+        const dialog = page.getByRole('dialog');
+        const body = dialog.locator('.card-body');
+        const header = dialog.locator('.card-header');
+
+        // The checked-in fixture's live content may not overflow, which made
+        // the original test vacuous (review r1): force deterministic overflow
+        // so the substantive assertions always run.
+        await body.evaluate((el) => {
+            const filler = document.createElement('div');
+            filler.setAttribute('data-testid', 'scroll-filler');
+            filler.setAttribute('aria-hidden', 'true');
+            filler.style.cssText = 'height: 2400px;';
+            el.appendChild(filler);
+        });
         const scrollInfo = await body.evaluate((el) => ({
             overflowY: getComputedStyle(el).overflowY,
             scrollHeight: el.scrollHeight,
             clientHeight: el.clientHeight,
         }));
         expect(scrollInfo.overflowY).toBe('auto');
-        if (scrollInfo.scrollHeight > scrollInfo.clientHeight) {
-            // Content exceeds the dialog: the body (not the whole card) owns
-            // the scrollbar, so the header remains visible while scrolling.
-            const header = page.getByRole('dialog').locator('.card-header');
-            const headerBox = await header.boundingBox();
-            const dialogBox = await page.getByRole('dialog').boundingBox();
-            expect(headerBox!.y).toBeLessThan(dialogBox!.y + dialogBox!.height);
-            expect(headerBox!.y).toBeGreaterThanOrEqual(dialogBox!.y - 1);
+        expect(scrollInfo.scrollHeight, 'card body must actually overflow').toBeGreaterThan(scrollInfo.clientHeight);
+
+        // Record the pinned header's position, then scroll the body to its
+        // maximum and prove the scroll actually advanced.
+        const headerBoxBefore = await header.boundingBox();
+        await body.evaluate((el) => {
+            el.scrollTop = el.scrollHeight;
+        });
+        const scrollTop = await body.evaluate((el) => el.scrollTop);
+        expect(scrollTop, 'card body scrolls to its maximum').toBeGreaterThan(0);
+
+        // The header keeps its exact position while the body scrolls beneath it.
+        const headerBoxAfter = await header.boundingBox();
+        expect(headerBoxAfter!.y).toBe(headerBoxBefore!.y);
+        const dialogBox = await dialog.boundingBox();
+        expect(headerBoxAfter!.y).toBeGreaterThanOrEqual(dialogBox!.y - 1);
+        expect(headerBoxAfter!.y + headerBoxAfter!.height)
+            .toBeLessThanOrEqual(dialogBox!.y + dialogBox!.height + 1);
+        await expect(header).toBeVisible();
+    });
+
+    test('background content is unreachable and document scrolling is locked while the dialog is open', async ({page}) => {
+        await page.goto(POPUP_FIXTURE);
+        const overflowBefore = await page.evaluate(() => getComputedStyle(document.body).overflow);
+        await openDetailsDialog(page);
+
+        const dialog = page.getByRole('dialog');
+
+        // Background isolation (issue #464 "prevent background interaction"):
+        // the app shell and page content behind the dialog are inert and
+        // hidden from the accessibility tree while it is open.
+        const backgroundState = await page.evaluate(() => {
+            const roots = Array.from(document.querySelectorAll<HTMLElement>('.app-shell, main.app-content'));
+            return roots.map((el) => ({
+                inert: el.hasAttribute('inert'),
+                ariaHidden: el.getAttribute('aria-hidden'),
+            }));
+        });
+        expect(backgroundState.length).toBeGreaterThan(0);
+        for (const state of backgroundState) {
+            expect(state.inert).toBe(true);
+            expect(state.ariaHidden).toBe('true');
         }
+
+        // Document scroll lock: the body cannot scroll while the dialog is open.
+        const overflowWhileOpen = await page.evaluate(() => getComputedStyle(document.body).overflow);
+        expect(overflowWhileOpen).toBe('hidden');
+        await page.mouse.wheel(0, 600);
+        await page.waitForTimeout(100);
+        const scrollYWhileOpen = await page.evaluate(() => window.scrollY);
+        expect(scrollYWhileOpen, 'wheel scrolling over the backdrop must not move the document').toBe(0);
+
+        // Programmatic focus on background elements is a no-op while inert.
+        const focusStayedInDialog = await page.evaluate(() => {
+            const navLink = document.getElementById('nav-rankings');
+            navLink?.focus();
+            const dialogEl = document.querySelector('[role="dialog"]');
+            return Boolean(dialogEl && dialogEl.contains(document.activeElement));
+        });
+        expect(focusStayedInDialog, 'focus must stay inside the dialog while the background is inert').toBe(true);
+
+        // Keyboard walk: Tab never leaves the dialog for the page behind it.
+        for (let i = 0; i < 8; i++) {
+            await page.keyboard.press('Tab');
+            const inside = await dialog.evaluate((el) => el.contains(document.activeElement));
+            expect(inside, `Tab #${i + 1} must stay inside the dialog`).toBe(true);
+        }
+
+        // Closing the dialog releases the isolation.
+        await page.keyboard.press('Escape');
+        await expect(dialog).toHaveCount(0);
+        const overflowAfter = await page.evaluate(() => getComputedStyle(document.body).overflow);
+        expect(overflowAfter).toBe(overflowBefore);
+        const stillInert = await page.evaluate(() =>
+            Array.from(document.querySelectorAll('.app-shell, main.app-content'))
+                .some((el) => el.hasAttribute('inert')));
+        expect(stillInert).toBe(false);
     });
 
     test('Tab cycles inside the dialog and Escape restores focus to the opener row', async ({page}) => {
@@ -187,5 +268,33 @@ test.describe('company details dialog layering (issue #464) — mobile', () => {
         await page.keyboard.press('Escape');
         await expect(page.getByRole('dialog')).toHaveCount(0);
         await expect(page.locator('.organization-card').first()).toBeFocused();
+    });
+
+    test('background is inert and document scrolling is locked at mobile width', async ({page}) => {
+        await page.goto(POPUP_FIXTURE);
+        const overflowBefore = await page.evaluate(() => getComputedStyle(document.body).overflow);
+        await openDetailsDialog(page);
+
+        // Same isolation contract as desktop, asserted at the narrow width.
+        const state = await page.evaluate(() => {
+            const roots = Array.from(document.querySelectorAll<HTMLElement>('.app-shell, main.app-content'));
+            return {
+                inert: roots.map((el) => el.hasAttribute('inert')),
+                overflow: getComputedStyle(document.body).overflow,
+            };
+        });
+        expect(state.inert.length).toBeGreaterThan(0);
+        expect(state.inert).not.toContain(false);
+        expect(state.overflow).toBe('hidden');
+
+        await page.keyboard.press('Escape');
+        await expect(page.getByRole('dialog')).toHaveCount(0);
+        const released = await page.evaluate(() => ({
+            inert: Array.from(document.querySelectorAll('.app-shell, main.app-content'))
+                .some((el) => el.hasAttribute('inert')),
+            overflow: getComputedStyle(document.body).overflow,
+        }));
+        expect(released.inert).toBe(false);
+        expect(released.overflow).toBe(overflowBefore);
     });
 });

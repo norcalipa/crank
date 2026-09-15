@@ -1,6 +1,8 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
+import {createPortal} from 'react-dom';
+import {lockBackground, unlockBackground} from './modalIsolation';
 
 interface ScoreDetail {
     type__name: string;
@@ -145,6 +147,26 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         }
     };
 
+    // Background isolation (issue #464): while the dialog is open, the app
+    // shell and page content behind it are inert/aria-hidden and document
+    // scrolling is locked, so keyboard focus, assistive-technology virtual
+    // navigation, programmatic focus and wheel/touch scrolling cannot reach
+    // the page behind the blocking dialog. On close the isolation is released
+    // BEFORE focus returns to the opener: the trigger element lives in the
+    // (currently inert) background, so restoring earlier would silently
+    // fail in real browsers and break the #464 focus-restore contract.
+    React.useLayoutEffect(() => {
+        if (!visible) {
+            return;
+        }
+        lockBackground();
+        return () => {
+            unlockBackground();
+            restoreFocusToOpener();
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [visible]);
+
     React.useEffect(() => {
         // Focusable-element selector for the WAI-ARIA focus trap (issue #464).
         const getFocusableElements = (): HTMLElement[] => {
@@ -193,6 +215,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         return () => {
             document.removeEventListener('keydown', handleKeyDown);
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [visible, onClose]);
 
     if (!organization || !visible) {
@@ -230,7 +253,10 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
 
     const handleCloseClick = (e: React.MouseEvent) => {
         e.stopPropagation();
-        // Return focus to the trigger element before close (WAI-ARIA dialog pattern).
+        // Return focus to the trigger element before close (WAI-ARIA dialog
+        // pattern). The close path also releases background isolation and
+        // re-restores focus afterwards (see the isolation effect), so the
+        // opener receives focus even while it is still inert here.
         restoreFocusToOpener();
         onClose();
     };
@@ -244,7 +270,10 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         }
     };
 
-    return (
+    // Render the dialog into a portal on <body>: the blocking dialog must not
+    // live inside the (inert) background containers while it is open.
+    // Fixed-position overlays are page-level by convention.
+    return createPortal(
         <div className="popup-overlay" data-testid="popup-overlay" onClick={handleOverlayClick}>
             <div ref={dialogRef} className="popup-details card bg-dark" role="dialog" aria-modal="true"
                  aria-labelledby="organization-details-title">
@@ -392,7 +421,8 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                     </div>
                 </div>
             </div>
-        </div>
+        </div>,
+        document.body
     );
 };
 

@@ -15,6 +15,10 @@
     --z-nav-drawer: 1300;
     --z-blocking-dialog: 1400;
     --z-skip-link: 2000;
+    /* The sticky mobile topbar is its own page-level stacking layer: it sits
+       above ordinary content but below every other navigation layer, so the
+       nav toggle and drawer chrome stay reachable above it (issue #464). */
+    --z-mobile-topbar: 1030;
 }
 
 .popup-overlay {
@@ -726,7 +730,7 @@ body.app-nav-drawer-open {
     .app-mobile-topbar {
         position: sticky;
         top: 0;
-        z-index: 1030;
+        z-index: var(--z-mobile-topbar);
         display: flex;
         align-items: center;
         min-height: 48px;

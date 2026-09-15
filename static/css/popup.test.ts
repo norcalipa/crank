@@ -63,6 +63,7 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         expect(tokenValue('z-nav-drawer')).toBe(1300);
         expect(tokenValue('z-blocking-dialog')).toBe(1400);
         expect(tokenValue('z-skip-link')).toBe(2000);
+        expect(tokenValue('z-mobile-topbar')).toBe(1030);
     });
 
     it('places the blocking dialog above all background chrome but below the skip link', () => {
@@ -70,16 +71,21 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         expect(blocking).not.toBeNull();
         expect(blocking!).toBeGreaterThan(tokenValue('z-nav-drawer')!);
         expect(blocking!).toBeLessThan(tokenValue('z-skip-link')!);
+        // The sticky mobile topbar is below the other navigation chrome so
+        // the nav toggle and drawer stay reachable above it.
+        expect(tokenValue('z-nav-toggle')!).toBeGreaterThan(tokenValue('z-mobile-topbar')!);
     });
 
-    it('every fixed-position layer consumes the tokens instead of hard-coded numbers', () => {
-        // Page-level stacking layers are the fixed- and absolutely-position
-        // rules (the skip link is absolute). Local stacking contexts inside a
-        // dialog (e.g. the sticky header's z-index: 1) are deliberately
+    it('every page-level stacking layer consumes the tokens instead of hard-coded numbers', () => {
+        // Page-level stacking layers are the fixed-, absolute- and
+        // sticky-position rules (the skip link is absolute; the mobile
+        // topbar is sticky — review r1). Local stacking contexts inside a
+        // dialog card (e.g. the sticky header's z-index: 1) are deliberately
         // excluded.
         const zRules = (popupCss.match(/[^{}]+\{[^}]*z-index:[^}]*\}/g) ?? [])
-            .filter((rule) => /position:\s*(fixed|absolute)/.test(rule));
-        expect(zRules.length).toBeGreaterThanOrEqual(6);
+            .filter((rule) => /position:\s*(fixed|absolute|sticky)/.test(rule))
+            .filter((rule) => !/\.popup-details\b/.test(rule));
+        expect(zRules.length).toBeGreaterThanOrEqual(7);
         for (const rule of zRules) {
             expect(rule).toMatch(/z-index:\s*var\(--z-/);
         }
@@ -88,6 +94,7 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         expect(popupCss).toMatch(/\.app-nav-toggle\s*\{[^}]*z-index:\s*var\(--z-nav-toggle\)/);
         expect(popupCss).toMatch(/\.app-nav-overlay\s*\{[^}]*z-index:\s*var\(--z-nav-overlay\)/);
         expect(popupCss).toMatch(/\.app-nav-drawer\s*\{[^}]*z-index:\s*var\(--z-nav-drawer\)/);
+        expect(popupCss).toMatch(/\.app-mobile-topbar\s*\{[^}]*z-index:\s*var\(--z-mobile-topbar\)/);
         expect(popupCss).toMatch(/\.skip-to-content\s*\{[^}]*z-index:\s*var\(--z-skip-link\)/);
     });
 

@@ -4,6 +4,7 @@ import '@testing-library/jest-dom';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import * as React from 'react';
 import SuggestCompanyModal from './SuggestCompanyModal';
+import {lockBackground, unlockBackground} from './modalIsolation';
 
 describe('SuggestCompanyModal', () => {
     beforeEach(() => {
@@ -235,6 +236,95 @@ describe('SuggestCompanyModal', () => {
             render(<SuggestCompanyModal visible={false} onClose={onClose} />);
             fireEvent.keyDown(document, {key: 'Escape'});
             expect(onClose).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('background isolation (issue #464 review)', () => {
+        let backgroundRoots: HTMLElement[];
+
+        beforeEach(() => {
+            // Stand up the page structure the isolation module targets.
+            const shell = document.createElement('aside');
+            shell.className = 'app-shell';
+            document.body.appendChild(shell);
+            const content = document.createElement('main');
+            content.className = 'app-content';
+            document.body.appendChild(content);
+            backgroundRoots = [shell, content];
+            document.body.style.overflow = 'auto';
+        });
+
+        afterEach(() => {
+            for (const root of backgroundRoots) {
+                root.remove();
+            }
+            document.body.style.overflow = '';
+        });
+
+        test('locks document scrolling and inert-hides the background while open', () => {
+            const {rerender} = render(<SuggestCompanyModal visible={false} onClose={jest.fn()} />);
+            rerender(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+
+            expect(document.body.style.overflow).toBe('hidden');
+            for (const root of backgroundRoots) {
+                expect(root).toHaveAttribute('inert');
+                expect(root).toHaveAttribute('aria-hidden', 'true');
+            }
+        });
+
+        test('locks the background when mounted already open', () => {
+            render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+
+            expect(document.body.style.overflow).toBe('hidden');
+            for (const root of backgroundRoots) {
+                expect(root).toHaveAttribute('inert');
+            }
+        });
+
+        test('releases the isolation when the modal closes', () => {
+            const {rerender} = render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+            rerender(<SuggestCompanyModal visible={false} onClose={jest.fn()} />);
+
+            expect(document.body.style.overflow).toBe('auto');
+            for (const root of backgroundRoots) {
+                expect(root).not.toHaveAttribute('inert');
+                expect(root).not.toHaveAttribute('aria-hidden');
+            }
+        });
+
+        test('releases isolation when unmounted while open', () => {
+            const {unmount} = render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+            unmount();
+
+            expect(document.body.style.overflow).toBe('auto');
+            for (const root of backgroundRoots) {
+                expect(root).not.toHaveAttribute('inert');
+                expect(root).not.toHaveAttribute('aria-hidden');
+            }
+        });
+
+        test('is reference-counted: a second holder keeps the background isolated', () => {
+            // Simulate the mutual-exclusion handoff: another dialog claims
+            // the isolation while this modal is open, so this modal's close
+            // must not release it early.
+            const {rerender} = render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+            expect(document.body.style.overflow).toBe('hidden');
+
+            lockBackground();
+            rerender(<SuggestCompanyModal visible={false} onClose={jest.fn()} />);
+
+            // Still held by the second dialog.
+            expect(document.body.style.overflow).toBe('hidden');
+            for (const root of backgroundRoots) {
+                expect(root).toHaveAttribute('inert');
+            }
+
+            unlockBackground();
+            expect(document.body.style.overflow).toBe('auto');
+            for (const root of backgroundRoots) {
+                expect(root).not.toHaveAttribute('inert');
+                expect(root).not.toHaveAttribute('aria-hidden');
+            }
         });
     });
 });

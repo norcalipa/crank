@@ -1,6 +1,8 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
+import {createPortal} from 'react-dom';
+import {lockBackground, unlockBackground} from './modalIsolation';
 
 interface SuggestCompanyModalProps {
     visible: boolean;
@@ -43,14 +45,29 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
     // Element that had focus when the dialog opened (the trigger). Restored on
     // close so keyboard and pointer users return to where they left off.
     private openerRef: HTMLElement | null = null;
+    // Set by handler-initiated closes so the focus restore is retried after
+    // background isolation is released (issue #464): the opener lives in the
+    // inert background, so the synchronous restore attempt alone can
+    // silently fail in real browsers.
+    private pendingRestoreFocus = false;
 
     componentDidMount() {
         // Guard against a stale keydown listener after the modal closes.
         document.addEventListener('keydown', this.handleDocumentKeyDown);
+        if (this.props.visible) {
+            // Isolate the background when the modal mounts already open
+            // (issue #464).
+            lockBackground();
+        }
     }
 
     componentWillUnmount() {
         document.removeEventListener('keydown', this.handleDocumentKeyDown);
+        if (this.props.visible) {
+            // Never leave the page scroll-locked or the background inert if
+            // the modal unmounts while it is open (issue #464).
+            unlockBackground();
+        }
     }
 
     getSnapshotBeforeUpdate(prevProps: SuggestCompanyModalProps): boolean {
@@ -67,15 +84,26 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
 
     componentDidUpdate(prevProps: SuggestCompanyModalProps, _prevState: Readonly<SuggestCompanyModalState>, focusWasInside: boolean) {
         if (this.props.visible && !prevProps.visible) {
-            // On open, capture the trigger element, then move focus into the
-            // dialog (WAI-ARIA dialog pattern, issue #464).
+            // On open, isolate the background (inert/aria-hidden app shell +
+            // document scroll lock) for the modal's lifetime, capture the
+            // trigger element, then move focus into the dialog (WAI-ARIA
+            // dialog pattern, issue #464).
+            lockBackground();
+            this.pendingRestoreFocus = false;
             this.openerRef = document.activeElement instanceof HTMLElement
                 ? document.activeElement : null;
             this.closeButtonRef.current?.focus();
-        } else if (!this.props.visible && prevProps.visible && focusWasInside) {
-            // The parent closed the modal while focus was inside it: return
-            // focus to the opener so it never lingers on a removed node.
-            this.restoreFocusToOpener();
+        } else if (!this.props.visible && prevProps.visible) {
+            // Release background isolation BEFORE restoring focus: the
+            // opener sits in the inert background, so restoring earlier
+            // would silently fail in real browsers (issue #464 focus-restore
+            // contract). Handler-initiated closes set pendingRestoreFocus;
+            // parent-initiated closes restore whenever focus was inside.
+            unlockBackground();
+            if (focusWasInside || this.pendingRestoreFocus) {
+                this.restoreFocusToOpener();
+                this.pendingRestoreFocus = false;
+            }
         }
     }
 
@@ -103,9 +131,9 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
     private handleDocumentKeyDown = (event: KeyboardEvent) => {
         if (!this.props.visible) return;
         if (event.key === 'Escape') {
-            // WAI-ARIA dialog pattern: return focus to the trigger element
-            // before closing (issue #464).
-            this.restoreFocusToOpener();
+            // WAI-ARIA dialog pattern: handleClose returns focus to the
+            // trigger element, retried after background isolation is
+            // released (issue #464).
             this.handleClose();
             return;
         }
@@ -173,9 +201,13 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
     };
 
     handleClose = () => {
-        // Return focus to the trigger element before close (WAI-ARIA dialog
-        // pattern, issue #464).
+        // Return focus to the trigger element (WAI-ARIA dialog pattern). The
+        // synchronous attempt keeps the contract for direct callers; in real
+        // browsers the opener is still inert at this point, so the restore is
+        // retried by componentDidUpdate after the isolation is released
+        // (issue #464).
         this.restoreFocusToOpener();
+        this.pendingRestoreFocus = true;
         this.setState({
             companyName: '',
             websiteUrl: '',
@@ -194,7 +226,9 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
             return null;
         }
         const {companyName, websiteUrl, careersUrl, reason, submitting, error, fieldErrors, success} = this.state;
-        return (
+        // Render the dialog into a portal on <body>: the blocking dialog must
+        // not live inside the (inert) background containers while it is open.
+        return createPortal(
             <div ref={this.modalRef} className="modal d-block blocking-modal" tabIndex={-1} role="dialog" aria-modal="true"
                  data-testid="suggest-company-modal">
                 <div className="modal-dialog" role="document">
@@ -297,7 +331,8 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
                         </div>
                     </div>
                 </div>
-            </div>
+            </div>,
+            document.body
         );
     }
 }

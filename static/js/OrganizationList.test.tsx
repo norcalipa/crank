@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 
 import * as React from 'react';
 
@@ -940,5 +940,173 @@ describe('OrganizationList', () => {
 
         addSpy.mockRestore();
         removeSpy.mockRestore();
+    });
+
+    describe('stale details-response guard (issue #464 review)', () => {
+        // A deferred fetch response lets the test control exactly when a
+        // slow organization-details request settles, exposing the race the
+        // immediately-resolving mocks above cannot (review round 1).
+        const detailsDeferred = () => {
+            let resolveResponse: (value: {json: () => Promise<unknown>}) => void = () => {};
+            const promise = new Promise<{json: () => Promise<unknown>}>((resolve) => {
+                resolveResponse = resolve;
+            });
+            return {promise, resolveResponse};
+        };
+        const choicesResponse = {json: () => Promise.resolve({})};
+        const scoresResponse = {json: () => Promise.resolve([])};
+        const provenanceResponse = {json: () => Promise.resolve(null)};
+
+        const deferredDetailsFetch = (pending: Record<string, {promise: Promise<{json: () => Promise<unknown>}>}>) =>
+            jest.fn().mockImplementation((url) => {
+                if (url === '/api/funding-round-choices/' || url === '/api/rto-policy-choices/') {
+                    return Promise.resolve(choicesResponse);
+                }
+                if (url.endsWith('/scores/') || url.endsWith('/provenance/')) {
+                    return Promise.resolve(url.endsWith('/scores/') ? scoresResponse : provenanceResponse);
+                }
+                if (pending[url]) {
+                    return pending[url].promise;
+                }
+                return Promise.reject(new Error('Fetch not mocked for this URL'));
+            });
+
+        test('a slow details response cannot reopen the dialog over the suggest modal', async () => {
+            const org1 = detailsDeferred();
+            global.fetch = deferredDetailsFetch({'/api/organizations/1/': org1});
+
+            render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+
+            // Open the first row: the details request stays pending (deferred).
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
+
+            // While the request is in flight the user opens the suggest modal.
+            fireEvent.click(screen.getByTestId('suggest-company-btn'));
+            expect(await screen.findByTestId('suggest-company-modal')).toBeInTheDocument();
+            fireEvent.change(screen.getByLabelText(/Company name/), {target: {value: 'Typed Co'}});
+
+            // The stale details response finally resolves: it must be ignored.
+            await act(async () => {
+                org1.resolveResponse({json: () => Promise.resolve({id: 1, name: 'Organization 1', type: 'C', url: 'https://org1.example.com'})});
+            });
+
+            // The suggest modal and its typed input survive; no details dialog appears.
+            expect(screen.getByTestId('suggest-company-modal')).toBeInTheDocument();
+            expect((screen.getByLabelText(/Company name/) as HTMLInputElement).value).toBe('Typed Co');
+            expect(screen.queryByText('Company (for profit)')).not.toBeInTheDocument();
+        });
+
+        test('an out-of-order older response cannot replace the newer company selection', async () => {
+            const org1 = detailsDeferred();
+            const org2 = detailsDeferred();
+            global.fetch = deferredDetailsFetch({
+                '/api/organizations/1/': org1,
+                '/api/organizations/2/': org2,
+            });
+
+            render(<OrganizationList organizations={organizations} />);
+
+            // Two rapid clicks: the second selection supersedes the first.
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            fireEvent.click(screen.getAllByText('Organization 2')[0]);
+
+            // The newer selection resolves first: its dialog opens.
+            await act(async () => {
+                org2.resolveResponse({json: () => Promise.resolve({id: 2, name: 'Organization 2', type: 'C', url: 'https://org2.example.com'})});
+            });
+            expect(await screen.findByRole('dialog', {name: 'Organization 2'})).toBeInTheDocument();
+
+            // The older, slower response arrives last and must be ignored: the
+            // dialog keeps showing the newer selection.
+            await act(async () => {
+                org1.resolveResponse({json: () => Promise.resolve({id: 1, name: 'Organization 1', type: 'C', url: 'https://org1.example.com'})});
+            });
+            expect(screen.queryByRole('dialog', {name: 'Organization 1'})).not.toBeInTheDocument();
+            expect(screen.getByRole('dialog', {name: 'Organization 2'})).toBeInTheDocument();
+        });
+
+        test('a slow response does not reopen a dialog the user has closed', async () => {
+            const org1 = detailsDeferred();
+            const org2 = detailsDeferred();
+            global.fetch = deferredDetailsFetch({
+                '/api/organizations/1/': org1,
+                '/api/organizations/2/': org2,
+            });
+
+            render(<OrganizationList organizations={organizations} />);
+
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            fireEvent.click(screen.getAllByText('Organization 2')[0]);
+
+            await act(async () => {
+                org2.resolveResponse({json: () => Promise.resolve({id: 2, name: 'Organization 2', type: 'C', url: 'https://org2.example.com'})});
+            });
+            expect(await screen.findByRole('dialog', {name: 'Organization 2'})).toBeInTheDocument();
+
+            // The user closes the dialog before the older response arrives.
+            fireEvent.keyDown(document, {key: 'Escape'});
+            await waitFor(() => {
+                expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            });
+
+            // The stale org-1 response lands after the close: it must not
+            // reopen anything.
+            await act(async () => {
+                org1.resolveResponse({json: () => Promise.resolve({id: 1, name: 'Organization 1', type: 'C', url: 'https://org1.example.com'})});
+            });
+            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            expect(screen.queryByText('Company (for profit)')).not.toBeInTheDocument();
+        });
+
+        test('a failing slow details response is ignored once superseded', async () => {
+            let rejectOrg1: (reason?: unknown) => void = () => {};
+            global.fetch = jest.fn().mockImplementation((url) => {
+                if (url === '/api/funding-round-choices/' || url === '/api/rto-policy-choices/') {
+                    return Promise.resolve(choicesResponse);
+                }
+                if (url === '/api/organizations/1/') {
+                    return new Promise((_resolve, reject) => {
+                        rejectOrg1 = reject;
+                    });
+                }
+                return Promise.reject(new Error('Fetch not mocked for this URL'));
+            });
+            const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+            render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            fireEvent.click(screen.getByTestId('suggest-company-btn'));
+            expect(await screen.findByTestId('suggest-company-modal')).toBeInTheDocument();
+
+            // The failed details request settles after the newer intent: the
+            // error path must not clobber the suggest modal either.
+            await act(async () => {
+                rejectOrg1(new Error('network down'));
+            });
+
+            expect(screen.getByTestId('suggest-company-modal')).toBeInTheDocument();
+            expect(screen.queryByText('Company (for profit)')).not.toBeInTheDocument();
+            expect(consoleSpy).not.toHaveBeenCalled();
+
+            consoleSpy.mockRestore();
+        });
+
+        test('a current slow response still opens the details dialog', async () => {
+            const org1 = detailsDeferred();
+            global.fetch = deferredDetailsFetch({'/api/organizations/1/': org1});
+
+            render(<OrganizationList organizations={organizations} />);
+
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+
+            // No newer intent intervenes: the guard must not over-block.
+            await act(async () => {
+                org1.resolveResponse({json: () => Promise.resolve({id: 1, name: 'Organization 1', type: 'C', url: 'https://org1.example.com'})});
+            });
+            expect(await screen.findByRole('dialog', {name: 'Organization 1'})).toBeInTheDocument();
+            expect(screen.getByText('https://org1.example.com')).toBeInTheDocument();
+        });
     });
 });

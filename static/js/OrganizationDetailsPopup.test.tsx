@@ -940,4 +940,91 @@ describe('OrganizationDetailsPopup', () => {
         const lastUpdated = screen.getByTestId('last-updated');
         expect(lastUpdated.textContent).toContain('weeks ago');
     });
+
+    describe('background isolation (issue #464 review)', () => {
+        let backgroundRoots: HTMLElement[];
+
+        beforeEach(() => {
+            // Stand up the page structure the isolation module targets: the
+            // application shell (navigation chrome) and the main content area.
+            const shell = document.createElement('aside');
+            shell.className = 'app-shell';
+            shell.innerHTML = '<a href="/">Nav link</a>';
+            document.body.appendChild(shell);
+            const content = document.createElement('main');
+            content.className = 'app-content';
+            document.body.appendChild(content);
+            backgroundRoots = [shell, content];
+            document.body.style.overflow = 'auto';
+        });
+
+        afterEach(() => {
+            for (const root of backgroundRoots) {
+                root.remove();
+            }
+            document.body.style.overflow = '';
+        });
+
+        test('locks document scrolling and inert-hides the background while the dialog is open', () => {
+            render(
+                <OrganizationDetailsPopup
+                    organization={mockOrganization}
+                    visible={true}
+                    onClose={() => {}}
+                />
+            );
+
+            expect(document.body.style.overflow).toBe('hidden');
+            for (const root of backgroundRoots) {
+                expect(root).toHaveAttribute('inert');
+                expect(root).toHaveAttribute('aria-hidden', 'true');
+            }
+        });
+
+        test('releases the scroll lock and background inertness when the dialog closes', () => {
+            const {rerender} = render(
+                <OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}} />
+            );
+            expect(document.body.style.overflow).toBe('hidden');
+
+            rerender(<OrganizationDetailsPopup organization={mockOrganization} visible={false} onClose={() => {}} />);
+
+            expect(document.body.style.overflow).toBe('auto');
+            for (const root of backgroundRoots) {
+                expect(root).not.toHaveAttribute('inert');
+                expect(root).not.toHaveAttribute('aria-hidden');
+            }
+        });
+
+        test('releases isolation when unmounted while the dialog is open', () => {
+            const {unmount} = render(
+                <OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}} />
+            );
+            expect(document.body.style.overflow).toBe('hidden');
+
+            unmount();
+
+            expect(document.body.style.overflow).toBe('auto');
+            for (const root of backgroundRoots) {
+                expect(root).not.toHaveAttribute('inert');
+                expect(root).not.toHaveAttribute('aria-hidden');
+            }
+        });
+
+        test('restores focus to the opener after isolation is released on close', () => {
+            const opener = document.createElement('button');
+            document.body.appendChild(opener);
+            opener.focus();
+
+            const {rerender} = render(
+                <OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}} />
+            );
+            rerender(<OrganizationDetailsPopup organization={mockOrganization} visible={false} onClose={() => {}} />);
+
+            // The cleanup restores focus AFTER unlocking, so the opener —
+            // inside the previously inert background — receives focus again.
+            expect(document.activeElement).toBe(opener);
+            opener.remove();
+        });
+    });
 });
