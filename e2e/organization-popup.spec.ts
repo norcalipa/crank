@@ -22,6 +22,25 @@ async function openDetailsDialog(page: Page): Promise<void> {
     await expect(page.getByRole('dialog')).toBeVisible();
 }
 
+// Review r3: Bootstrap sets `:root { scroll-behavior: smooth }`, so
+// window.scrollTo animates and an immediate exact read of window.scrollY
+// catches a mid-animation offset — the tall-document sanity assertions
+// failed in Firefox and WebKit (CI observed 0, 2, and 32 instead of 300
+// across retries) before the dialog was even opened. Disable smooth
+// scrolling on the test page — a page.evaluate scrollTo with instant
+// behavior — and wait for the scroll to settle before reading it, so the
+// setup is deterministic in chromium, firefox, and webkit.
+async function scrollWindowTo(page: Page, top: number, message?: string): Promise<void> {
+    await page.evaluate(() => {
+        document.documentElement.style.scrollBehavior = 'auto';
+    });
+    await page.evaluate((y) => window.scrollTo(0, y), top);
+    await expect.poll(
+        () => page.evaluate(() => window.scrollY),
+        {message: message ?? `window scroll must settle at ${top}`},
+    ).toBe(top);
+}
+
 test.describe('company details dialog layering (issue #464) — desktop', () => {
     test.use({viewport: {width: 1280, height: 800}});
 
@@ -158,9 +177,8 @@ test.describe('company details dialog layering (issue #464) — desktop', () => 
             filler.style.cssText = 'height: 2400px;';
             document.querySelector('main.app-content')!.appendChild(filler);
         });
-        await page.evaluate(() => window.scrollTo(0, 300));
-        expect(await page.evaluate(() => window.scrollY), 'sanity: the tall document scrolls before the dialog opens').toBe(300);
-        await page.evaluate(() => window.scrollTo(0, 0));
+        await scrollWindowTo(page, 300, 'sanity: the tall document scrolls before the dialog opens');
+        await scrollWindowTo(page, 0);
 
         const overflowBefore = await page.evaluate(() => ({
             body: getComputedStyle(document.body).overflow,
@@ -245,8 +263,7 @@ test.describe('company details dialog layering (issue #464) — desktop', () => 
             Array.from(document.querySelectorAll('.app-shell, main.app-content, .skip-to-content'))
                 .some((el) => el.hasAttribute('inert')));
         expect(stillInert).toBe(false);
-        await page.evaluate(() => window.scrollTo(0, 150));
-        expect(await page.evaluate(() => window.scrollY), 'sanity: the document scrolls again after the close').toBe(150);
+        await scrollWindowTo(page, 150, 'sanity: the document scrolls again after the close');
     });
 
     test('Tab cycles inside the dialog and Escape restores focus to the opener row', async ({page}) => {
@@ -364,9 +381,8 @@ test.describe('company details dialog layering (issue #464) — mobile', () => {
             filler.style.cssText = 'height: 2400px;';
             document.querySelector('main.app-content')!.appendChild(filler);
         });
-        await page.evaluate(() => window.scrollTo(0, 300));
-        expect(await page.evaluate(() => window.scrollY), 'sanity: the tall document scrolls before the dialog opens').toBe(300);
-        await page.evaluate(() => window.scrollTo(0, 0));
+        await scrollWindowTo(page, 300, 'sanity: the tall document scrolls before the dialog opens');
+        await scrollWindowTo(page, 0);
 
         const overflowBefore = await page.evaluate(() => ({
             body: getComputedStyle(document.body).overflow,
@@ -412,7 +428,6 @@ test.describe('company details dialog layering (issue #464) — mobile', () => {
         }));
         expect(released.inert).toBe(false);
         expect(released.overflow).toEqual(overflowBefore);
-        await page.evaluate(() => window.scrollTo(0, 150));
-        expect(await page.evaluate(() => window.scrollY), 'sanity: the document scrolls again after the close').toBe(150);
+        await scrollWindowTo(page, 150, 'sanity: the document scrolls again after the close');
     });
 });

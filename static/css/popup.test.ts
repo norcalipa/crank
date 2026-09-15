@@ -89,6 +89,50 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
             (match) => ({selector: match[1].trim(), declarations: match[2]}));
     };
 
+    // Review r3: the contract is enforced on EACH z-index declaration, not
+    // per rule. The r2 sweep passed a rule as soon as one of its declarations
+    // consumed a token, so a same-rule override (`.app-mobile-topbar {
+    // z-index: var(--z-mobile-topbar); z-index: 9999; }`) escaped the sweep
+    // while the raw value won in CSS. The lookbehind keeps a custom property
+    // named `*z-index*` from counting as a declaration mention.
+    const Z_INDEX_MENTION = /(?<![\w-])z-index\s*:/;
+    const zIndexDeclarations = (declarations: string): string[] =>
+        declarations.match(/(?<![\w-])z-index\s*:\s*[^;]+;/g) ?? [];
+
+    // Returns every z-index declaration that violates the layer-token
+    // contract as a [selector, offending declaration] pair. A declaration
+    // is clean only when it consumes a shared layer token, or — inside a
+    // whitelisted dialog-local stacking context — equals the pinned value
+    // exactly; any additional raw declaration sharing the rule is flagged,
+    // because it would override the clean declaration in CSS.
+    const zIndexViolations = (css: string): Array<[string, string]> => {
+        const tokenDeclaration =
+            new RegExp(`^z-index\\s*:\\s*var\\(--(?:${LAYER_TOKENS.join('|')})\\)\\s*;$`);
+        const violations: Array<[string, string]> = [];
+        for (const rule of cssRules(css)) {
+            if (!Z_INDEX_MENTION.test(rule.declarations)) {
+                continue;
+            }
+            const declarations = zIndexDeclarations(rule.declarations);
+            if (declarations.length === 0) {
+                // The rule declares z-index but parses to nothing (e.g. a
+                // missing trailing semicolon): never skip it silently.
+                violations.push([rule.selector, '<unparsable z-index declaration>']);
+                continue;
+            }
+            const context = LOCAL_STACKING_CONTEXTS.find((c) => c.selector.test(rule.selector));
+            const allowedPattern = context
+                ? new RegExp(`^z-index\\s*:\\s*${context.value}\\s*;$`)
+                : tokenDeclaration;
+            for (const declaration of declarations) {
+                if (!allowedPattern.test(declaration)) {
+                    violations.push([rule.selector, declaration.trim()]);
+                }
+            }
+        }
+        return violations;
+    };
+
     it('defines the shared layer tokens as :root custom properties', () => {
         expect(tokenValue('z-nav-rail')).toBe(1100);
         expect(tokenValue('z-nav-toggle')).toBe(1200);
@@ -117,22 +161,16 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         // `position` declaration) and other page-level positioned layers
         // (`.app-messages { position: relative; z-index: 1500 }`) escaped it
         // while the suite reported complete token adoption. Sweep EVERY rule
-        // that declares z-index — whatever its `position` — and require a
-        // shared token or an explicitly whitelisted dialog-local stacking
-        // context with its exact value.
-        const rules = cssRules(popupCss).filter((rule) => /z-index:/.test(rule.declarations));
-        expect(rules.length).toBeGreaterThanOrEqual(9);
+        // that declares z-index — whatever its `position`.
+        // Review r3: enforcement is per DECLARATION, so a same-rule raw
+        // override can no longer hide behind a token declaration in the
+        // same block — every declaration must consume a token, or be the
+        // whitelisted dialog-local value with nothing else in the rule.
+        const zRules = cssRules(popupCss).filter((rule) => Z_INDEX_MENTION.test(rule.declarations));
+        expect(zRules.length).toBeGreaterThanOrEqual(9);
 
-        const tokenPattern = `z-index:\\s*var\\(--(?:${LAYER_TOKENS.join('|')})\\)`;
-        for (const rule of rules) {
-            const whitelisted = LOCAL_STACKING_CONTEXTS.some((context) =>
-                context.selector.test(rule.selector)
-                && new RegExp(`z-index:\\s*${context.value}\\s*;`).test(rule.declarations));
-            if (whitelisted) {
-                continue;
-            }
-            expect(rule.declarations).toMatch(new RegExp(tokenPattern));
-        }
+        // A failing diff lists each offending [selector, declaration] pair.
+        expect(zIndexViolations(popupCss)).toEqual([]);
 
         // Every one of the seven layer tokens is actually consumed, so the
         // contract cannot drift: removing a consumer breaks the sweep just
@@ -148,6 +186,35 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         expect(popupCss).toMatch(/\.app-nav-drawer\s*\{[^}]*z-index:\s*var\(--z-nav-drawer\)/);
         expect(popupCss).toMatch(/\.app-mobile-topbar\s*\{[^}]*z-index:\s*var\(--z-mobile-topbar\)/);
         expect(popupCss).toMatch(/\.skip-to-content\s*\{[^}]*z-index:\s*var\(--z-skip-link\)/);
+    });
+
+    it('rejects raw z-index values, including overrides hidden in a tokenized rule', () => {
+        // Review r3 mutation probes, run through the same per-declaration
+        // enforcement that guards popup.css: each synthetic violation must
+        // be flagged, so the sweep cannot regress to per-rule matching.
+        const mutantCss = [
+            // Same-rule override: the token declaration parses, but the later
+            // raw value wins in CSS.
+            '.app-mobile-topbar { position: sticky; z-index: var(--z-mobile-topbar); z-index: 9999; }',
+            // Whitelisted dialog-local context smuggling an extra raw value.
+            '.popup-details .card-header { position: sticky; z-index: 1; z-index: 15; }',
+            // Page-level positioned layer with no token at all.
+            '.app-messages { position: relative; z-index: 1500; }',
+        ].join('\n');
+        expect(zIndexViolations(mutantCss)).toEqual([
+            ['.app-mobile-topbar', 'z-index: 9999;'],
+            ['.popup-details .card-header', 'z-index: 15;'],
+            ['.app-messages', 'z-index: 1500;'],
+        ]);
+
+        // Control: the same enforcement accepts clean declarations — a
+        // tokenized rule and the whitelisted dialog-local value — so it does
+        // not over-block the legitimate contract.
+        const cleanCss = [
+            '.app-nav-rail { position: fixed; z-index: var(--z-nav-rail); }',
+            '.popup-details .card-header { position: sticky; z-index: 1; }',
+        ].join('\n');
+        expect(zIndexViolations(cleanCss)).toEqual([]);
     });
 
     it('popup overlay and suggest modal use the blocking dialog token', () => {
