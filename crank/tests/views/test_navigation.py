@@ -79,13 +79,18 @@ class NavigationShellTests(TestCase):
 
     # --- Authenticated visibility --------------------------------------
 
-    def test_authenticated_sees_logout_and_username(self):
+    def test_authenticated_sees_logout_and_hydration_hook(self):
+        """Authenticated shell shows Logout and the account hook, but never
+        the username server-side: the shared page cache serves this shell to
+        every account (issue #470), so the client hydrates the label from the
+        uncached whoami endpoint."""
         user = self._create_user()
         self.client.force_login(user)
         response = self.client.get(reverse("index"))
         self.assertContains(response, "Logout")
-        self.assertContains(response, "testuser")
+        self.assertNotContains(response, "testuser")
         self.assertContains(response, 'id="nav-account"')
+        self.assertContains(response, "data-nav-user-label")
 
     def test_authenticated_non_staff_sees_admin_link(self):
         """Authenticated users see Admin per issue requirement (authorization
@@ -126,12 +131,16 @@ class NavigationShellTests(TestCase):
 
     # --- CSRF-safe logout -----------------------------------------------
 
-    def test_logout_form_has_csrf_token(self):
+    def test_logout_form_embeds_no_session_bound_token(self):
+        """The cached shell serves every account, so it must embed no
+        session-bound CSRF token (issue #470). Logout stays CSRF-safe via the
+        csrf_exempt CustomLogoutView: no per-session token is embedded that
+        could leak another user's session secret through the page cache."""
         user = self._create_user()
         self.client.force_login(user)
         response = self.client.get(reverse("index"))
         self.assertContains(response, 'action="/accounts/logout/"')
-        self.assertContains(response, "csrfmiddlewaretoken")
+        self.assertNotContains(response, "csrfmiddlewaretoken")
 
     # --- Mobile drawer markup -------------------------------------------
 

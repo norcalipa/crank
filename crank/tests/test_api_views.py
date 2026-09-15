@@ -1,5 +1,6 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
+from django.contrib.auth.models import User
 from django.test import TestCase, Client, override_settings, RequestFactory
 from django.urls import reverse
 from django.core.cache import cache
@@ -342,3 +343,65 @@ class ApiViewsTestCase(TestCase):
         response2 = self.client.get(reverse('organization-provenance', args=[self.org.id]))
         self.assertEqual(response2.status_code, 200)
         self.assertEqual(response1.content, response2.content)
+
+    # --- Public cache purity (issue #470) ---
+
+    def test_public_org_api_cache_is_identical_across_accounts_and_user_free(self):
+        """Cached organization payloads never contain another account's data."""
+        user_a = User.objects.create_user(
+            "cache-user-a", "cache-user-a@example.com", "pw12345"
+        )
+        user_b = User.objects.create_user(
+            "cache-user-b", "cache-user-b@example.com", "pw12345"
+        )
+        self.client.force_login(user_a)
+        first = self.client.get(reverse('organization-detail', args=[self.org.id]))
+        self.assertEqual(first.status_code, 200)
+        self.client.force_login(user_b)
+        second = self.client.get(reverse('organization-detail', args=[self.org.id]))
+        self.assertEqual(second.status_code, 200)
+        # The second account is served the cached payload: identical, and free
+        # of either account's identifiers.
+        self.assertEqual(first.content, second.content)
+        for marker in (
+            b"cache-user-a",
+            b"cache-user-b",
+            b"@example.com",
+        ):
+            self.assertNotIn(marker, second.content)
+
+    def test_public_provenance_cache_is_identical_across_accounts_and_user_free(self):
+        user_a = User.objects.create_user(
+            "cache-user-a", "cache-user-a@example.com", "pw12345"
+        )
+        user_b = User.objects.create_user(
+            "cache-user-b", "cache-user-b@example.com", "pw12345"
+        )
+        self.client.force_login(user_a)
+        first = self.client.get(reverse('organization-provenance', args=[self.org.id]))
+        self.assertEqual(first.status_code, 200)
+        self.client.force_login(user_b)
+        second = self.client.get(reverse('organization-provenance', args=[self.org.id]))
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.content, second.content)
+        self.assertNotIn(b"cache-user-a", second.content)
+        self.assertNotIn(b"cache-user-b", second.content)
+
+    # --- Account identity endpoint (issue #470 nav hydration) ---
+
+    def test_account_whoami_anonymous(self):
+        response = self.client.get(reverse('account-whoami'))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), {"authenticated": False})
+
+    def test_account_whoami_returns_only_callers_own_username(self):
+        user = User.objects.create_user(
+            "whoami-user", "whoami-user@example.com", "pw12345"
+        )
+        self.client.force_login(user)
+        response = self.client.get(reverse('account-whoami'))
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        self.assertEqual(
+            data, {"authenticated": True, "username": "whoami-user"}
+        )

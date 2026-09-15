@@ -419,6 +419,14 @@ JOB_MATCH_RELAXATION_PROBES = _env_int("JOB_MATCH_RELAXATION_PROBES", 3)
 # crashed/stale lock and reclaimed by the next claim for the same run type.
 AGENT_RUN_STALE_AFTER_SECONDS = _env_int("AGENT_RUN_STALE_AFTER_SECONDS", 3600)
 
+# Transactional publication outbox consumer (issue #470). The consumer is off
+# by default: rollout is migrate -> record events -> enable the flag -> wire
+# the cron. The publication_consumer CapabilitySwitch independently stops the
+# consumer; pending events simply accumulate while it is off.
+PUBLICATION_CONSUMER_ENABLED = _env_bool("PUBLICATION_CONSUMER_ENABLED", False)
+# Upper bound on pending events swept per publication_sweep invocation.
+PUBLICATION_SWEEP_BATCH_SIZE = _env_int("PUBLICATION_SWEEP_BATCH_SIZE", 500)
+
 # Yelp Fusion source adapter (roadmap: docs/readme.md 8.2, phase 2). The name
 # ``YELP_API_KEY`` is read as a secret from the environment only; it is never
 # committed and never logged. The other knobs tune the hardened transport.

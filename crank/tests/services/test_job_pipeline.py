@@ -14,9 +14,17 @@ from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from crank.agents.jobs.ingest import JobIngestResult
-from crank.models import AgentRun, JobSourceCatalog, UserPreference
+from crank.models import (
+    AgentRun,
+    JobListing,
+    JobSourceCatalog,
+    Organization,
+    PublicationEvent,
+    UserPreference,
+)
 from crank.services import agent_runs
 from crank.services.job_ingest import SKIP_OVERLAP, JobSourceIngestion
 from crank.services.job_pipeline import (
@@ -93,6 +101,19 @@ class JobPipelineServiceTests(TestCase):
             preferences=(
                 {"notes": "remote engineering"} if values is None else values
             ),
+        )
+
+    def _listing(self, source, organization, external_id):
+        now = timezone.now()
+        return JobListing.all_objects.create(
+            source=source,
+            external_id=external_id,
+            canonical_url=f"https://jobs.example.test/{external_id}",
+            employer_name=organization.name,
+            title="Engineer",
+            first_seen_at=now,
+            last_seen_at=now,
+            organization=organization,
         )
 
     @override_settings(JOB_PIPELINE_DEADLINE_SECONDS=300)
@@ -192,6 +213,88 @@ class JobPipelineServiceTests(TestCase):
             with self.assertRaises(JobPipelineError) as raised:
                 run_job_pipeline(self.run)
         self.assertEqual(raised.exception.counts["sources_failed"], 1)
+
+    @override_settings(JOB_PIPELINE_DEADLINE_SECONDS=300)
+    def test_successful_source_records_one_bounded_publication_event(self):
+        source = self.source("good")
+        employer = Organization.objects.create(
+            name="Employer One", url="https://employer.one"
+        )
+        other = Organization.objects.create(
+            name="Employer Two", url="https://employer.two"
+        )
+        self._listing(source, employer, "ext-1")
+        self._listing(source, employer, "ext-1-again")  # same org: deduped
+        self._listing(source, other, "ext-2")
+
+        with patch(
+            "crank.services.job_pipeline.ingest_jobs",
+            return_value=JobIngestResult(ingested=3, updated=1),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings",
+            return_value=(3, 0),
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            counts = run_job_pipeline(self.run)
+
+        self.assertEqual(counts["sources_succeeded"], 1)
+        events = PublicationEvent.objects.all()
+        self.assertEqual(events.count(), 1)
+        event = events.get()
+        self.assertEqual(event.target_type, PublicationEvent.TargetType.LISTING)
+        self.assertEqual(event.target_id, source.id)
+        self.assertEqual(event.event_kind, PublicationEvent.EventKind.INGESTED)
+        self.assertEqual(event.payload["source_key"], "fake.v1")
+        self.assertEqual(event.payload["ingested"], 3)
+        self.assertEqual(event.payload["updated"], 1)
+        self.assertEqual(event.payload["resolved"], 3)
+        self.assertEqual(
+            sorted(event.payload["organization_ids"]),
+            sorted([employer.id, other.id]),
+        )
+
+    @override_settings(JOB_PIPELINE_DEADLINE_SECONDS=300)
+    def test_failed_source_records_no_publication_event(self):
+        self.source("failed")
+
+        with patch(
+            "crank.services.job_pipeline.ingest_jobs",
+            return_value=JobIngestResult(errors=1),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings",
+            return_value=(0, 0),
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            # A population that completely fails raises; the assertion is
+            # that the failure still records no publication events.
+            with self.assertRaises(JobPipelineError):
+                run_job_pipeline(self.run)
+
+        self.assertEqual(PublicationEvent.objects.count(), 0)
+
+    @override_settings(JOB_PIPELINE_DEADLINE_SECONDS=300)
+    def test_source_publication_payload_is_bounded(self):
+        source = self.source("good")
+        organizations = [
+            Organization.objects.create(
+                name=f"Employer {index}", url=f"https://employer{index}.test"
+            )
+            for index in range(201)
+        ]
+        for index, organization in enumerate(organizations):
+            self._listing(source, organization, f"ext-{index}")
+
+        with patch(
+            "crank.services.job_pipeline.ingest_jobs",
+            return_value=JobIngestResult(ingested=201),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings",
+            return_value=(0, 0),
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            run_job_pipeline(self.run)
+
+        event = PublicationEvent.objects.get()
+        # Payload org ids are capped so a large source can never produce an
+        # unbounded outbox row.
+        self.assertEqual(len(event.payload["organization_ids"]), 200)
 
     def test_user_failure_does_not_stop_other_users(self):
         self.preference("alice")

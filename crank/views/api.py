@@ -89,3 +89,18 @@ def organization_scores(request, pk):
         cache.set(cache_key, scores_data, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
 
     return JsonResponse(scores_data, safe=False)
+
+
+def account_whoami(request):
+    """Return the caller's own bounded account identity for nav hydration.
+
+    Per-user identity must never live in the shared page caches (issue #470):
+    the cache_page'd shell is rendered user-free and the client fills the
+    account label from this per-request endpoint. It exposes only the
+    caller's own username and nothing else, and is never cached.
+    """
+    if not request.user.is_authenticated:
+        return JsonResponse({"authenticated": False})
+    return JsonResponse(
+        {"authenticated": True, "username": request.user.username}
+    )

@@ -21,7 +21,8 @@ from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
 from crank.models.agent_run import AgentRun
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.preference import UserPreference, default_preferences
-from crank.services import agent_runs
+from crank.models.publication import PublicationEvent
+from crank.services import agent_runs, publication
 from crank.services.job_ingest import ingest_job_source
 
 logger = logging.getLogger(__name__)
@@ -154,6 +155,41 @@ def _resolve_source_listings(source: Any, before_ids: set[int]) -> tuple[int, in
     return resolved, unresolved
 
 
+def _record_source_publication(source, result, resolved, unresolved):
+    """Record one bounded listing publication event per successful source.
+
+    One event per source per run (never per listing): the payload carries the
+    source's bounded, deduplicated employer organization ids, so the sweep can
+    invalidate organization-scope caches and downstream recompute (#462) can
+    consume the event without per-row event explosion. The payload is the full
+    per-source picture each run, so collapsing duplicate events to the max id
+    loses nothing.
+    """
+    organization_ids = list(
+        JobListing.all_objects.filter(
+            source=source, organization__isnull=False
+        )
+        # order_by() clears the model's default ordering, which would
+        # otherwise add last_seen_at/id to the SELECT and defeat DISTINCT.
+        .order_by()
+        .values_list("organization_id", flat=True)
+        .distinct()
+    )
+    publication.record_event(
+        target_type=PublicationEvent.TargetType.LISTING,
+        target_id=source.pk,
+        event_kind=PublicationEvent.EventKind.INGESTED,
+        payload={
+            "source_key": source.adapter_key,
+            "ingested": int(result.ingested),
+            "updated": int(result.updated),
+            "resolved": resolved,
+            "unresolved": unresolved,
+            "organization_ids": organization_ids,
+        },
+    )
+
+
 def _ingest_source(
     source: Any, options: Mapping[str, Any], before_ids: set[int]
 ) -> tuple[JobIngestResult | None, int, int, bool]:
@@ -273,6 +309,9 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                         "items_succeeded": int(result.ingested) + int(result.updated),
                     },
                 )
+                # One bounded publication event per successful source; a
+                # failed source records none (nothing accepted to publish).
+                _record_source_publication(source, result, resolved, unresolved)
         except Exception as exc:  # noqa: BLE001 - isolate source failures
             counts["sources_failed"] += 1
             agent_runs.monitoring.record_event(

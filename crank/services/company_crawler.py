@@ -24,7 +24,8 @@ from crank.models.company_profile import CompanyProfileObservation
 from crank.models.employer import EmployerAlias, normalize_employer_domain, normalize_employer_name
 from crank.models.job import JobSourceCatalog
 from crank.models.organization import Organization
-from crank.services import monitoring
+from crank.models.publication import PublicationEvent
+from crank.services import monitoring, publication
 
 EXTRACTION_VERSION = "firecrawl-company-profile.v1"
 MAX_ITEMS = 10
@@ -291,6 +292,21 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
                     fingerprint=fp,
                     **data,
                 )
+                # Durable outbox row in this same transaction: the provenance
+                # API payload changed for this organization (any non-rejected
+                # observation surfaces as latest_observation), so its cache
+                # keys must be invalidated after commit. Unresolved identities
+                # have no organization scope to invalidate.
+                if organization is not None:
+                    publication.record_event(
+                        target_type=PublicationEvent.TargetType.ORGANIZATION,
+                        target_id=organization.pk,
+                        event_kind=PublicationEvent.EventKind.OBSERVED,
+                        payload={
+                            "observation_id": observation.pk,
+                            "status": observation.status,
+                        },
+                    )
             counts["observations"] += 1
             counts[status] += 1
         except Exception as exc:

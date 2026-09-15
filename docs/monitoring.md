@@ -40,6 +40,25 @@ Each alert links to the runbook action: inspect sanitized admin runs, disable
 the affected source/capability, fix the upstream or capacity issue, then
 re-enable only after a confirmed healthy run.
 
+## Redis is a cache, not a system of record
+
+Redis holds only derived, rebuildable data: page/API cache entries,
+algorithm objects, and rate-limit counters (`job_search_rl:*`). Durable state
+lives in MySQL — sessions use the DB session engine, and required
+post-commit publication work is the `crank_publicationevent` outbox table
+(issue #470, `docs/publication-outbox.md`), never a Redis stream or key.
+Losing Redis is always safe: every value is recomputable from MySQL or
+expires by TTL.
+
+Public cached surfaces (`cache_page` on `algo/<int:algorithm_id>/`, the
+funding/RTO choices endpoints, and the organization detail/scores/provenance
+API caches) must never contain another account's private shell, history, or
+preferences. Per-user surfaces — conversations, matches, preferences, and
+their rate-limit/session keys — are never written to public cache keys, and
+user match responses stay uncached. A regression test renders the cached
+index and organization API responses for two different accounts and asserts
+identical, user-data-free payloads.
+
 ## Job inventory health probe
 
 The read-only `python manage.py crawl_healthcheck` command computes bounded

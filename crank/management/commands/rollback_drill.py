@@ -12,7 +12,11 @@ This command rehearses the rollback procedure documented in
    flags forced on so the switch is the only variable, and requires that
    gate to block. ``passed`` requires both checks: a registered key with
    no mapped real gate, or whose real gate does not block, **fails** the
-   drill instead of reporting success.
+   drill instead of reporting success. For ``publication_consumer``
+   there is no AgentRun run type: the consumer is gated by the
+   ``PUBLICATION_CONSUMER_ENABLED`` settings flag plus this switch,
+   and the drill verifies the switch alone blocks
+   ``monitoring.capability_enabled()``.
 3. Checks for orphaned RUNNING runs beyond the stale-lock TTL.
 4. Records an ``OperationalChangeAudit`` entry for the drill.
 5. Emits a monitoring event for the rollback drill.
@@ -69,6 +73,7 @@ GATE_FORCED_SETTINGS = {
     "JOB_PIPELINE_ENABLED": True,
     "CRAWL_CRON_ENABLED": True,
     "INTERACTIVE_AGENT_ENABLED": True,
+    "PUBLICATION_CONSUMER_ENABLED": True,
 }
 
 
@@ -82,7 +87,9 @@ def gate_verifiers():
     (the interactive chat path); ``gather_scores``/``job_pipeline``/
     ``crawl_schedule``/``agent_noop`` → their ``AgentRunCommand.get_enabled()``
     (the scheduled-run path, keyed by the registry key); ``crawl`` →
-    ``crank.services.crawl_runs.crawl_enabled`` (the on-demand crawl path).
+    ``crank.services.crawl_runs.crawl_enabled`` (the on-demand crawl path);
+    ``publication_consumer`` → ``crank.services.publication.consumer_enabled``
+    (the publication outbox consumer, gated by settings flag + switch).
 
     A key registered in ``ALLOWED_CAPABILITY_KEYS`` without an entry here
     fails the drill with ``reason="no real-gate verifier registered"``: the
@@ -96,7 +103,7 @@ def gate_verifiers():
         run_job_pipeline,
         schedule_crawls,
     )
-    from crank.services import crawl_runs
+    from crank.services import crawl_runs, publication
 
     return {
         "interactive_agent": llm_gates.is_interactive_agent_enabled,
@@ -105,6 +112,7 @@ def gate_verifiers():
         "agent_noop": agent_noop.Command().get_enabled,
         "crawl_schedule": schedule_crawls.Command().get_enabled,
         "crawl": crawl_runs.crawl_enabled,
+        "publication_consumer": publication.consumer_enabled,
     }
 
 

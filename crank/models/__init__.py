@@ -29,6 +29,7 @@ from crank.models.monitoring import (
     CapabilitySwitch,
     OperationalChangeAudit,
 )
+from crank.models.publication import PublicationEvent
 
 __all__ = [
     "AgentRun",
@@ -62,4 +63,5 @@ __all__ = [
     "CapabilitySwitch",
     "OperationalChangeAudit",
     "ALLOWED_CAPABILITY_KEYS",
+    "PublicationEvent",
 ]

@@ -3,6 +3,7 @@
 import json
 from datetime import datetime
 
+from django.contrib.auth.models import User
 from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.serializers import serialize
 from django.test import TestCase, Client, RequestFactory, override_settings
@@ -218,6 +219,34 @@ class IndexViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'organization-list-config')
         self.assertContains(response, 'data-can-suggest-company="false"')
+
+    def test_cached_algo_page_identical_across_accounts_and_user_free(self):
+        """The cache_page'd algo view serves every account the same payload.
+
+        Public cached pages (issue #470 AC6) must never contain another
+        account's private shell/history/preferences.
+        """
+        self.setup_scores()
+        user_a = User.objects.create_user(
+            "cache-user-a", "cache-user-a@example.com", "pw12345"
+        )
+        user_b = User.objects.create_user(
+            "cache-user-b", "cache-user-b@example.com", "pw12345"
+        )
+        algo_url = f"/algo/{DEFAULT_ALGORITHM_ID}/"
+        self.client.force_login(user_a)
+        first = self.client.get(algo_url)
+        self.assertEqual(first.status_code, 200)
+        self.client.force_login(user_b)
+        second = self.client.get(algo_url)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.content, second.content)
+        for marker in (b"cache-user-a", b"cache-user-b", b"@example.com"):
+            self.assertNotIn(marker, second.content)
+        # No per-user surface (rate-limit keys job_search_rl:*) is ever
+        # written into the public cache by these page requests.
+        for key in cache._cache:
+            self.assertNotIn("job_search_rl", str(key))
 
     def test_template_else_branch_shows_message_when_no_algorithm(self):
         ScoreAlgorithm.objects.all().delete()

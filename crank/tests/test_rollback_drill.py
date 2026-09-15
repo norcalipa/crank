@@ -66,10 +66,27 @@ class RollbackDrillCommandTests(TestCase):
     def test_drill_creates_disabled_switches(self):
         """The drill creates CapabilitySwitch entries with enabled=False."""
         self._call()
-        for key in ("interactive_agent", "gather_scores", "job_pipeline"):
+        for key in (
+            "interactive_agent",
+            "gather_scores",
+            "job_pipeline",
+            "publication_consumer",
+        ):
             switch = CapabilitySwitch.objects.get(key=key)
             self.assertFalse(switch.enabled)
             self.assertIn("rollback drill", switch.note)
+
+    def test_drill_blocks_publication_consumer_capability(self):
+        """The drilled publication_consumer switch blocks the capability."""
+        from crank.services import monitoring
+
+        self.assertTrue(
+            monitoring.capability_enabled("publication_consumer", default=True)
+        )
+        self._call()
+        self.assertFalse(
+            monitoring.capability_enabled("publication_consumer", default=True)
+        )
 
     def test_drill_disables_existing_enabled_switch(self):
         """If a switch already exists and is enabled, the drill disables it."""
@@ -202,7 +219,7 @@ class RollbackDrillCommandTests(TestCase):
         """Running the drill twice does not duplicate switches or audits."""
         self._call()
         self._call()
-        self.assertEqual(CapabilitySwitch.objects.count(), len(ALLOWED_CAPABILITY_KEYS))
+self.assertEqual(CapabilitySwitch.objects.count(), len(ALLOWED_CAPABILITY_KEYS))
         self.assertEqual(
             OperationalChangeAudit.objects.filter(
                 target_type="rollback_drill"

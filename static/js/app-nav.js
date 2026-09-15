@@ -83,3 +83,38 @@
         });
     }
 })();
+
+// Per-user nav hydration (issue #470): the shared page cache (cache_page on
+// /algo/) serves the same shell to every account, so the shell embeds no
+// username or session-bound CSRF token. The account label starts generic and
+// is filled per request from the uncached whoami endpoint.
+(function () {
+    "use strict";
+
+    function hydrateAccountLabel() {
+        var labels = document.querySelectorAll("[data-nav-user-label]");
+        if (!labels.length) return;
+        fetch("/api/account/whoami/", {
+            headers: { Accept: "application/json" },
+            credentials: "same-origin",
+        })
+            .then(function (response) {
+                return response.ok ? response.json() : null;
+            })
+            .then(function (data) {
+                if (!data || !data.authenticated || !data.username) return;
+                labels.forEach(function (label) {
+                    label.textContent = data.username;
+                });
+            })
+            .catch(function () {
+                // The generic label stands; nav must never block on this.
+            });
+    }
+
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", hydrateAccountLabel);
+    } else {
+        hydrateAccountLabel();
+    }
+})();

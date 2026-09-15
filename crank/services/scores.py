@@ -25,12 +25,14 @@ from django.utils import timezone
 
 from crank.models.agent_run import AgentRun
 from crank.models.organization import Organization
+from crank.models.publication import PublicationEvent
 from crank.models.score import (
     Score,
     ScoreAlgorithmWeight,
     ScoreTupleAnchor,
     ScoreType,
 )
+from crank.services import publication
 
 logger = logging.getLogger("score_persistence")
 
@@ -134,21 +136,28 @@ def organization_api_cache_key(target_id):
     return f"organization_api_{target_id}"
 
 
+def organization_provenance_api_cache_key(target_id):
+    """Cache key for the organization-provenance API response (issue #470)."""
+    return f"organization_provenance_api_{target_id}"
+
+
 # --- Cache invalidation ---------------------------------------------------------
 
 
 def affected_cache_keys(target_id, score_type_id=None):
     """Return every cache key a score for ``target_id`` can invalidate.
 
-    Covers the centralized average-score key, the organization detail/score API
-    keys, and the algorithm-result keys for every algorithm that weights the
-    changed score type. This is the single source of truth for score cache
-    invalidation, built from the same key constructors every read site uses.
+    Covers the centralized average-score key, the organization detail/scores/
+    provenance API keys, and the algorithm-result keys for every algorithm
+    that weights the changed score type. This is the single source of truth
+    for score cache invalidation, built from the same key constructors every
+    read site uses (the publication outbox sweeps delegate here).
     """
     keys = [
         organization_avg_scores_cache_key(target_id),
         organization_api_cache_key(target_id),
         organization_scores_api_cache_key(target_id),
+        organization_provenance_api_cache_key(target_id),
     ]
     weights = ScoreAlgorithmWeight.objects.values_list(
         "algorithm_id", flat=True
@@ -363,6 +372,25 @@ def _persist_locked(
             provenance=sanitize_provenance(provenance),
             run=run,
         )
+        outcome = CHANGED if previous_active is not None else CREATED
+        # Durable outbox row in this same transaction: the auto-increment id is
+        # the revision identity and a rolled-back batch discards the row. The
+        # on_commit invalidation below stays as the best-effort fast path; the
+        # publication sweep is the crash-safe backstop.
+        publication.record_event(
+            target_type=PublicationEvent.TargetType.SCORE,
+            target_id=target_id,
+            event_kind=(
+                PublicationEvent.EventKind.CHANGED
+                if outcome == CHANGED
+                else PublicationEvent.EventKind.CREATED
+            ),
+            payload={
+                "score_type_id": score_type_id,
+                "source_id": source_id,
+                "outcome": outcome,
+            },
+        )
         # Invalidation fires only if the enclosing transaction commits; a
         # rolled-back batch discards these callbacks (no cache churn).
         transaction.on_commit(
@@ -370,7 +398,6 @@ def _persist_locked(
                 _target, _type
             )
         )
-        outcome = CHANGED if previous_active is not None else CREATED
         logger.info(
             "score observation %s: outcome=%s target=%s type=%s source=%s "
             "replaced_score_id=%s new_score_id=%s",

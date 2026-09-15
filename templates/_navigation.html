@@ -42,12 +42,14 @@
 
             <div class="app-nav-footer">
                 {% if user.is_authenticated %}
+                    {# The shared page cache serves this shell to every account
+                       (issue #470), so it embeds no username or session-bound
+                       CSRF token; app-nav.js fills the label per request. #}
                     <div class="app-nav-user" id="nav-account">
                         <i class="fa-solid fa-user-circle" aria-hidden="true"></i>
-                        <span class="app-nav-label">{{ user.username }}</span>
+                        <span class="app-nav-label" data-nav-user-label>Account</span>
                     </div>
                     <form method="post" action="{% url 'account_logout' %}" class="app-nav-logout-form">
-                        {% csrf_token %}
                         <button type="submit" class="app-nav-link app-nav-link--logout">
                             <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
                             <span class="app-nav-label">Logout</span>
@@ -128,10 +130,9 @@
                 {% if user.is_authenticated %}
                     <div class="app-nav-user">
                         <i class="fa-solid fa-user-circle" aria-hidden="true"></i>
-                        <span class="app-nav-label">{{ user.username }}</span>
+                        <span class="app-nav-label" data-nav-user-label>Account</span>
                     </div>
                     <form method="post" action="{% url 'account_logout' %}" class="app-nav-logout-form">
-                        {% csrf_token %}
                         <button type="submit" class="app-nav-link app-nav-link--logout">
                             <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
                             <span class="app-nav-label">Logout</span>
