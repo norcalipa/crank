@@ -17,6 +17,7 @@ from django.contrib.sites.models import Site
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 from crank.views.index import IndexView
 from crank.settings import DEFAULT_ALGORITHM_ID
+from crank.services.scores import SCORE_CACHE_KEY_VERSION, algorithm_results_cache_key
 from django.core.cache import cache
 
 
@@ -317,3 +318,61 @@ class IndexViewTests(TestCase):
         # An active type with no active score is a missing dimension: 1 of 2.
         self.assertEqual(rows[org.id]['profile_completeness'], 50.0)
         self.assertEqual(rows[org.id]['avg_score'], 5.0)
+
+    def test_index_ignores_pre_fix_algorithm_results_cache_entry(self):
+        """Post-deploy rollout regression (issue #461 review, finding 1).
+
+        A deploy swaps the code while the shared cache keeps whatever the
+        previous build wrote. Seed the unversioned ``algorithm_<id>_results``
+        key with a pre-#461 ranking (the superseded-only org ranked, the
+        weighted average dragged down by historical rows) and prove the page
+        recomputes from the active-score predicates instead.
+        """
+        self.setup_superseded_scores()
+        pre_fix_rows = [
+            {'id': self.organization2.id, 'name': 'Org 2', 'avg_score': 2.0, 'ranking': 1},
+            {'id': self.organization1.id, 'name': 'Org 1', 'avg_score': 1.0, 'ranking': 2},
+        ]
+        cache.set(f'algorithm_{DEFAULT_ALGORITHM_ID}_results', pre_fix_rows)
+
+        response = self.client.get(self.index_url)
+
+        self.assertEqual(response.status_code, 200)
+        rows = {row['id']: row for row in response.context_data['top_organization_list']}
+        # Freshly computed rankings: the superseded-only org never appears,
+        # and Org 1's average reflects only its active rows ((5.0*3 + 1.0*1)
+        # / (3 + 1) == 4.0), not the poisoned 1.0 from the legacy entry.
+        self.assertNotIn(self.organization2.id, rows)
+        self.assertEqual(rows[self.organization1.id]['avg_score'], 4.0)
+        # The recompute is cached under the versioned key; the pre-fix entry
+        # is abandoned in place under the legacy key and never read again.
+        self.assertIsNotNone(
+            cache.get(algorithm_results_cache_key(DEFAULT_ALGORITHM_ID))
+        )
+        self.assertEqual(
+            cache.get(f'algorithm_{DEFAULT_ALGORITHM_ID}_results'), pre_fix_rows
+        )
+
+    def test_algo_page_cache_key_carries_the_score_cache_version(self):
+        """The /algo/<id>/ page cache embeds score-derived rankings.
+
+        Its key prefix rotates with SCORE_CACHE_KEY_VERSION, so pages cached
+        by a pre-#461 deployment (empty prefix) age out unread instead of
+        serving superseded averages after a deploy.
+        """
+        self.setup_superseded_scores()
+        response = self.client.get(
+            self.index_url + f'algo/{DEFAULT_ALGORITHM_ID}/'
+        )
+        self.assertEqual(response.status_code, 200)
+        # django's cache_page stores the response and its header under the
+        # versioned prefix; locmem exposes its key store so the deployed key
+        # format is assertable (a pre-#461 entry would live under the empty
+        # default prefix instead).
+        versioned_prefix = f'algo-{SCORE_CACHE_KEY_VERSION}'
+        cache_keys = list(cache._cache.keys())
+        self.assertTrue(
+            any(versioned_prefix in key for key in cache_keys),
+            f'no page-cache entry under the versioned prefix '
+            f'{versioned_prefix!r}: {cache_keys}',
+        )
