@@ -775,6 +775,30 @@ class JobSearchOrchestrator:
         except InvalidPreferencePatchError:
             raise
         except Exception as exc:  # defensive: port must raise typed error
+            if is_database_locked(exc):
+                # Review round 3 (MAJOR): an ``OperationalError("database is
+                # locked")`` raised by the guarded transaction's own COMMIT
+                # lands here AFTER every inner guarded block has run and been
+                # mapped — the outer boundary bypasses the inner checks. The
+                # atomic block has already rolled back, so nothing persisted;
+                # map the residual contention to the documented retryable 409
+                # envelope instead of the 500 ``invalid_output`` path:
+                # ``conversation_closed`` when the guarded transaction claimed
+                # the conversation row (contention there is a lifecycle
+                # writer), else ``preference_stale`` for the patch write.
+                # Narrow by construction: only ``is_database_locked`` matches
+                # (SQLite "database is locked", MySQL lock-wait/deadlock);
+                # genuine validation errors and non-contention backend
+                # failures keep their existing typed paths.
+                if lifecycle_guard is not None or patch is None:
+                    raise ConversationClosedError(
+                        "turn commit contended with a concurrent writer; the "
+                        "turn rolled back and is retryable"
+                    ) from exc
+                raise PreferenceStaleError(
+                    "turn commit contended with a concurrent writer; the "
+                    "turn rolled back and is retryable"
+                ) from exc
             raise InvalidPreferencePatchError(str(exc)) from exc
         return patch, bool(changed)
 

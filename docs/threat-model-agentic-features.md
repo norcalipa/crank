@@ -146,7 +146,16 @@ lands — implemented-before-documented rule, per #463's registry).
   or blocks on the row lock until the whole turn commits. Backend lock
   contention (SQLite single-writer fail-fast, MySQL lock-wait/deadlock) maps
   to the same retryable 409 envelopes — `conversation_closed` for lifecycle
-  writes, `preference_stale` for the patch write — never a 500.
+  writes and outer-commit contention, `preference_stale` for the patch
+  write — never a 500. The guarantee covers both contention surfaces: an
+  `is_database_locked`-guarded translation wraps each inner guarded block
+  (guard claim, patch write, reply hook) AND the guarded transaction's own
+  COMMIT — the outer boundary, where a commit-time `database is locked`
+  lands after every inner block has run (review round 3, MAJOR; pinned by
+  the two-connection outer-commit probe). The translation is narrow: only
+  lock-contention errors are translated, genuine validation errors keep
+  their typed paths, and non-contention backend failures (e.g. MySQL
+  connection errors) are never mislabeled as retryable contention.
 - **Tests:** `crank/tests/views/test_job_search.py`
   (`StalePreferenceAndLateReplyTests` — stale 409 + no overwrite + retry,
   matching-version applies, adapter mapping, reset/delete-with-patch changing
@@ -225,15 +234,20 @@ lands — implemented-before-documented rule, per #463's registry).
   writer lock makes a contending lifecycle write fail fast with
   `database is locked` (deadlock avoidance) rather than block; the lifecycle
   endpoints therefore retry that transient contention in place (bounded),
-  and any residual contention maps to the retryable 409 envelopes — never a
-  500 (MAJOR-2 two-connection probe pinned).
+  and any residual contention — inside the guarded blocks or at the guarded
+  transaction's COMMIT (the outer boundary, review round 3, MAJOR) — maps to
+  the retryable 409 envelopes — never a 500 (MAJOR-2 two-connection probes
+  pinned, including outer-commit contention).
 - **Retryability (issue #487):** a `conversation_closed` turn stays retryable
   with the same idempotency key: the transport's Retry recovers by switching
   to the user's active conversation — the reset's fresh one, or a newly
   created one after delete — and replaying the retained user turn (same
-  content, same key) there. The original user row is retained on the closed
-  conversation; end-to-end retry-after-reset and retry-after-delete tests
-  prove the retained turn is recoverable and completes with a 201.
+  content, same key) there. A reset retains the original user row on the
+  closed conversation; a delete removes that row and the whole conversation,
+  so the client replays the same content and idempotency key onto the fresh
+  conversation and reconstructs the turn there. End-to-end retry-after-reset
+  and retry-after-delete tests prove both paths recover and complete with a
+  201.
 
 ```mermaid
 sequenceDiagram

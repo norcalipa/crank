@@ -2220,6 +2220,74 @@ class GuardedTurnCommitTests(TestCase):
             )
         )
 
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_non_lock_operational_error_is_not_translated(self, record):
+        """Review round 3 MAJOR (narrowness / MySQL probe): a NON-contention
+        backend failure (e.g. a MySQL connection error) is never translated
+        into the retryable 409 envelopes — it keeps the existing stable 500
+        ``invalid_output`` path. The outer-commit translation shares the same
+        narrow ``is_database_locked`` predicate as the inner guarded blocks,
+        so the mapping cannot mask genuine backend faults as "retry"."""
+        from django.db import OperationalError
+
+        conversation_pk = self._start_conversation()
+        gateway = self._patch_gateway(
+            {
+                "message": "Noted your preference.",
+                "cited_organization_ids": [],
+                "cited_job_listing_ids": [],
+                "preference_patch": {"set": {"notes": "unrelated failure"}},
+            }
+        )
+        with self._patch_gateway_provider(gateway):
+            with patch(
+                "crank.services.preferences.apply_patch_to_user",
+                side_effect=OperationalError("connection refused"),
+            ):
+                resp = self._submit(
+                    conversation_pk, "prefer remote", str(uuid.uuid4())
+                )
+
+        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(resp.json()["error"]["type"], "invalid_output")
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "")
+        conv = JobSearchConversation.objects.get(pk=conversation_pk)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(
+            any(c.args[1].get("reason_code") == "invalid_output" for c in calls)
+        )
+
+    @override_settings(JOB_SEARCH_RESPONSE_MAX_LEN=10)
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_hook_path_reply_length_bound_applied_before_persistence(self, record):
+        """Review round 3 MINOR: the transport's reply-length bound is applied
+        BEFORE the persist_reply hook persists the message — the persisted AND
+        returned message respect ``JOB_SEARCH_RESPONSE_MAX_LEN`` on the
+        production orchestrator hook path. Previously the hook persisted the
+        unbounded orchestrator message and the view responded with it, so a
+        15-char reply with ``MAX_LEN=10`` persisted all 15 chars."""
+        conversation_pk = self._start_conversation()
+        gateway = self._patch_gateway(
+            {
+                "message": "123456789012345",  # 15 chars, over the bound of 10
+                "cited_organization_ids": [],
+                "cited_job_listing_ids": [],
+                "preference_patch": None,
+            }
+        )
+        with self._patch_gateway_provider(gateway):
+            resp = self._submit(conversation_pk, "prefer remote", str(uuid.uuid4()))
+
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()
+        self.assertEqual(len(body["message"]["content"]), 10)
+        conv = JobSearchConversation.objects.get(pk=conversation_pk)
+        assistant = conv.messages.get(role="assistant")
+        self.assertEqual(len(assistant.content), 10)
+        self.assertEqual(assistant.content, body["message"]["content"])
+
     def test_retry_after_midturn_reset_recovers_retained_turn(self):
         """MINOR (retryability): after a mid-turn reset the retained user turn
         is recoverable — the same content + idempotency key replays onto the
@@ -2633,3 +2701,103 @@ class GuardedTurnCommitConcurrencyTests(TransactionTestCase):
         self.assertFalse(old.active)
         self.assertEqual(old.messages.filter(role="assistant").count(), 0)
         self.assertEqual(old.messages.filter(role="user").count(), 1)
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_outer_commit_lock_contention_maps_to_retryable_409(self, record):
+        """Review round 3 MAJOR: lock contention raised by the guarded
+        transaction's own COMMIT — the outer boundary, AFTER every inner
+        guarded block has run and been mapped — maps to the retryable 409
+        ``conversation_closed`` envelope, never ``500 invalid_output``.
+
+        Reviewer repro pattern (two real SQLite connections): connection B
+        holds a read transaction (a SHARED lock); connection A (the turn)
+        claims the conversation row and writes patch + reply (RESERVED),
+        then A's COMMIT needs the EXCLUSIVE lock B is blocking and fails
+        with ``database is locked`` at the outer commit."""
+        from django.db import connections, transaction
+
+        user, client, conv_id = self._setup_user_and_conversation("probe4")
+        reached = threading.Event()
+        resume = threading.Event()
+        responses = {}
+        key = str(uuid.uuid4())
+        patch_payload = {
+            "message": "Noted your preference.",
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [],
+            "preference_patch": {"set": {"notes": "commit-contended patch"}},
+        }
+        real_get_or_create = JobSearchMessage.objects.get_or_create
+
+        def paused_get_or_create(*args, **kwargs):
+            # Pause AFTER the guard claim + patch write (A holds RESERVED),
+            # before the reply insert: the outer commit still lies ahead.
+            if kwargs.get("role") == JobSearchMessage.Role.ASSISTANT:
+                reached.set()
+                if not resume.wait(timeout=30):
+                    raise RuntimeError("turn was never resumed")
+            return real_get_or_create(*args, **kwargs)
+
+        provider = self._build_orchestrator_provider(
+            user, self._patch_gateway(patch_payload)
+        )
+
+        def run_turn():
+            try:
+                turn_client = Client()
+                turn_client.force_login(user)
+                with patch.object(
+                    JobSearchMessage.objects, "get_or_create", paused_get_or_create
+                ):
+                    with self._patch_provider(provider):
+                        responses["turn"] = turn_client.post(
+                            reverse("agent-conversation-detail", args=[conv_id]),
+                            data=json.dumps(
+                                {"content": "prefer remote", "idempotency_key": key}
+                            ),
+                            content_type="application/json",
+                        )
+            finally:
+                connections.close_all()
+
+        turn_thread = threading.Thread(target=run_turn)
+        turn_thread.start()
+        self.assertTrue(reached.wait(timeout=20), "turn never reached pause point")
+
+        # Connection B (this thread): hold a read transaction — a SHARED
+        # lock — while A holds RESERVED. SHARED is compatible with RESERVED,
+        # so B acquires it; A's COMMIT then needs EXCLUSIVE and cannot get
+        # it while B's read transaction stays open.
+        holder = transaction.atomic()
+        holder.__enter__()
+        list(JobSearchConversation.objects.filter(pk=conv_id))
+        try:
+            resume.set()
+            turn_thread.join(timeout=60)
+            self.assertFalse(turn_thread.is_alive())
+            resp = responses["turn"]
+            # The outer-commit contention surfaced as the retryable 409,
+            # not the 500 ``invalid_output`` broad handler.
+            self.assertEqual(resp.status_code, 409)
+            self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
+            calls = [
+                c for c in record.call_args_list if c.args[0] == "interactive_call"
+            ]
+            self.assertTrue(
+                any(
+                    c.args[1].get("reason_code") == "conversation_closed"
+                    for c in calls
+                )
+            )
+        finally:
+            holder.__exit__(None, None, None)
+
+        # The failed commit rolled the whole guarded transaction back: no
+        # patch, no reply; the earlier-committed user turn remains retryable
+        # with the same idempotency key.
+        stored = UserPreference.objects.get(user=user)
+        self.assertEqual(stored.preferences["notes"], "")
+        conv = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+        self.assertEqual(conv.messages.filter(role="user").count(), 1)
+        self.assertTrue(conv.active)

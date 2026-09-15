@@ -230,7 +230,7 @@ class JobSearchService:
                 reply_text, changed, results = self.provider.generate_reply(
                     conversation=conversation,
                     user_message=user_message,
-                    persist_reply=persist_reply,
+                    persist_reply=self._bound_persist_hook(persist_reply),
                 )
             else:
                 # Legacy provider signature: no guarded persistence hook; the
@@ -322,3 +322,31 @@ class JobSearchService:
                 "Please try again later or contact support."
             )
         return (reply_text or "").strip(), bool(changed), results
+
+    @staticmethod
+    def _bound_persist_hook(persist_reply):
+        """Wrap the reply hook with the transport's length bound (round 3).
+
+        The hook persists the reply INSIDE the orchestrator's guarded
+        transaction — before ``run_turn`` bounds the returned text — so the
+        transport bound (``JOB_SEARCH_RESPONSE_MAX_LEN``) must be applied to
+        the message before persistence: bound at the source of truth, not at
+        view response time (PR #501 review round 3, MINOR). Only an over-bound
+        message is truncated; a within-bound message persists verbatim.
+        ``AssistantCompletion``'s fixed 8000-character schema ceiling still
+        applies above this configurable transport cap.
+        """
+        if persist_reply is None:
+            return None
+
+        def bounded(*, reply_text, results, preferences_changed):
+            max_len = getattr(settings, "JOB_SEARCH_RESPONSE_MAX_LEN", 8000)
+            if reply_text is not None and len(reply_text) > max_len:
+                reply_text = reply_text[:max_len]
+            return persist_reply(
+                reply_text=reply_text,
+                results=results,
+                preferences_changed=preferences_changed,
+            )
+
+        return bounded
