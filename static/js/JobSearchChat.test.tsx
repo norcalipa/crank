@@ -1326,9 +1326,13 @@ describe('assistant availability status (issue #457)', () => {
         await renderWithStatus('replies_disabled', ['browse_rankings']);
         const notice = screen.getByTestId('assistant-status-notice');
         expect(notice).toHaveAttribute('data-status-state', 'replies_disabled');
-        expect(notice).toHaveTextContent(/assistant is not accepting replies right now/i);
+        // Scannable state label plus supporting copy.
+        expect(notice).toHaveTextContent('Assistant unavailable');
+        expect(notice).toHaveTextContent(/replies are paused right now/i);
+        expect(notice).toHaveTextContent(/saved preferences remain available/i);
         const rankings = screen.getByRole('link', {name: 'Browse company rankings'});
         expect(rankings).toHaveAttribute('href', '/');
+        expect(rankings).toHaveClass('assistant-status-notice-action');
         // No re-check affordance for a policy state (re-checking is not meaningful).
         expect(screen.queryByTestId('assistant-status-retry')).not.toBeInTheDocument();
         expect(screen.getByLabelText('Message')).toBeDisabled();
@@ -1343,12 +1347,16 @@ describe('assistant availability status (issue #457)', () => {
         }
     });
 
-    test('inventory_unavailable disables the composer and shows the notice with rankings action', async () => {
+    test('inventory_unavailable disables the composer and shows rankings plus saved-preferences guidance', async () => {
         await renderWithStatus('inventory_unavailable', ['browse_rankings']);
         const notice = screen.getByTestId('assistant-status-notice');
         expect(notice).toHaveAttribute('data-status-state', 'inventory_unavailable');
-        expect(notice).toHaveTextContent(/assistant is unavailable/i);
+        expect(notice).toHaveTextContent('Assistant unavailable');
         expect(notice).toHaveTextContent(/no active job listings/i);
+        // Required saved-preferences guidance (issue #457 UI contract), phrased
+        // so it cannot be read as the disabled composer accepting input now.
+        expect(notice).toHaveTextContent(/saved preferences are still available/i);
+        expect(notice).toHaveTextContent(/update them here once listings return/i);
         expect(screen.getByRole('link', {name: 'Browse company rankings'})).toHaveAttribute('href', '/');
         expect(screen.queryByTestId('assistant-status-retry')).not.toBeInTheDocument();
         expect(screen.getByLabelText('Message')).toBeDisabled();
@@ -1360,9 +1368,15 @@ describe('assistant availability status (issue #457)', () => {
         expect(notice).toHaveAttribute('data-status-state', 'temporarily_unavailable');
         expect(notice).toHaveTextContent(/temporarily unavailable/i);
         expect(screen.getByLabelText('Message')).toBeEnabled();
+        const retry = screen.getByTestId('assistant-status-retry');
+        // High-contrast treatment: white-on-dark pairs with the light warning
+        // surface (the previous btn-outline-warning pairing failed AA).
+        expect(retry).toHaveClass('btn-dark');
+        expect(retry).not.toHaveClass('btn-outline-warning');
+        expect(retry).toHaveClass('assistant-status-notice-action');
         // Recovery: the re-check now reports ready, so the notice disappears.
         (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
-        fireEvent.click(screen.getByTestId('assistant-status-retry'));
+        fireEvent.click(retry);
         await waitFor(() =>
             expect(screen.queryByTestId('assistant-status-notice')).not.toBeInTheDocument(),
         );

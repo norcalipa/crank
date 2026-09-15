@@ -160,18 +160,27 @@ function AssistantStatusNotice({status, onRetry, checking}: {
     // (the page requires login) and would add nothing actionable.
     if (status.state === 'ready' || status.state === 'signed_out') return null;
 
-    const copy: Record<string, string> = {
-        replies_disabled:
-            'The assistant is not accepting replies right now. You can still browse ' +
-            'company rankings, and your saved preferences remain available — update ' +
-            'them here once replies resume.',
-        inventory_unavailable:
-            'The assistant is unavailable right now: there are no active job listings ' +
-            'to search. You can still browse company rankings.',
-        temporarily_unavailable:
-            'The assistant is temporarily unavailable. Check again in a moment.',
-        refreshing:
-            'The assistant is refreshing its job listings. It will be back shortly.',
+    // Short scannable state label plus one supporting sentence: the state and
+    // the next action should be readable at a glance, especially on mobile.
+    const copy: Record<string, {title: string; body: string}> = {
+        replies_disabled: {
+            title: 'Assistant unavailable',
+            body: 'Replies are paused right now. Saved preferences remain ' +
+                'available — update them here once replies resume.',
+        },
+        inventory_unavailable: {
+            title: 'Assistant unavailable',
+            body: 'No active job listings to search right now. Saved preferences ' +
+                'are still available — update them here once listings return.',
+        },
+        temporarily_unavailable: {
+            title: 'Assistant temporarily unavailable',
+            body: 'Check again in a moment.',
+        },
+        refreshing: {
+            title: 'Assistant refreshing',
+            body: 'Job listings are being refreshed; the assistant will be back shortly.',
+        },
     };
     const text = copy[status.state];
     if (!text) return null;
@@ -181,33 +190,41 @@ function AssistantStatusNotice({status, onRetry, checking}: {
 
     return (
         <div
-            className="alert alert-warning d-flex justify-content-between align-items-center flex-wrap gap-2 py-2"
+            className="alert alert-warning assistant-status-notice py-2 px-3"
             role="status"
             data-testid="assistant-status-notice"
             data-status-state={status.state}
             aria-label="Assistant availability"
         >
-            <div className="flex-grow-1 me-2">
-                <i className="fa-solid fa-circle-info me-1" aria-hidden="true"></i>
-                <span>{text}</span>
-                {browseRankings && (
-                    <div className="mt-1">
-                        <a href="/" className="alert-link">
+            <div className="d-flex align-items-start gap-2">
+                <i className="fa-solid fa-circle-info mt-1" aria-hidden="true"></i>
+                <div>
+                    <strong className="d-block">{text.title}</strong>
+                    <span className="d-block small">{text.body}</span>
+                </div>
+            </div>
+            {(browseRankings || canRetry) && (
+                <div className="assistant-status-notice-actions d-flex flex-wrap gap-2 mt-1">
+                    {browseRankings && (
+                        <a href="/" className="alert-link assistant-status-notice-action">
                             Browse company rankings
                         </a>
-                    </div>
-                )}
-            </div>
-            {canRetry && (
-                <button
-                    type="button"
-                    className="btn btn-sm btn-outline-warning flex-shrink-0 text-nowrap"
-                    onClick={onRetry}
-                    disabled={checking}
-                    data-testid="assistant-status-retry"
-                >
-                    Check again
-                </button>
+                    )}
+                    {canRetry && (
+                        <button
+                            type="button"
+                            // btn-dark keeps white-on-dark text on the light
+                            // warning surface; the previous btn-outline-warning
+                            // pairing failed AA contrast (~1.47:1).
+                            className="btn btn-dark assistant-status-notice-action"
+                            onClick={onRetry}
+                            disabled={checking}
+                            data-testid="assistant-status-retry"
+                        >
+                            Check again
+                        </button>
+                    )}
+                </div>
             )}
         </div>
     );

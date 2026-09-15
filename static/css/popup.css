@@ -770,6 +770,54 @@ body.app-nav-drawer-open {
     border-color: rgba(255, 155, 163, .65);
 }
 
+/* Assistant availability notice (issue #457): a short scannable state label
+   plus supporting copy, with a comfortable touch target on every action. */
+#job-search-chat .card-body [data-testid='assistant-status-notice'] {
+    --assistant-notice-ink: #212529;
+}
+
+#job-search-chat .card-body [data-testid='assistant-status-notice'] a,
+#job-search-chat .card-body [data-testid='assistant-status-notice'] button {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+}
+
+/* Visible keyboard focus on the light warning surface: the shared
+   --bs-warning ring convention targets the dark chat surface, so this
+   scoped ring uses the notice's dark ink for clear contrast on
+   alert-warning. */
+#job-search-chat .card-body [data-testid='assistant-status-notice'] a:focus-visible,
+#job-search-chat .card-body [data-testid='assistant-status-notice'] button:focus-visible {
+    outline: 3px solid var(--assistant-notice-ink);
+    outline-offset: 2px;
+}
+
+@media (max-width: 767.98px) {
+    /* Mandatory content (header, automation note, availability notice,
+       composer) can exceed the measured card height on phones. The history
+       region yields first, but what remains must stay inside the card rather
+       than escaping past its bottom edge, so the card body becomes the scroll
+       container and every control stays reachable (issue #457 visual round 1). */
+    #job-search-chat .card-body {
+        overflow-y: auto;
+    }
+
+    /* Keep the notice itself as compact as the touch-target contract allows. */
+    #job-search-chat .card-body [data-testid='assistant-status-notice'] {
+        padding: .375rem .5rem;
+        margin-bottom: .375rem;
+    }
+
+    #job-search-chat .card-body [data-testid='assistant-status-notice'] strong {
+        line-height: 1.25;
+    }
+
+    #job-search-chat .card-body [data-testid='assistant-status-notice'] .small {
+        line-height: 1.3;
+    }
+}
+
 @media (max-width: 390px) {
     .app-content,
     .app-messages {
