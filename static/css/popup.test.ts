@@ -117,3 +117,65 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         expect(body![0]).toMatch(/min-height:\s*0/);
     });
 });
+
+describe('blocking-dialog close targets and row focus perimeter (issue #464 r2)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+
+    it('gives the popup Close control a 44×44px touch target with a compact glyph', () => {
+        const rule = popupCss.match(/\.popup-details \.card-header \.btn-close\s*\{[^}]*\}/);
+        expect(rule).not.toBeNull();
+        for (const decl of ['inline-size: 44px', 'block-size: 44px', 'min-inline-size: 44px', 'min-block-size: 44px']) {
+            expect(rule![0]).toContain(decl);
+        }
+        // The glyph stays visually compact inside the larger hit box.
+        expect(rule![0]).toMatch(/background-size:\s*1rem/);
+        expect(rule![0]).toMatch(/padding:\s*0/);
+        // The keyboard focus indicator survives the larger control.
+        expect(popupCss).toMatch(
+            /\.popup-details \.card-header \.btn-close:focus-visible\s*\{[^}]*outline:\s*3px solid var\(--bs-warning\)/,
+        );
+    });
+
+    it('keeps the suggest-modal Close target on the same 44px contract', () => {
+        const rule = popupCss.match(/\.modal\.blocking-modal \.btn-close\s*\{[^}]*\}/);
+        expect(rule).not.toBeNull();
+        for (const decl of ['inline-size: 44px', 'block-size: 44px', 'min-inline-size: 44px', 'min-block-size: 44px']) {
+            expect(rule![0]).toContain(decl);
+        }
+        expect(rule![0]).toMatch(/background-size:\s*1rem/);
+        expect(popupCss).toMatch(
+            /\.modal\.blocking-modal \.btn-close:focus-visible\s*\{[^}]*outline:\s*3px solid var\(--bs-warning\)/,
+        );
+    });
+
+    it('compensates the taller Close target by shrinking the header padding-block', () => {
+        // The 44px control must not balloon the pinned header: the container
+        // (not the target) absorbs the height.
+        const headerRules = popupCss.match(/\.popup-details \.card-header\s*\{[^}]*\}/g) ?? [];
+        expect(headerRules.join('\n')).toMatch(/padding-block:\s*\.375rem/);
+    });
+
+    it('draws the focused row perimeter on cells so the wrapper cannot clip it', () => {
+        // The `tr` outline would clip at the rounded, horizontally scrollable
+        // wrapper; cells carry the ring instead.
+        expect(popupCss).toMatch(
+            /\.organization-row:focus-visible\s*\{\s*outline:\s*none;/,
+        );
+        expect(popupCss).toMatch(
+            /\.organization-row:focus-visible > \*\s*\{[^}]*inset 0 3px 0 var\(--bs-warning\)[^}]*inset 0 -3px 0 var\(--bs-warning\)/,
+        );
+        expect(popupCss).toMatch(
+            /\.organization-row:focus-visible > :first-child\s*\{[^}]*inset 3px 0 0 var\(--bs-warning\)/,
+        );
+        expect(popupCss).toMatch(
+            /\.organization-row:focus-visible > :last-child\s*\{[^}]*inset -3px 0 0 var\(--bs-warning\)/,
+        );
+    });
+
+    it('keeps the complete outline ring on the mobile organization card', () => {
+        const grouped = popupCss.match(
+            /\.organization-card:focus-visible[\s\S]*?\{[^}]*outline:\s*3px solid var\(--bs-warning\)/,
+        );
+        expect(grouped).not.toBeNull();
+    });
+});

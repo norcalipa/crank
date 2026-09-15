@@ -533,13 +533,41 @@ body.app-nav-drawer-open {
 }
 
 .organization-card:focus-visible,
-.organization-row:focus-visible,
 .organization-table-wrap:focus-visible,
 .scoring-summary:focus-visible,
 .app-nav-toggle:focus-visible,
 .app-nav-brand:focus-visible {
     outline: 3px solid var(--bs-warning);
     outline-offset: 2px;
+}
+
+/* Desktop restored-focus indicator: a `tr` outline clips at the rounded,
+   horizontally scrollable table wrapper (left/right edges disappear), so
+   draw the complete perimeter as inset shadows on the row's cells instead
+   (issue #464, visual critique round 1). The mobile card keeps its
+   outline ring in the group above. */
+.organization-row:focus-visible {
+    outline: none;
+}
+
+.organization-row:focus-visible > * {
+    box-shadow:
+        inset 0 3px 0 var(--bs-warning),
+        inset 0 -3px 0 var(--bs-warning);
+}
+
+.organization-row:focus-visible > :first-child {
+    box-shadow:
+        inset 3px 0 0 var(--bs-warning),
+        inset 0 3px 0 var(--bs-warning),
+        inset 0 -3px 0 var(--bs-warning);
+}
+
+.organization-row:focus-visible > :last-child {
+    box-shadow:
+        inset -3px 0 0 var(--bs-warning),
+        inset 0 3px 0 var(--bs-warning),
+        inset 0 -3px 0 var(--bs-warning);
 }
 
 .readable-page-container {
@@ -570,6 +598,48 @@ body.app-nav-drawer-open {
 .popup-details .card-body,
 .popup-details .card-header {
     padding: 1rem;
+}
+
+/* Blocking-dialog Close controls need a 44×44px touch target (visual
+   critique, issue #464 round 1). The glyph stays visually compact: the
+   button box grows while the background icon keeps its 1rem size, and the
+   header padding-block shrinks so the pinned header keeps its height. */
+.popup-details .card-header {
+    padding-block: .375rem;
+}
+
+.popup-details .card-header .btn-close {
+    inline-size: 44px;
+    block-size: 44px;
+    min-inline-size: 44px;
+    min-block-size: 44px;
+    flex: 0 0 44px;
+    padding: 0;
+    background-position: center;
+    background-size: 1rem;
+    border-radius: .375rem;
+}
+
+.popup-details .card-header .btn-close:focus-visible {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
+}
+
+/* Keep the suggest-company modal's Close target on the same contract so
+   both blocking-dialog patterns stay consistent. */
+.modal.blocking-modal .btn-close {
+    inline-size: 44px;
+    block-size: 44px;
+    min-inline-size: 44px;
+    min-block-size: 44px;
+    padding: 0;
+    background-position: center;
+    background-size: 1rem;
+}
+
+.modal.blocking-modal .btn-close:focus-visible {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
 }
 
 #job-search-chat,
