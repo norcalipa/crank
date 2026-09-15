@@ -42,6 +42,17 @@ class InvalidPreferencePatchError(InvalidModelOutputError):
     """The model's preference patch is malformed or violates the preference schema."""
 
 
+class PreferenceStaleError(JobSearchError):
+    """A proposed preference patch lost an optimistic-concurrency check.
+
+    The preference row changed between the turn's version capture (turn start)
+    and patch application (after the provider reply), so applying the patch
+    would overwrite a newer change the user made (or a reset) mid-turn. The
+    patch is NOT applied; the transport maps this to a stable 409
+    ``preference_stale`` envelope and the persisted user turn stays retryable.
+    """
+
+
 class InvalidScoreSummaryRowError(JobSearchError):
     """A score-summary datasource returned a malformed/untyped row.
 

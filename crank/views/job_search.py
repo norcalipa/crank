@@ -16,6 +16,12 @@ Behavior contract (mirrored by the test suite):
   not duplicate the persisted user message or machine reply.
 * Provider/service failures return a stable 500 and durable retries.
 * Per-user/IP request limits apply; leaning on them returns a stable 429.
+* A late reply whose proposed preference patch lost the optimistic-
+  concurrency check returns a stable 409 ``preference_stale`` and never
+  overwrites the newer preference version; the user turn stays retryable.
+* A reply completing after the conversation was reset or deleted mid-turn
+  attaches to nothing: a stable 409 ``conversation_closed`` is returned and
+  no assistant message is persisted.
 * A correlation id is echoed back in ``X-Request-ID`` on every response.
 * Message and assistant content is never logged and is always rendered as text.
 """
@@ -37,6 +43,7 @@ from crank.agents.job_search.demo import (
     JobSearchServiceError,
     ServiceCostLimit,
     ServiceInvalidOutput,
+    ServicePreferenceStale,
     ServiceTimeout,
 )
 from crank.models import JobSearchConversation, JobSearchMessage
@@ -318,6 +325,22 @@ def agent_conversation_detail(request, conversation_id):
             "The assistant produced an unexpected response. Please try again.",
             request_id,
         )
+    except ServicePreferenceStale:
+        monitoring.record_event("interactive_call", {
+            "status": "error",
+            "reason_code": "preference_stale",
+            "correlation_id": request_id,
+        })
+        # The proposed patch was rejected by the optimistic-concurrency check:
+        # the preference row changed while the turn was in flight, so nothing
+        # was overwritten. The user turn remains persisted; the client can
+        # retry with the same idempotency key (issue #487).
+        return _error(
+            request, 409, "preference_stale",
+            "Your preferences changed while the assistant was responding. "
+            "Please retry.",
+            request_id,
+        )
     except JobSearchServiceError:
         monitoring.record_event("interactive_call", {
             "status": "error",
@@ -339,6 +362,27 @@ def agent_conversation_detail(request, conversation_id):
         return _error(
             request, 500, "unexpected_error",
             "An unexpected error occurred. Please try again.",
+            request_id,
+        )
+
+    # Late-reply lifecycle guard (issue #487): the conversation may have been
+    # reset (active=False) or deleted by a concurrent request while the turn
+    # was in flight. Re-check ownership AND active state before persisting the
+    # assistant message so a late reply can never attach to a closed or
+    # deleted conversation.
+    conversation = JobSearchConversation.objects.filter(
+        pk=conversation.pk, owner=request.user, active=True
+    ).first()
+    if conversation is None:
+        monitoring.record_event("interactive_call", {
+            "status": "error",
+            "reason_code": "conversation_closed",
+            "correlation_id": request_id,
+        })
+        return _error(
+            request, 409, "conversation_closed",
+            "This conversation was reset or deleted while the assistant was "
+            "responding.",
             request_id,
         )
 

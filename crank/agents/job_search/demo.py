@@ -28,6 +28,7 @@ from crank.agents.job_search import quality
 from crank.agents.job_search.errors import (
     CostLimitError as _OrchestratorCostLimit,
     InvalidModelOutputError as _OrchestratorInvalidOutput,
+    PreferenceStaleError as _OrchestratorPreferenceStale,
     ProviderTimeoutError as _OrchestratorTimeout,
 )
 from crank.checks import is_non_dev_environment
@@ -41,6 +42,7 @@ __all__ = [
     "JobSearchServiceError",
     "ServiceCostLimit",
     "ServiceInvalidOutput",
+    "ServicePreferenceStale",
     "ServiceTimeout",
 ]
 
@@ -63,6 +65,16 @@ class ServiceCostLimit(JobSearchServiceError):
 
 class ServiceInvalidOutput(JobSearchServiceError):
     """The provider output failed schema validation."""
+
+
+class ServicePreferenceStale(JobSearchServiceError):
+    """A proposed preference patch lost its optimistic-concurrency check.
+
+    The preference row changed while the turn was in flight (the user edited
+    or reset preferences, or another request patched them), so the patch was
+    NOT applied. The view maps this to a stable 409 ``preference_stale``
+    envelope; the persisted user turn remains retryable (issue #487).
+    """
 
 
 class DemoJobSearchProvider:
@@ -208,6 +220,15 @@ class JobSearchService:
             raise ServiceInvalidOutput(
                 "The assistant produced an unexpected response. "
                 "Please try again."
+            ) from exc
+        except _OrchestratorPreferenceStale as exc:
+            logger.error(
+                "job_search stale preference patch conversation=%s",
+                getattr(conversation, "pk", None),
+            )
+            raise ServicePreferenceStale(
+                "Your preferences changed while the assistant was responding. "
+                "Please retry."
             ) from exc
         except Exception as exc:  # provider failure -> stable service error
             logger.error(

@@ -35,6 +35,7 @@ from crank.agents.job_search.errors import (
     InvalidOrganizationReferenceError,
     InvalidPreferencePatchError,
     JobSearchError,
+    PreferenceStaleError,
     ProviderError,
     ProviderTimeoutError,
 )
@@ -202,15 +203,34 @@ class _PreferenceServiceAdapter:
     def __init__(self, user: Any) -> None:
         self._user = user
 
+    def current_modified(self) -> Any:
+        """Return the owner's current preference version, or None when absent.
+
+        The orchestrator captures this at turn start and passes it back as
+        ``expected_modified`` so a late reply cannot overwrite a preference
+        change made while the turn was in flight (issue #487).
+        """
+        from crank.models.preference import UserPreference
+
+        row = UserPreference.objects.filter(user=self._user).first()
+        return row.modified if row is not None else None
+
     def validate_patch(self, patch: dict[str, Any]) -> None:
         from crank.services.preferences import validate_patch
 
         validate_patch(patch)
 
-    def apply_patch(self, patch: dict[str, Any]) -> bool:
-        from crank.services.preferences import apply_patch_to_user
+    def apply_patch(self, patch: dict[str, Any], expected_modified: Any = None) -> bool:
+        from crank.services.preferences import StalePreferenceError, apply_patch_to_user
 
-        result = apply_patch_to_user(self._user, patch)
+        try:
+            result = apply_patch_to_user(self._user, patch, expected_modified)
+        except StalePreferenceError as exc:
+            # Map the concrete store's typed error to the orchestrator-level
+            # error so the transport layer stays provider-independent.
+            raise PreferenceStaleError(
+                "preference changed while the assistant was responding"
+            ) from exc
         return bool(result.get("changed", False))
 
 
@@ -228,7 +248,11 @@ class _NullPreferenceService:
         # to validate against. The orchestrator already bounds the patch shape.
         pass
 
-    def apply_patch(self, patch: dict[str, Any]) -> bool:
+    def current_modified(self) -> Any:
+        # No user row exists to version; the stale check degrades to a no-op.
+        return None
+
+    def apply_patch(self, patch: dict[str, Any], expected_modified: Any = None) -> bool:
         return False
 
 

@@ -26,7 +26,8 @@ from crank.agents.job_search.demo import (
     ServiceInvalidOutput,
     ServiceTimeout,
 )
-from crank.models import JobSearchConversation, JobSearchMessage
+from crank.models import JobSearchConversation, JobSearchMessage, UserPreference
+from crank.services import preferences
 
 
 LOCMEM = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
@@ -1475,3 +1476,307 @@ class TypedErrorCategoryTests(TestCase):
         self.assertNotIn("api_key", msg)
         self.assertNotIn("OpenAI", msg)
         self.assertNotIn("gpt-4", msg)
+
+
+@override_settings(CACHES=LOCMEM)
+class StalePreferenceAndLateReplyTests(TestCase):
+    """Issue #487: optimistic-concurrency wiring and late-reply lifecycle guards.
+
+    Covers three guards end-to-end through the Django view layer:
+
+    1. A turn whose proposed preference patch is stale (the preference row
+       changed while the turn was in flight) returns a stable 409
+       ``preference_stale``, never overwrites the newer version, and leaves
+       the persisted user turn retryable.
+    2. A matching version applies the patch normally (both branches of the
+       optimistic check).
+    3. A reply completing after the conversation was reset or deleted
+       mid-turn attaches to no active conversation (409
+       ``conversation_closed``) and changes no preferences.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user("stale", "stale@example.com", "pw")
+        self.client = Client()
+        self.client.force_login(self.user)
+        # Materialize the owner's preference row so the version capture has a
+        # real ``modified`` timestamp to check against.
+        preferences.read(self.user)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _start_conversation(self):
+        resp = self.client.post(
+            reverse("agent-conversation-list"),
+            data=json.dumps({"create_new": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        return resp.json()["id"]
+
+    def _submit(self, conversation_id, content, key):
+        return self.client.post(
+            reverse("agent-conversation-detail", args=[conversation_id]),
+            data=json.dumps({"content": content, "idempotency_key": key}),
+            content_type="application/json",
+        )
+
+    def _build_orchestrator_provider(self, gateway):
+        """Build an OrchestratorJobSearchProvider wired to the real preference store.
+
+        The gateway is caller-controlled so a test can mutate lifecycle state
+        mid-turn (inside ``complete``) exactly like a slow real provider.
+        """
+        from crank.agents.job_search.providers import (
+            OrchestratorJobSearchProvider,
+            _PreferenceServiceAdapter,
+        )
+        from crank.agents.job_search.service import JobSearchOrchestrator
+
+        orchestrator = JobSearchOrchestrator(
+            gateway=gateway,
+            preference_service=_PreferenceServiceAdapter(self.user),
+            org_datasource=lambda filters, limit: [],
+            score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [],
+        )
+        return OrchestratorJobSearchProvider(orchestrator=orchestrator)
+
+    def _patch_service_provider(self, provider):
+        return patch.object(
+            JobSearchService,
+            "__init__",
+            lambda self, *args, **kwargs: setattr(self, "provider", provider),
+        )
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_stale_preference_patch_returns_409_and_never_overwrites(self, record):
+        """A late reply's patch is rejected when the row changed mid-turn."""
+        from crank.services import preferences as pref_service
+
+        class ConcurrentlyEditingGateway:
+            """Simulates a user preference edit racing a slow provider reply."""
+
+            def __init__(self, user):
+                self.user = user
+                self.payload = {
+                    "message": "I noted your preference update.",
+                    "cited_organization_ids": [],
+                    "cited_job_listing_ids": [],
+                    "preference_patch": {"set": {"notes": "late patch"}},
+                }
+
+            def complete(self, request):
+                # Mid-turn: the user (or another request) edits preferences,
+                # bumping the row's ``modified`` past the turn-start capture.
+                pref_service.apply_patch_to_user(
+                    self.user, {"set": {"notes": "concurrent edit"}}
+                )
+                from crank.agents.job_search.gateway import GatewayResponse
+
+                return GatewayResponse(text=json.dumps(self.payload))
+
+            def close(self):
+                return None
+
+        provider = self._build_orchestrator_provider(
+            ConcurrentlyEditingGateway(self.user)
+        )
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+
+        with self._patch_service_provider(provider):
+            resp = self._submit(conv_id, "please prefer remote work", key)
+
+        self.assertEqual(resp.status_code, 409)
+        body = resp.json()
+        self.assertEqual(body["error"]["type"], "preference_stale")
+        self.assertIn("request_id", body["error"])
+        self.assertTrue(resp.headers.get("X-Request-ID"))
+
+        # The stale patch was never applied; the concurrent edit survived.
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "concurrent edit")
+
+        # The user turn persisted exactly once; no assistant message.
+        conv = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertEqual(conv.messages.filter(role="user").count(), 1)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+
+        # Telemetry records the reason without any content.
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "preference_stale" for c in calls))
+
+        # The persisted user turn stays retryable with the same key.
+        from crank.agents.job_search.gateway import GatewayResponse
+
+        class CleanGateway:
+            def complete(self, request):
+                return GatewayResponse(
+                    text=json.dumps(
+                        {
+                            "message": "Got it — remote work noted.",
+                            "cited_organization_ids": [],
+                            "cited_job_listing_ids": [],
+                            "preference_patch": {"set": {"notes": "retry patch"}},
+                        }
+                    )
+                )
+
+            def close(self):
+                return None
+
+        retry_provider = self._build_orchestrator_provider(CleanGateway())
+        with self._patch_service_provider(retry_provider):
+            retry = self._submit(conv_id, "please prefer remote work", key)
+        self.assertEqual(retry.status_code, 201)
+        conv = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertEqual(conv.messages.filter(role="user").count(), 1)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 1)
+        stored.refresh_from_db()
+        self.assertEqual(stored.preferences["notes"], "retry patch")
+
+    def test_matching_preference_version_applies_patch(self):
+        """Both branches: a matching ``expected_modified`` applies the patch."""
+        from crank.agents.job_search.gateway import GatewayResponse
+
+        class CleanGateway:
+            def complete(self, request):
+                return GatewayResponse(
+                    text=json.dumps(
+                        {
+                            "message": "Noted.",
+                            "cited_organization_ids": [],
+                            "cited_job_listing_ids": [],
+                            "preference_patch": {"set": {"notes": "accepted patch"}},
+                        }
+                    )
+                )
+
+            def close(self):
+                return None
+
+        provider = self._build_orchestrator_provider(CleanGateway())
+        conv_id = self._start_conversation()
+        with self._patch_service_provider(provider):
+            resp = self._submit(conv_id, "prefer remote", str(uuid.uuid4()))
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(resp.json()["preferences_changed"])
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "accepted patch")
+
+    def test_preference_adapter_maps_stale_error_and_versions(self):
+        """Unit: adapter exposes ``current_modified`` and maps stale errors."""
+        from crank.agents.job_search.errors import PreferenceStaleError
+        from crank.agents.job_search.providers import _PreferenceServiceAdapter
+        from crank.services.preferences import StalePreferenceError as _StoreStale
+
+        fresh = User.objects.create_user("adapteruser", "adapter@example.com", "pw")
+        adapter = _PreferenceServiceAdapter(fresh)
+        # No row yet -> version capture degrades to None.
+        self.assertIsNone(adapter.current_modified())
+
+        preferences.read(fresh)
+        version = adapter.current_modified()
+        self.assertIsNotNone(version)
+
+        # Correct version applies; wrong version raises the orchestrator-level
+        # typed error (mapped from the store's StalePreferenceError).
+        self.assertTrue(
+            adapter.apply_patch({"set": {"notes": "v-ok"}}, expected_modified=version)
+        )
+        self.assertEqual(UserPreference.objects.get(user=fresh).preferences["notes"], "v-ok")
+        with self.assertRaises(PreferenceStaleError) as ctx:
+            adapter.apply_patch(
+                {"set": {"notes": "v-stale"}}, expected_modified=version
+            )
+        # The underlying store error is a StalePreferenceError (chained).
+        self.assertIsInstance(ctx.exception.__cause__, _StoreStale)
+        # The stale patch was not applied.
+        self.assertEqual(UserPreference.objects.get(user=fresh).preferences["notes"], "v-ok")
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_reply_after_midturn_reset_attaches_to_nothing(self, record):
+        """A reply completing after a mid-turn reset persists no assistant message."""
+        from crank.models.job_search import JobSearchConversation
+
+        class MidTurnResetProvider:
+            """Mutates conversation lifecycle state mid-turn (reset case)."""
+
+            def generate_reply(self, *, conversation, user_message):
+                JobSearchConversation.objects.filter(pk=conversation.pk).update(
+                    active=False
+                )
+                JobSearchConversation.objects.create(owner=conversation.owner)
+                return "late reply after reset", True, None
+
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        with self._patch_service_provider(MidTurnResetProvider()):
+            resp = self._submit(conv_id, "hello", key)
+
+        self.assertEqual(resp.status_code, 409)
+        body = resp.json()
+        self.assertEqual(body["error"]["type"], "conversation_closed")
+        self.assertTrue(resp.headers.get("X-Request-ID"))
+
+        # The old conversation is closed and carries no assistant message; the
+        # fresh one created by the reset is empty as well.
+        old = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertFalse(old.active)
+        self.assertEqual(old.messages.filter(role="assistant").count(), 0)
+        for conv in JobSearchConversation.objects.filter(owner=self.user):
+            self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "conversation_closed" for c in calls))
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_reply_after_midturn_delete_attaches_to_nothing(self, record):
+        """A reply completing after a mid-turn delete persists no message row."""
+        from crank.models.job_search import JobSearchConversation
+
+        class MidTurnDeleteProvider:
+            """Mutates conversation lifecycle state mid-turn (delete case)."""
+
+            def generate_reply(self, *, conversation, user_message):
+                conversation.messages.all().delete()
+                JobSearchConversation.objects.filter(pk=conversation.pk).delete()
+                return "late reply after delete", True, None
+
+        conv_id = self._start_conversation()
+        with self._patch_service_provider(MidTurnDeleteProvider()):
+            resp = self._submit(conv_id, "hello", str(uuid.uuid4()))
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
+        # No orphan assistant message anywhere.
+        self.assertFalse(JobSearchMessage.objects.filter(role="assistant").exists())
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "conversation_closed" for c in calls))
+
+    def test_reply_after_midturn_reset_changes_no_preferences(self):
+        """The closed-conversation guard leaves the preference row untouched."""
+        from crank.models.job_search import JobSearchConversation
+
+        stored = UserPreference.objects.get(user=self.user)
+        before = stored.preferences
+
+        class MidTurnResetProvider:
+            def generate_reply(self, *, conversation, user_message):
+                # The turn claims a preference change while resetting lifecycle
+                # state; neither may reach the user's stored preferences.
+                JobSearchConversation.objects.filter(pk=conversation.pk).update(
+                    active=False
+                )
+                return "late reply", True, None
+
+        conv_id = self._start_conversation()
+        with self._patch_service_provider(MidTurnResetProvider()):
+            resp = self._submit(conv_id, "hello", str(uuid.uuid4()))
+        self.assertEqual(resp.status_code, 409)
+        stored.refresh_from_db()
+        self.assertEqual(stored.preferences, before)
+        self.assertEqual(stored.preferences_markdown, preferences.read(self.user)["markdown"])

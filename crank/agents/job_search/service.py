@@ -29,6 +29,7 @@ from crank.agents.job_search.errors import (
     InvalidOrganizationReferenceError,
     InvalidPreferencePatchError,
     JobSearchError,
+    PreferenceStaleError,
     ProviderError,
     ProviderTimeoutError,
 )
@@ -60,7 +61,26 @@ class PreferenceService(Protocol):
     def validate_patch(self, patch: dict[str, Any]) -> None:
         ...  # pragma: no cover - structural Protocol stub, never called directly
 
-    def apply_patch(self, patch: dict[str, Any]) -> bool:
+    def current_modified(self) -> Any:
+        """Return the owner's current preference version (``modified``), or None.
+
+        Captured by the orchestrator at turn start and passed back to
+        :meth:`apply_patch` as ``expected_modified`` so a patch proposed by a
+        slow reply cannot overwrite a preference change (or reset) that
+        happened while the turn was in flight. Ports without version tracking
+        may omit this method; the orchestrator then degrades to no check.
+        """
+        ...  # pragma: no cover - structural Protocol stub, never called directly
+
+    def apply_patch(
+        self, patch: dict[str, Any], expected_modified: Any = None
+    ) -> bool:
+        """Apply an accepted patch transactionally; return whether it changed.
+
+        Raises :class:`PreferenceStaleError` when ``expected_modified`` is
+        given and the preference row changed since the turn captured it. The
+        parameter is optional so existing mock ports remain compatible.
+        """
         ...  # pragma: no cover - structural Protocol stub, never called directly
 
 
@@ -280,6 +300,12 @@ class JobSearchOrchestrator:
             matches=match_data,
         )
 
+        # 2a. Capture the preference version at turn start (issue #487). A
+        # slow provider reply must never overwrite a preference change or a
+        # reset the user made while the turn was in flight, so the patch is
+        # later applied only if the row still carries this version.
+        expected_modified = self._capture_expected_modified()
+
         # 3. Provider call (maps provider failures to typed errors).
         response = self._invoke_gateway(model_context, token_budget, max_tokens)
 
@@ -308,7 +334,9 @@ class JobSearchOrchestrator:
         preferences_changed = False
         applied_patch: dict[str, Any] | None = None
         if completion.has_preference_patch:
-            applied_patch, preferences_changed = self._apply_preference_patch(completion.preference_patch)
+            applied_patch, preferences_changed = self._apply_preference_patch(
+                completion.preference_patch, expected_modified
+            )
 
         # 7. Build citation-validated structured results from server data.
         structured_results = self._build_results(
@@ -554,8 +582,26 @@ class JobSearchOrchestrator:
             organizations=tuple(org_results),
         )
 
+    def _capture_expected_modified(self) -> Any:
+        """Capture the preference row version at turn start (best effort).
+
+        Ports without ``current_modified`` (or one that fails) degrade to
+        ``None``, which disables the stale check and reproduces the previous
+        behavior; the concrete production port always implements it.
+        """
+        reader = getattr(self._preference_service, "current_modified", None)
+        if reader is None:
+            return None
+        try:
+            return reader()
+        except Exception:  # pragma: no cover - defensive port boundary
+            logger.warning(
+                "preference version capture failed; continuing without stale check"
+            )
+            return None
+
     def _apply_preference_patch(
-        self, patch: dict[str, Any]
+        self, patch: dict[str, Any], expected_modified: Any = None
     ) -> tuple:
         try:
             self._preference_service.validate_patch(patch)
@@ -563,5 +609,37 @@ class JobSearchOrchestrator:
             raise
         except Exception as exc:  # defensive: port must raise typed error
             raise InvalidPreferencePatchError(str(exc)) from exc
-        changed = self._preference_service.apply_patch(patch)
+        try:
+            changed = self._apply_patch_with_version(patch, expected_modified)
+        except PreferenceStaleError:
+            # Fail closed: a stale patch is never applied and never retried
+            # silently inside the turn. The transport maps this to a stable
+            # 409 ``preference_stale`` envelope; the user turn stays retryable.
+            raise
+        except Exception as exc:  # defensive: port must raise typed error
+            raise InvalidPreferencePatchError(str(exc)) from exc
         return patch, bool(changed)
+
+    def _apply_patch_with_version(
+        self, patch: dict[str, Any], expected_modified: Any
+    ) -> bool:
+        """Call the port's ``apply_patch``, passing the version when supported.
+
+        Mock ports written before the ``expected_modified`` parameter (and the
+        production null port) accept only ``(patch)``; for those the version
+        is dropped and the previous behavior is preserved.
+        """
+        import inspect
+
+        try:
+            params = inspect.signature(self._preference_service.apply_patch).parameters
+        except (TypeError, ValueError):  # pragma: no cover - builtins etc.
+            params = {}
+        accepts_version = "expected_modified" in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+        if accepts_version:
+            return self._preference_service.apply_patch(
+                patch, expected_modified=expected_modified
+            )
+        return self._preference_service.apply_patch(patch)

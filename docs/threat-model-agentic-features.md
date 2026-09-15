@@ -3,14 +3,19 @@
 
 # Threat model: agentic job-search features
 
-Review date: 2026-08-12
+Review date: 2026-09-14 (updated by #487; previous review 2026-08-12)
 Scope: authenticated chat, preferences, score/source ingestion, listing
-resolution, deterministic matching, and owner-scoped match presentation.
+resolution, deterministic matching, owner-scoped match presentation, and the
+assistant-surface boundaries added by epic UX (typed page context, allowlisted
+UI actions, proposed preference patches, cached account state, late replies,
+and evidence status).
 
 This review is intentionally bounded to the existing agentic feature paths. It
 covers the offline security/integration suite in
-`crank/tests/security/test_phase4_security.py` and the focused boundary tests
-listed below. No live provider or source traffic is required.
+`crank/tests/security/test_phase4_security.py`, the focused boundary tests
+listed below, and the #487 extensions. No live provider or source traffic is
+required. **A fixture-based suite is not a completed audit**; residual risks
+are stated per boundary below and owners are named.
 
 ## Assets and actors
 
@@ -50,6 +55,179 @@ listed below. No live provider or source traffic is required.
 | User records -> export/reset/delete/retention | Exporting another tenant, stale data after deletion, excessive history, preference audit leakage | Owner-scoped preference/conversation operations, cascade delete, contents-free audits, configured message export cap, reset archives chat, inactive/dismissed matches excluded | `crank/tests/services/test_preferences.py`, `crank/tests/views/test_job_search.py`, `test_job_matches.py`, phase-4 retention tests | Preference/match retention is policy-driven rather than a background purge in this phase; owner: privacy/product maintainers |
 | Runtime -> logs/events | Prompt/message/source secrets or sensitive content in logs/New Relic | Correlation/status/counters only, sanitized bounded error summaries, no prompt/message logging, auth never in transport errors | `crank/tests/test_agent_runs.py`, `test_llm.py`, transport redaction tests, phase-4 negative log/event assertions | Downstream infrastructure must preserve field filtering; owner: platform/observability maintainers |
 
+## Assistant-surface boundaries (epic UX, #487)
+
+Each control below is marked **implemented** (shipped with tests in this
+change) or **pending** (owned by its sibling ticket; asserted nowhere until it
+lands — implemented-before-documented rule, per #463's registry).
+
+### Typed page context
+
+- **Status: pending** — owner: #477/#478 (typed context and action vocabulary),
+  surface #471 (sidebar shell); preference/background consumers #465/#484/#466/#460.
+- **Asset:** the bounded, typed page-context objects the assistant may read
+  (server-built, schema-validated); never raw DOM or client-controlled JSON.
+- **Planned controls:** server-owned construction and bounds (depth/size caps
+  via the `types.py` bounded-scalar/patch primitives), untrusted-data labels,
+  no model-controlled field names. Until the owning tickets land, the chat
+  context remains the existing deterministic builder
+  (`crank/agents/job_search/context.py`) whose bounds are tested in
+  `crank/tests/agents/test_context.py`.
+- **Evidence:** existing `test_context.py` / `test_types.py`; no new controls
+  claimed here.
+
+### Allowlisted UI actions
+
+- **Status: pending** — owner: #478 (action vocabulary), surface #471.
+- **Asset:** the fixed, code-owned action/tool allowlist. Today this is the
+  `tools.py` module surface (plain server-wired functions, no registry the
+  model can expand) and the fixed `AssistantCompletion` schema; the future UI
+  action vocabulary must follow the same pattern.
+- **Implemented controls pinned by #487:** hostile model output cannot add
+  actions/tools/policy keys (`AssistantCompletion.from_json` rejects unknown
+  keys and oversized values); malformed action payloads (unknown names, wrong
+  types, oversized values) and patch keys outside the validated spec fail
+  closed (`MalformedActionPayloadTests` in
+  `crank/tests/security/test_phase4_security.py`); prompt-injection fixtures
+  through the provider are carried as inert display text and never expand the
+  tool surface (`test_prompt_injection_fixture_cannot_invoke_tools`);
+  `tools.py` is asserted to stay a fixed, code-owned allowlist.
+- **Pending:** the UI action vocabulary itself and its dispatch boundary are
+  built and validated by #478/#471.
+
+### Proposed preference patches
+
+- **Status: implemented (this change).**
+- **Asset:** the user's stored `UserPreference` row (version-1 schema),
+  projected markdown, and the audit trail.
+- **Control chain:** model output → `AssistantCompletion.from_json` bounds →
+  `validate_patch` (typed schema, unknown fields fail) →
+  `apply_patch_to_user(user, patch, expected_modified)` under
+  `select_for_update` with the optimistic `modified` check (`_check_stale`) →
+  owner-scoped persistence → contents-free audit rows.
+- **Wiring (#487):** the orchestrator captures the preference row's `modified`
+  at turn start (`PreferenceService.current_modified()`) and passes it as
+  `expected_modified` through `PreferenceService.apply_patch`; a row changed
+  mid-turn (user edit or reset while a slow reply was in flight) raises
+  `StalePreferenceError`, mapped to the typed `PreferenceStaleError` and then
+  to a stable **409 `preference_stale`** envelope. The stale patch is never
+  applied; the persisted user turn remains retryable with the same
+  idempotency key.
+- **Tests:** `crank/tests/views/test_job_search.py`
+  (`StalePreferenceAndLateReplyTests` — stale 409 + no overwrite + retry,
+  matching-version applies, adapter mapping),
+  `crank/tests/security/test_phase4_security.py` (`MalformedActionPayloadTests`).
+- **Residual risk:** a valid-but-undesirable user-requested patch still
+  depends on schema policy, not on this check; owner: preference/agent
+  maintainers.
+
+### Cached account state
+
+- **Status: implemented (tests pinned by #487; caching semantics owned by #470).**
+- **Asset:** public cache entries (`cache_page`-decorated views —
+  `algo/<id>/` IndexView, funding/RTO choices — and the organization API
+  caches) and private session state.
+- **Controls:** public endpoints are deliberately unauthenticated; the
+  requirement is separation, not access control. Public payloads must be
+  identical for different authenticated accounts and contain no username,
+  preference, or conversation content; rate-limit keys (`job_search_rl:*`)
+  and session keys never contain message content — counters only.
+- **Tests:** `PublicCacheSeparationTests` and
+  `test_no_message_content_in_any_cache_key_or_value` in
+  `crank/tests/security/test_phase4_security.py`.
+- **Residual risk:** page-cache poisoning via shared-cache key collisions is
+  an infrastructure concern (`CACHE_MIDDLEWARE_KEY_PREFIX` deployment
+  config), not covered by fixtures; owner: platform maintainers (#470).
+
+### Late replies
+
+- **Status: implemented (this change).**
+- **Abuse case:** a slow/cancelled provider reply completing after the
+  conversation was reset or deleted mid-turn — previously it could attach an
+  assistant message to a closed conversation.
+- **Control:** `agent_conversation_detail` re-checks conversation active state
+  AND existence after `run_turn` and before persisting the assistant message
+  (owner-scoped, `active=True`); a closed/deleted conversation yields a
+  stable **409 `conversation_closed`** and no assistant message row is
+  written. Combined with the stale-patch guard, a late reply can neither
+  reapply an obsolete preference change nor attach to a dead conversation.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant V as agent_conversation_detail
+    participant O as Orchestrator
+    participant P as Provider gateway
+    participant DB as Preference/Conversation store
+
+    C->>V: POST message (idempotency_key)
+    V->>DB: persist user turn (get_or_create)
+    V->>O: run_turn
+    O->>DB: capture preference modified (turn start)
+    O->>P: complete(...)
+    Note over P: slow reply in flight;<br/>concurrent user edit/reset bumps preference version<br/>or resets/deletes the conversation
+    P-->>O: reply with proposed patch
+    O->>DB: apply_patch(expected_modified=captured)
+    alt preference changed mid-turn
+        DB-->>O: StalePreferenceError (not applied)
+        O-->>V: PreferenceStaleError
+        V-->>C: 409 preference_stale (user turn retryable)
+    else version matches
+        DB-->>O: applied
+        O-->>V: reply
+        V->>DB: re-check conversation active+owner
+        alt conversation reset/deleted mid-turn
+            V-->>C: 409 conversation_closed (no assistant message persisted)
+        else still active
+            V->>DB: persist assistant message
+            V-->>C: 201 reply
+        end
+    end
+```
+
+- **Tests:** `StalePreferenceAndLateReplyTests` (reset and delete mid-turn,
+  provider mutates lifecycle state; preferences unchanged; retry works).
+- **Residual risk:** the lifecycle re-check is best-effort (read-then-write,
+  not serialized with reset/delete); a true serialization point would need a
+  per-conversation lock, rejected as an availability regression; owner:
+  web/API maintainers.
+
+### Evidence status
+
+- **Status: implemented (pinned by #487; status model owned by #460/#484 surfaces).**
+- **Asset:** `CompanyProfileObservation.Status` — accepted/pending evidence
+  states shown to users.
+- **Controls:** evidence states are **server-derived only**;
+  `mark_reviewed` validates the transition server-side and model output has
+  no evidence field at all (`AssistantCompletion.from_json` rejects any
+  `evidence` key; `test_evidence_status_is_server_derived_and_never_model_upgraded`).
+- **Pending:** the user-facing evidence surface itself lands with #460/#484;
+  its rendering boundaries must be validated when it exists.
+
+### MySQL concurrency/deletion variants (opt-in)
+
+The default suite runs on SQLite, where `select_for_update` is a no-op: the
+optimistic `modified` check is exercised, the row lock is not.
+Backend-specific variants live in
+`crank/tests/security/test_mysql_concurrency_variants.py` and are
+**skipped unless `CRANK_MYSQL_TEST=1`** with a MySQL-configured settings
+target:
+
+```bash
+export CRANK_MYSQL_TEST=1
+export DJANGO_SETTINGS_MODULE=crank.settings_mysql   # MySQL-configured settings module
+export ENV=dev SECRET_KEY=... REDIS_MASTER_URL=redis://localhost:6379/0
+# Two concurrent patch writers, one stale: exactly one wins; the stale
+# writer receives StalePreferenceError and nothing is overwritten.
+python -m pytest crank/tests/security/test_mysql_concurrency_variants.py::MySqlConcurrencyVariants::test_two_writers_one_stale -v
+# Conversation deleted mid-turn: no assistant message row survives.
+python -m pytest crank/tests/security/test_mysql_concurrency_variants.py::MySqlConcurrencyVariants::test_delete_during_turn -v
+```
+
+- **Residual risk:** these variants require operator-provisioned MySQL and
+  are not run in CI; lock behavior under real load is asserted only by these
+  opt-in runs; owner: platform maintainers.
+
 ## Retention and deletion policy covered by this phase
 
 - Interactive chat exports only the newest `JOB_SEARCH_MESSAGES_RETENTION`
@@ -70,6 +248,13 @@ listed below. No live provider or source traffic is required.
 
 The tested controls fail closed at each boundary: unauthorized objects resolve
 as 404/not-found, invalid model/source data is rejected before writes, network
-requests cannot follow unapproved/private destinations, and sensitive values do
-not appear in logs/events. Residual risks above are operational or require
-separate production/load/legal review; they are not widened by this phase.
+requests cannot follow unapproved/private destinations, stale preference
+patches and late replies cannot overwrite or attach to newer/other state, and
+sensitive values do not appear in logs/events/caches. Residual risks above
+(concurrent-request races on production backends, cache-key infrastructure
+config, source terms/licensing, schema-policy choices, and the surfaces still
+pending their owning tickets — typed page context, UI action vocabulary,
+preference/evidence/background UX) are stated per boundary with named owners.
+These are operational or require separate production/load/legal review; they
+are not widened by this phase. Passing the offline suites is **not** a
+completed security audit.
