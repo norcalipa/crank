@@ -9,6 +9,13 @@ from django.db import models
 from django_extensions.db.models import TimeStampedModel
 
 
+# Registry of operator switch keys. Extend ONLY with the owning ticket's
+# own PR: a new capability adds its key here (default off) before its code
+# path is enabled anywhere, and the drill extends in lockstep —
+# rollback_drill.drill_capabilities() derives its list from this frozenset
+# and crank/tests/test_rollback_drill.py + test_rollout_gates.py fail if a
+# registered key is missing from the drill. Planned epic-#454 names are
+# documented (as planned, not available) in docs/rollout-gates.md.
 ALLOWED_CAPABILITY_KEYS = frozenset(
     {
         "interactive_agent",

@@ -32,7 +32,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
-from django.db import IntegrityError, transaction
+from django.db import connection, IntegrityError, transaction
 from django.db.models import Q
 from django.http import JsonResponse
 from django.utils import timezone
@@ -59,6 +59,67 @@ from crank.serializers.job_search import (
 )
 
 logger = logging.getLogger("crank.job_search")
+
+
+def persist_idempotent_message(conversation, idempotency_key, role, defaults):
+    """Persist one turn message first-write-wins, duplicate-free.
+
+    Replay guarantee: at most one message per (conversation,
+    idempotency_key, role) exists after concurrent retries of the same
+    submission. Turns without an idempotency key (legacy clients) are
+    outside the guarantee — there is nothing to deduplicate, so every
+    submission inserts its own row (the ``unique_jobsearch_message_idempotency``
+    condition excludes empty keys, and a get-or-create lookup on an empty
+    key would falsely match an earlier legacy turn and swallow the new one).
+
+    On backends that support partial indexes (SQLite, PostgreSQL) the
+    conditional ``unique_jobsearch_message_idempotency`` constraint
+    enforces first-write-wins. Production MySQL does not create partial
+    unique indexes (Django's W036 warnings are expected; see
+    ``docs/deployment-migrations.md``), so writers are serialized on the
+    parent conversation row with ``select_for_update`` — the same
+    MySQL-safe pattern as ``crank/services/scores.py`` ``_persist_locked``.
+    The lock is acquired and held INSIDE one atomic block across the
+    lookup AND the insert, and is released only at commit: the winner
+    commits first; the loser then acquires the lock, finds the winner's
+    row, and replays it instead of inserting. (Releasing the lock before
+    the write would let two MySQL writers both miss the lookup and both
+    insert — MySQL has no conditional unique constraint to catch it.)
+    Backends without ``FOR UPDATE`` (SQLite, where the row lock is a no-op
+    anyway and a wrapping transaction would only contend SQLite's
+    database-wide lock across threads) keep the plain get-or-create:
+    there the conditional unique constraint enforces first-write-wins.
+    The MySQL two-connection race is proven by
+    ``crank/tests/test_mysql_concurrency.py``.
+    """
+    if not idempotency_key:
+        # No key: nothing to deduplicate. Skip the lock and the lookup so
+        # every legacy turn inserts its own row.
+        return (
+            JobSearchMessage.objects.create(
+                conversation=conversation, role=role, **defaults
+            ),
+            True,
+        )
+
+    def _get_or_create():
+        return JobSearchMessage.objects.get_or_create(
+            conversation=conversation,
+            idempotency_key=idempotency_key,
+            role=role,
+            defaults=defaults,
+        )
+
+    if connection.features.has_select_for_update:
+        with transaction.atomic():
+            # Serialize concurrent writers for this conversation (MySQL-safe).
+            # The row lock must stay held across the lookup and the insert;
+            # it is released only when this block commits.
+            JobSearchConversation.objects.select_for_update().get(
+                pk=conversation.pk
+            )
+            return _get_or_create()
+    return _get_or_create()
 
 
 def _request_id(request):

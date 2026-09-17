@@ -16,6 +16,7 @@ class Command(AgentRunCommand):
     )
 
     run_type = "noop"
+    capability_key = "agent_noop"
     enabled_setting = "AGENT_NOOP_ENABLED"
 
     def run_payload(self, run, **options):
