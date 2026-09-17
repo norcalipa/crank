@@ -80,11 +80,13 @@ class RollbackDrillInterfaceTest(SimpleTestCase):
         from crank.management.commands import rollback_drill
 
         self.assertTrue(callable(rollback_drill.Command.handle))
-        # DRILL_CAPABILITIES drives the drill; it must cover the capabilities
-        # documented in the rollout gate (kill-switch + AgentRun.RunType pairs).
-        self.assertIsInstance(rollback_drill.DRILL_CAPABILITIES, (list, tuple))
-        self.assertGreater(len(rollback_drill.DRILL_CAPABILITIES), 0)
-        for entry in rollback_drill.DRILL_CAPABILITIES:
+        # drill_capabilities() drives the drill; it must cover the capabilities
+        # documented in the rollout gate (kill-switch + AgentRun.RunType pairs)
+        # and is derived in lockstep from ALLOWED_CAPABILITY_KEYS.
+        self.assertTrue(callable(rollback_drill.drill_capabilities))
+        capabilities = rollback_drill.drill_capabilities()
+        self.assertGreater(len(capabilities), 0)
+        for entry in capabilities:
             self.assertIn("key", entry)
             self.assertIn("run_type", entry)
 

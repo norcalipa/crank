@@ -24,6 +24,7 @@ from django.views.generic import TemplateView
 
 from crank.auth import login_required_with_expiry
 from crank.decorators import cache_page_if_anonymous_method
+from crank.services.scores import SCORE_CACHE_KEY_VERSION
 from crank.views.api import (
     organization_detail,
     organization_provenance,
@@ -67,7 +68,12 @@ urlpatterns = [
     # visitor from the shared entry (issue #487 review, MINOR-1); anonymous
     # traffic keeps the page cache, authenticated requests render fresh and
     # never read or poison the shared entry.
-    path("algo/<int:algorithm_id>/", cache_page_if_anonymous_method(settings.CACHE_MIDDLEWARE_SECONDS)(IndexView.as_view()), name="index"),
+    # The page also embeds score-derived rankings, so its key prefix rotates
+    # with the score cache version: pages rendered by a pre-#461 deployment
+    # (empty prefix) age out unread instead of serving superseded averages
+    # after deploy. The attribute-only choices endpoints below carry no score
+    # data and keep the default prefix.
+    path("algo/<int:algorithm_id>/", cache_page_if_anonymous_method(settings.CACHE_MIDDLEWARE_SECONDS, key_prefix=f"algo-{SCORE_CACHE_KEY_VERSION}")(IndexView.as_view()), name="index"),
     path('api/funding-round-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(FundingRoundChoicesView.as_view()), name='funding_round_choices'),
     path('api/rto-policy-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(RTOPolicyChoicesView.as_view()), name='rto_policy_choices'),
     path('api/organizations/<int:pk>/', organization_detail, name='organization-detail'),

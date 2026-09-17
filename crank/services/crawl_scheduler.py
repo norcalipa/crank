@@ -1,6 +1,11 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
-"""Bounded freshness planning for company and job-source crawls."""
+"""Bounded freshness planning for company-profile crawls.
+
+Since issue #462 job-source ingestion has a single owner: the job pipeline
+(``run_job_pipeline``). The scheduler plans organization-profile crawls only;
+``--phase jobs`` is an accepted, documented no-op.
+"""
 
 from __future__ import annotations
 
@@ -11,8 +16,6 @@ from typing import Any, Callable, Mapping
 from django.conf import settings
 from django.utils import timezone
 
-from crank.agents.jobs.base import JobSourceQuery
-from crank.agents.jobs.ingest import ingest_jobs
 from crank.models.job import JobSourceCatalog
 from crank.models.source import ApprovalState, SourceCatalog
 from crank.services import monitoring
@@ -20,6 +23,8 @@ from crank.services.company_crawler import crawl_company_profile
 
 
 PHASE_ORGANIZATIONS = "organization"
+# Accepted for operator-script compatibility; a documented no-op since #462:
+# job-source ingestion is owned by run_job_pipeline.
 PHASE_JOBS = "jobs"
 PHASE_ALL = "all"
 PHASES = frozenset({PHASE_ORGANIZATIONS, PHASE_JOBS, PHASE_ALL})
@@ -58,19 +63,6 @@ def _dispatch_organization(source: SourceCatalog, now: datetime) -> Any:
     return crawl_company_profile(source, now=now)
 
 
-def _dispatch_job(
-    source: JobSourceCatalog, now: datetime, max_listings: int, max_pages: int
-) -> Any:
-    del now  # The job ingestion contract timestamps listings from the adapter.
-    return ingest_jobs(
-        source,
-        JobSourceQuery(
-            max_listings=max(1, min(max_listings, 10000)),
-            max_pages=max(1, min(max_pages, 1000)),
-        ),
-    )
-
-
 def plan_crawls(
     *,
     phase: str = PHASE_ALL,
@@ -79,16 +71,34 @@ def plan_crawls(
     deadline_seconds: int | None = None,
     dispatchers: Mapping[str, Callable[..., Any]] | None = None,
 ) -> dict[str, int | bool]:
-    """Dispatch stale approved sources within explicit source and time budgets.
+    """Dispatch stale approved organization sources within explicit budgets.
 
     Source names and payloads never enter telemetry. A source's timestamp is
     advanced only after a dispatch completes without provider errors, keeping
     failed sources stale for the next bounded retry while preserving freshness
     guarantees.
+
+    ``phase=PHASE_JOBS`` is a documented no-op since #462 (the job pipeline is
+    the single job-ingestion owner): it returns bounded counts only — each
+    present job source is reported as skipped with no dispatch — while
+    ``PHASE_ORGANIZATIONS`` and ``PHASE_ALL`` plan organization profiles.
     """
     if phase not in PHASES:
         raise ValueError(f"unsupported crawl phase: {phase}")
     reference = now or timezone.now()
+    counts: dict[str, int | bool] = {
+        "scheduled": 0,
+        "stale": 0,
+        "skipped": 0,
+        "errors": 0,
+        "organizations_total": 0,
+        "jobs_total": 0,
+    }
+    if phase == PHASE_JOBS:
+        counts["jobs_total"] = JobSourceCatalog.objects.count()
+        counts["skipped"] = int(counts["jobs_total"])
+        monitoring.record_event("crawl_planning", counts)
+        return counts
     limit = max(
         0,
         int(
@@ -106,43 +116,19 @@ def plan_crawls(
         ),
     )
     dispatchers = dispatchers or {}
-    counts: dict[str, int | bool] = {
-        "scheduled": 0,
-        "stale": 0,
-        "skipped": 0,
-        "errors": 0,
-        "organizations_total": 0,
-        "jobs_total": 0,
-    }
 
-    sources: list[tuple[str, Any, int]] = []
-    if phase in {PHASE_ALL, PHASE_ORGANIZATIONS}:
-        organization_sources = list(SourceCatalog.objects.all().order_by("pk"))
-        counts["organizations_total"] = len(organization_sources)
-        sources.extend(
-            (
-                PHASE_ORGANIZATIONS,
-                source,
-                int(_setting("ORGANIZATION_FRESHNESS_HOURS", 168)),
-            )
-            for source in organization_sources
+    organization_sources = list(SourceCatalog.objects.all().order_by("pk"))
+    counts["organizations_total"] = len(organization_sources)
+    sources: list[tuple[SourceCatalog, int]] = [
+        (
+            source,
+            int(_setting("ORGANIZATION_FRESHNESS_HOURS", 168)),
         )
-    if phase in {PHASE_ALL, PHASE_JOBS}:
-        job_sources = list(JobSourceCatalog.objects.all().order_by("pk"))
-        counts["jobs_total"] = len(job_sources)
-        sources.extend(
-            (PHASE_JOBS, source, int(_setting("JOB_FRESHNESS_HOURS", 24)))
-            for source in job_sources
-        )
+        for source in organization_sources
+    ]
 
-    for source_phase, source, freshness_hours in sources:
-        approved_state = (
-            ApprovalState.APPROVED
-            if source_phase == PHASE_ORGANIZATIONS
-            else JobSourceCatalog.ApprovalState.APPROVED
-        )
-        approved = source.approval_state == approved_state
-        if not approved or not source.enabled:
+    for source, freshness_hours in sources:
+        if source.approval_state != ApprovalState.APPROVED or not source.enabled:
             counts["skipped"] += 1
             continue
         if not is_stale(source.last_crawl_at, freshness_hours, now=reference):
@@ -153,17 +139,8 @@ def plan_crawls(
             counts["skipped"] += 1
             continue
         try:
-            if source_phase == PHASE_ORGANIZATIONS:
-                dispatcher = dispatchers.get(PHASE_ORGANIZATIONS, _dispatch_organization)
-                result = dispatcher(source, reference)
-            else:
-                dispatcher = dispatchers.get(PHASE_JOBS, _dispatch_job)
-                result = dispatcher(
-                    source,
-                    reference,
-                    int(_setting("CRAWL_MAX_JOB_LISTINGS", 100)),
-                    int(_setting("CRAWL_MAX_PAGES", 10)),
-                )
+            dispatcher = dispatchers.get(PHASE_ORGANIZATIONS, _dispatch_organization)
+            result = dispatcher(source, reference)
             counts["scheduled"] += 1
             result_errors = _result_errors(result)
             counts["errors"] += result_errors

@@ -7,11 +7,15 @@ from django.shortcuts import get_object_or_404
 
 from crank.models.organization import Organization
 from crank.models.company_profile import CompanyProfileObservation
+from crank.services.scores import (
+    organization_api_cache_key,
+    organization_scores_api_cache_key,
+)
 
 
 def organization_detail(request, pk):
     """Returns organization details as JSON."""
-    cache_key = f'organization_api_{pk}'
+    cache_key = organization_api_cache_key(pk)
     org_data = cache.get(cache_key)
 
     if not org_data:
@@ -75,7 +79,7 @@ def organization_provenance(request, pk):
 
 def organization_scores(request, pk):
     """Returns organization scores as JSON."""
-    cache_key = f'organization_scores_api_{pk}'
+    cache_key = organization_scores_api_cache_key(pk)
     scores_data = cache.get(cache_key)
 
     if not scores_data:

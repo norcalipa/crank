@@ -8,7 +8,16 @@ deterministic markdown projection, and owner-scoped application services
 
 Design rules from the issue:
 
-* Unknown fields and ambiguous operations fail validation.
+* Unknown fields and ambiguous operations fail validation: a patch may
+  only reference fields this schema version knows (strict-patch rule).
+* Forward compatibility during rolling deploys (epic #454 additive
+  rollouts): a stored document may carry additive fields written by a
+  newer schema version. ``read``/``export`` serve such documents
+  unchanged; ``apply_patch``/``reset`` validate and rewrite only the fields
+  this version knows and preserve the unknown portion verbatim — never
+  validating, modifying, or dropping it, and never projecting it into
+  markdown. A patch that targets an unknown field is still rejected, so
+  an old pod can never corrupt a newer pod's fields.
 * Markdown is derived output and is never accepted as canonical state.
 * Concurrent updates must not silently overwrite a newer preference version,
   enforced with a row lock (``select_for_update``) plus an optimistic
@@ -267,6 +276,68 @@ def validate_document(document):
     walk(_FIELD_SPEC, document, "")
 
 
+def _validate_known_fields(document, spec=_FIELD_SPEC, prefix=""):
+    """Validate the portion of ``document`` this schema version knows.
+
+    Unlike :func:`validate_document`, unknown (additive) keys at any
+    object level are tolerated: a stored document written by a newer
+    schema version must remain servable by older code during a rolling
+    deploy. Known fields are still strictly required and type-checked, so
+    a document missing or corrupting a known field fails exactly as
+    before. Callers must preserve the tolerated unknown keys themselves
+    (see :func:`_extract_unknown`).
+    """
+    if not isinstance(document, dict):
+        raise InvalidValueError("Preferences must be a JSON object")
+    missing = [key for key in spec if key not in document]
+    if missing:
+        raise InvalidValueError(
+            "Missing required field(s): {}".format(", ".join(missing))
+        )
+    for key, sub_spec in spec.items():
+        child = "{}.{}".format(prefix, key) if prefix else key
+        if isinstance(sub_spec, dict):
+            _validate_known_fields(document[key], sub_spec, child)
+        else:
+            validate_value(child, sub_spec, document[key])
+
+
+def _extract_unknown(document, spec=_FIELD_SPEC):
+    """Deep-copy the additive (unknown-to-this-schema) part of a document.
+
+    Unknown keys are collected at every object level: a new top-level
+    section (e.g. a future ``notifications``) and new keys inside known
+    sections (e.g. a future ``compensation.new_field``) are both captured.
+    Values are copied verbatim and never validated — this schema version
+    treats them as opaque payloads owned by a newer version.
+    """
+    unknown = {}
+    if not isinstance(document, dict) or not isinstance(spec, dict):
+        return unknown
+    for key, value in document.items():
+        if key not in spec:
+            unknown[key] = copy.deepcopy(value)
+        elif isinstance(spec[key], dict) and isinstance(value, dict):
+            nested = _extract_unknown(value, spec[key])
+            if nested:
+                unknown[key] = nested
+    return unknown
+
+
+def _merge_unknown(document, unknown):
+    """Reattach the additive portion captured by :func:`_extract_unknown`."""
+    for key, value in unknown.items():
+        if (
+            key in document
+            and isinstance(document[key], dict)
+            and isinstance(value, dict)
+        ):
+            _merge_unknown(document[key], value)
+        else:
+            document[key] = value
+    return document
+
+
 def _get(doc, path):
     parts = _split_path(path)
     node = doc
@@ -403,7 +474,12 @@ def apply_patch(document, patch):
     """
     validate_patch(patch)
     new_doc = copy.deepcopy(document)
-    validate_document(new_doc)
+    # Forward compatibility (epic #454): validate only the known portion of
+    # the stored document. Additive fields written by a newer schema version
+    # ride along in ``new_doc`` untouched: they are never rejected, modified,
+    # or dropped by this path, and a patch cannot address them (strict patch
+    # rule), so old pods never corrupt newer pods' fields.
+    _validate_known_fields(new_doc)
     changes = 0
 
     set_part = patch.get("set") or {}
@@ -483,8 +559,14 @@ def _money(value, currency):
 
 
 def to_markdown(document):
-    """Render a validated document to deterministic, escaped markdown."""
-    validate_document(document)
+    """Render a validated document to deterministic, escaped markdown.
+
+    Tolerates additive fields this schema version does not know (they are
+    preserved in the stored JSON but never projected into markdown), so a
+    document written by a newer schema version renders during a rolling
+    deploy.
+    """
+    _validate_known_fields(document)
     lines = ["# Career Preferences", ""]
     comp = document["compensation"]
     lines.append("## Compensation")
@@ -731,6 +813,11 @@ def reset(user, expected_modified=None):
         else:
             _check_stale(pref, expected_modified)
             fresh = default_preferences()
+            # Forward compatibility: a newer schema version may have written
+            # additive fields this version cannot interpret. Resetting the
+            # known fields must never drop them; they are reattached to the
+            # fresh defaults verbatim and stay owned by the newer version.
+            _merge_unknown(fresh, _extract_unknown(pref.preferences))
         changed = not (
             pref.preferences == fresh
             and pref.preferences_markdown == to_markdown(fresh)

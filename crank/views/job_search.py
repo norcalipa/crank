@@ -13,7 +13,12 @@ Behavior contract (mirrored by the test suite):
 * Conversations are owner-scoped; cross-user access returns 404.
 * POST bodies are CSRF-checked, size-limited, and validated via serializers.
 * Submissions are idempotent on ``idempotency_key``: a retried submission does
-  not duplicate the persisted user message or machine reply.
+  not duplicate the persisted user message or machine reply, and at most one
+  provider run executes per turn at a time (the MySQL-safe ``JobSearchTurn``
+  anchor's unconditional unique constraint plus a row lock serialize
+  concurrent same-key submissions; live claims get a stable 409
+  ``turn_in_progress``, retries are rate-limited and capped per turn, and
+  expired claims are recovered instead of stranding the turn).
 * Provider/service failures return a stable 500 and durable retries.
 * Per-user/IP request limits apply; leaning on them returns a stable 429.
 * A late reply whose proposed preference patch lost the optimistic-
@@ -29,11 +34,13 @@ import json
 import logging
 import time
 import uuid
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
-from django.db import IntegrityError, transaction
+from django.db import connection, IntegrityError, transaction
+from django.db.models import Q
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -52,7 +59,7 @@ from crank.agents.job_search.demo import (
     ServiceTimeout,
 )
 from crank.agents.job_search.errors import ConversationClosedError, is_database_locked
-from crank.models import JobSearchConversation, JobSearchMessage
+from crank.models import JobSearchConversation, JobSearchMessage, JobSearchTurn
 from crank.services import monitoring
 from crank.serializers.job_search import (
     ConversationCreateSerializer,
@@ -116,6 +123,67 @@ def _run_lifecycle_write(action):
             last_exc = exc
             time.sleep(0.25)
     raise last_exc
+
+
+def persist_idempotent_message(conversation, idempotency_key, role, defaults):
+    """Persist one turn message first-write-wins, duplicate-free.
+
+    Replay guarantee: at most one message per (conversation,
+    idempotency_key, role) exists after concurrent retries of the same
+    submission. Turns without an idempotency key (legacy clients) are
+    outside the guarantee — there is nothing to deduplicate, so every
+    submission inserts its own row (the ``unique_jobsearch_message_idempotency``
+    condition excludes empty keys, and a get-or-create lookup on an empty
+    key would falsely match an earlier legacy turn and swallow the new one).
+
+    On backends that support partial indexes (SQLite, PostgreSQL) the
+    conditional ``unique_jobsearch_message_idempotency`` constraint
+    enforces first-write-wins. Production MySQL does not create partial
+    unique indexes (Django's W036 warnings are expected; see
+    ``docs/deployment-migrations.md``), so writers are serialized on the
+    parent conversation row with ``select_for_update`` — the same
+    MySQL-safe pattern as ``crank/services/scores.py`` ``_persist_locked``.
+    The lock is acquired and held INSIDE one atomic block across the
+    lookup AND the insert, and is released only at commit: the winner
+    commits first; the loser then acquires the lock, finds the winner's
+    row, and replays it instead of inserting. (Releasing the lock before
+    the write would let two MySQL writers both miss the lookup and both
+    insert — MySQL has no conditional unique constraint to catch it.)
+    Backends without ``FOR UPDATE`` (SQLite, where the row lock is a no-op
+    anyway and a wrapping transaction would only contend SQLite's
+    database-wide lock across threads) keep the plain get-or-create:
+    there the conditional unique constraint enforces first-write-wins.
+    The MySQL two-connection race is proven by
+    ``crank/tests/test_mysql_concurrency.py``.
+    """
+    if not idempotency_key:
+        # No key: nothing to deduplicate. Skip the lock and the lookup so
+        # every legacy turn inserts its own row.
+        return (
+            JobSearchMessage.objects.create(
+                conversation=conversation, role=role, **defaults
+            ),
+            True,
+        )
+
+    def _get_or_create():
+        return JobSearchMessage.objects.get_or_create(
+            conversation=conversation,
+            idempotency_key=idempotency_key,
+            role=role,
+            defaults=defaults,
+        )
+
+    if connection.features.has_select_for_update:
+        with transaction.atomic():
+            # Serialize concurrent writers for this conversation (MySQL-safe).
+            # The row lock must stay held across the lookup and the insert;
+            # it is released only when this block commits.
+            JobSearchConversation.objects.select_for_update().get(
+                pk=conversation.pk
+            )
+            return _get_or_create()
+    return _get_or_create()
 
 
 def _request_id(request):
@@ -201,6 +269,162 @@ def _get_active_conversation(user, conversation_id):
     ).first()
 
 
+def _turn_attempt_cap():
+    """Return the bounded per-turn provider attempt cap (issue #458)."""
+    return max(1, int(getattr(settings, "JOB_SEARCH_TURN_MAX_ATTEMPTS", 5)))
+
+
+def _turn_lease_deadline():
+    """Return the expiry of a fresh turn claim lease.
+
+    The lease must comfortably exceed the longest legitimate provider run;
+    an expired lease means the claiming worker can no longer be running and
+    the turn may be recovered (reaped to failed-and-retryable).
+    """
+    seconds = max(1, int(getattr(settings, "JOB_SEARCH_TURN_LEASE_SECONDS", 300)))
+    return timezone.now() + timedelta(seconds=seconds)
+
+
+def _finalize_turn(turn_id, delivery_state, failure_code=""):
+    """Persist a turn's outcome on its anchor row exactly once (issue #458).
+
+    A primary-key ``update`` is used so a conversation deleted mid-flight
+    (cascade removes the anchor) makes this a safe no-op instead of raising,
+    and the lease is always released.
+    """
+    JobSearchTurn.objects.filter(pk=turn_id).update(
+        delivery_state=delivery_state,
+        failure_code=failure_code,
+        lease_expires_at=None,
+        modified=timezone.now(),
+    )
+
+
+def _release_failed_turn(turn_id, failure_code=""):
+    """Best-effort ``failed`` finalize for the retryable 409 outcomes.
+
+    These outcomes (issue #487) can follow backend lock contention that is
+    still in progress, so the finalize write itself may hit ``database is
+    locked``. Failing the response over it would turn a documented retryable
+    409 into a 500; the claim's lease expiry recovers the turn instead
+    (``_reap_stale_turns``). Any other backend error still propagates.
+    """
+    try:
+        _finalize_turn(turn_id, JobSearchTurn.DeliveryState.FAILED, failure_code)
+    except Exception as exc:
+        if not is_database_locked(exc):
+            raise
+        logger.warning(
+            "job_search turn finalize contended; lease expiry will recover it"
+        )
+
+
+def _reap_stale_turns(conversation):
+    """Recover turns whose worker lease expired (issue #458).
+
+    A ``pending`` claim past its lease cannot still be running (the lease is
+    set above the longest legitimate provider run), so reads and retries mark
+    it failed-and-retryable instead of returning ``turn_in_progress`` forever
+    after a crashed/interrupted worker.
+    """
+    JobSearchTurn.objects.filter(
+        conversation=conversation,
+        delivery_state=JobSearchTurn.DeliveryState.PENDING,
+    ).filter(
+        Q(lease_expires_at__lt=timezone.now()) | Q(lease_expires_at__isnull=True)
+    ).update(
+        delivery_state=JobSearchTurn.DeliveryState.FAILED,
+        failure_code=JobSearchTurn.FailureCode.WORKER_INTERRUPTED,
+        lease_expires_at=None,
+        modified=timezone.now(),
+    )
+
+
+def _claim_turn(conversation, turn_key):
+    """Claim a turn for a provider run, MySQL-safe (issue #458 CRITICAL).
+
+    Returns ``(turn, outcome, replay_message)`` where ``outcome`` is one of:
+
+    * ``claimed`` — this request owns the claim and must run the provider;
+    * ``in_progress`` — another live claim holds the turn (409);
+    * ``completed`` — replay the stored assistant reply instead;
+    * ``retry_limited`` — the per-turn attempt cap was reached.
+
+    The anchor row's **unconditional** unique constraint guarantees exactly
+    one row per ``(conversation, turn_key)`` on every backend — MySQL
+    included, where the message-level partial unique constraint is never
+    emitted (W036) — so concurrent first submissions serialize on
+    ``get_or_create`` and later transitions on ``select_for_update``.
+    """
+    turn = None
+    for _ in range(3):
+        try:
+            turn, created = JobSearchTurn.objects.get_or_create(
+                conversation=conversation,
+                turn_key=turn_key,
+                defaults={
+                    "delivery_state": JobSearchTurn.DeliveryState.PENDING,
+                    "attempt_count": 1,
+                    "lease_expires_at": _turn_lease_deadline(),
+                },
+            )
+            break
+        except IntegrityError:
+            # Lost the create race against a winner whose transaction had not
+            # committed yet, so get_or_create's internal re-get missed the row.
+            # The constraint keeps at most one anchor either way; retry.
+            continue
+    if turn is None:  # pragma: no cover - defensive; see IntegrityError above
+        raise JobSearchTurn.DoesNotExist(
+            "turn anchor could not be created for key %s" % turn_key
+        )
+    if created:
+        # Creation *is* the claim: the first request to insert the anchor owns
+        # it (attempt 1) and every concurrent loser observes ``pending``.
+        return turn, "claimed", None
+
+    with transaction.atomic():
+        locked = JobSearchTurn.objects.select_for_update().get(pk=turn.pk)
+        if locked.delivery_state == JobSearchTurn.DeliveryState.COMPLETED:
+            replay = JobSearchMessage.objects.filter(
+                conversation=conversation,
+                idempotency_key=turn_key,
+                role=JobSearchMessage.Role.ASSISTANT,
+            ).first()
+            if replay is not None:
+                return locked, "completed", replay
+            # Completed anchor without a stored reply (deleted out of band);
+            # fall through and re-claim so the turn can be answered.
+        if (
+            locked.delivery_state == JobSearchTurn.DeliveryState.PENDING
+            and locked.lease_expires_at is not None
+            and locked.lease_expires_at > timezone.now()
+        ):
+            return locked, "in_progress", None
+        if locked.attempt_count >= _turn_attempt_cap():
+            if locked.delivery_state == JobSearchTurn.DeliveryState.PENDING:
+                # Stale claim at the cap: finalize the interrupted claim; the
+                # turn is not retriable anymore either way.
+                locked.delivery_state = JobSearchTurn.DeliveryState.FAILED
+                locked.failure_code = JobSearchTurn.FailureCode.WORKER_INTERRUPTED
+                locked.lease_expires_at = None
+                locked.save(update_fields=[
+                    "delivery_state", "failure_code", "lease_expires_at", "modified",
+                ])
+            return locked, "retry_limited", None
+        # Failed or stale-pending claim: take over the turn for a new bounded
+        # provider attempt (each takeover is a real provider execution).
+        locked.delivery_state = JobSearchTurn.DeliveryState.PENDING
+        locked.failure_code = ""
+        locked.attempt_count += 1
+        locked.lease_expires_at = _turn_lease_deadline()
+        locked.save(update_fields=[
+            "delivery_state", "failure_code", "attempt_count",
+            "lease_expires_at", "modified",
+        ])
+        return locked, "claimed", None
+
+
 @login_required
 @ensure_csrf_cookie
 @require_http_methods(["GET", "POST"])
@@ -222,6 +446,8 @@ def agent_conversation_list(request):
                 request, 404, "no_conversation",
                 "No active conversation for this user; POST to create one.", request_id,
             )
+        # Recovery-on-read (issue #458): reap turns whose worker lease expired.
+        _reap_stale_turns(conversation)
         return JsonResponse(
             serialize_conversation(conversation), headers={"X-Request-ID": request_id}
         )
@@ -287,6 +513,10 @@ def agent_conversation_detail(request, conversation_id):
         )
 
     if request.method == "GET":
+        # Recovery-on-read (issue #458): turns whose worker lease expired are
+        # marked failed-and-retryable before serializing, so an interrupted
+        # worker never strands a turn in ``pending`` forever.
+        _reap_stale_turns(conversation)
         return JsonResponse(
             serialize_conversation(conversation), headers={"X-Request-ID": request_id}
         )
@@ -304,9 +534,9 @@ def agent_conversation_detail(request, conversation_id):
     message_text = serializer.validated_data["content"]
     idempotency_key = serializer.validated_data["idempotency_key"]
 
-    # Idempotent retry: if we already answered this key, replay that answer so
-    # a network retry cannot persist a duplicate assistant turn. Rate limit is
-    # checked *after* this replay so retries never consume the budget.
+    # Idempotent replay: if we already answered this key, replay that answer
+    # so a network retry cannot persist a duplicate assistant turn. Replay is
+    # a pure read (no provider call, no cost) so it never consumes budget.
     existing_assistant = conversation.messages.filter(
         idempotency_key=idempotency_key, role=JobSearchMessage.Role.ASSISTANT
     ).first()
@@ -319,31 +549,59 @@ def agent_conversation_detail(request, conversation_id):
             headers={"X-Request-ID": request_id},
         )
 
-    # Peek at whether the user message already exists for this key before
-    # checking the rate limit, so a retry after a transient 500 never
-    # exhausts the user's hourly budget.
-    existing_user = conversation.messages.filter(
-        idempotency_key=idempotency_key, role=JobSearchMessage.Role.USER
-    ).first()
-
-    if not existing_user and _check_rate_limit(request):
+    # Rate limit every request that can reach the provider — fresh sends AND
+    # failed-turn retries alike (issue #458): an existing key is not a free
+    # path to unbounded provider calls. Only the completed-turn replay above
+    # stays free. The check happens before any persistence, so a throttled
+    # request leaves no turn behind.
+    if _check_rate_limit(request):
         return _error(
             request, 429, "rate_limited",
             "Too many messages. Try again shortly.", request_id,
         )
 
-    # Persist the user turn once (even across failed provider calls).
-    # ``get_or_create`` is used with a DB-level ``UniqueConstraint`` so
-    # concurrent requests with the same key cannot create duplicates.
-    if existing_user:
-        user_message = existing_user
-    else:
-        user_message, _user_created = JobSearchMessage.objects.get_or_create(
-            conversation=conversation,
-            idempotency_key=idempotency_key,
-            role=JobSearchMessage.Role.USER,
-            defaults={"content": message_text},
+    # Turn claim (issue #458): serialize concurrent same-key submissions on
+    # the MySQL-safe anchor row (unconditional unique constraint + row lock)
+    # so at most one request runs the provider (and re-applies preferences)
+    # at a time. Completed turns replay their stored assistant reply; live
+    # pending claims 409; failed claims are re-claimed up to the attempt cap;
+    # stale pending claims are recovered instead of stranding the turn.
+    turn, outcome, replay_message = _claim_turn(conversation, idempotency_key)
+    if outcome == "in_progress":
+        return _error(
+            request, 409, "turn_in_progress",
+            "This response is still being generated. Please wait a moment.",
+            request_id,
         )
+    if outcome == "completed":
+        return JsonResponse(
+            {
+                "message": serialize_message(replay_message),
+                "preferences_changed": replay_message.preferences_changed,
+            },
+            headers={"X-Request-ID": request_id},
+        )
+    if outcome == "retry_limited":
+        return _error(
+            request, 429, "retry_limit_reached",
+            "This response couldn't be delivered after {} attempts. Please edit "
+            "the message and send it again as a new message.".format(
+                _turn_attempt_cap()
+            ),
+            request_id,
+        )
+
+    # Persist the user turn once (even across failed provider calls). Only
+    # the anchor-claim owner can be here for a fresh key — the anchor race
+    # above is what serializes the insert — so a concurrent same-key
+    # duplicate user row is impossible even on MySQL, where the message-level
+    # partial unique constraint is never emitted.
+    user_message, _user_created = JobSearchMessage.objects.get_or_create(
+        conversation=conversation,
+        idempotency_key=idempotency_key,
+        role=JobSearchMessage.Role.USER,
+        defaults={"content": message_text},
+    )
 
     # Guarded reply persistence (issue #487 review round 2, MAJOR-1): the
     # hook below is invoked by the orchestrator INSIDE the same database
@@ -386,6 +644,10 @@ def agent_conversation_detail(request, conversation_id):
                     "conversation was reset or deleted while the assistant "
                     "was responding"
                 )
+            # Mark the turn completed inside the same transaction as the
+            # reply (issue #458): a client observing ``completed`` can always
+            # find the reply, and a rolled-back commit leaves neither.
+            _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.COMPLETED)
         except IntegrityError:
             # The conversation row vanished inside the guarded window
             # (concurrent delete): the FK insert fails and nothing persists.
@@ -404,6 +666,7 @@ def agent_conversation_detail(request, conversation_id):
             persist_reply=_persist_reply,
         )
     except AssistantUnavailable:
+        _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.FAILED, JobSearchTurn.FailureCode.ASSISTANT_UNAVAILABLE)
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "assistant_unavailable",
@@ -416,6 +679,7 @@ def agent_conversation_detail(request, conversation_id):
             request_id,
         )
     except ServiceTimeout:
+        _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.FAILED, JobSearchTurn.FailureCode.PROVIDER_TIMEOUT)
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "provider_timeout",
@@ -427,6 +691,7 @@ def agent_conversation_detail(request, conversation_id):
             request_id,
         )
     except ServiceCostLimit:
+        _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.FAILED, JobSearchTurn.FailureCode.COST_LIMIT)
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "cost_limit",
@@ -439,6 +704,7 @@ def agent_conversation_detail(request, conversation_id):
             request_id,
         )
     except ServiceInvalidOutput:
+        _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.FAILED, JobSearchTurn.FailureCode.INVALID_OUTPUT)
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "invalid_output",
@@ -450,6 +716,9 @@ def agent_conversation_detail(request, conversation_id):
             request_id,
         )
     except ServicePreferenceStale:
+        # No dedicated failure code: the turn is simply failed-and-retryable
+        # (the code is internal; clients read only the delivery state).
+        _release_failed_turn(turn.pk)
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "preference_stale",
@@ -466,6 +735,7 @@ def agent_conversation_detail(request, conversation_id):
             request_id,
         )
     except ServicePreferenceVersionUnavailable:
+        _release_failed_turn(turn.pk)
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "preference_version_unavailable",
@@ -482,6 +752,7 @@ def agent_conversation_detail(request, conversation_id):
             request_id,
         )
     except ServiceConversationClosed:
+        _release_failed_turn(turn.pk, JobSearchTurn.FailureCode.CONVERSATION_GONE)
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "conversation_closed",
@@ -498,6 +769,7 @@ def agent_conversation_detail(request, conversation_id):
             request_id,
         )
     except JobSearchServiceError:
+        _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.FAILED, JobSearchTurn.FailureCode.SERVICE_ERROR)
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "service_error",
@@ -510,6 +782,7 @@ def agent_conversation_detail(request, conversation_id):
         )
     except Exception:
         logger.exception("unexpected job_search error")
+        _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.FAILED, JobSearchTurn.FailureCode.UNEXPECTED_ERROR)
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "unexpected_error",
@@ -523,72 +796,34 @@ def agent_conversation_detail(request, conversation_id):
 
     if persisted.get("message") is not None:
         # Guarded hook path: the orchestrator's single transaction already
-        # persisted the reply together with any preference patch (one commit
-        # boundary, issue #487 review round 2, MAJOR-1).
+        # persisted the reply together with any preference patch and the
+        # turn's ``completed`` finalize (one commit boundary, issue #487
+        # review round 2, MAJOR-1).
         assistant_message = persisted["message"]
+        attach_conversation = conversation
     else:
         # Legacy provider without the guarded-persistence hook (demo path):
-        # persist here in a self-contained transaction as before.
+        # persist here in a self-contained transaction.
         #
-        # Late-reply lifecycle guard (issue #487): the conversation may have
-        # been reset (active=False) or deleted by a concurrent request while
-        # the turn was in flight. The re-check and the assistant-message
-        # insert are ONE transactional step using an atomic conditional-
-        # persistence scheme: a **write-first conditional claim** —
-        # ``UPDATE ... WHERE active=True`` — takes the conversation row's
-        # write lock on every backend (including SQLite, where FOR UPDATE is
-        # a no-op and a read-first transaction fails the SHARED->RESERVED
-        # upgrade under concurrent writers). The claim and the
-        # reset/delete/create-new endpoints therefore share one serialization
-        # boundary: a concurrent reset/delete either commits before the claim
-        # — it matches no active row and the reply is discarded — or blocks on
-        # the row's write lock until the insert commits; it can never
-        # interleave between the two. The in-transaction re-verify below
-        # fails closed if the row went inactive inside the window; a vanished
-        # row surfaces as an FK IntegrityError — both roll the insert back
-        # and map to the stable 409.
-        results_json_str = _results_json(results)
-        try:
-            with transaction.atomic():
-                claimed = JobSearchConversation.objects.filter(
-                    pk=conversation.pk, owner=request.user, active=True
-                ).update(active=True)
-                if not claimed:
-                    # Reset or deleted mid-turn: attach nothing.
-                    raise _ReplyDiscarded()
-                assistant_message, _created = JobSearchMessage.objects.get_or_create(
-                    conversation=conversation,
-                    idempotency_key=idempotency_key,
-                    role=JobSearchMessage.Role.ASSISTANT,
-                    defaults={
-                        "content": reply_text,
-                        "preferences_changed": changed,
-                        "results_json": results_json_str,
-                    },
-                )
-                if not JobSearchConversation.objects.filter(
-                    pk=conversation.pk, owner=request.user, active=True
-                ).exists():
-                    # Lifecycle state flipped inside the window: discard.
-                    raise _ReplyDiscarded()
-        except _ReplyDiscarded:
-            monitoring.record_event("interactive_call", {
-                "status": "error",
-                "reason_code": "conversation_closed",
-                "correlation_id": request_id,
-            })
-            return _error(
-                request, 409, "conversation_closed",
-                "This conversation was reset or deleted while the assistant was "
-                "responding.",
-                request_id,
-            )
-        except IntegrityError:
-            # The conversation row vanished (concurrent delete) between the locked
-            # re-check and the insert; the FK insert fails and nothing persists.
-            logger.info(
-                "job_search assistant insert failed: conversation closed mid-persist"
-            )
+        # Late-reply guard, transactional (issues #458 r2 / #487): the
+        # conversation may have been reset or deleted while the provider ran.
+        # The re-check and the persist happen in ONE transaction, and the
+        # re-check is a write-first claim — a conditional ``UPDATE ... WHERE
+        # active = 1`` that only matches a conversation that is still owned
+        # and active, and that holds the conversation row's write lock (row
+        # lock on MySQL/Postgres; SQLite's single-writer serialization) until
+        # this transaction commits. Reset/delete take the same lock, so a
+        # lifecycle change can never interleave between the claim and the
+        # persist: if the reset/delete committed first, the claim matches
+        # zero rows and the reply is discarded with a retryable 409
+        # ``conversation_closed``; if this transaction claimed first, the
+        # reset/delete is applied only after the reply is committed. A flip
+        # observed after the insert rolls the insert back (a vanished row
+        # surfaces as an FK IntegrityError and is discarded the same way).
+        # The pk-based anchor finalize is a safe no-op when the conversation
+        # (and with it the anchor) was deleted.
+
+        def _conversation_closed():
             monitoring.record_event("interactive_call", {
                 "status": "error",
                 "reason_code": "conversation_closed",
@@ -601,6 +836,61 @@ def agent_conversation_detail(request, conversation_id):
                 request_id,
             )
 
+        results_json_str = _results_json(results)
+        try:
+            with transaction.atomic():
+                attach_conversation = None
+                if JobSearchConversation.objects.filter(
+                    pk=conversation.pk, owner=request.user, active=True
+                ).update(modified=timezone.now()):
+                    # Final verification immediately before the persist. The
+                    # claim above already excludes out-of-band lifecycle
+                    # changes (they block on the row lock until commit); this
+                    # read additionally observes a change made through this
+                    # transaction's own connection at the exact attach moment.
+                    attach_conversation = _reattach_locked_conversation(
+                        conversation.pk, request.user
+                    )
+                if attach_conversation is None:
+                    # Nothing was written: the lifecycle change stands and the
+                    # anchor is quarantined in the same commit.
+                    _finalize_turn(
+                        turn.pk,
+                        JobSearchTurn.DeliveryState.FAILED,
+                        JobSearchTurn.FailureCode.CONVERSATION_GONE,
+                    )
+                    return _conversation_closed()
+                # The assistant reply is persisted before — and atomically
+                # with — the turn being marked completed, so any client that
+                # ever observes ``completed`` can find the reply (a completed
+                # turn always replays it).
+                assistant_message, _created = JobSearchMessage.objects.get_or_create(
+                    conversation=attach_conversation,
+                    idempotency_key=idempotency_key,
+                    role=JobSearchMessage.Role.ASSISTANT,
+                    defaults={
+                        "content": reply_text,
+                        "preferences_changed": changed,
+                        "results_json": results_json_str,
+                    },
+                )
+                if not JobSearchConversation.objects.filter(
+                    pk=conversation.pk, owner=request.user, active=True
+                ).exists():
+                    # Lifecycle state flipped inside the insert window: roll
+                    # the insert back with the transaction (issue #487).
+                    raise _ReplyDiscarded()
+                _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.COMPLETED)
+        except (_ReplyDiscarded, IntegrityError):
+            # A vanished row surfaces as an FK IntegrityError; both roll the
+            # insert back and leave the turn retryable.
+            _finalize_turn(
+                turn.pk,
+                JobSearchTurn.DeliveryState.FAILED,
+                JobSearchTurn.FailureCode.CONVERSATION_GONE,
+            )
+            return _conversation_closed()
+
     # Helpfulness-gap telemetry (issue #397): size conversations that keep
     # engaging the assistant but never produce a result card. Scalar counts
     # only; no message content or conversation identity is emitted.
@@ -612,7 +902,9 @@ def agent_conversation_detail(request, conversation_id):
     # claim the transition atomically with a conditional update that flips
     # ``helpfulness_gap_emitted`` false -> true; exactly one concurrent
     # request wins the update and emits, the rest see no row to claim.
-    assistant_qs = conversation.messages.filter(role=JobSearchMessage.Role.ASSISTANT)
+    assistant_qs = JobSearchMessage.objects.filter(
+        conversation=attach_conversation, role=JobSearchMessage.Role.ASSISTANT
+    )
     assistant_turns = assistant_qs.count()
     result_cards = assistant_qs.exclude(results_json="").count()
     if quality.has_helpfulness_gap(
@@ -659,6 +951,23 @@ def agent_conversation_export(request, conversation_id):
     response["Content-Disposition"] = 'attachment; filename="{}"'.format(filename)
     response["X-Request-ID"] = request_id
     return response
+
+
+def _reattach_locked_conversation(conversation_id, user):
+    """Re-read the claimed conversation row inside the attach transaction.
+
+    The write-first claim in ``agent_conversation_detail`` matched a
+    conversation that was still owned and active, and its row lock excludes
+    any out-of-band reset/delete until the attach transaction commits. This
+    read still exists so a lifecycle change made through the transaction's
+    own connection — the exact TOCTOU window between the claim and the
+    persist — is observed before any reply is persisted. It is deliberately
+    a module-level seam so tests can interpose a reset or delete at that
+    exact moment (issue #458 r2).
+    """
+    return JobSearchConversation.objects.filter(
+        pk=conversation_id, owner=user, active=True
+    ).first()
 
 
 @login_required

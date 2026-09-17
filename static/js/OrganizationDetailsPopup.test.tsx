@@ -304,6 +304,149 @@ describe('OrganizationDetailsPopup', () => {
         expect(onCloseMock).not.toHaveBeenCalled();
     });
 
+    describe('focus trap (issue #464)', () => {
+        test('Tab from the last focusable element wraps to the first', () => {
+            render(
+                <OrganizationDetailsPopup
+                    organization={mockOrganization}
+                    visible={true}
+                    onClose={() => {}}
+                />
+            );
+
+            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
+            const focusables = Array.from(
+                dialog.querySelectorAll<HTMLElement>(
+                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                )
+            );
+            expect(focusables.length).toBeGreaterThan(1);
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+
+            last.focus();
+            expect(document.activeElement).toBe(last);
+
+            fireEvent.keyDown(document, {key: 'Tab'});
+
+            expect(document.activeElement).toBe(first);
+        });
+
+        test('Shift+Tab from the first focusable element wraps to the last', () => {
+            render(
+                <OrganizationDetailsPopup
+                    organization={mockOrganization}
+                    visible={true}
+                    onClose={() => {}}
+                />
+            );
+
+            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
+            const focusables = Array.from(
+                dialog.querySelectorAll<HTMLElement>(
+                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                )
+            );
+            const first = focusables[0];
+            const last = focusables[focusables.length - 1];
+
+            first.focus();
+            expect(document.activeElement).toBe(first);
+
+            fireEvent.keyDown(document, {key: 'Tab', shiftKey: true});
+
+            expect(document.activeElement).toBe(last);
+        });
+
+        test('Tab with focus outside the dialog moves focus into it (never behind it)', () => {
+            render(
+                <OrganizationDetailsPopup
+                    organization={mockOrganization}
+                    visible={true}
+                    onClose={() => {}}
+                />
+            );
+
+            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
+            const focusables = Array.from(
+                dialog.querySelectorAll<HTMLElement>(
+                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                )
+            );
+            const first = focusables[0];
+
+            // Park focus on a background element outside the dialog.
+            const outside = document.createElement('button');
+            document.body.appendChild(outside);
+            outside.focus();
+            expect(document.activeElement).toBe(outside);
+
+            fireEvent.keyDown(document, {key: 'Tab'});
+
+            expect(dialog.contains(document.activeElement)).toBe(true);
+            expect(document.activeElement).toBe(first);
+
+            document.body.removeChild(outside);
+        });
+
+        test('Shift+Tab with focus outside the dialog moves focus to its last element', () => {
+            render(
+                <OrganizationDetailsPopup
+                    organization={mockOrganization}
+                    visible={true}
+                    onClose={() => {}}
+                />
+            );
+
+            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
+            const focusables = Array.from(
+                dialog.querySelectorAll<HTMLElement>(
+                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                )
+            );
+            const last = focusables[focusables.length - 1];
+
+            const outside = document.createElement('button');
+            document.body.appendChild(outside);
+            outside.focus();
+
+            fireEvent.keyDown(document, {key: 'Tab', shiftKey: true});
+
+            expect(document.activeElement).toBe(last);
+
+            document.body.removeChild(outside);
+        });
+
+        test('Tab cycling ignores disabled buttons inside the dialog', () => {
+            render(
+                <OrganizationDetailsPopup
+                    organization={mockOrganization}
+                    visible={true}
+                    onClose={() => {}}
+                />
+            );
+
+            const dialog = screen.getByRole('dialog', {name: 'Test Organization'});
+            // The only anchor and button remain the cycle bounds; adding a
+            // disabled button must not affect the cycle.
+            const disabled = document.createElement('button');
+            disabled.disabled = true;
+            dialog.appendChild(disabled);
+
+            const focusables = Array.from(
+                dialog.querySelectorAll<HTMLElement>(
+                    'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+                )
+            );
+            expect(focusables).not.toContain(disabled);
+
+            fireEvent.keyDown(document, {key: 'Tab'});
+            expect(dialog.contains(document.activeElement)).toBe(true);
+
+            dialog.removeChild(disabled);
+        });
+    });
+
     test('removes event listener on unmount', () => {
         const onCloseMock = jest.fn();
         const documentAddEventListenerSpy = jest.spyOn(document, 'addEventListener');
@@ -796,5 +939,105 @@ describe('OrganizationDetailsPopup', () => {
 
         const lastUpdated = screen.getByTestId('last-updated');
         expect(lastUpdated.textContent).toContain('weeks ago');
+    });
+
+    describe('background isolation (issue #464 review)', () => {
+        let backgroundRoots: HTMLElement[];
+
+        beforeEach(() => {
+            // Stand up the page structure the isolation module targets: the
+            // application shell (navigation chrome), the main content area,
+            // and the modal-external skip link (review r2: it used to stay a
+            // focusable page-level target while the dialog was open).
+            const shell = document.createElement('aside');
+            shell.className = 'app-shell';
+            shell.innerHTML = '<a href="/">Nav link</a>';
+            document.body.appendChild(shell);
+            const content = document.createElement('main');
+            content.className = 'app-content';
+            document.body.appendChild(content);
+            const skipLink = document.createElement('a');
+            skipLink.className = 'skip-to-content';
+            skipLink.href = '#main-content';
+            document.body.appendChild(skipLink);
+            backgroundRoots = [shell, content, skipLink];
+            document.body.style.overflow = 'auto';
+            document.documentElement.style.overflow = 'auto';
+        });
+
+        afterEach(() => {
+            for (const root of backgroundRoots) {
+                root.remove();
+            }
+            document.body.style.overflow = '';
+            document.documentElement.style.overflow = '';
+        });
+
+        test('locks document scrolling and inert-hides the background while the dialog is open', () => {
+            render(
+                <OrganizationDetailsPopup
+                    organization={mockOrganization}
+                    visible={true}
+                    onClose={() => {}}
+                />
+            );
+
+            expect(document.body.style.overflow).toBe('hidden');
+            // The root element carries the viewport overflow under the
+            // stylesheet's `html, body { overflow-x: hidden }` rule — locking
+            // body alone leaves the actual document scroller free (review r2).
+            expect(document.documentElement.style.overflow).toBe('hidden');
+            for (const root of backgroundRoots) {
+                expect(root).toHaveAttribute('inert');
+                expect(root).toHaveAttribute('aria-hidden', 'true');
+            }
+        });
+
+        test('releases the scroll lock and background inertness when the dialog closes', () => {
+            const {rerender} = render(
+                <OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}} />
+            );
+            expect(document.body.style.overflow).toBe('hidden');
+
+            rerender(<OrganizationDetailsPopup organization={mockOrganization} visible={false} onClose={() => {}} />);
+
+            expect(document.body.style.overflow).toBe('auto');
+            expect(document.documentElement.style.overflow).toBe('auto');
+            for (const root of backgroundRoots) {
+                expect(root).not.toHaveAttribute('inert');
+                expect(root).not.toHaveAttribute('aria-hidden');
+            }
+        });
+
+        test('releases isolation when unmounted while the dialog is open', () => {
+            const {unmount} = render(
+                <OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}} />
+            );
+            expect(document.body.style.overflow).toBe('hidden');
+
+            unmount();
+
+            expect(document.body.style.overflow).toBe('auto');
+            for (const root of backgroundRoots) {
+                expect(root).not.toHaveAttribute('inert');
+                expect(root).not.toHaveAttribute('aria-hidden');
+            }
+        });
+
+        test('restores focus to the opener after isolation is released on close', () => {
+            const opener = document.createElement('button');
+            document.body.appendChild(opener);
+            opener.focus();
+
+            const {rerender} = render(
+                <OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}} />
+            );
+            rerender(<OrganizationDetailsPopup organization={mockOrganization} visible={false} onClose={() => {}} />);
+
+            // The cleanup restores focus AFTER unlocking, so the opener —
+            // inside the previously inert background — receives focus again.
+            expect(document.activeElement).toBe(opener);
+            opener.remove();
+        });
     });
 });

@@ -8,6 +8,7 @@ from django.core.cache import cache
 from django.conf import settings
 
 from crank.models.organization import Organization
+from crank.models.score import Score, ScoreType
 from crank.views.fundinground import FundingRoundChoicesView
 from crank.views.rtopolicy import RTOPolicyChoicesView
 
@@ -114,4 +115,23 @@ class ApiViewsTest(TestCase):
         # Both responses should match and contain the expected data
         self.assertEqual(data1, data2)
         self.assertIn('R', data1)
-        self.assertEqual(data1['R'], 'Remote') 
+        self.assertEqual(data1['R'], 'Remote')
+
+    def test_organization_scores_excludes_superseded_rows_and_inactive_types(self):
+        """The company detail modal reads only active scores of active types
+        (issue #461), consistent with rankings."""
+        source = Organization.objects.create(name="Source Org", gives_ratings=True)
+        target = Organization.objects.create(name="Detail Org")
+        active_type = ScoreType.objects.create(name="Culture")
+        retired_type = ScoreType.objects.create(name="Legacy", status=0)
+        Score.objects.create(source=source, target=target, type=active_type, score=1.0, status=0)
+        Score.objects.create(source=source, target=target, type=active_type, score=5.0)
+        Score.objects.create(source=source, target=target, type=retired_type, score=4.0)
+
+        response = self.client.get(
+            reverse('organization-scores', kwargs={'pk': target.pk})
+        )
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content.decode('utf-8'))
+        # The historical 1.0 and the retired-type 4.0 must not average in.
+        self.assertEqual(data, [{"type__name": "Culture", "avg_score": 5.0}])

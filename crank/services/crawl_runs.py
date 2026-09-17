@@ -22,6 +22,7 @@ from crank.models.monitoring import OperationalChangeAudit
 from crank.models.source import ApprovalState, SourceCatalog
 from crank.services import agent_runs, monitoring
 from crank.services.company_crawler import crawl_company_profile
+from crank.services.job_ingest import SKIP_OVERLAP, ingest_job_source
 
 SOURCE_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 MAX_LISTINGS = 100
@@ -30,6 +31,18 @@ MAX_PAGES = 10
 
 class CrawlRequestError(ValueError):
     """Raised when a crawl request cannot safely be accepted."""
+
+
+def crawl_enabled() -> bool:
+    """On-demand crawl gate: the ``crawl`` ``CapabilitySwitch`` key.
+
+    This is the real execution gate for one-shot crawls
+    (``trigger_crawl``): with the switch row disabled the crawl path is
+    blocked even though the manual command was confirmed, giving the
+    ``crawl`` registry key a path it actually controls. ``rollback_drill``
+    verifies this function blocks when the switch is off.
+    """
+    return monitoring.capability_enabled("crawl", default=True)
 
 
 def _validate_key(source_key: str) -> str:
@@ -106,6 +119,21 @@ def _is_timeout(result: Any) -> bool:
     return "timeout" in text or "timed out" in text
 
 
+class SourceLockHeld(RuntimeError):
+    """Raised when the per-source ingestion lock is held by another path.
+
+    The message is fixed, sanitized text: no source payloads or credentials.
+    """
+
+    message = (
+        "Skipped: another ingestion path holds this source's lock "
+        f"(reason={SKIP_OVERLAP})."
+    )
+
+    def __init__(self):
+        super().__init__(self.message)
+
+
 def _execute(source, source_type: str):
     if source_type == CrawlRun.SourceType.ORGANIZATION:
         return crawl_company_profile(source)
@@ -113,7 +141,13 @@ def _execute(source, source_type: str):
         max_listings=max(1, min(int(getattr(settings, "CRAWL_MAX_LISTINGS", MAX_LISTINGS)), MAX_LISTINGS)),
         max_pages=max(1, min(int(getattr(settings, "CRAWL_MAX_PAGES", MAX_PAGES)), MAX_PAGES)),
     )
-    return ingest_jobs(source, query)
+    # Job ingestion is routed through the shared single-owner boundary
+    # (issue #462): same policy, same per-source lock, same idempotent
+    # ingest call as the recurring pipeline.
+    ingestion = ingest_job_source(source, query=query)
+    if ingestion.skipped:
+        raise SourceLockHeld()
+    return ingestion.result
 
 
 def _outcome(result: Any) -> str:
@@ -135,6 +169,8 @@ def trigger_crawl(*, source_key: str, source_type: str, requested_by=None) -> Cr
     The provider result is reduced to allowlisted counters immediately. No
     response body, credential, or provider payload is retained or emitted.
     """
+    if not crawl_enabled():
+        raise CrawlRequestError("on-demand crawl capability is disabled")
     source = resolve_source(source_key, source_type)
     _policy_check(source, source_type)
     canonical_key = str(source.adapter_key)[:64]
@@ -199,23 +235,40 @@ def trigger_crawl(*, source_key: str, source_type: str, requested_by=None) -> Cr
         )
         return run
     except Exception as exc:
-        summary = f"{type(exc).__name__} ({monitoring.failure_reason(exc)})"
-        outcome = CrawlRun.Outcome.TIMEOUT if monitoring.failure_reason(exc) == "timeout" else CrawlRun.Outcome.FAILURE
+        if isinstance(exc, SourceLockHeld):
+            # Overlap with an in-flight pipeline/other manual ingestion: record
+            # the skip with a sanitized reason instead of fetching again.
+            summary = str(exc)
+            outcome = CrawlRun.Outcome.FAILURE
+            event = "crawl_run_skipped"
+        else:
+            summary = f"{type(exc).__name__} ({monitoring.failure_reason(exc)})"
+            outcome = (
+                CrawlRun.Outcome.TIMEOUT
+                if monitoring.failure_reason(exc) == "timeout"
+                else CrawlRun.Outcome.FAILURE
+            )
+            event = "crawl_run_failed"
         run.outcome = outcome
         run.error_summary = summary
         run.finished_at = timezone.now()
         run.save(update_fields=["outcome", "error_summary", "finished_at", "modified"])
         agent_run.finalize(AgentRun.Status.FAILED, error_summary=summary)
-        monitoring.record_event("crawl_run_failed", {"run_id": run.pk, "source_key": canonical_key})
+        monitoring.record_event(event, {"run_id": run.pk, "source_key": canonical_key})
         OperationalChangeAudit.record(
             actor=requested_by,
             target_type=f"{source_type}_source",
             target_id=canonical_key,
-            action="crawl_failed",
+            action="crawl_skipped" if event == "crawl_run_skipped" else "crawl_failed",
             new_value={"run_id": run.pk, "outcome": outcome},
             confirmed=True,
         )
         return run
 
 
-__all__ = ["CrawlRequestError", "resolve_source", "trigger_crawl"]
+__all__ = [
+    "CrawlRequestError",
+    "SourceLockHeld",
+    "resolve_source",
+    "trigger_crawl",
+]

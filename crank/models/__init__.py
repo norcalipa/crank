@@ -3,7 +3,7 @@
 from crank.models.agent_run import AgentRun
 from crank.models.crawl_run import CrawlRun
 from crank.models.conversation import Conversation, Message
-from crank.models.job_search import JobSearchConversation, JobSearchMessage
+from crank.models.job_search import JobSearchConversation, JobSearchMessage, JobSearchTurn
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
@@ -42,6 +42,7 @@ __all__ = [
     "Message",
     "JobSearchConversation",
     "JobSearchMessage",
+    "JobSearchTurn",
     "JobSourceCatalog",
     "JobListing",
     "JobMatch",

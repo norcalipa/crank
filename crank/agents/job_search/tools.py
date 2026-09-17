@@ -197,25 +197,18 @@ def default_score_summary_datasource(
     limit: int,
 ) -> list[Any]:
     """Server-controlled query: average score summaries for the given targets."""
-    from django.db.models import Avg
+    # Delegation to the shared helper keeps the assistant's reads on the same
+    # active-score definition as rankings and company details.
+    from crank.services.scores import active_score_summary_rows
 
-    from crank.models.score import Score, ScoreType
-
-    base = Score.objects.filter(status=1, target_id__in=organization_ids)
-    if score_types:
-        type_pks = list(
-            ScoreType.objects.filter(status=1, name__in=score_types).values_list("pk", flat=True)
-        )
-        base = base.filter(type_id__in=type_pks)
-    grouped = base.values("target_id", "type__name").annotate(avg_score=Avg("score"))
-    results = list(grouped[:limit])
+    rows = list(active_score_summary_rows(organization_ids, score_types)[:limit])
     return [
         {
             "organization_id": int(row["target_id"]),
             "score_type": str(row["type__name"]),
             "avg_score": float(row["avg_score"] or 0.0),
         }
-        for row in results
+        for row in rows
     ]
 
 
