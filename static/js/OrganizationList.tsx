@@ -66,6 +66,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         };
     }
 
+    // Monotonically increasing generation for blocking-dialog intents (issue
+    // #464). Every dialog open/close/select action claims the next value so
+    // an in-flight organization-details fetch can detect, when its response
+    // arrives, that a newer intent has superseded it.
+    private modalGeneration = 0;
+
     componentDidMount() {
         fetch('/api/funding-round-choices/')
             .then(response => response.json())
@@ -204,11 +210,25 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     };
 
     handleOrganizationClick = (organization: Organization) => {
-        // Get organization details if not already fetched
+        // Claim this open intent synchronously (issue #464): every later
+        // open/close action bumps the generation, and the details fetch below
+        // re-checks it on resolve, so a stale response can never reopen or
+        // replace a newer dialog or a different company selection.
+        const generation = ++this.modalGeneration;
+        // Get organization details if not already fetched. Opening the details
+        // dialog closes the suggest modal: only one blocking dialog may be
+        // active at a time (issue #464).
         if (!organization.url || !organization.type) {
             fetch(`/api/organizations/${organization.id}/`)
                 .then(response => response.json())
                 .then(data => {
+                    // Stale-response guard (issue #464): the dialog may have
+                    // been closed, a different company selected, or a newer
+                    // request issued while this fetch was in flight. Ignore
+                    // the late response in all of those cases.
+                    if (!this.isCurrentDetailsIntent(generation, organization.id)) {
+                        return;
+                    }
                     const updatedOrg = { ...organization, ...data };
                     const updatedOrganizations = this.state.organizations.map(org =>
                         org.id === organization.id ? updatedOrg : org
@@ -216,26 +236,56 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     this.setState({
                         organizations: updatedOrganizations,
                         selectedOrganization: updatedOrg,
-                        showPopup: true
+                        showPopup: true,
+                        showSuggestModal: false
                     });
                 })
                 .catch(error => {
+                    if (!this.isCurrentDetailsIntent(generation, organization.id)) {
+                        return;
+                    }
                     console.error('Error fetching organization details:', error);
                     this.setState({
                         selectedOrganization: organization,
-                        showPopup: true
+                        showPopup: true,
+                        showSuggestModal: false
                     });
                 });
         } else {
             this.setState({
                 selectedOrganization: organization,
-                showPopup: true
+                showPopup: true,
+                showSuggestModal: false
             });
         }
     };
 
+    // A details response may only open the dialog while its captured intent
+    // is still the latest one (issue #464 stale-response race): no newer
+    // open/close/select has superseded it (generation check) and no other
+    // company's dialog is the currently active intent (selection check).
+    // Without this guard, a slow response could reopen a dialog the user
+    // closed, clobber a suggest form the user is typing into, or replace a
+    // newer selection when responses resolve out of order.
+    isCurrentDetailsIntent = (generation: number, organizationId: number): boolean => {
+        if (generation !== this.modalGeneration) {
+            return false;
+        }
+        return !(
+            this.state.showPopup
+            && this.state.selectedOrganization !== null
+            && this.state.selectedOrganization.id !== organizationId
+        );
+    };
+
     handleOpenSuggestModal = () => {
-        this.setState({showSuggestModal: true});
+        // Opening the suggest modal closes the details dialog: only one
+        // blocking dialog may be active at a time (issue #464). The
+        // generation bump also invalidates any in-flight details fetch so
+        // its late response cannot reopen the details dialog over this
+        // modal or destroy the user's form input.
+        ++this.modalGeneration;
+        this.setState({showSuggestModal: true, showPopup: false, selectedOrganization: null});
     };
 
     handleCloseSuggestModal = () => {
@@ -243,6 +293,10 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     };
 
     handleClosePopup = () => {
+        // Closing the details dialog invalidates any in-flight details fetch
+        // (issue #464): a response that arrives after this close must not
+        // reopen the dialog.
+        ++this.modalGeneration;
         this.setState({ showPopup: false });
     };
 

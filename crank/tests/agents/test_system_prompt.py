@@ -12,8 +12,8 @@ from crank.agents.job_search.system_prompt import (
 
 
 class TestSystemPrompt:
-    def test_version_is_2(self):
-        assert SYSTEM_PROMPT_VERSION == 2
+    def test_version_is_3(self):
+        assert SYSTEM_PROMPT_VERSION == 3
 
     def test_contains_hard_citation_constraint(self):
         text = build_system_prompt()
@@ -44,9 +44,17 @@ class TestSystemPrompt:
         assert "- do not mention pricing" in text
 
     def test_prompt_id_is_stable(self):
-        assert prompt_id() == "job_search_system_v2"
+        assert prompt_id() == "job_search_system_v3"
         assert prompt_id(1) == "job_search_system_v1"
 
     def test_untrusted_markdown_warning(self):
         text = build_system_prompt()
         assert "untrusted" in text.lower()
+
+    def test_contains_availability_honesty_rule(self):
+        """The prompt instructs honest availability reporting (issue #476)."""
+        text = build_system_prompt()
+        assert "AVAILABILITY HONESTY" in text
+        assert "AVAILABILITY STATE" in text
+        assert "never claim zero matches when listings have not finished" in text
+        assert "no results meet your" in text

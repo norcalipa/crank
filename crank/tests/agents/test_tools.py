@@ -219,3 +219,35 @@ class TestDefaultDatasources(TestCase):
         assert rows == [
             {"organization_id": org.id, "score_type": "culture", "avg_score": 4.5}
         ]
+
+    def test_default_score_summary_datasource_excludes_superseded_rows(self):
+        """Assistant score summaries share the active-score definition used by
+        rankings and company details (issue #461)."""
+        from crank.models.organization import Organization
+        from crank.models.score import Score, ScoreType
+
+        org = Organization.objects.create(
+            name="SupersededOrg", status=1, public=True,
+            url="https://superseded.example", funding_round="A", rto_policy="R",
+        )
+        scorer = Organization.objects.create(
+            name="SupersededScorer", status=1, public=True, gives_ratings=True,
+            url="https://superseded-scorer.example", funding_round="A", rto_policy="R",
+        )
+        active_type = ScoreType.objects.create(name="culture", status=1)
+        retired_type = ScoreType.objects.create(name="legacy", status=0)
+        Score.objects.create(type=active_type, source=scorer, target=org, score=1.0, status=0)
+        Score.objects.create(type=active_type, source=scorer, target=org, score=4.5)
+        Score.objects.create(type=retired_type, source=scorer, target=org, score=3.0)
+
+        # Without a type filter: only the active score of the active type.
+        assert default_score_summary_datasource([org.id], None, 10) == [
+            {"organization_id": org.id, "score_type": "culture", "avg_score": 4.5}
+        ]
+        # With a type filter: same result, historical 1.0 never averages in.
+        assert default_score_summary_datasource([org.id], ["culture"], 10) == [
+            {"organization_id": org.id, "score_type": "culture", "avg_score": 4.5}
+        ]
+
+    def test_default_score_summary_datasource_empty_score_set(self):
+        assert default_score_summary_datasource([987654], None, 10) == []

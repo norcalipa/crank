@@ -1,14 +1,20 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import json
+
+import pytest
 from types import SimpleNamespace
 
+import pytest
+
 from crank.agents.job_search.errors import (
+    ConversationClosedError,
     CostLimitError,
     InvalidJobListingReferenceError,
     InvalidModelOutputError,
     InvalidOrganizationReferenceError,
     InvalidPreferencePatchError,
+    PreferenceVersionUnavailableError,
     ProviderError,
     ProviderTimeoutError,
 )
@@ -38,6 +44,7 @@ class FakePreferenceService:
     def __init__(self, validate_error=None, apply_result=False):
         self.validate_error = validate_error
         self.apply_result = apply_result
+        self.apply_result_seen = None
         self.validate_calls = 0
         self.apply_calls = 0
 
@@ -46,8 +53,9 @@ class FakePreferenceService:
         if self.validate_error is not None:
             raise self.validate_error if isinstance(self.validate_error, Exception) else InvalidPreferencePatchError(str(self.validate_error))
 
-    def apply_patch(self, patch):
+    def apply_patch(self, patch, expected_modified=None):
         self.apply_calls += 1
+        self.apply_result_seen = expected_modified
         return self.apply_result
 
 
@@ -97,6 +105,7 @@ class TestHappyPath:
         make_orchestrator(gw, pref).run(
             user_prompt="actually hybrid is fine",
             conversation=history, preference_markdown="## preferences\nremote",
+            expected_modified="2026-09-14T00:00:00Z",
         )
         content = " ".join(m["content"] for m in gw.requests[0].messages)
         assert "I want remote work" in content
@@ -113,11 +122,138 @@ class TestHappyPath:
         })
         result = make_orchestrator(gw, pref).run(
             user_prompt="prefer seed", conversation=[], preference_markdown="",
+            expected_modified="2026-09-14T00:00:00Z",
         )
         assert pref.validate_calls == 1
         assert pref.apply_calls == 1
+        assert pref.apply_result_seen == "2026-09-14T00:00:00Z"
         assert result.preferences_changed is True
         assert result.preference_patch == {"replace": {"funding_round": "S"}}
+
+
+class TestPreferenceBaselineGuards:
+    """Issue #487 review MAJOR-3/MAJOR-4: turn-start baseline + fail-closed gates.
+
+    The preference ``expected_modified`` baseline must be the turn-start
+    capture (never re-read mid-turn), and any writer port without a baseline
+    — or a legacy port that cannot carry one — aborts the patch path instead
+    of silently disabling the stale check. Only demonstrably no-writer ports
+    (``writable = False``) are allowed to proceed without a baseline.
+    """
+
+    PATCH_PAYLOAD = {
+        "message": "Updated your preferences.",
+        "cited_organization_ids": [],
+        "cited_job_listing_ids": [],
+        "preference_patch": {"set": {"notes": "ok"}},
+    }
+
+    def test_baseline_is_captured_at_turn_start_not_mid_turn(self):
+        """The port receives the turn-start baseline verbatim (MAJOR-3).
+
+        The gateway runs after the capture, but the value passed to
+        ``apply_patch`` is still the one given at turn start — the orchestrator
+        never re-reads a fresh version mid-turn, so a concurrent edit cannot
+        pair stale prompt data with a fresh baseline (or vice versa).
+        """
+        marker = object()
+        pref = FakePreferenceService(apply_result=True)
+        order = []
+
+        class MutatingGateway(FakeGateway):
+            def complete(self, request):
+                # Mid-turn "edit": after capture, before apply.
+                order.append("gateway")
+                return super().complete(request)
+
+        gw = MutatingGateway(dict(self.PATCH_PAYLOAD))
+        make_orchestrator(gw, pref).run(
+            user_prompt="prefer remote", conversation=[], preference_markdown="",
+            expected_modified=marker,
+        )
+        assert order == ["gateway"]
+        assert pref.apply_calls == 1
+        # Identity check: the exact turn-start object reached the port.
+        assert pref.apply_result_seen is marker
+
+    def test_missing_baseline_fails_closed_for_writer_port(self):
+        """A writer port without a captured baseline never applies a patch (MAJOR-4)."""
+        pref = FakePreferenceService(apply_result=True)
+        gw = FakeGateway(dict(self.PATCH_PAYLOAD))
+        with pytest.raises(PreferenceVersionUnavailableError):
+            make_orchestrator(gw, pref).run(
+                user_prompt="prefer remote", conversation=[], preference_markdown="",
+            )
+        assert pref.apply_calls == 0
+
+    def test_missing_baseline_allowed_only_for_no_writer_port(self):
+        """A ``writable = False`` port demonstrably cannot persist, so the
+        patch path proceeds (as a documented no-op) without a baseline."""
+        class NullLikePort(FakePreferenceService):
+            writable = False
+
+        pref = NullLikePort(apply_result=False)
+        gw = FakeGateway(dict(self.PATCH_PAYLOAD))
+        result = make_orchestrator(gw, pref).run(
+            user_prompt="prefer remote", conversation=[], preference_markdown="",
+        )
+        assert pref.apply_calls == 1
+        assert result.preferences_changed is False
+
+    def test_legacy_writer_port_without_version_param_fails_closed(self):
+        """A legacy writer port that cannot carry the version aborts (MAJOR-4)."""
+        class LegacyWriterPort:
+            writable = True
+
+            def validate_patch(self, patch):
+                pass
+
+            def apply_patch(self, patch):  # legacy signature: no version param
+                return True
+
+        gw = FakeGateway(dict(self.PATCH_PAYLOAD))
+        with pytest.raises(PreferenceVersionUnavailableError):
+            make_orchestrator(gw, LegacyWriterPort()).run(
+                user_prompt="prefer remote", conversation=[], preference_markdown="",
+                expected_modified="2026-09-14T00:00:00Z",
+            )
+
+    def test_legacy_no_writer_port_without_version_param_allowed(self):
+        """A legacy port that demonstrably has no writer may keep its old
+        signature; the call is a documented no-op."""
+        class LegacyNoWriterPort:
+            writable = False
+
+            def validate_patch(self, patch):
+                pass
+
+            def apply_patch(self, patch):
+                return False
+
+        gw = FakeGateway(dict(self.PATCH_PAYLOAD))
+        result = make_orchestrator(gw, LegacyNoWriterPort()).run(
+            user_prompt="prefer remote", conversation=[], preference_markdown="",
+            expected_modified="2026-09-14T00:00:00Z",
+        )
+        assert result.preferences_changed is False
+
+    @pytest.mark.django_db
+    def test_lifecycle_guard_aborts_patch_when_conversation_closed(self):
+        """The guard runs before the write and aborts the patch fail-closed
+        (MAJOR-2): a closed conversation never receives a preference change."""
+        pref = FakePreferenceService(apply_result=True)
+        gw = FakeGateway(dict(self.PATCH_PAYLOAD))
+
+        def guard():
+            raise ConversationClosedError("closed mid-turn")
+
+        with pytest.raises(ConversationClosedError):
+            make_orchestrator(gw, pref).run(
+                user_prompt="prefer remote", conversation=[], preference_markdown="",
+                expected_modified="2026-09-14T00:00:00Z",
+                lifecycle_guard=guard,
+            )
+        assert pref.apply_calls == 0
 
 
 class TestRejections:
@@ -586,3 +722,101 @@ class TestToolsUsedNegation:
         )
         assert "query_score_summaries" not in result.tools_used
         assert "query_active_organizations" in result.tools_used
+
+
+class TestAvailabilityContext:
+    """Issue #476: derived availability state reaches the model context."""
+
+    @pytest.mark.django_db
+    def test_build_model_context_includes_availability_for_seeded_user(self):
+        from types import SimpleNamespace
+
+        from django.contrib.auth.models import User
+
+        from crank.models.preference import default_preferences
+
+        user = User.objects.create_user("availuser", password="secret")
+        org_rows = [ORG_ACME]
+        listing_rows = [
+            SimpleNamespace(
+                id=42, pk=42, title="Senior Engineer", organization_name="Acme",
+                organization_id=1, location="SF", remote=True,
+                canonical_url="https://jobs.example.test/42",
+                observed_at=None, updated_at=None,
+                employer_name="Acme", status="active",
+            )
+        ]
+
+        def availability_service(u):
+            from crank.empty_state import derive_state
+
+            return derive_state(user=u).to_dict(include_staff=False)
+
+        gw = FakeGateway({
+            "message": "ok",
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [],
+            "preference_patch": None,
+        })
+        orch = JobSearchOrchestrator(
+            gateway=gw,
+            preference_service=FakePreferenceService(),
+            user=user,
+            org_datasource=lambda filters, limit: org_rows,
+            score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: listing_rows,
+            match_service=lambda *, user, limit: {"job_matches": [], "organization_matches": []},
+            availability_service=availability_service,
+        )
+        # Seed a default (empty) preference document so the derived state is
+        # no_preferences given active listings exist.
+        from crank.models.preference import UserPreference
+
+        UserPreference.objects.create(
+            user=user, preferences=default_preferences(), schema_version=2
+        )
+        from crank.models.job import JobSourceCatalog
+        from crank.models.organization import Organization
+
+        Organization.objects.create(name="Acme")
+        source = JobSourceCatalog.objects.create(
+            name="Synthetic",
+            adapter_key="synthetic.v1",
+            base_url="https://jobs.example.test",
+            enabled=True,
+        )
+        from crank.models.job import JobListing
+        from django.utils import timezone as tz
+
+        JobListing.all_objects.create(
+            source=source,
+            external_id="42",
+            canonical_url="https://jobs.example.test/42",
+            employer_name="Acme",
+            title="Senior Engineer",
+            first_seen_at=tz.now(),
+            last_seen_at=tz.now(),
+            status=JobListing.Status.ACTIVE,
+            organization=Organization.objects.get(name="Acme"),
+        )
+        orch.run(user_prompt="what's available?", conversation=[], preference_markdown="")
+        request = gw.requests[0]
+        joined = "\n".join(m["content"] for m in request.messages)
+        assert "AVAILABILITY STATE (server-controlled" in joined
+        assert "state=no_preferences" in joined
+
+    def test_availability_absent_for_unpersisted_user(self):
+        """A stand-in user (no pk) keeps availability absent without DB access."""
+        gw = FakeGateway({
+            "message": "ok",
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [],
+            "preference_patch": None,
+        })
+        orch = make_orchestrator(gw, FakePreferenceService())
+        orch.run(user_prompt="hi", conversation=[], preference_markdown="")
+        request = gw.requests[0]
+        joined = "\n".join(m["content"] for m in request.messages)
+        # The tool-block marker must be absent; the system prompt's honesty
+        # rule mentions "AVAILABILITY STATE" by name, so match the prefix.
+        assert "AVAILABILITY STATE (server-controlled" not in joined

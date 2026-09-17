@@ -23,6 +23,8 @@ from django.views.decorators.cache import cache_page
 from django.views.generic import TemplateView
 
 from crank.auth import login_required_with_expiry
+from crank.decorators import cache_page_if_anonymous_method
+from crank.services.scores import SCORE_CACHE_KEY_VERSION
 from crank.views.api import (
     organization_detail,
     organization_provenance,
@@ -59,7 +61,20 @@ urlpatterns = [
     path("healthz/ready/", readiness, name="readiness"),
     path("", IndexView.as_view(), name="index"),
     path("admin/", admin.site.urls),
-    path("algo/<int:algorithm_id>/", cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(IndexView.as_view()), name="index"),
+    # The rankings page is the only ``cache_page``-decorated HTML view, and its
+    # shared navigation chrome renders the signed-in account's username — so
+    # the page cache must be anonymous-only (the established
+    # ``cache_page_if_anonymous_method`` pattern). Caching it for everyone
+    # served the first authenticated requester's username to every later
+    # visitor from the shared entry (issue #487 review, MINOR-1); anonymous
+    # traffic keeps the page cache, authenticated requests render fresh and
+    # never read or poison the shared entry.
+    # The page also embeds score-derived rankings, so its key prefix rotates
+    # with the score cache version: pages rendered by a pre-#461 deployment
+    # (empty prefix) age out unread instead of serving superseded averages
+    # after deploy. The attribute-only choices endpoints below carry no score
+    # data and keep the default prefix.
+    path("algo/<int:algorithm_id>/", cache_page_if_anonymous_method(settings.CACHE_MIDDLEWARE_SECONDS, key_prefix=f"algo-{SCORE_CACHE_KEY_VERSION}")(IndexView.as_view()), name="index"),
     path('api/funding-round-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(FundingRoundChoicesView.as_view()), name='funding_round_choices'),
     path('api/rto-policy-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(RTOPolicyChoicesView.as_view()), name='rto_policy_choices'),
     path('api/organizations/<int:pk>/', organization_detail, name='organization-detail'),

@@ -18,6 +18,7 @@ from django.test import TestCase, override_settings
 from crank.agents.jobs.ingest import JobIngestResult
 from crank.models import AgentRun, JobSourceCatalog, UserPreference
 from crank.services import agent_runs
+from crank.services.job_ingest import SKIP_OVERLAP, JobSourceIngestion
 from crank.services.job_pipeline import (
     JobPipelineError,
     _active_listings,
@@ -30,6 +31,11 @@ from crank.services.job_pipeline import (
     _source_query,
     run_job_pipeline,
 )
+
+
+def ingestion(result=None, *, skipped=False, reason=""):
+    """Build a boundary outcome for tests."""
+    return JobSourceIngestion(result=result, skipped=skipped, reason=reason)
 
 
 class JobPipelineServiceTests(TestCase):
@@ -101,7 +107,10 @@ class JobPipelineServiceTests(TestCase):
         self.source("good")
         self.preference("alice")
         result = JobIngestResult(ingested=2, updated=1)
-        with patch("crank.services.job_pipeline.ingest_jobs", return_value=result), patch(
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(result),
+        ), patch(
             "crank.services.job_pipeline._resolve_source_listings", return_value=(2, 0)
         ), patch("crank.services.job_pipeline._active_listings", return_value=[object()]), patch(
             "crank.services.job_pipeline._run_user", return_value=3
@@ -118,8 +127,8 @@ class JobPipelineServiceTests(TestCase):
         self.source("raised")
         self.source("good")
         with patch(
-            "crank.services.job_pipeline.ingest_jobs",
-            side_effect=[RuntimeError("upstream"), JobIngestResult(ingested=1)],
+            "crank.services.job_pipeline.ingest_job_source",
+            side_effect=[RuntimeError("upstream"), ingestion(JobIngestResult(ingested=1))],
         ), patch("crank.services.job_pipeline._resolve_source_listings", return_value=(0, 0)), patch(
             "crank.services.job_pipeline.agent_runs.record_agent_event"
         ):
@@ -130,8 +139,14 @@ class JobPipelineServiceTests(TestCase):
     def test_source_failure_does_not_stop_other_sources(self):
         self.source("failed")
         self.source("good")
-        results = [JobIngestResult(errors=1), JobIngestResult(ingested=1)]
-        with patch("crank.services.job_pipeline.ingest_jobs", side_effect=results), patch(
+        results = [
+            ingestion(JobIngestResult(errors=1)),
+            ingestion(JobIngestResult(ingested=1)),
+        ]
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            side_effect=results,
+        ), patch(
             "crank.services.job_pipeline._resolve_source_listings", return_value=(0, 0)
         ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
             counts = run_job_pipeline(self.run)
@@ -139,11 +154,40 @@ class JobPipelineServiceTests(TestCase):
         self.assertEqual(counts["sources_failed"], 1)
         self.assertEqual(counts["listings_ingested"], 1)
 
+    def test_locked_source_is_skipped_not_failed(self):
+        # A source whose per-source lock is held by another ingestion path is
+        # skipped with a recorded reason, never double-fetched (issue #462).
+        self.source("contended")
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(None, skipped=True, reason=SKIP_OVERLAP),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings"
+        ) as resolve, patch(
+            "crank.services.job_pipeline.agent_runs.record_agent_event"
+        ):
+            counts = run_job_pipeline(self.run)
+        self.assertEqual(counts["sources_skipped"], 1)
+        self.assertEqual(counts["sources_failed"], 0)
+        self.assertEqual(counts["sources_succeeded"], 0)
+        resolve.assert_not_called()
+
+    def test_all_sources_skipped_does_not_raise_pipeline_error(self):
+        # Contention skips are transient, not failures: an all-skipped run
+        # must not fail the pipeline with "all sources failed".
+        self.source("contended")
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(None, skipped=True, reason=SKIP_OVERLAP),
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            counts = run_job_pipeline(self.run)
+        self.assertEqual(counts["sources_skipped"], 1)
+
     def test_all_source_failure_raises_with_counts(self):
         self.source("failed")
         with patch(
-            "crank.services.job_pipeline.ingest_jobs",
-            return_value=JobIngestResult(errors=1),
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(JobIngestResult(errors=1)),
         ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
             with self.assertRaises(JobPipelineError) as raised:
                 run_job_pipeline(self.run)
@@ -189,7 +233,7 @@ class JobPipelineServiceTests(TestCase):
     def test_deadline_stops_source_and_user_processing(self):
         self.source("late")
         self.preference("alice")
-        with patch("crank.services.job_pipeline.ingest_jobs") as ingest, patch(
+        with patch("crank.services.job_pipeline.ingest_job_source") as ingest, patch(
             "crank.services.job_pipeline._run_user"
         ) as matcher, patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
             counts = run_job_pipeline(self.run, deadline_seconds=0)
