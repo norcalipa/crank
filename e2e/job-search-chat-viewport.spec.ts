@@ -80,6 +80,18 @@ async function mockJobSearchApi(page: Page, scenario: 'empty' | 'populated'): Pr
         const method = request.method();
         const pathname = new URL(request.url()).pathname;
 
+        if (method === 'GET' && pathname === '/api/agent/assistant-status/') {
+            // Advisory assistant-status endpoint (issue #457): the fixture
+            // renders the healthy baseline; per-state scenarios stub this route
+            // explicitly.
+            await route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({state: 'ready', actions: [], checked_at: '2026-08-20T00:00:00Z'}),
+            });
+            return;
+        }
+
         if (method === 'GET' && pathname === '/api/agent/conversations/') {
             if (scenario === 'populated') {
                 await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(populatedConversation)});
@@ -201,6 +213,96 @@ for (const vp of viewports) {
         });
     });
 }
+
+test.describe('assistant availability layout (#457)', () => {
+    // Scroll-yield contract (visual round 2, coordinated with #496): the card
+    // body never scrolls; the history is the only yielding region and the
+    // availability notice + composer stay in the non-scrolling bottom stack,
+    // fully visible on initial load at every supported viewport.
+    const unavailableScenarios = [
+        {name: 'replies-disabled', status: {state: 'replies_disabled', actions: ['browse_rankings']}, gated: true},
+        {name: 'inventory-unavailable', status: {state: 'inventory_unavailable', actions: ['browse_rankings']}, gated: true},
+        // Transiently unavailable is retryable but not gated: sending stays possible.
+        {name: 'temporarily-unavailable', status: {state: 'temporarily_unavailable', actions: ['retry']}, gated: false},
+    ];
+
+    for (const vp of viewports.filter((v) => ['desktop', 'mobile'].includes(v.name))) {
+        test.describe(`layout ${vp.name} (${vp.width}x${vp.height})`, () => {
+            test.use({viewport: {width: vp.width, height: vp.height}, isMobile: vp.isMobile, hasTouch: vp.hasTouch});
+
+            for (const scenario of unavailableScenarios) {
+                test(`${scenario.name}: notice, action, and composer visible without scrolling the card body`, async ({page}) => {
+                    await mockJobSearchApi(page, 'empty');
+                    // Registered after mockJobSearchApi so this handler wins for
+                    // the assistant-status route in this scenario.
+                    await page.route('**/api/agent/assistant-status/', (route) =>
+                        route.fulfill({
+                            status: 200,
+                            contentType: 'application/json',
+                            body: JSON.stringify({...scenario.status, checked_at: '2026-08-20T00:00:00Z'}),
+                        }),
+                    );
+                    await page.goto(CHAT_FIXTURE);
+
+                    const notice = page.locator('[data-testid="assistant-status-notice"]');
+                    await expect(notice).toBeVisible();
+                    await expect(notice.locator('a, button').first()).toBeVisible();
+
+                    // Wait for deterministic layout: the measured card height is
+                    // applied and web fonts have finished loading.
+                    await page.waitForFunction(() => {
+                        const card = document.getElementById('job-search-chat')?.firstElementChild as HTMLElement | null;
+                        return !!card && card.style.height !== '' && document.fonts.status === 'loaded';
+                    });
+                    await page.evaluate(() => new Promise<void>((resolve) => {
+                        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+                    }));
+
+                    const layout = await page.evaluate(() => {
+                        const cardBody = document.querySelector('#job-search-chat .card-body') as HTMLElement;
+                        const history = document.querySelector('[role="log"][aria-label="Message history"]') as HTMLElement;
+                        const noticeEl = document.querySelector('[data-testid="assistant-status-notice"]') as HTMLElement;
+                        const composer = document.querySelector('textarea[aria-label="Message"]') as HTMLElement;
+                        const viewportHeight = window.innerHeight;
+                        const withinViewport = (el: HTMLElement) => {
+                            const r = el.getBoundingClientRect();
+                            return r.top >= -1 && r.bottom <= viewportHeight + 1;
+                        };
+                        return {
+                            cardBodyScrolls: cardBody.scrollHeight > cardBody.clientHeight + 1,
+                            cardBodyOverflowY: getComputedStyle(cardBody).overflowY,
+                            historyOverflowY: getComputedStyle(history).overflowY,
+                            noticeWithinViewport: withinViewport(noticeEl),
+                            composerWithinViewport: withinViewport(composer),
+                        };
+                    });
+
+                    expect(layout.cardBodyOverflowY, 'card body must not become a scroll container').toBe('visible');
+                    expect(layout.cardBodyScrolls, 'card body must not scroll; history yields instead').toBe(false);
+                    expect(layout.historyOverflowY, 'history must be the sole scroll region').toBe('auto');
+                    expect(layout.noticeWithinViewport, 'complete notice must be visible on initial load').toBe(true);
+                    expect(layout.composerWithinViewport, 'composer must be visible on initial load').toBe(true);
+
+                    // The advisory status gates futile states on purpose: the
+                    // composer stays visible but disabled, and never below the
+                    // fold. Transient states keep the composer enabled.
+                    const composer = page.locator('textarea[aria-label="Message"]');
+                    await expect(composer).toBeVisible();
+                    if (scenario.gated) {
+                        await expect(composer).toBeDisabled();
+                        await expect(page.locator('button[aria-label="Send message"]')).toBeDisabled();
+                    } else {
+                        await expect(composer).toBeEnabled();
+                    }
+                    const box = await composer.boundingBox();
+                    expect(box, 'composer should have a bounding box').not.toBeNull();
+                    expect(box!.y + box!.height, 'composer should not be buried below the fold').toBeLessThanOrEqual(vp.height + 1);
+                    await expectNoHorizontalOverflow(page);
+                });
+            }
+        });
+    }
+});
 
 test.describe('empty state', () => {
     test('empty history shows guidance text when there are no messages', async ({page}) => {

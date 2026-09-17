@@ -73,6 +73,20 @@ interface ApiError {
     error?: {type?: string; message?: string; request_id?: string};
 }
 
+export type AssistantState =
+    | 'signed_out'
+    | 'replies_disabled'
+    | 'temporarily_unavailable'
+    | 'inventory_unavailable'
+    | 'refreshing'
+    | 'ready';
+
+export interface AssistantStatus {
+    state: AssistantState;
+    actions: string[];
+    checked_at: string;
+}
+
 function getCookie(name: string): string {
     const match = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
     return match ? decodeURIComponent(match[2]) : '';
@@ -291,6 +305,99 @@ function rtoPolicyLabel(code: string): string {
     return map[code] || code || '';
 }
 
+// States in which submitting a message would be futile: the assistant cannot
+// answer at all (administratively disabled) or has nothing to search.
+// Gating is advisory-only: the POST path remains authoritative and a failed
+// status fetch never gates the composer (issue #457).
+const GATED_STATES: AssistantState[] = ['replies_disabled', 'inventory_unavailable'];
+
+function isGatedState(state: AssistantState | undefined): boolean {
+    return state !== undefined && GATED_STATES.includes(state);
+}
+
+// Re-checking is only meaningful for transient conditions; a fixed policy
+// state (replies_disabled) is not expected to flip by re-fetching.
+const RETRYABLE_STATES: AssistantState[] = ['temporarily_unavailable', 'refreshing'];
+
+function AssistantStatusNotice({status, onRetry, checking}: {
+    status: AssistantStatus;
+    onRetry: () => void;
+    checking: boolean;
+}) {
+    // No notice for the healthy baseline; signed_out is unreachable on /chat/
+    // (the page requires login) and would add nothing actionable.
+    if (status.state === 'ready' || status.state === 'signed_out') return null;
+
+    // Short scannable state label plus one supporting sentence: the state and
+    // the next action should be readable at a glance, especially on mobile.
+    const copy: Record<string, {title: string; body: string}> = {
+        replies_disabled: {
+            title: 'Assistant unavailable',
+            body: 'Replies are paused right now. Saved preferences remain ' +
+                'available — update them here once replies resume.',
+        },
+        inventory_unavailable: {
+            title: 'Assistant unavailable',
+            body: 'No active job listings to search right now. Saved preferences ' +
+                'are still available — update them here once listings return.',
+        },
+        temporarily_unavailable: {
+            title: 'Assistant temporarily unavailable',
+            body: 'Check again in a moment.',
+        },
+        refreshing: {
+            title: 'Assistant refreshing',
+            body: 'Job listings are being refreshed; the assistant will be back shortly.',
+        },
+    };
+    const text = copy[status.state];
+    if (!text) return null;
+
+    const canRetry = RETRYABLE_STATES.includes(status.state);
+    const browseRankings = status.actions.includes('browse_rankings');
+
+    return (
+        <div
+            className="alert alert-warning assistant-status-notice py-2 px-3"
+            role="status"
+            data-testid="assistant-status-notice"
+            data-status-state={status.state}
+            aria-label="Assistant availability"
+        >
+            <div className="d-flex align-items-start gap-2">
+                <i className="fa-solid fa-circle-info mt-1" aria-hidden="true"></i>
+                <div>
+                    <strong className="d-block">{text.title}</strong>
+                    <span className="d-block small">{text.body}</span>
+                </div>
+            </div>
+            {(browseRankings || canRetry) && (
+                <div className="assistant-status-notice-actions d-flex flex-wrap gap-2 mt-1">
+                    {browseRankings && (
+                        <a href="/" className="alert-link assistant-status-notice-action">
+                            Browse company rankings
+                        </a>
+                    )}
+                    {canRetry && (
+                        <button
+                            type="button"
+                            // btn-dark keeps white-on-dark text on the light
+                            // warning surface; the previous btn-outline-warning
+                            // pairing failed AA contrast (~1.47:1).
+                            className="btn btn-dark assistant-status-notice-action"
+                            onClick={onRetry}
+                            disabled={checking}
+                            data-testid="assistant-status-retry"
+                        >
+                            Check again
+                        </button>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
 function JobCard({job}: {job: JobResult}) {
     const comp = formatCompensation(job.compensation);
     const freshness = job.observed_at
@@ -421,6 +528,10 @@ const JobSearchChat: React.FC = () => {
     const [dataNoteOpen, setDataNoteOpen] = React.useState(false);
     const [preferencesChanged, setPreferencesChanged] = React.useState(false);
     const [prefDismissed, setPrefDismissed] = React.useState(false);
+    // Advisory assistant availability (issue #457). null means the status is
+    // unknown — e.g. the fetch failed — and the chat stays fully usable.
+    const [assistantStatus, setAssistantStatus] = React.useState<AssistantStatus | null>(null);
+    const [statusChecking, setStatusChecking] = React.useState(false);
     // Availability state (issue #476): fetched lazily, best-effort, so an
     // assistant reply without results can carry a compact availability notice
     // from the same canonical contract as the job-match panel.
@@ -691,6 +802,33 @@ const JobSearchChat: React.FC = () => {
         };
     }, []);
 
+    // Advisory availability check (issue #457). Runs on mount and is re-run
+    // before each send and from the notice's retry affordance. A failed check
+    // never blocks the chat: the POST path remains authoritative.
+    const refreshStatus = React.useCallback(async (): Promise<AssistantStatus | null> => {
+        setStatusChecking(true);
+        try {
+            const res = await csrfFetch('/api/agent/assistant-status/');
+            if (!res.ok) throw new Error('status-failed');
+            const data = (await res.json()) as AssistantStatus;
+            setAssistantStatus(data);
+            return data;
+        } catch {
+            // Advisory only: leave any previous status in place and keep the
+            // chat usable (status never gates or ungate the send path itself).
+            return null;
+        } finally {
+            setStatusChecking(false);
+        }
+    }, []);
+
+    // Fetch the status on mount. Declared before the conversation-resume
+    // effect so the status request is issued first (a deterministic order the
+    // tests rely on).
+    React.useEffect(() => {
+        void refreshStatus();
+    }, [refreshStatus]);
+
     // Resume the user's most recent conversation on load.
     React.useEffect(() => {
         let cancelled = false;
@@ -753,6 +891,11 @@ const JobSearchChat: React.FC = () => {
     }, [messages.length]);
 
     const isReady = conversationId !== null && !pending && !loading;
+
+    // Composer gating from the advisory status (issue #457): only states where
+    // sending is known-futile disable the input; a missing/failed status never
+    // gates (advisory-only contract).
+    const composerGated = isGatedState(assistantStatus?.state);
 
     // Reconcile durable client state against the server after a (re)load:
     // the server is the single source of truth. Markers are reconciled per
@@ -1183,10 +1326,21 @@ const JobSearchChat: React.FC = () => {
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         const content = input.trim();
-        if (!content || !isReady) return;
+        if (!content || !isReady || composerGated) return;
+        await submitTurn(content);
+    };
+
+    // Pre-send advisory re-check (issue #457): fetch the status and abort the
+    // turn when it now reports a futile state. The notice is already updated
+    // by refreshStatus; a failed check (null) proceeds with the send.
+    const submitTurn = async (content: string) => {
+        if (!conversationId) return;
+        const status = await refreshStatus();
+        if (status && isGatedState(status.state)) return;
         // Explicit send resolves the surfaced recovery draft (issue #458 r2):
         // its content is being dealt with now, so it is no longer an unsent
-        // turn to recover. Other unsent markers stay untouched.
+        // turn to recover. Other unsent markers stay untouched. A gated
+        // (aborted) send keeps the draft recoverable.
         clearSurfacedDraft();
         await sendTurn(content, newId());
     };
@@ -1229,11 +1383,10 @@ const JobSearchChat: React.FC = () => {
         if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
             const content = input.trim();
-            if (content && isReady) {
+            if (content && isReady && !composerGated) {
                 // Explicit send resolves the surfaced recovery draft (see
-                // handleSubmit).
-                clearSurfacedDraft();
-                sendTurn(content, newId());
+                // submitTurn).
+                void submitTurn(content);
             }
         }
     };
@@ -1498,6 +1651,14 @@ const JobSearchChat: React.FC = () => {
                 </div>
 
                 <div className="flex-shrink-0" style={{paddingBottom: 'calc(0.25rem + env(safe-area-inset-bottom))'}}>
+                    {assistantStatus && (
+                        <AssistantStatusNotice
+                            status={assistantStatus}
+                            checking={statusChecking}
+                            onRetry={() => { void refreshStatus(); }}
+                        />
+                    )}
+
                     {error && (
                         <div className="alert alert-danger d-flex justify-content-between align-items-center"
                              role="alert" data-testid="chat-error" data-error-type={errorType || undefined}>
@@ -1535,12 +1696,12 @@ const JobSearchChat: React.FC = () => {
                                     }
                                 }}
                                 onKeyDown={handleKeyDown}
-                                disabled={!conversationId || pending}
+                                disabled={!conversationId || pending || composerGated}
                                 autoComplete="off"
                                 rows={1}
                                 style={{resize: 'none', overflowY: 'hidden'}}
                             />
-                            <button type="submit" className="btn btn-primary chat-send chat-focus" disabled={!conversationId || pending || !input.trim()}
+                            <button type="submit" className="btn btn-primary chat-send chat-focus" disabled={!conversationId || pending || composerGated || !input.trim()}
                                     aria-label="Send message">
                                 <i className="fa-solid fa-paper-plane" aria-hidden="true"></i>
                                 <span>Send</span>

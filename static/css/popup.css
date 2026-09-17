@@ -901,6 +901,104 @@ body.app-nav-drawer-open {
     border-color: rgba(255, 155, 163, .65);
 }
 
+/* Assistant availability notice (issue #457): a short scannable state label
+   plus supporting copy, with a comfortable touch target on every action. */
+#job-search-chat .card-body [data-testid='assistant-status-notice'] {
+    --assistant-notice-ink: #212529;
+}
+
+#job-search-chat .card-body [data-testid='assistant-status-notice'] a,
+#job-search-chat .card-body [data-testid='assistant-status-notice'] button {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+}
+
+/* Visible keyboard focus on the light warning surface: the shared
+   --bs-warning ring convention targets the dark chat surface, so this
+   scoped ring uses the notice's dark ink for clear contrast on
+   alert-warning. */
+#job-search-chat .card-body [data-testid='assistant-status-notice'] a:focus-visible,
+#job-search-chat .card-body [data-testid='assistant-status-notice'] button:focus-visible {
+    outline: 3px solid var(--assistant-notice-ink);
+    outline-offset: 2px;
+}
+
+@media (max-width: 767.98px) {
+    /* Scroll-yield contract (issue #457 visual round 2, coordinated with the
+       #496 responsive-card pattern): the message history is the ONLY scrolling
+       region in the card — it already owns `min-height: 0` + `overflow-y:
+       auto` from JobSearchChat.tsx. The availability notice, its actions, and
+       the composer live in a non-scrolling bottom stack, and the card body
+       itself never scrolls. Instead of hiding mandatory chrome behind a
+       whole-body scrollbar, the mobile chrome is compacted so the complete
+       notice, its action, and the composer fit above the fold at phone
+       heights (375x667) while the history yields the remaining space. */
+    #job-search-chat .card-body {
+        min-height: 0;
+    }
+
+    /* Compact the mandatory mobile chrome (conversation controls + automation
+       disclosure) so the bottom stack stays fully visible on initial load.
+       The 44px control touch targets are preserved. */
+    #job-search-chat .card-header {
+        padding-top: .25rem;
+        padding-bottom: .25rem;
+    }
+
+    /* The static "Conversation" heading costs a full wrapped row on phones
+       without adding information; keep it in the accessibility tree (the
+       section is still labelled by it) but visually hidden, and spend the
+       reclaimed row on the history yield instead. */
+    #job-search-chat .card-header h2 {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        border: 0;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+    }
+
+    #job-search-chat .card-header .btn {
+        padding: .2rem .45rem;
+        font-size: .8125rem;
+    }
+
+    #job-search-chat #job-search-data-note {
+        padding: .5rem .625rem;
+        margin-bottom: .5rem;
+        font-size: .8125rem;
+        line-height: 1.35;
+    }
+
+    /* Tighten the gap between the yielding history and the bottom stack
+       (overrides the .mb-3 utility, which is !important). */
+    #job-search-chat .card-body [role='log'] {
+        margin-bottom: .5rem !important;
+    }
+
+    /* Keep the notice itself as compact as the touch-target contract allows. */
+    #job-search-chat .card-body [data-testid='assistant-status-notice'] {
+        padding: .375rem .5rem;
+        margin-bottom: .375rem;
+    }
+
+    #job-search-chat .card-body [data-testid='assistant-status-notice'] strong {
+        line-height: 1.25;
+    }
+
+    #job-search-chat .card-body [data-testid='assistant-status-notice'] .small {
+        line-height: 1.3;
+    }
+
+    #job-search-chat .card-body [data-testid='assistant-status-notice'] .assistant-status-notice-actions {
+        margin-top: .25rem;
+    }
+}
+
 /* Issue #476 round-3 contrast fix: #job-match-panel is a dark surface, but
    Bootstrap's .card inherits the light-theme body foreground, so panel copy
    computed to dark-on-dark. data-bs-theme="dark" on the section flips the

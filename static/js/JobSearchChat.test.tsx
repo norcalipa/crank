@@ -4,7 +4,7 @@ import '@testing-library/jest-dom';
 import {render, screen, fireEvent, waitFor, act} from '@testing-library/react';
 import * as React from 'react';
 
-import JobSearchChat, {ChatMessage} from './JobSearchChat';
+import JobSearchChat, {AssistantState, AssistantStatus, ChatMessage} from './JobSearchChat';
 
 function jsonResponse(payload: unknown, status = 200): Response {
     return new Response(JSON.stringify(payload), {
@@ -32,6 +32,34 @@ function userMessage(content: string): ChatMessage {
     return {id: 1, role: 'user', content, preferences_changed: false, created: null, results: null};
 }
 
+function assistantStatus(state: AssistantState, actions: string[] = []): {state: AssistantState; actions: string[]; checked_at: string} {
+    return {state, actions, checked_at: '2026-09-14T00:00:00Z'};
+}
+
+function statusResponse(state: AssistantState, actions: string[] = []): Response {
+    return jsonResponse(assistantStatus(state, actions));
+}
+
+// Fetch mock for suites written before the advisory status check (issue
+// #457): the status URL always answers 'ready' and never reaches the queued
+// mock, so those suites keep their exact fetch order and call counts.
+function statusAwareFetch(): jest.Mock {
+    const queue = jest.fn();
+    const route = (input: RequestInfo | URL, init?: RequestInit) =>
+        String(input).includes('/api/agent/assistant-status/')
+            ? Promise.resolve(statusResponse('ready'))
+            : queue(input, init);
+    return new Proxy(route, {
+        get: (_target, prop) => (prop === STATUS_AWARE ? true : (queue as any)[prop]),
+    }) as unknown as jest.Mock;
+}
+
+const STATUS_AWARE = Symbol('statusAwareFetch');
+
+function isStatusAware(fetchMock: unknown): boolean {
+    return Boolean((fetchMock as any)[STATUS_AWARE]);
+}
+
 function userTurn(content: string, key: string, deliveryState: ChatMessage['delivery_state'], id = 1, retryAvailable?: boolean): ChatMessage {
     return {id, role: 'user', content, preferences_changed: false, created: null, results: null, idempotency_key: key, delivery_state: deliveryState, retry_available: retryAvailable};
 }
@@ -43,6 +71,11 @@ function inflightKeyFor(conversationId: number, key: string): string {
 }
 
 async function renderChat(existingMessages: ChatMessage[] = []) {
+    // Mount order: the advisory status check fires first, then the resume.
+    // A status-aware fetch mock answers the check itself.
+    if (!isStatusAware(global.fetch)) {
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+    }
     // Resume the user's most recent conversation on mount.
     (global.fetch as jest.Mock).mockResolvedValueOnce(
         jsonResponse(emptyConversation(42, existingMessages)),
@@ -67,6 +100,23 @@ async function renderChatAs(existingMessages: ChatMessage[]) {
 function lastPostedKey(fetchMock: jest.Mock): string {
     const posts = postBodies(fetchMock, messageUrl());
     return posts[posts.length - 1].idempotency_key;
+}
+
+// The advisory pre-send status check (issue #457) runs before the POST, so a
+// send's POST is issued a tick after the click: wait for it, then read its key.
+async function postedKeyAfterSend(fetchMock: jest.Mock): Promise<string> {
+    await waitFor(() => expect(postBodies(fetchMock, messageUrl()).length).toBeGreaterThan(0));
+    return lastPostedKey(fetchMock);
+}
+
+// Hold the next fetch open and settle it on demand, so a test can queue the
+// follow-up reconcile response before the send's outcome lands.
+function holdNextFetch(fetchMock: jest.Mock): (outcome: Response | Error) => void {
+    let settle: (outcome: Response | Error) => void = () => {};
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve, reject) => {
+        settle = (outcome) => (outcome instanceof Error ? reject(outcome) : resolve(outcome));
+    }));
+    return (outcome) => settle(outcome);
 }
 
 function messageUrl() {
@@ -345,6 +395,7 @@ describe('JobSearchChat', () => {
             scrollTo.mockClear();
 
             const response = jsonResponse({message: assistantMessage(3, 'reply'), preferences_changed: false}, 201);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(response);
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
@@ -360,6 +411,7 @@ describe('JobSearchChat', () => {
             fireEvent.scroll(history);
             scrollTo.mockClear();
 
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse({message: assistantMessage(3, 'reply'), preferences_changed: false}, 201),
             );
@@ -385,17 +437,26 @@ describe('JobSearchChat', () => {
     describe('submit / pending / success', () => {
         test('submits a message, shows pending state, and renders the assistant reply', async () => {
             await renderChat();
-            (global.fetch as jest.Mock).mockResolvedValueOnce(
-                jsonResponse({
-                    message: assistantMessage(3, 'Consider remote-friendly companies.'),
-                    preferences_changed: true,
-                }, 201),
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            // Hold the POST response so the pending state is observable.
+            let resolvePost: (response: Response) => void = () => {};
+            (global.fetch as jest.Mock).mockImplementationOnce(
+                () => new Promise<Response>((resolve) => { resolvePost = resolve; }),
             );
 
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'I need remote'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
 
-            expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-busy', 'true');
+            // The pre-send status re-check resolves before the turn starts.
+            await waitFor(() =>
+                expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-busy', 'true'),
+            );
+            await act(async () => {
+                resolvePost(jsonResponse({
+                    message: assistantMessage(3, 'Consider remote-friendly companies.'),
+                    preferences_changed: true,
+                }, 201));
+            });
             await screen.findByText('Consider remote-friendly companies.');
             expect(screen.getByText('I need remote')).toBeInTheDocument();
 
@@ -415,6 +476,7 @@ describe('JobSearchChat', () => {
 
         test('submits via the form on Enter', async () => {
             await renderChat();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse({message: assistantMessage(4, 'Enter works'), preferences_changed: false}, 201),
             );
@@ -426,6 +488,7 @@ describe('JobSearchChat', () => {
         test('marks the composer row pending while the Stop control is rendered', async () => {
             await renderChat();
             let resolveReply: (v: unknown) => void = () => {};
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockImplementationOnce(
                 () => new Promise((r) => { resolveReply = r; }),
             );
@@ -435,9 +498,10 @@ describe('JobSearchChat', () => {
 
             // While Stop is present the row carries chat-composer-pending; CSS
             // compacts Send to an icon-only ≥44px target on narrow screens,
-            // and the button keeps its accessible name throughout.
+            // and the button keeps its accessible name throughout. (The POST
+            // follows the advisory pre-send status check, issue #457.)
             const row = screen.getByLabelText('Message').closest('.input-group');
-            expect(row).toHaveClass('chat-composer-pending');
+            await waitFor(() => expect(row).toHaveClass('chat-composer-pending'));
             expect(screen.getByTestId('stop-button')).toBeInTheDocument();
             expect(screen.getByRole('button', {name: 'Send message'})).toBeInTheDocument();
 
@@ -455,6 +519,7 @@ describe('JobSearchChat', () => {
             await renderChat();
             const mockFetch = global.fetch as jest.Mock;
             mockFetch
+                .mockResolvedValueOnce(statusResponse('ready'))
                 .mockResolvedValueOnce(
                     jsonResponse({
                         error: {type: 'service_error', message: 'We could not respond right now.', request_id: 'abc'},
@@ -488,6 +553,7 @@ describe('JobSearchChat', () => {
             await renderChat();
             const mockFetch = global.fetch as jest.Mock;
             mockFetch
+                .mockResolvedValueOnce(statusResponse('ready'))
                 .mockResolvedValueOnce(
                     jsonResponse({
                         error: {type: 'assistant_unavailable', message: 'The assistant is not available right now.', request_id: 'rid-503'},
@@ -514,6 +580,7 @@ describe('JobSearchChat', () => {
 
         test('surfaces provider_timeout error with data-error-type', async () => {
             await renderChat();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse({
                     error: {type: 'provider_timeout', message: 'The assistant took too long.', request_id: 'rid-504'},
@@ -528,6 +595,7 @@ describe('JobSearchChat', () => {
 
         test('surfaces cost_limit error with data-error-type', async () => {
             await renderChat();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse({
                     error: {type: 'cost_limit', message: 'Usage limit reached.', request_id: 'rid-429'},
@@ -543,6 +611,7 @@ describe('JobSearchChat', () => {
 
         test('surfaces invalid_output error with data-error-type', async () => {
             await renderChat();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse({
                     error: {type: 'invalid_output', message: 'Unexpected response.', request_id: 'rid-500'},
@@ -556,6 +625,7 @@ describe('JobSearchChat', () => {
 
         test('surfaces unexpected_error with data-error-type', async () => {
             await renderChat();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse({
                     error: {type: 'unexpected_error', message: 'Unexpected error.', request_id: 'rid-500b'},
@@ -570,11 +640,12 @@ describe('JobSearchChat', () => {
         test('clears error type when a new message is sent', async () => {
             await renderChat();
             const mockFetch = global.fetch as jest.Mock;
-            mockFetch.mockResolvedValueOnce(
-                jsonResponse({error: {type: 'provider_timeout', message: 'Timeout.'}}, 504),
-            ).mockResolvedValueOnce(
-                jsonResponse({message: assistantMessage(7, 'ok'), preferences_changed: false}, 201),
-            );
+            mockFetch.mockResolvedValueOnce(statusResponse('ready'))
+                .mockResolvedValueOnce(
+                    jsonResponse({error: {type: 'provider_timeout', message: 'Timeout.'}}, 504),
+                ).mockResolvedValueOnce(
+                    jsonResponse({message: assistantMessage(7, 'ok'), preferences_changed: false}, 201),
+                );
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'first'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             const alert1 = await screen.findByRole('alert');
@@ -589,6 +660,7 @@ describe('JobSearchChat', () => {
             await renderChat();
             const mockFetch = global.fetch as jest.Mock;
             mockFetch
+                .mockResolvedValueOnce(statusResponse('ready'))
                 .mockResolvedValueOnce(
                     jsonResponse({
                         error: {
@@ -635,6 +707,7 @@ describe('JobSearchChat', () => {
             await renderChat();
             const mockFetch = global.fetch as jest.Mock;
             mockFetch
+                .mockResolvedValueOnce(statusResponse('ready'))
                 .mockResolvedValueOnce(
                     jsonResponse({
                         error: {
@@ -684,6 +757,7 @@ describe('additional JobSearchChat coverage', () => {
 
     describe('resume / init failure paths', () => {
         test('shows an init error and the start button when resume fails (non-404)', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({detail: 'boom'}, 500));
             render(<JobSearchChat/>);
             expect(await screen.findByText(/could not load your conversation/i)).toBeInTheDocument();
@@ -692,7 +766,9 @@ describe('additional JobSearchChat coverage', () => {
 
         test('auto-creates a conversation on resume 404 so the input is usable', async () => {
             const mock = global.fetch as jest.Mock;
-            // First call: GET resume → 404 (no existing conversation).
+            // Mount order: status check first, then GET resume → 404, then
+            // POST create → new conversation.
+            mock.mockResolvedValueOnce(statusResponse('ready'));
             mock.mockResolvedValueOnce(jsonResponse({}, 404));
             // Second call: POST create → new conversation.
             mock.mockResolvedValueOnce(jsonResponse(emptyConversation(7), 201));
@@ -712,6 +788,7 @@ describe('additional JobSearchChat coverage', () => {
 
         test('shows init error when auto-create after 404 also fails', async () => {
             const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
             // First call: GET resume → 404 (no existing conversation).
             mock.mockResolvedValueOnce(jsonResponse({}, 404));
             // Second call: POST create → 500 (server error).
@@ -723,7 +800,8 @@ describe('additional JobSearchChat coverage', () => {
 
         test('starting a new conversation from the error state works', async () => {
             const mock = global.fetch as jest.Mock;
-            mock.mockResolvedValueOnce(jsonResponse({detail: 'down'}, 503))
+            mock.mockResolvedValueOnce(statusResponse('ready'))
+                .mockResolvedValueOnce(jsonResponse({detail: 'down'}, 503))
                 .mockResolvedValueOnce(jsonResponse(emptyConversation(11), 201));
             render(<JobSearchChat/>);
             await screen.findByText(/could not load your conversation/i, {}, {timeout: 5000});
@@ -742,9 +820,11 @@ describe('additional JobSearchChat coverage', () => {
     describe('security & runtime branches', () => {
         test('includes the CSRF token header on state-changing requests', async () => {
             document.cookie = 'csrftoken=abc123token';
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
             render(<JobSearchChat/>);
             await screen.findByLabelText('Message');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse({message: assistantMessage(8, 'ok'), preferences_changed: false}, 201),
             );
@@ -763,9 +843,11 @@ describe('additional JobSearchChat coverage', () => {
             const original = Object.getOwnPropertyDescriptor(global.crypto, 'randomUUID');
             Object.defineProperty(global.crypto, 'randomUUID', {value: undefined, configurable: true});
             try {
+                (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
                 (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
                 render(<JobSearchChat/>);
                 await screen.findByLabelText('Message');
+                (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
                 (global.fetch as jest.Mock).mockResolvedValueOnce(
                     jsonResponse({message: assistantMessage(9, 'fallback'), preferences_changed: false}, 201),
                 );
@@ -785,6 +867,7 @@ describe('additional JobSearchChat coverage', () => {
         });
 
         test('marks the last rendered message as an aria-live region', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse(emptyConversation(42, [userMessage('first'), assistantMessage(2, 'second')])),
             );
@@ -799,12 +882,14 @@ describe('additional JobSearchChat coverage', () => {
     describe('optimistic rollback & preference disclosure', () => {
         test('treats a non-JSON error as uncertain: question stays, check offered, no saved claim', async () => {
             window.localStorage.clear();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse(emptyConversation(42, [assistantMessage(0, 'ready')])),
             );
             render(<JobSearchChat/>);
             await screen.findByText('ready');
             const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
             mock.mockResolvedValueOnce(new Response('plain text error', {status: 500}));
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'boom'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
@@ -825,9 +910,11 @@ describe('additional JobSearchChat coverage', () => {
         });
 
         test('dismisses the preference-update notice', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
             render(<JobSearchChat/>);
             await screen.findByLabelText('Message');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse({message: assistantMessage(3, 'noted'), preferences_changed: true}, 201),
             );
@@ -841,6 +928,7 @@ describe('additional JobSearchChat coverage', () => {
 
     describe('export', () => {
         test('downloads the conversation as a JSON file', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse(emptyConversation(42, [userMessage('exportable')])),
             );
@@ -861,6 +949,7 @@ describe('additional JobSearchChat coverage', () => {
         });
 
         test('surfaces an error when export fails', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse(emptyConversation(42, [userMessage('x')])),
             );
@@ -900,9 +989,11 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
         const original = Object.getOwnPropertyDescriptor(global.crypto, 'randomUUID');
         Object.defineProperty(global.crypto, 'randomUUID', {value: () => 'fixed-uuid-1234', configurable: true});
         try {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
             render(<JobSearchChat/>);
             await screen.findByLabelText('Message');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse({message: assistantMessage(7, 'sure'), preferences_changed: false}, 201),
             );
@@ -922,7 +1013,8 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
 
     test('surfaces an error when starting a new conversation fails', async () => {
         const mock = global.fetch as jest.Mock;
-        mock.mockResolvedValueOnce(jsonResponse({detail: 'down'}, 503))
+        mock.mockResolvedValueOnce(statusResponse('ready'))
+            .mockResolvedValueOnce(jsonResponse({detail: 'down'}, 503))
             .mockResolvedValueOnce(jsonResponse({}, 500));
         render(<JobSearchChat/>);
         await screen.findByText(/could not load your conversation/i);
@@ -931,6 +1023,7 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
     });
 
     test('reset succeeds when confirmed', async () => {
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse(emptyConversation(42, [userMessage('old')])),
         );
@@ -944,6 +1037,7 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
     });
 
     test('reset surfaces an error when it fails', async () => {
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse(emptyConversation(42, [userMessage('keep')])),
         );
@@ -957,6 +1051,7 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
     });
 
     test('delete surfaces an error when it fails', async () => {
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse(emptyConversation(42, [userMessage('del')])),
         );
@@ -1004,6 +1099,7 @@ describe('JobSearchChat result cards (issue #396)', () => {
     test('renders job and org cards when results are present', async () => {
         const results = makeResults();
         const msg = assistantMessage(5, 'Check these out.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse(emptyConversation(42, [msg])),
         );
@@ -1024,6 +1120,7 @@ describe('JobSearchChat result cards (issue #396)', () => {
 
     test('no result cards when results is null', async () => {
         const msg = assistantMessage(5, 'Just text, no cards.', false, null);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse(emptyConversation(42, [msg])),
         );
@@ -1034,6 +1131,7 @@ describe('JobSearchChat result cards (issue #396)', () => {
 
     test('no result cards when results have empty arrays', async () => {
         const msg = assistantMessage(5, 'No matches found.', false, {jobs: [], organizations: []});
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse(emptyConversation(42, [msg])),
         );
@@ -1045,6 +1143,7 @@ describe('JobSearchChat result cards (issue #396)', () => {
     test('job cards are keyboard focusable with screen-reader labels', async () => {
         const results = makeResults();
         const msg = assistantMessage(5, 'Here you go.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse(emptyConversation(42, [msg])),
         );
@@ -1059,6 +1158,7 @@ describe('JobSearchChat result cards (issue #396)', () => {
     test('history reload shows the same cards', async () => {
         const results = makeResults();
         const msg = assistantMessage(5, 'Reload test.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse(emptyConversation(42, [msg])),
         );
@@ -1069,12 +1169,14 @@ describe('JobSearchChat result cards (issue #396)', () => {
     });
 
     test('new reply with results renders cards after submit', async () => {
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse(emptyConversation(42, [userMessage('jobs?')])),
         );
         render(<JobSearchChat/>);
         await screen.findByText('jobs?');
         const results = makeResults();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse({
                 message: assistantMessage(10, 'Found one!', false, results),
@@ -1096,6 +1198,7 @@ describe('JobSearchChat result cards (issue #396)', () => {
             }],
         };
         const msg = assistantMessage(5, 'Check Globex.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse(emptyConversation(42, [msg])),
         );
@@ -1115,6 +1218,7 @@ describe('JobSearchChat result cards (issue #396)', () => {
             organizations: [],
         };
         const msg = assistantMessage(5, 'Simple job.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse(emptyConversation(42, [msg])),
         );
@@ -1136,6 +1240,7 @@ describe('JobSearchChat result cards (issue #396)', () => {
             organizations: [],
         };
         const msg = assistantMessage(5, 'Min only.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse(emptyConversation(42, [msg])),
         );
@@ -1155,6 +1260,7 @@ describe('JobSearchChat result cards (issue #396)', () => {
             organizations: [],
         };
         const msg = assistantMessage(5, 'Max only.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse(emptyConversation(42, [msg])),
         );
@@ -1174,6 +1280,7 @@ describe('JobSearchChat result cards (issue #396)', () => {
             organizations: [],
         };
         const msg = assistantMessage(5, 'Long.', false, results);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse(emptyConversation(42, [msg])),
         );
@@ -1203,6 +1310,7 @@ describe('textarea composer', () => {
 
     test('Enter submits the message', async () => {
         await renderChat();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(
             jsonResponse({message: assistantMessage(5, 'reply'), preferences_changed: false}, 201),
         );
@@ -1306,6 +1414,7 @@ describe('textarea composer', () => {
             value: {height: 800, addEventListener, removeEventListener},
         });
         try {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse(emptyConversation(42)),
             );
@@ -1330,6 +1439,7 @@ describe('textarea composer', () => {
     test('resets to single-row height after send', async () => {
         await renderChat();
         (global.fetch as jest.Mock)
+            .mockResolvedValueOnce(statusResponse('ready'))
             .mockResolvedValueOnce(
                 jsonResponse({message: assistantMessage(5, 'got it'), preferences_changed: false}, 201),
             );
@@ -1343,6 +1453,7 @@ describe('textarea composer', () => {
     test('clears the composer input and resets height when a send fails', async () => {
         await renderChat();
         (global.fetch as jest.Mock)
+            .mockResolvedValueOnce(statusResponse('ready'))
             .mockResolvedValueOnce(
                 jsonResponse({error: {message: 'server error'}}, 500),
             );
@@ -1356,13 +1467,218 @@ describe('textarea composer', () => {
     });
 });
 
+// ── Advisory assistant-status notice + composer gating (issue #457) ─────
+
+describe('assistant availability status (issue #457)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    function statusCalls(fetchMock: jest.Mock) {
+        return fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/agent/assistant-status/'));
+    }
+
+    async function renderWithStatus(state: AssistantState, actions: string[] = [], existingMessages: ChatMessage[] = []) {
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse(state, actions));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, existingMessages)));
+        render(<JobSearchChat/>);
+        await screen.findByLabelText('Message');
+        await waitFor(() => expect(screen.getByLabelText('Message')).toBeInTheDocument());
+    }
+
+    test('fetches the status on mount before resuming', async () => {
+        await renderWithStatus('ready');
+        const calls = (global.fetch as jest.Mock).mock.calls.map(([url]) => String(url));
+        expect(calls[0]).toContain('/api/agent/assistant-status/');
+        expect(calls[1]).toContain('/api/agent/conversations/');
+    });
+
+    test('re-checks the status before each send (advisory pre-send gate)', async () => {
+        await renderWithStatus('ready');
+        expect(statusCalls(global.fetch as jest.Mock)).toHaveLength(1);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse({message: assistantMessage(20, 'ok'), preferences_changed: false}, 201),
+        );
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await screen.findByText('ok');
+        // One mount check + one pre-send check; the POST followed the re-check.
+        expect(statusCalls(global.fetch as jest.Mock)).toHaveLength(2);
+        // The lazy job-match availability fetch (issue #476) may follow the
+        // reply; only the agent calls matter for the ordering check.
+        const calls = (global.fetch as jest.Mock).mock.calls
+            .map(([url]) => String(url))
+            .filter((url) => !url.includes('/api/job-matches/status/'));
+        expect(calls[calls.length - 2]).toContain('/api/agent/assistant-status/');
+        expect(calls[calls.length - 1]).toContain(messageUrl());
+    });
+
+    test('an unrecognized future state renders no notice (defensive fallback)', async () => {
+        // Forward compatibility: a server enum value this client does not know
+        // must degrade to the healthy baseline, not break the chat.
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse({state: 'something_new', actions: ['browse_rankings'], checked_at: 'x'} as unknown as AssistantStatus),
+        );
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+        render(<JobSearchChat/>);
+        await screen.findByLabelText('Message');
+        await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+        expect(screen.queryByTestId('assistant-status-notice')).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Message')).toBeEnabled();
+    });
+
+    test('ready state renders no notice and keeps the composer usable', async () => {
+        await renderWithStatus('ready');
+        expect(screen.queryByTestId('assistant-status-notice')).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Message')).toBeEnabled();
+    });
+
+    test('signed_out state renders no notice (unreachable on /chat/ but advisory-safe)', async () => {
+        await renderWithStatus('signed_out');
+        expect(screen.queryByTestId('assistant-status-notice')).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Message')).toBeEnabled();
+    });
+
+    test('replies_disabled disables the composer and shows the notice with rankings action', async () => {
+        await renderWithStatus('replies_disabled', ['browse_rankings']);
+        const notice = screen.getByTestId('assistant-status-notice');
+        expect(notice).toHaveAttribute('data-status-state', 'replies_disabled');
+        // Scannable state label plus supporting copy.
+        expect(notice).toHaveTextContent('Assistant unavailable');
+        expect(notice).toHaveTextContent(/replies are paused right now/i);
+        expect(notice).toHaveTextContent(/saved preferences remain available/i);
+        const rankings = screen.getByRole('link', {name: 'Browse company rankings'});
+        expect(rankings).toHaveAttribute('href', '/');
+        expect(rankings).toHaveClass('assistant-status-notice-action');
+        // No re-check affordance for a policy state (re-checking is not meaningful).
+        expect(screen.queryByTestId('assistant-status-retry')).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Message')).toBeDisabled();
+        expect(screen.getByRole('button', {name: 'Send message'})).toBeDisabled();
+    });
+
+    test('replies_disabled notice leaks no internal reason strings', async () => {
+        await renderWithStatus('replies_disabled');
+        const notice = screen.getByTestId('assistant-status-notice').textContent || '';
+        for (const needle of ['LLM', 'API_KEY', 'provider', 'INTERACTIVE_AGENT_ENABLED', 'demo']) {
+            expect(notice.toLowerCase()).not.toContain(needle.toLowerCase());
+        }
+    });
+
+    test('inventory_unavailable disables the composer and shows rankings plus saved-preferences guidance', async () => {
+        await renderWithStatus('inventory_unavailable', ['browse_rankings']);
+        const notice = screen.getByTestId('assistant-status-notice');
+        expect(notice).toHaveAttribute('data-status-state', 'inventory_unavailable');
+        expect(notice).toHaveTextContent('Assistant unavailable');
+        expect(notice).toHaveTextContent(/no active job listings/i);
+        // Required saved-preferences guidance (issue #457 UI contract), phrased
+        // so it cannot be read as the disabled composer accepting input now.
+        expect(notice).toHaveTextContent(/saved preferences are still available/i);
+        expect(notice).toHaveTextContent(/update them here once listings return/i);
+        expect(screen.getByRole('link', {name: 'Browse company rankings'})).toHaveAttribute('href', '/');
+        expect(screen.queryByTestId('assistant-status-retry')).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Message')).toBeDisabled();
+    });
+
+    test('temporarily_unavailable shows the notice with a working retry affordance', async () => {
+        await renderWithStatus('temporarily_unavailable', ['retry']);
+        const notice = screen.getByTestId('assistant-status-notice');
+        expect(notice).toHaveAttribute('data-status-state', 'temporarily_unavailable');
+        expect(notice).toHaveTextContent(/temporarily unavailable/i);
+        expect(screen.getByLabelText('Message')).toBeEnabled();
+        const retry = screen.getByTestId('assistant-status-retry');
+        // High-contrast treatment: white-on-dark pairs with the light warning
+        // surface (the previous btn-outline-warning pairing failed AA).
+        expect(retry).toHaveClass('btn-dark');
+        expect(retry).not.toHaveClass('btn-outline-warning');
+        expect(retry).toHaveClass('assistant-status-notice-action');
+        // Recovery: the re-check now reports ready, so the notice disappears.
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+        fireEvent.click(retry);
+        await waitFor(() =>
+            expect(screen.queryByTestId('assistant-status-notice')).not.toBeInTheDocument(),
+        );
+    });
+
+    test('refreshing shows the notice with a retry affordance and keeps the composer usable', async () => {
+        await renderWithStatus('refreshing', ['retry']);
+        const notice = screen.getByTestId('assistant-status-notice');
+        expect(notice).toHaveAttribute('data-status-state', 'refreshing');
+        expect(notice).toHaveTextContent(/refreshing/i);
+        expect(screen.getByTestId('assistant-status-retry')).toBeInTheDocument();
+        expect(screen.getByLabelText('Message')).toBeEnabled();
+    });
+
+    test('a gating status re-check before send blocks the POST and surfaces the notice', async () => {
+        // Mount reports ready; the pre-send re-check reports a futile state.
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+        render(<JobSearchChat/>);
+        await screen.findByLabelText('Message');
+        await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            statusResponse('inventory_unavailable', ['browse_rankings']),
+        );
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'doomed message'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        const notice = await screen.findByTestId('assistant-status-notice');
+        expect(notice).toHaveAttribute('data-status-state', 'inventory_unavailable');
+        expect(screen.getByLabelText('Message')).toBeDisabled();
+        // Advisory gate: no message POST was attempted after the re-check.
+        const posts = postBodies(global.fetch as jest.Mock, messageUrl());
+        expect(posts).toHaveLength(0);
+        // The draft is preserved, not lost.
+        expect(screen.getByLabelText('Message')).toHaveValue('doomed message');
+    });
+
+    test('a failed status fetch leaves the chat fully usable (advisory-only)', async () => {
+        (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('status down'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+        render(<JobSearchChat/>);
+        await screen.findByLabelText('Message');
+        await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+        // No notice, composer not gated, and the send still proceeds: the POST
+        // path is authoritative when the advisory check is unavailable.
+        expect(screen.queryByTestId('assistant-status-notice')).not.toBeInTheDocument();
+        (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('status down again'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse({message: assistantMessage(21, 'still works'), preferences_changed: false}, 201),
+        );
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hi'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await screen.findByText('still works');
+    });
+
+    test('POST 503 after a ready status still surfaces the durable error envelope', async () => {
+        // A runtime outage between the status check and the send must surface
+        // through the unchanged POST error path (AC-6 composes with #458's
+        // durable turn-state recovery, which is verified there).
+        await renderWithStatus('ready');
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse({
+                error: {type: 'assistant_unavailable', message: 'The assistant is not available right now.', request_id: 'rid'},
+            }, 503),
+        );
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'will fail'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        const alert = await screen.findByRole('alert');
+        expect(alert).toHaveAttribute('data-error-type', 'assistant_unavailable');
+        expect(screen.getByTestId('retry-button')).toBeInTheDocument();
+    });
+});
+
 // ---------------------------------------------------------------------------
 // Issue #476: compact availability notice for empty assistant replies
 // ---------------------------------------------------------------------------
 
 describe('JobSearchChat availability notice (#476)', () => {
     beforeEach(() => {
-        global.fetch = jest.fn();
+        global.fetch = statusAwareFetch();
         window.innerHeight = 768;
     });
 
@@ -1479,7 +1795,7 @@ describe('durable turn state (issue #458)', () => {
     const KEY_B = '987e6543-e21b-12d3-b456-426614174999';
 
     beforeEach(() => {
-        global.fetch = jest.fn();
+        global.fetch = statusAwareFetch();
         window.localStorage.clear();
     });
 
@@ -1621,7 +1937,7 @@ describe('durable turn state (issue #458)', () => {
             );
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'held turn'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            const key = lastPostedKey(global.fetch as jest.Mock);
+            const key = await postedKeyAfterSend(global.fetch as jest.Mock);
             const markerKey = inflightKeyFor(42, key);
             await waitFor(() => expect(window.localStorage.getItem(markerKey)).not.toBeNull());
             const marker = JSON.parse(window.localStorage.getItem(markerKey) || '{}');
@@ -1680,7 +1996,7 @@ describe('durable turn state (issue #458)', () => {
             );
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'turn a'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            const keyA = lastPostedKey(global.fetch as jest.Mock);
+            const keyA = await postedKeyAfterSend(global.fetch as jest.Mock);
             await waitFor(() => expect(window.localStorage.getItem(inflightKeyFor(42, keyA))).not.toBeNull());
             // While turn A is in flight, another tab starts turn B in the same
             // conversation: its marker lands next to A's.
@@ -2018,9 +2334,10 @@ describe('durable turn state (issue #458)', () => {
             );
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'slow turn'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            // The POST is issued synchronously: capture its key, then queue the
-            // reconcile GET showing the turn persisted and still pending.
-            const key = lastPostedKey(mock);
+            // Capture the POST's key (issued after the advisory status check),
+            // then queue the reconcile GET showing the turn persisted and
+            // still pending.
+            const key = await postedKeyAfterSend(mock);
             mock.mockResolvedValueOnce(
                 jsonResponse(emptyConversation(42, [userTurn('slow turn', key, 'pending')])),
             );
@@ -2066,7 +2383,7 @@ describe('durable turn state (issue #458)', () => {
             );
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'never sent'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            const key = lastPostedKey(mock);
+            const key = await postedKeyAfterSend(mock);
             // The reconcile GET succeeds and shows no trace of the key.
             mock.mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
             fireEvent.click(await screen.findByTestId('stop-button'));
@@ -2096,7 +2413,7 @@ describe('durable turn state (issue #458)', () => {
             );
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'doomed'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            const key = lastPostedKey(mock);
+            const key = await postedKeyAfterSend(mock);
             mock.mockResolvedValueOnce(jsonResponse({detail: 'gone'}, 404));
             fireEvent.click(await screen.findByTestId('stop-button'));
             await screen.findByText(/this conversation is no longer available/i);
@@ -2242,7 +2559,7 @@ describe('durable turn state (issue #458)', () => {
             );
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'turn a'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            const keyA = lastPostedKey(global.fetch as jest.Mock);
+            const keyA = await postedKeyAfterSend(global.fetch as jest.Mock);
             await waitFor(() => expect(window.localStorage.getItem(inflightKeyFor(42, keyA))).not.toBeNull());
             // While turn A is in flight, another tab starts turn B: its
             // marker lands next to A's.
@@ -2364,12 +2681,13 @@ describe('durable turn state (issue #458)', () => {
         test('a network failure the server never received is restored as a draft', async () => {
             await renderChat([]);
             const mock = global.fetch as jest.Mock;
-            mock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+            const settlePost = holdNextFetch(mock);
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'maybe lost'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            const key = lastPostedKey(mock);
+            const key = await postedKeyAfterSend(mock);
             // The reconcile GET succeeds and shows no trace of the key.
             mock.mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
+            settlePost(new TypeError('Failed to fetch'));
             // The turn is restored as a draft; nothing pretends it was sent.
             await screen.findByText(/kept as a draft/i);
             expect(screen.getByLabelText('Message')).toHaveValue('maybe lost');
@@ -2388,14 +2706,15 @@ describe('durable turn state (issue #458)', () => {
         test('a network failure the server did receive adopts the server state', async () => {
             await renderChat([]);
             const mock = global.fetch as jest.Mock;
-            mock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+            const settlePost = holdNextFetch(mock);
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'arrived anyway'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            const key = lastPostedKey(mock);
+            const key = await postedKeyAfterSend(mock);
             // The reconcile GET shows the turn failed server-side.
             mock.mockResolvedValueOnce(
                 jsonResponse(emptyConversation(42, [userTurn('arrived anyway', key, 'failed')])),
             );
+            settlePost(new TypeError('Failed to fetch'));
             // The server state wins: the turn renders as failed (saved), not
             // as a draft.
             await screen.findByTestId('failed-turn');
@@ -2407,11 +2726,12 @@ describe('durable turn state (issue #458)', () => {
         test('a non-JSON error reconciles to an unsent draft when the server never received it', async () => {
             await renderChat([]);
             const mock = global.fetch as jest.Mock;
-            mock.mockResolvedValueOnce(new Response('plain text error', {status: 500}));
+            const settlePost = holdNextFetch(mock);
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'uncertain text'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            const key = lastPostedKey(mock);
+            const key = await postedKeyAfterSend(mock);
             mock.mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
+            settlePost(new Response('plain text error', {status: 500}));
             await screen.findByText(/kept as a draft/i);
             expect(screen.getByLabelText('Message')).toHaveValue('uncertain text');
             expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('uncertain text');
@@ -2423,10 +2743,10 @@ describe('durable turn state (issue #458)', () => {
         test('two tabs confirmed absent keep both unsent markers; the newest surfaces', async () => {
             await renderChat([]);
             const mock = global.fetch as jest.Mock;
-            mock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+            const settlePost = holdNextFetch(mock);
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'from this tab'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            const key = lastPostedKey(mock);
+            const key = await postedKeyAfterSend(mock);
             // The other tab sends its own turn while this one is waiting.
             const otherKey = '22222222-2222-4222-8222-222222222222';
             window.localStorage.setItem(
@@ -2435,6 +2755,7 @@ describe('durable turn state (issue #458)', () => {
             );
             // This tab's reconcile GET shows the server never received it.
             mock.mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
+            settlePost(new TypeError('Failed to fetch'));
             await screen.findByText(/kept as a draft/i);
             // Both unsent markers survive: this tab's absent reconciliation
             // no longer deletes its own marker nor destroys the other tab's
@@ -2455,7 +2776,7 @@ describe('durable turn state (issue #458)', () => {
             mock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'check me'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            const key = lastPostedKey(mock);
+            const key = await postedKeyAfterSend(mock);
             await screen.findByTestId('pending-turn');
             // The check now reaches the server and it never received the turn.
             mock.mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
@@ -2472,11 +2793,12 @@ describe('durable turn state (issue #458)', () => {
         test('a non-JSON error against a conversation deleted elsewhere reports it honestly', async () => {
             await renderChat([]);
             const mock = global.fetch as jest.Mock;
-            mock.mockResolvedValueOnce(new Response('plain text error', {status: 502}));
+            const settlePost = holdNextFetch(mock);
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'gateway doomed'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            const key = lastPostedKey(mock);
+            const key = await postedKeyAfterSend(mock);
             mock.mockResolvedValueOnce(jsonResponse({detail: 'gone'}, 404));
+            settlePost(new Response('plain text error', {status: 502}));
             await screen.findByText(/this conversation is no longer available/i);
             expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
         });
@@ -2484,11 +2806,12 @@ describe('durable turn state (issue #458)', () => {
         test('a network failure against a conversation deleted elsewhere reports it honestly', async () => {
             await renderChat([]);
             const mock = global.fetch as jest.Mock;
-            mock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+            const settlePost = holdNextFetch(mock);
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'doomed'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            const key = lastPostedKey(mock);
+            const key = await postedKeyAfterSend(mock);
             mock.mockResolvedValueOnce(jsonResponse({detail: 'gone'}, 404));
+            settlePost(new TypeError('Failed to fetch'));
             await screen.findByText(/this conversation is no longer available/i);
             expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
         });
