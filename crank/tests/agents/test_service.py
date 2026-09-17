@@ -5,6 +5,8 @@ import json
 import pytest
 from types import SimpleNamespace
 
+import pytest
+
 from crank.agents.job_search.errors import (
     ConversationClosedError,
     CostLimitError,
@@ -720,3 +722,101 @@ class TestToolsUsedNegation:
         )
         assert "query_score_summaries" not in result.tools_used
         assert "query_active_organizations" in result.tools_used
+
+
+class TestAvailabilityContext:
+    """Issue #476: derived availability state reaches the model context."""
+
+    @pytest.mark.django_db
+    def test_build_model_context_includes_availability_for_seeded_user(self):
+        from types import SimpleNamespace
+
+        from django.contrib.auth.models import User
+
+        from crank.models.preference import default_preferences
+
+        user = User.objects.create_user("availuser", password="secret")
+        org_rows = [ORG_ACME]
+        listing_rows = [
+            SimpleNamespace(
+                id=42, pk=42, title="Senior Engineer", organization_name="Acme",
+                organization_id=1, location="SF", remote=True,
+                canonical_url="https://jobs.example.test/42",
+                observed_at=None, updated_at=None,
+                employer_name="Acme", status="active",
+            )
+        ]
+
+        def availability_service(u):
+            from crank.empty_state import derive_state
+
+            return derive_state(user=u).to_dict(include_staff=False)
+
+        gw = FakeGateway({
+            "message": "ok",
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [],
+            "preference_patch": None,
+        })
+        orch = JobSearchOrchestrator(
+            gateway=gw,
+            preference_service=FakePreferenceService(),
+            user=user,
+            org_datasource=lambda filters, limit: org_rows,
+            score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: listing_rows,
+            match_service=lambda *, user, limit: {"job_matches": [], "organization_matches": []},
+            availability_service=availability_service,
+        )
+        # Seed a default (empty) preference document so the derived state is
+        # no_preferences given active listings exist.
+        from crank.models.preference import UserPreference
+
+        UserPreference.objects.create(
+            user=user, preferences=default_preferences(), schema_version=2
+        )
+        from crank.models.job import JobSourceCatalog
+        from crank.models.organization import Organization
+
+        Organization.objects.create(name="Acme")
+        source = JobSourceCatalog.objects.create(
+            name="Synthetic",
+            adapter_key="synthetic.v1",
+            base_url="https://jobs.example.test",
+            enabled=True,
+        )
+        from crank.models.job import JobListing
+        from django.utils import timezone as tz
+
+        JobListing.all_objects.create(
+            source=source,
+            external_id="42",
+            canonical_url="https://jobs.example.test/42",
+            employer_name="Acme",
+            title="Senior Engineer",
+            first_seen_at=tz.now(),
+            last_seen_at=tz.now(),
+            status=JobListing.Status.ACTIVE,
+            organization=Organization.objects.get(name="Acme"),
+        )
+        orch.run(user_prompt="what's available?", conversation=[], preference_markdown="")
+        request = gw.requests[0]
+        joined = "\n".join(m["content"] for m in request.messages)
+        assert "AVAILABILITY STATE (server-controlled" in joined
+        assert "state=no_preferences" in joined
+
+    def test_availability_absent_for_unpersisted_user(self):
+        """A stand-in user (no pk) keeps availability absent without DB access."""
+        gw = FakeGateway({
+            "message": "ok",
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [],
+            "preference_patch": None,
+        })
+        orch = make_orchestrator(gw, FakePreferenceService())
+        orch.run(user_prompt="hi", conversation=[], preference_markdown="")
+        request = gw.requests[0]
+        joined = "\n".join(m["content"] for m in request.messages)
+        # The tool-block marker must be absent; the system prompt's honesty
+        # rule mentions "AVAILABILITY STATE" by name, so match the prefix.
+        assert "AVAILABILITY STATE (server-controlled" not in joined

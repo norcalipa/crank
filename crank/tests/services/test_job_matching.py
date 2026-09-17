@@ -1025,3 +1025,147 @@ class RankedAPIWithMatchesTests(TestCase):
         payload = response.json()
         # Should fall back to default limit
         assert "job_matches" in payload
+
+
+# ---------------------------------------------------------------------------
+# Bounded relaxation preview (issue #476)
+# ---------------------------------------------------------------------------
+
+
+class RelaxationPreviewTests(TestCase):
+    """The zero-match relaxation probe: bounded, deterministic, read-only."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("probeuser", password="secret")
+
+    def make_criteria(self, **overrides):
+        doc = preferences(**overrides)
+        return project_criteria(doc, 2), doc
+
+    def test_no_preferences_returns_none(self):
+        from crank.services.job_matching import relaxation_preview
+
+        assert relaxation_preview(self.user) is None
+
+    def test_zero_probe_cap_returns_none(self):
+        from crank.services.job_matching import relaxation_preview
+
+        UserPreference.objects.create(
+            user=self.user,
+            preferences=preferences(exclusions={"companies": ["acme"]}),
+            schema_version=2,
+        )
+        listings = [listing(1), listing(2)]
+        assert relaxation_preview(self.user, max_probes=0, queryset=listings) is None
+
+    def test_baseline_nonzero_returns_none(self):
+        """Nothing to explain when matching already yields results."""
+        from crank.services.job_matching import relaxation_preview
+
+        UserPreference.objects.create(
+            user=self.user, preferences=preferences(), schema_version=2
+        )
+        listings = [listing(1)]
+        assert relaxation_preview(self.user, queryset=listings) is None
+
+    def test_first_beneficial_constraint_is_exclusions(self):
+        from crank.services.job_matching import relaxation_preview
+
+        UserPreference.objects.create(
+            user=self.user,
+            preferences=preferences(exclusions={"companies": ["acme"]}),
+            schema_version=2,
+        )
+        listings = [listing(1), listing(2), listing(3)]
+        preview = relaxation_preview(self.user, queryset=listings)
+        assert preview is not None
+        assert preview["field"] == "exclusions"
+        assert preview["label"] == "Removing excluded companies (currently acme)"
+        assert preview["added_count"] == 3
+
+    def test_first_beneficial_constraint_is_work_location(self):
+        """Work location is probed before exclusions and wins when it helps."""
+        from crank.services.job_matching import relaxation_preview
+
+        UserPreference.objects.create(
+            user=self.user,
+            preferences=preferences(work_location={"max_in_office_days": 0}),
+            schema_version=2,
+        )
+        in_office = org(rto_policy="O")
+        listings = [listing(1, organization=in_office), listing(2, organization=in_office)]
+        preview = relaxation_preview(self.user, queryset=listings)
+        assert preview is not None
+        assert preview["field"] == "work_location"
+        assert preview["label"] == "Broadening work location (at most 0 in-office days)"
+        assert preview["added_count"] == 2
+
+    def test_probe_cap_limits_probes(self):
+        """A cap of one stops after the work-location probe and returns None."""
+        from crank.services.job_matching import relaxation_preview
+
+        # Work location is set but relaxing it cannot help (remote orgs pass
+        # already); exclusions would help, but the cap stops before probing it.
+        UserPreference.objects.create(
+            user=self.user,
+            preferences=preferences(
+                work_location={"modes": ["remote"]},
+                exclusions={"companies": ["acme"]},
+            ),
+            schema_version=2,
+        )
+        listings = [listing(1), listing(2)]
+        assert relaxation_preview(self.user, max_probes=1, queryset=listings) is None
+        # Raising the cap lets the exclusions probe run and win.
+        preview = relaxation_preview(self.user, max_probes=2, queryset=listings)
+        assert preview is not None
+        assert preview["field"] == "exclusions"
+
+    def test_added_count_respects_limit(self):
+        from crank.services.job_matching import MAX_MATCH_RESULTS, relaxation_preview
+
+        UserPreference.objects.create(
+            user=self.user,
+            preferences=preferences(exclusions={"companies": ["acme"]}),
+            schema_version=2,
+        )
+        listings = [listing(1), listing(2), listing(3), listing(4), listing(5)]
+        preview = relaxation_preview(self.user, limit=3, queryset=listings)
+        assert preview is not None
+        assert preview["added_count"] == 3
+        assert preview["added_count"] <= MAX_MATCH_RESULTS
+
+    def test_unset_constraints_are_not_probed(self):
+        """Probes only run for constraints the user actually set."""
+        from crank.services.job_matching import relaxation_preview
+
+        UserPreference.objects.create(
+            user=self.user,
+            preferences=preferences(exclusions={"companies": ["acme"]}),
+            schema_version=2,
+        )
+        listings = [listing(1)]
+        # minimum_salary and work_location are unset; they are skipped, so a
+        # cap of 1 is enough to reach the exclusions probe.
+        preview = relaxation_preview(self.user, max_probes=1, queryset=listings)
+        assert preview is not None
+        assert preview["field"] == "exclusions"
+
+    def test_relaxed_criteria_never_touches_saved_preferences(self):
+        """The probe relaxes an in-memory copy; the saved document is intact."""
+        from crank.services.job_matching import _relaxed_criteria
+
+        criteria, doc = self.make_criteria(
+            work_location={"modes": ["remote"], "max_in_office_days": 0},
+            exclusions={"companies": ["acme"]},
+            compensation={"minimum_salary": 90000},
+        )
+        relaxed = _relaxed_criteria(criteria, "work_location")
+        assert relaxed.work_modes == frozenset()
+        assert relaxed.countries == frozenset()
+        assert relaxed.max_in_office_days is None
+        assert criteria.work_modes == frozenset({"remote"})
+        assert criteria.max_in_office_days == 0
+        assert criteria.excluded_companies == frozenset({"acme"})
+        assert criteria.min_salary == Decimal(90000)
+        assert doc["work_location"]["modes"] == ["remote"]

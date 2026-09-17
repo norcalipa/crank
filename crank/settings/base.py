@@ -405,6 +405,10 @@ CRAWL_DEADLINE_SECONDS = _env_int("CRAWL_DEADLINE_SECONDS", 300)
 # Consecutive failed crawls that mark a source as repeatedly failing in the
 # read-only inventory health check. Operators can lower it for tighter alerts.
 CRAWL_REPEATED_FAILURE_THRESHOLD = _env_int("CRAWL_REPEATED_FAILURE_THRESHOLD", 3)
+# Bounded relaxation-probe cap for the zero-match filter-change preview
+# (issue #476). At most this many single-constraint relaxations are evaluated
+# per /api/job-matches/status/ call; 0 disables the preview entirely.
+JOB_MATCH_RELAXATION_PROBES = _env_int("JOB_MATCH_RELAXATION_PROBES", 3)
 # Staleness TTL (seconds): a RUNNING claim older than this is treated as a
 # crashed/stale lock and reclaimed by the next claim for the same run type.
 AGENT_RUN_STALE_AFTER_SECONDS = _env_int("AGENT_RUN_STALE_AFTER_SECONDS", 3600)

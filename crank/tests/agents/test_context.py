@@ -192,3 +192,54 @@ class TestBuildModelContextEdge:
         )
         assert context.organization_catalog == []
         assert context.score_summaries == []
+
+
+class TestAvailabilityState:
+    """Issue #476: the canonical availability state rides in model context."""
+
+    def build(self, **kwargs):
+        from crank.agents.job_search.context import build_model_context
+
+        defaults = {
+            "prompt_id": "p",
+            "system": "s",
+            "conversation": [],
+            "user_prompt": "q",
+            "preference_markdown": "",
+            "organization_catalog": [],
+            "score_summaries": [],
+            "max_preference_characters": 100,
+            "max_conversation_characters": 1000,
+        }
+        defaults.update(kwargs)
+        return build_model_context(**defaults)
+
+    def test_availability_absent_by_default(self):
+        context = self.build()
+        assert context.availability is None
+        contents = [m["content"] for m in context.to_messages()]
+        assert not any("AVAILABILITY STATE" in c for c in contents)
+
+    def test_availability_rendered_into_tool_block(self):
+        context = self.build(
+            availability={
+                "state": "no_matches",
+                "title": "No matches for your current requirements",
+                "message": "Jobs are available, but none meet your saved requirements yet.",
+                "refreshing": True,
+            }
+        )
+        assert context.availability is not None
+        contents = [m["content"] for m in context.to_messages()]
+        block = next(c for c in contents if "AVAILABILITY STATE (server-controlled" in c)
+        assert "state=no_matches" in block
+        assert "No matches for your current requirements" in block
+        assert "refreshing=True" in block
+
+    def test_availability_refreshing_defaults_false(self):
+        context = self.build(
+            availability={"state": "ok", "title": "Matches ready", "message": "m"}
+        )
+        contents = [m["content"] for m in context.to_messages()]
+        block = next(c for c in contents if "AVAILABILITY STATE (server-controlled" in c)
+        assert "refreshing=False" in block

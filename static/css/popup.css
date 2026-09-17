@@ -854,6 +854,33 @@ body.app-nav-drawer-open {
     #job-search-chat .input-group {
         align-items: stretch;
     }
+
+    /* Recovery actions stack full-width on phones so the primary action is
+       prominent and every secondary action stays a >=44px target. */
+    #job-match-panel .job-match-actions {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    /* Round-3 density: with the empty-state copy visible again, compact the
+       panel's vertical rhythm so the full action stack fits inside a 375x812
+       viewport without dropping actions or going below 44px targets. */
+    #job-match-panel .card-header {
+        padding: .5rem .75rem;
+    }
+
+    #job-match-panel .card-body {
+        padding: .75rem;
+    }
+
+    #job-match-panel .job-match-actions {
+        gap: .5rem;
+        margin-top: .5rem !important;
+    }
+
+    #job-match-panel .job-match-actions .btn {
+        min-height: 44px;
+    }
 }
 
 /* The chat card is a dark surface; the default danger red is hard to read
@@ -872,6 +899,56 @@ body.app-nav-drawer-open {
 #job-search-chat .btn-outline-danger:disabled {
     color: rgba(255, 155, 163, .65);
     border-color: rgba(255, 155, 163, .65);
+}
+
+/* Issue #476 round-3 contrast fix: #job-match-panel is a dark surface, but
+   Bootstrap's .card inherits the light-theme body foreground, so panel copy
+   computed to dark-on-dark. data-bs-theme="dark" on the section flips the
+   theme tokens; these scoped rules pin the explicit light foreground pairings
+   so card title, state headings, body copy, and .text-muted render at
+   >=4.5:1 on the #212529 surface regardless of page-level theme. */
+#job-match-panel {
+    color: #f8f9fa;
+}
+
+#job-match-panel .card-header,
+#job-match-panel .card-body {
+    color: #f8f9fa;
+}
+
+#job-match-panel .text-muted {
+    color: rgba(248, 249, 250, 0.75) !important;
+}
+
+/* Inline SVG glyphs (round-2 icon fix): align like font glyphs and spin the
+   in-progress marker without depending on an icon-font animation. */
+.crank-icon {
+    vertical-align: -0.125em;
+}
+
+.crank-icon-spin {
+    animation: crank-icon-spin 1s linear infinite;
+}
+
+@keyframes crank-icon-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .crank-icon-spin {
+        animation: none;
+    }
+}
+
+/* Issue #476 round-2 visual fixes: match-panel recovery controls and the
+   header refresh control keep >=44x44px interactive targets at every
+   viewport; visual size stays compact via padding. The action group keeps
+   at least an 8px gap between adjacent targets (gap-2). */
+#job-match-panel .btn {
+    min-height: 44px;
+    min-width: 44px;
 }
 
 @media (max-width: 390px) {

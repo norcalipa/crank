@@ -1356,6 +1356,124 @@ describe('textarea composer', () => {
     });
 });
 
+// ---------------------------------------------------------------------------
+// Issue #476: compact availability notice for empty assistant replies
+// ---------------------------------------------------------------------------
+
+describe('JobSearchChat availability notice (#476)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+        window.innerHeight = 768;
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    const noMatchesStatus = {
+        state: 'no_matches',
+        title: 'No matches for your current requirements',
+        message: 'Jobs are available, but none meet your saved requirements yet.',
+        actions: ['chat'],
+    };
+
+    async function renderAndSend(statusPayloadValue: unknown) {
+        const mock = global.fetch as jest.Mock;
+        mock.mockImplementation((url: string) => {
+            if (url.includes('/api/agent/conversations') && (mock as any).mock.calls.length === 1) {
+                return Promise.resolve(jsonResponse(emptyConversation(42)));
+            }
+            if (url.includes('/api/job-matches/status/')) {
+                return Promise.resolve(jsonResponse(statusPayloadValue));
+            }
+            // POST message -> assistant reply with no result cards.
+            return Promise.resolve(jsonResponse(
+                {message: assistantMessage(2, 'Nothing came back.'), preferences_changed: false},
+                201,
+            ));
+        });
+        render(<JobSearchChat/>);
+        const input = await screen.findByLabelText('Message');
+        await waitFor(() => expect(input).toBeEnabled());
+        fireEvent.change(input, {target: {value: 'any jobs?'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await screen.findByText('Nothing came back.');
+    }
+
+    test('empty assistant reply shows an availability notice instead of silence', async () => {
+        await renderAndSend(noMatchesStatus);
+        const notice = await screen.findByTestId('availability-notice');
+        expect(notice).toBeInTheDocument();
+        expect(notice).toHaveAttribute('role', 'status');
+        expect(notice).toHaveAttribute('aria-live', 'polite');
+        expect(notice).toHaveTextContent('No matches for your current requirements');
+        expect(notice).toHaveTextContent('Jobs are available, but none meet your saved requirements yet.');
+        expect(screen.queryByTestId('result-cards')).not.toBeInTheDocument();
+    });
+
+    test('no availability notice when the state is ok', async () => {
+        await renderAndSend({state: 'ok', title: 'Matches ready', message: 'You have matches.'});
+        await waitFor(() => {
+            expect(screen.queryByTestId('availability-notice')).not.toBeInTheDocument();
+        });
+    });
+
+    test('status fetch failure never breaks the chat or renders a notice', async () => {
+        const mock = global.fetch as jest.Mock;
+        mock.mockImplementation((url: string) => {
+            if (url.includes('/api/job-matches/status/')) {
+                return Promise.reject(new Error('status down'));
+            }
+            if (mock.mock.calls.length === 1) {
+                return Promise.resolve(jsonResponse(emptyConversation(42)));
+            }
+            return Promise.resolve(jsonResponse(
+                {message: assistantMessage(2, 'Nothing came back.'), preferences_changed: false},
+                201,
+            ));
+        });
+        render(<JobSearchChat/>);
+        const input = await screen.findByLabelText('Message');
+        await waitFor(() => expect(input).toBeEnabled());
+        fireEvent.change(input, {target: {value: 'any jobs?'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await screen.findByText('Nothing came back.');
+        expect(screen.queryByTestId('availability-notice')).not.toBeInTheDocument();
+    });
+
+    test('assistant reply with results never shows the availability notice', async () => {
+        const mock = global.fetch as jest.Mock;
+        mock.mockImplementation((url: string) => {
+            if (mock.mock.calls.length === 1) {
+                return Promise.resolve(jsonResponse(emptyConversation(42)));
+            }
+            if (url.includes('/api/job-matches/status/')) {
+                return Promise.resolve(jsonResponse(noMatchesStatus));
+            }
+            return Promise.resolve(jsonResponse({
+                message: assistantMessage(2, 'Here is a match.', false, {
+                    jobs: [{
+                        id: 7, title: 'Senior Engineer', organization_name: 'Acme',
+                        location: 'SF', remote: true, compensation: null,
+                        canonical_url: 'https://jobs.example.test/7',
+                        observed_at: null, updated_at: null,
+                    }],
+                    organizations: [],
+                }),
+                preferences_changed: false,
+            }, 201));
+        });
+        render(<JobSearchChat/>);
+        const input = await screen.findByLabelText('Message');
+        await waitFor(() => expect(input).toBeEnabled());
+        fireEvent.change(input, {target: {value: 'find jobs'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await screen.findByText('Here is a match.');
+        expect(await screen.findByTestId('result-cards')).toBeInTheDocument();
+        expect(screen.queryByTestId('availability-notice')).not.toBeInTheDocument();
+    });
+});
+
 describe('durable turn state (issue #458)', () => {
     const KEY_A = '123e4567-e89b-42d3-a456-426614174000';
     const KEY_B = '987e6543-e21b-12d3-b456-426614174999';

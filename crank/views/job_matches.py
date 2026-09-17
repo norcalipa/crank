@@ -2,6 +2,7 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 """Authenticated JSON endpoints for owner-scoped job matches."""
 
+from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
 from django.http import JsonResponse
@@ -9,13 +10,14 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
-from crank.empty_state import derive_state
+from crank.empty_state import NO_MATCHES, derive_state
 from crank.models.job import JobListing
 from crank.models.job_match import JobMatch
 from crank.services.job_matching import (
     MAX_MATCH_RESULTS,
     match_jobs,
     match_organizations,
+    relaxation_preview,
 )
 
 _DEFAULT_PAGE_SIZE = 20
@@ -187,6 +189,14 @@ def job_match_dismiss(request, match_id):
     return JsonResponse(_match_payload(match, detail=True))
 
 
+def _probe_cap() -> int:
+    """Bounded relaxation-probe cap from settings; misconfiguration fails safe."""
+    try:
+        return max(0, int(getattr(settings, "JOB_MATCH_RELAXATION_PROBES", 3)))
+    except (TypeError, ValueError):
+        return 3
+
+
 @login_required
 @require_GET
 def job_match_status(request):
@@ -196,6 +206,11 @@ def job_match_status(request):
     ``EmptyState`` so the chat and job-match surfaces use the same wording.
     Staff-only details (crawl error summaries, internal state names) are
     included only when the requester is a staff member.
+
+    Read-only by contract: neither this view nor the zero-match relaxation
+    preview ever writes preferences. Additive payload fields (``refreshing``,
+    ``coverage``, ``active_constraints``, ``inventory``,
+    ``relaxation_preview``) are emitted only when meaningful.
     """
     match_count = (
         JobMatch.objects.filter(
@@ -206,7 +221,14 @@ def job_match_status(request):
     )
     state = derive_state(user=request.user, match_count=match_count)
     is_staff = bool(request.user.is_staff)
-    return JsonResponse(state.to_dict(include_staff=is_staff))
+    payload = state.to_dict(include_staff=is_staff)
+    if state.state == NO_MATCHES:
+        payload["relaxation_preview"] = relaxation_preview(
+            request.user,
+            max_probes=_probe_cap(),
+            limit=MAX_MATCH_RESULTS,
+        )
+    return JsonResponse(payload)
 
 
 @login_required

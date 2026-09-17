@@ -18,13 +18,20 @@ function statusPayload(state: string, overrides: Partial<{
     message: string;
     actions: string[];
     staff_detail: string;
-}> = {}) {
+}> & Record<string, unknown> = {}) {
+    const known = ['state', 'title', 'message', 'actions', 'staff_detail'];
+    const extra = Object.fromEntries(
+        Object.entries(overrides).filter(([key]) => !known.includes(key)),
+    );
     return {
         state,
         title: overrides.title ?? 'Test title',
         message: overrides.message ?? 'Test message',
         actions: overrides.actions ?? [],
         ...(overrides.staff_detail ? {staff_detail: overrides.staff_detail} : {}),
+        // Additive #476 fields (refreshing, coverage, active_constraints,
+        // inventory, relaxation_preview) pass through untouched.
+        ...extra,
     };
 }
 
@@ -59,6 +66,38 @@ const sampleOrgMatch = {
     reasons: ['Public company', 'Remote', 'Score 4.2'],
 };
 
+// Helper: mock all three API calls and wait for ready phase.
+// Hoisted to module scope so every describe block in this file can reuse it.
+async function renderPanel(
+    statusState: string = 'ok',
+    opts: { count?: number; staffDetail?: string; statusOverrides?: Record<string, unknown>; rankedJobs?: any[]; rankedOrgs?: any[]; rankedStatus?: number } = {},
+) {
+    const count = opts.count ?? 0;
+    const rankedJobs = opts.rankedJobs ?? [];
+    const rankedOrgs = opts.rankedOrgs ?? [];
+    const rankedStatus = opts.rankedStatus ?? 200;
+    const mock = global.fetch as jest.Mock;
+    mock.mockImplementation((url: string) => {
+        if (url.includes('/api/job-matches/status/')) {
+            return Promise.resolve(jsonResponse(
+                statusPayload(statusState, {
+                    ...(opts.staffDetail ? { staff_detail: opts.staffDetail } : {}),
+                    ...(opts.statusOverrides || {}),
+                }),
+            ));
+        }
+        if (url.includes('/api/job-matches/ranked/')) {
+            return Promise.resolve(jsonResponse(rankedPayload(rankedJobs, rankedOrgs), rankedStatus));
+        }
+        if (url.includes('/api/job-matches/')) {
+            return Promise.resolve(jsonResponse(matchPayload(count)));
+        }
+        return Promise.resolve(jsonResponse({}));
+    });
+    render(<JobMatchPanel/>);
+    await waitFor(() => expect(screen.getByTestId('job-match-panel')).not.toHaveTextContent('Loading'));
+}
+
 describe('JobMatchPanel', () => {
     beforeEach(() => {
         global.fetch = jest.fn();
@@ -67,37 +106,6 @@ describe('JobMatchPanel', () => {
     afterEach(() => {
         jest.restoreAllMocks();
     });
-
-    // Helper: mock all three API calls and wait for ready phase
-    async function renderPanel(
-        statusState: string = 'ok',
-        opts: { count?: number; staffDetail?: string; statusOverrides?: Record<string, unknown>; rankedJobs?: any[]; rankedOrgs?: any[]; rankedStatus?: number } = {},
-    ) {
-        const count = opts.count ?? 0;
-        const rankedJobs = opts.rankedJobs ?? [];
-        const rankedOrgs = opts.rankedOrgs ?? [];
-        const rankedStatus = opts.rankedStatus ?? 200;
-        const mock = global.fetch as jest.Mock;
-        mock.mockImplementation((url: string) => {
-            if (url.includes('/api/job-matches/status/')) {
-                return Promise.resolve(jsonResponse(
-                    statusPayload(statusState, {
-                        ...(opts.staffDetail ? { staff_detail: opts.staffDetail } : {}),
-                        ...(opts.statusOverrides || {}),
-                    }),
-                ));
-            }
-            if (url.includes('/api/job-matches/ranked/')) {
-                return Promise.resolve(jsonResponse(rankedPayload(rankedJobs, rankedOrgs), rankedStatus));
-            }
-            if (url.includes('/api/job-matches/')) {
-                return Promise.resolve(jsonResponse(matchPayload(count)));
-            }
-            return Promise.resolve(jsonResponse({}));
-        });
-        render(<JobMatchPanel/>);
-        await waitFor(() => expect(screen.getByTestId('job-match-panel')).not.toHaveTextContent('Loading'));
-    }
 
     describe('loading state', () => {
         test('shows a loading indicator while fetching', () => {
@@ -244,14 +252,19 @@ describe('JobMatchPanel', () => {
                 statusOverrides: {
                     title: 'No job sources configured',
                     message: "CRank hasn't been connected to any job sources yet.",
-                    actions: ['suggest_company', 'help'],
+                    actions: ['explore_companies', 'suggest_company', 'help'],
                 },
             });
             const el = screen.getByTestId('empty-state-no_source');
             expect(el).toHaveTextContent('No job sources configured');
             expect(el).toHaveTextContent("hasn't been connected");
-            expect(screen.getByTestId('action-suggest_company')).toBeInTheDocument();
-            expect(screen.getByTestId('action-help')).toBeInTheDocument();
+            // AC-4: explore_companies is the recommended (primary) recovery
+            // path where openings can't be confirmed; the rest are secondary.
+            const explore = screen.getByTestId('action-explore_companies');
+            expect(explore).toBeInTheDocument();
+            expect(explore).toHaveClass('btn-primary');
+            expect(screen.getByTestId('action-suggest_company')).toHaveClass('btn-outline-info');
+            expect(screen.getByTestId('action-help')).toHaveClass('btn-outline-info');
         });
 
         test('source_disabled: shows appropriate copy and actions', async () => {
@@ -510,5 +523,220 @@ describe('JobMatchPanel', () => {
             document.body.removeChild(container);
             jest.dontMock('react-dom/client');
         });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #476: combined states, refresh/coverage notices, zero-match context
+// ---------------------------------------------------------------------------
+
+describe('JobMatchPanel combined states (#476)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    test('shows refresh notice alongside ranked matches when refreshing', async () => {
+        await renderPanel('ok', {
+            count: 3,
+            statusOverrides: {refreshing: true},
+            rankedJobs: [sampleJobMatch],
+            rankedOrgs: [sampleOrgMatch],
+        });
+        expect(screen.getByTestId('refresh-notice')).toBeInTheDocument();
+        expect(screen.getByTestId('ranked-job-matches')).toBeInTheDocument();
+        expect(screen.getByTestId('ranked-org-matches')).toBeInTheDocument();
+        expect(screen.getByRole('status')).toBeInTheDocument();
+    });
+
+    test('shows coverage notice with numbers alongside results for partial_coverage', async () => {
+        await renderPanel('partial_coverage', {
+            count: 2,
+            statusOverrides: {
+                coverage: {enabled_sources: 2, failing_sources: 1},
+                inventory: {active_listings: 4, last_success_at: null, age_hours: null},
+            },
+            rankedJobs: [sampleJobMatch],
+        });
+        const notice = screen.getByTestId('coverage-notice');
+        expect(notice).toBeInTheDocument();
+        expect(notice).toHaveTextContent('1 of 2');
+        expect(screen.getByTestId('ranked-job-matches')).toBeInTheDocument();
+    });
+
+    test('partial_coverage is a recognized empty-state with icon when no matches', async () => {
+        await renderPanel('partial_coverage', {
+            statusOverrides: {coverage: {enabled_sources: 3, failing_sources: 2}},
+        });
+        expect(screen.getByTestId('empty-state-partial_coverage')).toBeInTheDocument();
+    });
+
+    test('no_matches renders active constraints, inventory facts, and preview', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {
+                actions: ['chat', 'explore_companies', 'suggest_company', 'help'],
+                active_constraints: ['Minimum salary 150,000', 'Excluded companies: acme'],
+                inventory: {active_listings: 3, last_success_at: '2026-09-14T10:00:00Z', age_hours: 2.5},
+                relaxation_preview: {
+                    field: 'work_location',
+                    label: 'Broadening work location (currently Remote)',
+                    added_count: 4,
+                },
+            },
+        });
+        expect(screen.getByTestId('empty-state-no_matches')).toBeInTheDocument();
+        const constraints = screen.getByTestId('active-constraints');
+        expect(constraints).toHaveTextContent('Minimum salary 150,000');
+        expect(constraints).toHaveTextContent('Excluded companies: acme');
+        expect(screen.getByTestId('inventory-facts')).toHaveTextContent('3 active listings checked');
+        // Round-1 visual critique: the preview names the concrete dimension
+        // and carries an exact bounded count — no vague "about".
+        expect(screen.getByTestId('relaxation-preview')).toHaveTextContent(
+            'Broadening work location (currently Remote) would surface 4 more listings.',
+        );
+        expect(screen.getByTestId('relaxation-preview').textContent).not.toContain('about');
+        // The recommended first action is primary; the rest are secondary.
+        expect(screen.getByTestId('action-chat')).toHaveClass('btn-primary');
+        expect(screen.getByTestId('action-explore_companies')).toHaveClass('btn-outline-info');
+    });
+
+    test('explore_companies action renders with label and navigates to rankings', async () => {
+        const originalHref = window.location;
+        // jsdom location is read-only; replace it to observe navigation.
+        Object.defineProperty(window, 'location', {
+            configurable: true,
+            writable: true,
+            value: {href: 'https://crank.test/jobs/'},
+        });
+        try {
+            await renderPanel('no_matches', {
+                statusOverrides: {actions: ['explore_companies']},
+            });
+            const button = screen.getByTestId('action-explore_companies');
+            expect(button).toHaveTextContent('Explore company rankings');
+            fireEvent.click(button);
+            expect(window.location.href).toBe('/');
+        } finally {
+            Object.defineProperty(window, 'location', {
+                configurable: true,
+                writable: true,
+                value: originalHref,
+            });
+        }
+    });
+
+    test('empty states expose an accessible live region', async () => {
+        await renderPanel('no_matches');
+        const region = screen.getByTestId('empty-state-no_matches');
+        expect(region).toHaveAttribute('role', 'status');
+        expect(region).toHaveAttribute('aria-live', 'polite');
+    });
+
+    test('no active constraints renders no constraints block', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {active_constraints: [], relaxation_preview: null},
+        });
+        expect(screen.queryByTestId('active-constraints')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('relaxation-preview')).not.toBeInTheDocument();
+    });
+});
+
+describe('JobMatchPanel round-2 visual fixes (contrast + icons)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    test('panel pins the dark-surface contrast system (r2 contrast fix)', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {
+                title: 'No matches for your current requirements',
+                message: 'Jobs are available, but none meet your saved requirements yet.',
+                actions: ['chat', 'suggest_company', 'help'],
+                active_constraints: ['Work location: Remote'],
+                inventory: {active_listings: 3, last_success_at: '2026-09-14T10:00:00Z', age_hours: 2.5},
+            },
+        });
+        const section = screen.getByTestId('job-match-panel');
+        // The panel is a dark surface, so it must opt into Bootstrap's dark
+        // theme tokens: the light-theme body foreground computed to
+        // rgb(33,37,41) on the rgb(33,37,41) card in round 2.
+        expect(section).toHaveAttribute('data-bs-theme', 'dark');
+        expect(section).toHaveClass('bg-dark');
+        // Every phase (loading, error, results, empty states) uses the same
+        // dark-themed section.
+        expect(section.className).toContain('card');
+        // Muted copy inside the panel is scoped to the light-muted token so
+        // it stays legible on the dark surface (popup.css pins the color).
+        expect(section.querySelector('.text-muted')).not.toBeNull();
+        // State copy carries a visible heading and body, not DOM-only text.
+        expect(screen.getByTestId('empty-state-no_matches').textContent).toContain(
+            'No matches for your current requirements',
+        );
+    });
+
+    test('header refresh control renders a visible inline glyph (r2 icon fix)', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [sampleJobMatch]});
+        const refresh = screen.getByTestId('job-match-refresh');
+        const glyph = refresh.querySelector('svg[data-icon]');
+        expect(glyph).not.toBeNull();
+        expect(glyph).toHaveAttribute('data-icon', 'refresh-cw');
+        expect(glyph).toHaveAttribute('aria-hidden', 'true');
+        // Accessible name is preserved on the control itself.
+        expect(refresh).toHaveAttribute('aria-label', 'Refresh match status');
+    });
+
+    test('empty states render a visible inline status glyph', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {
+                title: 'No matches',
+                message: 'Test',
+                actions: ['chat'],
+            },
+        });
+        const empty = screen.getByTestId('empty-state-no_matches');
+        const glyph = empty.querySelector('svg[data-icon]');
+        expect(glyph).not.toBeNull();
+        expect(glyph?.getAttribute('data-icon')).toBe('search');
+    });
+});
+
+describe('JobMatchPanel inline icons (r2 icon fix)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    test('no panel markup depends on the FontAwesome webfont', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {
+                title: 'Test',
+                message: 'Test',
+                actions: ['chat', 'explore_companies', 'suggest_company', 'help'],
+                active_constraints: ['Work location: Remote'],
+                inventory: {active_listings: 3, last_success_at: null, age_hours: 2},
+                relaxation_preview: {field: 'work_location', label: 'Broadening work location', added_count: 4},
+            },
+        });
+        // Every glyph is an inline SVG with a data-icon name; no <i class="fa-...">
+        // references remain anywhere in the panel.
+        const section = screen.getByTestId('job-match-panel');
+        expect(section.querySelectorAll('svg[data-icon]').length).toBeGreaterThan(0);
+        expect(section.querySelectorAll('.fa-solid, i[class*="fa-"]').length).toBe(0);
+        // All action glyphs resolve to real inline icons (never the fallback
+        // missing for a mistyped name).
+        for (const action of ['chat', 'explore_companies', 'suggest_company', 'help']) {
+            const btn = screen.getByTestId(`action-${action}`);
+            expect(btn.querySelector('svg[data-icon]')).not.toBeNull();
+        }
     });
 });
