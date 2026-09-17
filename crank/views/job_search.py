@@ -33,7 +33,7 @@ from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
-from django.db.models import Q theirs
+from django.db.models import Q
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -476,7 +476,7 @@ def agent_conversation_detail(request, conversation_id):
         return _error(
             request, 409, "turn_in_progress",
             "This response is still being generated. Please wait a moment.",
-            request_id, theirs
+            request_id,
         )
     if outcome == "completed":
         return JsonResponse(
@@ -671,7 +671,7 @@ def agent_conversation_detail(request, conversation_id):
                 "results_json": results_json_str,
             },
         )
-        _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.COMPLETED) theirs
+        _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.COMPLETED)
 
     # Helpfulness-gap telemetry (issue #397): size conversations that keep
     # engaging the assistant but never produce a result card. Scalar counts
