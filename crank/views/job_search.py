@@ -32,7 +32,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
-from django.db import IntegrityError, transaction
+from django.db import connection, IntegrityError, transaction
 from django.db.models import Q
 from django.http import JsonResponse
 from django.utils import timezone
