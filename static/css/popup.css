@@ -3,6 +3,22 @@
    property that the viewport-reactive chat shell reads in measureCardHeight. */
 :root {
     --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+
+    /* Shared stacking-layer tokens (issue #464). Navigation chrome, blocking
+       dialogs and the skip link consume these instead of inventing numbers.
+       Blocking dialogs sit above every background layer (nav rail, toggle,
+       overlay, drawer) but below the skip link so keyboard users can always
+       escape the page while a dialog is open. */
+    --z-nav-rail: 1100;
+    --z-nav-toggle: 1200;
+    --z-nav-overlay: 1250;
+    --z-nav-drawer: 1300;
+    --z-blocking-dialog: 1400;
+    --z-skip-link: 2000;
+    /* The sticky mobile topbar is its own page-level stacking layer: it sits
+       above ordinary content but below every other navigation layer, so the
+       nav toggle and drawer chrome stay reachable above it (issue #464). */
+    --z-mobile-topbar: 1030;
 }
 
 .popup-overlay {
@@ -12,17 +28,24 @@
     right: 0;
     bottom: 0;
     background-color: rgba(0, 0, 0, 0.7);
-    z-index: 1000;
+    z-index: var(--z-blocking-dialog);
     display: flex;
     justify-content: center;
     align-items: center;
+}
+
+/* Suggest-company modal rides Bootstrap's .modal but must also sit above the
+   navigation rail (--bs-modal-zindex is 1055, below the 1100 rail). */
+.modal.blocking-modal {
+    z-index: var(--z-blocking-dialog);
 }
 
 .popup-details {
     width: 80%;
     max-width: 900px;
     max-height: 90vh;
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
     border-radius: 4px;
     background-color: #212529;
@@ -34,6 +57,12 @@
     background-color: #212529;
     padding: 0.75rem 1.25rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    /* Header (title + Close) stays pinned while long content scrolls in the
+       card body below (issue #464). */
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    flex-shrink: 0;
 }
 
 .popup-details .card-header h2 {
@@ -44,6 +73,11 @@
 .popup-details .card-body {
     padding: 1.25rem;
     background-color: #212529;
+    /* Internal scroll container: large content scrolls here, never the whole
+       card, so the header never scrolls out of view (issue #464). */
+    overflow-y: auto;
+    min-height: 0;
+    flex: 1 1 auto;
 }
 
 .popup-details .table {
@@ -106,7 +140,7 @@ html, body {
     position: absolute;
     top: 0;
     left: 0;
-    z-index: 2000;
+    z-index: var(--z-skip-link);
     padding: .5rem .75rem;
     background: var(--bs-body-bg);
     color: var(--bs-body-color);
@@ -138,7 +172,7 @@ html, body {
     border-right: 1px solid var(--bs-border-color);
     display: flex;
     flex-direction: column;
-    z-index: 1100;
+    z-index: var(--z-nav-rail);
     overflow-y: auto;
 }
 
@@ -266,7 +300,7 @@ html, body {
     position: fixed;
     top: .5rem;
     left: .5rem;
-    z-index: 1200;
+    z-index: var(--z-nav-toggle);
     width: 44px;
     height: 44px;
     padding: 0;
@@ -302,7 +336,7 @@ html, body {
     width: 280px;
     background: var(--bs-body-bg);
     border-right: 1px solid var(--bs-border-color);
-    z-index: 1300;
+    z-index: var(--z-nav-drawer);
     overflow-y: auto;
     display: flex;
     flex-direction: column;
@@ -346,7 +380,7 @@ html, body {
     right: 0;
     bottom: 0;
     background-color: rgba(0, 0, 0, .5);
-    z-index: 1250;
+    z-index: var(--z-nav-overlay);
 }
 
 .app-content {
@@ -503,13 +537,41 @@ body.app-nav-drawer-open {
 }
 
 .organization-card:focus-visible,
-.organization-row:focus-visible,
 .organization-table-wrap:focus-visible,
 .scoring-summary:focus-visible,
 .app-nav-toggle:focus-visible,
 .app-nav-brand:focus-visible {
     outline: 3px solid var(--bs-warning);
     outline-offset: 2px;
+}
+
+/* Desktop restored-focus indicator: a `tr` outline clips at the rounded,
+   horizontally scrollable table wrapper (left/right edges disappear), so
+   draw the complete perimeter as inset shadows on the row's cells instead
+   (issue #464, visual critique round 1). The mobile card keeps its
+   outline ring in the group above. */
+.organization-row:focus-visible {
+    outline: none;
+}
+
+.organization-row:focus-visible > * {
+    box-shadow:
+        inset 0 3px 0 var(--bs-warning),
+        inset 0 -3px 0 var(--bs-warning);
+}
+
+.organization-row:focus-visible > :first-child {
+    box-shadow:
+        inset 3px 0 0 var(--bs-warning),
+        inset 0 3px 0 var(--bs-warning),
+        inset 0 -3px 0 var(--bs-warning);
+}
+
+.organization-row:focus-visible > :last-child {
+    box-shadow:
+        inset -3px 0 0 var(--bs-warning),
+        inset 0 3px 0 var(--bs-warning),
+        inset 0 -3px 0 var(--bs-warning);
 }
 
 .readable-page-container {
@@ -540,6 +602,48 @@ body.app-nav-drawer-open {
 .popup-details .card-body,
 .popup-details .card-header {
     padding: 1rem;
+}
+
+/* Blocking-dialog Close controls need a 44×44px touch target (visual
+   critique, issue #464 round 1). The glyph stays visually compact: the
+   button box grows while the background icon keeps its 1rem size, and the
+   header padding-block shrinks so the pinned header keeps its height. */
+.popup-details .card-header {
+    padding-block: .375rem;
+}
+
+.popup-details .card-header .btn-close {
+    inline-size: 44px;
+    block-size: 44px;
+    min-inline-size: 44px;
+    min-block-size: 44px;
+    flex: 0 0 44px;
+    padding: 0;
+    background-position: center;
+    background-size: 1rem;
+    border-radius: .375rem;
+}
+
+.popup-details .card-header .btn-close:focus-visible {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
+}
+
+/* Keep the suggest-company modal's Close target on the same contract so
+   both blocking-dialog patterns stay consistent. */
+.modal.blocking-modal .btn-close {
+    inline-size: 44px;
+    block-size: 44px;
+    min-inline-size: 44px;
+    min-block-size: 44px;
+    padding: 0;
+    background-position: center;
+    background-size: 1rem;
+}
+
+.modal.blocking-modal .btn-close:focus-visible {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
 }
 
 #job-search-chat,
@@ -626,7 +730,7 @@ body.app-nav-drawer-open {
     .app-mobile-topbar {
         position: sticky;
         top: 0;
-        z-index: 1030;
+        z-index: var(--z-mobile-topbar);
         display: flex;
         align-items: center;
         min-height: 48px;
@@ -878,6 +982,227 @@ body.app-nav-drawer-open {
     max-width: 100%;
     overflow-wrap: break-word;
     word-break: break-word;
+}
+/* Job-search chat message surfaces and controls (issue #458, round 2).
+   Additive block: chat-side only, does not alter other rule groups. Colors
+   follow the visual-review spec — high-contrast bubbles, semantic failure
+   (red) and retry-in-progress (amber) panels, ≥44px touch targets, and a
+   consistent visible keyboard-focus ring. */
+.chat-bubble {
+    border-radius: 0.75rem; /* rounded-xl */
+    padding: 0.5rem 0.75rem; /* px-3 py-2 */
+    font-size: 1rem; /* text-base */
+    line-height: 1.5rem; /* leading-6 */
+}
+
+.chat-bubble-user {
+    background-color: #1d4ed8; /* blue-700 */
+    color: #ffffff; /* text-white */
+}
+
+.chat-bubble-assistant {
+    background-color: #334155; /* slate-700 */
+    color: #f8fafc; /* slate-50 */
+}
+
+/* Round-2 critique fix: nested result-card content inside the slate assistant
+   surface must not inherit Bootstrap light-theme muted/link tokens, which fail
+   contrast (~2.2:1 muted, ~2.3:1 link) against slate-700. Scope light
+   foregrounds to the assistant bubble only — user bubbles, page text, and the
+   dark toolbar keep their existing themes. */
+.chat-bubble-assistant .text-muted {
+    color: #cbd5e1 !important; /* slate-300; ~7:1 on slate-700 */
+}
+
+.chat-bubble-assistant a {
+    color: #7dd3fc; /* sky-300; ~6.2:1 on slate-700 */
+}
+
+.chat-bubble-assistant a:hover,
+.chat-bubble-assistant a:focus-visible {
+    color: #bfdbfe; /* blue-200; brighter on hover/keyboard focus */
+}
+
+/* Slight nested-surface separation so section labels and card boundaries stay
+   readable against the assistant bubble (round-2 critique, minor item). */
+.chat-bubble-assistant .job-card,
+.chat-bubble-assistant .org-card {
+    border-color: #94a3b8 !important; /* slate-400 */
+    background-color: rgba(15, 23, 42, 0.18);
+}
+
+.chat-status-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+
+.chat-status-icon {
+    width: 1rem; /* h-4 w-4 */
+    height: 1rem;
+    flex-shrink: 0;
+    margin-top: 0.125rem; /* mt-0.5 */
+}
+
+.chat-failure-panel {
+    border-radius: 0.5rem; /* rounded-lg */
+    border: 1px solid rgba(248, 113, 113, 0.5); /* border-red-400/50 */
+    background-color: #450a0a; /* bg-red-950 */
+    padding: 0.5rem 0.75rem; /* px-3 py-2 */
+    color: #fee2e2; /* text-red-100 */
+}
+
+.chat-retry-panel {
+    border-radius: 0.5rem;
+    border: 1px solid rgba(251, 191, 36, 0.5); /* border-amber-400/50 */
+    background-color: #451a03; /* bg-amber-950 */
+    padding: 0.5rem 0.75rem;
+    color: #fef3c7; /* text-amber-100 */
+}
+
+.chat-status-detail {
+    font-size: 0.875rem; /* text-sm */
+    line-height: 1.25rem; /* leading-5 */
+    margin-top: 0.25rem;
+}
+
+.chat-actions {
+    display: flex;
+    flex-direction: column; /* flex-col, sm:flex-row below */
+    gap: 0.5rem; /* gap-2 */
+}
+
+@media (min-width: 576px) {
+    .chat-actions {
+        flex-direction: row;
+    }
+}
+
+.chat-btn {
+    min-height: 2.75rem; /* min-h-11: ≥44px touch target */
+    border-radius: 0.375rem; /* rounded-md */
+    padding: 0.5rem 0.75rem; /* px-3 py-2 */
+    font-size: 0.875rem; /* text-sm */
+    line-height: 1.25rem;
+    font-weight: 500; /* font-medium */
+}
+
+.chat-btn-primary {
+    background-color: #ffffff; /* bg-white */
+    color: #1e40af; /* text-blue-800 */
+    border: 1px solid #ffffff;
+}
+
+.chat-btn-secondary {
+    background-color: transparent; /* bg-transparent */
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.6); /* border-white/60 */
+}
+
+/* Stable muted disabled treatment for retry/edit controls while a retry is
+   in flight — clearly unavailable, not hover-like. */
+.chat-btn:disabled,
+.chat-btn-retry:disabled {
+    background-color: #334155 !important; /* disabled:bg-slate-700 */
+    color: #cbd5e1 !important; /* disabled:text-slate-300 */
+    border-color: #64748b !important; /* disabled:border-slate-500 */
+    cursor: not-allowed; /* disabled:cursor-not-allowed */
+}
+
+.chat-send {
+    display: inline-flex;
+    min-height: 2.75rem; /* min-h-11 */
+    min-width: 2.75rem; /* min-w-11 */
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding-left: 0.75rem; /* px-3 */
+    padding-right: 0.75rem;
+    flex-shrink: 0;
+}
+
+.chat-stop {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    min-height: 2.75rem;
+}
+
+/* Round-2 critique fix: while the Stop control is rendered (pending), compact
+   Send to a 44px icon-only target on narrow phones so textarea + Send + Stop
+   fit in one row without clipping the placeholder. The visible label returns
+   in ordinary states; the button keeps aria-label="Send message" throughout,
+   and the target never drops below 44px. */
+@media (max-width: 390px) {
+    .chat-composer-pending .chat-send > span {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    .chat-composer-pending .chat-send {
+        width: 2.75rem;
+        padding-inline: 0;
+    }
+}
+
+/* Visible, consistent keyboard-focus ring on chat controls. */
+.chat-focus:focus-visible {
+    outline: 2px solid #93c5fd; /* blue-300 ring */
+    outline-offset: 2px;
+}
+
+/* Compacted data note: one muted row (~≤64px) by default so the
+   conversation owns the viewport; details expand in place. */
+.chat-note {
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background-color: rgba(15, 23, 42, 0.6);
+    color: #cbd5e1;
+    border-radius: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.8125rem;
+    line-height: 1.25rem;
+    margin-bottom: 0.75rem;
+}
+
+.chat-note-row {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    min-height: 2rem;
+}
+
+.chat-note-text {
+    flex: 1 1 auto;
+}
+
+.chat-note-toggle {
+    flex-shrink: 0;
+    background-color: transparent;
+    border: 1px solid rgba(148, 163, 184, 0.5);
+    color: #e2e8f0;
+    border-radius: 0.375rem;
+    padding: 0.125rem 0.5rem;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    min-height: 2rem;
+}
+
+.chat-note-details {
+    margin-top: 0.25rem;
+}
+
+@media (max-width: 390px) {
+    .chat-note {
+        font-size: 0.75rem;
+        line-height: 1.125rem;
+    }
 }
 
 .job-card a, .org-card a {

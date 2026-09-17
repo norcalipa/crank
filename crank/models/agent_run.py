@@ -17,6 +17,7 @@ recorded as ``skipped`` instead. This is the database-backed overlap guard
 that the Kubernetes scheduler's ``concurrencyPolicy: Forbid`` cannot fully
 replace (retries, manual triggers, or multiple replicas can still collide).
 """
+import hashlib
 import uuid
 
 from django.db import models, connection
@@ -26,17 +27,31 @@ from django.utils.translation import gettext_lazy as _
 from django_extensions.db.models import TimeStampedModel
 
 
-def advisory_lock_key(run_type):
-    """Return a stable integer lock key for a run type (MySQL ``GET_LOCK``).
+def advisory_lock_key(name):
+    """Return a stable integer lock key for an arbitrary lock name.
 
-    MySQL ``GET_LOCK`` accepts a string name, but returning a deterministic
-    hash-derived integer keeps the value compact and backend-agnostic.
+    MySQL ``GET_LOCK`` accepts a string name, but a compact deterministic
+    integer keeps the value backend-agnostic. The hash must be stable across
+    processes: Python's builtin ``hash()`` is salted per interpreter, which
+    would give separate workers different keys and silently disable the
+    cross-process guard.
     """
-    return abs(hash(f"agent_run:{run_type}")) % (2**31)
+    digest = hashlib.sha256(str(name).encode()).digest()
+    return int.from_bytes(digest[:4], "big") % (2**31)
 
 
-def acquire_advisory_lock(run_type, timeout_seconds=0):
-    """Acquire a MySQL advisory lock for the given run type.
+def run_type_lock_name(run_type):
+    """Return the advisory-lock name used for a run-type overlap guard."""
+    return f"agent_run:{run_type}"
+
+
+def source_lock_name(source):
+    """Return the advisory-lock name guarding one job source's ingestion."""
+    return f"job_source:{source.pk}"
+
+
+def acquire_named_advisory_lock(name, timeout_seconds=0):
+    """Acquire a MySQL advisory lock for the given lock name.
 
     Returns ``True`` if the lock was acquired (or the backend does not support
     advisory locks, in which case the caller relies on the partial unique
@@ -49,7 +64,7 @@ def acquire_advisory_lock(run_type, timeout_seconds=0):
         # PostgreSQL advisory locks exist but are session-scoped and unnecessary
         # given the partial index.
         return True
-    key = advisory_lock_key(run_type)
+    key = advisory_lock_key(name)
     with connection.cursor() as cursor:
         cursor.execute(
             "SELECT GET_LOCK(%s, %s)", [str(key), timeout_seconds]
@@ -58,14 +73,26 @@ def acquire_advisory_lock(run_type, timeout_seconds=0):
     return bool(row and row[0] == 1)
 
 
-def release_advisory_lock(run_type):
-    """Release the MySQL advisory lock for the given run type, if held."""
+def acquire_advisory_lock(run_type, timeout_seconds=0):
+    """Acquire the MySQL advisory lock for the given run type."""
+    return acquire_named_advisory_lock(
+        run_type_lock_name(run_type), timeout_seconds=timeout_seconds
+    )
+
+
+def release_named_advisory_lock(name):
+    """Release the MySQL advisory lock for the given lock name, if held."""
     vendor = connection.vendor
     if vendor != "mysql":
         return
-    key = advisory_lock_key(run_type)
+    key = advisory_lock_key(name)
     with connection.cursor() as cursor:
         cursor.execute("SELECT RELEASE_LOCK(%s)", [str(key)])
+
+
+def release_advisory_lock(run_type):
+    """Release the MySQL advisory lock for the given run type, if held."""
+    release_named_advisory_lock(run_type_lock_name(run_type))
 
 
 class AgentRun(TimeStampedModel):

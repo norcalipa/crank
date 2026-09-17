@@ -111,9 +111,14 @@ def record_agent_event(run, event_type, **fields):
 def claim_run(run_type):
     """Atomically claim the scheduler slot for ``run_type``.
 
-    Returns the claimed ``AgentRun``. Raises ``IntegrityError`` if another run
-    of this type is currently running or pending; the caller should record that
-    invocation as skipped (see :func:`record_skipped`).
+    Returns the claimed ``AgentRun``. If another run of this type is currently
+    RUNNING (and fresh), raises ``IntegrityError``; the caller should record
+    that invocation as skipped (see :func:`record_skipped`).
+
+    A queued (PENDING) run of the same type is adopted instead of skipped:
+    the oldest PENDING row transitions to RUNNING (reusing its correlation id)
+    so admin-queued work is executed by the next deployed consumer invocation
+    rather than blocking it.
 
     The overlap guard is DB-portable. The partial unique constraint
     (``unique_agentrun_active_per_type``) is the authoritative guard on
@@ -122,7 +127,8 @@ def claim_run(run_type):
     (``GET_LOCK``) per run type before the insert, closing the TOCTOU window
     on MySQL. A RUNNING claim older than ``AGENT_RUN_STALE_AFTER_SECONDS`` is
     treated as a crashed/stale lock and reclaimed (finalized as failed) before
-    a new claim is allowed.
+    a new claim is allowed; a PENDING row past the same TTL (queued but never
+    consumed) is reclaimed as failed the same way.
     """
     stale_after = timedelta(seconds=int(
         getattr(settings, "AGENT_RUN_STALE_AFTER_SECONDS", 3600)
@@ -155,34 +161,55 @@ def claim_run(run_type):
             active = AgentRun.objects.filter(
                 run_type=run_type,
                 status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING],
-            ).first()
+            ).order_by("id").first()
+            run = None
             if active is not None:
-                if (
-                    active.status == AgentRun.Status.RUNNING
-                    and active.started_at
-                    and (now - active.started_at) >= stale_after
-                ):
-                    # Crashed/stale lock: claimed but never finalized (e.g. a pod
-                    # died between claim and finalize). Reclaim so the run type is
-                    # not blocked forever.
-                    active.finalize(
-                        AgentRun.Status.FAILED,
-                        error_summary=(
-                            "Stale run reclaimed: started but never finalized before "
-                            "the staleness TTL (possible crash)."
-                        ),
-                    )
+                if active.status == AgentRun.Status.RUNNING:
+                    if (
+                        active.started_at
+                        and (now - active.started_at) >= stale_after
+                    ):
+                        # Crashed/stale lock: claimed but never finalized (e.g. a pod
+                        # died between claim and finalize). Reclaim so the run type is
+                        # not blocked forever.
+                        active.finalize(
+                            AgentRun.Status.FAILED,
+                            error_summary=(
+                                "Stale run reclaimed: started but never finalized before "
+                                "the staleness TTL (possible crash)."
+                            ),
+                        )
+                    else:
+                        raise IntegrityError(
+                            f"Agent run {run_type} is already active "
+                            f"(status={active.status})"
+                        )
                 else:
-                    raise IntegrityError(
-                        f"Agent run {run_type} is already active "
-                        f"(status={active.status})"
-                    )
+                    # PENDING row: either adopt it as this invocation's work or,
+                    # if no consumer ever came within the TTL, reclaim it so a
+                    # queued run can never block or outlive the slot forever.
+                    if active.created and (now - active.created) >= stale_after:
+                        active.finalize(
+                            AgentRun.Status.FAILED,
+                            error_summary=(
+                                "Queued run reclaimed: queued but never consumed "
+                                "within the staleness TTL (no consumer adopted it)."
+                            ),
+                        )
+                    else:
+                        # Adopt the queued run: PENDING -> RUNNING per the allowed
+                        # transitions, preserving its correlation id for tracing.
+                        active.status = AgentRun.Status.RUNNING
+                        active.started_at = now
+                        active.save(update_fields=["status", "started_at", "modified"])
+                        run = active
 
-            run = AgentRun.objects.create(
-                run_type=run_type,
-                status=AgentRun.Status.RUNNING,
-                started_at=now,
-            )
+            if run is None:
+                run = AgentRun.objects.create(
+                    run_type=run_type,
+                    status=AgentRun.Status.RUNNING,
+                    started_at=now,
+                )
     finally:
         release_advisory_lock(run_type)
     logger.info(
@@ -191,11 +218,7 @@ def claim_run(run_type):
         run.status,
         run.correlation_id,
     )
-    record_agent_event(
-        run,
-        "run_started",
-        started_at=run.started_at.isoformat() if run.started_at else None,
-    )
+    record_agent_event(run, "run_started")
     return run
 
 

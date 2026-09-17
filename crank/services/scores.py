@@ -20,11 +20,17 @@ from dataclasses import dataclass
 
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
+from django.db.models import Avg
 from django.utils import timezone
 
 from crank.models.agent_run import AgentRun
 from crank.models.organization import Organization
-from crank.models.score import Score, ScoreAlgorithmWeight, ScoreType
+from crank.models.score import (
+    Score,
+    ScoreAlgorithmWeight,
+    ScoreTupleAnchor,
+    ScoreType,
+)
 
 logger = logging.getLogger("score_persistence")
 
@@ -91,6 +97,43 @@ class ScoreObservationResult:
         return self.outcome == CHANGED
 
 
+# --- Cache keys ------------------------------------------------------------------
+
+# Version prefix for every score-derived read cache key. Bump this whenever
+# the semantics of the cached *values* change: issue #461 changed these reads
+# to exclude superseded score rows and scores of deactivated types, so any
+# entry a pre-#461 deployment wrote must never be served afterwards. Rotating
+# the version makes post-deploy reads start from empty keys (old entries are
+# simply never read again and age out via TTL); no deploy-time purge is
+# required. Constructing these keys anywhere else is forbidden —
+# :func:`affected_cache_keys` and every read site below share these builders.
+SCORE_CACHE_KEY_VERSION = "v2"
+
+
+def organization_avg_scores_cache_key(target_id):
+    """Cache key for ``Organization.avg_scores`` (versioned; see above)."""
+    return f"{SCORE_CACHE_KEY_VERSION}:organization_{target_id}_avg_scores"
+
+
+def organization_scores_api_cache_key(target_id):
+    """Cache key for the organization-scores API response (versioned)."""
+    return f"{SCORE_CACHE_KEY_VERSION}:organization_scores_api_{target_id}"
+
+
+def algorithm_results_cache_key(algorithm_id):
+    """Cache key for an algorithm's ranking results (versioned)."""
+    return f"{SCORE_CACHE_KEY_VERSION}:algorithm_{algorithm_id}_results"
+
+
+def organization_api_cache_key(target_id):
+    """Cache key for the organization-detail API response.
+
+    Deliberately **not** versioned: that response carries organization
+    attributes only, so its semantics did not change in #461.
+    """
+    return f"organization_api_{target_id}"
+
+
 # --- Cache invalidation ---------------------------------------------------------
 
 
@@ -100,12 +143,12 @@ def affected_cache_keys(target_id, score_type_id=None):
     Covers the centralized average-score key, the organization detail/score API
     keys, and the algorithm-result keys for every algorithm that weights the
     changed score type. This is the single source of truth for score cache
-    invalidation.
+    invalidation, built from the same key constructors every read site uses.
     """
     keys = [
-        f"organization_{target_id}_avg_scores",
-        f"organization_api_{target_id}",
-        f"organization_scores_api_{target_id}",
+        organization_avg_scores_cache_key(target_id),
+        organization_api_cache_key(target_id),
+        organization_scores_api_cache_key(target_id),
     ]
     weights = ScoreAlgorithmWeight.objects.values_list(
         "algorithm_id", flat=True
@@ -113,8 +156,43 @@ def affected_cache_keys(target_id, score_type_id=None):
     if score_type_id is not None:
         weights = weights.filter(type_id=score_type_id)
     algorithm_ids = sorted(set(weights))
-    keys.extend(f"algorithm_{algorithm_id}_results" for algorithm_id in algorithm_ids)
+    keys.extend(
+        algorithm_results_cache_key(algorithm_id) for algorithm_id in algorithm_ids
+    )
     return keys
+
+
+# --- Active-score reads -------------------------------------------------------
+
+
+def active_score_summary_rows(target_ids=None, score_types=None):
+    """Single documented definition of an active-score read aggregation.
+
+    Returns one row per ``(target, active score type)`` with the average of
+    that target's **active** score rows for **active** score types only:
+    ``{"target_id", "type__name", "avg_score"}``. Superseded (inactive) score
+    rows and scores for deactivated types never enter any average, so a
+    replacement observation changes every consumer's result identically.
+
+    ``target_ids`` filters to the given target organizations (``None`` = all).
+    ``score_types`` restricts to score types with these names (``None`` or
+    empty = all active types). An active type with no active score for a
+    target is a missing dimension: it contributes no row and counts against
+    completeness in consumers that compare against the full active-type set.
+
+    The raw ranking SQL in ``crank/views/index.py`` mirrors this predicate set
+    (``cs.status = 1 AND ct.status = 1`` over active algorithm weights) because
+    it cannot call this helper without a rewrite; keep them in sync.
+    """
+    rows = Score.objects.filter(
+        status=Score.ACTIVE_STATUS,
+        type__status=ScoreType.ACTIVE_STATUS,
+    )
+    if target_ids is not None:
+        rows = rows.filter(target_id__in=target_ids)
+    if score_types:
+        rows = rows.filter(type__name__in=score_types)
+    return rows.values("target_id", "type__name").annotate(avg_score=Avg("score"))
 
 
 def invalidate_score_caches(target_id, score_type_id=None):
@@ -202,25 +280,51 @@ def _persist_locked(
     provenance,
     run_id,
 ):
-    """Lock, compare, and write a single observation within an atomic block."""
-    with transaction.atomic():
-        # Serialize concurrent writers for the same (type, source, target).
-        # Locking the most recent row (any status) makes contenders block on a
-        # single row, which preserves exactly-one-active even on MySQL where
-        # Django cannot create the partial unique index.
-        Score.objects.filter(
-            type_id=score_type_id, source_id=source_id, target_id=target_id
-        ).order_by("-id").select_for_update().first()
+    """Serialize on a per-tuple anchor row, compare, and write a single
+    observation within one atomic block.
 
-        active = (
+    An *empty* tuple must be lockable too: MySQL cannot emit the partial
+    unique constraint on Score (W036) and ``select_for_update`` cannot lock
+    rows that do not exist, so every (type, source, target) tuple is anchored
+    by a persistent ``ScoreTupleAnchor`` row. The anchor's full unique
+    constraint is emitted on every backend, so racing first writers collide on
+    ``get_or_create`` (the loser's insert blocks on the winner's uncommitted
+    index entry, then re-reads the winner's anchor with a locking read), and
+    every writer holds ``select_for_update`` on the anchor for the whole
+    transaction -- top-level or nested in a caller's larger atomic block, since
+    row locks live until commit or rollback. A contender therefore always
+    reconciles against the winner's committed state.
+
+    The Score reads below are locking reads for the same reason: under
+    REPEATABLE READ a plain read could miss a concurrent winner's
+    just-committed rows and resurrect the first-write race.
+    """
+    with transaction.atomic():
+        # Anchor the tuple (created on first write, race-safely via the
+        # anchor's full unique constraint), then hold it for the whole
+        # transaction so every writer for this tuple is serialized.
+        ScoreTupleAnchor.objects.get_or_create(
+            type_id=score_type_id,
+            source_id=source_id,
+            target_id=target_id,
+        )
+        ScoreTupleAnchor.objects.select_for_update().get(
+            type_id=score_type_id,
+            source_id=source_id,
+            target_id=target_id,
+        )
+        # Locking reads (see docstring): one pass loads and locks every row of
+        # the tuple, so the active row is whatever the winner committed.
+        locked_rows = list(
             Score.objects.filter(
                 type_id=score_type_id,
                 source_id=source_id,
                 target_id=target_id,
-                status=Score.ACTIVE_STATUS,
-            )
-            .order_by("-id")
-            .first()
+            ).select_for_update()
+        )
+        active = next(
+            (row for row in locked_rows if row.status == Score.ACTIVE_STATUS),
+            None,
         )
 
         if active is not None and _identical(

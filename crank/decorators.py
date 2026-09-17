@@ -5,13 +5,13 @@ from functools import wraps
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
 
-def cache_page_if_anonymous_method(timeout, view_func=None):
+def cache_page_if_anonymous_method(timeout, view_func=None, key_prefix=None):
     def decorator(view_func):
         @wraps(view_func)
         def _wrapped_view(request, *args, **kwargs):
             if request.user.is_authenticated:
                 return view_func(request, *args, **kwargs)
-            return cache_page(timeout)(view_func)(request, *args, **kwargs)
+            return cache_page(timeout, key_prefix=key_prefix)(view_func)(request, *args, **kwargs)
         return _wrapped_view
 
     def class_decorator(cls):

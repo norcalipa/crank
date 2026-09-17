@@ -308,6 +308,45 @@ python manage.py rollback_drill
 python manage.py rollback_drill --json
 ```
 
+## Capability Registry (Epic #454 — issue #463)
+
+Every capability introduced by epic #454 ships with an independently
+controlled switch, default **off**, added to `ALLOWED_CAPABILITY_KEYS` in
+`crank/models/monitoring.py` (or a settings flag in
+`crank/settings/base.py`) **by its owning ticket before its code path is
+enabled anywhere**. Names marked **planned** below are reserved by this
+registry only; per #463, new flag names must be implemented before being
+documented as available. `rollback_drill` derives its capability list in
+lockstep from `ALLOWED_CAPABILITY_KEYS`
+(`rollback_drill.drill_capabilities()`), and
+`crank/tests/test_rollback_drill.py` plus `crank/tests/test_rollout_gates.py`
+fail if a registered key is missing from the drill. The drill also maps
+every registered key to the **real execution gate its production path
+consults** (`rollback_drill.gate_verifiers()`): with the switch disabled, the
+drill invokes that production gate (settings flags forced on, so the switch
+is the only variable) and requires it to block. A registered key whose
+real gate is missing or not enforced **cannot report `passed`** — it fails
+the drill — so a registry row always corresponds to a path that actually
+reads its switch.
+
+| Capability | Switch key / settings flag | Owning ticket | Default | Status |
+|---|---|---|---|---|
+| Interactive agent | `interactive_agent` + `AGENT_RUN_ENABLED`, `AGENT_NOOP_ENABLED` | #328 | off | registered |
+| Score source | `gather_scores` + `GATHER_SCORES_ENABLED` | #328 | off | registered |
+| Job pipeline | `job_pipeline` + `JOB_PIPELINE_ENABLED` | #328 | off | registered |
+| Agent no-op | `agent_noop` + `AGENT_NOOP_ENABLED` | #328 | off | registered |
+| Crawl scheduling | `crawl_schedule` + `CRAWL_CRON_ENABLED` | #328 | off | registered |
+| On-demand crawl | `crawl` | #328 | off | registered |
+| Publication consumer | `publication_consumer` | #470 | off | planned |
+| Assistant shell | `assistant_shell` | #472 | off | planned |
+| Recompute phases | per-phase key (named at implementation) | #475 | off | planned |
+
+Independence rules: no two capabilities share a canary decision or a switch;
+flipping one switch never disables another capability's data path; a
+rollback leaves direct controls and stored conversations, preferences, and
+accepted data usable, and never deletes records or reverses production
+migrations (see `docs/deployment-migrations.md`, "Epic #454 rollout").
+
 ## Evidence Storage
 
 - **Run records:** `AgentRun` (status, counts, error_summary, correlation_id)

@@ -30,6 +30,12 @@ class AgentRunCommand(BaseCommand):
 
     #: ``AgentRun.RunType`` value this command represents.
     run_type = None
+    #: ``CapabilitySwitch`` registry key (``ALLOWED_CAPABILITY_KEYS``) that
+    #: gates this command. Defaults to the run type (key and run type share
+    #: a name). Commands whose registry key differs from the run type
+    #: override this so the registered switch gates the real path
+    #: (e.g. ``agent_noop`` commands the ``noop`` run type).
+    capability_key = None
     #: Setting name (Django settings) that gates whether this command may work.
     #: Disabled by default; enable it per environment.
     enabled_setting = "AGENT_RUN_ENABLED"
@@ -38,13 +44,18 @@ class AgentRunCommand(BaseCommand):
         """Whether this command may perform work for the current environment.
 
         The master ``AGENT_RUN_ENABLED`` switch gates everything; the
-        per-command setting (e.g. ``AGENT_NOOP_ENABLED``) must also be on.
+        per-command setting (e.g. ``AGENT_NOOP_ENABLED``) must also be on;
+        and the command's registered ``CapabilitySwitch`` key must be
+        enabled (rollback: flipping the switch off blocks the run even
+        when the settings flags are on).
         """
         if not getattr(settings, "AGENT_RUN_ENABLED", False):
             return False
         if not bool(getattr(settings, self.enabled_setting, False)):
             return False
-        return monitoring.capability_enabled(self.run_type, default=True)
+        return monitoring.capability_enabled(
+            self.capability_key or self.run_type, default=True
+        )
 
     def run_payload(self, run, **options):  # pragma: no cover - overridden
         """Execute the command's actual work.

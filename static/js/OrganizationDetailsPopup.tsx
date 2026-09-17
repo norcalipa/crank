@@ -1,6 +1,8 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
+import {createPortal} from 'react-dom';
+import {lockBackground, unlockBackground} from './modalIsolation';
 
 interface ScoreDetail {
     type__name: string;
@@ -83,6 +85,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     const [provenance, setProvenance] = React.useState<ProvenanceData | null>(null);
     const [provenanceLoading, setProvenanceLoading] = React.useState(false);
     const closeButtonRef = React.useRef<HTMLButtonElement>(null);
+    const dialogRef = React.useRef<HTMLDivElement>(null);
     // Element that had focus when the dialog opened (the trigger). Restored on
     // close so keyboard and pointer users return to where they left off.
     const openerRef = React.useRef<HTMLElement | null>(null);
@@ -144,13 +147,69 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         }
     };
 
+    // Background isolation (issue #464): while the dialog is open, everything
+    // outside it — the app shell, the page content and the modal-external
+    // skip link — is inert/aria-hidden, and the actual document scroller
+    // (the root element, which carries the viewport overflow under the
+    // stylesheet's `html, body { overflow-x: hidden }` rule) is locked along
+    // with body. Keyboard focus, assistive-technology virtual navigation,
+    // programmatic focus and wheel/touch scrolling therefore cannot reach
+    // the page behind the blocking dialog. On close the isolation is released
+    // BEFORE focus returns to the opener: the trigger element lives in the
+    // (currently inert) background, so restoring earlier would silently
+    // fail in real browsers and break the #464 focus-restore contract.
+    React.useLayoutEffect(() => {
+        if (!visible) {
+            return;
+        }
+        lockBackground();
+        return () => {
+            unlockBackground();
+            restoreFocusToOpener();
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [visible]);
+
     React.useEffect(() => {
+        // Focusable-element selector for the WAI-ARIA focus trap (issue #464).
+        const getFocusableElements = (): HTMLElement[] => {
+            const dialog = dialogRef.current;
+            if (!dialog) return [];
+            return Array.from(dialog.querySelectorAll<HTMLElement>(
+                'a[href], button:not([disabled]), input:not([disabled]), '
+                + 'select:not([disabled]), textarea:not([disabled]), '
+                + '[tabindex]:not([tabindex="-1"])'
+            ));
+        };
+
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (visible && event.key === 'Escape') {
+            if (!visible) return;
+            if (event.key === 'Escape') {
                 // WAI-ARIA dialog pattern: return focus to the trigger element
                 // that opened the dialog before closing (issue #430).
                 restoreFocusToOpener();
                 onClose();
+                return;
+            }
+            if (event.key === 'Tab') {
+                // WAI-ARIA focus trap (issue #464): cycle Tab/Shift+Tab among
+                // the dialog's own focusable elements so keyboard focus can
+                // never move behind the modal into the page background.
+                const focusables = getFocusableElements();
+                if (focusables.length === 0) return;
+                const first = focusables[0];
+                const last = focusables[focusables.length - 1];
+                const active = document.activeElement;
+                const insideDialog = active instanceof HTMLElement && dialogRef.current?.contains(active);
+                if (event.shiftKey) {
+                    if (!insideDialog || active === first) {
+                        event.preventDefault();
+                        last.focus();
+                    }
+                } else if (!insideDialog || active === last) {
+                    event.preventDefault();
+                    first.focus();
+                }
             }
         };
 
@@ -159,6 +218,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         return () => {
             document.removeEventListener('keydown', handleKeyDown);
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [visible, onClose]);
 
     if (!organization || !visible) {
@@ -196,7 +256,10 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
 
     const handleCloseClick = (e: React.MouseEvent) => {
         e.stopPropagation();
-        // Return focus to the trigger element before close (WAI-ARIA dialog pattern).
+        // Return focus to the trigger element before close (WAI-ARIA dialog
+        // pattern). The close path also releases background isolation and
+        // re-restores focus afterwards (see the isolation effect), so the
+        // opener receives focus even while it is still inert here.
         restoreFocusToOpener();
         onClose();
     };
@@ -210,9 +273,12 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         }
     };
 
-    return (
+    // Render the dialog into a portal on <body>: the blocking dialog must not
+    // live inside the (inert) background containers while it is open.
+    // Fixed-position overlays are page-level by convention.
+    return createPortal(
         <div className="popup-overlay" data-testid="popup-overlay" onClick={handleOverlayClick}>
-            <div className="popup-details card bg-dark" role="dialog" aria-modal="true"
+            <div ref={dialogRef} className="popup-details card bg-dark" role="dialog" aria-modal="true"
                  aria-labelledby="organization-details-title">
                 <div className="card-header bg-dark d-flex justify-content-between align-items-center">
                     <h2 id="organization-details-title">{organization.name}</h2>
@@ -358,7 +424,8 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                     </div>
                 </div>
             </div>
-        </div>
+        </div>,
+        document.body
     );
 };
 

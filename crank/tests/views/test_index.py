@@ -17,6 +17,7 @@ from django.contrib.sites.models import Site
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 from crank.views.index import IndexView
 from crank.settings import DEFAULT_ALGORITHM_ID
+from crank.services.scores import SCORE_CACHE_KEY_VERSION, algorithm_results_cache_key
 from django.core.cache import cache
 
 
@@ -235,3 +236,143 @@ class IndexViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'window.location.search')
         self.assertContains(response, 'algorithmUrl + window.location.search')
+
+    # --- superseded-score exclusion (issue #461) ---
+
+    def setup_superseded_scores(self):
+        """Org 1 has a superseded 1.0 row plus its active 5.0 replacement, an
+        active score on a deactivated type, and a deactivated weight row that
+        would duplicate the join if not filtered. Org 2 has only a superseded
+        row."""
+        self.organization1 = Organization.objects.create(
+            name="Org 1", funding_round="P", rto_policy="R", accelerated_vesting=True,
+            url='org1.com', gives_ratings=True, public=True, type="C",
+        )
+        self.organization2 = Organization.objects.create(
+            name="Org 2", funding_round="B", rto_policy="H", accelerated_vesting=False,
+            url='org2.com', gives_ratings=False, public=False, type="C",
+        )
+        self.type_a = ScoreType.objects.create(name='Weighted Type')
+        self.type_b = ScoreType.objects.create(name='Light Type')
+        self.retired_type = ScoreType.objects.create(name='Retired Type', status=0)
+        ScoreAlgorithmWeight.objects.create(
+            algorithm_id=DEFAULT_ALGORITHM_ID, type_id=self.type_a.id, weight=3.0)
+        ScoreAlgorithmWeight.objects.create(
+            algorithm_id=DEFAULT_ALGORITHM_ID, type_id=self.type_b.id, weight=1.0)
+        # A deactivated weight row for the same type/algorithm must not
+        # duplicate the join and skew the weighted SUM.
+        ScoreAlgorithmWeight.objects.create(
+            algorithm_id=DEFAULT_ALGORITHM_ID, type_id=self.type_a.id, weight=3.0, status=0)
+        # Superseded 1.0 row replaced by an active 5.0 for the weighted type.
+        Score.objects.create(source_id=self.organization2.id, target_id=self.organization1.id,
+                             score=1.0, type_id=self.type_a.id, status=0)
+        Score.objects.create(source_id=self.organization2.id, target_id=self.organization1.id,
+                             score=5.0, type_id=self.type_a.id)
+        # Active score for the second active type.
+        Score.objects.create(source_id=self.organization2.id, target_id=self.organization1.id,
+                             score=1.0, type_id=self.type_b.id)
+        # A stray active score on a deactivated type must not count.
+        Score.objects.create(source_id=self.organization2.id, target_id=self.organization1.id,
+                             score=4.0, type_id=self.retired_type.id)
+        # Org 2 only has a superseded row: it must be excluded entirely.
+        Score.objects.create(source_id=self.organization1.id, target_id=self.organization2.id,
+                             score=2.0, type_id=self.type_a.id, status=0)
+
+    def test_superseded_scores_excluded_from_rankings_and_completeness(self):
+        self.setup_superseded_scores()
+        response = self.client.get(self.index_url + 'algo/1/')
+        self.assertEqual(response.status_code, 200)
+        rows = {row['id']: row for row in response.context_data['top_organization_list']}
+        # The superseded-only org has no active scores, so it never appears.
+        self.assertNotIn(self.organization2.id, rows)
+        org1 = rows[self.organization1.id]
+        # Only active rows count: (5.0*3 + 1.0*1) / (3 + 1) = 4.0. Averaging
+        # the historical 1.0 row, the deactivated-type 4.0, or double-counting
+        # the deactivated weight row would all shift this value.
+        self.assertEqual(org1['avg_score'], 4.0)
+        self.assertEqual(org1['ranking'], 1)
+        # Both active types have active scores; the retired type's score must
+        # not inflate completeness above 100.
+        self.assertEqual(org1['profile_completeness'], 100.0)
+
+    def test_profile_completeness_counts_unscored_active_type_as_missing(self):
+        org = Organization.objects.create(
+            name="Half Org", funding_round="P", rto_policy="R", url='half.com',
+            gives_ratings=True, public=True, type="C",
+        )
+        scorer = Organization.objects.create(
+            name="Scorer Org", gives_ratings=True, url='scorer.com', type="C",
+        )
+        scored_type = ScoreType.objects.create(name='Scored Type')
+        unscored_type = ScoreType.objects.create(name='Unscored Type')
+        ScoreAlgorithmWeight.objects.create(
+            algorithm_id=DEFAULT_ALGORITHM_ID, type_id=scored_type.id, weight=1.0)
+        ScoreAlgorithmWeight.objects.create(
+            algorithm_id=DEFAULT_ALGORITHM_ID, type_id=unscored_type.id, weight=1.0)
+        Score.objects.create(source_id=scorer.id, target_id=org.id,
+                             score=5.0, type_id=scored_type.id)
+
+        response = self.client.get(self.index_url + 'algo/1/')
+        self.assertEqual(response.status_code, 200)
+        rows = {row['id']: row for row in response.context_data['top_organization_list']}
+        # An active type with no active score is a missing dimension: 1 of 2.
+        self.assertEqual(rows[org.id]['profile_completeness'], 50.0)
+        self.assertEqual(rows[org.id]['avg_score'], 5.0)
+
+    def test_index_ignores_pre_fix_algorithm_results_cache_entry(self):
+        """Post-deploy rollout regression (issue #461 review, finding 1).
+
+        A deploy swaps the code while the shared cache keeps whatever the
+        previous build wrote. Seed the unversioned ``algorithm_<id>_results``
+        key with a pre-#461 ranking (the superseded-only org ranked, the
+        weighted average dragged down by historical rows) and prove the page
+        recomputes from the active-score predicates instead.
+        """
+        self.setup_superseded_scores()
+        pre_fix_rows = [
+            {'id': self.organization2.id, 'name': 'Org 2', 'avg_score': 2.0, 'ranking': 1},
+            {'id': self.organization1.id, 'name': 'Org 1', 'avg_score': 1.0, 'ranking': 2},
+        ]
+        cache.set(f'algorithm_{DEFAULT_ALGORITHM_ID}_results', pre_fix_rows)
+
+        response = self.client.get(self.index_url)
+
+        self.assertEqual(response.status_code, 200)
+        rows = {row['id']: row for row in response.context_data['top_organization_list']}
+        # Freshly computed rankings: the superseded-only org never appears,
+        # and Org 1's average reflects only its active rows ((5.0*3 + 1.0*1)
+        # / (3 + 1) == 4.0), not the poisoned 1.0 from the legacy entry.
+        self.assertNotIn(self.organization2.id, rows)
+        self.assertEqual(rows[self.organization1.id]['avg_score'], 4.0)
+        # The recompute is cached under the versioned key; the pre-fix entry
+        # is abandoned in place under the legacy key and never read again.
+        self.assertIsNotNone(
+            cache.get(algorithm_results_cache_key(DEFAULT_ALGORITHM_ID))
+        )
+        self.assertEqual(
+            cache.get(f'algorithm_{DEFAULT_ALGORITHM_ID}_results'), pre_fix_rows
+        )
+
+    def test_algo_page_cache_key_carries_the_score_cache_version(self):
+        """The /algo/<id>/ page cache embeds score-derived rankings.
+
+        Its key prefix rotates with SCORE_CACHE_KEY_VERSION, so pages cached
+        by a pre-#461 deployment (empty prefix) age out unread instead of
+        serving superseded averages after a deploy.
+        """
+        self.setup_superseded_scores()
+        response = self.client.get(
+            self.index_url + f'algo/{DEFAULT_ALGORITHM_ID}/'
+        )
+        self.assertEqual(response.status_code, 200)
+        # django's cache_page stores the response and its header under the
+        # versioned prefix; locmem exposes its key store so the deployed key
+        # format is assertable (a pre-#461 entry would live under the empty
+        # default prefix instead).
+        versioned_prefix = f'algo-{SCORE_CACHE_KEY_VERSION}'
+        cache_keys = list(cache._cache.keys())
+        self.assertTrue(
+            any(versioned_prefix in key for key in cache_keys),
+            f'no page-cache entry under the versioned prefix '
+            f'{versioned_prefix!r}: {cache_keys}',
+        )

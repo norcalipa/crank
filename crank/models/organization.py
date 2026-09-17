@@ -5,7 +5,7 @@ from django.core.cache import cache
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django_extensions.db.models import TimeStampedModel, ActivatorModel
-from django.db.models import TextChoices, Avg
+from django.db.models import TextChoices
 
 
 class Organization(TimeStampedModel, ActivatorModel):
@@ -54,9 +54,25 @@ class Organization(TimeStampedModel, ActivatorModel):
     accelerated_vesting = models.BooleanField(default=False)
 
     def avg_scores(self):
-        cache_key = f'organization_{self.pk}_avg_scores'
-        return cache.get_or_set(cache_key, lambda: self.scores.values("type__name").annotate(avg_score=Avg('score')),
-                            timeout=settings.CACHE_MIDDLEWARE_SECONDS)
+        # Only active scores of active score types may enter an average; the
+        # predicate set is centralized in
+        # crank.services.scores.active_score_summary_rows and the cache key in
+        # crank.services.scores.organization_avg_scores_cache_key (local import
+        # avoids a circular import with the service layer).
+        from crank.services.scores import (
+            active_score_summary_rows,
+            organization_avg_scores_cache_key,
+        )
+
+        cache_key = organization_avg_scores_cache_key(self.pk)
+        return cache.get_or_set(
+            cache_key,
+            lambda: [
+                {"type__name": row["type__name"], "avg_score": row["avg_score"]}
+                for row in active_score_summary_rows(target_ids=[self.pk])
+            ],
+            timeout=settings.CACHE_MIDDLEWARE_SECONDS,
+        )
 
     @staticmethod
     def get_funding_round_choices():
