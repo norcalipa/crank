@@ -8,13 +8,12 @@ import pytest
 @pytest.fixture(scope="session")
 def django_db_modify_db_settings():
     from django.conf import settings
+    from django.db import connection
 
-    # Only redirect the test database for the default SQLite suite; a
-    # MySQL-variant run (crank/tests/test_mysql_concurrency.py, documented
-    # in its docstring) must keep Django's normal test_<NAME> database on
-    # the configured MySQL server.
-    engine = settings.DATABASES["default"]["ENGINE"]
-    if "sqlite" in engine:
-        settings.DATABASES["default"]["TEST"]["NAME"] = (
-            f"/tmp/sf_gate_{os.getpid()}.sqlite3"
-        )
+    if connection.vendor != "sqlite":
+        # MySQL-backed runs keep Django's configured test database; only
+        # SQLite runs get the isolated per-process scratch database.
+        return
+    settings.DATABASES["default"]["TEST"]["NAME"] = (
+        f"/tmp/sf_gate_{os.getpid()}.sqlite3"
+    )

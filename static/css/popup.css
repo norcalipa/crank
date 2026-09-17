@@ -207,7 +207,7 @@ html, body {
 
 .app-nav-link--active {
     background-color: rgba(0, 123, 255, .15);
-    color: #a8ccff;
+    color: var(--bs-primary-text-emphasis, #0a58ca);
     font-weight: 600;
     box-shadow: inset 3px 0 0 var(--bs-link-color);
     border-radius: .375rem;
@@ -279,6 +279,16 @@ html, body {
     cursor: pointer;
 }
 
+/* Mobile top bar: gives the hamburger its own reserved band with a clean
+   border so navigation never overlays page content (notice, search label). */
+.app-mobile-topbar {
+    display: none;
+}
+
+.app-mobile-topbar .app-nav-toggle {
+    position: static;
+}
+
 .app-nav-toggle:focus-visible {
     outline: 3px solid var(--bs-warning);
     outline-offset: 2px;
@@ -340,15 +350,13 @@ html, body {
 }
 
 .app-content {
-    margin-left: 240px;
     min-width: 0;
-    max-width: calc(100vw - 240px);
+    max-width: 100%;
     outline: none;
     padding: 2rem 2rem 3rem;
 }
 
 .app-messages {
-    margin-left: 240px;
     padding: 1rem 2rem;
 }
 
@@ -419,11 +427,19 @@ body.app-nav-drawer-open {
 .organization-search {
     flex: 1 1 14rem;
     min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+}
+
+.organization-search .form-control {
+    flex: 1 1 10rem;
+    min-width: 0;
 }
 
 .organization-filter {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: .5rem;
     flex: 1 1 18rem;
     min-width: 0;
@@ -432,9 +448,24 @@ body.app-nav-drawer-open {
     border-radius: var(--bs-border-radius);
 }
 
+.organization-filter .form-check-input {
+    flex: 0 0 auto;
+    margin-top: .25rem;
+}
+
 .organization-filter label {
     margin: 0;
     overflow-wrap: anywhere;
+}
+
+.organization-results-count,
+.organization-page-count {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.organization-page-count {
+    margin-top: .25rem;
 }
 
 .organization-table-wrap {
@@ -563,6 +594,19 @@ body.app-nav-drawer-open {
         max-width: 100%;
         overflow-wrap: anywhere;
     }
+
+    /* Desktop: the fixed nav rail occupies the left 240px, so the content
+       column offsets and caps to the remaining viewport width. These
+       deductions are scoped here (issue #456) so collapsed-navigation
+       viewports reflow to the full container width. */
+    .app-content {
+        margin-left: 240px;
+        max-width: calc(100vw - 240px);
+    }
+
+    .app-messages {
+        margin-left: 240px;
+    }
 }
 
 @media (max-width: 767.98px) {
@@ -579,14 +623,32 @@ body.app-nav-drawer-open {
         place-items: center;
     }
 
+    .app-mobile-topbar {
+        position: sticky;
+        top: 0;
+        z-index: 1030;
+        display: flex;
+        align-items: center;
+        min-height: 48px;
+        padding: .125rem .75rem;
+        background: var(--bs-body-bg);
+        border-bottom: 1px solid var(--bs-border-color);
+    }
+
     .app-content {
-        margin-left: 0;
-        padding: 1.25rem 1rem 2.5rem 4.5rem;
+        padding: .5rem 1rem 2.5rem;
     }
 
     .app-messages {
-        margin-left: 0;
-        padding: 1rem 1rem 1rem 4.5rem;
+        padding: .25rem .75rem;
+    }
+
+    .app-messages .alert {
+        margin-bottom: 0;
+    }
+
+    .page-container {
+        padding-top: .25rem;
     }
 
     .scoring-summary {
@@ -604,6 +666,22 @@ body.app-nav-drawer-open {
     .organization-cards {
         display: grid;
         gap: .75rem;
+    }
+
+    /* Company names keep the same link affordance as the desktop table: */
+    .organization-card .organization-card-name {
+        color: var(--bs-link-color);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+    }
+
+    /* Comfortable touch targets for controls users tap on phones. */
+    #job-search-chat .btn-group .btn {
+        min-height: 44px;
+    }
+
+    button[data-testid='suggest-company-btn'] {
+        min-height: 44px;
     }
 
     .organization-card .card-body {
@@ -662,12 +740,34 @@ body.app-nav-drawer-open {
     }
 
     #job-search-chat .card-body {
-        padding: .75rem;
+        padding: .5rem .75rem;
+    }
+
+    #job-search-chat .card-body .alert {
+        margin-bottom: .5rem;
     }
 
     #job-search-chat .input-group {
         align-items: stretch;
     }
+}
+
+/* The chat card is a dark surface; the default danger red is hard to read
+   on it, so use a lighter treatment with sufficient contrast (icon + text). */
+#job-search-chat .btn-outline-danger {
+    color: #ff9ba3;
+    border-color: #ff9ba3;
+}
+
+#job-search-chat .btn-outline-danger:hover,
+#job-search-chat .btn-outline-danger:focus-visible {
+    color: #212529;
+    background-color: #ff9ba3;
+}
+
+#job-search-chat .btn-outline-danger:disabled {
+    color: rgba(255, 155, 163, .65);
+    border-color: rgba(255, 155, 163, .65);
 }
 
 @media (max-width: 390px) {
@@ -701,6 +801,227 @@ body.app-nav-drawer-open {
     max-width: 100%;
     overflow-wrap: break-word;
     word-break: break-word;
+}
+/* Job-search chat message surfaces and controls (issue #458, round 2).
+   Additive block: chat-side only, does not alter other rule groups. Colors
+   follow the visual-review spec — high-contrast bubbles, semantic failure
+   (red) and retry-in-progress (amber) panels, ≥44px touch targets, and a
+   consistent visible keyboard-focus ring. */
+.chat-bubble {
+    border-radius: 0.75rem; /* rounded-xl */
+    padding: 0.5rem 0.75rem; /* px-3 py-2 */
+    font-size: 1rem; /* text-base */
+    line-height: 1.5rem; /* leading-6 */
+}
+
+.chat-bubble-user {
+    background-color: #1d4ed8; /* blue-700 */
+    color: #ffffff; /* text-white */
+}
+
+.chat-bubble-assistant {
+    background-color: #334155; /* slate-700 */
+    color: #f8fafc; /* slate-50 */
+}
+
+/* Round-2 critique fix: nested result-card content inside the slate assistant
+   surface must not inherit Bootstrap light-theme muted/link tokens, which fail
+   contrast (~2.2:1 muted, ~2.3:1 link) against slate-700. Scope light
+   foregrounds to the assistant bubble only — user bubbles, page text, and the
+   dark toolbar keep their existing themes. */
+.chat-bubble-assistant .text-muted {
+    color: #cbd5e1 !important; /* slate-300; ~7:1 on slate-700 */
+}
+
+.chat-bubble-assistant a {
+    color: #7dd3fc; /* sky-300; ~6.2:1 on slate-700 */
+}
+
+.chat-bubble-assistant a:hover,
+.chat-bubble-assistant a:focus-visible {
+    color: #bfdbfe; /* blue-200; brighter on hover/keyboard focus */
+}
+
+/* Slight nested-surface separation so section labels and card boundaries stay
+   readable against the assistant bubble (round-2 critique, minor item). */
+.chat-bubble-assistant .job-card,
+.chat-bubble-assistant .org-card {
+    border-color: #94a3b8 !important; /* slate-400 */
+    background-color: rgba(15, 23, 42, 0.18);
+}
+
+.chat-status-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+}
+
+.chat-status-icon {
+    width: 1rem; /* h-4 w-4 */
+    height: 1rem;
+    flex-shrink: 0;
+    margin-top: 0.125rem; /* mt-0.5 */
+}
+
+.chat-failure-panel {
+    border-radius: 0.5rem; /* rounded-lg */
+    border: 1px solid rgba(248, 113, 113, 0.5); /* border-red-400/50 */
+    background-color: #450a0a; /* bg-red-950 */
+    padding: 0.5rem 0.75rem; /* px-3 py-2 */
+    color: #fee2e2; /* text-red-100 */
+}
+
+.chat-retry-panel {
+    border-radius: 0.5rem;
+    border: 1px solid rgba(251, 191, 36, 0.5); /* border-amber-400/50 */
+    background-color: #451a03; /* bg-amber-950 */
+    padding: 0.5rem 0.75rem;
+    color: #fef3c7; /* text-amber-100 */
+}
+
+.chat-status-detail {
+    font-size: 0.875rem; /* text-sm */
+    line-height: 1.25rem; /* leading-5 */
+    margin-top: 0.25rem;
+}
+
+.chat-actions {
+    display: flex;
+    flex-direction: column; /* flex-col, sm:flex-row below */
+    gap: 0.5rem; /* gap-2 */
+}
+
+@media (min-width: 576px) {
+    .chat-actions {
+        flex-direction: row;
+    }
+}
+
+.chat-btn {
+    min-height: 2.75rem; /* min-h-11: ≥44px touch target */
+    border-radius: 0.375rem; /* rounded-md */
+    padding: 0.5rem 0.75rem; /* px-3 py-2 */
+    font-size: 0.875rem; /* text-sm */
+    line-height: 1.25rem;
+    font-weight: 500; /* font-medium */
+}
+
+.chat-btn-primary {
+    background-color: #ffffff; /* bg-white */
+    color: #1e40af; /* text-blue-800 */
+    border: 1px solid #ffffff;
+}
+
+.chat-btn-secondary {
+    background-color: transparent; /* bg-transparent */
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.6); /* border-white/60 */
+}
+
+/* Stable muted disabled treatment for retry/edit controls while a retry is
+   in flight — clearly unavailable, not hover-like. */
+.chat-btn:disabled,
+.chat-btn-retry:disabled {
+    background-color: #334155 !important; /* disabled:bg-slate-700 */
+    color: #cbd5e1 !important; /* disabled:text-slate-300 */
+    border-color: #64748b !important; /* disabled:border-slate-500 */
+    cursor: not-allowed; /* disabled:cursor-not-allowed */
+}
+
+.chat-send {
+    display: inline-flex;
+    min-height: 2.75rem; /* min-h-11 */
+    min-width: 2.75rem; /* min-w-11 */
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding-left: 0.75rem; /* px-3 */
+    padding-right: 0.75rem;
+    flex-shrink: 0;
+}
+
+.chat-stop {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    min-height: 2.75rem;
+}
+
+/* Round-2 critique fix: while the Stop control is rendered (pending), compact
+   Send to a 44px icon-only target on narrow phones so textarea + Send + Stop
+   fit in one row without clipping the placeholder. The visible label returns
+   in ordinary states; the button keeps aria-label="Send message" throughout,
+   and the target never drops below 44px. */
+@media (max-width: 390px) {
+    .chat-composer-pending .chat-send > span {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    .chat-composer-pending .chat-send {
+        width: 2.75rem;
+        padding-inline: 0;
+    }
+}
+
+/* Visible, consistent keyboard-focus ring on chat controls. */
+.chat-focus:focus-visible {
+    outline: 2px solid #93c5fd; /* blue-300 ring */
+    outline-offset: 2px;
+}
+
+/* Compacted data note: one muted row (~≤64px) by default so the
+   conversation owns the viewport; details expand in place. */
+.chat-note {
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    background-color: rgba(15, 23, 42, 0.6);
+    color: #cbd5e1;
+    border-radius: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.8125rem;
+    line-height: 1.25rem;
+    margin-bottom: 0.75rem;
+}
+
+.chat-note-row {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    min-height: 2rem;
+}
+
+.chat-note-text {
+    flex: 1 1 auto;
+}
+
+.chat-note-toggle {
+    flex-shrink: 0;
+    background-color: transparent;
+    border: 1px solid rgba(148, 163, 184, 0.5);
+    color: #e2e8f0;
+    border-radius: 0.375rem;
+    padding: 0.125rem 0.5rem;
+    font-size: 0.75rem;
+    line-height: 1rem;
+    min-height: 2rem;
+}
+
+.chat-note-details {
+    margin-top: 0.25rem;
+}
+
+@media (max-width: 390px) {
+    .chat-note {
+        font-size: 0.75rem;
+        line-height: 1.125rem;
+    }
 }
 
 .job-card a, .org-card a {

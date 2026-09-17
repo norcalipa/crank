@@ -21,8 +21,6 @@ from opentelemetry.instrumentation.django import DjangoInstrumentor
 from opentelemetry.instrumentation.redis import RedisInstrumentor
 
 load_dotenv()
-DjangoInstrumentor().instrument(is_sql_commentor_enabled=True)
-RedisInstrumentor().instrument()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -172,6 +170,13 @@ JOB_SEARCH_RESPONSE_MAX_LEN = int(os.environ.get("JOB_SEARCH_RESPONSE_MAX_LEN", 
 JOB_SEARCH_REQUEST_MAX_BYTES = int(os.environ.get("JOB_SEARCH_REQUEST_MAX_BYTES", "65536"))
 JOB_SEARCH_MESSAGES_RETENTION = int(os.environ.get("JOB_SEARCH_MESSAGES_RETENTION", "50"))
 JOB_SEARCH_RATE_LIMIT_PER_HOUR = int(os.environ.get("JOB_SEARCH_RATE_LIMIT_PER_HOUR", "120"))
+# Turn retry/claim policy (issue #458). Retries run the provider, so they are
+# rate limited like fresh sends and additionally capped per turn.
+JOB_SEARCH_TURN_MAX_ATTEMPTS = int(os.environ.get("JOB_SEARCH_TURN_MAX_ATTEMPTS", "5"))
+# Lease for an in-flight turn claim. Must comfortably exceed the longest
+# legitimate provider run; an expired lease lets the next read/retry recover
+# a turn whose worker was interrupted (crash/kill).
+JOB_SEARCH_TURN_LEASE_SECONDS = int(os.environ.get("JOB_SEARCH_TURN_LEASE_SECONDS", "300"))
 COMPANY_REQUEST_RATE_LIMIT_PER_HOUR = int(os.environ.get("COMPANY_REQUEST_RATE_LIMIT_PER_HOUR", "5"))
 JOB_SEARCH_PROVIDER = os.environ.get("JOB_SEARCH_PROVIDER", "demo")
 REDIS_MASTER_URL = os.environ.get("REDIS_MASTER_URL", "redis://redis-master:6379/0")
@@ -434,3 +439,16 @@ FIRECRAWL_TIMEOUT = _env_float("FIRECRAWL_TIMEOUT", 30.0)
 FIRECRAWL_MAX_PAGES = _env_int("FIRECRAWL_MAX_PAGES", 10)
 FIRECRAWL_MAX_LISTINGS = _env_int("FIRECRAWL_MAX_LISTINGS", 100)
 FIRECRAWL_CREDIT_BUDGET = _env_int("FIRECRAWL_CREDIT_BUDGET", 10)
+
+# Import-time instrumentation reads ``django.conf.settings`` (the OTEL SQL
+# commentor consults the settings), which re-enters Django's lazy settings
+# loader. When that happens mid-import, a ``DJANGO_SETTINGS_MODULE`` that
+# points at a *submodule* (for example ``crank.settings.mysql_test``) star-
+# imports this module while it is still initializing and permanently drops
+# every setting not yet defined (``INSTALLED_APPS`` most visibly, which then
+# silently falls back to the empty global default and makes ``migrate`` a
+# no-op). Keeping every settings definition above the instrumentation calls
+# makes that re-entrant snapshot complete, so the ``crank.settings`` package
+# and submodules such as ``mysql_test`` load identically.
+DjangoInstrumentor().instrument(is_sql_commentor_enabled=True)
+RedisInstrumentor().instrument()
