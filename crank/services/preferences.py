@@ -67,6 +67,15 @@ class StalePreferenceError(PreferenceError):
     """The preference changed since the caller's last read."""
 
 
+#: Sentinel ``expected_modified`` value meaning "no preference row existed
+#: at turn start" (issue #487). Passing it to :func:`apply_patch_to_user`
+#: applies the patch only if the row is *still* absent at commit time; a row
+#: that appeared (or was re-created) mid-turn makes the patch stale instead of
+#: overwriting it. Distinct from ``None`` (the explicit low-level opt-out of
+#: the check) and from a ``datetime`` (the row existed and must be unchanged).
+PREFERENCE_ABSENT = object()
+
+
 # ---------------------------------------------------------------------------
 # Schema
 # ---------------------------------------------------------------------------
@@ -691,6 +700,12 @@ def _lock(user):
 
 
 def _check_stale(pref, expected_modified):
+    if expected_modified is PREFERENCE_ABSENT:
+        # No row existed at turn start, but one exists now: it was created
+        # (or re-created) mid-turn, so the patch must not overwrite it.
+        raise StalePreferenceError(
+            "preference row was created while the turn was in flight"
+        )
     if expected_modified is None:
         return
     expected = _normalize_ts(expected_modified)
@@ -745,11 +760,31 @@ def apply_patch_to_user(user, patch, expected_modified=None):
     Returns a dict: ``{preferences, markdown, modified, changed}``. Raises
     ``StalePreferenceError`` if ``expected_modified`` no longer matches (the
     change is not applied). Regenerates markdown after every accepted patch.
+
+    ``expected_modified`` is the turn-start baseline and may be:
+
+    * the row's ``modified`` datetime — the row must still carry it at commit;
+    * :data:`PREFERENCE_ABSENT` — no row existed at turn start; the patch is
+      applied only if the row is *still* absent (a mid-turn creation, e.g. a
+      concurrent first-interaction, makes the patch stale);
+    * ``None`` — explicit opt-out of the check (legacy low-level callers).
+
+    If the row existed at turn start but is gone at apply time (the user
+    deleted their preferences mid-turn), the patch fails closed with
+    ``StalePreferenceError`` instead of silently re-creating the row.
     """
     with transaction.atomic():
         pref = _lock(user)
         if pref is None:
-            pref = _fetch_or_create_pending(user)
+            if expected_modified is PREFERENCE_ABSENT or expected_modified is None:
+                # Still absent since the turn-start capture: safe to create.
+                pref = _fetch_or_create_pending(user)
+            else:
+                # The row existed at turn start but was deleted mid-turn;
+                # re-creating it would resurrect the deleted preference state.
+                raise StalePreferenceError(
+                    "preference row was deleted while the turn was in flight"
+                )
         else:
             _check_stale(pref, expected_modified)
         new_doc, changes = apply_patch(pref.preferences, patch)

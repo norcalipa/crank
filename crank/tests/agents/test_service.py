@@ -1,14 +1,18 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import json
+
+import pytest
 from types import SimpleNamespace
 
 from crank.agents.job_search.errors import (
+    ConversationClosedError,
     CostLimitError,
     InvalidJobListingReferenceError,
     InvalidModelOutputError,
     InvalidOrganizationReferenceError,
     InvalidPreferencePatchError,
+    PreferenceVersionUnavailableError,
     ProviderError,
     ProviderTimeoutError,
 )
@@ -38,6 +42,7 @@ class FakePreferenceService:
     def __init__(self, validate_error=None, apply_result=False):
         self.validate_error = validate_error
         self.apply_result = apply_result
+        self.apply_result_seen = None
         self.validate_calls = 0
         self.apply_calls = 0
 
@@ -46,8 +51,9 @@ class FakePreferenceService:
         if self.validate_error is not None:
             raise self.validate_error if isinstance(self.validate_error, Exception) else InvalidPreferencePatchError(str(self.validate_error))
 
-    def apply_patch(self, patch):
+    def apply_patch(self, patch, expected_modified=None):
         self.apply_calls += 1
+        self.apply_result_seen = expected_modified
         return self.apply_result
 
 
@@ -97,6 +103,7 @@ class TestHappyPath:
         make_orchestrator(gw, pref).run(
             user_prompt="actually hybrid is fine",
             conversation=history, preference_markdown="## preferences\nremote",
+            expected_modified="2026-09-14T00:00:00Z",
         )
         content = " ".join(m["content"] for m in gw.requests[0].messages)
         assert "I want remote work" in content
@@ -113,11 +120,138 @@ class TestHappyPath:
         })
         result = make_orchestrator(gw, pref).run(
             user_prompt="prefer seed", conversation=[], preference_markdown="",
+            expected_modified="2026-09-14T00:00:00Z",
         )
         assert pref.validate_calls == 1
         assert pref.apply_calls == 1
+        assert pref.apply_result_seen == "2026-09-14T00:00:00Z"
         assert result.preferences_changed is True
         assert result.preference_patch == {"replace": {"funding_round": "S"}}
+
+
+class TestPreferenceBaselineGuards:
+    """Issue #487 review MAJOR-3/MAJOR-4: turn-start baseline + fail-closed gates.
+
+    The preference ``expected_modified`` baseline must be the turn-start
+    capture (never re-read mid-turn), and any writer port without a baseline
+    — or a legacy port that cannot carry one — aborts the patch path instead
+    of silently disabling the stale check. Only demonstrably no-writer ports
+    (``writable = False``) are allowed to proceed without a baseline.
+    """
+
+    PATCH_PAYLOAD = {
+        "message": "Updated your preferences.",
+        "cited_organization_ids": [],
+        "cited_job_listing_ids": [],
+        "preference_patch": {"set": {"notes": "ok"}},
+    }
+
+    def test_baseline_is_captured_at_turn_start_not_mid_turn(self):
+        """The port receives the turn-start baseline verbatim (MAJOR-3).
+
+        The gateway runs after the capture, but the value passed to
+        ``apply_patch`` is still the one given at turn start — the orchestrator
+        never re-reads a fresh version mid-turn, so a concurrent edit cannot
+        pair stale prompt data with a fresh baseline (or vice versa).
+        """
+        marker = object()
+        pref = FakePreferenceService(apply_result=True)
+        order = []
+
+        class MutatingGateway(FakeGateway):
+            def complete(self, request):
+                # Mid-turn "edit": after capture, before apply.
+                order.append("gateway")
+                return super().complete(request)
+
+        gw = MutatingGateway(dict(self.PATCH_PAYLOAD))
+        make_orchestrator(gw, pref).run(
+            user_prompt="prefer remote", conversation=[], preference_markdown="",
+            expected_modified=marker,
+        )
+        assert order == ["gateway"]
+        assert pref.apply_calls == 1
+        # Identity check: the exact turn-start object reached the port.
+        assert pref.apply_result_seen is marker
+
+    def test_missing_baseline_fails_closed_for_writer_port(self):
+        """A writer port without a captured baseline never applies a patch (MAJOR-4)."""
+        pref = FakePreferenceService(apply_result=True)
+        gw = FakeGateway(dict(self.PATCH_PAYLOAD))
+        with pytest.raises(PreferenceVersionUnavailableError):
+            make_orchestrator(gw, pref).run(
+                user_prompt="prefer remote", conversation=[], preference_markdown="",
+            )
+        assert pref.apply_calls == 0
+
+    def test_missing_baseline_allowed_only_for_no_writer_port(self):
+        """A ``writable = False`` port demonstrably cannot persist, so the
+        patch path proceeds (as a documented no-op) without a baseline."""
+        class NullLikePort(FakePreferenceService):
+            writable = False
+
+        pref = NullLikePort(apply_result=False)
+        gw = FakeGateway(dict(self.PATCH_PAYLOAD))
+        result = make_orchestrator(gw, pref).run(
+            user_prompt="prefer remote", conversation=[], preference_markdown="",
+        )
+        assert pref.apply_calls == 1
+        assert result.preferences_changed is False
+
+    def test_legacy_writer_port_without_version_param_fails_closed(self):
+        """A legacy writer port that cannot carry the version aborts (MAJOR-4)."""
+        class LegacyWriterPort:
+            writable = True
+
+            def validate_patch(self, patch):
+                pass
+
+            def apply_patch(self, patch):  # legacy signature: no version param
+                return True
+
+        gw = FakeGateway(dict(self.PATCH_PAYLOAD))
+        with pytest.raises(PreferenceVersionUnavailableError):
+            make_orchestrator(gw, LegacyWriterPort()).run(
+                user_prompt="prefer remote", conversation=[], preference_markdown="",
+                expected_modified="2026-09-14T00:00:00Z",
+            )
+
+    def test_legacy_no_writer_port_without_version_param_allowed(self):
+        """A legacy port that demonstrably has no writer may keep its old
+        signature; the call is a documented no-op."""
+        class LegacyNoWriterPort:
+            writable = False
+
+            def validate_patch(self, patch):
+                pass
+
+            def apply_patch(self, patch):
+                return False
+
+        gw = FakeGateway(dict(self.PATCH_PAYLOAD))
+        result = make_orchestrator(gw, LegacyNoWriterPort()).run(
+            user_prompt="prefer remote", conversation=[], preference_markdown="",
+            expected_modified="2026-09-14T00:00:00Z",
+        )
+        assert result.preferences_changed is False
+
+    @pytest.mark.django_db
+    def test_lifecycle_guard_aborts_patch_when_conversation_closed(self):
+        """The guard runs before the write and aborts the patch fail-closed
+        (MAJOR-2): a closed conversation never receives a preference change."""
+        pref = FakePreferenceService(apply_result=True)
+        gw = FakeGateway(dict(self.PATCH_PAYLOAD))
+
+        def guard():
+            raise ConversationClosedError("closed mid-turn")
+
+        with pytest.raises(ConversationClosedError):
+            make_orchestrator(gw, pref).run(
+                user_prompt="prefer remote", conversation=[], preference_markdown="",
+                expected_modified="2026-09-14T00:00:00Z",
+                lifecycle_guard=guard,
+            )
+        assert pref.apply_calls == 0
 
 
 class TestRejections:

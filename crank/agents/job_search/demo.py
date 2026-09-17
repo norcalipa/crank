@@ -26,8 +26,11 @@ from django.conf import settings
 
 from crank.agents.job_search import quality
 from crank.agents.job_search.errors import (
+    ConversationClosedError as _OrchestratorConversationClosed,
     CostLimitError as _OrchestratorCostLimit,
     InvalidModelOutputError as _OrchestratorInvalidOutput,
+    PreferenceStaleError as _OrchestratorPreferenceStale,
+    PreferenceVersionUnavailableError as _OrchestratorPreferenceVersionUnavailable,
     ProviderTimeoutError as _OrchestratorTimeout,
 )
 from crank.checks import is_non_dev_environment
@@ -39,8 +42,11 @@ __all__ = [
     "DemoJobSearchProvider",
     "JobSearchService",
     "JobSearchServiceError",
+    "ServiceConversationClosed",
     "ServiceCostLimit",
     "ServiceInvalidOutput",
+    "ServicePreferenceStale",
+    "ServicePreferenceVersionUnavailable",
     "ServiceTimeout",
 ]
 
@@ -63,6 +69,36 @@ class ServiceCostLimit(JobSearchServiceError):
 
 class ServiceInvalidOutput(JobSearchServiceError):
     """The provider output failed schema validation."""
+
+
+class ServicePreferenceStale(JobSearchServiceError):
+    """A proposed preference patch lost its optimistic-concurrency check.
+
+    The preference row changed while the turn was in flight (the user edited
+    or reset preferences, or another request patched them), so the patch was
+    NOT applied. The view maps this to a stable 409 ``preference_stale``
+    envelope; the persisted user turn remains retryable (issue #487).
+    """
+
+
+class ServicePreferenceVersionUnavailable(JobSearchServiceError):
+    """The preference baseline could not be captured at turn start.
+
+    Fail-closed guard (issue #487 review, MAJOR-4): a writer preference port
+    without a captured ``expected_modified`` baseline never applies a proposed
+    patch. The view maps this to the same stable, retryable 409
+    ``preference_stale`` envelope; the persisted user turn remains retryable.
+    """
+
+
+class ServiceConversationClosed(JobSearchServiceError):
+    """The conversation was reset or deleted while the turn was in flight.
+
+    Raised when the lifecycle guard aborts a proposed preference patch whose
+    conversation is no longer active (issue #487 review, MAJOR-2). The view
+    maps this to the stable 409 ``conversation_closed`` envelope; the
+    persisted user turn remains retryable.
+    """
 
 
 class DemoJobSearchProvider:
@@ -168,17 +204,40 @@ class JobSearchService:
     def __init__(self, provider=None):
         self.provider = provider or _build_provider()
 
-    def run_turn(self, *, conversation, user_message):
+    def run_turn(self, *, conversation, user_message, persist_reply=None):
         """Run one turn; returns ``(reply_text, preferences_changed, results)``.
 
         ``results`` is an optional :class:`StructuredResults` (or ``None``).
+        ``persist_reply``, when given, is forwarded to the provider so the
+        assistant reply is persisted INSIDE the same database transaction as
+        the lifecycle guard's row claim and the preference patch (issue #487
+        review round 2, MAJOR-1) — one commit boundary for the whole turn.
+        Providers whose ``generate_reply`` does not accept the hook (legacy
+        or demo providers) are called without it, and the view persists the
+        reply itself in a self-contained transaction as before.
+
         Raises :class:`JobSearchServiceError` when the provider fails so the
         view can return a stable 500 without persisting a duplicate message.
         """
         try:
-            reply_text, changed, results = self.provider.generate_reply(
-                conversation=conversation, user_message=user_message
+            import inspect
+
+            params = inspect.signature(self.provider.generate_reply).parameters
+            accepts_hook = "persist_reply" in params or any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
             )
+            if accepts_hook:
+                reply_text, changed, results = self.provider.generate_reply(
+                    conversation=conversation,
+                    user_message=user_message,
+                    persist_reply=self._bound_persist_hook(persist_reply),
+                )
+            else:
+                # Legacy provider signature: no guarded persistence hook; the
+                # view's post-turn transaction handles the reply.
+                reply_text, changed, results = self.provider.generate_reply(
+                    conversation=conversation, user_message=user_message
+                )
         except JobSearchServiceError:
             # Already a typed service error (e.g. from generate_reply);
             # let it propagate without re-wrapping.
@@ -209,6 +268,33 @@ class JobSearchService:
                 "The assistant produced an unexpected response. "
                 "Please try again."
             ) from exc
+        except _OrchestratorPreferenceStale as exc:
+            logger.error(
+                "job_search stale preference patch conversation=%s",
+                getattr(conversation, "pk", None),
+            )
+            raise ServicePreferenceStale(
+                "Your preferences changed while the assistant was responding. "
+                "Please retry."
+            ) from exc
+        except _OrchestratorConversationClosed as exc:
+            logger.info(
+                "job_search conversation closed mid-turn conversation=%s",
+                getattr(conversation, "pk", None),
+            )
+            raise ServiceConversationClosed(
+                "This conversation was reset or deleted while the assistant "
+                "was responding."
+            ) from exc
+        except _OrchestratorPreferenceVersionUnavailable as exc:
+            logger.error(
+                "job_search preference baseline unavailable conversation=%s",
+                getattr(conversation, "pk", None),
+            )
+            raise ServicePreferenceVersionUnavailable(
+                "Your preferences could not be verified while the assistant "
+                "was responding. Please retry."
+            ) from exc
         except Exception as exc:  # provider failure -> stable service error
             logger.error(
                 "job_search service error conversation=%s provider=%s error_type=%s",
@@ -236,3 +322,31 @@ class JobSearchService:
                 "Please try again later or contact support."
             )
         return (reply_text or "").strip(), bool(changed), results
+
+    @staticmethod
+    def _bound_persist_hook(persist_reply):
+        """Wrap the reply hook with the transport's length bound (round 3).
+
+        The hook persists the reply INSIDE the orchestrator's guarded
+        transaction — before ``run_turn`` bounds the returned text — so the
+        transport bound (``JOB_SEARCH_RESPONSE_MAX_LEN``) must be applied to
+        the message before persistence: bound at the source of truth, not at
+        view response time (PR #501 review round 3, MINOR). Only an over-bound
+        message is truncated; a within-bound message persists verbatim.
+        ``AssistantCompletion``'s fixed 8000-character schema ceiling still
+        applies above this configurable transport cap.
+        """
+        if persist_reply is None:
+            return None
+
+        def bounded(*, reply_text, results, preferences_changed):
+            max_len = getattr(settings, "JOB_SEARCH_RESPONSE_MAX_LEN", 8000)
+            if reply_text is not None and len(reply_text) > max_len:
+                reply_text = reply_text[:max_len]
+            return persist_reply(
+                reply_text=reply_text,
+                results=results,
+                preferences_changed=preferences_changed,
+            )
+
+        return bounded

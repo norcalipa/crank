@@ -815,9 +815,15 @@ const JobSearchChat: React.FC = () => {
         return data.id;
     };
 
-    const sendTurn = async (content: string, key: string) => {
-        if (!conversationId || pendingRef.current) return;
-        const turnConversationId = conversationId;
+    const sendTurn = async (
+        content: string,
+        key: string,
+        opts?: {conversationId?: number | null; retriedAfterClose?: boolean},
+    ) => {
+        const turnConversationId = opts && 'conversationId' in opts ? opts.conversationId : conversationId;
+        // The conversation_closed recovery replays from inside the original
+        // send, which still holds the pending guard.
+        if (turnConversationId == null || (pendingRef.current && !opts?.retriedAfterClose)) return;
         pendingRef.current = true;
         keepDraftRef.current = false;
         setPending(true);
@@ -836,7 +842,9 @@ const JobSearchChat: React.FC = () => {
         // Optimistically reflect the user's turn: appended when this is a new
         // turn; for a retry the persisted user message is already in history
         // and is flipped back to pending in place instead.
-        const existingUser = messages.find(
+        // A conversation_closed replay targets a fresh conversation: the
+        // `messages` captured by this closure still belong to the closed one.
+        const existingUser = opts?.retriedAfterClose ? undefined : messages.find(
             (m) => m.role === 'user' && m.idempotency_key === key,
         );
         const optimisticUser: ChatMessage = {
@@ -934,18 +942,38 @@ const JobSearchChat: React.FC = () => {
                     await reconcileWithServer(turnConversationId, key);
                     return;
                 }
-                if (serverType === 'conversation_changed') {
-                    // The server's transactional late-reply guard refused to
-                    // attach: the conversation was reset or deleted mid-flight
-                    // (another tab). The turn is quarantined server-side; sync
-                    // with the server instead of guessing — the refetch decides
-                    // whether the conversation is gone and clears its markers.
+                if (serverType === 'conversation_closed') {
+                    // conversation_closed (issue #487): the conversation was
+                    // reset or deleted while the turn was in flight, but the
+                    // user turn stays retryable with the SAME idempotency key.
+                    // Recover by switching to the user's active conversation —
+                    // the reset's fresh one, or a newly created one after
+                    // delete — and replaying the retained turn there exactly
+                    // once. The replay records its own marker on the new
+                    // conversation, so the closed one's marker is resolved.
+                    if (!existingUser) {
+                        setMessages((prev) => prev.filter((m) => m !== optimisticUser));
+                    }
+                    if (!opts?.retriedAfterClose) {
+                        try {
+                            const newId = await ensureConversation(false);
+                            clearInflightTurn(turnConversationId, key);
+                            // Adopt the new conversation synchronously so the
+                            // replay's stale-conversation guard accepts it.
+                            conversationIdRef.current = newId;
+                            await sendTurn(content, key, {
+                                conversationId: newId,
+                                retriedAfterClose: true,
+                            });
+                            return;
+                        } catch {
+                            // Recovery failed; surface the original error below.
+                        }
+                    }
                     setError(serverMsg);
                     setErrorType(serverType);
-                    const outcome = await reconcileWithServer(turnConversationId, key);
-                    if (outcome === 'gone') {
-                        setError('This conversation is no longer available.');
-                    }
+                    lastSent.current = {content, key};
+                    setRetrying(true);
                     return;
                 }
                 if (parsed && serverType && PRE_PERSISTENCE_ERROR_TYPES.has(serverType)) {

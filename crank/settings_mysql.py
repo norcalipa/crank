@@ -3,15 +3,17 @@
 """MySQL-configured settings target for the opt-in concurrency variants.
 
 The default suite runs on SQLite, where ``select_for_update`` is a no-op, so
-the conversation-row serialization that makes turn replay idempotent on
-MySQL (#463) is only truly exercised against a backend with row locks.
-Point ``DJANGO_SETTINGS_MODULE`` at this module to run
-``crank/tests/test_mysql_concurrency.py``:
+two guards are only truly exercised against a backend with row locks: the
+lock-based serialization guards on chat turns and lifecycle writes (#487), and
+the conversation-row serialization that makes turn replay idempotent on MySQL
+(#463). Point ``DJANGO_SETTINGS_MODULE`` at this module to run either suite:
 
     export DJANGO_SETTINGS_MODULE=crank.settings_mysql
     export ENV=dev SECRET_KEY=... REDIS_MASTER_URL=redis://localhost:6379/0
     export CRANK_MYSQL_NAME=crank_test CRANK_MYSQL_USER=... CRANK_MYSQL_PASSWORD=...
     python -m pytest crank/tests/test_mysql_concurrency.py -v
+    CRANK_MYSQL_TEST=1 python -m pytest \\
+        crank/tests/security/test_mysql_concurrency_variants.py -v
 
 Every credential is read from the environment (never committed); defaults
 target a disposable local MySQL server. This module is for operator-driven,

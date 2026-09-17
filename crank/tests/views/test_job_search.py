@@ -8,6 +8,7 @@ service errors, rate limiting, and no cross-user leakage.
 """
 import json
 import threading
+import time
 import unittest
 import uuid
 from collections import OrderedDict
@@ -30,7 +31,13 @@ from crank.agents.job_search.demo import (
     ServiceInvalidOutput,
     ServiceTimeout,
 )
-from crank.models import JobSearchConversation, JobSearchMessage, JobSearchTurn
+from crank.models import (
+    JobSearchConversation,
+    JobSearchMessage,
+    JobSearchTurn,
+    UserPreference,
+)
+from crank.services import preferences
 from crank.views import job_search as job_search_views
 
 
@@ -886,7 +893,7 @@ class OrchestratorE2ESmokeTests(TestCase):
             def validate_patch(self, patch):
                 pass
 
-            def apply_patch(self, patch):
+            def apply_patch(self, patch, expected_modified=None):
                 return True
 
         default_orgs = orgs or [
@@ -1521,6 +1528,1330 @@ class TypedErrorCategoryTests(TestCase):
 
 
 @override_settings(CACHES=LOCMEM)
+class StalePreferenceAndLateReplyTests(TestCase):
+    """Issue #487: optimistic-concurrency wiring and late-reply lifecycle guards.
+
+    Covers three guards end-to-end through the Django view layer:
+
+    1. A turn whose proposed preference patch is stale (the preference row
+       changed while the turn was in flight) returns a stable 409
+       ``preference_stale``, never overwrites the newer version, and leaves
+       the persisted user turn retryable.
+    2. A matching version applies the patch normally (both branches of the
+       optimistic check).
+    3. A reply completing after the conversation was reset or deleted
+       mid-turn attaches to no active conversation (409
+       ``conversation_closed``) and changes no preferences.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user("stale", "stale@example.com", "pw")
+        self.client = Client()
+        self.client.force_login(self.user)
+        # Materialize the owner's preference row so the version capture has a
+        # real ``modified`` timestamp to check against.
+        preferences.read(self.user)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _start_conversation(self):
+        resp = self.client.post(
+            reverse("agent-conversation-list"),
+            data=json.dumps({"create_new": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        return resp.json()["id"]
+
+    def _submit(self, conversation_id, content, key):
+        return self.client.post(
+            reverse("agent-conversation-detail", args=[conversation_id]),
+            data=json.dumps({"content": content, "idempotency_key": key}),
+            content_type="application/json",
+        )
+
+    def _build_orchestrator_provider(self, gateway):
+        """Build an OrchestratorJobSearchProvider wired to the real preference store.
+
+        The gateway is caller-controlled so a test can mutate lifecycle state
+        mid-turn (inside ``complete``) exactly like a slow real provider.
+        """
+        from crank.agents.job_search.providers import (
+            OrchestratorJobSearchProvider,
+            _PreferenceServiceAdapter,
+        )
+        from crank.agents.job_search.service import JobSearchOrchestrator
+
+        orchestrator = JobSearchOrchestrator(
+            gateway=gateway,
+            preference_service=_PreferenceServiceAdapter(self.user),
+            org_datasource=lambda filters, limit: [],
+            score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [],
+        )
+        return OrchestratorJobSearchProvider(orchestrator=orchestrator)
+
+    def _patch_service_provider(self, provider):
+        return patch.object(
+            JobSearchService,
+            "__init__",
+            lambda self, *args, **kwargs: setattr(self, "provider", provider),
+        )
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_stale_preference_patch_returns_409_and_never_overwrites(self, record):
+        """A late reply's patch is rejected when the row changed mid-turn."""
+        from crank.services import preferences as pref_service
+
+        class ConcurrentlyEditingGateway:
+            """Simulates a user preference edit racing a slow provider reply."""
+
+            def __init__(self, user):
+                self.user = user
+                self.payload = {
+                    "message": "I noted your preference update.",
+                    "cited_organization_ids": [],
+                    "cited_job_listing_ids": [],
+                    "preference_patch": {"set": {"notes": "late patch"}},
+                }
+
+            def complete(self, request):
+                # Mid-turn: the user (or another request) edits preferences,
+                # bumping the row's ``modified`` past the turn-start capture.
+                pref_service.apply_patch_to_user(
+                    self.user, {"set": {"notes": "concurrent edit"}}
+                )
+                from crank.agents.job_search.gateway import GatewayResponse
+
+                return GatewayResponse(text=json.dumps(self.payload))
+
+            def close(self):
+                return None
+
+        provider = self._build_orchestrator_provider(
+            ConcurrentlyEditingGateway(self.user)
+        )
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+
+        with self._patch_service_provider(provider):
+            resp = self._submit(conv_id, "please prefer remote work", key)
+
+        self.assertEqual(resp.status_code, 409)
+        body = resp.json()
+        self.assertEqual(body["error"]["type"], "preference_stale")
+        self.assertIn("request_id", body["error"])
+        self.assertTrue(resp.headers.get("X-Request-ID"))
+
+        # The stale patch was never applied; the concurrent edit survived.
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "concurrent edit")
+
+        # The user turn persisted exactly once; no assistant message.
+        conv = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertEqual(conv.messages.filter(role="user").count(), 1)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+
+        # Telemetry records the reason without any content.
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "preference_stale" for c in calls))
+
+        # The persisted user turn stays retryable with the same key.
+        from crank.agents.job_search.gateway import GatewayResponse
+
+        class CleanGateway:
+            def complete(self, request):
+                return GatewayResponse(
+                    text=json.dumps(
+                        {
+                            "message": "Got it — remote work noted.",
+                            "cited_organization_ids": [],
+                            "cited_job_listing_ids": [],
+                            "preference_patch": {"set": {"notes": "retry patch"}},
+                        }
+                    )
+                )
+
+            def close(self):
+                return None
+
+        retry_provider = self._build_orchestrator_provider(CleanGateway())
+        with self._patch_service_provider(retry_provider):
+            retry = self._submit(conv_id, "please prefer remote work", key)
+        self.assertEqual(retry.status_code, 201)
+        conv = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertEqual(conv.messages.filter(role="user").count(), 1)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 1)
+        stored.refresh_from_db()
+        self.assertEqual(stored.preferences["notes"], "retry patch")
+
+    def test_matching_preference_version_applies_patch(self):
+        """Both branches: a matching ``expected_modified`` applies the patch."""
+        from crank.agents.job_search.gateway import GatewayResponse
+
+        class CleanGateway:
+            def complete(self, request):
+                return GatewayResponse(
+                    text=json.dumps(
+                        {
+                            "message": "Noted.",
+                            "cited_organization_ids": [],
+                            "cited_job_listing_ids": [],
+                            "preference_patch": {"set": {"notes": "accepted patch"}},
+                        }
+                    )
+                )
+
+            def close(self):
+                return None
+
+        provider = self._build_orchestrator_provider(CleanGateway())
+        conv_id = self._start_conversation()
+        with self._patch_service_provider(provider):
+            resp = self._submit(conv_id, "prefer remote", str(uuid.uuid4()))
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(resp.json()["preferences_changed"])
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "accepted patch")
+
+    def test_preference_adapter_maps_stale_error_and_versions(self):
+        """Unit: the production adapter maps store errors to typed errors.
+
+        Also pins the baseline semantics (issue #487 review, MAJOR-3/MAJOR-4):
+        ``PREFERENCE_ABSENT`` applies only while the row stays absent; a row
+        deleted mid-turn fails closed instead of being silently re-created.
+        """
+        from crank.agents.job_search.errors import PreferenceStaleError
+        from crank.agents.job_search.providers import _PreferenceServiceAdapter
+        from crank.services.preferences import PREFERENCE_ABSENT, StalePreferenceError as _StoreStale
+
+        fresh = User.objects.create_user("adapteruser", "adapter@example.com", "pw")
+        adapter = _PreferenceServiceAdapter(fresh)
+        self.assertTrue(adapter.writable)
+
+        # No row yet: the ABSENT baseline applies and creates the row.
+        self.assertTrue(adapter.apply_patch({"set": {"notes": "v-first"}}, expected_modified=PREFERENCE_ABSENT))
+        self.assertEqual(UserPreference.objects.get(user=fresh).preferences["notes"], "v-first")
+        version = UserPreference.objects.get(user=fresh).modified
+
+        # Correct version applies; wrong version raises the orchestrator-level
+        # typed error (mapped from the store's StalePreferenceError).
+        self.assertTrue(
+            adapter.apply_patch({"set": {"notes": "v-ok"}}, expected_modified=version)
+        )
+        self.assertEqual(UserPreference.objects.get(user=fresh).preferences["notes"], "v-ok")
+        with self.assertRaises(PreferenceStaleError) as ctx:
+            adapter.apply_patch(
+                {"set": {"notes": "v-stale"}}, expected_modified=version
+            )
+        # The underlying store error is a StalePreferenceError (chained).
+        self.assertIsInstance(ctx.exception.__cause__, _StoreStale)
+        # The stale patch was not applied.
+        self.assertEqual(UserPreference.objects.get(user=fresh).preferences["notes"], "v-ok")
+
+        # A row existing at capture but deleted mid-turn fails closed: the
+        # patch never re-creates the deleted preference state.
+        current = UserPreference.objects.get(user=fresh).modified
+        preferences.delete_user_preference(fresh)
+        with self.assertRaises(PreferenceStaleError):
+            adapter.apply_patch({"set": {"notes": "v-resurrect"}}, expected_modified=current)
+        self.assertFalse(UserPreference.objects.filter(user=fresh).exists())
+
+        # ABSENT against a row created after capture is stale, not overwrite.
+        preferences.read(fresh)  # the row appears mid-turn, after the capture
+        with self.assertRaises(PreferenceStaleError):
+            adapter.apply_patch({"set": {"notes": "v-overwrite"}}, expected_modified=PREFERENCE_ABSENT)
+        self.assertEqual(
+            UserPreference.objects.get(user=fresh).preferences["notes"], ""
+        )
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_reply_after_midturn_reset_attaches_to_nothing(self, record):
+        """A reply completing after a mid-turn reset persists no assistant message."""
+        from crank.models.job_search import JobSearchConversation
+
+        class MidTurnResetProvider:
+            """Mutates conversation lifecycle state mid-turn (reset case)."""
+
+            def generate_reply(self, *, conversation, user_message):
+                JobSearchConversation.objects.filter(pk=conversation.pk).update(
+                    active=False
+                )
+                JobSearchConversation.objects.create(owner=conversation.owner)
+                return "late reply after reset", True, None
+
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        with self._patch_service_provider(MidTurnResetProvider()):
+            resp = self._submit(conv_id, "hello", key)
+
+        self.assertEqual(resp.status_code, 409)
+        body = resp.json()
+        self.assertEqual(body["error"]["type"], "conversation_closed")
+        self.assertTrue(resp.headers.get("X-Request-ID"))
+
+        # The old conversation is closed and carries no assistant message; the
+        # fresh one created by the reset is empty as well.
+        old = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertFalse(old.active)
+        self.assertEqual(old.messages.filter(role="assistant").count(), 0)
+        for conv in JobSearchConversation.objects.filter(owner=self.user):
+            self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "conversation_closed" for c in calls))
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_reply_after_midturn_delete_attaches_to_nothing(self, record):
+        """A reply completing after a mid-turn delete persists no message row."""
+        from crank.models.job_search import JobSearchConversation
+
+        class MidTurnDeleteProvider:
+            """Mutates conversation lifecycle state mid-turn (delete case)."""
+
+            def generate_reply(self, *, conversation, user_message):
+                conversation.messages.all().delete()
+                JobSearchConversation.objects.filter(pk=conversation.pk).delete()
+                return "late reply after delete", True, None
+
+        conv_id = self._start_conversation()
+        with self._patch_service_provider(MidTurnDeleteProvider()):
+            resp = self._submit(conv_id, "hello", str(uuid.uuid4()))
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
+        # No orphan assistant message anywhere.
+        self.assertFalse(JobSearchMessage.objects.filter(role="assistant").exists())
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "conversation_closed" for c in calls))
+
+    def test_reply_after_midturn_reset_changes_no_preferences(self):
+        """The closed-conversation guard leaves the preference row untouched."""
+        from crank.models.job_search import JobSearchConversation
+
+        stored = UserPreference.objects.get(user=self.user)
+        before = stored.preferences
+
+        class MidTurnResetProvider:
+            def generate_reply(self, *, conversation, user_message):
+                # The turn claims a preference change while resetting lifecycle
+                # state; neither may reach the user's stored preferences.
+                JobSearchConversation.objects.filter(pk=conversation.pk).update(
+                    active=False
+                )
+                return "late reply", True, None
+
+        conv_id = self._start_conversation()
+        with self._patch_service_provider(MidTurnResetProvider()):
+            resp = self._submit(conv_id, "hello", str(uuid.uuid4()))
+        self.assertEqual(resp.status_code, 409)
+        stored.refresh_from_db()
+        self.assertEqual(stored.preferences, before)
+        self.assertEqual(stored.preferences_markdown, preferences.read(self.user)["markdown"])
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_midturn_reset_with_proposed_patch_changes_neither_domain(self, record):
+        """MAJOR-2 (real orchestrator + real store): a reset landing mid-turn
+        with a proposed patch commits NEITHER the patch nor the reply.
+
+        The patch application verifies conversation-active state inside the
+        same transaction as the write (the lifecycle guard), so the transport
+        returns 409 ``conversation_closed`` while preferences remain
+        unchanged — previously the patch committed before the view's
+        post-turn check and the user's preferences changed under a closed
+        conversation.
+        """
+        from crank.models.job_search import JobSearchConversation
+
+        class MidTurnResetWithPatchGateway:
+            """Resets the conversation mid-turn and proposes a preference patch."""
+
+            def complete(self, request):
+                JobSearchConversation.objects.filter(pk=conversation_pk).update(
+                    active=False
+                )
+                JobSearchConversation.objects.create(owner=user)
+                from crank.agents.job_search.gateway import GatewayResponse
+
+                return GatewayResponse(
+                    text=json.dumps(
+                        {
+                            "message": "Noted your preference.",
+                            "cited_organization_ids": [],
+                            "cited_job_listing_ids": [],
+                            "preference_patch": {"set": {"notes": "late patch"}},
+                        }
+                    )
+                )
+
+            def close(self):
+                return None
+
+        user = self.user
+        conversation_pk = self._start_conversation()
+
+        provider = self._build_orchestrator_provider(
+            MidTurnResetWithPatchGateway()
+        )
+        with self._patch_service_provider(provider):
+            resp = self._submit(conversation_pk, "prefer remote", str(uuid.uuid4()))
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
+        # Neither persistence domain changed: no preference patch applied...
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "")
+        # ...and no assistant message attached to the closed conversation.
+        old = JobSearchConversation.objects.get(pk=conversation_pk)
+        self.assertFalse(old.active)
+        self.assertEqual(old.messages.filter(role="assistant").count(), 0)
+        # The persisted user turn stays retryable.
+        self.assertEqual(old.messages.filter(role="user").count(), 1)
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "conversation_closed" for c in calls))
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_midturn_delete_with_proposed_patch_changes_neither_domain(self, record):
+        """MAJOR-2 delete variant: a delete landing mid-turn with a proposed
+        patch commits neither the patch nor the reply."""
+        from crank.models.job_search import JobSearchConversation
+
+        class MidTurnDeleteWithPatchGateway:
+            """Deletes the conversation mid-turn and proposes a patch."""
+
+            def complete(self, request):
+                JobSearchConversation.objects.filter(pk=conversation_pk).delete()
+                from crank.agents.job_search.gateway import GatewayResponse
+
+                return GatewayResponse(
+                    text=json.dumps(
+                        {
+                            "message": "Noted your preference.",
+                            "cited_organization_ids": [],
+                            "cited_job_listing_ids": [],
+                            "preference_patch": {"set": {"notes": "late patch"}},
+                        }
+                    )
+                )
+
+            def close(self):
+                return None
+
+        conversation_pk = self._start_conversation()
+        provider = self._build_orchestrator_provider(
+            MidTurnDeleteWithPatchGateway()
+        )
+        with self._patch_service_provider(provider):
+            resp = self._submit(conversation_pk, "prefer remote", str(uuid.uuid4()))
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "")
+        self.assertFalse(JobSearchMessage.objects.filter(role="assistant").exists())
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "conversation_closed" for c in calls))
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_preference_baseline_capture_failure_fails_closed(self, record):
+        """MAJOR-4 (view level): when the baseline cannot be captured at turn
+        start, a proposed patch aborts with the stable retryable 409 — the
+        stale check is never silently skipped for a writer port."""
+        from crank.agents.job_search.providers import OrchestratorJobSearchProvider
+
+        class PatchProposingGateway:
+            def complete(self, request):
+                from crank.agents.job_search.gateway import GatewayResponse
+
+                return GatewayResponse(
+                    text=json.dumps(
+                        {
+                            "message": "Noted your preference.",
+                            "cited_organization_ids": [],
+                            "cited_job_listing_ids": [],
+                            "preference_patch": {"set": {"notes": "unverified patch"}},
+                        }
+                    )
+                )
+
+            def close(self):
+                return None
+
+        conversation_pk = self._start_conversation()
+        provider = self._build_orchestrator_provider(PatchProposingGateway())
+        with self._patch_service_provider(provider):
+            with patch.object(
+                OrchestratorJobSearchProvider,
+                "_read_preference_snapshot",
+                return_value=("", None),
+            ):
+                resp = self._submit(conversation_pk, "prefer remote", str(uuid.uuid4()))
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "preference_stale")
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "")
+        conv = JobSearchConversation.objects.get(pk=conversation_pk)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+        self.assertEqual(conv.messages.filter(role="user").count(), 1)
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(
+            any(c.args[1].get("reason_code") == "preference_version_unavailable" for c in calls)
+        )
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_reset_landing_between_recheck_and_insert_discards_reply(self, record):
+        """MAJOR-1 window: a reset landing AFTER the locked re-check but BEFORE
+        the assistant insert still cannot receive the reply.
+
+        The hook flips the row inactive at the exact moment the insert runs
+        (inside the persistence transaction); the in-transaction re-verify sees
+        it, the whole transaction rolls back — including the simulated flip,
+        because it shares the same transaction here — and the reply is
+        discarded with a stable 409. On locking backends the flip cannot even
+        interleave: reset/delete block on the conversation row lock until the
+        insert commits.
+        """
+
+        class StaticProvider:
+            def generate_reply(self, *, conversation, user_message):
+                return "late reply", True, None
+
+        conversation_pk = self._start_conversation()
+        real_get_or_create = JobSearchMessage.objects.get_or_create
+
+        def hooked_get_or_create(*args, **kwargs):
+            if kwargs.get("role") == JobSearchMessage.Role.ASSISTANT:
+                JobSearchConversation.objects.filter(pk=conversation_pk).update(
+                    active=False
+                )
+            return real_get_or_create(*args, **kwargs)
+
+        with self._patch_service_provider(StaticProvider()):
+            with patch.object(JobSearchMessage.objects, "get_or_create", hooked_get_or_create):
+                resp = self._submit(conversation_pk, "hello", str(uuid.uuid4()))
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
+        # The assistant insert was rolled back with the transaction.
+        self.assertFalse(JobSearchMessage.objects.filter(role="assistant").exists())
+        conv = JobSearchConversation.objects.get(pk=conversation_pk)
+        self.assertEqual(conv.messages.filter(role="user").count(), 1)
+        # The simulated in-window flip shared the persistence transaction, so
+        # it rolled back too — proving the insert and the flip were one
+        # transactional step, not a read-then-write pair.
+        self.assertTrue(conv.active)
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "conversation_closed" for c in calls))
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_delete_landing_between_recheck_and_insert_discards_reply(self, record):
+        """MAJOR-1 window (delete): a delete landing after the locked re-check
+        but before the insert makes the FK insert fail; nothing persists and
+        the reply is discarded with a stable 409."""
+
+        class StaticProvider:
+            def generate_reply(self, *, conversation, user_message):
+                return "late reply", True, None
+
+        conversation_pk = self._start_conversation()
+        real_get_or_create = JobSearchMessage.objects.get_or_create
+
+        def hooked_get_or_create(*args, **kwargs):
+            if kwargs.get("role") == JobSearchMessage.Role.ASSISTANT:
+                JobSearchConversation.objects.filter(pk=conversation_pk).delete()
+            return real_get_or_create(*args, **kwargs)
+
+        with self._patch_service_provider(StaticProvider()):
+            with patch.object(JobSearchMessage.objects, "get_or_create", hooked_get_or_create):
+                resp = self._submit(conversation_pk, "hello", str(uuid.uuid4()))
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
+        # The insert (and the simulated in-window delete) rolled back; no
+        # assistant message survived anywhere.
+        self.assertFalse(JobSearchMessage.objects.filter(role="assistant").exists())
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(any(c.args[1].get("reason_code") == "conversation_closed" for c in calls))
+
+
+@override_settings(CACHES=LOCMEM)
+class GuardedTurnCommitTests(TestCase):
+    """Issue #487 review round 2 (MAJOR-1/MAJOR-2), hook path.
+
+    With the real orchestrator wired to the real preference store, the
+    lifecycle guard's write-first row claim, the preference-patch write, and
+    the reply persistence run in ONE transaction with a single commit
+    boundary; backend lock contention maps to the retryable 409 envelopes.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user("guarded", "guarded@example.com", "pw")
+        self.client = Client()
+        self.client.force_login(self.user)
+        preferences.read(self.user)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _start_conversation(self):
+        resp = self.client.post(
+            reverse("agent-conversation-list"),
+            data=json.dumps({"create_new": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        return resp.json()["id"]
+
+    def _submit(self, conversation_id, content, key):
+        return self.client.post(
+            reverse("agent-conversation-detail", args=[conversation_id]),
+            data=json.dumps({"content": content, "idempotency_key": key}),
+            content_type="application/json",
+        )
+
+    def _patch_gateway_provider(self, gateway):
+        from crank.agents.job_search.providers import (
+            OrchestratorJobSearchProvider,
+            _PreferenceServiceAdapter,
+        )
+        from crank.agents.job_search.service import JobSearchOrchestrator
+
+        orchestrator = JobSearchOrchestrator(
+            gateway=gateway,
+            preference_service=_PreferenceServiceAdapter(self.user),
+            org_datasource=lambda filters, limit: [],
+            score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [],
+        )
+        provider = OrchestratorJobSearchProvider(orchestrator=orchestrator)
+        return patch.object(
+            JobSearchService,
+            "__init__",
+            lambda self, *args, **kwargs: setattr(self, "provider", provider),
+        )
+
+    @staticmethod
+    def _patch_gateway(payload):
+        from crank.agents.job_search.gateway import GatewayResponse
+
+        class PatchProposingGateway:
+            def complete(self, request):
+                return GatewayResponse(text=json.dumps(payload))
+
+            def close(self):
+                return None
+
+        return PatchProposingGateway()
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_hook_path_patch_and_reply_roll_back_together(self, record):
+        """MAJOR-1 (hook path): the patch write and the reply insert share one
+        transaction — an in-window lifecycle flip rolls BOTH back."""
+        conversation_pk = self._start_conversation()
+        real_get_or_create = JobSearchMessage.objects.get_or_create
+
+        def hooked_get_or_create(*args, **kwargs):
+            if kwargs.get("role") == JobSearchMessage.Role.ASSISTANT:
+                JobSearchConversation.objects.filter(pk=conversation_pk).update(
+                    active=False
+                )
+            return real_get_or_create(*args, **kwargs)
+
+        gateway = self._patch_gateway(
+            {
+                "message": "Noted your preference.",
+                "cited_organization_ids": [],
+                "cited_job_listing_ids": [],
+                "preference_patch": {"set": {"notes": "late patch"}},
+            }
+        )
+        with self._patch_gateway_provider(gateway):
+            with patch.object(
+                JobSearchMessage.objects, "get_or_create", hooked_get_or_create
+            ):
+                resp = self._submit(
+                    conversation_pk, "prefer remote", str(uuid.uuid4())
+                )
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
+        # The patch write and the assistant insert were ONE transactional
+        # step: the in-window flip rolled both back with the transaction.
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "")
+        conv = JobSearchConversation.objects.get(pk=conversation_pk)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+        self.assertEqual(conv.messages.filter(role="user").count(), 1)
+        # The simulated flip shared the transaction, so it rolled back too.
+        self.assertTrue(conv.active)
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_database_locked_on_patch_write_maps_to_retryable_409(self, record):
+        """MAJOR-2: lock contention during the preference write surfaces as
+        the retryable 409 ``preference_stale`` envelope, never a 500."""
+        from django.db import OperationalError
+
+        conversation_pk = self._start_conversation()
+        gateway = self._patch_gateway(
+            {
+                "message": "Noted your preference.",
+                "cited_organization_ids": [],
+                "cited_job_listing_ids": [],
+                "preference_patch": {"set": {"notes": "contended patch"}},
+            }
+        )
+        with self._patch_gateway_provider(gateway):
+            with patch(
+                "crank.services.preferences.apply_patch_to_user",
+                side_effect=OperationalError("database is locked"),
+            ):
+                resp = self._submit(
+                    conversation_pk, "prefer remote", str(uuid.uuid4())
+                )
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "preference_stale")
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "")
+        conv = JobSearchConversation.objects.get(pk=conversation_pk)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(
+            any(c.args[1].get("reason_code") == "preference_stale" for c in calls)
+        )
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_database_locked_on_lifecycle_claim_maps_to_retryable_409(self, record):
+        """MAJOR-2: lock contention during the lifecycle guard claim surfaces
+        as the retryable 409 ``conversation_closed`` envelope, never a 500."""
+        from django.db import OperationalError
+
+        from crank.agents.job_search.errors import ConversationClosedError
+        from crank.agents.job_search.providers import OrchestratorJobSearchProvider
+
+        def contended_guard():
+            raise OperationalError("database is locked")
+
+        conversation_pk = self._start_conversation()
+        gateway = self._patch_gateway(
+            {
+                "message": "Noted your preference.",
+                "cited_organization_ids": [],
+                "cited_job_listing_ids": [],
+                "preference_patch": {"set": {"notes": "contended patch"}},
+            }
+        )
+        with self._patch_gateway_provider(gateway):
+            with patch.object(
+                OrchestratorJobSearchProvider,
+                "_make_lifecycle_guard",
+                return_value=contended_guard,
+            ):
+                resp = self._submit(
+                    conversation_pk, "prefer remote", str(uuid.uuid4())
+                )
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "")
+        conv = JobSearchConversation.objects.get(pk=conversation_pk)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(
+            any(
+                c.args[1].get("reason_code") == "conversation_closed" for c in calls
+            )
+        )
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_non_lock_operational_error_is_not_translated(self, record):
+        """Review round 3 MAJOR (narrowness / MySQL probe): a NON-contention
+        backend failure (e.g. a MySQL connection error) is never translated
+        into the retryable 409 envelopes — it keeps the existing stable 500
+        ``invalid_output`` path. The outer-commit translation shares the same
+        narrow ``is_database_locked`` predicate as the inner guarded blocks,
+        so the mapping cannot mask genuine backend faults as "retry"."""
+        from django.db import OperationalError
+
+        conversation_pk = self._start_conversation()
+        gateway = self._patch_gateway(
+            {
+                "message": "Noted your preference.",
+                "cited_organization_ids": [],
+                "cited_job_listing_ids": [],
+                "preference_patch": {"set": {"notes": "unrelated failure"}},
+            }
+        )
+        with self._patch_gateway_provider(gateway):
+            with patch(
+                "crank.services.preferences.apply_patch_to_user",
+                side_effect=OperationalError("connection refused"),
+            ):
+                resp = self._submit(
+                    conversation_pk, "prefer remote", str(uuid.uuid4())
+                )
+
+        self.assertEqual(resp.status_code, 500)
+        self.assertEqual(resp.json()["error"]["type"], "invalid_output")
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "")
+        conv = JobSearchConversation.objects.get(pk=conversation_pk)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
+        self.assertTrue(
+            any(c.args[1].get("reason_code") == "invalid_output" for c in calls)
+        )
+
+    @override_settings(JOB_SEARCH_RESPONSE_MAX_LEN=10)
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_hook_path_reply_length_bound_applied_before_persistence(self, record):
+        """Review round 3 MINOR: the transport's reply-length bound is applied
+        BEFORE the persist_reply hook persists the message — the persisted AND
+        returned message respect ``JOB_SEARCH_RESPONSE_MAX_LEN`` on the
+        production orchestrator hook path. Previously the hook persisted the
+        unbounded orchestrator message and the view responded with it, so a
+        15-char reply with ``MAX_LEN=10`` persisted all 15 chars."""
+        conversation_pk = self._start_conversation()
+        gateway = self._patch_gateway(
+            {
+                "message": "123456789012345",  # 15 chars, over the bound of 10
+                "cited_organization_ids": [],
+                "cited_job_listing_ids": [],
+                "preference_patch": None,
+            }
+        )
+        with self._patch_gateway_provider(gateway):
+            resp = self._submit(conversation_pk, "prefer remote", str(uuid.uuid4()))
+
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()
+        self.assertEqual(len(body["message"]["content"]), 10)
+        conv = JobSearchConversation.objects.get(pk=conversation_pk)
+        assistant = conv.messages.get(role="assistant")
+        self.assertEqual(len(assistant.content), 10)
+        self.assertEqual(assistant.content, body["message"]["content"])
+
+    def test_retry_after_midturn_reset_recovers_retained_turn(self):
+        """MINOR (retryability): after a mid-turn reset the retained user turn
+        is recoverable — the same content + idempotency key replays onto the
+        new active conversation and succeeds."""
+        from crank.models.job_search import JobSearchConversation
+
+        class MidTurnResetProvider:
+            def generate_reply(self, *, conversation, user_message):
+                JobSearchConversation.objects.filter(pk=conversation.pk).update(
+                    active=False
+                )
+                JobSearchConversation.objects.create(owner=conversation.owner)
+                return "recovered reply", False, None
+
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        with patch.object(
+            JobSearchService,
+            "__init__",
+            lambda self, *args, **kwargs: setattr(
+                self, "provider", MidTurnResetProvider()
+            ),
+        ):
+            resp = self._submit(conv_id, "hello there", key)
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
+        old = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertFalse(old.active)
+        # The retained user turn survives on the closed conversation.
+        self.assertEqual(old.messages.filter(role="user").count(), 1)
+
+        # Recovery: switch to the user's active (fresh) conversation and
+        # replay the retained turn with the SAME idempotency key.
+        resume = self.client.post(
+            reverse("agent-conversation-list"),
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        self.assertEqual(resume.status_code, 200)
+        new_id = resume.json()["id"]
+        self.assertNotEqual(new_id, conv_id)
+        retry = self._submit(new_id, "hello there", key)
+        self.assertEqual(retry.status_code, 201)
+        new_conv = JobSearchConversation.objects.get(pk=new_id)
+        self.assertEqual(new_conv.messages.filter(role="user").count(), 1)
+        self.assertEqual(
+            new_conv.messages.filter(
+                role="assistant", idempotency_key=key
+            ).count(),
+            1,
+        )
+        # The original retained row is untouched on the closed conversation.
+        old = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertEqual(old.messages.filter(role="user", idempotency_key=key).count(), 1)
+        self.assertEqual(old.messages.filter(role="assistant").count(), 0)
+
+    def test_retry_after_midturn_delete_recreates_and_recovers_turn(self):
+        """MINOR (retryability, delete variant): after a mid-turn delete the
+        same content + idempotency key replays onto a freshly created active
+        conversation."""
+        from crank.models.job_search import JobSearchConversation
+
+        class MidTurnDeleteProvider:
+            def generate_reply(self, *, conversation, user_message):
+                conversation.messages.all().delete()
+                JobSearchConversation.objects.filter(pk=conversation.pk).delete()
+                return "recovered reply", False, None
+
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        with patch.object(
+            JobSearchService,
+            "__init__",
+            lambda self, *args, **kwargs: setattr(
+                self, "provider", MidTurnDeleteProvider()
+            ),
+        ):
+            resp = self._submit(conv_id, "hello there", key)
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
+        self.assertFalse(JobSearchConversation.objects.filter(pk=conv_id).exists())
+
+        # Recovery: no active conversation remains, so the resume call
+        # creates a fresh one; the retained turn replays with the same key.
+        resume = self.client.post(
+            reverse("agent-conversation-list"),
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        self.assertEqual(resume.status_code, 201)
+        new_id = resume.json()["id"]
+        retry = self._submit(new_id, "hello there", key)
+        self.assertEqual(retry.status_code, 201)
+        new_conv = JobSearchConversation.objects.get(pk=new_id)
+        self.assertEqual(
+            new_conv.messages.filter(role="assistant", idempotency_key=key).count(),
+            1,
+        )
+
+
+
+
+class GuardedTurnCommitConcurrencyTests(TransactionTestCase):
+    """Reviewer repro (PR #501 fix-verification round 2) as regression tests.
+
+    Two real database connections (file-backed SQLite via ``TransactionTestCase``)
+    race a guarded turn against a conversation reset:
+
+    * MAJOR-2 probe — a reset landing while the turn holds the conversation
+      row's write lock (after the guard claim, before the patch write) cannot
+      make the turn fail with ``500 invalid_output``; the turn completes and
+      the reset's bounded retry lands it after the single commit.
+    * MAJOR-1 repro — a reset landing after the patch write but before the
+      single commit leaves NO committed patch on a closed conversation: the
+      reset blocks until the turn's commit, then closes the conversation.
+    * A reset fully completing before the guard claim aborts the whole turn
+      with the retryable 409 and nothing persisted.
+    """
+
+    def setUp(self):
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+
+    def _setup_user_and_conversation(self, username):
+        user = User.objects.create_user(username, f"{username}@example.com", "pw")
+        preferences.read(user)
+        client = Client()
+        client.force_login(user)
+        create = client.post(
+            reverse("agent-conversation-list"),
+            data=json.dumps({"create_new": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(create.status_code, 201)
+        return user, client, create.json()["id"]
+
+    def _build_orchestrator_provider(self, user, gateway, preference_service=None):
+        from crank.agents.job_search.providers import (
+            OrchestratorJobSearchProvider,
+            _PreferenceServiceAdapter,
+        )
+        from crank.agents.job_search.service import JobSearchOrchestrator
+
+        orchestrator = JobSearchOrchestrator(
+            gateway=gateway,
+            preference_service=preference_service or _PreferenceServiceAdapter(user),
+            org_datasource=lambda filters, limit: [],
+            score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [],
+        )
+        return OrchestratorJobSearchProvider(orchestrator=orchestrator)
+
+    @staticmethod
+    def _patch_provider(provider):
+        return patch.object(
+            JobSearchService,
+            "__init__",
+            lambda self, *args, **kwargs: setattr(self, "provider", provider),
+        )
+
+    @staticmethod
+    def _patch_gateway(payload):
+        from crank.agents.job_search.gateway import GatewayResponse
+
+        class PatchProposingGateway:
+            def complete(self, request):
+                return GatewayResponse(text=json.dumps(payload))
+
+            def close(self):
+                return None
+
+        return PatchProposingGateway()
+
+    def _race_turn_against_reset(self, user, provider, conv_id, pause_in_pref_write):
+        """Run the turn in one connection, pause it inside the guarded commit
+        window, race a reset from a second client, then resume the turn."""
+        from django.db import connections
+
+        reached = threading.Event()
+        resume = threading.Event()
+        responses = {}
+        key = str(uuid.uuid4())
+        patch_payload = {
+            "message": "Noted your preference.",
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [],
+            "preference_patch": {"set": {"notes": "late patch"}},
+        }
+        cleanup = []
+
+        if pause_in_pref_write:
+            # MAJOR-2 probe pause point: after the guard claim, before the
+            # preference write.
+            from crank.agents.job_search.providers import _PreferenceServiceAdapter
+
+            class PausingPreferenceService:
+                writable = True
+
+                def __init__(self, inner):
+                    self._inner = inner
+
+                def validate_patch(self, patch):
+                    self._inner.validate_patch(patch)
+
+                def apply_patch(self, patch, expected_modified=None):
+                    reached.set()
+                    if not resume.wait(timeout=20):
+                        raise RuntimeError("turn was never resumed")
+                    return self._inner.apply_patch(
+                        patch, expected_modified=expected_modified
+                    )
+
+            preference_service = PausingPreferenceService(
+                _PreferenceServiceAdapter(user)
+            )
+            provider = self._build_orchestrator_provider(
+                user, self._patch_gateway(patch_payload), preference_service
+            )
+        else:
+            # MAJOR-1 repro pause point: after the patch write, before the
+            # reply insert / single commit.
+            real_get_or_create = JobSearchMessage.objects.get_or_create
+
+            def paused_get_or_create(*args, **kwargs):
+                if kwargs.get("role") == JobSearchMessage.Role.ASSISTANT:
+                    reached.set()
+                    if not resume.wait(timeout=20):
+                        raise RuntimeError("turn was never resumed")
+                return real_get_or_create(*args, **kwargs)
+
+            cleanup.append(
+                patch.object(
+                    JobSearchMessage.objects, "get_or_create", paused_get_or_create
+                )
+            )
+            provider = self._build_orchestrator_provider(
+                user, self._patch_gateway(patch_payload)
+            )
+
+        def run_turn():
+            try:
+                turn_client = Client()
+                turn_client.force_login(user)
+                with self._patch_provider(provider):
+                    responses["turn"] = turn_client.post(
+                        reverse("agent-conversation-detail", args=[conv_id]),
+                        data=json.dumps({"content": "prefer remote", "idempotency_key": key}),
+                        content_type="application/json",
+                    )
+            finally:
+                connections.close_all()
+
+        def run_reset():
+            try:
+                reset_client = Client()
+                reset_client.force_login(user)
+                responses["reset"] = reset_client.post(
+                    reverse("agent-conversation-reset", args=[conv_id])
+                )
+            finally:
+                connections.close_all()
+
+        turn_thread = threading.Thread(target=run_turn)
+        for cm in cleanup:
+            # Enter the pause hooks BEFORE the turn starts: the turn thread
+            # must hit the patched hook for ``reached`` to ever fire.
+            cm.__enter__()
+        turn_thread.start()
+        self.assertTrue(reached.wait(timeout=20), "turn never reached pause point")
+        reset_thread = threading.Thread(target=run_reset)
+        reset_thread.start()
+        time.sleep(0.3)  # let the reset block on the turn's row write lock
+        resume.set()
+        turn_thread.join(timeout=30)
+        reset_thread.join(timeout=30)
+        self.assertFalse(turn_thread.is_alive())
+        self.assertFalse(reset_thread.is_alive())
+        for cm in cleanup:
+            cm.__exit__(None, None, None)
+        return responses
+
+    def test_reset_landing_between_claim_and_patch_write_lands_after_commit(self):
+        """MAJOR-2 two-connection probe: a reset racing the guarded window
+        after the guard claim cannot turn the reply into ``500 invalid_output``;
+        the turn completes (patch + reply in one commit) and the reset's
+        bounded retry lands it after that commit."""
+        user, client, conv_id = self._setup_user_and_conversation("probe1")
+        provider = self._build_orchestrator_provider(user, self._patch_gateway({}))
+
+        responses = self._race_turn_against_reset(
+            user, provider, conv_id, pause_in_pref_write=True
+        )
+
+        self.assertEqual(responses["turn"].status_code, 201)
+        self.assertEqual(responses["reset"].status_code, 201)
+        # The patch and the reply committed together inside the guarded
+        # transaction — no 500, no lost patch.
+        stored = UserPreference.objects.get(user=user)
+        self.assertEqual(stored.preferences["notes"], "late patch")
+        old = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertEqual(old.messages.filter(role="assistant").count(), 1)
+        # The reset then closed the conversation and created a fresh one.
+        self.assertFalse(old.active)
+        fresh = JobSearchConversation.objects.filter(owner=user, active=True).first()
+        self.assertIsNotNone(fresh)
+        self.assertNotEqual(fresh.pk, conv_id)
+
+    def test_reset_landing_after_patch_write_blocks_until_single_commit(self):
+        """MAJOR-1 (reviewer repro): a reset landing after the patch write but
+        before the single commit blocks until the commit — the patch and the
+        reply persist together on the still-active conversation, and the reset
+        closes it afterwards. The old post-patch/pre-reply window (patch
+        committed, reply discarded with 409) is gone."""
+        user, client, conv_id = self._setup_user_and_conversation("probe2")
+
+        responses = self._race_turn_against_reset(
+            user, None, conv_id, pause_in_pref_write=False
+        )
+
+        self.assertEqual(responses["turn"].status_code, 201)
+        self.assertEqual(responses["reset"].status_code, 201)
+        stored = UserPreference.objects.get(user=user)
+        self.assertEqual(stored.preferences["notes"], "late patch")
+        old = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertEqual(old.messages.filter(role="assistant").count(), 1)
+        self.assertFalse(old.active)
+        fresh = JobSearchConversation.objects.filter(owner=user, active=True).first()
+        self.assertIsNotNone(fresh)
+        self.assertNotEqual(fresh.pk, conv_id)
+
+    def test_reset_completing_before_guard_claim_yields_retryable_409(self):
+        """A reset fully completing before the guard claim aborts the whole
+        turn: 409 ``conversation_closed``, neither patch nor reply persisted."""
+        from django.db import connections
+
+        user, client, conv_id = self._setup_user_and_conversation("probe3")
+        reached = threading.Event()
+        resume = threading.Event()
+        responses = {}
+        gateway_payload = {
+            "message": "Noted your preference.",
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [],
+            "preference_patch": {"set": {"notes": "late patch"}},
+        }
+
+        class PausingGateway:
+            def complete(self, request):
+                reached.set()
+                if not resume.wait(timeout=20):
+                    raise RuntimeError("turn was never resumed")
+                return self.__class__._response(gateway_payload)
+
+            @staticmethod
+            def _response(payload):
+                from crank.agents.job_search.gateway import GatewayResponse
+
+                return GatewayResponse(text=json.dumps(payload))
+
+            def close(self):
+                return None
+
+        provider = self._build_orchestrator_provider(user, PausingGateway())
+        key = str(uuid.uuid4())
+
+        def run_turn():
+            try:
+                turn_client = Client()
+                turn_client.force_login(user)
+                with self._patch_provider(provider):
+                    responses["turn"] = turn_client.post(
+                        reverse("agent-conversation-detail", args=[conv_id]),
+                        data=json.dumps({"content": "prefer remote", "idempotency_key": key}),
+                        content_type="application/json",
+                    )
+            finally:
+                connections.close_all()
+
+        def run_reset():
+            try:
+                reset_client = Client()
+                reset_client.force_login(user)
+                responses["reset"] = reset_client.post(
+                    reverse("agent-conversation-reset", args=[conv_id])
+                )
+            finally:
+                connections.close_all()
+
+        turn_thread = threading.Thread(target=run_turn)
+        turn_thread.start()
+        self.assertTrue(reached.wait(timeout=20), "turn never reached the gateway")
+        # The turn holds NO database transaction here (the guarded window has
+        # not started), so the reset completes immediately.
+        reset_thread = threading.Thread(target=run_reset)
+        reset_thread.start()
+        reset_thread.join(timeout=20)
+        resume.set()
+        turn_thread.join(timeout=30)
+        self.assertFalse(turn_thread.is_alive())
+
+        self.assertEqual(responses["reset"].status_code, 201)
+        self.assertEqual(responses["turn"].status_code, 409)
+        self.assertEqual(responses["turn"].json()["error"]["type"], "conversation_closed")
+        stored = UserPreference.objects.get(user=user)
+        self.assertEqual(stored.preferences["notes"], "")
+        old = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertFalse(old.active)
+        self.assertEqual(old.messages.filter(role="assistant").count(), 0)
+        self.assertEqual(old.messages.filter(role="user").count(), 1)
+
+    @patch("crank.views.job_search.monitoring.record_event")
+    def test_outer_commit_lock_contention_maps_to_retryable_409(self, record):
+        """Review round 3 MAJOR: lock contention raised by the guarded
+        transaction's own COMMIT — the outer boundary, AFTER every inner
+        guarded block has run and been mapped — maps to the retryable 409
+        ``conversation_closed`` envelope, never ``500 invalid_output``.
+
+        Reviewer repro pattern (two real SQLite connections): connection B
+        holds a read transaction (a SHARED lock); connection A (the turn)
+        claims the conversation row and writes patch + reply (RESERVED),
+        then A's COMMIT needs the EXCLUSIVE lock B is blocking and fails
+        with ``database is locked`` at the outer commit."""
+        from django.db import connections, transaction
+
+        user, client, conv_id = self._setup_user_and_conversation("probe4")
+        reached = threading.Event()
+        resume = threading.Event()
+        responses = {}
+        key = str(uuid.uuid4())
+        patch_payload = {
+            "message": "Noted your preference.",
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [],
+            "preference_patch": {"set": {"notes": "commit-contended patch"}},
+        }
+        real_get_or_create = JobSearchMessage.objects.get_or_create
+
+        def paused_get_or_create(*args, **kwargs):
+            # Pause AFTER the guard claim + patch write (A holds RESERVED),
+            # before the reply insert: the outer commit still lies ahead.
+            if kwargs.get("role") == JobSearchMessage.Role.ASSISTANT:
+                reached.set()
+                if not resume.wait(timeout=30):
+                    raise RuntimeError("turn was never resumed")
+            return real_get_or_create(*args, **kwargs)
+
+        provider = self._build_orchestrator_provider(
+            user, self._patch_gateway(patch_payload)
+        )
+
+        def run_turn():
+            try:
+                turn_client = Client()
+                turn_client.force_login(user)
+                with patch.object(
+                    JobSearchMessage.objects, "get_or_create", paused_get_or_create
+                ):
+                    with self._patch_provider(provider):
+                        responses["turn"] = turn_client.post(
+                            reverse("agent-conversation-detail", args=[conv_id]),
+                            data=json.dumps(
+                                {"content": "prefer remote", "idempotency_key": key}
+                            ),
+                            content_type="application/json",
+                        )
+            finally:
+                connections.close_all()
+
+        turn_thread = threading.Thread(target=run_turn)
+        turn_thread.start()
+        self.assertTrue(reached.wait(timeout=20), "turn never reached pause point")
+
+        # Connection B (this thread): hold a read transaction — a SHARED
+        # lock — while A holds RESERVED. SHARED is compatible with RESERVED,
+        # so B acquires it; A's COMMIT then needs EXCLUSIVE and cannot get
+        # it while B's read transaction stays open.
+        holder = transaction.atomic()
+        holder.__enter__()
+        list(JobSearchConversation.objects.filter(pk=conv_id))
+        try:
+            resume.set()
+            turn_thread.join(timeout=60)
+            self.assertFalse(turn_thread.is_alive())
+            resp = responses["turn"]
+            # The outer-commit contention surfaced as the retryable 409,
+            # not the 500 ``invalid_output`` broad handler.
+            self.assertEqual(resp.status_code, 409)
+            self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
+            calls = [
+                c for c in record.call_args_list if c.args[0] == "interactive_call"
+            ]
+            self.assertTrue(
+                any(
+                    c.args[1].get("reason_code") == "conversation_closed"
+                    for c in calls
+                )
+            )
+        finally:
+            holder.__exit__(None, None, None)
+
+        # The failed commit rolled the whole guarded transaction back: no
+        # patch, no reply; the earlier-committed user turn remains retryable
+        # with the same idempotency key.
+        stored = UserPreference.objects.get(user=user)
+        self.assertEqual(stored.preferences["notes"], "")
+        conv = JobSearchConversation.objects.get(pk=conv_id)
+        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
+        self.assertEqual(conv.messages.filter(role="user").count(), 1)
+        self.assertTrue(conv.active)
+
+
+@override_settings(CACHES=LOCMEM)
 class TurnDeliveryStateTests(TestCase):
     """Turn delivery state machine and serialization (issue #458)."""
 
@@ -2054,7 +3385,7 @@ class TurnDeliveryStateTests(TestCase):
         ):
             resp = self._submit(conv_id, "reply to nowhere", key)
         self.assertEqual(resp.status_code, 409)
-        self.assertEqual(resp.json()["error"]["type"], "conversation_changed")
+        self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
         conv = JobSearchConversation.objects.get(pk=conv_id)
         self.assertFalse(conv.active)
         # The late reply was NOT attached to the (now archived) conversation.
@@ -2091,7 +3422,7 @@ class TurnDeliveryStateTests(TestCase):
         ):
             resp = self._submit(conv_id, "reply to nowhere", key)
         self.assertEqual(resp.status_code, 409)
-        self.assertEqual(resp.json()["error"]["type"], "conversation_changed")
+        self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
         conv = JobSearchConversation.objects.get(pk=conv_id)
         self.assertFalse(conv.active)
         # The late reply was NOT attached to the (now archived) conversation.
@@ -2120,7 +3451,7 @@ class TurnDeliveryStateTests(TestCase):
         ):
             resp = self._submit(conv_id, "reply to nowhere", key)
         self.assertEqual(resp.status_code, 409)
-        self.assertEqual(resp.json()["error"]["type"], "conversation_changed")
+        self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
         self.assertFalse(JobSearchConversation.objects.filter(pk=conv_id).exists())
         # The late reply was not persisted anywhere.
         self.assertEqual(
@@ -2155,7 +3486,7 @@ class TurnDeliveryStateTests(TestCase):
         ):
             resp = self._submit(conv_id, "reply to nowhere", key)
         self.assertEqual(resp.status_code, 409)
-        self.assertEqual(resp.json()["error"]["type"], "conversation_changed")
+        self.assertEqual(resp.json()["error"]["type"], "conversation_closed")
         self.assertFalse(JobSearchConversation.objects.filter(pk=conv_id).exists())
         self.assertEqual(
             JobSearchMessage.objects.filter(
@@ -2416,3 +3747,104 @@ class TurnClaimMySQLConcurrencyTests(TransactionTestCase):
         )
         self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.COMPLETED)
         self.assertEqual(turn.attempt_count, 1)
+
+
+@override_settings(CACHES=LOCMEM)
+class RetryableConflictTurnStateTests(TestCase):
+    """Retryable 409s release the turn anchor (issues #458 + #487).
+
+    ``preference_stale`` and ``conversation_closed`` keep the user turn
+    retryable with the same idempotency key, so the anchor must end
+    ``failed`` — a ``pending`` claim would answer every retry with
+    ``turn_in_progress`` until its lease expired.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user("conflict", "c@example.com", "pw")
+        self.client = Client()
+        self.client.force_login(self.user)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _start_conversation(self):
+        resp = self.client.post(
+            reverse("agent-conversation-list"),
+            data=json.dumps({"create_new": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        return resp.json()["id"]
+
+    def _submit(self, conversation_id, key):
+        return self.client.post(
+            reverse("agent-conversation-detail", args=[conversation_id]),
+            data=json.dumps({"content": "hello", "idempotency_key": key}),
+            content_type="application/json",
+        )
+
+    def _assert_failed_then_retryable(self, error, error_type, failure_code):
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        with patch.object(JobSearchService, "run_turn", side_effect=error):
+            resp = self._submit(conv_id, key)
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], error_type)
+        turn = JobSearchTurn.objects.get(conversation_id=conv_id, turn_key=key)
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.FAILED)
+        self.assertEqual(turn.failure_code, failure_code)
+        self.assertIsNone(turn.lease_expires_at)
+
+        # The same key re-claims the turn instead of 409 turn_in_progress.
+        with patch.object(
+            JobSearchService, "run_turn", return_value=("retried", False, None)
+        ):
+            retry = self._submit(conv_id, key)
+        self.assertEqual(retry.status_code, 201)
+        turn.refresh_from_db()
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.COMPLETED)
+        self.assertEqual(turn.attempt_count, 2)
+
+    def test_preference_stale_releases_turn_for_same_key_retry(self):
+        from crank.agents.job_search.demo import ServicePreferenceStale
+
+        self._assert_failed_then_retryable(
+            ServicePreferenceStale("stale"), "preference_stale", ""
+        )
+
+    def test_preference_version_unavailable_releases_turn(self):
+        from crank.agents.job_search.demo import ServicePreferenceVersionUnavailable
+
+        self._assert_failed_then_retryable(
+            ServicePreferenceVersionUnavailable("no baseline"), "preference_stale", ""
+        )
+
+    def test_conversation_closed_releases_turn(self):
+        from crank.agents.job_search.demo import ServiceConversationClosed
+
+        self._assert_failed_then_retryable(
+            ServiceConversationClosed("closed"),
+            "conversation_closed",
+            JobSearchTurn.FailureCode.CONVERSATION_GONE,
+        )
+
+    def test_release_tolerates_lock_contention(self):
+        from django.db import OperationalError
+
+        with patch.object(
+            job_search_views, "_finalize_turn",
+            side_effect=OperationalError("database is locked"),
+        ):
+            # Swallowed: lease expiry recovers the turn instead of a 500.
+            job_search_views._release_failed_turn(1)
+
+    def test_release_propagates_other_backend_errors(self):
+        from django.db import OperationalError
+
+        with patch.object(
+            job_search_views, "_finalize_turn",
+            side_effect=OperationalError("connection refused"),
+        ):
+            with self.assertRaises(OperationalError):
+                job_search_views._release_failed_turn(1)
