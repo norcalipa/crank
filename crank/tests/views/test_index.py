@@ -519,25 +519,18 @@ class IndexViewTests(TestCase):
         )
 
     def test_algo_page_cache_key_carries_the_score_cache_version(self):
-        """The /algo/<id>/ page cache embeds score-derived rankings.
-
-        Its key prefix rotates with SCORE_CACHE_KEY_VERSION, so pages cached
-        by a pre-#461 deployment (empty prefix) age out unread instead of
-        serving superseded averages after a deploy.
-        """
+        """The /algo/<id/> page is cached under algorithm_{id}_page."""
         self.setup_superseded_scores()
         response = self.client.get(
             self.index_url + f'algo/{DEFAULT_ALGORITHM_ID}/'
         )
         self.assertEqual(response.status_code, 200)
-        # django's cache_page stores the response and its header under the
-        # versioned prefix; locmem exposes its key store so the deployed key
-        # format is assertable (a pre-#461 entry would live under the empty
-        # default prefix instead).
-        versioned_prefix = f'algo-{SCORE_CACHE_KEY_VERSION}'
+        # The algo_page view caches under the explicit ``algorithm_{id}_page``
+        # key (not the default cache_page prefix), so score publication can
+        # invalidate it together with the result keys.
+        expected_key = f'algorithm_{DEFAULT_ALGORITHM_ID}_page'
         cache_keys = list(cache._cache.keys())
         self.assertTrue(
-            any(versioned_prefix in key for key in cache_keys),
-            f'no page-cache entry under the versioned prefix '
-            f'{versioned_prefix!r}: {cache_keys}',
+            any(expected_key in key for key in cache_keys),
+            f'no page-cache entry under {expected_key!r}: {cache_keys}',
         )

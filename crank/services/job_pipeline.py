@@ -305,18 +305,18 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
             .distinct()
         )
         try:
-            result, resolved, unresolved, skipped = _ingest_source(
-                source, options, before_ids
-            )
-            if skipped:
-                counts["sources_skipped"] += 1
-                continue
             # One transaction per source stage: the accepted writes and their
             # publication events commit together, so an outbox insert failure
             # (or any crash inside the block) rolls the writes back and
             # committed data can never be left without its event. A source
             # with partial row failures still publishes the rows it accepted.
             with transaction.atomic():
+                result, resolved, unresolved, skipped = _ingest_source(
+                    source, options, before_ids
+                )
+                if skipped:
+                    counts["sources_skipped"] += 1
+                    continue
                 if int(result.ingested) or int(result.updated) or resolved or unresolved:
                     _record_source_publication(
                         source, result, resolved, unresolved, before_org_ids

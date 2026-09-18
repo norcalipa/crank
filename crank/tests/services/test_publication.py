@@ -331,7 +331,9 @@ class SweepTests(TestCase):
         )
         keys = publication.affected_keys(event)
         self.assertIn(f"organization_provenance_api_{self.org.id}", keys)
-        self.assertIn(f"algorithm_{self.algorithm.id}_results", keys)
+        self.assertIn(
+            score_services.algorithm_results_cache_key(self.algorithm.id), keys
+        )
         self.assertIn(f"algorithm_{self.algorithm.id}_page", keys)
 
     def test_affected_keys_for_organization_event_include_provenance_key(self):

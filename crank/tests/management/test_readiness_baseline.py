@@ -226,12 +226,13 @@ class ReadinessBaselineCommandTests(TestCase):
         self.assertEqual(leaves["pending"], [])
         self.assertEqual(leaves["pending_count"], 0)
         self.assertFalse(leaves["truncated"])
-        # The exact deployed revision: the crank app's applied leaf migrations.
-        # 0033 is the two-parent merge node joining #458's 0030_jobsearch_turn_state
-        # with #495's 0032_score_tuple_anchor; 0031_publicationevent (issue #470)
-        # is a sibling leaf off 0029_merge pending a merge migration.
-        self.assertIn("crank.0033_merge_20260915_0828", leaves["applied"])
-        self.assertIn("crank.0031_publicationevent", leaves["applied"])
+        # The exact deployed revision: the crank app's applied leaf migration.
+        # 0034_merge_0031_publicationevent_0033_merge_20260915_0828 merged
+        # the two leaves (0031 from #470, 0033 from #495/#496) into one head.
+        self.assertIn(
+            "crank.0034_merge_0031_publicationevent_0033_merge_20260915_0828",
+            leaves["applied"],
+        )
         self.assertEqual(leaves["applied_count"], len(leaves["applied"]))
 
     def test_migration_leaves_fail_closed_on_db_error(self):

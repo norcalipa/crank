@@ -668,19 +668,27 @@ class PublicCacheSeparationTests(TestCase):
             value = cache.get(raw_key.replace(":1:", "", 1))
             assert secret not in repr(value)
 
-    def test_algo_index_view_page_cache_is_anonymous_only_and_public(self):
-        """The ``algo/<id>/`` IndexView page cache never carries account chrome.
+    def test_algo_index_view_page_cache_is_auth_neutral_and_public(self):
+        """The ``algo/<id>/`` shared page cache never carries account chrome.
 
-        Issue #487 review, MINOR-1: warming this surface and requesting as a
-        second account proved the shared ``cache_page`` entry previously
-        served the first requester's username to every later visitor (the nav
-        chrome renders ``{{ user.username }}``). The page cache is therefore
-        anonymous-only (``cache_page_if_anonymous_method``): anonymous visits
-        share one public entry (the fetch counter pins the hit), while
-        authenticated accounts render fresh and see only their own chrome —
-        never each other's.
+        Issue #487 review, MINOR-1: the nav chrome renders
+        ``{{ user.username }}``, so a shared ``cache_page`` entry previously
+        served the first requester's username to every later visitor. Issue
+        #470 supersedes the anonymous-only entry with an explicitly keyed,
+        auth-neutral shell cached under ``algorithm_<id>_page``: the
+        server-rendered shell contains no username at all (auth controls are
+        hidden and hydrated client-side from whoami), so one entry safely
+        serves every visitor. This test pins that invariant: a published
+        algorithm's page is served from the shared entry to anonymous and
+        authenticated visitors alike (the fetch counter pins the hit), and
+        no account's username ever appears in any served payload.
         """
+        from crank.models import ScoreAlgorithm
         from crank.views.index import IndexView
+
+        ScoreAlgorithm.objects.create(
+            id=5, name="Security Algorithm", description_content="test.md", status=1
+        )
 
         calls = {"fetches": 0}
         real_get_queryset = IndexView.get_queryset
@@ -690,48 +698,46 @@ class PublicCacheSeparationTests(TestCase):
             return real_get_queryset(self)
 
         url = reverse("index", args=[5])
-        # The class setUp logs in alice; the page cache is anonymous-only now,
-        # so start from a clean anonymous session.
+        # The class setUp logs in alice; start from a clean anonymous session
+        # so the first visit warms the shared entry.
         self.client.logout()
         with patch.object(IndexView, "get_queryset", counting_get_queryset):
-            # Anonymous visit warms the shared page cache.
             first = self.client.get(url)
             assert first.status_code == 200
             assert calls["fetches"] == 1
             again = self.client.get(url)
             assert again.status_code == 200
-            assert calls["fetches"] == 1  # cache hit for the second anonymous visit
+            assert calls["fetches"] == 1  # shared-entry hit for the second visit
             assert first.content == again.content
 
-            # Authenticated accounts render fresh: they never read the shared
-            # entry (which would serve someone else's chrome) and never
-            # poison it with their own.
+            # Authenticated accounts are served the same auth-neutral entry —
+            # the shell has no username to leak, so the shared hit is safe.
             self._login(self.alice)
             alice_resp = self.client.get(url)
             assert alice_resp.status_code == 200
-            assert calls["fetches"] == 2
+            assert calls["fetches"] == 1  # still the shared entry
             self._login(self.bob)
             bob_resp = self.client.get(url)
             assert bob_resp.status_code == 200
-            assert calls["fetches"] == 3
+            assert calls["fetches"] == 1
 
-            # The shared entry is still the anonymous, username-free payload.
+            # The shared entry is still the username-free shell.
             self.client.logout()
             replay = self.client.get(url)
             assert replay.status_code == 200
-            assert calls["fetches"] == 3  # still the warmed entry
+            assert calls["fetches"] == 1
             assert replay.content == first.content
 
-        # Each account sees only its own chrome; no cross-account leakage.
-        assert b"cachealice" in alice_resp.content
-        assert b"cachebob" not in alice_resp.content
-        assert b"cachebob" in bob_resp.content
-        assert b"cachealice" not in bob_resp.content
-        # The shared public cache entry contains no username at all.
-        assert b"cachealice" not in first.content
-        assert b"cachebob" not in first.content
-        assert b"cachealice" not in replay.content
-        assert b"cachebob" not in replay.content
+        # Every visitor is served the identical auth-neutral shell; no
+        # account's username is ever served from the shared cache entry.
+        assert alice_resp.content == bob_resp.content == first.content
+        for content in (first.content, alice_resp.content, bob_resp.content, replay.content):
+            assert b"cachealice" not in content
+            assert b"cachebob" not in content
+        # The auth controls are present but hidden — hydrated client-side —
+        # so the served shell carries no server-rendered account identity.
+        assert b"data-nav-auth-only" in first.content
+        assert b"data-nav-anon-only" in first.content
 
     def test_funding_choices_second_account_served_from_cache(self):
         """Funding choices: account B receives the warmed public entry even

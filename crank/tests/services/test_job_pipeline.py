@@ -229,8 +229,8 @@ class JobPipelineServiceTests(TestCase):
         self._listing(source, other, "ext-2")
 
         with patch(
-            "crank.services.job_pipeline.ingest_jobs",
-            return_value=JobIngestResult(ingested=3, updated=1),
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(JobIngestResult(ingested=3, updated=1)),
         ), patch(
             "crank.services.job_pipeline._resolve_source_listings",
             return_value=(3, 0),
@@ -260,8 +260,8 @@ class JobPipelineServiceTests(TestCase):
         self.source("failed")
 
         with patch(
-            "crank.services.job_pipeline.ingest_jobs",
-            return_value=JobIngestResult(errors=1),
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(JobIngestResult(errors=1)),
         ), patch(
             "crank.services.job_pipeline._resolve_source_listings",
             return_value=(0, 0),
@@ -290,10 +290,10 @@ class JobPipelineServiceTests(TestCase):
             self._listing(source, organization, f"ext-{index}")
 
         with patch(
-            "crank.services.job_pipeline.ingest_jobs",
-            return_value=JobIngestResult(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(JobIngestResult(
                 ingested=publication.MAX_PAYLOAD_ORGANIZATION_IDS + 1
-            ),
+            )),
         ), patch(
             "crank.services.job_pipeline._resolve_source_listings",
             return_value=(0, 0),
@@ -342,8 +342,8 @@ class JobPipelineServiceTests(TestCase):
             return (1, 0)
 
         with patch(
-            "crank.services.job_pipeline.ingest_jobs",
-            return_value=JobIngestResult(ingested=1),
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(JobIngestResult(ingested=1)),
         ), patch(
             "crank.services.job_pipeline._resolve_source_listings",
             side_effect=reassign,
@@ -376,8 +376,8 @@ class JobPipelineServiceTests(TestCase):
             return (0, 1)
 
         with patch(
-            "crank.services.job_pipeline.ingest_jobs",
-            return_value=JobIngestResult(ingested=1),
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(JobIngestResult(ingested=1)),
         ), patch(
             "crank.services.job_pipeline._resolve_source_listings",
             side_effect=unresolved,
@@ -403,10 +403,10 @@ class JobPipelineServiceTests(TestCase):
 
         def accepted_ingest(source, query, adapter=None):
             self._listing(source, employer, "ext-atomic")
-            return JobIngestResult(ingested=1)
+            return ingestion(JobIngestResult(ingested=1))
 
         with patch(
-            "crank.services.job_pipeline.ingest_jobs", side_effect=accepted_ingest
+            "crank.services.job_pipeline.ingest_job_source", side_effect=accepted_ingest
         ), patch(
             "crank.services.job_pipeline._resolve_source_listings",
             return_value=(0, 0),
@@ -432,10 +432,10 @@ class JobPipelineServiceTests(TestCase):
 
         def accepted_ingest(source, query, adapter=None):
             self._listing(source, employer, "ext-rollback")
-            return JobIngestResult(ingested=1)
+            return ingestion(JobIngestResult(ingested=1))
 
         with patch(
-            "crank.services.job_pipeline.ingest_jobs", side_effect=accepted_ingest
+            "crank.services.job_pipeline.ingest_job_source", side_effect=accepted_ingest
         ), patch(
             "crank.services.job_pipeline._resolve_source_listings",
             return_value=(0, 0),
@@ -463,8 +463,8 @@ class JobPipelineServiceTests(TestCase):
         self._listing(source, employer, "ext-partial")
 
         with patch(
-            "crank.services.job_pipeline.ingest_jobs",
-            return_value=JobIngestResult(ingested=2, errors=1),
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(JobIngestResult(ingested=2, errors=1)),
         ), patch(
             "crank.services.job_pipeline._resolve_source_listings",
             return_value=(1, 0),

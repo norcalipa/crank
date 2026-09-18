@@ -219,7 +219,7 @@ class RollbackDrillCommandTests(TestCase):
         """Running the drill twice does not duplicate switches or audits."""
         self._call()
         self._call()
-self.assertEqual(CapabilitySwitch.objects.count(), len(ALLOWED_CAPABILITY_KEYS))
+        self.assertEqual(CapabilitySwitch.objects.count(), len(ALLOWED_CAPABILITY_KEYS))
         self.assertEqual(
             OperationalChangeAudit.objects.filter(
                 target_type="rollback_drill"
@@ -246,7 +246,7 @@ self.assertEqual(CapabilitySwitch.objects.count(), len(ALLOWED_CAPABILITY_KEYS))
         with run_type=None.)"""
         from django.core.management.base import CommandError
 
-        extended = frozenset(ALLOWED_CAPABILITY_KEYS | {"publication_consumer"})
+        extended = frozenset(ALLOWED_CAPABILITY_KEYS | {"unwired_key"})
         with patch(
             "crank.models.monitoring.ALLOWED_CAPABILITY_KEYS", extended
         ), patch(
@@ -256,7 +256,7 @@ self.assertEqual(CapabilitySwitch.objects.count(), len(ALLOWED_CAPABILITY_KEYS))
             with self.assertRaises(CommandError):
                 self._call(as_json=True)
         # The unverified key was drilled (switch row exists) but did not pass.
-        switch = CapabilitySwitch.objects.get(key="publication_consumer")
+        switch = CapabilitySwitch.objects.get(key="unwired_key")
         self.assertFalse(switch.enabled)
 
     def test_drill_fails_when_real_gate_not_enforced(self):
