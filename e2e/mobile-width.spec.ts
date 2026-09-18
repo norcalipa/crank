@@ -128,6 +128,42 @@ async function expectHitTestable(page: Page, selector: string, label: string): P
     expect(hit, `${label} must be hit-testable at its own coordinates`).toBe(true);
 }
 
+/**
+ * The live shell renders the hamburger inside a reserved `.app-mobile-topbar`
+ * sticky band (audit follow-up on #456): the toggle participates in normal flow
+ * inside that band instead of floating `position: fixed` over page content, so
+ * it can never overlap rankings headings or chat alerts at phone widths.
+ */
+async function expectTopbarReservesBand(page: Page, contentSelector: string, label: string): Promise<void> {
+    const data = await page.evaluate((sel) => {
+        const topbar = document.querySelector<HTMLElement>('.app-mobile-topbar');
+        const toggle = document.querySelector<HTMLElement>('[data-nav-toggle]');
+        const content = document.querySelector<HTMLElement>(sel);
+        if (!topbar || !toggle || !content) return null;
+        const topbarRect = topbar.getBoundingClientRect();
+        const toggleRect = toggle.getBoundingClientRect();
+        const contentRect = content.getBoundingClientRect();
+        return {
+            topbarPosition: getComputedStyle(topbar).position,
+            topbarHeight: topbarRect.height,
+            topbarBottom: topbarRect.bottom,
+            togglePosition: getComputedStyle(toggle).position,
+            toggleInTopbar: toggle.closest('.app-mobile-topbar') === topbar,
+            toggleRect: {top: toggleRect.top, bottom: toggleRect.bottom, left: toggleRect.left, right: toggleRect.right},
+            contentRect: {top: contentRect.top, bottom: contentRect.bottom, left: contentRect.left, right: contentRect.right},
+        };
+    }, contentSelector);
+    expect(data, `topbar, toggle and ${label} must all exist`).not.toBeNull();
+    expect(data!.topbarPosition, 'topbar is a sticky reserved band').toBe('sticky');
+    expect(data!.topbarHeight, 'topbar reserves a comfortable band').toBeGreaterThanOrEqual(48);
+    expect(data!.togglePosition, 'toggle flows inside the topbar band, not fixed over content').toBe('static');
+    expect(data!.toggleInTopbar, 'toggle is rendered inside .app-mobile-topbar').toBe(true);
+    expect(data!.contentRect.top, `${label} starts below the topbar band`).toBeGreaterThanOrEqual(data!.topbarBottom - 1);
+    const overlapsVertically = data!.toggleRect.bottom > data!.contentRect.top + 1 && data!.toggleRect.top < data!.contentRect.bottom - 1;
+    const overlapsHorizontally = data!.toggleRect.right > data!.contentRect.left + 1 && data!.toggleRect.left < data!.contentRect.right - 1;
+    expect(overlapsVertically && overlapsHorizontally, `toggle must not overlap ${label}`).toBe(false);
+}
+
 const mobileViewports = [320, 375, 390, 430];
 
 for (const width of mobileViewports) {
@@ -141,14 +177,25 @@ for (const width of mobileViewports) {
             await expectNoHorizontalOverflow(page);
             await expectContentSpansViewport(page);
 
+            // The hamburger gets its own reserved band: it must not overlay the
+            // page heading (audit on #456 measured the fixed toggle overlapping
+            // the "Company rankings" heading at every phone width).
+            await expectTopbarReservesBand(page, '#organization-list h1', 'rankings heading');
+
             await expectHitTestable(page, '#organization-search', 'organization search input');
             await expectHitTestable(page, '#acceleratedVesting', 'accelerated vesting checkbox');
             // Mobile shows the card list; the opener is a card article (role=button).
             await expectHitTestable(page, 'article[aria-label^="View details for"]', 'organization card details opener');
 
-            // Long names wrap instead of widening the document.
-            const cardName = page.locator('.organization-card-name').first();
+            // Long names wrap instead of widening the document. Target the
+            // deliberately long fixture record (Zephyr, id 6) — the audit found
+            // this assertion was picking the first short card ("Acme Robotics"),
+            // so it never exercised long-name overflow. The record carries both
+            // spaced words and one unbroken token so `overflow-wrap: anywhere`
+            // is genuinely exercised, not just ordinary space wrapping.
+            const cardName = page.locator('.organization-card-name', {hasText: 'Zephyr Quintessence'}).first();
             await expect(cardName).toBeVisible();
+            await expect(cardName).toContainText('NanotechnologicalBiopharmaceuticalResearchLaboratories');
             const nameOverflow = await cardName.evaluate((el) => {
                 const style = getComputedStyle(el);
                 return {wrap: style.overflowWrap || style.wordWrap, scrollW: el.scrollWidth, clientW: el.clientWidth};
@@ -163,6 +210,10 @@ for (const width of mobileViewports) {
             await expect(page.locator('article[aria-label="Your message"]')).toHaveCount(1);
             await expectNoHorizontalOverflow(page);
             await expectContentSpansViewport(page);
+
+            // The reserved topbar band must also clear Django message alerts
+            // (the audit measured the fixed toggle overlapping the chat alert).
+            await expectTopbarReservesBand(page, '.app-messages .alert', 'chat message alert');
 
             const composer = page.locator('textarea[aria-label="Message"]');
             await expect(composer).toBeVisible();
