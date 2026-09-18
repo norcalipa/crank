@@ -258,15 +258,22 @@ or deletes records to recover an unavailable provider, and it must leave
 direct controls, stored conversations, preferences, and accepted data
 usable.
 
-## Sibling migration leaves (PR #495 / PR #496)
+## Sibling migration leaves and merge order
 
-`0030_jobsearch_turn_state` (PR #496) and `0032_score_tuple_anchor`
-(PR #495) are sibling leaves: both declare `0029_merge_20260815_1645` as
-their only parent, so the migration graph forks into two parallel heads. The
-agreed ordering contract: **whoever merges second adds a dependency/merge
-migration** on top of both leaves so the graph returns to a single truthful
-head — `makemigrations --check` (and the CI gate above) fails loudly on the
-forked graph until that merge migration exists. Do not renumber or rewrite an
-already-applied leaf to fake a linear history; add the merge node instead,
-and record the resulting ordering in the deployment record for the release
-that carries both changes.
+`0030_jobsearch_turn_state` (PR #496), `0031_publicationevent` (PR #504,
+issue #470), and `0032_score_tuple_anchor` (PR #495) are sibling leaves:
+all declare `0029_merge_20260815_1645` as their only parent, so the
+migration graph forks into three parallel heads. The agreed ordering
+contract: **whoever merges second or third adds a dependency/merge
+migration** on top of the landed leaves so the graph returns to a single
+truthful head — `makemigrations --check` (and the CI gate above) fails
+loudly on the forked graph until that merge migration exists. Do not
+renumber or rewrite an already-applied leaf to fake a linear history; add
+the merge node instead, and record the resulting ordering in the deployment
+record for the release that carries both changes. This PR (#504 / #470) was
+created as the third sibling off `0029_merge_20260815_1645`; when #458 or
+#461 lands first, whichever branch lands later updates `0031`'s dependency
+from `0029_merge_20260815_1645` to the then-latest landed head (likely
+`0030_jobsearch_turn_state` or `0032_score_tuple_anchor`) and adds a
+numbered merge migration if a head split remains, keeping
+`makemigrations --check --dry-run` clean on the merged result.

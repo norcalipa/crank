@@ -79,13 +79,18 @@ class NavigationShellTests(TestCase):
 
     # --- Authenticated visibility --------------------------------------
 
-    def test_authenticated_sees_logout_and_username(self):
+    def test_authenticated_sees_logout_and_hydration_hook(self):
+        """Authenticated shell shows Logout and the account hook, but never
+        the username server-side: the shared page cache serves this shell to
+        every account (issue #470), so the client hydrates the label from the
+        uncached whoami endpoint."""
         user = self._create_user()
         self.client.force_login(user)
         response = self.client.get(reverse("index"))
         self.assertContains(response, "Logout")
-        self.assertContains(response, "testuser")
+        self.assertNotContains(response, "testuser")
         self.assertContains(response, 'id="nav-account"')
+        self.assertContains(response, "data-nav-user-label")
 
     def test_authenticated_non_staff_sees_admin_link(self):
         """Authenticated users see Admin per issue requirement (authorization
@@ -126,12 +131,37 @@ class NavigationShellTests(TestCase):
 
     # --- CSRF-safe logout -----------------------------------------------
 
-    def test_logout_form_has_csrf_token(self):
+    def test_logout_form_embeds_csrf_token_server_side(self):
+        """Logout is a normal CSRF-checked POST (the global exemption was
+        removed): server-rendered shells embed a per-session token in the
+        logout form. Only the shared full-page-cached shell stays token-free
+        and submits via app-nav.js with the CSRF cookie."""
         user = self._create_user()
         self.client.force_login(user)
         response = self.client.get(reverse("index"))
         self.assertContains(response, 'action="/accounts/logout/"')
         self.assertContains(response, "csrfmiddlewaretoken")
+
+    def test_cached_algo_shell_is_token_free_and_auth_neutral(self):
+        """The full-page-cached /algo/ shell embeds no session-bound CSRF
+        token and renders the same auth-neutral markup for anonymous and
+        authenticated accounts: both auth control groups present but
+        hidden, revealed per request by app-nav.js from whoami."""
+        user = self._create_user()
+        cache.clear()
+        anonymous = self.client.get("/algo/1/")
+        self.assertEqual(anonymous.status_code, 200)
+        self.assertContains(anonymous, "data-nav-auth-only")
+        self.assertContains(anonymous, "data-nav-anon-only")
+        self.assertNotContains(anonymous, "csrfmiddlewaretoken")
+        self.assertNotContains(anonymous, "testuser")
+        cache.delete("algorithm_1_page")
+        self.client.force_login(user)
+        authed = self.client.get("/algo/1/")
+        self.assertEqual(authed.status_code, 200)
+        self.assertEqual(authed.content, anonymous.content)
+        self.assertNotContains(authed, "csrfmiddlewaretoken")
+        self.assertContains(authed, 'id="nav-admin"')
 
     # --- Mobile drawer markup -------------------------------------------
 

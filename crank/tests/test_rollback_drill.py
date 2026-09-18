@@ -66,10 +66,27 @@ class RollbackDrillCommandTests(TestCase):
     def test_drill_creates_disabled_switches(self):
         """The drill creates CapabilitySwitch entries with enabled=False."""
         self._call()
-        for key in ("interactive_agent", "gather_scores", "job_pipeline"):
+        for key in (
+            "interactive_agent",
+            "gather_scores",
+            "job_pipeline",
+            "publication_consumer",
+        ):
             switch = CapabilitySwitch.objects.get(key=key)
             self.assertFalse(switch.enabled)
             self.assertIn("rollback drill", switch.note)
+
+    def test_drill_blocks_publication_consumer_capability(self):
+        """The drilled publication_consumer switch blocks the capability."""
+        from crank.services import monitoring
+
+        self.assertTrue(
+            monitoring.capability_enabled("publication_consumer", default=True)
+        )
+        self._call()
+        self.assertFalse(
+            monitoring.capability_enabled("publication_consumer", default=True)
+        )
 
     def test_drill_disables_existing_enabled_switch(self):
         """If a switch already exists and is enabled, the drill disables it."""
@@ -229,7 +246,7 @@ class RollbackDrillCommandTests(TestCase):
         with run_type=None.)"""
         from django.core.management.base import CommandError
 
-        extended = frozenset(ALLOWED_CAPABILITY_KEYS | {"publication_consumer"})
+        extended = frozenset(ALLOWED_CAPABILITY_KEYS | {"unwired_key"})
         with patch(
             "crank.models.monitoring.ALLOWED_CAPABILITY_KEYS", extended
         ), patch(
@@ -239,7 +256,7 @@ class RollbackDrillCommandTests(TestCase):
             with self.assertRaises(CommandError):
                 self._call(as_json=True)
         # The unverified key was drilled (switch row exists) but did not pass.
-        switch = CapabilitySwitch.objects.get(key="publication_consumer")
+        switch = CapabilitySwitch.objects.get(key="unwired_key")
         self.assertFalse(switch.enabled)
 
     def test_drill_fails_when_real_gate_not_enforced(self):

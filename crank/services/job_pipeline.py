@@ -10,6 +10,7 @@ import time
 from typing import Any, Mapping
 
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 
 from crank.agents.jobs.base import JobSourceQuery
@@ -21,7 +22,8 @@ from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
 from crank.models.agent_run import AgentRun
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.preference import UserPreference, default_preferences
-from crank.services import agent_runs
+from crank.models.publication import PublicationEvent
+from crank.services import agent_runs, publication
 from crank.services.job_ingest import ingest_job_source
 
 logger = logging.getLogger(__name__)
@@ -154,6 +156,57 @@ def _resolve_source_listings(source: Any, before_ids: set[int]) -> tuple[int, in
     return resolved, unresolved
 
 
+def _record_source_publication(source, result, resolved, unresolved, before_org_ids):
+    """Record bounded listing publication events for one ingested source.
+
+    One event per bounded chunk of the deduplicated affected organization
+    ids (never per listing): the sweep unions affected keys across pending
+    events, so a source mapped to more organizations than one payload chunk
+    holds still publishes every organization — no id is ever silently
+    dropped — and downstream recompute (#462) can consume the events without
+    per-row event explosion. The affected set is the union of the source's
+    pre-stage organization ids and its post-stage ones: a listing reassigned
+    from organization A to B (or unresolved away from A) makes A affected
+    even though it no longer maps to any of the source's listings, and its
+    caches would otherwise keep serving stale listing-derived data. Must run
+    inside the same transaction as the source's accepted writes so the
+    events commit exactly when the writes commit.
+    """
+    organization_ids = set(
+        JobListing.all_objects.filter(
+            source=source, organization__isnull=False
+        )
+        # order_by() clears the model's default ordering, which would
+        # otherwise add last_seen_at/id to the SELECT and defeat DISTINCT.
+        .order_by()
+        .values_list("organization_id", flat=True)
+        .distinct()
+    )
+    organization_ids.update(before_org_ids)
+    organization_ids = sorted(organization_ids)
+    bound = publication.MAX_PAYLOAD_ORGANIZATION_IDS
+    chunks = [
+        organization_ids[index : index + bound]
+        for index in range(0, len(organization_ids), bound)
+    ] or [[]]
+    for chunk_index, organization_ids_chunk in enumerate(chunks):
+        publication.record_event(
+            target_type=PublicationEvent.TargetType.LISTING,
+            target_id=source.pk,
+            event_kind=PublicationEvent.EventKind.INGESTED,
+            payload={
+                "source_key": source.adapter_key,
+                "ingested": int(result.ingested),
+                "updated": int(result.updated),
+                "resolved": resolved,
+                "unresolved": unresolved,
+                "organization_ids": organization_ids_chunk,
+                "chunk_index": chunk_index,
+                "chunk_count": len(chunks),
+            },
+        )
+
+
 def _ingest_source(
     source: Any, options: Mapping[str, Any], before_ids: set[int]
 ) -> tuple[JobIngestResult | None, int, int, bool]:
@@ -239,13 +292,35 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
         before_ids = set(
             JobListing.all_objects.filter(source=source).values_list("pk", flat=True)
         )
-        try:
-            result, resolved, unresolved, skipped = _ingest_source(
-                source, options, before_ids
+        # Snapshot the source's pre-stage organization ids too: a listing
+        # reassigned or unresolved during this stage makes its *former*
+        # organization affected, and only the union of the before/after ids
+        # covers every organization whose caches need invalidation.
+        before_org_ids = set(
+            JobListing.all_objects.filter(
+                source=source, organization__isnull=False
             )
-            if skipped:
-                counts["sources_skipped"] += 1
-                continue
+            .order_by()
+            .values_list("organization_id", flat=True)
+            .distinct()
+        )
+        try:
+            # One transaction per source stage: the accepted writes and their
+            # publication events commit together, so an outbox insert failure
+            # (or any crash inside the block) rolls the writes back and
+            # committed data can never be left without its event. A source
+            # with partial row failures still publishes the rows it accepted.
+            with transaction.atomic():
+                result, resolved, unresolved, skipped = _ingest_source(
+                    source, options, before_ids
+                )
+                if skipped:
+                    counts["sources_skipped"] += 1
+                    continue
+                if int(result.ingested) or int(result.updated) or resolved or unresolved:
+                    _record_source_publication(
+                        source, result, resolved, unresolved, before_org_ids
+                    )
             counts["listings_ingested"] += int(result.ingested)
             counts["listings_updated"] += int(result.updated)
             counts["employers_resolved"] += resolved

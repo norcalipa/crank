@@ -26,6 +26,7 @@ from crank.auth import login_required_with_expiry
 from crank.decorators import cache_page_if_anonymous_method
 from crank.services.scores import SCORE_CACHE_KEY_VERSION
 from crank.views.api import (
+    account_whoami,
     organization_detail,
     organization_provenance,
     organization_scores,
@@ -35,7 +36,7 @@ from crank.views.company_requests import company_requests
 from crank.views.fundinground import FundingRoundChoicesView
 from crank.views.health import readiness
 from crank.views.help import HelpView, PrivacyView
-from crank.views.index import IndexView
+from crank.views.index import IndexView, algo_page
 from crank.views.job_matches import (
     job_match_detail,
     job_match_dismiss,
@@ -61,23 +62,18 @@ urlpatterns = [
     path("healthz/ready/", readiness, name="readiness"),
     path("", IndexView.as_view(), name="index"),
     path("admin/", admin.site.urls),
-    # The rankings page is the only ``cache_page``-decorated HTML view, and its
-    # shared navigation chrome renders the signed-in account's username — so
-    # the page cache must be anonymous-only (the established
-    # ``cache_page_if_anonymous_method`` pattern). Caching it for everyone
-    # served the first authenticated requester's username to every later
-    # visitor from the shared entry (issue #487 review, MINOR-1); anonymous
-    # traffic keeps the page cache, authenticated requests render fresh and
-    # never read or poison the shared entry.
-    # The page also embeds score-derived rankings, so its key prefix rotates
-    # with the score cache version: pages rendered by a pre-#461 deployment
-    # (empty prefix) age out unread instead of serving superseded averages
-    # after deploy. The attribute-only choices endpoints below carry no score
-    # data and keep the default prefix.
-    path("algo/<int:algorithm_id>/", cache_page_if_anonymous_method(settings.CACHE_MIDDLEWARE_SECONDS, key_prefix=f"algo-{SCORE_CACHE_KEY_VERSION}")(IndexView.as_view()), name="index"),
+    # The ``/algo/<id>/`` shell is served by the explicit ``algo_page`` view
+    # which caches under the ``algorithm_{id}_page`` key — listed in
+    # ``scores.affected_cache_keys()`` — so score publication clears the
+    # rendered HTML together with the result keys. The shell is auth-neutral
+    # (see ``_navigation.html``), so one entry serves every account safely
+    # (addresses issue #487 review MINOR-1: the old ``cache_page`` entry
+    # was not auth-aware).
+    path("algo/<int:algorithm_id>/", algo_page, name="index"),
     path('api/funding-round-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(FundingRoundChoicesView.as_view()), name='funding_round_choices'),
     path('api/rto-policy-choices/', cache_page(settings.CACHE_MIDDLEWARE_SECONDS)(RTOPolicyChoicesView.as_view()), name='rto_policy_choices'),
     path('api/organizations/<int:pk>/', organization_detail, name='organization-detail'),
+    path('api/account/whoami/', account_whoami, name='account-whoami'),
     path('api/organizations/<int:pk>/provenance/', organization_provenance, name='organization-provenance'),
     path('api/organizations/<int:pk>/scores/', organization_scores, name='organization-scores'),
     path('api/company-requests/', company_requests, name='company-request-list'),

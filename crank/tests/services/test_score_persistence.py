@@ -21,6 +21,7 @@ from django.utils import timezone
 
 from crank.models.agent_run import AgentRun
 from crank.models.organization import Organization
+from crank.models.publication import PublicationEvent
 from crank.models.score import (
     Score,
     ScoreAlgorithm,
@@ -538,6 +539,87 @@ class ScorePersistenceServiceTests(TestCase):
     CACHES={
         "default": {
             "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "score-outbox-writer-tests",
+        }
+    }
+)
+class ScorePublicationOutboxTests(TestCase):
+    """The score writer records one outbox event per accepted change."""
+
+    def setUp(self):
+        cache.clear()
+        self.source = Organization.objects.create(
+            name="Outbox Source", gives_ratings=True
+        )
+        self.target = Organization.objects.create(name="Outbox Target")
+        self.score_type = ScoreType.objects.create(name="Culture")
+
+    def _persist(self, value):
+        return score_services.persist_score_observation(
+            source=self.source,
+            target=self.target,
+            score_type=self.score_type,
+            value=value,
+            provenance={"external_id": "ext-1", "adapter_version": "v1"},
+        )
+
+    def test_created_outcome_records_one_event(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            result = self._persist(4.5)
+        event = PublicationEvent.objects.get()
+        self.assertEqual(result.outcome, "created")
+        self.assertEqual(event.target_type, PublicationEvent.TargetType.SCORE)
+        self.assertEqual(event.target_id, self.target.id)
+        self.assertEqual(event.event_kind, PublicationEvent.EventKind.CREATED)
+        self.assertEqual(
+            event.payload,
+            {
+                "score_type_id": self.score_type.id,
+                "source_id": self.source.id,
+                "outcome": "created",
+            },
+        )
+
+    def test_changed_outcome_records_exactly_one_event(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            self._persist(3.0)
+        with self.captureOnCommitCallbacks(execute=True):
+            result = self._persist(4.5)
+        self.assertEqual(result.outcome, "changed")
+        events = list(PublicationEvent.objects.order_by("id"))
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[1].event_kind, PublicationEvent.EventKind.CHANGED)
+        self.assertEqual(events[1].payload["outcome"], "changed")
+
+    def test_noop_outcome_records_no_event(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            self._persist(4.5)
+        before = PublicationEvent.objects.count()
+        with self.captureOnCommitCallbacks(execute=False) as callbacks:
+            result = self._persist(4.5)
+        self.assertEqual(result.outcome, "noop")
+        self.assertEqual(PublicationEvent.objects.count(), before)
+        self.assertEqual(len(callbacks), 0)
+
+    def test_event_ids_order_revisions_within_the_outbox(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            self._persist(3.0)
+        with self.captureOnCommitCallbacks(execute=True):
+            self._persist(4.5)
+        events = list(PublicationEvent.objects.order_by("id"))
+        # The event table's own auto-increment id is the revision identity:
+        # ids strictly increase across sequential accepted changes.
+        self.assertLess(events[0].id, events[1].id)
+        self.assertEqual(
+            [event.event_kind for event in events],
+            [PublicationEvent.EventKind.CREATED, PublicationEvent.EventKind.CHANGED],
+        )
+
+
+@override_settings(
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
             "LOCATION": "score-cache-tests",
         }
     }
@@ -575,8 +657,11 @@ class ScoreCacheKeyTests(TestCase):
             f"{version}:organization_{self.target.id}_avg_scores",
             f"organization_api_{self.target.id}",
             f"{version}:organization_scores_api_{self.target.id}",
+            f"organization_provenance_api_{self.target.id}",
             f"{version}:algorithm_{self.algo.id}_results",
+            f"algorithm_{self.algo.id}_page",
             f"{version}:algorithm_{self.algo2.id}_results",
+            f"algorithm_{self.algo2.id}_page",
         }
         self.assertEqual(set(keys), expected)
         # Algorithms weighted on a different type are not invalidated by this
@@ -603,11 +688,24 @@ class ScoreCacheKeyTests(TestCase):
                 f"{version}:organization_{self.target.id}_avg_scores",
                 f"organization_api_{self.target.id}",
                 f"{version}:organization_scores_api_{self.target.id}",
+                f"organization_provenance_api_{self.target.id}",
                 f"{version}:algorithm_{self.algo.id}_results",
+                f"algorithm_{self.algo.id}_page",
                 f"{version}:algorithm_{self.algo2.id}_results",
+                f"algorithm_{self.algo2.id}_page",
                 f"{version}:algorithm_{self.algo3.id}_results",
+                f"algorithm_{self.algo3.id}_page",
             },
         )
+
+    def test_invalidate_clears_full_page_cache_key(self):
+        """The full-page shell cache for /algo/<id>/ is invalidated together
+        with the result keys, so a published score change clears the rendered
+        ranking page (review finding: uninvalidated full-page cache)."""
+        page_key = f"algorithm_{self.algo.id}_page"
+        cache.set(page_key, {"html": "stale ranking"})
+        score_services.invalidate_score_caches(self.target.id, self.score_type.id)
+        self.assertIsNone(cache.get(page_key))
 
     def test_invalidate_clears_every_known_key(self):
         keys = score_services.affected_cache_keys(self.target.id, self.score_type.id)

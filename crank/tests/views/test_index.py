@@ -3,6 +3,7 @@
 import json
 from datetime import datetime
 
+from django.contrib.auth.models import User
 from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.serializers import serialize
 from django.test import TestCase, Client, RequestFactory, override_settings
@@ -17,6 +18,7 @@ from django.contrib.sites.models import Site
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 from crank.views.index import IndexView
 from crank.settings import DEFAULT_ALGORITHM_ID
+from crank.auth import SESSION_EXPIRED_MESSAGE
 from crank.services.scores import SCORE_CACHE_KEY_VERSION, algorithm_results_cache_key
 from django.core.cache import cache
 
@@ -219,6 +221,169 @@ class IndexViewTests(TestCase):
         self.assertContains(response, 'organization-list-config')
         self.assertContains(response, 'data-can-suggest-company="false"')
 
+    def test_cached_algo_page_identical_across_accounts_and_user_free(self):
+        """The full-page-cached algo view serves every account the same
+        auth-neutral payload, including across cookie differences (issue
+        #470 AC6; review finding: auth-dependent cached shell)."""
+        self.setup_scores()
+        user_a = User.objects.create_user(
+            "cache-user-a", "cache-user-a@example.com", "pw12345"
+        )
+        user_b = User.objects.create_user(
+            "cache-user-b", "cache-user-b@example.com", "pw12345"
+        )
+        algo_url = f"/algo/{DEFAULT_ALGORITHM_ID}/"
+        anonymous = self.client.get(algo_url)
+        self.assertEqual(anonymous.status_code, 200)
+        self.client.force_login(user_a)
+        first = self.client.get(algo_url)
+        self.assertEqual(first.status_code, 200)
+        self.client.force_login(user_b)
+        second = self.client.get(algo_url)
+        self.assertEqual(second.status_code, 200)
+        # A different session cookie and CSRF cookie must not change the
+        # served payload either.
+        varied_cookies = self.client.get(
+            algo_url,
+            HTTP_COOKIE="sessionid=bogus; csrftoken=bogus",
+        )
+        self.assertEqual(varied_cookies.status_code, 200)
+        self.assertEqual(first.content, second.content)
+        self.assertEqual(anonymous.content, second.content)
+        self.assertEqual(varied_cookies.content, second.content)
+        for marker in (
+            b"cache-user-a",
+            b"cache-user-b",
+            b"@example.com",
+            b"csrfmiddlewaretoken",
+        ):
+            self.assertNotIn(marker, second.content)
+        # The cached shell renders auth-neutral: both auth control groups
+        # are present but hidden and revealed client-side from whoami, and
+        # the React list's auth flags default to anonymous until hydration.
+        self.assertContains(second, "data-nav-auth-only")
+        self.assertContains(second, "data-nav-anon-only")
+        self.assertContains(second, 'data-authenticated="false"')
+        self.assertContains(second, 'data-can-suggest-company="false"')
+        # No per-user surface (rate-limit keys job_search_rl:*) is ever
+        # written into the public cache by these page requests.
+        for key in cache._cache:
+            self.assertNotIn("job_search_rl", str(key))
+
+    def test_algo_page_cache_uses_invalidatable_key_and_score_events_clear_it(self):
+        """The algo shell caches under algorithm_<id>_page — a key listed in
+        scores.affected_cache_keys — instead of cache_page's request-derived
+        key, so score publication clears the rendered page together with the
+        result keys (review finding: uninvalidated full-page cache)."""
+        self.setup_scores()
+        from crank.services import publication
+
+        algo_url = f"/algo/{DEFAULT_ALGORITHM_ID}/"
+        page_key = f"algorithm_{DEFAULT_ALGORITHM_ID}_page"
+        first = self.client.get(algo_url)
+        self.assertEqual(first.status_code, 200)
+        self.assertIsNotNone(cache.get(page_key))
+
+        publication.record_event(
+            target_type="score",
+            target_id=self.organization1.id,
+            event_kind="changed",
+            payload={"score_type_id": 1, "outcome": "changed"},
+        )
+        publication.sweep_pending()
+        self.assertIsNone(cache.get(page_key))
+
+        # The next request re-primes the cache and is served from it after.
+        second = self.client.get(algo_url)
+        self.assertEqual(second.status_code, 200)
+        self.assertIsNotNone(cache.get(page_key))
+
+    def test_cached_algo_shell_excludes_flash_messages(self):
+        """The full-page-cached algo shell is shared across every account,
+        so per-session flash messages must never render into it: a queued
+        message would otherwise be baked into the shared entry and served to
+        every later caller (review finding: messages leak through the shared
+        page cache)."""
+        self.setup_scores()
+        algo_url = f"/algo/{DEFAULT_ALGORITHM_ID}/"
+        page_key = f"algorithm_{DEFAULT_ALGORITHM_ID}_page"
+
+        # An anonymous request to a protected page queues the
+        # session-expired flash message (crank.auth.login_required_with_expiry).
+        expired = self.client.get("/chat/")
+        self.assertEqual(expired.status_code, 302)
+
+        first = self.client.get(algo_url)
+        self.assertEqual(first.status_code, 200)
+        self.assertNotContains(first, SESSION_EXPIRED_MESSAGE)
+        self.assertNotIn(b"app-messages", first.content)
+
+        # The cached entry itself is message-free, so an independent second
+        # account is never poisoned by the first client's queued message.
+        self.assertIsNotNone(cache.get(page_key))
+        self.assertNotIn(SESSION_EXPIRED_MESSAGE.encode(), cache.get(page_key).content)
+        second_client = Client()
+        second = second_client.get(algo_url)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.content, first.content)
+        self.assertNotContains(second, SESSION_EXPIRED_MESSAGE)
+
+        # Excluding the message from the cached shell never drops it: it
+        # stays queued and renders on the next uncached page.
+        uncached = self.client.get(self.index_url)
+        self.assertEqual(uncached.status_code, 200)
+        self.assertContains(uncached, SESSION_EXPIRED_MESSAGE)
+
+    def test_invalid_algo_ids_are_never_full_page_cached(self):
+        """A bad algorithm id falls back to the default algorithm, but that
+        response must never enter the page cache under the *requested* id:
+        no score publication clears algorithm_<bad_id>_page, so it would
+        serve stale default-algorithm content until TTL (review finding:
+        invalid-ID fallback cached under an uninvalidatable key)."""
+        self.setup_scores()
+        from crank.services import publication
+
+        bad_url = "/algo/99999/"
+        bad_page_key = "algorithm_99999_page"
+        first = self.client.get(bad_url)
+        self.assertEqual(first.status_code, 200)
+        # The fallback still renders the default algorithm's content, but
+        # never under a key no score event touches.
+        self.assertContains(first, "Test Algorithm")
+        self.assertIsNone(cache.get(bad_page_key))
+
+        # Repeated fallback requests keep working and keep staying uncached.
+        second = self.client.get(bad_url)
+        self.assertEqual(second.status_code, 200)
+        self.assertIsNone(cache.get(bad_page_key))
+
+        # A changed score for the default algorithm is visible on the next
+        # fallback render: nothing stale survives a publication sweep.
+        Score.objects.filter(target_id=self.organization2.id).update(score=9.0)
+        publication.record_event(
+            target_type="score",
+            target_id=self.organization2.id,
+            event_kind="changed",
+            payload={"score_type_id": 1, "outcome": "changed"},
+        )
+        publication.sweep_pending()
+        fresh = self.client.get(bad_url)
+        self.assertEqual(fresh.status_code, 200)
+        fresh_content = fresh.content.decode()
+        self.assertLess(
+            fresh_content.index("Org 2"),
+            fresh_content.index("Org 1"),
+            "Org 2 outranks Org 1 after the changed score, so a stale "
+            "cached fallback would still show Org 1 first",
+        )
+
+        # Valid ids keep using the explicitly invalidatable cache key.
+        valid = self.client.get(f"/algo/{DEFAULT_ALGORITHM_ID}/")
+        self.assertEqual(valid.status_code, 200)
+        self.assertIsNotNone(
+            cache.get(f"algorithm_{DEFAULT_ALGORITHM_ID}_page")
+        )
+
     def test_template_else_branch_shows_message_when_no_algorithm(self):
         ScoreAlgorithm.objects.all().delete()
         request = self.factory.get(self.index_url)
@@ -354,25 +519,18 @@ class IndexViewTests(TestCase):
         )
 
     def test_algo_page_cache_key_carries_the_score_cache_version(self):
-        """The /algo/<id>/ page cache embeds score-derived rankings.
-
-        Its key prefix rotates with SCORE_CACHE_KEY_VERSION, so pages cached
-        by a pre-#461 deployment (empty prefix) age out unread instead of
-        serving superseded averages after a deploy.
-        """
+        """The /algo/<id/> page is cached under algorithm_{id}_page."""
         self.setup_superseded_scores()
         response = self.client.get(
             self.index_url + f'algo/{DEFAULT_ALGORITHM_ID}/'
         )
         self.assertEqual(response.status_code, 200)
-        # django's cache_page stores the response and its header under the
-        # versioned prefix; locmem exposes its key store so the deployed key
-        # format is assertable (a pre-#461 entry would live under the empty
-        # default prefix instead).
-        versioned_prefix = f'algo-{SCORE_CACHE_KEY_VERSION}'
+        # The algo_page view caches under the explicit ``algorithm_{id}_page``
+        # key (not the default cache_page prefix), so score publication can
+        # invalidate it together with the result keys.
+        expected_key = f'algorithm_{DEFAULT_ALGORITHM_ID}_page'
         cache_keys = list(cache._cache.keys())
         self.assertTrue(
-            any(versioned_prefix in key for key in cache_keys),
-            f'no page-cache entry under the versioned prefix '
-            f'{versioned_prefix!r}: {cache_keys}',
+            any(expected_key in key for key in cache_keys),
+            f'no page-cache entry under {expected_key!r}: {cache_keys}',
         )

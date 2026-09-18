@@ -4,6 +4,7 @@ from django.http import JsonResponse
 from django.core.cache import cache
 from django.conf import settings
 from django.shortcuts import get_object_or_404
+from django.views.decorators.csrf import ensure_csrf_cookie
 
 from crank.models.organization import Organization
 from crank.models.company_profile import CompanyProfileObservation
@@ -89,3 +90,28 @@ def organization_scores(request, pk):
         cache.set(cache_key, scores_data, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
 
     return JsonResponse(scores_data, safe=False)
+
+
+@ensure_csrf_cookie
+def account_whoami(request):
+    """Return the caller's own bounded account identity for nav hydration.
+
+    Per-user identity must never live in the shared page caches (issue #470):
+    the full-page-cached shell is rendered auth-neutral and the client fills
+    the account label and auth-dependent visibility per request from this
+    endpoint. It exposes only the caller's own username and nothing else.
+
+    It is marked non-cacheable (``Cache-Control: private, no-store``) so
+    browsers and intermediaries never replay a stale identity across account
+    switches, and ``@ensure_csrf_cookie`` guarantees a CSRF cookie exists so
+    the cached shell can submit a token-checked logout without embedding a
+    session-bound token.
+    """
+    if not request.user.is_authenticated:
+        response = JsonResponse({"authenticated": False})
+    else:
+        response = JsonResponse(
+            {"authenticated": True, "username": request.user.username}
+        )
+    response["Cache-Control"] = "private, no-store"
+    return response

@@ -15,6 +15,7 @@ from crank.models.company_profile import CompanyProfileObservation
 from crank.models.employer import EmployerAlias
 from crank.models.job import JobSourceCatalog
 from crank.models.organization import Organization
+from crank.models.publication import PublicationEvent
 from crank.models.score import Score, ScoreType
 from crank.services.company_crawler import (
     EXTRACTION_VERSION,
@@ -95,6 +96,34 @@ class CompanyCrawlerTests(TestCase):
         self.assertEqual(second.observations, 0)
         self.assertEqual(second.duplicates, 1)
         self.assertEqual(CompanyProfileObservation.objects.count(), 1)
+
+    def test_observation_with_resolved_organization_records_publication_event(self):
+        organization = Organization.objects.create(
+            name="Example Labs",
+            url="https://example.test",
+            public=False,
+            funding_round=Organization.FundingRound.SERIES_A,
+            rto_policy=Organization.RTOPolicy.REMOTE,
+        )
+
+        result = crawl_company_profile(self.source, client=FakeClient([profile()]))
+
+        observation = CompanyProfileObservation.objects.get()
+        event = PublicationEvent.objects.get()
+        self.assertEqual(result.observations, 1)
+        self.assertEqual(
+            event.target_type, PublicationEvent.TargetType.ORGANIZATION
+        )
+        self.assertEqual(event.target_id, organization.id)
+        self.assertEqual(event.event_kind, PublicationEvent.EventKind.OBSERVED)
+        self.assertEqual(event.payload["observation_id"], observation.pk)
+
+    def test_unresolved_organization_records_no_publication_event(self):
+        result = crawl_company_profile(self.source, client=FakeClient([profile()]))
+
+        self.assertEqual(result.observations, 1)
+        self.assertIsNone(CompanyProfileObservation.objects.get().organization)
+        self.assertEqual(PublicationEvent.objects.count(), 0)
 
     def test_conflicting_profile_enters_review_queue(self):
         organization = Organization.objects.create(

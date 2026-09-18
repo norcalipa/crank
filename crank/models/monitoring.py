@@ -24,6 +24,7 @@ ALLOWED_CAPABILITY_KEYS = frozenset(
         "agent_noop",
         "crawl_schedule",
         "crawl",
+        "publication_consumer",
     }
 )
 

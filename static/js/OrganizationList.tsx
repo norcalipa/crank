@@ -493,19 +493,26 @@ export default OrganizationList;
 
 document.addEventListener('DOMContentLoaded', () => {
     const organizationDataElement = document.getElementById('organization-data');
-    if (organizationDataElement && organizationDataElement.textContent) {
-        try {
-            const organizationsData = JSON.parse(organizationDataElement.textContent);
-            const container = document.getElementById('organization-list');
-            if (container) {
-                const configElement = document.getElementById('organization-list-config');
-                const root = createRoot(container);
-                root.render(<OrganizationList organizations={organizationsData}
-                    canSuggestCompany={configElement?.getAttribute('data-can-suggest-company') === 'true'}
-                    isAuthenticated={container.dataset.authenticated === 'true'}/>);
-            }
-        } catch (error) {
-            console.error('Error parsing organization data:', error);
+    if (!organizationDataElement || !organizationDataElement.textContent) {
+        return;
+    }
+    try {
+        const organizationsData = JSON.parse(organizationDataElement.textContent);
+        const container = document.getElementById('organization-list');
+        if (!container) {
+            return;
         }
+        const configElement = document.getElementById('organization-list-config');
+        const root = createRoot(container);
+        const render = () => root.render(<OrganizationList organizations={organizationsData}
+            canSuggestCompany={configElement?.getAttribute('data-can-suggest-company') === 'true'}
+            isAuthenticated={container.dataset.authenticated === 'true'}/>);
+        render();
+        // The full-page-cached shell renders auth-neutral and app-nav.js
+        // hydrates the auth flags per request (issue #470); re-render once
+        // with the hydrated values.
+        document.addEventListener('crank:auth-hydrated', render, { once: true });
+    } catch (error) {
+        console.error('Error parsing organization data:', error);
     }
 });
