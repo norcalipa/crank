@@ -1,0 +1,122 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+name: Django-backed E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Harness: the tier itself, its config, seeder, outage hook, workflow.
+      - 'playwright.django.config.ts'
+      - 'e2e/django/**'
+      - 'crank/management/commands/seed_e2e.py'
+      - 'crank/agents/job_search/demo.py'
+      - '.github/workflows/playwright-django.yml'
+      # System under test: the application files the journeys render. Without
+      # these, a UI-only regression merges without ever starting django-e2e.
+      - 'static/js/**'
+      - 'static/css/**'
+      - 'templates/**'
+      - 'crank/views/**'
+      - 'webpack.config.js'
+      - 'webpack.e2e.config.js'
+      - 'package-lock.json'
+  pull_request:
+    branches: [main]
+    paths:
+      # Must stay in exact parity with the push trigger; asserted by
+      # crank/tests/test_django_e2e_workflow.py.
+      - 'playwright.django.config.ts'
+      - 'e2e/django/**'
+      - 'crank/management/commands/seed_e2e.py'
+      - 'crank/agents/job_search/demo.py'
+      - '.github/workflows/playwright-django.yml'
+      - 'static/js/**'
+      - 'static/css/**'
+      - 'templates/**'
+      - 'crank/views/**'
+      - 'webpack.config.js'
+      - 'webpack.e2e.config.js'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+jobs:
+  django-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      SECRET_KEY: django-e2e-throwaway-ci-key
+      REDIS_MASTER_URL: redis://localhost:6379/0
+      CI: 'true'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Node.js dependencies
+        run: npm install
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Build production bundles
+        run: npx webpack
+
+      - name: Run Django-backed suite (normal pass)
+        run: npx playwright test --config=playwright.django.config.ts --project=chromium --grep-invert '@outage'
+
+      - name: Run provider-outage pass
+        run: npx playwright test --config=playwright.django.config.ts --project=chromium --grep '@outage'
+        env:
+          CRANK_E2E_PROVIDER_FAILURE: '1'
+          PW_E2E_PROVIDER_FAILURE: '1'
+
+      - name: Sanitized evidence captures
+        if: always()
+        run: |
+          mkdir -p e2e/artifacts/captures
+          npx playwright test --config=playwright.django.config.ts --project=chromium e2e/django/captures.spec.ts || true
+        env:
+          PW_CAPTURE_DIR: ${{ github.workspace }}/e2e/artifacts/captures
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
+
+      - name: Upload sanitized captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: django-e2e-captures
+          path: e2e/artifacts/captures/
+          retention-days: 14
