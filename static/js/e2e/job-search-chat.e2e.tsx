@@ -9,6 +9,7 @@ import {createRoot} from 'react-dom/client';
 import JobSearchChat from '../JobSearchChat';
 import OrganizationList from '../OrganizationList';
 import JobMatchPanel from '../JobMatchPanel';
+import '../suggestCompany/mount';
 
 // Job-match panel fixtures (issue #476): mount the real JobMatchPanel against
 // stubbed /api/job-matches/* endpoints, selected via ?state=<key>. The status

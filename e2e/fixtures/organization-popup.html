@@ -110,6 +110,8 @@
     {"id": 5, "name": "Evergreen Bio", "ranking": 5, "avg_score": 4.43, "funding_round": "B", "rto_policy": "R", "profile_completeness": 79, "accelerated_vesting": false, "url": "https://evergreen.example", "type": "C"}
 ]
 </script>
-<script src="/static/dist/e2e.js"></script>
+    <!-- Single shared "Suggest a company" host (issue #471): outside .app-shell/main.app-content per the modal isolation contract -->
+    <div id="suggest-company-host"></div>
+    <script src="/static/dist/e2e.js"></script>
 </body>
 </html>
