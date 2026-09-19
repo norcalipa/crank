@@ -572,6 +572,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
     signInUrl = '/accounts/login/',
     signedOutMessage = '',
 }) => {
+    const [effectiveAuthenticated, setEffectiveAuthenticated] = React.useState(isAuthenticated);
+
     const [conversationId, setConversationId] = React.useState<number | null>(null);
     const [messages, setMessages] = React.useState<ChatMessage[]>([]);
     const [input, setInput] = React.useState('');
@@ -920,7 +922,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
     // history region must stay empty until an authenticated load succeeds
     // (AC-10).
     React.useEffect(() => {
-        if (!isAuthenticated) {
+        if (!effectiveAuthenticated) {
             setLoading(false);
             setInput((current) => current || readPendingDraft());
             return;
@@ -975,7 +977,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
         return () => {
             cancelled = true;
         };
-    }, [isAuthenticated, purgeGeneration]);
+    }, [effectiveAuthenticated, purgeGeneration]);
 
     // Account-switch / sign-out purge (issue #465 AC-9). Any in-flight
     // submission is aborted (stopping only the client's wait — the server
@@ -996,7 +998,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
         setInitError(null);
         setPreferencesChanged(false);
         setPrefDismissed(false);
-        if (isAuthenticated) {
+        if (effectiveAuthenticated) {
             // Force the resume effect to re-run so the (possibly different)
             // account's own conversation loads fresh — never the stale
             // conversation just cleared above.
@@ -1015,7 +1017,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
         // lives here rather than duplicated into the un-bundled app-nav.js.
         const handleHydrated = (e: Event) => {
             const detail = (e as CustomEvent).detail as {authenticated?: boolean; username?: string} | undefined;
-            if (!detail || !detail.authenticated || !detail.username) return;
+            if (!detail) return;
+            setEffectiveAuthenticated(!!detail.authenticated);
+            if (!detail.authenticated || !detail.username) return;
             let lastAccount: string | null = null;
             try {
                 lastAccount = window.localStorage.getItem('crank:last-account');
@@ -1039,7 +1043,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
             document.removeEventListener('crank:private-state-purged', handlePurged);
             document.removeEventListener('crank:auth-hydrated', handleHydrated);
         };
-    }, [isAuthenticated]);
+    }, [effectiveAuthenticated]);
 
     // Announce new assistant content to assistive tech.
     React.useEffect(() => {
@@ -1685,7 +1689,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
                     </div>
                 )}
 
-                {!isAuthenticated && (
+                {!effectiveAuthenticated && (
                     // Signed-out introduction (issue #465 AC-2/AC-6): mirrors
                     // the server-rendered block above the card (present
                     // before hydration and for no-JS/screen-reader-first
@@ -1721,7 +1725,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
                 <div className="position-relative d-flex flex-column flex-grow-1" style={{minHeight: 0}}>
                     <div className="bg-dark border rounded p-3 mb-3 flex-grow-1" style={{minHeight: 0, overflowY: 'auto'}}
                          ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
-                        {isAuthenticated && messages.length === 0 && !loading && (
+                        {effectiveAuthenticated && messages.length === 0 && !loading && (
                             <div data-testid="empty-history">
                                 <p className="text-muted mb-2">
                                     Ask about compensation, work location, funding, or culture to get started.
@@ -1866,11 +1870,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
                                 className="form-control chat-focus"
                                 placeholder="Type your message…"
                                 aria-label="Message"
-                                aria-describedby={!isAuthenticated ? 'job-search-signed-out-reason' : undefined}
+                                aria-describedby={!effectiveAuthenticated ? 'job-search-signed-out-reason' : undefined}
                                 value={input}
                                 onChange={(e) => {
                                     setInput(e.target.value);
-                                    if (isAuthenticated) {
+                                    if (effectiveAuthenticated) {
                                         writeComposerDraft(conversationId, e.target.value);
                                     } else {
                                         // Sensitive draft text (issue #465 AC-8):
@@ -1891,14 +1895,14 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
                                     }
                                 }}
                                 onKeyDown={handleKeyDown}
-                                disabled={isAuthenticated ? (!conversationId || pending || composerGated) : pending}
+                                disabled={effectiveAuthenticated ? (!conversationId || pending || composerGated) : pending}
                                 autoComplete="off"
                                 rows={1}
                                 style={{resize: 'none', overflowY: 'hidden'}}
                             />
                             <button type="submit" className="btn btn-primary chat-send chat-focus"
-                                    disabled={!isAuthenticated || !conversationId || pending || composerGated || !input.trim()}
-                                    aria-label="Send message" aria-describedby={!isAuthenticated ? 'job-search-signed-out-reason' : undefined}>
+                                    disabled={!effectiveAuthenticated || !conversationId || pending || composerGated || !input.trim()}
+                                    aria-label="Send message" aria-describedby={!effectiveAuthenticated ? 'job-search-signed-out-reason' : undefined}>
                                 <i className="fa-solid fa-paper-plane" aria-hidden="true"></i>
                                 <span>Send</span>
                             </button>

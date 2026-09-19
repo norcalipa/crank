@@ -68,6 +68,30 @@ class JobSearchPageTests(TestCase):
         self.assertContains(response, 'data-authenticated="true"')
         self.assertNotContains(response, "Sign in to save your search")
 
+    def test_sign_in_url_preserves_only_validated_company_context(self):
+        org = Organization.objects.create(
+            name="Context Organization",
+            status=1,
+            type="C",
+            url="https://example.com",
+            gives_ratings=True,
+            public=True,
+            accelerated_vesting=True,
+            funding_round="S",
+            rto_policy="R",
+        )
+
+        response = self.client.get(
+            self.url,
+            {"company": org.id, "message": "private draft", "salary": "secret"},
+        )
+
+        sign_in_url = response.context["sign_in_url"]
+        self.assertIn("company%3D{}".format(org.id), sign_in_url)
+        self.assertNotIn("private", sign_in_url)
+        self.assertNotIn("salary", sign_in_url)
+        self.assertNotIn("message", sign_in_url)
+
     def test_company_query_param_resolves_existing_organization(self):
         org = Organization.objects.create(
             name="Test Organization",

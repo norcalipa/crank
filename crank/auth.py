@@ -15,7 +15,7 @@ discarded the visitor's intended destination on every anonymous request to
 """
 from __future__ import annotations
 
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode
 
 from django.conf import settings
 from django.utils.http import url_has_allowed_host_and_scheme
@@ -58,7 +58,13 @@ def safe_next_url(request, candidate: str | None) -> str | None:
         return None
     if not candidate.startswith("/"):
         return None
-    if candidate.startswith("//") or candidate.startswith("/\\"):
+    decoded_candidate = unquote(candidate)
+    if (
+        decoded_candidate.startswith("//")
+        or decoded_candidate.startswith("/\\")
+        or "\r" in decoded_candidate
+        or "\n" in decoded_candidate
+    ):
         return None
     if not url_has_allowed_host_and_scheme(
         candidate,

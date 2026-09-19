@@ -98,8 +98,19 @@ class SafeNextUrlTests(TestCase):
     def test_rejects_backslash_prefixed_url(self):
         self.assertIsNone(safe_next_url(self._request(), "\\\\evil.example"))
 
+    def test_rejects_encoded_external_url(self):
+        self.assertIsNone(safe_next_url(self._request(), "/%2f%2fevil.example/"))
+
     def test_rejects_different_host_same_scheme(self):
         self.assertIsNone(safe_next_url(self._request(), "http://other-host/x"))
+
+    def test_rejects_same_host_when_https_is_required(self):
+        self.assertIsNone(
+            safe_next_url(self._request(secure=True), "http://testserver/private/")
+        )
+
+    def test_rejects_root_relative_url_with_invalid_control_character(self):
+        self.assertIsNone(safe_next_url(self._request(), "/private/%0d%0a"))
 
     def test_rejects_accounts_logout_path(self):
         self.assertIsNone(safe_next_url(self._request(), "/accounts/logout/"))
