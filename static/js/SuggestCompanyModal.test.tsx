@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import * as React from 'react';
 import SuggestCompanyModal from './SuggestCompanyModal';
 import {lockBackground, unlockBackground} from './modalIsolation';
@@ -73,6 +73,211 @@ describe('SuggestCompanyModal', () => {
             expect(screen.getByTestId('suggest-error')).toHaveTextContent('Please correct');
         });
         expect(screen.getByText('Enter a company name.')).toBeInTheDocument();
+    });
+
+    test('context.companyName prefills the company-name input', () => {
+        render(<SuggestCompanyModal visible={true} onClose={jest.fn()}
+                                     context={{source: 'job_results', companyName: 'Acme Corp'}} />);
+        expect((screen.getByLabelText(/Company name/) as HTMLInputElement).value).toBe('Acme Corp');
+    });
+
+    test('no context leaves the company-name input empty', () => {
+        render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+        expect((screen.getByLabelText(/Company name/) as HTMLInputElement).value).toBe('');
+    });
+
+    test('prefills on reopen when context arrives with the same visible transition', () => {
+        const { rerender } = render(
+            <SuggestCompanyModal visible={false} onClose={jest.fn()} context={null} />
+        );
+        rerender(
+            <SuggestCompanyModal visible={true} onClose={jest.fn()}
+                                  context={{source: 'company_details', companyName: 'Beta Inc'}} />
+        );
+        expect((screen.getByLabelText(/Company name/) as HTMLInputElement).value).toBe('Beta Inc');
+    });
+
+    test('the pre-submission review notice is present in the form body (AC-9)', () => {
+        render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+        expect(screen.getByTestId('suggest-review-notice')).toHaveTextContent(/review queue/);
+    });
+
+    test('submitted payload contains exactly company_name, website_url, careers_url, reason', async () => {
+        render(<SuggestCompanyModal visible={true} onClose={jest.fn()}
+                                     context={{source: 'rankings', searchTerm: 'acme', page: 2}} />);
+        fireEvent.change(screen.getByLabelText(/Company name/), {target: {value: 'Acme Corp'}});
+        fireEvent.change(screen.getByLabelText(/Public website/), {target: {value: 'https://acme.com'}});
+        fireEvent.click(screen.getByTestId('suggest-submit-btn'));
+
+        await waitFor(() => {
+            expect(screen.getByTestId('suggest-success')).toBeInTheDocument();
+        });
+        const call = (global.fetch as jest.Mock).mock.calls[0];
+        const body = JSON.parse(call[1].body);
+        expect(Object.keys(body).sort()).toEqual(['careers_url', 'company_name', 'reason', 'website_url']);
+        expect(body).toEqual({
+            company_name: 'Acme Corp',
+            website_url: 'https://acme.com',
+            careers_url: '',
+            reason: '',
+        });
+    });
+
+    test('double submit in one tick calls fetch exactly once (AC-7)', async () => {
+        render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+        fireEvent.change(screen.getByLabelText(/Company name/), {target: {value: 'Acme'}});
+        fireEvent.change(screen.getByLabelText(/Public website/), {target: {value: 'https://acme.com'}});
+
+        const submitBtn = screen.getByTestId('suggest-submit-btn') as HTMLButtonElement;
+        // Two native clicks inside a single `act` callback, rather than two
+        // separate `fireEvent.click` calls (each of which flushes React's
+        // state update — including `disabled` — before the next dispatch):
+        // this reproduces the real race the synchronous `submitInFlight`
+        // guard exists for (AC-7), where `disabled={submitting}` alone
+        // would let both reach `fetch`.
+        act(() => {
+            submitBtn.click();
+            submitBtn.click();
+        });
+
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+
+        await waitFor(() => {
+            expect(screen.getByTestId('suggest-success')).toBeInTheDocument();
+        });
+    });
+
+    test('a later submit after a completed one is not blocked by the in-flight guard', async () => {
+        render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+        fireEvent.change(screen.getByLabelText(/Company name/), {target: {value: 'Acme'}});
+        fireEvent.change(screen.getByLabelText(/Public website/), {target: {value: 'https://acme.com'}});
+        fireEvent.click(screen.getByTestId('suggest-submit-btn'));
+        await waitFor(() => {
+            expect(screen.getByTestId('suggest-success')).toBeInTheDocument();
+        });
+
+        fireEvent.click(screen.getByText('Close'));
+        fireEvent.change(screen.getByLabelText(/Company name/), {target: {value: 'Acme 2'}});
+        fireEvent.change(screen.getByLabelText(/Public website/), {target: {value: 'https://acme2.com'}});
+        fireEvent.click(screen.getByTestId('suggest-submit-btn'));
+
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    test('shows a sign-in message and link on a 401 response (AC-8, AC-12)', async () => {
+        global.fetch = jest.fn().mockImplementation(() => {
+            return Promise.resolve({
+                ok: false,
+                status: 401,
+                json: () => Promise.resolve({error: 'Sign in to suggest a company.'}),
+            });
+        });
+
+        render(<SuggestCompanyModal visible={true} onClose={jest.fn()}
+                                     context={{source: 'assistant'}} />);
+        fireEvent.change(screen.getByLabelText(/Company name/), {target: {value: 'Acme'}});
+        fireEvent.change(screen.getByLabelText(/Public website/), {target: {value: 'https://acme.com'}});
+        fireEvent.click(screen.getByTestId('suggest-submit-btn'));
+
+        await waitFor(() => {
+            expect(screen.getByTestId('suggest-auth-required')).toBeInTheDocument();
+        });
+        expect(screen.getByText(/Sign in to suggest a company/)).toBeInTheDocument();
+        expect(screen.getByTestId('suggest-sign-in-link')).toHaveAttribute('href', '/accounts/login/');
+    });
+
+    test('shows a duplicate-in-catalog message on a 409 with company_name field errors', async () => {
+        global.fetch = jest.fn().mockImplementation(() => {
+            return Promise.resolve({
+                ok: false,
+                status: 409,
+                json: () => Promise.resolve({
+                    error: 'This company is already in the catalog.',
+                    field_errors: {company_name: ['An organization with this identity already exists.']},
+                }),
+            });
+        });
+
+        render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+        fireEvent.change(screen.getByLabelText(/Company name/), {target: {value: 'Acme'}});
+        fireEvent.change(screen.getByLabelText(/Public website/), {target: {value: 'https://acme.com'}});
+        fireEvent.click(screen.getByTestId('suggest-submit-btn'));
+
+        await waitFor(() => {
+            expect(screen.getByTestId('suggest-error')).toHaveTextContent('already in the catalog');
+        });
+        expect(screen.getByText('An organization with this identity already exists.')).toBeInTheDocument();
+    });
+
+    test('shows a pending-duplicate-request message on a 409 with duplicate_request', async () => {
+        global.fetch = jest.fn().mockImplementation(() => {
+            return Promise.resolve({
+                ok: false,
+                status: 409,
+                json: () => Promise.resolve({
+                    error: 'A pending suggestion for this company already exists.',
+                    duplicate_request: {id: 7, status: 'pending'},
+                }),
+            });
+        });
+
+        render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+        fireEvent.change(screen.getByLabelText(/Company name/), {target: {value: 'Acme'}});
+        fireEvent.change(screen.getByLabelText(/Public website/), {target: {value: 'https://acme.com'}});
+        fireEvent.click(screen.getByTestId('suggest-submit-btn'));
+
+        await waitFor(() => {
+            expect(screen.getByTestId('suggest-error')).toHaveTextContent('pending suggestion for this company already exists');
+        });
+    });
+
+    test('shows the rate-limit message on a 429 response', async () => {
+        global.fetch = jest.fn().mockImplementation(() => {
+            return Promise.resolve({
+                ok: false,
+                status: 429,
+                json: () => Promise.resolve({
+                    error: 'You have reached the suggestion limit. Please try again later.',
+                }),
+            });
+        });
+
+        render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+        fireEvent.change(screen.getByLabelText(/Company name/), {target: {value: 'Acme'}});
+        fireEvent.change(screen.getByLabelText(/Public website/), {target: {value: 'https://acme.com'}});
+        fireEvent.click(screen.getByTestId('suggest-submit-btn'));
+
+        await waitFor(() => {
+            expect(screen.getByTestId('suggest-error')).toHaveTextContent('reached the suggestion limit');
+        });
+    });
+
+    test('400 response retains all four field values (AC-6)', async () => {
+        global.fetch = jest.fn().mockImplementation(() => {
+            return Promise.resolve({
+                ok: false,
+                status: 400,
+                json: () => Promise.resolve({
+                    error: 'Please correct the highlighted fields.',
+                    field_errors: {website_url: ['Enter a valid URL.']},
+                }),
+            });
+        });
+
+        render(<SuggestCompanyModal visible={true} onClose={jest.fn()} />);
+        fireEvent.change(screen.getByLabelText(/Company name/), {target: {value: 'Acme Corp'}});
+        fireEvent.change(screen.getByLabelText(/Public website/), {target: {value: 'https://acme.example'}});
+        fireEvent.change(screen.getByLabelText(/Careers page/), {target: {value: 'https://acme.com/careers'}});
+        fireEvent.change(screen.getByLabelText(/Why should CRank/), {target: {value: 'Great company'}});
+        fireEvent.click(screen.getByTestId('suggest-submit-btn'));
+
+        await waitFor(() => {
+            expect(screen.getByTestId('suggest-error')).toBeInTheDocument();
+        });
+        expect((screen.getByLabelText(/Company name/) as HTMLInputElement).value).toBe('Acme Corp');
+        expect((screen.getByLabelText(/Public website/) as HTMLInputElement).value).toBe('https://acme.example');
+        expect((screen.getByLabelText(/Careers page/) as HTMLInputElement).value).toBe('https://acme.com/careers');
+        expect((screen.getByLabelText(/Why should CRank/) as HTMLTextAreaElement).value).toBe('Great company');
     });
 
     test('shows network error on fetch failure', async () => {

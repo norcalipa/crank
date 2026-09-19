@@ -3,10 +3,15 @@
 import * as React from 'react';
 import {createPortal} from 'react-dom';
 import {lockBackground, unlockBackground} from './modalIsolation';
+import type {SuggestCompanyContext} from './suggestCompany/controller';
 
 interface SuggestCompanyModalProps {
     visible: boolean;
     onClose: () => void;
+    // Prefill/context from the trigger (issue #471). Only `companyName` is
+    // rendered into the form; `source`/`searchTerm`/`page`/`organizationId`
+    // are the caller's concern and are never sent to the API.
+    context?: SuggestCompanyContext | null;
 }
 
 interface SuggestCompanyModalState {
@@ -18,6 +23,9 @@ interface SuggestCompanyModalState {
     error: string;
     fieldErrors: Record<string, string[]>;
     success: boolean;
+    // Set on a 401 response: renders the sign-in prompt instead of the form
+    // (issue #471 AC-8/AC-12) rather than a generic error banner.
+    authRequired: boolean;
 }
 
 function getCookie(name: string): string {
@@ -29,7 +37,7 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
     constructor(props: SuggestCompanyModalProps) {
         super(props);
         this.state = {
-            companyName: '',
+            companyName: props.context?.companyName || '',
             websiteUrl: '',
             careersUrl: '',
             reason: '',
@@ -37,6 +45,7 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
             error: '',
             fieldErrors: {},
             success: false,
+            authRequired: false,
         };
     }
 
@@ -50,6 +59,10 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
     // inert background, so the synchronous restore attempt alone can
     // silently fail in real browsers.
     private pendingRestoreFocus = false;
+    // Synchronous double-submit guard (issue #471 AC-7): `disabled={submitting}`
+    // alone is not enough because two synchronous submit events in the same
+    // tick both fire before React commits the state update.
+    private submitInFlight = false;
 
     componentDidMount() {
         // Guard against a stale keydown listener after the modal closes.
@@ -94,6 +107,10 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
             this.openerRef = document.activeElement instanceof HTMLElement
                 ? document.activeElement : null;
             this.closeButtonRef.current?.focus();
+            // Prefill the company name from the trigger's context (issue
+            // #471 AC-5). A reopen with no context (or no companyName)
+            // leaves the field empty rather than carrying over a stale value.
+            this.setState({companyName: this.props.context?.companyName || ''});
         } else if (!this.props.visible && prevProps.visible) {
             // Release background isolation BEFORE restoring focus: the
             // opener sits in the inert background, so restoring earlier
@@ -168,7 +185,14 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
 
     handleSubmit = async (event: React.FormEvent) => {
         event.preventDefault();
-        this.setState({submitting: true, error: '', fieldErrors: {}, success: false});
+        // Double-click guard (issue #471 AC-7): the disabled attribute alone
+        // takes effect only after React commits, so a second synchronous
+        // submit in the same tick would otherwise still reach fetch.
+        if (this.submitInFlight) {
+            return;
+        }
+        this.submitInFlight = true;
+        this.setState({submitting: true, error: '', fieldErrors: {}, success: false, authRequired: false});
         try {
             const response = await fetch('/api/company-requests/', {
                 method: 'POST',
@@ -186,6 +210,11 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
             const data = await response.json();
             if (response.ok) {
                 this.setState({success: true, submitting: false});
+            } else if (response.status === 401) {
+                // Assistant-triggered opens are not auth-gated (issue #471
+                // AC-12), so a signed-out submit surfaces here instead of
+                // silently doing nothing.
+                this.setState({submitting: false, authRequired: true});
             } else {
                 this.setState({
                     submitting: false,
@@ -198,6 +227,8 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
                 submitting: false,
                 error: 'Network error. Please try again.',
             });
+        } finally {
+            this.submitInFlight = false;
         }
     };
 
@@ -218,6 +249,7 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
             error: '',
             fieldErrors: {},
             success: false,
+            authRequired: false,
         });
         this.props.onClose();
     };
@@ -226,7 +258,7 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
         if (!this.props.visible) {
             return null;
         }
-        const {companyName, websiteUrl, careersUrl, reason, submitting, error, fieldErrors, success} = this.state;
+        const {companyName, websiteUrl, careersUrl, reason, submitting, error, fieldErrors, success, authRequired} = this.state;
         // Render the dialog into a portal on <body>: the blocking dialog must
         // not live inside the (inert) background containers while it is open.
         return createPortal(
@@ -240,18 +272,30 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
                                     onClick={this.handleClose} data-testid="suggest-close-btn"></button>
                         </div>
                         <div className="modal-body">
-                            {success ? (
+                            {authRequired ? (
+                                <div data-testid="suggest-auth-required">
+                                    <p>Sign in to suggest a company.</p>
+                                    <a href="/accounts/login/" className="btn btn-primary"
+                                       data-testid="suggest-sign-in-link">Sign in</a>
+                                </div>
+                            ) : success ? (
                                 <div data-testid="suggest-success">
                                     <p>Thanks! Your suggestion is in the review queue.</p>
                                     <p className="text-muted small">
-                                        We evaluate suggestions as staff time allows. We will not promise a
-                                        completion date, but your request is recorded and will be reviewed.
+                                        Submissions enter review and do not immediately change company
+                                        facts. We evaluate suggestions as staff time allows. We will not
+                                        promise a completion date, but your request is recorded and will
+                                        be reviewed.
                                     </p>
                                     <button type="button" className="btn btn-secondary"
                                             onClick={this.handleClose}>Close</button>
                                 </div>
                             ) : (
                                 <form onSubmit={this.handleSubmit}>
+                                    <p className="text-muted small" data-testid="suggest-review-notice">
+                                        Suggestions enter a review queue and do not immediately change
+                                        company facts.
+                                    </p>
                                     {error && (
                                         <div className="alert alert-danger" role="alert"
                                              data-testid="suggest-error">{error}</div>

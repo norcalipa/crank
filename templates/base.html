@@ -40,5 +40,9 @@
 <!-- Cloudflare Web Analytics -->
 <script defer src='https://static.cloudflareinsights.com/beacon.min.js'
         data-cf-beacon='{"token": "47ad721970f040feb8b977942546247c"}'></script><!-- End Cloudflare Web Analytics -->
+<!-- Mount anchor for the single shared "Suggest a company" controller
+     (issue #471). Must stay outside .app-shell and main.app-content so
+     modalIsolation.ts's inert selector never captures it. -->
+<div id="suggest-company-host"></div>
 </body>
 </html>

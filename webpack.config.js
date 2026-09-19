@@ -7,7 +7,7 @@ const options = {};
 
 module.exports = {
     entry: {
-        main: './static/js/OrganizationList.tsx',
+        main: './static/js/main.tsx',
         jobsearch: './static/js/JobSearchChat.tsx',
         jobmatch: './static/js/JobMatchPanel.tsx',
     },
