@@ -740,3 +740,34 @@ describe('JobMatchPanel inline icons (r2 icon fix)', () => {
         }
     });
 });
+
+describe('JobMatchPanel signed-out state (issue #465)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    test('isAuthenticated=false renders a sign-in message and CTA without fetching any job-matches endpoint', async () => {
+        render(<JobMatchPanel isAuthenticated={false} signInUrl="/accounts/login/?next=%2Fchat%2F"/>);
+
+        expect(screen.getByTestId('job-match-signed-out')).toHaveTextContent(/sign in to see personalized job matches/i);
+        const cta = screen.getByTestId('job-match-sign-in-cta');
+        expect(cta).toHaveAttribute('href', '/accounts/login/?next=%2Fchat%2F');
+        expect(screen.queryByTestId('job-match-loading')).not.toBeInTheDocument();
+
+        // Give any (wrongly issued) fetch a tick to fire, then assert it
+        // never did: /chat/ is now public, so an anonymous visitor's browser
+        // must never hit the @login_required /api/job-matches/* endpoints.
+        await Promise.resolve();
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('isAuthenticated=true (default) fetches normally', async () => {
+        await renderPanel('ok', {count: 3});
+        expect(screen.queryByTestId('job-match-signed-out')).not.toBeInTheDocument();
+        expect(global.fetch).toHaveBeenCalled();
+    });
+});

@@ -93,11 +93,29 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
         window.addEventListener('popstate', this.handlePopState);
         this.normalizeCurrentPage();
+        this.openCompanyFromUrl();
     }
 
     componentWillUnmount() {
         window.removeEventListener('popstate', this.handlePopState);
     }
+
+    // A user sent to sign-in from a company's details dialog returns with
+    // that company id in the URL (issue #465 AC-7): open the same dialog on
+    // load so the round trip through sign-in feels seamless. A missing or
+    // unknown id is silently ignored — never a console error — the page
+    // still renders the normal ranked list.
+    openCompanyFromUrl = () => {
+        const params = new URLSearchParams(window.location.search);
+        const raw = params.get('company');
+        if (raw === null) return;
+        const companyId = Number(raw);
+        if (!Number.isInteger(companyId)) return;
+        const organization = this.props.organizations.find((org) => org.id === companyId);
+        if (organization) {
+            this.handleOrganizationClick(organization);
+        }
+    };
 
     getUrlState = () => {
         const params = new URLSearchParams(window.location.search);

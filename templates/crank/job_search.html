@@ -13,16 +13,46 @@
                 <h1 class="h2 mb-1">
                     <i class="fa-solid fa-comments"></i> CRank Job Search Assistant
                 </h1>
-                <p class="text-muted">
-                    Talk to the assistant about your job preferences. Messages are
-                    saved to your account and are private to you.
-                </p>
+                {% if visitor_state == 'authenticated' %}
+                    <p class="text-muted">
+                        Talk to the assistant about your job preferences. Messages are
+                        saved to your account and are private to you.
+                    </p>
+                {% elif visitor_state == 'session_expired' %}
+                    {% comment %}
+                        Rendered server-side (issue #465) so it is present even
+                        before JobSearchChat.tsx hydrates; the mounted
+                        component renders the same explanation for its own
+                        users once JS takes over.
+                    {% endcomment %}
+                    <div class="alert alert-warning" role="status" aria-live="polite"
+                         data-testid="job-search-session-expired-notice">
+                        {{ session_expired_message }}
+                    </div>
+                {% else %}
+                    <p class="text-muted" data-testid="job-search-first-visit-intro">
+                        {{ first_visit_intro }}
+                    </p>
+                {% endif %}
+                {% if visitor_state != 'authenticated' %}
+                    <p>
+                        <a href="{{ sign_in_url }}" class="btn btn-primary"
+                           data-testid="job-search-sign-in-cta">Sign in to save your search</a>
+                    </p>
+                {% endif %}
             </div>
         </div>
         <div class="row">
             <div class="col-12 col-lg-8">
-                <div id="job-match-panel"></div>
-                <div id="job-search-chat"></div>
+                <div id="job-match-panel"
+                     data-authenticated="{% if visitor_state == 'authenticated' %}true{% else %}false{% endif %}"
+                     data-sign-in-url="{{ sign_in_url }}"></div>
+                <div id="job-search-chat"
+                     data-authenticated="{% if visitor_state == 'authenticated' %}true{% else %}false{% endif %}"
+                     data-visitor-state="{{ visitor_state }}"
+                     data-sign-in-url="{{ sign_in_url }}"
+                     data-signed-out-message="{% if visitor_state == 'session_expired' %}{{ session_expired_message }}{% else %}{{ first_visit_intro }}{% endif %}"
+                     data-selected-company-id="{% if selected_company_id %}{{ selected_company_id }}{% endif %}"></div>
             </div>
         </div>
         <noscript>

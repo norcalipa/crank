@@ -783,6 +783,62 @@ describe('OrganizationList', () => {
         });
     });
 
+    describe('deep-linked company dialog (issue #465 AC-7)', () => {
+        afterEach(() => {
+            window.history.replaceState({}, '', '/');
+        });
+
+        test('?company=<id> matching a listed organization opens that dialog on mount', async () => {
+            window.history.replaceState({}, '', '/?company=1');
+
+            render(<OrganizationList organizations={organizations} />);
+
+            await waitFor(() => {
+                expect(screen.getByRole('dialog')).toBeInTheDocument();
+            });
+        });
+
+        test('?company=<unknown id> mounts cleanly with no dialog and no console error', async () => {
+            const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+            window.history.replaceState({}, '', '/?company=999999');
+
+            render(<OrganizationList organizations={organizations} />);
+
+            await waitFor(() => {
+                expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+            });
+            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            expect(consoleError).not.toHaveBeenCalled();
+            consoleError.mockRestore();
+        });
+
+        test('?company=abc mounts cleanly with no dialog and no console error', async () => {
+            const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+            window.history.replaceState({}, '', '/?company=abc');
+
+            render(<OrganizationList organizations={organizations} />);
+
+            await waitFor(() => {
+                expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+            });
+            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            expect(consoleError).not.toHaveBeenCalled();
+            consoleError.mockRestore();
+        });
+
+        test('?company=<id> combined with ?page=2&search=acme preserves the existing filter state', async () => {
+            window.history.replaceState({}, '', '/?company=1&page=2&search=Organization%202');
+
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+
+            await waitFor(() => {
+                expect(screen.getByRole('dialog')).toBeInTheDocument();
+            });
+            expect(screen.getByRole('textbox', {name: 'Search organizations'})).toHaveValue('Organization 2');
+            expect(screen.getByText('Page 1 of 1')).toBeInTheDocument();
+        });
+    });
+
     test('normalizes an out-of-range page in the URL', async () => {
         window.history.replaceState({}, '', '/?page=99');
 
