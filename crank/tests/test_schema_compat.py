@@ -47,16 +47,16 @@ class PreferenceSchemaCompatTests(TestCase):
         self.user = User.objects.create_user("prefcompat", password="secret")
 
     def test_v2_document_round_trips_through_read_export_and_patch(self):
-        """The canonical v2 document loads, validates, and round-trips when
-        future additive fields are absent."""
+        """The canonical (current) default document loads, validates, and
+        round-trips when future additive fields are absent."""
         UserPreference.objects.create(user=self.user, preferences=default_preferences())
 
         read_doc = preferences_service.read(user=self.user)
-        self.assertEqual(read_doc["schema_version"], 2)
+        self.assertEqual(read_doc["schema_version"], 3)
         self.assertEqual(read_doc["preferences"], default_preferences())
 
         exported = preferences_service.export(user=self.user)
-        self.assertEqual(exported["schema_version"], 2)
+        self.assertEqual(exported["schema_version"], 3)
         self.assertEqual(exported["preferences"], default_preferences())
 
         patch = {"set": {"notes": "prefers public transit"}}
@@ -87,6 +87,56 @@ class PreferenceSchemaCompatTests(TestCase):
         exported = preferences_service.export(user=self.user)
         self.assertEqual(exported["schema_version"], 1)
         self.assertEqual(exported["preferences"], v2_doc)
+
+    def test_v3_document_round_trips_through_read_export_patch_and_reset(self):
+        """The v3 document (roles, importance, scope, and the new
+        compensation/work_location keys) validates and round-trips through
+        every service entry point, not just read/export."""
+        UserPreference.objects.create(user=self.user, preferences=default_preferences())
+
+        read_doc = preferences_service.read(user=self.user)
+        self.assertEqual(read_doc["schema_version"], 3)
+
+        exported = preferences_service.export(user=self.user)
+        self.assertEqual(exported["schema_version"], 3)
+
+        patch = {"set": {"roles.families": ["engineering"], "compensation.basis": "total"}}
+        patched = preferences_service.apply_patch_to_user(self.user, patch)
+        self.assertTrue(patched["changed"])
+        self.assertEqual(patched["preferences"]["roles"]["families"], ["engineering"])
+        self.assertEqual(patched["preferences"]["compensation"]["basis"], "total")
+
+        reset_result = preferences_service.reset(user=self.user)
+        self.assertTrue(reset_result["changed"])
+        self.assertEqual(reset_result["preferences"], default_preferences())
+
+    def test_v2_document_missing_v3_keys_is_still_served(self):
+        """A stored document missing the 0035-added keys (roles, importance,
+        scope, and the new compensation/work_location subkeys) still reads
+        and exports unchanged: the services do not require the additive v3
+        keys to serve old documents."""
+        v3_doc = default_preferences()
+        del v3_doc["roles"]
+        del v3_doc["importance"]
+        del v3_doc["scope"]
+        for key in (
+            "basis", "period", "minimum_total_compensation",
+            "equity_liquidity_required", "acceptable_liquidity_events",
+        ):
+            del v3_doc["compensation"][key]
+        del v3_doc["work_location"]["office_days_exact"]
+        UserPreference.objects.create(user=self.user, preferences=v3_doc, schema_version=2)
+
+        read_doc = preferences_service.read(user=self.user)
+        self.assertNotIn("roles", read_doc["preferences"])
+        self.assertNotIn("importance", read_doc["preferences"])
+        self.assertNotIn("scope", read_doc["preferences"])
+        self.assertNotIn("basis", read_doc["preferences"]["compensation"])
+        self.assertNotIn("office_days_exact", read_doc["preferences"]["work_location"])
+
+        exported = preferences_service.export(user=self.user)
+        self.assertEqual(exported["schema_version"], 2)
+        self.assertEqual(exported["preferences"], v3_doc)
 
     def test_document_with_future_additive_field_still_reads_and_exports(self):
         """A document carrying an extra (future, additive) section is served

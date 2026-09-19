@@ -188,11 +188,16 @@ Verified at commit `d62183acd4a7f93c662c1368f9aec6aeb1f839b8` (2026-09-14):
    - **0032 → #461** (score tuple anchor) —
      `0032_score_tuple_anchor.py` already exists on the `fix/issue-461`
      branch (PR #495); the number must not be reused.
-   - **0033+** — remaining schema tickets take numbers in controller merge
-     order at implementation time:
-     **#459** (UX-14, versioned preference schema), **#460** (UX-18,
-     accepted field-level evidence model), **#467** (UX-17, result
-     revisions), **#475** (UX-29, versioned recompute fields).
+   - **0033** and **0034** are merge migrations
+     (`0033_merge_20260915_0828`, `0034_merge_0031_publicationevent_0033_merge_20260915_0828`)
+     that already exist on `main`; they join prior branch leaves and are not
+     available to a schema ticket.
+   - **0035 → #459** (UX-14, versioned preference schema), parent `0034`;
+     assigned 2026-09-19.
+   - **0036+** — remaining schema tickets take numbers in controller merge
+     order at implementation time: **#460** (UX-18, accepted field-level
+     evidence model — 0036 reserved by the current batch), **#467** (UX-17,
+     result revisions), **#475** (UX-29, versioned recompute fields).
 3. Cross-branch numbering collisions are resolved with a **numbered merge
    migration** following the `0029` precedent. Never renumber or rewrite an
    applied migration.
@@ -211,12 +216,12 @@ bounded reviewed backfill, and contract only after all old pods are gone.
 
 | Field group | Owning ticket | Migration slot | Rollout sequence |
 |---|---|---|---|
-| Preference fields | #459 (UX-14, "Version the preference schema") | 0033+ (assigned at implementation) | Add nullable/defaulted JSON keys and columns first; deploy code that serves both document shapes; bounded resumable backfill of existing v2 documents; no removal in the same release. |
+| Preference fields | #459 (UX-14, "Version the preference schema") | 0035 (assigned 2026-09-19) | Add nullable/defaulted JSON keys and columns first; deploy code that serves both document shapes; bounded resumable backfill of existing v2 documents; no removal in the same release. |
 | Turn lifecycle | #458 (UX-05, "Persist turn delivery state") | 0030 (claimed on `fix/issue-458`) | Additive turn/status columns; code tolerates missing values on old rows; backfill lifecycle timestamps separately; old conversations stay replayable via `idempotency_key`. |
-| Accepted field-level evidence | #460 (UX-18, "Model accepted field-level evidence, scope and freshness timestamps") | 0033+ | Additive evidence model/rows; accepted evidence is resolved per field, never by blanket latest-row; pending/rejected/conflicting observations stay inspectable. |
+| Accepted field-level evidence | #460 (UX-18, "Model accepted field-level evidence, scope and freshness timestamps") | 0036 (reserved) | Additive evidence model/rows; accepted evidence is resolved per field, never by blanket latest-row; pending/rejected/conflicting observations stay inspectable. |
 | Publication outbox | #470 (UX-28, publication after commit) | 0031 | Create `PublicationEvent` additively; the consumer is gated by its own switch (see the capability registry in `docs/rollout-gates.md`); pending work survives restart; an incompatible consumer rollback is addressed before enablement. |
-| Result revisions | #467 (UX-17, "Unify deterministic eligibility, match reasons and result revisions") | 0033+ | Additive revision rows/fields; readers fall back to the un-revised result; bounded backfill of revisions for existing matches. |
-| Versioned recomputation | #475 (UX-29, "Recompute versioned matches") | 0033+ | Additive revision-tag fields on match work/results (preference revision, accepted-data revision, ranking version); obsolete-run rejection via compare-and-swap; preserve seen/dismissed across upserts. |
+| Result revisions | #467 (UX-17, "Unify deterministic eligibility, match reasons and result revisions") | 0037+ | Additive revision rows/fields; readers fall back to the un-revised result; bounded backfill of revisions for existing matches. |
+| Versioned recomputation | #475 (UX-29, "Recompute versioned matches") | 0037+ | Additive revision-tag fields on match work/results (preference revision, accepted-data revision, ranking version); obsolete-run rejection via compare-and-swap; preserve seen/dismissed across upserts. |
 
 Tickets that do **not** own schema in this epic (verified scopes): #457
 (UX-04) is assistant/inventory availability exposure, #462 (UX-24) is the

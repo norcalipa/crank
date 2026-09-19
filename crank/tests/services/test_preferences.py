@@ -77,6 +77,16 @@ class TestSchema:
             ("priorities", {"culture": 2.0}),
             ("work_location", {}),      # dict-spec subtree -> _validate_node_value missing-keys
             ("priorities", {"culture": "high"}),
+            ("compensation.basis", "weekly"),
+            ("compensation.period", "fortnight"),
+            ("compensation.currency", "US"),        # 2 letters
+            ("compensation.currency", "USDX"),      # 4 letters
+            ("compensation.currency", "U5D"),       # non-letter
+            ("work_location.office_days_exact", -1),
+            ("work_location.office_days_exact", 8),
+            ("importance", {"compensation.minimum_salary": -0.1}),
+            ("importance", {"compensation.minimum_salary": 1.1}),
+            ("importance", {"roles.unknown_criterion": 0.5}),  # unregistered key
         ],
     )
     def test_invalid_values_fail(self, path, value):
@@ -90,6 +100,137 @@ class TestSchema:
         else:
             with pytest.raises(InvalidValueError):
                 prefs.validate_value(path, spec, value)
+
+
+class TestV3Schema:
+    """Issue #459: explicit roles, compensation basis/period/liquidity,
+    exact office days, importance, and scope."""
+
+    def test_default_is_v3_superset_of_v2(self):
+        doc = prefs.default_preferences()
+        prefs.validate_document(doc)
+        # Every v2 key retains its v2 default.
+        assert doc["compensation"]["minimum_salary"] is None
+        assert doc["compensation"]["currency"] == "USD"
+        assert doc["compensation"]["equity_minimum_percent"] is None
+        assert doc["compensation"]["require_public_company"] is None
+        assert doc["culture"] == []
+        assert doc["work_location"]["modes"] == []
+        assert doc["work_location"]["countries"] == []
+        assert doc["work_location"]["require_onsite"] is None
+        assert doc["work_location"]["max_in_office_days"] is None
+        assert doc["geography"] == {"regions": [], "remote_friendly": None}
+        assert doc["industry"] == []
+        assert doc["funding_stage"] == []
+        assert doc["vesting"] == {
+            "max_cliff_months": None,
+            "max_vesting_months": None,
+            "prefer_accelerated": None,
+        }
+        assert doc["exclusions"] == {
+            "companies": [], "titles": [], "industries": [], "locations": [],
+        }
+        assert doc["priorities"] == {}
+        assert doc["notes"] == ""
+        # New v3 keys are present with additive defaults.
+        assert doc["roles"] == {"families": [], "titles": [], "seniority": []}
+        assert doc["compensation"]["basis"] == "base"
+        assert doc["compensation"]["period"] == "year"
+        assert doc["compensation"]["minimum_total_compensation"] is None
+        assert doc["compensation"]["equity_liquidity_required"] is None
+        assert doc["compensation"]["acceptable_liquidity_events"] == []
+        assert doc["work_location"]["office_days_exact"] is None
+        assert doc["importance"] == {}
+        assert doc["scope"] == {"countries": [], "role_families": []}
+
+    def test_office_days_exact_boundaries_accepted(self):
+        assert prefs.validate_value("work_location.office_days_exact", "int", 0) == 0
+        assert prefs.validate_value("work_location.office_days_exact", "int", 7) == 7
+
+    def test_importance_boundaries_accepted(self):
+        result = prefs.validate_value(
+            "importance", "float_map",
+            {"compensation.minimum_salary": 0.0, "culture": 1.0},
+        )
+        assert result == {"compensation.minimum_salary": 0.0, "culture": 1.0}
+
+    def test_currency_lowercase_normalizes_to_uppercase(self):
+        assert prefs.validate_value("compensation.currency", "str", "usd") == "USD"
+        assert prefs.validate_value("compensation.currency", "str", "eur") == "EUR"
+
+    def test_basis_and_period_accept_valid_enum_values(self):
+        assert prefs.validate_value("compensation.basis", "str", "base") == "base"
+        assert prefs.validate_value("compensation.basis", "str", "total") == "total"
+        assert prefs.validate_value("compensation.period", "str", "year") == "year"
+        assert prefs.validate_value("compensation.period", "str", "month") == "month"
+        assert prefs.validate_value("compensation.period", "str", "hour") == "hour"
+
+
+class TestUnsupportedCriteria:
+    def test_empty_document_has_no_unsupported_criteria(self):
+        assert prefs.unsupported_criteria(prefs.default_preferences()) == []
+
+    def test_document_with_only_supported_values_has_no_unsupported_criteria(self):
+        doc = prefs.default_preferences()
+        doc["compensation"]["minimum_salary"] = 150000
+        doc["compensation"]["basis"] = "total"  # basis itself is SUPPORTED
+        doc["culture"] = ["transparent"]
+        assert prefs.unsupported_criteria(doc) == []
+
+    def test_minimum_total_compensation_set_is_reported(self):
+        doc = prefs.default_preferences()
+        doc["compensation"]["minimum_total_compensation"] = 250000
+        assert "compensation.minimum_total_compensation" in prefs.unsupported_criteria(doc)
+
+    def test_pre_migration_document_missing_v3_keys_has_no_unsupported_criteria(self):
+        """A stored v2 document (pre-0035) lacks every v3 key outright, not
+        just at its default value. ``unsupported_criteria`` must tolerate the
+        absent path (via ``_get_optional``) rather than raising, and treat a
+        missing key the same as an unset default."""
+        doc = prefs.default_preferences()
+        del doc["roles"]
+        del doc["scope"]
+        for key in (
+            "basis", "period", "minimum_total_compensation",
+            "equity_liquidity_required", "acceptable_liquidity_events",
+        ):
+            del doc["compensation"][key]
+        del doc["work_location"]["office_days_exact"]
+        assert prefs.unsupported_criteria(doc) == []
+
+    def test_basis_total_with_total_set_is_reported(self):
+        doc = prefs.default_preferences()
+        doc["compensation"]["basis"] = "total"
+        doc["compensation"]["minimum_total_compensation"] = 250000
+        unsupported = prefs.unsupported_criteria(doc)
+        assert "compensation.minimum_total_compensation" in unsupported
+        assert "compensation.basis" not in unsupported  # basis is SUPPORTED
+
+    def test_ordering_is_deterministic(self):
+        doc = prefs.default_preferences()
+        doc["scope"]["countries"] = ["US"]
+        doc["roles"]["families"] = ["engineering"]
+        doc["work_location"]["office_days_exact"] = 2
+        first = prefs.unsupported_criteria(doc)
+        second = prefs.unsupported_criteria(doc)
+        assert first == second
+        assert first == [key for key in prefs.CRITERION_SUPPORT if key in first]
+
+    def test_all_unsupported_criteria_registered_unsupported(self):
+        doc = prefs.default_preferences()
+        doc["roles"]["families"] = ["eng"]
+        doc["roles"]["titles"] = ["Staff Engineer"]
+        doc["roles"]["seniority"] = ["staff"]
+        doc["compensation"]["minimum_total_compensation"] = 1
+        doc["compensation"]["equity_liquidity_required"] = True
+        doc["compensation"]["acceptable_liquidity_events"] = ["acquisition"]
+        doc["work_location"]["office_days_exact"] = 3
+        doc["scope"]["countries"] = ["US"]
+        doc["scope"]["role_families"] = ["engineering"]
+        unsupported = prefs.unsupported_criteria(doc)
+        for key in unsupported:
+            assert prefs.CRITERION_SUPPORT[key] == prefs.UNSUPPORTED
+        assert len(unsupported) == 9
 
 
 class TestPatch:
@@ -113,7 +254,17 @@ class TestPatch:
         doc = prefs.default_preferences()
         new, changes = prefs.apply_patch(
             doc,
-            {"set": {"compensation": {"minimum_salary": 200000, "currency": "USD", "equity_minimum_percent": 0.5, "require_public_company": None}}},
+            {"set": {"compensation": {
+                "minimum_salary": 200000,
+                "currency": "USD",
+                "equity_minimum_percent": 0.5,
+                "require_public_company": None,
+                "basis": "base",
+                "period": "year",
+                "minimum_total_compensation": None,
+                "equity_liquidity_required": None,
+                "acceptable_liquidity_events": [],
+            }}},
         )
         assert changes == 1
         assert new["compensation"]["minimum_salary"] == 200000
@@ -202,6 +353,85 @@ class TestPatch:
         assert new != original
 
 
+class TestV3Patch:
+    """apply_patch coverage for every new v3 path (issue #459)."""
+
+    def test_set_roles_families(self):
+        doc = prefs.default_preferences()
+        new, changes = prefs.apply_patch(doc, {"set": {"roles.families": ["engineering"]}})
+        assert changes == 1
+        assert new["roles"]["families"] == ["engineering"]
+
+    def test_set_equal_value_is_a_noop(self):
+        doc = prefs.default_preferences()
+        first, c1 = prefs.apply_patch(doc, {"set": {"roles.families": ["engineering"]}})
+        assert c1 == 1
+        repeat, c2 = prefs.apply_patch(first, {"set": {"roles.families": ["engineering"]}})
+        assert c2 == 0
+        assert repeat["roles"]["families"] == ["engineering"]
+
+    def test_remove_scalar_resets_basis_to_default(self):
+        doc, _ = prefs.apply_patch(
+            prefs.default_preferences(), {"set": {"compensation.basis": "total"}}
+        )
+        new, changes = prefs.apply_patch(doc, {"remove": {"compensation.basis": None}})
+        assert changes == 1
+        assert new["compensation"]["basis"] == "base"
+
+    def test_remove_list_item_from_roles_titles(self):
+        doc, _ = prefs.apply_patch(
+            prefs.default_preferences(),
+            {"set": {"roles.titles": ["Staff Engineer", "Principal Engineer"]}},
+        )
+        new, changes = prefs.apply_patch(doc, {"remove": {"roles.titles": ["Staff Engineer"]}})
+        assert changes == 1
+        assert new["roles"]["titles"] == ["Principal Engineer"]
+
+    def test_remove_importance_key_via_dynamic_float_map_path(self):
+        doc, _ = prefs.apply_patch(
+            prefs.default_preferences(),
+            {"set": {"importance": {"compensation.minimum_salary": 1.0}}},
+        )
+        new, changes = prefs.apply_patch(
+            doc, {"remove": {"importance": ["compensation.minimum_salary"]}}
+        )
+        assert changes == 1
+        assert new["importance"] == {}
+
+    def test_patch_targeting_unregistered_roles_field_fails(self):
+        doc = prefs.default_preferences()
+        with pytest.raises(UnknownFieldError):
+            prefs.apply_patch(doc, {"set": {"roles.unknown": ["x"]}})
+
+    def test_patch_targeting_unregistered_scope_field_fails(self):
+        """``scope`` is a fixed two-field object (countries, role_families);
+        any other key is rejected the same way any unknown field is —
+        strict-patch (UnknownFieldError) — since scope has no dynamic keys
+        to validate against the criterion registry."""
+        doc = prefs.default_preferences()
+        with pytest.raises(UnknownFieldError):
+            prefs.apply_patch(doc, {"set": {"scope.unknown": ["x"]}})
+
+    def test_set_compensation_liquidity_fields(self):
+        doc = prefs.default_preferences()
+        new, changes = prefs.apply_patch(
+            doc,
+            {"set": {
+                "compensation.equity_liquidity_required": True,
+                "compensation.acceptable_liquidity_events": ["acquisition", "ipo"],
+            }},
+        )
+        assert changes == 2
+        assert new["compensation"]["equity_liquidity_required"] is True
+        assert new["compensation"]["acceptable_liquidity_events"] == ["acquisition", "ipo"]
+
+    def test_set_work_location_office_days_exact(self):
+        doc = prefs.default_preferences()
+        new, changes = prefs.apply_patch(doc, {"set": {"work_location.office_days_exact": 2}})
+        assert changes == 1
+        assert new["work_location"]["office_days_exact"] == 2
+
+
 class TestMarkdown:
     def test_deterministic_output(self):
         doc = prefs.default_preferences()
@@ -229,6 +459,65 @@ class TestMarkdown:
         assert md.startswith("# Career Preferences\n")
         assert "## Compensation" in md
         assert "## Exclusions" in md
+
+    def test_default_document_has_no_v3_sections(self):
+        """With no v3 values set, no Roles/Unsupported requirements section
+        appears and no new Compensation/Work Location lines are added: the
+        markdown for an untouched document matches today's shape exactly."""
+        md = prefs.to_markdown(prefs.default_preferences())
+        assert "## Roles" not in md
+        assert "## Unsupported requirements" not in md
+        assert "Compensation basis" not in md
+        assert "Compensation period" not in md
+        assert "Minimum total compensation" not in md
+        assert "Equity liquidity required" not in md
+        assert "Acceptable liquidity events" not in md
+        assert "Exact in-office days" not in md
+
+    def test_unsupported_requirements_section_appears_when_set(self):
+        doc = prefs.default_preferences()
+        doc["compensation"]["minimum_total_compensation"] = 250000
+        md = prefs.to_markdown(doc)
+        assert "## Unsupported requirements" in md
+        assert "compensation.minimum\\_total\\_compensation: Not evaluated by matching yet." in md
+
+    def test_roles_and_liquidity_values_are_escaped(self):
+        doc = prefs.default_preferences()
+        doc["roles"]["families"] = ["*eng*"]
+        doc["roles"]["titles"] = ["_staff_"]
+        doc["roles"]["seniority"] = ["`senior`"]
+        doc["compensation"]["acceptable_liquidity_events"] = ["secondary <sale>"]
+        md = prefs.to_markdown(doc)
+        assert "\\*eng\\*" in md
+        assert "\\_staff\\_" in md
+        assert "\\`senior\\`" in md
+        assert "secondary &lt;sale&gt;" in md
+        # Raw unescaped sequences must not survive.
+        assert "*eng*" not in md
+        assert "_staff_" not in md
+
+    def test_roles_section_only_lists_set_lists(self):
+        doc = prefs.default_preferences()
+        doc["roles"]["families"] = ["engineering"]
+        md = prefs.to_markdown(doc)
+        roles_section = md.split("## Roles")[1].split("## Culture")[0]
+        assert "- Families: engineering" in roles_section
+        assert "- Titles:" not in roles_section
+        assert "- Seniority:" not in roles_section
+
+    def test_compensation_basis_and_period_only_render_when_non_default(self):
+        doc = prefs.default_preferences()
+        doc["compensation"]["basis"] = "total"
+        doc["compensation"]["period"] = "hour"
+        md = prefs.to_markdown(doc)
+        assert "- Compensation basis: Total" in md
+        assert "- Compensation period: Hour" in md
+
+    def test_office_days_exact_renders_when_set(self):
+        doc = prefs.default_preferences()
+        doc["work_location"]["office_days_exact"] = 2
+        md = prefs.to_markdown(doc)
+        assert "- Exact in-office days/week: 2" in md
 
 
 # ---------------------------------------------------------------------------
@@ -410,11 +699,16 @@ class TestReviewFixes:
             prefs.apply_patch_to_user(user, {"set": {"notes": "n" * 2001}})
 
     def test_currency_escaped_in_markdown(self, user):
-        patch = {"set": {"compensation.currency": "US`D",
-                         "compensation.minimum_salary": 100000}}
-        result = prefs.apply_patch_to_user(user, patch)
-        assert "US`D" not in result["markdown"]
-        assert "US\\`D" in result["markdown"]
+        """compensation.currency is now a strict 3-ASCII-letter enum (issue
+        #459 AC-4), so a value with markdown control characters can no
+        longer reach the stored document through the validated write path;
+        _money()'s _escape_md call is pinned directly instead."""
+        with pytest.raises(prefs.InvalidValueError):
+            prefs.apply_patch_to_user(
+                user,
+                {"set": {"compensation.currency": "US`D", "compensation.minimum_salary": 100000}},
+            )
+        assert prefs._money(100000, "US`D") == "US\\`D 100,000"
 
     def test_double_read_creates_single_row(self, user):
         """M2/M3: re-reading an existing row never duplicates it or double-audits create."""
@@ -538,7 +832,11 @@ class TestCoverageEdges:
         with pytest.raises(prefs.UnknownFieldError):
             prefs.apply_patch(
                 prefs.default_preferences(),
-                {"set": {"work_location": {"modes": [], "countries": [], "require_onsite": None, "max_in_office_days": None, "bogus": 1}}},
+                {"set": {"work_location": {
+                    "modes": [], "countries": [], "require_onsite": None,
+                    "max_in_office_days": None, "office_days_exact": None,
+                    "bogus": 1,
+                }}},
             )
 
     def test_subtree_set_non_object_value(self):

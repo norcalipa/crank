@@ -459,9 +459,55 @@ class SchemaValidationTests(TestCase):
         assert "max_in_office_days" in doc["work_location"]
         assert doc["work_location"]["max_in_office_days"] is None
 
-    def test_schema_version_is_2(self):
+    def test_schema_version_is_3(self):
         from crank.models.preference import SCHEMA_VERSION
-        assert SCHEMA_VERSION == 2
+        assert SCHEMA_VERSION == 3
+
+
+class V3CriteriaProjectionTests(TestCase):
+    """project_criteria tolerates v3 documents without evaluating the new,
+    still-UNSUPPORTED criteria (issue #459 AC-7): no silent backfill of
+    minimum_total_compensation into min_salary, and no inference of
+    liquidity/cliff/office days from coarse organization labels."""
+
+    def test_minimum_total_compensation_is_not_backfilled_into_min_salary(self):
+        criteria = project_criteria(
+            preferences(compensation={
+                "minimum_salary": None,
+                "minimum_total_compensation": 250000,
+            }),
+            3,
+        )
+        assert criteria.min_salary is None
+
+    def test_basis_total_does_not_change_min_salary(self):
+        criteria = project_criteria(
+            preferences(compensation={
+                "minimum_salary": 100000,
+                "basis": "total",
+                "minimum_total_compensation": 250000,
+            }),
+            3,
+        )
+        assert criteria.min_salary == Decimal(100000)
+
+    def test_criteria_version_is_3_for_v3_document(self):
+        criteria = project_criteria(preferences(), 3)
+        assert criteria.criteria_version == 3
+
+    def test_criteria_version_is_2_for_v2_document(self):
+        criteria = project_criteria(preferences(), 2)
+        assert criteria.criteria_version == 2
+
+    def test_equity_liquidity_required_does_not_change_exclusion_behavior(self):
+        """equity_liquidity_required is registered UNSUPPORTED: setting it
+        must not exclude a non-public organization, because no code path
+        infers liquidity from funding_round."""
+        criteria = project_criteria(
+            preferences(compensation={"equity_liquidity_required": True}), 3,
+        )
+        non_public_org = org(funding_round="A")
+        assert _org_excluded(non_public_org, criteria) is False
 
 
 # ---------------------------------------------------------------------------
