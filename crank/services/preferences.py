@@ -94,6 +94,11 @@ _FIELD_SPEC = {
         "currency": "str",
         "equity_minimum_percent": "float",
         "require_public_company": "bool",
+        "basis": "str",               # "base" or "total"
+        "period": "str",              # "year", "month", or "hour"
+        "minimum_total_compensation": "int",
+        "equity_liquidity_required": "bool",
+        "acceptable_liquidity_events": "str_list",
     },
     "culture": "str_list",  # preferred culture attributes
     "work_location": {
@@ -101,6 +106,7 @@ _FIELD_SPEC = {
         "countries": "str_list",
         "require_onsite": "bool",
         "max_in_office_days": "int",  # RTO ceiling (0-7)
+        "office_days_exact": "int",   # exact required in-office days (0-7)
     },
     "geography": {
         "regions": "str_list",
@@ -121,6 +127,61 @@ _FIELD_SPEC = {
     },
     "priorities": "float_map",
     "notes": "str",
+    "roles": {
+        "families": "str_list",
+        "titles": "str_list",
+        "seniority": "str_list",
+    },
+    "importance": "float_map",  # criterion key -> 0.0 (soft) .. 1.0 (hard)
+    "scope": {
+        "countries": "str_list",
+        "role_families": "str_list",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Criterion support registry (issue #459)
+# ---------------------------------------------------------------------------
+# Whether the matching engine (crank.agents.jobs.matching.project_criteria)
+# actually evaluates a given criterion key. A criterion set by the user but
+# registered UNSUPPORTED must be surfaced (see unsupported_criteria) rather
+# than silently treated as satisfied.
+SUPPORTED = "supported"
+UNSUPPORTED = "unsupported"
+
+CRITERION_SUPPORT = {
+    "compensation.minimum_salary": SUPPORTED,
+    "compensation.currency": SUPPORTED,
+    "compensation.equity_minimum_percent": SUPPORTED,
+    "compensation.require_public_company": SUPPORTED,
+    "compensation.basis": SUPPORTED,
+    "compensation.period": SUPPORTED,
+    "culture": SUPPORTED,
+    "work_location.modes": SUPPORTED,
+    "work_location.countries": SUPPORTED,
+    "work_location.require_onsite": SUPPORTED,
+    "work_location.max_in_office_days": SUPPORTED,
+    "geography.regions": SUPPORTED,
+    "geography.remote_friendly": SUPPORTED,
+    "industry": SUPPORTED,
+    "funding_stage": SUPPORTED,
+    "vesting.max_cliff_months": SUPPORTED,
+    "vesting.max_vesting_months": SUPPORTED,
+    "vesting.prefer_accelerated": SUPPORTED,
+    "exclusions.companies": SUPPORTED,
+    "exclusions.titles": SUPPORTED,
+    "exclusions.industries": SUPPORTED,
+    "exclusions.locations": SUPPORTED,
+    "roles.families": UNSUPPORTED,
+    "roles.titles": UNSUPPORTED,
+    "roles.seniority": UNSUPPORTED,
+    "compensation.minimum_total_compensation": UNSUPPORTED,
+    "compensation.equity_liquidity_required": UNSUPPORTED,
+    "compensation.acceptable_liquidity_events": UNSUPPORTED,
+    "work_location.office_days_exact": UNSUPPORTED,
+    "scope.countries": UNSUPPORTED,
+    "scope.role_families": UNSUPPORTED,
 }
 
 
@@ -191,7 +252,10 @@ def validate_value(field, leaf_type, value):
                 raise InvalidValueError(f"Field {field!r} must be an integer")
             if value < 0:
                 raise InvalidValueError(f"Field {field!r} must be non-negative")
-            if field == "work_location.max_in_office_days" and value > 7:
+            if (
+                field in ("work_location.max_in_office_days", "work_location.office_days_exact")
+                and value > 7
+            ):
                 raise InvalidValueError(
                     f"Field {field!r} must not exceed 7"
                 )
@@ -206,7 +270,22 @@ def validate_value(field, leaf_type, value):
         # other string fields are capped at MAX_SCALAR_LENGTH (M1).
         allow_empty = field == "notes"
         max_length = MAX_NOTES_LENGTH if field == "notes" else MAX_SCALAR_LENGTH
-        return _validate_str(value, field, allow_empty=allow_empty, max_length=max_length)
+        value = _validate_str(value, field, allow_empty=allow_empty, max_length=max_length)
+        if field == "compensation.currency":
+            value = value.upper()
+            if len(value) != 3 or not value.isascii() or not value.isalpha():
+                raise InvalidValueError(
+                    f"Field {field!r} must be exactly three ASCII letters"
+                )
+        elif field == "compensation.basis" and value not in ("base", "total"):
+            raise InvalidValueError(
+                f"Field {field!r} must be 'base' or 'total'"
+            )
+        elif field == "compensation.period" and value not in ("year", "month", "hour"):
+            raise InvalidValueError(
+                f"Field {field!r} must be 'year', 'month', or 'hour'"
+            )
+        return value
     if leaf_type == "str_list":
         if not isinstance(value, list):
             raise InvalidValueError(f"Field {field!r} must be a list")
@@ -228,6 +307,10 @@ def validate_value(field, leaf_type, value):
         out = {}
         for key, weight in value.items():
             _validate_str(key, field)
+            if field == "importance" and key not in CRITERION_SUPPORT:
+                raise InvalidValueError(
+                    f"Unknown criterion key {key!r} for {field!r}"
+                )
             if isinstance(weight, bool) or not isinstance(weight, (int, float)):
                 raise InvalidValueError(
                     f"Priority {key!r} must be a number"
@@ -352,6 +435,48 @@ def _set(doc, path, value):
     for part in parts[:-1]:
         node = node[part]
     node[parts[-1]] = value
+
+
+def _get_optional(document, path):
+    """Like :func:`_get`, but returns ``None`` for a path that is absent.
+
+    Used by :func:`unsupported_criteria` so it tolerates a document that
+    predates a given criterion key (pre-migration) instead of raising.
+    """
+    node = document
+    for part in _split_path(path):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node
+
+
+def _criterion_is_set(spec, value):
+    """Whether *value* represents the user actually expressing this criterion,
+    as opposed to the field's un-set default."""
+    if spec in ("str_list", "float_map"):
+        return bool(value)
+    return value is not None
+
+
+def unsupported_criteria(document):
+    """Return the ordered list of criterion keys the user has set that the
+    matching engine cannot evaluate (registered ``UNSUPPORTED`` in
+    :data:`CRITERION_SUPPORT`).
+
+    A criterion is considered "set" when it differs from its schema default
+    (a non-empty list/map, or a non-``None`` scalar). Order follows
+    :data:`CRITERION_SUPPORT`'s definition order, which is deterministic.
+    """
+    result = []
+    for path, support in CRITERION_SUPPORT.items():
+        if support != UNSUPPORTED:
+            continue
+        spec, _dynamic = _resolve_spec(path)
+        value = _get_optional(document, path)
+        if _criterion_is_set(spec, value):
+            result.append(path)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -577,7 +702,34 @@ def to_markdown(document):
         lines.append("- Minimum equity target: Not specified")
     if comp["require_public_company"] is not None:
         lines.append("- Require public company: {}".format("Yes" if comp["require_public_company"] else "No"))
+    if comp["basis"] != "base":
+        lines.append("- Compensation basis: {}".format(comp["basis"].capitalize()))
+    if comp["period"] != "year":
+        lines.append("- Compensation period: {}".format(comp["period"].capitalize()))
+    if comp["minimum_total_compensation"] is not None:
+        lines.append("- Minimum total compensation: {}".format(
+            _money(comp["minimum_total_compensation"], comp["currency"])
+        ))
+    if comp["equity_liquidity_required"] is not None:
+        lines.append("- Equity liquidity required: {}".format(
+            "Yes" if comp["equity_liquidity_required"] else "No"
+        ))
+    if comp["acceptable_liquidity_events"]:
+        lines.append("- Acceptable liquidity events: {}".format(
+            ", ".join(_escape_md(e) for e in comp["acceptable_liquidity_events"])
+        ))
     lines.append("")
+
+    roles = document["roles"]
+    if roles["families"] or roles["titles"] or roles["seniority"]:
+        lines.append("## Roles")
+        if roles["families"]:
+            lines.append("- Families: {}".format(", ".join(_escape_md(f) for f in roles["families"])))
+        if roles["titles"]:
+            lines.append("- Titles: {}".format(", ".join(_escape_md(t) for t in roles["titles"])))
+        if roles["seniority"]:
+            lines.append("- Seniority: {}".format(", ".join(_escape_md(s) for s in roles["seniority"])))
+        lines.append("")
 
     _section(lines, "Culture", document["culture"])
     wl = document["work_location"]
@@ -587,6 +739,8 @@ def to_markdown(document):
     lines.append("- Require onsite: {}".format("Yes" if wl["require_onsite"] else "No"))
     if wl["max_in_office_days"] is not None:
         lines.append("- Max in-office days/week: {}".format(wl["max_in_office_days"]))
+    if wl["office_days_exact"] is not None:
+        lines.append("- Exact in-office days/week: {}".format(wl["office_days_exact"]))
     lines.append("")
     geo = document["geography"]
     lines.append("## Geography")
@@ -619,6 +773,7 @@ def to_markdown(document):
         lines.append("## Notes")
         lines.append(_escape_md(notes))
         lines.append("")
+    _unsupported_section(lines, document)
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -629,6 +784,23 @@ def _section(lines, heading, items):
             lines.append(f"- {_escape_md(item)}")
     else:
         lines.append("- None")
+    lines.append("")
+
+
+def _unsupported_section(lines, document):
+    """Append the "Unsupported requirements" section, if any criterion the
+    user set is not yet evaluated by the matching engine.
+
+    Never rendered in a way that implies satisfaction: each entry is listed
+    with an explicit "Not evaluated by matching yet." caveat, and the whole
+    section is omitted when nothing unsupported is set.
+    """
+    unsupported = unsupported_criteria(document)
+    if not unsupported:
+        return
+    lines.append("## Unsupported requirements")
+    for key in unsupported:
+        lines.append("- {}: Not evaluated by matching yet.".format(_escape_md(key)))
     lines.append("")
 
 
