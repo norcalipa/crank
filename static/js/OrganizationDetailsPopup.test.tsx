@@ -6,6 +6,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import * as React from 'react';
 
 import OrganizationDetailsPopup from './OrganizationDetailsPopup';
+import * as suggestCompanyController from './suggestCompany/controller';
 
 // Add an interface that matches the component's expected props
 interface ScoreDetail {
@@ -762,6 +763,33 @@ describe('OrganizationDetailsPopup', () => {
             expect(screen.getByTestId('correction-action')).toBeInTheDocument();
         });
         expect(screen.getByTestId('suggest-correction-link')).toBeInTheDocument();
+    });
+
+    test('the correction trigger calls the controller with company_details context and closes the dialog', async () => {
+        const openSpy = jest.spyOn(suggestCompanyController, 'openSuggestCompany').mockImplementation(() => {});
+        const onClose = jest.fn();
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={onClose}
+                isAuthenticated={true}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('suggest-correction-link')).toBeInTheDocument();
+        });
+        fireEvent.click(screen.getByTestId('suggest-correction-link'));
+
+        expect(openSpy).toHaveBeenCalledWith({
+            source: 'company_details',
+            companyName: 'Test Organization',
+            organizationId: 1,
+        });
+        expect(onClose).toHaveBeenCalledTimes(1);
+
+        openSpy.mockRestore();
     });
 
     test('does not show correction link when not authenticated', async () => {

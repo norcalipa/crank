@@ -6,6 +6,8 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import * as React from 'react';
 
 import OrganizationList from './OrganizationList';
+import SuggestCompanyHost from './suggestCompany/SuggestCompanyHost';
+import * as suggestCompanyController from './suggestCompany/controller';
 
 interface Organization {
     id: number;
@@ -19,7 +21,17 @@ interface Organization {
 }
 
 describe('OrganizationList', () => {
+    let openSuggestCompanySpy: jest.SpyInstance;
+    let closeSuggestCompanySpy: jest.SpyInstance;
+
     beforeEach(() => {
+        // Spy on (not mock) the real controller: OrganizationList's triggers
+        // are asserted via the spy, while the real implementation still runs
+        // so tests that also mount SuggestCompanyHost see genuine state
+        // changes (issue #471).
+        openSuggestCompanySpy = jest.spyOn(suggestCompanyController, 'openSuggestCompany');
+        closeSuggestCompanySpy = jest.spyOn(suggestCompanyController, 'closeSuggestCompany');
+        suggestCompanyController.closeSuggestCompany();
         // Mock fetch calls
         global.fetch = jest.fn().mockImplementation((url) => {
             if (url === '/api/funding-round-choices/') {
@@ -76,7 +88,7 @@ describe('OrganizationList', () => {
     });
 
     afterEach(() => {
-        jest.clearAllMocks();
+        jest.restoreAllMocks();
     });
 
     const organizations: Organization[] = [
@@ -432,7 +444,7 @@ describe('OrganizationList', () => {
     });
 
     test('opening the suggest modal closes the details dialog (#464)', async () => {
-        render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+        render(<><OrganizationList organizations={organizations} isAuthenticated={true} /><SuggestCompanyHost /></>);
 
         await waitFor(() => {
             expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
@@ -453,10 +465,11 @@ describe('OrganizationList', () => {
         });
         expect(screen.queryByText('Company (for profit)')).not.toBeInTheDocument();
         expect(screen.getAllByRole('dialog')).toHaveLength(1);
+        expect(openSuggestCompanySpy).toHaveBeenCalledWith({source: 'rankings', searchTerm: '', page: 1});
     });
 
     test('opening the details dialog closes the suggest modal (#464)', async () => {
-        render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+        render(<><OrganizationList organizations={organizations} isAuthenticated={true} /><SuggestCompanyHost /></>);
 
         await waitFor(() => {
             expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
@@ -474,6 +487,34 @@ describe('OrganizationList', () => {
         });
         expect(screen.queryByTestId('suggest-company-modal')).not.toBeInTheDocument();
         expect(screen.getAllByRole('dialog')).toHaveLength(1);
+        expect(closeSuggestCompanySpy).toHaveBeenCalled();
+    });
+
+    test('the list no longer renders SuggestCompanyModal itself', async () => {
+        render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+        fireEvent.click(await screen.findByTestId('suggest-company-btn'));
+        expect(openSuggestCompanySpy).toHaveBeenCalledWith({source: 'rankings', searchTerm: '', page: 1});
+        expect(screen.queryByTestId('suggest-company-modal')).not.toBeInTheDocument();
+    });
+
+    test('page/search/filter state is unchanged after an open-then-close cycle (AC-10)', async () => {
+        render(<><OrganizationList organizations={organizations} isAuthenticated={true} /><SuggestCompanyHost /></>);
+
+        const searchInput = await screen.findByPlaceholderText('Search organizations');
+        fireEvent.change(searchInput, {target: {value: 'Organization 1'}});
+        await waitFor(() => {
+            expect(screen.queryAllByText('Organization 2')).toHaveLength(0);
+        });
+
+        fireEvent.click(screen.getByTestId('suggest-company-btn'));
+        expect(await screen.findByTestId('suggest-company-modal')).toBeInTheDocument();
+        fireEvent.click(screen.getByTestId('suggest-close-btn'));
+        await waitFor(() => {
+            expect(screen.queryByTestId('suggest-company-modal')).not.toBeInTheDocument();
+        });
+
+        expect((screen.getByPlaceholderText('Search organizations') as HTMLInputElement).value).toBe('Organization 1');
+        expect(screen.queryAllByText('Organization 2')).toHaveLength(0);
     });
 
     test('handles error when fetching organization details', async () => {
@@ -892,16 +933,29 @@ describe('OrganizationList', () => {
     });
 
     test('opens and closes suggest company modal for authenticated users', async () => {
-        render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+        render(<><OrganizationList organizations={organizations} isAuthenticated={true} /><SuggestCompanyHost /></>);
         fireEvent.click(await screen.findByTestId('suggest-company-btn'));
         expect(screen.getByTestId('suggest-company-modal')).toBeInTheDocument();
+        expect(openSuggestCompanySpy).toHaveBeenCalledWith({source: 'rankings', searchTerm: '', page: 1});
         fireEvent.click(screen.getByTestId('suggest-close-btn'));
-        expect(screen.queryByTestId('suggest-company-modal')).not.toBeInTheDocument();
+        await waitFor(() => {
+            expect(screen.queryByTestId('suggest-company-modal')).not.toBeInTheDocument();
+        });
+    });
+
+    test('empty-state link calls the controller with source rankings_empty', async () => {
+        render(<><OrganizationList organizations={[]} isAuthenticated={true} /><SuggestCompanyHost /></>);
+        fireEvent.click(await screen.findByTestId('suggest-company-btn'));
+        expect(openSuggestCompanySpy).toHaveBeenCalledWith({source: 'rankings', searchTerm: '', page: 1});
+        openSuggestCompanySpy.mockClear();
+
+        fireEvent.click(screen.getByText('Suggest a company', {selector: 'button.btn-link'}));
+        expect(openSuggestCompanySpy).toHaveBeenCalledWith({source: 'rankings_empty', searchTerm: '', page: 1});
     });
 
     test('opens suggest company modal from empty results', async () => {
-        render(<OrganizationList organizations={[]} isAuthenticated={true} />);
-        fireEvent.click(await screen.findByTestId('suggest-company-btn'));
+        render(<><OrganizationList organizations={[]} isAuthenticated={true} /><SuggestCompanyHost /></>);
+        fireEvent.click(screen.getByText('Suggest a company', {selector: 'button.btn-link'}));
         expect(screen.getByTestId('suggest-company-modal')).toBeInTheDocument();
     });
 
@@ -975,7 +1029,7 @@ describe('OrganizationList', () => {
             const org1 = detailsDeferred();
             global.fetch = deferredDetailsFetch({'/api/organizations/1/': org1});
 
-            render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+            render(<><OrganizationList organizations={organizations} isAuthenticated={true} /><SuggestCompanyHost /></>);
 
             // Open the first row: the details request stays pending (deferred).
             fireEvent.click(screen.getAllByText('Organization 1')[0]);
@@ -1074,7 +1128,7 @@ describe('OrganizationList', () => {
             });
             const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
-            render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+            render(<><OrganizationList organizations={organizations} isAuthenticated={true} /><SuggestCompanyHost /></>);
 
             fireEvent.click(screen.getAllByText('Organization 1')[0]);
             fireEvent.click(screen.getByTestId('suggest-company-btn'));
@@ -1166,7 +1220,7 @@ describe('OrganizationList', () => {
                 return Promise.reject(new Error('Fetch not mocked for this URL'));
             });
 
-            render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+            render(<><OrganizationList organizations={organizations} isAuthenticated={true} /><SuggestCompanyHost /></>);
 
             // Details dialog opens: background isolated (shell, content, skip
             // link) and the actual document scroller locked.

@@ -3,6 +3,7 @@
 import * as React from 'react';
 import {createPortal} from 'react-dom';
 import {lockBackground, unlockBackground} from './modalIsolation';
+import {openSuggestCompany} from './suggestCompany/controller';
 
 interface ScoreDetail {
     type__name: string;
@@ -409,11 +410,22 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                     )}
                                     {isAuthenticated && (
                                         <div className="mt-2" data-testid="correction-action">
-                                            <a href={`/api/company-requests/`}
-                                               className="btn btn-sm btn-outline-light"
-                                               data-testid="suggest-correction-link">
+                                            <button type="button"
+                                                    className="btn btn-sm btn-outline-light"
+                                                    data-testid="suggest-correction-link"
+                                                    onClick={() => {
+                                                        // Only one blocking dialog is open at a time
+                                                        // (issue #464/#471): opening the suggestion
+                                                        // form closes this details dialog.
+                                                        openSuggestCompany({
+                                                            source: 'company_details',
+                                                            companyName: organization.name,
+                                                            organizationId: organization.id,
+                                                        });
+                                                        onClose();
+                                                    }}>
                                                 Suggest a Correction
-                                            </a>
+                                            </button>
                                         </div>
                                     )}
                                 </div>
