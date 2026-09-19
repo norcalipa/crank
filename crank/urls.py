@@ -20,9 +20,7 @@ from django.conf import settings
 from django.contrib import admin
 from django.urls import include, path
 from django.views.decorators.cache import cache_page
-from django.views.generic import TemplateView
 
-from crank.auth import login_required_with_expiry
 from crank.decorators import cache_page_if_anonymous_method
 from crank.services.scores import SCORE_CACHE_KEY_VERSION
 from crank.views.api import (
@@ -52,6 +50,7 @@ from crank.views.job_search import (
     agent_conversation_list,
     agent_conversation_reset,
 )
+from crank.views.job_search_page import job_search_page
 from crank.views.logout import CustomLogoutView
 from crank.views.release_diagnostics import release_diagnostics
 from crank.views.rtopolicy import RTOPolicyChoicesView
@@ -78,7 +77,7 @@ urlpatterns = [
     path('api/organizations/<int:pk>/scores/', organization_scores, name='organization-scores'),
     path('api/company-requests/', company_requests, name='company-request-list'),
     path('api/company-requests/<int:pk>/', company_requests, name='company-request-detail'),
-    path('chat/', login_required_with_expiry(TemplateView.as_view(template_name='crank/job_search.html')), name='job_search'),
+    path('chat/', job_search_page, name='job_search'),
     path('api/agent/assistant-status/', assistant_status, name='agent-assistant-status'),
     path('api/agent/conversations/', agent_conversation_list, name='agent-conversation-list'),
     path('api/agent/conversations/<int:conversation_id>/', agent_conversation_detail, name='agent-conversation-detail'),

@@ -108,6 +108,34 @@
         return match ? decodeURIComponent(match[1]) : null;
     }
 
+    // Removes every private client-side artefact (issue #465 AC-9): all
+    // `crank:jobsearch:` keys (drafts, turn-recovery markers) plus the
+    // sign-in intent. This is the plain-JS twin of
+    // static/js/authIntent.ts's purgePrivateClientState() — app-nav.js is a
+    // standalone script (not a webpack entry), so it cannot import that
+    // TS module and keeps its own copy instead.
+    function purgePrivateClientState() {
+        try {
+            window.sessionStorage.removeItem("crank:auth-intent");
+        } catch (e) {
+            // Storage unavailable; nothing durable to clear.
+        }
+        try {
+            var doomed = [];
+            for (var i = 0; i < window.localStorage.length; i++) {
+                var key = window.localStorage.key(i);
+                if (key && key.indexOf("crank:jobsearch:") === 0) {
+                    doomed.push(key);
+                }
+            }
+            doomed.forEach(function (key) {
+                window.localStorage.removeItem(key);
+            });
+        } catch (e) {
+            // Storage unavailable; nothing durable to purge.
+        }
+    }
+
     function submitLogoutWithToken(event) {
         // The shared cached shell carries no session-bound CSRF token; the
         // whoami response guarantees a CSRF cookie before this form is
@@ -115,6 +143,17 @@
         // other form.
         event.preventDefault();
         var form = event.currentTarget;
+        // Purge before the request settles (issue #465 AC-9): sign-out must
+        // discard every private artefact regardless of whether the POST
+        // succeeds, and the mounted chat's in-flight request must be told
+        // to abort rather than attach a stale reply to the signed-out view.
+        purgePrivateClientState();
+        try {
+            window.localStorage.removeItem("crank:last-account");
+        } catch (e) {
+            // Storage unavailable; nothing durable to clear.
+        }
+        document.dispatchEvent(new CustomEvent("crank:private-state-purged"));
         fetch(form.action, {
             method: "POST",
             credentials: "same-origin",
@@ -147,8 +186,14 @@
         }
         // The React list mounts from the dataset attributes before this
         // async fetch resolves, so notify it to re-render with the hydrated
-        // auth state.
-        document.dispatchEvent(new CustomEvent("crank:auth-hydrated"));
+        // auth state. The username travels in the detail (issue #465 AC-9)
+        // so a mounted JobSearchChat can compare it against
+        // `crank:last-account` and purge on an account switch — the
+        // compare-and-purge decision lives there, not here, since it is the
+        // one place that can act on both the old and new value together.
+        document.dispatchEvent(new CustomEvent("crank:auth-hydrated", {
+            detail: { authenticated: authenticated, username: authenticated ? data.username : null },
+        }));
     }
 
     function hydrateAccountState() {

@@ -298,6 +298,27 @@ class IndexViewTests(TestCase):
         self.assertEqual(second.status_code, 200)
         self.assertIsNotNone(cache.get(page_key))
 
+    def _queue_flash_message(self, text):
+        """Queue a message the same way ``django.contrib.messages`` would,
+        without depending on any specific view to produce one (issue #465
+        removed the only production call site,
+        ``crank.auth.login_required_with_expiry``). Uses the default
+        ``CookieStorage`` backend directly to write the same cookie a real
+        view's response would carry, then transplants it onto the test
+        client so the next request reads it exactly as it would in
+        production."""
+        from django.contrib.messages import constants
+        from django.contrib.messages.storage.cookie import CookieStorage
+        from django.http import HttpResponse
+
+        request = RequestFactory().get("/")
+        response = HttpResponse()
+        storage = CookieStorage(request)
+        storage.add(constants.WARNING, text)
+        storage.update(response)
+        for key, morsel in response.cookies.items():
+            self.client.cookies[key] = morsel.value
+
     def test_cached_algo_shell_excludes_flash_messages(self):
         """The full-page-cached algo shell is shared across every account,
         so per-session flash messages must never render into it: a queued
@@ -308,10 +329,10 @@ class IndexViewTests(TestCase):
         algo_url = f"/algo/{DEFAULT_ALGORITHM_ID}/"
         page_key = f"algorithm_{DEFAULT_ALGORITHM_ID}_page"
 
-        # An anonymous request to a protected page queues the
-        # session-expired flash message (crank.auth.login_required_with_expiry).
-        expired = self.client.get("/chat/")
-        self.assertEqual(expired.status_code, 302)
+        # Queue a flash message the way any Django view might (issue #465
+        # removed /chat/'s own use of messages.warning; the shared-cache
+        # exclusion this test guards applies to any queued message).
+        self._queue_flash_message(SESSION_EXPIRED_MESSAGE)
 
         first = self.client.get(algo_url)
         self.assertEqual(first.status_code, 200)
