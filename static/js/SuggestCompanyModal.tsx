@@ -273,10 +273,12 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
                         </div>
                         <div className="modal-body">
                             {authRequired ? (
-                                <div data-testid="suggest-auth-required">
-                                    <p>Sign in to suggest a company.</p>
-                                    <a href="/accounts/login/" className="btn btn-primary"
-                                       data-testid="suggest-sign-in-link">Sign in</a>
+                                <div className="text-center py-2" data-testid="suggest-auth-required">
+                                    <p className="mb-3">Sign in to suggest a company.</p>
+                                    <div className="d-grid gap-2 d-sm-block">
+                                        <a href="/accounts/login/" className="btn btn-primary px-4"
+                                           data-testid="suggest-sign-in-link">Sign in</a>
+                                    </div>
                                 </div>
                             ) : success ? (
                                 <div data-testid="suggest-success">

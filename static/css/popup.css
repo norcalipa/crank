@@ -35,9 +35,33 @@
 }
 
 /* Suggest-company modal rides Bootstrap's .modal but must also sit above the
-   navigation rail (--bs-modal-zindex is 1055, below the 1100 rail). */
+   navigation rail (--bs-modal-zindex is 1055, below the 1100 rail). It is
+   rendered with `d-block` directly (no Bootstrap JS), so Bootstrap's own
+   .modal-backdrop element never gets created; this ::before supplies the
+   dimming scrim instead, painted before (so behind) .modal-dialog in source
+   order. */
 .modal.blocking-modal {
     z-index: var(--z-blocking-dialog);
+    /* Overrides the `.d-block` utility class (display: block !important)
+       also present on this element, so the dialog gets flex centering
+       instead of Bootstrap's default top-anchored block layout. */
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+
+.modal.blocking-modal::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-color: rgba(0, 0, 0, 0.7);
+}
+
+.modal.blocking-modal .modal-dialog {
+    margin: 0;
+    max-height: 100%;
+    overflow-y: auto;
 }
 
 .popup-details {

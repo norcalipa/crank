@@ -28,10 +28,12 @@
                 {% endfor %}
 
                 {% if user.is_authenticated or auth_neutral_shell %}
-                    {# The full-page-cached /algo/ shell renders auth-neutral
-                       for every account (issue #470): auth-dependent controls
-                       are always present but hidden, and app-nav.js reveals
-                       them per request from the uncached whoami endpoint. #}
+                    {% comment %}
+                    The full-page-cached /algo/ shell renders auth-neutral
+                    for every account (issue #470): auth-dependent controls
+                    are always present but hidden, and app-nav.js reveals
+                    them per request from the uncached whoami endpoint.
+                    {% endcomment %}
                     <li {% if auth_neutral_shell %}hidden data-nav-auth-only{% endif %}>
                         <a href="/admin/"
                            id="nav-admin"
@@ -47,11 +49,13 @@
             <div class="app-nav-footer">
                 {% if user.is_authenticated or auth_neutral_shell %}
                     <div class="app-nav-user-group"{% if auth_neutral_shell %} hidden data-nav-auth-only{% endif %}>
-                        {# The shell embeds no username (issue #470): app-nav.js
-                           fills the label per request from whoami. Server-rendered
-                           pages embed a per-session CSRF token in the logout
-                           form; the shared cached shell stays token-free and
-                           app-nav.js submits it with the CSRF cookie. #}
+                        {% comment %}
+                        The shell embeds no username (issue #470): app-nav.js
+                        fills the label per request from whoami. Server-rendered
+                        pages embed a per-session CSRF token in the logout
+                        form; the shared cached shell stays token-free and
+                        app-nav.js submits it with the CSRF cookie.
+                        {% endcomment %}
                         <div class="app-nav-user" id="nav-account">
                             <i class="fa-solid fa-user-circle" aria-hidden="true"></i>
                             <span class="app-nav-label" data-nav-user-label>Account</span>

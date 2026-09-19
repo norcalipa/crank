@@ -22,11 +22,13 @@
 <body>
 {% include "_navigation.html" %}
 {% if messages and not auth_neutral_shell %}
-    {# The /algo/<id>/ shell is full-page cached and shared across every
-       account (issue #470): rendering the per-session messages framework
-       output into it would serve one account's flash message to every
-       later caller, so the cached shell stays message-free and pending
-       messages stay queued for the next uncached page. #}
+    {% comment %}
+    The /algo/<id>/ shell is full-page cached and shared across every
+    account (issue #470): rendering the per-session messages framework
+    output into it would serve one account's flash message to every
+    later caller, so the cached shell stays message-free and pending
+    messages stay queued for the next uncached page.
+    {% endcomment %}
     <div class="container mt-3 app-messages" role="status" aria-live="polite">
         {% for message in messages %}
             <div class="alert alert-{{ message.tags|default:'info' }}" role="alert">{{ message }}</div>
