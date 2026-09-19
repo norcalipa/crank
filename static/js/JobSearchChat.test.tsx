@@ -966,10 +966,26 @@ describe('additional JobSearchChat coverage', () => {
             const div = document.createElement('div');
             div.id = 'job-search-chat';
             document.body.appendChild(div);
+            // The module's own DOMContentLoaded handler calls createRoot()
+            // directly (it is not RTL's render()), so this is the only way
+            // to get a handle to unmount it. Without an explicit unmount the
+            // component's document-level listeners (issue #465's
+            // crank:auth-hydrated / crank:private-state-purged handlers)
+            // would keep running for the rest of the test file and react to
+            // events other tests dispatch on document.
+            const reactDomClient = require('react-dom/client') as {createRoot: (c: Element) => {unmount: () => void}};
+            const realCreateRoot = reactDomClient.createRoot;
+            let capturedRoot: {unmount: () => void} | null = null;
+            const spy = jest.spyOn(reactDomClient, 'createRoot').mockImplementation((container) => {
+                capturedRoot = realCreateRoot(container as Element);
+                return capturedRoot;
+            });
             try {
                 document.dispatchEvent(new Event('DOMContentLoaded', {bubbles: true}));
                 await waitFor(() => expect(div.querySelector('.card.bg-dark')).toBeTruthy());
             } finally {
+                act(() => { capturedRoot?.unmount(); });
+                spy.mockRestore();
                 document.body.removeChild(div);
             }
         });
@@ -2848,8 +2864,13 @@ describe('durable turn state (issue #458)', () => {
                 fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
                 await screen.findByText('works anyway');
             } finally {
-                restoreSet();
+                // Undo in reverse (LIFO) order: each breakStorage() snapshots
+                // whatever window.localStorage currently is, so undoing
+                // restoreSet before restoreRemove would re-clobber the real
+                // storage with the still-broken intermediate object and leak
+                // a permanently broken localStorage into every later test.
                 restoreRemove();
+                restoreSet();
             }
         });
 
@@ -2864,5 +2885,162 @@ describe('durable turn state (issue #458)', () => {
                 restoreGet();
             }
         });
+    });
+});
+
+describe('signed-out visitor and account-switch purge (issue #465)', () => {
+    beforeEach(() => {
+        global.fetch = statusAwareFetch();
+        window.localStorage.clear();
+        window.sessionStorage.clear();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+        window.localStorage.clear();
+        window.sessionStorage.clear();
+    });
+
+    function conversationsCalls(fetchMock: jest.Mock): unknown[][] {
+        return fetchMock.mock.calls.filter(([url]) => String(url).startsWith('/api/agent/conversations/'));
+    }
+
+    test('isAuthenticated=false renders the introduction and CTA, gates the composer, and issues no conversation fetch', async () => {
+        render(<JobSearchChat
+            isAuthenticated={false}
+            visitorState="anonymous_first_visit"
+            signInUrl="/accounts/login/?next=%2Fchat%2F"
+            signedOutMessage="Ask the CRank assistant about compensation."
+        />);
+
+        const intro = await screen.findByTestId('signed-out-introduction');
+        expect(intro).toHaveTextContent('Ask the CRank assistant about compensation.');
+        const cta = screen.getByTestId('chat-sign-in-cta');
+        expect(cta).toHaveAttribute('href', '/accounts/login/?next=%2Fchat%2F');
+        expect(screen.getByRole('button', {name: 'Send message'})).toBeDisabled();
+        // The textarea itself stays usable so a draft can be typed (AC-8);
+        // only sending is gated on an account.
+        expect(screen.getByLabelText('Message')).toBeEnabled();
+        expect(screen.queryByTestId('empty-history')).not.toBeInTheDocument();
+
+        // Give any (wrongly issued) resume fetch a tick to fire, then assert
+        // it never did: an anonymous GET must create no conversation row.
+        await act(async () => { await Promise.resolve(); });
+        expect(conversationsCalls(global.fetch as jest.Mock)).toHaveLength(0);
+    });
+
+    test('visitorState=session_expired renders whatever signedOutMessage the server resolved', async () => {
+        // The server (crank.views.job_search_page) already resolves
+        // visitorState into the one correct message and sends only that one
+        // down as signedOutMessage — this component never branches on
+        // visitorState itself, so an anonymous-first-visit response can
+        // never leak the expiry copy (or vice versa) via an unused prop.
+        render(<JobSearchChat
+            isAuthenticated={false}
+            visitorState="session_expired"
+            signInUrl="/accounts/login/?next=%2Fchat%2F"
+            signedOutMessage="Your session has expired."
+        />);
+
+        const intro = await screen.findByTestId('signed-out-introduction');
+        expect(intro).toHaveTextContent('Your session has expired.');
+        expect(screen.getByRole('log', {name: 'Message history'})).toBeEmptyDOMElement();
+    });
+
+    test('a draft typed while signed out is written to the pending pre-conversation slot', async () => {
+        render(<JobSearchChat isAuthenticated={false} visitorState="anonymous_first_visit"
+                               signedOutMessage="intro"/>);
+        const input = await screen.findByLabelText('Message');
+
+        fireEvent.change(input, {target: {value: 'looking for remote roles'}});
+
+        expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBe('looking for remote roles');
+
+        fireEvent.change(input, {target: {value: ''}});
+        expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBeNull();
+    });
+
+    test('a pending draft is adopted into the composer once a conversation exists after sign-in', async () => {
+        window.localStorage.setItem('crank:jobsearch:draft:pending', 'restored draft text');
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({detail: 'not found'}, 404));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(99)));
+
+        render(<JobSearchChat isAuthenticated/>);
+
+        await waitFor(() => expect(screen.getByLabelText('Message')).toHaveValue('restored draft text'));
+        expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBeNull();
+        expect(window.localStorage.getItem('crank:jobsearch:draft:99')).toBe('restored draft text');
+    });
+
+    test('crank:auth-hydrated with a username different from crank:last-account purges storage and resets the view', async () => {
+        window.localStorage.setItem('crank:last-account', 'alice');
+        window.localStorage.setItem('crank:jobsearch:draft:42', 'alice draft');
+        await renderChat([userMessage('a secret message from alice')]);
+        expect(screen.getByText('a secret message from alice')).toBeInTheDocument();
+
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(55)));
+        act(() => {
+            document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: true, username: 'bob'}}));
+        });
+
+        await waitFor(() => expect(screen.queryByText('a secret message from alice')).not.toBeInTheDocument());
+        expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBeNull();
+        expect(window.localStorage.getItem('crank:last-account')).toBe('bob');
+        // The view re-resumes for the new account rather than staying blank.
+        await waitFor(() => expect(conversationsCalls(global.fetch as jest.Mock).length).toBeGreaterThan(1));
+    });
+
+    test('crank:auth-hydrated with the same username purges nothing', async () => {
+        window.localStorage.setItem('crank:last-account', 'alice');
+        window.localStorage.setItem('crank:jobsearch:draft:42', 'alice draft');
+        await renderChat([userMessage('alice can still see this')]);
+
+        act(() => {
+            document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: true, username: 'alice'}}));
+        });
+
+        expect(screen.getByText('alice can still see this')).toBeInTheDocument();
+        expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('alice draft');
+    });
+
+    test('crank:private-state-purged aborts an in-flight send and clears the view', async () => {
+        const abortSpy = jest.spyOn(AbortController.prototype, 'abort');
+        await renderChat([]);
+        const mock = global.fetch as jest.Mock;
+        const settlePost = holdNextFetch(mock);
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'in flight'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await postedKeyAfterSend(mock);
+
+        act(() => {
+            document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
+        });
+
+        expect(abortSpy).toHaveBeenCalled();
+        await waitFor(() => expect(screen.getByLabelText('Message')).toHaveValue(''));
+        expect(screen.queryByText('in flight')).not.toBeInTheDocument();
+        settlePost(new Response(null, {status: 499}));
+    });
+
+    test('crank:auth-hydrated tolerates a broken localStorage read without throwing', async () => {
+        await renderChat([userMessage('alice message')]);
+        const original = window.localStorage;
+        const failing: Storage = {
+            ...original,
+            getItem: () => { throw new Error('storage unavailable'); },
+        };
+        Object.defineProperty(window, 'localStorage', {value: failing, configurable: true});
+        try {
+            expect(() => {
+                act(() => {
+                    document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: true, username: 'bob'}}));
+                });
+            }).not.toThrow();
+            // A failed read is treated as no prior account: nothing to
+            // compare against, so nothing is purged.
+            expect(screen.getByText('alice message')).toBeInTheDocument();
+        } finally {
+            Object.defineProperty(window, 'localStorage', {value: original, configurable: true});
+        }
     });
 });

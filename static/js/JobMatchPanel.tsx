@@ -306,7 +306,17 @@ function ResultNotices({emptyState}: {emptyState: EmptyStatePayload}) {
     );
 }
 
-const JobMatchPanel: React.FC = () => {
+export interface JobMatchPanelProps {
+    // Hydrated server-side (issue #465): /chat/ is now reachable by
+    // anonymous visitors, and every /api/job-matches/* endpoint below is
+    // @login_required, so an anonymous fetch would 302 to the login page
+    // and this panel's res.json() would throw on the returned HTML. Gate
+    // the fetch entirely instead of surfacing that as a generic error.
+    isAuthenticated?: boolean;
+    signInUrl?: string;
+}
+
+const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, signInUrl = '/accounts/login/'}) => {
     const [phase, setPhase] = React.useState<PanelPhase>('loading');
     const [emptyState, setEmptyState] = React.useState<EmptyStatePayload | null>(null);
     const [matchCount, setMatchCount] = React.useState<number>(0);
@@ -314,6 +324,7 @@ const JobMatchPanel: React.FC = () => {
     const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
 
     const fetchStatus = React.useCallback(async () => {
+        if (!isAuthenticated) return;
         setPhase('loading');
         setErrorMsg(null);
         try {
@@ -341,7 +352,7 @@ const JobMatchPanel: React.FC = () => {
             setErrorMsg(e instanceof Error ? e.message : 'Could not load job match status.');
             setPhase('error');
         }
-    }, []);
+    }, [isAuthenticated]);
 
     React.useEffect(() => {
         fetchStatus();
@@ -383,6 +394,25 @@ const JobMatchPanel: React.FC = () => {
                 break;
         }
     }, [fetchStatus]);
+
+    if (!isAuthenticated) {
+        return (
+            <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
+                     aria-labelledby="job-match-panel-title">
+                <div className="card-header">
+                    <h2 id="job-match-panel-title" className="h6 mb-0">Your Job Matches</h2>
+                </div>
+                <div className="card-body">
+                    <p className="text-muted mb-2" data-testid="job-match-signed-out">
+                        Sign in to see personalized job matches based on your saved preferences.
+                    </p>
+                    <a href={signInUrl} className="btn btn-primary btn-sm" data-testid="job-match-sign-in-cta">
+                        Sign in to save your search
+                    </a>
+                </div>
+            </section>
+        );
+    }
 
     if (phase === 'loading') {
         return (
@@ -647,6 +677,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const container = document.getElementById('job-match-panel');
     if (container) {
         const root = require('react-dom/client').createRoot(container);
-        root.render(<JobMatchPanel/>);
+        root.render(<JobMatchPanel
+            isAuthenticated={container.dataset.authenticated === 'true'}
+            signInUrl={container.dataset.signInUrl}
+        />);
     }
 });

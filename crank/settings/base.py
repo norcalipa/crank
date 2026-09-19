@@ -101,6 +101,10 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'allauth.account.middleware.AccountMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
+    # Issue #465: sets the non-identifying "has signed in before" cookie
+    # flagged by crank.auth.mark_authenticated_visit (a user_logged_in
+    # receiver connected in CrankConfig.ready()).
+    'crank.auth.MarkAuthenticatedVisitMiddleware',
 ]
 
 ROOT_URLCONF = 'crank.urls'
