@@ -18,6 +18,13 @@ from crank.auth import FIRST_VISIT_INTRO, SESSION_EXPIRED_MESSAGE, sign_in_url, 
 from crank.models import Organization
 
 
+def _chat_next_url(request, selected_company_id: int | None) -> str:
+    """Return the only non-sensitive chat context allowed in a login handoff."""
+    if selected_company_id is None:
+        return "/chat/"
+    return f"/chat/?company={selected_company_id}"
+
+
 def _selected_company_id(request) -> int | None:
     """Return the ``?company=<id>`` value only when it names a real org.
 
@@ -42,7 +49,9 @@ def job_search_page(request):
     selected_company_id = _selected_company_id(request)
     context = {
         "visitor_state": visitor_state(request),
-        "sign_in_url": sign_in_url(request, next_url=request.get_full_path()),
+        "sign_in_url": sign_in_url(
+            request, next_url=_chat_next_url(request, selected_company_id)
+        ),
         "first_visit_intro": FIRST_VISIT_INTRO,
         "session_expired_message": SESSION_EXPIRED_MESSAGE,
         "selected_company_id": selected_company_id,
