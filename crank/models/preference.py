@@ -8,18 +8,20 @@ from django_extensions.db.models import TimeStampedModel
 # The canonical schema version used by the preference lifecycle services in
 # ``crank.services.preferences``. Bump this (and add a forward migration that
 # maps old documents to the new shape) whenever the JSON schema changes.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def default_preferences():
     """Return a fresh, schema-valid empty preferences document.
 
-    This is the canonical version-2 document shape defined by the preference
-    lifecycle services (issue #306): typed sections for compensation, culture,
-    work location, geography, industry, funding stage, vesting, exclusions,
-    priorities, and notes. The JSON object is the source of truth for
-    deterministic matching; ``preferences_markdown`` is only a server-generated,
-    human-readable projection of this document.
+    This is the canonical version-3 document shape defined by the preference
+    lifecycle services (issue #306, extended by issue #459): typed sections
+    for compensation, culture, work location, geography, industry, funding
+    stage, vesting, exclusions, priorities, notes, explicit role/seniority
+    lists, per-criterion importance weights, and applicable scope. The JSON
+    object is the source of truth for deterministic matching;
+    ``preferences_markdown`` is only a server-generated, human-readable
+    projection of this document.
     """
     return {
         "compensation": {
@@ -27,9 +29,20 @@ def default_preferences():
             "currency": "USD",
             "equity_minimum_percent": None,
             "require_public_company": None,
+            "basis": "base",
+            "period": "year",
+            "minimum_total_compensation": None,
+            "equity_liquidity_required": None,
+            "acceptable_liquidity_events": [],
         },
         "culture": [],
-        "work_location": {"modes": [], "countries": [], "require_onsite": None, "max_in_office_days": None},
+        "work_location": {
+            "modes": [],
+            "countries": [],
+            "require_onsite": None,
+            "max_in_office_days": None,
+            "office_days_exact": None,
+        },
         "geography": {"regions": [], "remote_friendly": None},
         "industry": [],
         "funding_stage": [],
@@ -41,6 +54,9 @@ def default_preferences():
         "exclusions": {"companies": [], "titles": [], "industries": [], "locations": []},
         "priorities": {},
         "notes": "",
+        "roles": {"families": [], "titles": [], "seniority": []},
+        "importance": {},
+        "scope": {"countries": [], "role_families": []},
     }
 
 
@@ -58,7 +74,7 @@ class UserPreference(TimeStampedModel):
     credentials, or provider request payloads are ever stored here.
     """
 
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,

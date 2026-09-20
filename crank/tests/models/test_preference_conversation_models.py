@@ -24,8 +24,8 @@ class UserPreferenceModelTests(TestCase):
         user = User.objects.create_user(username="pref-user", password="pw")
         pref = UserPreference.objects.create(user=user)
         self.assertEqual(pref.schema_version, UserPreference.SCHEMA_VERSION)
-        self.assertEqual(pref.schema_version, 2)
-        # Defaults must be valid schema-v2 documents.
+        self.assertEqual(pref.schema_version, 3)
+        # Defaults must be valid schema-v3 documents.
         self.assertEqual(pref.preferences, default_preferences())
         self.assertIn("compensation", pref.preferences)
         self.assertIn("priorities", pref.preferences)

@@ -967,6 +967,31 @@ class OrchestratorE2ESmokeTests(TestCase):
         with self.assertRaises(Exception):
             adapter.validate_patch({"set": {"not_a_real_field": 1}})
 
+    def test_provider_preference_adapter_validates_v3_path_through_shared_authority(self):
+        """Issue #459 AC-10: chat extraction and direct editing share one
+        validation authority. A v3-only path (``roles.families``, absent
+        before this issue) succeeds through the adapter, while a path this
+        schema version does not know still raises ``UnknownFieldError`` —
+        proving the adapter delegates to the same
+        ``crank.services.preferences`` module rather than a stale copy of
+        the schema.
+        """
+        from crank.agents.job_search.providers import _PreferenceServiceAdapter
+        from crank.services.preferences import UnknownFieldError
+
+        user = User.objects.create_user("prefv3", "prefv3@example.com", "pw")
+        adapter = _PreferenceServiceAdapter(user)
+
+        adapter.validate_patch({"set": {"roles.families": ["engineering"]}})
+        self.assertTrue(adapter.apply_patch({"set": {"roles.families": ["engineering"]}}))
+
+        from crank.models.preference import UserPreference
+        pref = UserPreference.objects.get(user=user)
+        self.assertEqual(pref.preferences["roles"]["families"], ["engineering"])
+
+        with self.assertRaises(UnknownFieldError):
+            adapter.validate_patch({"set": {"roles.unknown_path": ["x"]}})
+
     def test_provider_wires_user_and_match_service_when_not_injected(self):
         """MAJOR-2: a provider without an injected orchestrator wires owner services.
 

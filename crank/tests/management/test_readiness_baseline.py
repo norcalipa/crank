@@ -227,10 +227,10 @@ class ReadinessBaselineCommandTests(TestCase):
         self.assertEqual(leaves["pending_count"], 0)
         self.assertFalse(leaves["truncated"])
         # The exact deployed revision: the crank app's applied leaf migration.
-        # 0034_merge_0031_publicationevent_0033_merge_20260915_0828 merged
-        # the two leaves (0031 from #470, 0033 from #495/#496) into one head.
+        # The two leaves (0031 from #470, 0033 from #495/#496) were merged
+        # by 0034, and 0035 (#459) stacks on top of that merged head.
         self.assertIn(
-            "crank.0034_merge_0031_publicationevent_0033_merge_20260915_0828",
+            "crank.0035_preference_schema_v3",
             leaves["applied"],
         )
         self.assertEqual(leaves["applied_count"], len(leaves["applied"]))
