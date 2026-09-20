@@ -97,15 +97,19 @@ class SuggestCompanyModal extends React.Component<SuggestCompanyModalProps, Sugg
 
     componentDidUpdate(prevProps: SuggestCompanyModalProps, _prevState: Readonly<SuggestCompanyModalState>, focusWasInside: boolean) {
         if (this.props.visible && !prevProps.visible) {
-            // On open, isolate the background (inert/aria-hidden app shell +
-            // main content + modal-external skip link, and a scroll lock on
-            // the actual document scroller) for the modal's lifetime, capture
-            // the trigger element, then move focus into the dialog (WAI-ARIA
-            // dialog pattern, issue #464).
-            lockBackground();
-            this.pendingRestoreFocus = false;
+            // Capture the opener BEFORE lockBackground() inerts the shell (issue
+            // #464 contract, mirrored from OrganizationDetailsPopup): inerting
+            // blurs the trigger and resets activeElement to <body> in real
+            // browsers, so capturing after the lock would lose the focus-restore
+            // target and Escape/Close could not return focus to the opener.
             this.openerRef = document.activeElement instanceof HTMLElement
                 ? document.activeElement : null;
+            // On open, isolate the background (inert/aria-hidden app shell +
+            // main content + modal-external skip link, and a scroll lock on
+            // the actual document scroller) for the modal's lifetime, then
+            // move focus into the dialog (WAI-ARIA dialog pattern, issue #464).
+            lockBackground();
+            this.pendingRestoreFocus = false;
             this.closeButtonRef.current?.focus();
             // Prefill the company name from the trigger's context (issue
             // #471 AC-5). A reopen with no context (or no companyName)

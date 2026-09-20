@@ -330,6 +330,19 @@ test.describe('company details dialog layering (issue #464) — desktop', () => 
         await expect(page.getByRole('dialog', {name: /Acme Robotics/})).toBeVisible();
         await expect(page.getByTestId('suggest-company-modal')).toHaveCount(0);
     });
+
+    test('suggest modal Escape returns keyboard focus to the toolbar button that opened it', async ({page}) => {
+        // Real-browser assertion of the #464 focus-restore contract on the
+        // suggest modal: the opener must be captured BEFORE lockBackground()
+        // inerts the shell, because inerting blurs the trigger and resets
+        // activeElement to <body>.
+        await page.goto(POPUP_FIXTURE);
+        await page.getByTestId('suggest-company-btn').click();
+        await expect(page.getByTestId('suggest-company-modal')).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(page.getByTestId('suggest-company-modal')).toHaveCount(0);
+        await expect(page.getByTestId('suggest-company-btn')).toBeFocused();
+    });
 });
 
 test.describe('company details dialog layering (issue #464) — mobile', () => {

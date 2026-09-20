@@ -351,6 +351,31 @@ test.describe('composer behavior', () => {
     });
 });
 
+test.describe('integrated suggest-company entry points (issue #471)', () => {
+    // Executable cross-bundle coverage for the job surface: the JobMatchPanel
+    // actions dispatch the crank:suggest-company window event, and the
+    // main-bundle bridge opens the single host. The /chat/ assistant surface
+    // has no suggest trigger to exercise — JobSearchChat renders result cards
+    // and an availability notice only; the review thread records the blocker.
+    const PANEL_FIXTURE = '/e2e/fixtures/job-match-panel.html';
+
+    test('job empty state action opens the shared suggest form', async ({page}) => {
+        await page.goto(`${PANEL_FIXTURE}?state=no_matches`);
+        await page.getByTestId('action-suggest_company').click();
+        await expect(page.getByTestId('suggest-company-modal')).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(page.getByTestId('suggest-company-modal')).toHaveCount(0);
+    });
+
+    test('job outage (no source) state action opens the shared suggest form', async ({page}) => {
+        await page.goto(`${PANEL_FIXTURE}?state=no_source`);
+        await page.getByTestId('action-suggest_company').click();
+        await expect(page.getByTestId('suggest-company-modal')).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(page.getByTestId('suggest-company-modal')).toHaveCount(0);
+    });
+});
+
 test.describe('200% zoom', () => {
     test.skip(({browserName}) => browserName !== 'chromium', 'page-scale zoom emulation is Chromium-only');
 
