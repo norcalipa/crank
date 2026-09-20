@@ -850,7 +850,12 @@ const JobSearchChat: React.FC = () => {
                         setMessages(createData.messages);
                         reconcileDurableState(createData);
                         setLoading(false);
-                        composerRef.current?.focus();
+                        // Focus after React commits: a synchronous focus here
+                        // lands on the still-disabled textarea (disabled until
+                        // conversationId/loading commit) and is silently
+                        // dropped, leaving the composer unfocused (CI: 400%
+                        // zoom composer-focus race).
+                        window.setTimeout(() => composerRef.current?.focus(), 0);
                     } catch {
                         if (cancelled) return;
                         setInitError('Could not start a conversation. Please try again.');
@@ -868,7 +873,9 @@ const JobSearchChat: React.FC = () => {
                 setPreferencesChanged(data.preferences_changed);
                 reconcileDurableState(data);
                 setLoading(false);
-                composerRef.current?.focus();
+                // Defer focus past the React commit (see above): the textarea
+                // is disabled until conversationId/loading land.
+                window.setTimeout(() => composerRef.current?.focus(), 0);
             })
             .catch(() => {
                 if (cancelled) return;
@@ -1409,7 +1416,8 @@ const JobSearchChat: React.FC = () => {
             setInitError('Could not start a conversation. Please try again.');
         } finally {
             setLoading(false);
-            composerRef.current?.focus();
+            // Defer focus past the React commit (see above).
+            window.setTimeout(() => composerRef.current?.focus(), 0);
         }
     };
 

@@ -151,12 +151,18 @@ def _classify_authenticated_state() -> str:
     ).strip().lower()
     if provider_name in ("", "demo") and is_non_dev_environment():
         return REPLIES_DISABLED
-    # Feature flag off: the assistant is administratively disabled.
-    if not getattr(settings, "INTERACTIVE_AGENT_ENABLED", False):
+    # Feature flag off (a non-demo provider): the assistant is administratively
+    # disabled. The demo provider is the dev/test double and serves in dev
+    # regardless of this flag — its send path never consults it — so the flag
+    # only gates a non-demo (orchestrator) configuration.
+    flag_off = not getattr(settings, "INTERACTIVE_AGENT_ENABLED", False)
+    if flag_off and provider_name not in ("", "demo"):
         return REPLIES_DISABLED
-    # Capability enabled: ask the (already fail-closed) provider factory.
-    # Construction is config-only and never performs network or credential
-    # reads; the exception text is consumed here and never serialized.
+    # Ask the (already fail-closed) provider factory. Construction is
+    # config-only and never performs network or credential reads; the
+    # exception text is consumed here and never serialized. A successful
+    # construction means the provider can serve right now (the demo always
+    # can in dev; the orchestrator only when it is enabled and configured).
     try:
         _build_provider()
     except AssistantUnavailable:

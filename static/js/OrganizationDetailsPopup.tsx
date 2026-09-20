@@ -3,6 +3,7 @@
 import * as React from 'react';
 import {createPortal} from 'react-dom';
 import {lockBackground, unlockBackground} from './modalIsolation';
+import {openSuggestCompany} from './suggestCompany/controller';
 
 interface ScoreDetail {
     type__name: string;
@@ -124,17 +125,6 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         }
     }, [organization, visible]);
 
-    // On open, capture the element that triggered the dialog (document.activeElement)
-    // before focus moves to the Close button, then move focus into the dialog.
-    React.useEffect(() => {
-        if (visible) {
-            if (document.activeElement instanceof HTMLElement) {
-                openerRef.current = document.activeElement;
-            }
-            closeButtonRef.current?.focus();
-        }
-    }, [visible]);
-
     // Restore focus to the opener on close (WAI-ARIA dialog pattern). If the
     // opener is no longer in the document, defensively blur the active element
     // so focus never lingers on a now-hidden node. Uses the same
@@ -154,13 +144,23 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     // stylesheet's `html, body { overflow-x: hidden }` rule) is locked along
     // with body. Keyboard focus, assistive-technology virtual navigation,
     // programmatic focus and wheel/touch scrolling therefore cannot reach
-    // the page behind the blocking dialog. On close the isolation is released
-    // BEFORE focus returns to the opener: the trigger element lives in the
-    // (currently inert) background, so restoring earlier would silently
-    // fail in real browsers and break the #464 focus-restore contract.
+    // the page behind the blocking dialog.
+    //
+    // The opener is captured BEFORE lockBackground() inerts the shell:
+    // inerting the shell blurs the trigger (activeElement resets to <body>),
+    // so capturing after the lock would record <body> and silently lose the
+    // focus-restore target. On close the isolation is released BEFORE focus
+    // returns to the opener: the trigger element lives in the (currently
+    // inert) background, so restoring earlier would silently fail in real
+    // browsers and break the #464 focus-restore contract.
     React.useLayoutEffect(() => {
         if (!visible) {
             return;
+        }
+        // Capture the trigger element while it is still in the focusable
+        // background (i.e. before the shell goes inert).
+        if (document.activeElement instanceof HTMLElement) {
+            openerRef.current = document.activeElement;
         }
         lockBackground();
         return () => {
@@ -168,6 +168,15 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
             restoreFocusToOpener();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [visible]);
+
+    // Move focus into the dialog once it opens. A passive effect is safe here:
+    // focusing the Close button inside the dialog is unaffected by the
+    // background inert applied in the layout effect above.
+    React.useEffect(() => {
+        if (visible) {
+            closeButtonRef.current?.focus();
+        }
     }, [visible]);
 
     React.useEffect(() => {
@@ -409,11 +418,22 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                     )}
                                     {isAuthenticated && (
                                         <div className="mt-2" data-testid="correction-action">
-                                            <a href={`/api/company-requests/`}
-                                               className="btn btn-sm btn-outline-light"
-                                               data-testid="suggest-correction-link">
+                                            <button type="button"
+                                                    className="btn btn-sm btn-outline-light"
+                                                    data-testid="suggest-correction-link"
+                                                    onClick={() => {
+                                                        // Only one blocking dialog is open at a time
+                                                        // (issue #464/#471): opening the suggestion
+                                                        // form closes this details dialog.
+                                                        openSuggestCompany({
+                                                            source: 'company_details',
+                                                            companyName: organization.name,
+                                                            organizationId: organization.id,
+                                                        });
+                                                        onClose();
+                                                    }}>
                                                 Suggest a Correction
-                                            </a>
+                                            </button>
                                         </div>
                                     )}
                                 </div>

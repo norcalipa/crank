@@ -3,7 +3,7 @@
 import * as React from 'react';
 import {createRoot} from "react-dom/client";
 import OrganizationDetailsPopup from './OrganizationDetailsPopup';
-import SuggestCompanyModal from './SuggestCompanyModal';
+import {closeSuggestCompany, openSuggestCompany} from './suggestCompany/controller';
 
 interface ScoreDetail {
     type__name: string;
@@ -44,7 +44,6 @@ interface OrganizationListState {
     searchTerm: string;
     selectedOrganization: Organization | null;
     showPopup: boolean;
-    showSuggestModal: boolean;
 }
 
 class OrganizationList extends React.Component<OrganizationListProps, OrganizationListState> {
@@ -61,8 +60,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             acceleratedVesting: urlState.acceleratedVesting,
             searchTerm: urlState.searchTerm,
             selectedOrganization: null,
-            showPopup: false,
-            showSuggestModal: false
+            showPopup: false
         };
     }
 
@@ -233,11 +231,15 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     const updatedOrganizations = this.state.organizations.map(org =>
                         org.id === organization.id ? updatedOrg : org
                     );
+                    // Opening the details dialog closes the suggest modal:
+                    // only one blocking dialog may be active at a time
+                    // (issue #464), now enforced across the shared controller
+                    // (issue #471).
+                    closeSuggestCompany();
                     this.setState({
                         organizations: updatedOrganizations,
                         selectedOrganization: updatedOrg,
-                        showPopup: true,
-                        showSuggestModal: false
+                        showPopup: true
                     });
                 })
                 .catch(error => {
@@ -245,17 +247,17 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         return;
                     }
                     console.error('Error fetching organization details:', error);
+                    closeSuggestCompany();
                     this.setState({
                         selectedOrganization: organization,
-                        showPopup: true,
-                        showSuggestModal: false
+                        showPopup: true
                     });
                 });
         } else {
+            closeSuggestCompany();
             this.setState({
                 selectedOrganization: organization,
-                showPopup: true,
-                showSuggestModal: false
+                showPopup: true
             });
         }
     };
@@ -278,18 +280,15 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         );
     };
 
-    handleOpenSuggestModal = () => {
+    handleOpenSuggestModal = (source: 'rankings' | 'rankings_empty') => {
         // Opening the suggest modal closes the details dialog: only one
         // blocking dialog may be active at a time (issue #464). The
         // generation bump also invalidates any in-flight details fetch so
         // its late response cannot reopen the details dialog over this
         // modal or destroy the user's form input.
         ++this.modalGeneration;
-        this.setState({showSuggestModal: true, showPopup: false, selectedOrganization: null});
-    };
-
-    handleCloseSuggestModal = () => {
-        this.setState({showSuggestModal: false});
+        this.setState({showPopup: false, selectedOrganization: null});
+        openSuggestCompany({source, searchTerm: this.state.searchTerm, page: this.state.currentPage});
     };
 
     handleClosePopup = () => {
@@ -353,7 +352,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 </div>
                 {this.props.isAuthenticated && (
                     <button type="button" className="btn btn-outline-primary btn-sm mt-2"
-                            data-testid="suggest-company-btn" onClick={this.handleOpenSuggestModal}>
+                            data-testid="suggest-company-btn"
+                            onClick={() => this.handleOpenSuggestModal('rankings')}>
                         Suggest a company
                     </button>
                 )}
@@ -395,7 +395,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 <h2 className="h5">No organizations found</h2>
                 <p>There are no organizations that match your search or filters.</p>
                 {(searchTerm || acceleratedVesting) && <button type="button" className="btn btn-secondary" onClick={this.handleClearFilters}>Clear search and filters</button>}
-                {(this.props.canSuggestCompany || this.props.isAuthenticated) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0" onClick={this.handleOpenSuggestModal}>Suggest a company</button> for evaluation.</p>}
+                {(this.props.canSuggestCompany || this.props.isAuthenticated) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0" onClick={() => this.handleOpenSuggestModal('rankings_empty')}>Suggest a company</button> for evaluation.</p>}
             </div>) : (<>
                 <div className="organization-table-wrap" role="region" aria-label="Organization rankings" tabIndex={0}>
                     <table className="table organization-table">
@@ -480,10 +480,6 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 visible={showPopup}
                 onClose={this.handleClosePopup}
                 isAuthenticated={this.props.isAuthenticated}
-            />
-            <SuggestCompanyModal
-                visible={this.state.showSuggestModal}
-                onClose={this.handleCloseSuggestModal}
             />
         </div>);
     }

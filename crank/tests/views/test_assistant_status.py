@@ -118,7 +118,10 @@ class StateClassificationTests(AssistantStatusTestCase):
         self.assertIn("checked_at", body)
 
     def test_replies_disabled_when_flag_off(self):
-        with override_settings(INTERACTIVE_AGENT_ENABLED=False):
+        # The feature flag gates a non-demo (orchestrator) configuration; with
+        # the flag off and the orchestrator selected the assistant is
+        # administratively disabled regardless of the environment.
+        with override_settings(INTERACTIVE_AGENT_ENABLED=False, JOB_SEARCH_PROVIDER="orchestrator"):
             self.assertEqual(self._body(self._get())["state"], "replies_disabled")
 
     def test_replies_disabled_for_demo_provider_in_non_dev(self):
@@ -129,9 +132,15 @@ class StateClassificationTests(AssistantStatusTestCase):
         with override_settings(JOB_SEARCH_PROVIDER="", ENV="prod"):
             self.assertEqual(self._body(self._get())["state"], "replies_disabled")
 
-    def test_demo_provider_with_flag_off_in_dev_is_replies_disabled(self):
+    def test_demo_provider_with_flag_off_in_dev_is_ready_with_inventory(self):
+        # The demo provider is the dev/test double and serves in dev regardless
+        # of INTERACTIVE_AGENT_ENABLED (its send path never consults the flag),
+        # so a dev demo configuration with a populated inventory is ready.
+        self._seed_inventory()
         with override_settings(INTERACTIVE_AGENT_ENABLED=False):
-            self.assertEqual(self._body(self._get())["state"], "replies_disabled")
+            body = self._body(self._get())
+        self.assertEqual(body["state"], "ready")
+        self.assertEqual(body["actions"], [])
 
     def test_temporarily_unavailable_when_provider_construction_fails(self):
         # Orchestrator selected but the LLM configuration is broken at runtime.

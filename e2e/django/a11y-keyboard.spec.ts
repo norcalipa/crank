@@ -53,11 +53,6 @@ test.describe('blocking dialog keyboard semantics', () => {
     });
 
     test('suggest-company modal: Escape closes and returns focus', async ({page}) => {
-        pendingTicketMerge(
-            464,
-            'SuggestCompanyModal Escape/focus-return hardening ships with #464; ' +
-            'assert the hardened behavior when it merges and delete this skip',
-        );
         await login(page);
         await page.goto('/');
         await page.getByTestId('suggest-company-btn').click();

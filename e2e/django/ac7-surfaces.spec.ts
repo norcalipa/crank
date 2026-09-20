@@ -126,28 +126,71 @@ test.describe('direct action during outage @outage', () => {
     });
 });
 
-// -- Shared request form from the rankings "Suggest a company" action (#471) --
+// -- Shared request form from every "Suggest a company" entry point (#471) --
 test.describe('shared request form', () => {
-    test('the rankings "Suggest a company" action opens the shared request form with a visible outcome', async ({page}) => {
+    test('the rankings toolbar action opens the shared request form with a visible outcome', async ({page}) => {
         pendingTicketMerge(
             471,
-            'the shared company-request form ships with #471; this test pins the ' +
-            'rankings entry point only — extend it to the remaining Suggest ' +
-            'actions (chat correction link, help surface) when the form lands. ' +
-            'delete this skip when its PR merges',
+            'the shared company-request form (single #suggest-company-host ' +
+            'controller) ships with #471; this test pins the rankings toolbar ' +
+            'entry point. Selectors verified against the #471 branch: ' +
+            'data-testid=suggest-company-modal/suggest-company-name/' +
+            'suggest-submit-btn/suggest-success. delete this skip when its PR merges',
         );
         await login(page);
         await page.goto('/');
 
-        // From the rankings surface…
+        // From the rankings toolbar…
         await page.getByTestId('suggest-company-btn').click();
-        const form = page.getByTestId('company-request-form');
-        await expect(form).toBeVisible();
+        const modal = page.getByTestId('suggest-company-modal');
+        await expect(modal).toBeVisible();
 
-        // …submitting the shared form has a visible, asserted outcome.
-        await form.locator('input[name="company_name"]').fill('E2E Form Probe Co');
-        await form.getByRole('button', {name: /submit/i}).click();
-        await expect(page.getByTestId('company-request-confirmation')).toBeVisible();
+        // …submitting the shared form has a visible, asserted outcome. A
+        // unique name avoids the real duplicate-detection response
+        // (crank/views/company_requests.py) colliding across test runs
+        // against a reused dev server.
+        await modal.locator('#suggest-company-name').fill(`E2E Form Probe Co ${Date.now()}`);
+        await modal.locator('#suggest-website-url').fill(`https://e2e-form-probe-${Date.now()}.example.com`);
+        await modal.getByTestId('suggest-submit-btn').click();
+        await expect(modal.getByTestId('suggest-success')).toBeVisible();
+    });
+
+    test('the rankings empty-state action opens the same shared form', async ({page}) => {
+        pendingTicketMerge(
+            471,
+            'the shared company-request form ships with #471; this test pins ' +
+            'the rankings empty-state entry point (source: rankings_empty). ' +
+            'delete this skip when its PR merges',
+        );
+        await login(page);
+        await page.goto('/?search=E2E+Nonexistent+Company+Probe');
+
+        const emptyState = page.getByRole('alert').filter({hasText: 'No organizations found'});
+        await expect(emptyState).toBeVisible();
+        await emptyState.getByRole('button', {name: 'Suggest a company'}).click();
+        await expect(page.getByTestId('suggest-company-modal')).toBeVisible();
+    });
+
+    test('the company details "Suggest a Correction" action opens the shared form prefilled and closes the details dialog', async ({page}) => {
+        pendingTicketMerge(
+            471,
+            'the shared company-request form ships with #471; this test pins ' +
+            'the company-details entry point (source: company_details, ' +
+            'companyName prefilled). Only one blocking dialog is open at a ' +
+            'time (issue #464 contract). delete this skip when its PR merges',
+        );
+        await login(page);
+        await page.goto('/');
+
+        await page.locator('tr[aria-label="View details for E2E Alpha Corp"]').click();
+        const details = page.getByRole('dialog').filter({has: page.locator('#organization-details-title')});
+        await expect(details).toBeVisible();
+
+        await details.getByTestId('suggest-correction-link').click();
+        const modal = page.getByTestId('suggest-company-modal');
+        await expect(modal).toBeVisible();
+        await expect(details).toBeHidden();
+        await expect(modal.locator('#suggest-company-name')).toHaveValue('E2E Alpha Corp');
     });
 });
 

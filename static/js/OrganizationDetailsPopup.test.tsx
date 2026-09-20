@@ -6,6 +6,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import * as React from 'react';
 
 import OrganizationDetailsPopup from './OrganizationDetailsPopup';
+import * as suggestCompanyController from './suggestCompany/controller';
 
 // Add an interface that matches the component's expected props
 interface ScoreDetail {
@@ -267,6 +268,63 @@ describe('OrganizationDetailsPopup', () => {
         expect(document.activeElement).toBe(focusableDiv);
 
         document.body.removeChild(focusableDiv);
+    });
+
+    // Regression (issue #471 CI repair): the opener must be captured BEFORE
+    // background isolation inerts the shell. Inerting the shell blurs the
+    // trigger (activeElement resets to <body>); if capture ran after the
+    // lock, the restore target would be lost and Escape would strand focus
+    // on <body>. This test drives the real modalIsolation inert/scroll lock
+    // to prove focus still returns to the trigger through the full lifecycle.
+    test('restores focus to the trigger after Escape while the background is inerted', () => {
+        const onCloseMock = jest.fn();
+
+        // A real trigger element that lives in the (to-be-inerted) background.
+        const trigger = document.createElement('button');
+        trigger.setAttribute('aria-label', 'View details');
+        document.body.appendChild(trigger);
+        trigger.focus();
+        expect(document.activeElement).toBe(trigger);
+
+        const {rerender} = render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={false}
+                onClose={onCloseMock}
+            />
+        );
+
+        // Open: the shell/content/skip-link go inert. The trigger must have
+        // been captured before the inert blur so the restore can find it.
+        rerender(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={onCloseMock}
+            />
+        );
+
+        // The background is isolated while open.
+        const shell = document.querySelector('.app-shell, main.app-content, .skip-to-content');
+        if (shell) {
+            expect(shell).toHaveAttribute('inert');
+        }
+
+        // Escape closes and returns focus to the captured trigger.
+        fireEvent.keyDown(document, {key: 'Escape'});
+        expect(onCloseMock).toHaveBeenCalledTimes(1);
+
+        // Parent honors onClose and hides the dialog (commit release path).
+        rerender(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={false}
+                onClose={onCloseMock}
+            />
+        );
+
+        expect(document.activeElement).toBe(trigger);
+        document.body.removeChild(trigger);
     });
 
     test('does not call onClose when other keys are pressed', () => {
@@ -762,6 +820,33 @@ describe('OrganizationDetailsPopup', () => {
             expect(screen.getByTestId('correction-action')).toBeInTheDocument();
         });
         expect(screen.getByTestId('suggest-correction-link')).toBeInTheDocument();
+    });
+
+    test('the correction trigger calls the controller with company_details context and closes the dialog', async () => {
+        const openSpy = jest.spyOn(suggestCompanyController, 'openSuggestCompany').mockImplementation(() => {});
+        const onClose = jest.fn();
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={onClose}
+                isAuthenticated={true}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('suggest-correction-link')).toBeInTheDocument();
+        });
+        fireEvent.click(screen.getByTestId('suggest-correction-link'));
+
+        expect(openSpy).toHaveBeenCalledWith({
+            source: 'company_details',
+            companyName: 'Test Organization',
+            organizationId: 1,
+        });
+        expect(onClose).toHaveBeenCalledTimes(1);
+
+        openSpy.mockRestore();
     });
 
     test('does not show correction link when not authenticated', async () => {
