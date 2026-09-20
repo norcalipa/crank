@@ -157,11 +157,17 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         if (!visible) {
             return;
         }
-        // Capture the trigger element while it is still in the focusable
-        // background (i.e. before the shell goes inert).
-        if (document.activeElement instanceof HTMLElement) {
-            openerRef.current = document.activeElement;
-        }
+        // Capture the opener BEFORE lockBackground(): inerting the background
+        // resets document.activeElement to <body> when the (focused) trigger
+        // becomes inert, so any capture after this point records <body> and
+        // Escape/Close would restore focus nowhere (the deterministic
+        // django-e2e focus-restore failure repaired for #465). Runs only on
+        // the rising edge of `visible`, so a re-render while the dialog is
+        // already open (e.g. the crank:auth-hydrated re-render) can never
+        // clobber the original opener with the dialog's own Close button.
+        openerRef.current = document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
         lockBackground();
         return () => {
             unlockBackground();
