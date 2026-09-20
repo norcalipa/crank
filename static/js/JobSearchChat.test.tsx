@@ -764,36 +764,31 @@ describe('additional JobSearchChat coverage', () => {
             expect(screen.getByRole('button', {name: 'Start a conversation'})).toBeInTheDocument();
         });
 
-        test('auto-creates a conversation on resume 404 so the input is usable', async () => {
+        test('a resume 404 renders the usable empty state WITHOUT creating a conversation (issue #472)', async () => {
             const mock = global.fetch as jest.Mock;
-            // Mount order: status check first, then GET resume → 404, then
-            // POST create → new conversation.
+            // Mount order: status check first, then GET resume → 404. No POST
+            // follows: opening the assistant must not create a row.
             mock.mockResolvedValueOnce(statusResponse('ready'));
             mock.mockResolvedValueOnce(jsonResponse({}, 404));
-            // Second call: POST create → new conversation.
-            mock.mockResolvedValueOnce(jsonResponse(emptyConversation(7), 201));
             render(<JobSearchChat/>);
             await screen.findByLabelText('Message');
             await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
             expect(screen.getByTestId('empty-history')).toBeInTheDocument();
             expect(screen.queryByText(/could not load/i)).not.toBeInTheDocument();
-            // Verify a POST with create_new was made.
             const posts = mock.mock.calls
                 .map(([url, init]) => ({url: String(url), init: init as RequestInit}))
                 .filter((c) => c.init?.method === 'POST');
-            expect(posts.length).toBeGreaterThanOrEqual(1);
-            const body = JSON.parse(posts[0].init.body as string);
-            expect(body.create_new).toBe(true);
+            expect(posts).toHaveLength(0);
         });
 
-        test('shows init error when auto-create after 404 also fails', async () => {
+        test('createOnMount: shows init error when auto-create after 404 also fails', async () => {
             const mock = global.fetch as jest.Mock;
             mock.mockResolvedValueOnce(statusResponse('ready'));
             // First call: GET resume → 404 (no existing conversation).
             mock.mockResolvedValueOnce(jsonResponse({}, 404));
             // Second call: POST create → 500 (server error).
             mock.mockResolvedValueOnce(jsonResponse({}, 500));
-            render(<JobSearchChat/>);
+            render(<JobSearchChat createOnMount={true}/>);
             expect(await screen.findByText(/could not start a conversation/i)).toBeInTheDocument();
             expect(screen.queryByLabelText('Message')).toBeDisabled();
         });
@@ -961,8 +956,72 @@ describe('additional JobSearchChat coverage', () => {
         });
     });
 
+    describe('createOnMount (issue #472)', () => {
+        test('default (false): a 404 from the resume GET issues no POST and renders the empty state', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 404));
+            render(<JobSearchChat/>);
+            await screen.findByTestId('empty-history');
+            const posts = (global.fetch as jest.Mock).mock.calls.filter(
+                (call) => (call[1] as RequestInit | undefined)?.method === 'POST'
+                    && String(call[0]).includes('/api/agent/conversations/'),
+            );
+            expect(posts).toHaveLength(0);
+        });
+
+        test('sending the first message from the not-started state creates the conversation, then sends', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 404));
+            render(<JobSearchChat/>);
+            await screen.findByTestId('empty-history');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse({message: assistantMessage(7, 'hi there'), preferences_changed: false}, 201),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('hi there');
+            const posts = (global.fetch as jest.Mock).mock.calls.filter(
+                (call) => (call[1] as RequestInit | undefined)?.method === 'POST'
+                    && String(call[0]) === '/api/agent/conversations/',
+            );
+            expect(posts).toHaveLength(1);
+            expect(JSON.parse((posts[0][1] as RequestInit).body as string)).toEqual({create_new: true});
+        });
+
+        test('a failed create on first send surfaces an init error and sends nothing', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 404));
+            render(<JobSearchChat/>);
+            await screen.findByTestId('empty-history');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            expect(await screen.findByText(/could not start a conversation/i)).toBeInTheDocument();
+            const sends = (global.fetch as jest.Mock).mock.calls.filter(
+                (call) => String(call[0]).match(/\/api\/agent\/conversations\/\d+\//),
+            );
+            expect(sends).toHaveLength(0);
+        });
+
+        test('createOnMount={true} still POSTs on a 404', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 404));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+            render(<JobSearchChat createOnMount={true}/>);
+            await screen.findByLabelText('Message');
+            const posts = (global.fetch as jest.Mock).mock.calls.filter(
+                (call) => (call[1] as RequestInit | undefined)?.method === 'POST'
+                    && String(call[0]) === '/api/agent/conversations/',
+            );
+            expect(posts).toHaveLength(1);
+        });
+    });
+
     describe('DOM bootstrap', () => {
-        test('mounts itself onto a #job-search-chat element on DOMContentLoaded', async () => {
+        test('the component module no longer self-mounts (issue #472: the workspace owns mounting)', () => {
             const div = document.createElement('div');
             div.id = 'job-search-chat';
             document.body.appendChild(div);
@@ -982,7 +1041,7 @@ describe('additional JobSearchChat coverage', () => {
             });
             try {
                 document.dispatchEvent(new Event('DOMContentLoaded', {bubbles: true}));
-                await waitFor(() => expect(div.querySelector('.card.bg-dark')).toBeTruthy());
+                expect(div.querySelector('.card.bg-dark')).toBeNull();
             } finally {
                 act(() => { capturedRoot?.unmount(); });
                 spy.mockRestore();
@@ -2239,7 +2298,7 @@ describe('durable turn state (issue #458)', () => {
             third.unmount();
         });
 
-        test('a conversation restored via auto-create also reconciles its marker', async () => {
+        test('a conversation restored via auto-create (createOnMount) also reconciles its marker', async () => {
             window.localStorage.setItem(
                 inflightKeyFor(7, KEY_A),
                 JSON.stringify({conversationId: 7, content: 'ghost turn', key: KEY_A, ts: Date.now()}),
@@ -2248,7 +2307,7 @@ describe('durable turn state (issue #458)', () => {
             mock.mockResolvedValueOnce(jsonResponse({}, 404));
             // Auto-created conversation happens to be id 7 with no trace of the key.
             mock.mockResolvedValueOnce(jsonResponse(emptyConversation(7), 201));
-            render(<JobSearchChat/>);
+            render(<JobSearchChat createOnMount={true}/>);
             await screen.findByLabelText('Message');
             await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
             expect(screen.getByLabelText('Message')).toHaveValue('ghost turn');

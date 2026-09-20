@@ -4,6 +4,15 @@
 :root {
     --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
 
+    /* Shared workspace geometry (issue #472). The rail width collapses from
+       240px to 72px whenever the assistant is docked below 1440px so the
+       main region keeps a >=640px content box at 1280px. */
+    --app-rail-width: 240px;
+    --assistant-panel-width: clamp(360px, 28vw, 420px);
+    --assistant-drawer-width: min(420px, 100vw - 48px);
+    --z-assistant: 1050;
+}
+
     /* Shared stacking-layer tokens (issue #464). Navigation chrome, blocking
        dialogs and the skip link consume these instead of inventing numbers.
        Blocking dialogs sit above every background layer (nav rail, toggle,
@@ -728,12 +737,12 @@ body.app-nav-drawer-open {
        deductions are scoped here (issue #456) so collapsed-navigation
        viewports reflow to the full container width. */
     .app-content {
-        margin-left: 240px;
-        max-width: calc(100vw - 240px);
+        margin-left: var(--app-rail-width);
+        max-width: calc(100vw - var(--app-rail-width));
     }
 
     .app-messages {
-        margin-left: 240px;
+        margin-left: var(--app-rail-width);
     }
 }
 
@@ -1350,5 +1359,232 @@ body.app-nav-drawer-open {
     }
     .job-card strong, .org-card strong {
         font-size: 0.9rem;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   Shared assistant workspace (issue #472). One assistant per document, placed
+   by viewport: docked >=1280px, drawer 768-1279.98px, sheet <768px. The body
+   mode classes (assistant-docked / assistant-drawer / assistant-sheet) are
+   the only CSS hooks; WorkspaceShell.tsx owns them.
+   ------------------------------------------------------------------------ */
+
+.assistant-launcher {
+    position: fixed;
+    right: 1rem;
+    bottom: calc(1rem + var(--safe-area-inset-bottom));
+    z-index: var(--z-assistant);
+    display: inline-flex;
+    align-items: center;
+    gap: .5rem;
+    min-height: 44px;
+    padding: .625rem 1rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: 999px;
+    background: var(--bs-primary);
+    color: #fff;
+    font-size: .9375rem;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .4);
+}
+
+.assistant-launcher:hover {
+    filter: brightness(1.1);
+}
+
+.assistant-launcher:focus-visible,
+.assistant-panel button:focus-visible {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
+}
+
+.assistant-panel {
+    display: flex;
+    flex-direction: column;
+    background: var(--bs-body-bg);
+    color: var(--bs-body-color);
+    z-index: var(--z-assistant);
+}
+
+.assistant-panel-inner {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.assistant-panel-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: .5rem;
+    padding: .75rem 1rem;
+    border-bottom: 1px solid var(--bs-border-color);
+}
+
+.assistant-panel-title {
+    font-size: 1rem;
+    margin: 0;
+}
+
+.assistant-panel-context {
+    margin: .125rem 0 0;
+    font-size: .8125rem;
+    color: var(--bs-secondary-color);
+}
+
+.assistant-panel-controls {
+    display: flex;
+    gap: .25rem;
+    flex-shrink: 0;
+}
+
+.assistant-panel-controls .btn {
+    min-width: 44px;
+    min-height: 44px;
+}
+
+.assistant-back-to-results {
+    margin: .5rem 1rem 0;
+    min-height: 44px;
+}
+
+.assistant-panel-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: .75rem 1rem;
+}
+
+.assistant-panel-body #job-search-chat {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* Shape-matched loading skeleton for the lazy chat chunk: mirrors the
+   header/history/composer stack the real chat renders. */
+.assistant-loading {
+    display: grid;
+    gap: .75rem;
+    padding: 1rem 0;
+}
+
+.assistant-loading-line {
+    height: 1rem;
+    border-radius: .375rem;
+    background: linear-gradient(90deg,
+        rgba(255, 255, 255, .08) 25%,
+        rgba(255, 255, 255, .16) 50%,
+        rgba(255, 255, 255, .08) 75%);
+    background-size: 200% 100%;
+    animation: assistant-loading-shimmer 1.4s linear infinite;
+}
+
+.assistant-loading-line.short {
+    width: 60%;
+}
+
+@keyframes assistant-loading-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+}
+
+/* Docked: >=1280px. The panel sits at the right edge of the viewport in the
+   normal layout band; the main region gives up exactly its width. */
+@media (min-width: 1280px) {
+    body.assistant-docked .assistant-panel--docked {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: var(--assistant-panel-width);
+        border-left: 1px solid var(--bs-border-color);
+    }
+
+    body.assistant-docked .app-content {
+        max-width: calc(100vw - var(--app-rail-width) - var(--assistant-panel-width));
+    }
+
+    body.assistant-docked .assistant-launcher {
+        right: calc(var(--assistant-panel-width) + 1rem);
+    }
+}
+
+/* Collapsed rail: whenever the panel is docked below 1440px the nav rail
+   shrinks to its icon column so 1280px keeps a >=640px content box. */
+@media (min-width: 768px) and (max-width: 1439.98px) {
+    body.assistant-docked {
+        --app-rail-width: 72px;
+    }
+
+    body.assistant-docked .app-nav-rail {
+        width: 72px;
+    }
+
+    body.assistant-docked .app-nav-label,
+    body.assistant-docked .app-nav-brand-text,
+    body.assistant-docked .app-nav-user span,
+    body.assistant-docked .app-nav-logout-label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+
+    body.assistant-docked .app-nav-link,
+    body.assistant-docked .app-nav-brand,
+    body.assistant-docked .app-nav-user {
+        justify-content: center;
+        gap: 0;
+    }
+}
+
+/* Drawer: 768-1279.98px. Non-modal right-edge overlay; the background stays
+   focusable and scrollable, Escape closes. */
+@media (min-width: 768px) and (max-width: 1279.98px) {
+    .assistant-panel--drawer {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: var(--assistant-drawer-width);
+        border-left: 1px solid var(--bs-border-color);
+        box-shadow: -4px 0 16px rgba(0, 0, 0, .4);
+    }
+}
+
+/* Sheet: <768px. Full-screen blocking dialog; lockBackground isolates the
+   background and the composer row clears the home-indicator safe area. */
+@media (max-width: 767.98px) {
+    .assistant-panel--sheet {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+    }
+
+    .assistant-panel--sheet .assistant-panel-body {
+        padding-bottom: max(.5rem, env(safe-area-inset-bottom));
+    }
+
+    .assistant-panel--sheet #job-search-chat form {
+        padding-bottom: max(.5rem, env(safe-area-inset-bottom));
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .assistant-loading-line {
+        animation: none;
+    }
+
+    .assistant-panel,
+    .assistant-launcher {
+        transition: none;
     }
 }

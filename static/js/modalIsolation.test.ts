@@ -8,7 +8,7 @@
 // overflow-x: hidden }` rule), not body alone. Lock/unlock are
 // reference-counted and restore every inline value they touch.
 import '@testing-library/jest-dom';
-import {lockBackground, unlockBackground} from './modalIsolation';
+import {lockBackground, subscribeBackgroundLock, unlockBackground} from './modalIsolation';
 
 describe('modalIsolation (issue #464 review r2)', () => {
     let shell: HTMLElement;
@@ -227,5 +227,32 @@ describe('modalIsolation (issue #464 review r2)', () => {
                 Object.defineProperty(root, 'clientWidth', realClientWidth);
             }
         });
+    });
+});
+
+describe('subscribeBackgroundLock (issue #472)', () => {
+    beforeEach(() => {
+        document.body.innerHTML =
+            '<div class="app-shell"></div><main class="app-content"></main>';
+    });
+
+    test('notifies with the active hold count on every lock and unlock', () => {
+        const seen: number[] = [];
+        const unsubscribe = subscribeBackgroundLock((count) => seen.push(count));
+        lockBackground();
+        lockBackground();
+        unlockBackground();
+        unlockBackground();
+        expect(seen).toEqual([1, 2, 1, 0]);
+        unsubscribe();
+    });
+
+    test('unsubscribe stops notifications', () => {
+        const listener = jest.fn();
+        const unsubscribe = subscribeBackgroundLock(listener);
+        unsubscribe();
+        lockBackground();
+        unlockBackground();
+        expect(listener).not.toHaveBeenCalled();
     });
 });

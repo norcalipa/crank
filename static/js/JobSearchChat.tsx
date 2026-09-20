@@ -613,6 +613,9 @@ export interface JobSearchChatProps {
     // for — available synchronously, unlike the whoami hydration. Empty for
     // a signed-out visitor.
     accountKey?: string;
+    // Shared workspace contract: opening the assistant must not create a
+    // conversation; the first send creates it.
+    createOnMount?: boolean;
 }
 
 const JobSearchChat: React.FC<JobSearchChatProps> = ({
@@ -620,6 +623,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
     signInUrl = '/accounts/login/',
     signedOutMessage = '',
     accountKey = '',
+    createOnMount = false,
 }) => {
     // Cross-account purge, synchronously, before the first render commits
     // (issue #465 review round 2). Conversation resume and
@@ -1012,6 +1016,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
         csrfFetch('/api/agent/conversations/', {signal: controller.signal})
             .then(async (res) => {
                 if (stale()) return;
+                if (res.status === 404 && !createOnMount) {
+                    setLoading(false);
+                    return;
+                }
                 if (res.status === 404) {
                     // No existing conversation — create one so the user can start chatting.
                     try {
@@ -1980,13 +1988,13 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
                                     }
                                 }}
                                 onKeyDown={handleKeyDown}
-                                disabled={effectiveAuthenticated ? (!conversationId || pending || composerGated) : pending}
+                                disabled={effectiveAuthenticated ? ((createOnMount && !conversationId) || pending || composerGated) : pending}
                                 autoComplete="off"
                                 rows={1}
                                 style={{resize: 'none', overflowY: 'hidden'}}
                             />
                             <button type="submit" className="btn btn-primary chat-send chat-focus"
-                                    disabled={!effectiveAuthenticated || !conversationId || pending || composerGated || !input.trim()}
+                                    disabled={!effectiveAuthenticated || (createOnMount && !conversationId) || pending || composerGated || !input.trim()}
                                     aria-label="Send message" aria-describedby={!effectiveAuthenticated ? 'job-search-signed-out-reason' : undefined}>
                                 <i className="fa-solid fa-paper-plane" aria-hidden="true"></i>
                                 <span>Send</span>
@@ -2020,16 +2028,3 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
 
 export default JobSearchChat;
 
-document.addEventListener('DOMContentLoaded', () => {
-    const container = document.getElementById('job-search-chat');
-    if (container) {
-        const root = createRoot(container);
-        root.render(<JobSearchChat
-            isAuthenticated={container.dataset.authenticated === 'true'}
-            visitorState={container.dataset.visitorState}
-            signInUrl={container.dataset.signInUrl}
-            signedOutMessage={container.dataset.signedOutMessage}
-            accountKey={container.dataset.accountKey}
-        />);
-    }
-});

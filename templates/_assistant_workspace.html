@@ -1,0 +1,16 @@
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
+{% comment %}
+Mount anchor for the shared assistant workspace (issue #472). Rendered by
+templates/base.html on every non-admin, non-authentication page. Must stay
+outside .app-shell and main.app-content so modalIsolation.ts's inert
+selector never captures it. `data-assistant-pinned` marks /chat/ as the
+pinned case: the panel opens on load instead of behind the launcher.
+{% endcomment %}
+<div id="assistant-workspace"{% if assistant_workspace_pinned %} data-assistant-pinned="true"{% endif %}></div>
+<noscript>
+    <div class="alert alert-info m-3" role="note">
+        The job search assistant needs JavaScript, or you can
+        <a href="{% url 'job_search' %}">open the assistant page directly</a>.
+    </div>
+</noscript>

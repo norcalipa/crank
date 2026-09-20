@@ -62,6 +62,7 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
     // (review r2).
     const LAYER_TOKENS = [
         'z-mobile-topbar',
+        'z-assistant',
         'z-nav-rail',
         'z-nav-toggle',
         'z-nav-overlay',
@@ -141,6 +142,15 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         expect(tokenValue('z-blocking-dialog')).toBe(1400);
         expect(tokenValue('z-skip-link')).toBe(2000);
         expect(tokenValue('z-mobile-topbar')).toBe(1030);
+        expect(tokenValue('z-assistant')).toBe(1050);
+    });
+
+    it('places the assistant workspace above the mobile topbar but below every blocking dialog', () => {
+        // Issue #472: the launcher/drawer/sheet float over page chrome, and
+        // the blocking-dialog layer stays on top so a dialog opened over the
+        // sheet is never occluded by it.
+        expect(tokenValue('z-assistant')!).toBeGreaterThan(tokenValue('z-mobile-topbar')!);
+        expect(tokenValue('z-assistant')!).toBeLessThan(tokenValue('z-blocking-dialog')!);
     });
 
     it('places the blocking dialog above all background chrome but below the skip link', () => {

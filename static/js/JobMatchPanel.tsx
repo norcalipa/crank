@@ -673,13 +673,3 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
 
 export default JobMatchPanel;
 
-document.addEventListener('DOMContentLoaded', () => {
-    const container = document.getElementById('job-match-panel');
-    if (container) {
-        const root = require('react-dom/client').createRoot(container);
-        root.render(<JobMatchPanel
-            isAuthenticated={container.dataset.authenticated === 'true'}
-            signInUrl={container.dataset.signInUrl}
-        />);
-    }
-});

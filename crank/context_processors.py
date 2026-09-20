@@ -63,4 +63,14 @@ def navigation_context(request):
         "nav_is_job_search": is_job_search,
         "nav_is_help": is_help,
         "nav_is_rankings": is_rankings,
+        # Shared assistant workspace (issue #472): rendered everywhere except
+        # the admin/staff and authentication surfaces. /chat/ is the pinned
+        # case — the panel opens on load instead of behind the launcher.
+        "assistant_workspace_enabled": not (
+            path.startswith("/admin")
+            or path.startswith("/staff/")
+            or path.startswith("/accounts/")
+        ),
+        "assistant_workspace_pinned": is_job_search,
+        "assistant_workspace_pinned": is_job_search,
     }

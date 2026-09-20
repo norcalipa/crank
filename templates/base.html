@@ -46,5 +46,6 @@
      (issue #471). Must stay outside .app-shell and main.app-content so
      modalIsolation.ts's inert selector never captures it. -->
 <div id="suggest-company-host"></div>
+{% if assistant_workspace_enabled %}{% include "_assistant_workspace.html" %}{% endif %}
 </body>
 </html>

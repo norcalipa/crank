@@ -236,6 +236,47 @@ class NavigationShellTests(TestCase):
 
     # --- No horizontal scroll at 320px ----------------------------------
 
+    def test_assistant_workspace_enabled_flag(self):
+        """Issue #472: the workspace renders everywhere except admin/staff/auth."""
+        from crank.context_processors import navigation_context
+        from django.test import RequestFactory
+
+        factory = RequestFactory()
+        for path in ("/", "/algo/1/", "/chat/", "/help/", "/privacy/"):
+            ctx = navigation_context(factory.get(path))
+            self.assertTrue(ctx["assistant_workspace_enabled"], path)
+        for path in ("/admin/", "/staff/release-diagnostics/", "/accounts/login/"):
+            ctx = navigation_context(factory.get(path))
+            self.assertFalse(ctx["assistant_workspace_enabled"], path)
+
+    def test_assistant_workspace_pinned_only_on_chat(self):
+        from crank.context_processors import navigation_context
+        from django.test import RequestFactory
+
+        factory = RequestFactory()
+        self.assertTrue(navigation_context(factory.get("/chat/"))["assistant_workspace_pinned"])
+        self.assertFalse(navigation_context(factory.get("/"))["assistant_workspace_pinned"])
+
+    def test_index_renders_workspace_anchor(self):
+        response = self.client.get(reverse("index"))
+        self.assertContains(response, 'id="assistant-workspace"')
+
+    def test_chat_renders_workspace_anchor_and_drops_jobsearch_bundle(self):
+        user = self._create_user()
+        self.client.force_login(user)
+        response = self.client.get(reverse("job_search"))
+        content = response.content.decode()
+        self.assertIn('id="assistant-workspace"', content)
+        self.assertIn('data-assistant-pinned="true"', content)
+        self.assertNotIn('jobsearch.js', content)
+        self.assertIn('id="job-match-panel"', content)
+        # Exactly one chat mount point: the workspace owns JobSearchChat now.
+        self.assertNotIn('id="job-search-chat"', content)
+
+    def test_login_page_has_no_workspace_anchor(self):
+        response = self.client.get("/accounts/login/")
+        self.assertNotIn('id="assistant-workspace"', response.content.decode())
+
     def test_css_has_overflow_x_hidden(self):
         import os
         css_path = os.path.join(

@@ -426,12 +426,9 @@ describe('JobMatchPanel', () => {
             Object.defineProperty(window, 'location', {value: original, writable: true});
         });
 
-        test('chat action focuses the message input', async () => {
-            const input = document.createElement('input');
-            input.setAttribute('aria-label', 'Message');
-            input.scrollIntoView = jest.fn();
-            document.body.appendChild(input);
-            const focusSpy = jest.spyOn(input, 'focus');
+        test('chat action dispatches crank:assistant-open (issue #472)', async () => {
+            const handler = jest.fn();
+            window.addEventListener('crank:assistant-open', handler);
             await renderPanel('no_preferences', {
                 statusOverrides: {
                     title: 'Tell us',
@@ -440,8 +437,8 @@ describe('JobMatchPanel', () => {
                 },
             });
             fireEvent.click(screen.getByTestId('action-chat'));
-            expect(focusSpy).toHaveBeenCalled();
-            document.body.removeChild(input);
+            expect(handler).toHaveBeenCalledTimes(1);
+            window.removeEventListener('crank:assistant-open', handler);
         });
 
         test('unknown action is a no-op (does not throw)', async () => {
@@ -456,12 +453,9 @@ describe('JobMatchPanel', () => {
             expect(screen.getByTestId('job-match-panel')).toBeInTheDocument();
         });
 
-        test('complete_profile action focuses message input and scrolls', async () => {
-            const input = document.createElement('input');
-            input.setAttribute('aria-label', 'Message');
-            input.scrollIntoView = jest.fn();
-            document.body.appendChild(input);
-            const focusSpy = jest.spyOn(input, 'focus');
+        test('complete_profile action dispatches crank:assistant-open (issue #472)', async () => {
+            const handler = jest.fn();
+            window.addEventListener('crank:assistant-open', handler);
             await renderPanel('no_preferences', {
                 statusOverrides: {
                     title: 'Complete profile',
@@ -470,9 +464,8 @@ describe('JobMatchPanel', () => {
                 },
             });
             fireEvent.click(screen.getByTestId('action-complete_profile'));
-            expect(focusSpy).toHaveBeenCalled();
-            expect(input.scrollIntoView).toHaveBeenCalledWith({behavior: 'smooth', block: 'center'});
-            document.body.removeChild(input);
+            expect(handler).toHaveBeenCalledTimes(1);
+            window.removeEventListener('crank:assistant-open', handler);
         });
     });
 
@@ -500,7 +493,7 @@ describe('JobMatchPanel', () => {
     });
 
     describe('DOMContentLoaded bootstrap', () => {
-        test('renders panel into #job-match-panel container on DOMContentLoaded', () => {
+        test('the component module no longer self-mounts (issue #472: jobmatch.tsx owns the mount)', () => {
             const container = document.createElement('div');
             container.id = 'job-match-panel';
             document.body.appendChild(container);
@@ -513,8 +506,27 @@ describe('JobMatchPanel', () => {
                 require('./JobMatchPanel');
             });
 
-            // The module-level DOMContentLoaded listener should have been registered.
-            // Fire it to trigger the bootstrap.
+            document.dispatchEvent(new Event('DOMContentLoaded'));
+
+            expect(mockCreateRoot).not.toHaveBeenCalled();
+
+            document.body.removeChild(container);
+            jest.dontMock('react-dom/client');
+        });
+
+        test('jobmatch.tsx entry renders the panel into #job-match-panel on DOMContentLoaded', () => {
+            const container = document.createElement('div');
+            container.id = 'job-match-panel';
+            document.body.appendChild(container);
+
+            const mockRender = jest.fn();
+            const mockCreateRoot = jest.fn(() => ({render: mockRender}));
+            jest.doMock('react-dom/client', () => ({createRoot: mockCreateRoot}));
+
+            jest.isolateModules(() => {
+                require('./jobmatch');
+            });
+
             document.dispatchEvent(new Event('DOMContentLoaded'));
 
             expect(mockCreateRoot).toHaveBeenCalledWith(container);
