@@ -173,7 +173,6 @@ class TestUnsupportedCriteria:
     def test_document_with_only_supported_values_has_no_unsupported_criteria(self):
         doc = prefs.default_preferences()
         doc["compensation"]["minimum_salary"] = 150000
-        doc["compensation"]["basis"] = "total"  # basis itself is SUPPORTED
         doc["culture"] = ["transparent"]
         assert prefs.unsupported_criteria(doc) == []
 
@@ -181,6 +180,60 @@ class TestUnsupportedCriteria:
         doc = prefs.default_preferences()
         doc["compensation"]["minimum_total_compensation"] = 250000
         assert "compensation.minimum_total_compensation" in prefs.unsupported_criteria(doc)
+
+    def test_basis_total_is_reported(self):
+        """Issue #459 review, MAJOR-3: the matching engine never reads
+        ``compensation.basis``, so ``basis == \"total\"`` must be surfaced
+        as unsupported rather than silently applying ``minimum_salary`` as
+        a base-salary filter (the exact defect #459 names)."""
+        doc = prefs.default_preferences()
+        doc["compensation"]["basis"] = "total"
+        doc["compensation"]["minimum_salary"] = 250000
+        unsupported = prefs.unsupported_criteria(doc)
+        assert "compensation.basis" in unsupported
+
+    def test_period_non_default_is_reported(self):
+        """The engine never reads ``compensation.period`` either."""
+        doc = prefs.default_preferences()
+        doc["compensation"]["period"] = "hour"
+        assert "compensation.period" in prefs.unsupported_criteria(doc)
+
+    def test_require_onsite_set_is_reported(self):
+        """The engine never reads ``work_location.require_onsite``."""
+        doc = prefs.default_preferences()
+        doc["work_location"]["require_onsite"] = True
+        assert "work_location.require_onsite" in prefs.unsupported_criteria(doc)
+
+    def test_importance_set_is_reported(self):
+        """Issue #459 review, MAJOR-2: a non-empty importance map is a
+        hard-requirement signal the matching engine cannot evaluate, so it
+        must be surfaced, not silently counted as satisfied."""
+        doc = prefs.default_preferences()
+        doc["importance"]["compensation.minimum_salary"] = 1.0
+        assert "importance" in prefs.unsupported_criteria(doc)
+
+    def test_notes_set_is_reported_but_empty_notes_is_not(self):
+        """``notes`` is UNSUPPORTED (nothing in matching reads it), and its
+        empty-string default must not count as set (issue #459 review,
+        MINOR-3)."""
+        doc = prefs.default_preferences()
+        assert "notes" not in prefs.unsupported_criteria(doc)
+        doc["notes"] = "prefers public transit"
+        assert "notes" in prefs.unsupported_criteria(doc)
+
+    def test_priorities_are_supported(self):
+        """``priorities`` is genuinely read by ``project_criteria`` — it is
+        one of the better-supported criteria (issue #459 review, MINOR-3)."""
+        assert prefs.CRITERION_SUPPORT["priorities"] == prefs.SUPPORTED
+        doc = prefs.default_preferences()
+        doc["priorities"]["culture"] = 0.8
+        assert "priorities" not in prefs.unsupported_criteria(doc)
+
+    def test_importance_accepts_priorities_key(self):
+        """The registry doubles as the allow-list for importance keys, so
+        registering ``priorities`` makes it a valid importance target."""
+        result = prefs.validate_value("importance", "float_map", {"priorities": 1.0})
+        assert result == {"priorities": 1.0}
 
     def test_pre_migration_document_missing_v3_keys_has_no_unsupported_criteria(self):
         """A stored v2 document (pre-0035) lacks every v3 key outright, not
@@ -204,7 +257,7 @@ class TestUnsupportedCriteria:
         doc["compensation"]["minimum_total_compensation"] = 250000
         unsupported = prefs.unsupported_criteria(doc)
         assert "compensation.minimum_total_compensation" in unsupported
-        assert "compensation.basis" not in unsupported  # basis is SUPPORTED
+        assert "compensation.basis" in unsupported
 
     def test_ordering_is_deterministic(self):
         doc = prefs.default_preferences()
@@ -231,6 +284,20 @@ class TestUnsupportedCriteria:
         for key in unsupported:
             assert prefs.CRITERION_SUPPORT[key] == prefs.UNSUPPORTED
         assert len(unsupported) == 9
+
+    def test_registry_covers_every_canonical_leaf(self):
+        """AC-5 / MINOR-3: every canonical criterion key in ``_FIELD_SPEC``
+        is registered — no leaf is silently outside the support registry."""
+        def leaves(spec, prefix=""):
+            for key, sub in spec.items():
+                path = f"{prefix}.{key}" if prefix else key
+                if isinstance(sub, dict):
+                    yield from leaves(sub, path)
+                else:
+                    yield path
+
+        missing = [path for path in leaves(prefs._FIELD_SPEC) if path not in prefs.CRITERION_SUPPORT]
+        assert missing == []
 
 
 class TestPatch:
@@ -430,6 +497,104 @@ class TestV3Patch:
         new, changes = prefs.apply_patch(doc, {"set": {"work_location.office_days_exact": 2}})
         assert changes == 1
         assert new["work_location"]["office_days_exact"] == 2
+
+
+def _v2_shaped_document():
+    """A stored pre-0035 (schema v2) document: the v3 default minus the
+    v3-only keys, as an old row looks before migration 0035 runs."""
+    doc = prefs.default_preferences()
+    del doc["roles"]
+    del doc["importance"]
+    del doc["scope"]
+    for key in (
+        "basis", "period", "minimum_total_compensation",
+        "equity_liquidity_required", "acceptable_liquidity_events",
+    ):
+        del doc["compensation"][key]
+    del doc["work_location"]["office_days_exact"]
+    return doc
+
+
+class TestPreMigrationDocumentServing:
+    """Issue #459 review, MAJOR-1: stored v1/v2 documents must still patch
+    and render markdown (AC-9). ``apply_patch`` and ``to_markdown`` backfill
+    missing known keys from the current defaults without clobbering set
+    values or touching unknown additive keys."""
+
+    def test_apply_patch_on_v2_document_backfills_missing_v3_keys(self):
+        v2_doc = _v2_shaped_document()
+        v2_doc["compensation"]["minimum_salary"] = 175000
+        new, changes = prefs.apply_patch(v2_doc, {"set": {"notes": "hello"}})
+        assert changes == 1
+        assert new["notes"] == "hello"
+        # Set values survive; missing keys land at their v3 defaults.
+        assert new["compensation"]["minimum_salary"] == 175000
+        assert new["compensation"]["basis"] == "base"
+        assert new["compensation"]["period"] == "year"
+        assert new["roles"] == {"families": [], "titles": [], "seniority": []}
+        assert new["importance"] == {}
+        assert new["scope"] == {"countries": [], "role_families": []}
+        assert new["work_location"]["office_days_exact"] is None
+
+    def test_apply_patch_on_v2_document_does_not_mutate_input(self):
+        v2_doc = _v2_shaped_document()
+        original = copy.deepcopy(v2_doc)
+        prefs.apply_patch(v2_doc, {"set": {"notes": "hello"}})
+        assert v2_doc == original
+
+    def test_apply_patch_on_v2_document_preserves_unknown_additive_keys(self):
+        v2_doc = _v2_shaped_document()
+        v2_doc["notifications"] = {"channel": "email"}
+        new, _ = prefs.apply_patch(v2_doc, {"set": {"notes": "hello"}})
+        assert new["notifications"] == {"channel": "email"}
+        assert new["roles"] == {"families": [], "titles": [], "seniority": []}
+
+    def test_apply_patch_can_set_v3_fields_on_v2_document(self):
+        """Once backfilled, a patch may target the new v3 paths directly."""
+        v2_doc = _v2_shaped_document()
+        new, changes = prefs.apply_patch(v2_doc, {"set": {"roles.families": ["engineering"]}})
+        assert changes == 1
+        assert new["roles"]["families"] == ["engineering"]
+
+    def test_to_markdown_on_v2_document_renders_without_raising(self):
+        v2_doc = _v2_shaped_document()
+        v2_doc["compensation"]["minimum_salary"] = 175000
+        md = prefs.to_markdown(v2_doc)
+        assert md.startswith("# Career Preferences\n")
+        assert "USD 175,000" in md
+        # Default-filled v3 keys render exactly as an untouched v3 document:
+        # no v3-only lines appear.
+        assert "## Roles" not in md
+        assert "## Unsupported requirements" not in md
+        assert "Compensation basis" not in md
+
+    def test_to_markdown_on_v2_document_does_not_mutate_input(self):
+        v2_doc = _v2_shaped_document()
+        original = copy.deepcopy(v2_doc)
+        prefs.to_markdown(v2_doc)
+        assert v2_doc == original
+
+    def test_to_markdown_on_v1_document_renders_without_raising(self):
+        """The backfill covers every prior schema era: a v1 document is also
+        missing the 0024 keys (require_public_company, max_in_office_days)."""
+        v1_doc = _v2_shaped_document()
+        del v1_doc["compensation"]["require_public_company"]
+        del v1_doc["work_location"]["max_in_office_days"]
+        md = prefs.to_markdown(v1_doc)
+        assert md.startswith("# Career Preferences\n")
+        new, changes = prefs.apply_patch(v1_doc, {"set": {"notes": "v1"}})
+        assert changes == 1
+        assert new["compensation"]["require_public_company"] is None
+        assert new["work_location"]["max_in_office_days"] is None
+
+    def test_fill_missing_defaults_never_clobbers_set_values(self):
+        doc = _v2_shaped_document()
+        doc["compensation"]["currency"] = "EUR"
+        doc["culture"] = ["transparent"]
+        prefs._fill_missing_defaults(doc)
+        assert doc["compensation"]["currency"] == "EUR"
+        assert doc["culture"] == ["transparent"]
+        assert doc["compensation"]["basis"] == "base"
 
 
 class TestMarkdown:

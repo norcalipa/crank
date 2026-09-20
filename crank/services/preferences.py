@@ -155,12 +155,12 @@ CRITERION_SUPPORT = {
     "compensation.currency": SUPPORTED,
     "compensation.equity_minimum_percent": SUPPORTED,
     "compensation.require_public_company": SUPPORTED,
-    "compensation.basis": SUPPORTED,
-    "compensation.period": SUPPORTED,
+    "compensation.basis": UNSUPPORTED,
+    "compensation.period": UNSUPPORTED,
     "culture": SUPPORTED,
     "work_location.modes": SUPPORTED,
     "work_location.countries": SUPPORTED,
-    "work_location.require_onsite": SUPPORTED,
+    "work_location.require_onsite": UNSUPPORTED,
     "work_location.max_in_office_days": SUPPORTED,
     "geography.regions": SUPPORTED,
     "geography.remote_friendly": SUPPORTED,
@@ -173,6 +173,8 @@ CRITERION_SUPPORT = {
     "exclusions.titles": SUPPORTED,
     "exclusions.industries": SUPPORTED,
     "exclusions.locations": SUPPORTED,
+    "priorities": SUPPORTED,
+    "notes": UNSUPPORTED,
     "roles.families": UNSUPPORTED,
     "roles.titles": UNSUPPORTED,
     "roles.seniority": UNSUPPORTED,
@@ -180,6 +182,7 @@ CRITERION_SUPPORT = {
     "compensation.equity_liquidity_required": UNSUPPORTED,
     "compensation.acceptable_liquidity_events": UNSUPPORTED,
     "work_location.office_days_exact": UNSUPPORTED,
+    "importance": UNSUPPORTED,
     "scope.countries": UNSUPPORTED,
     "scope.role_families": UNSUPPORTED,
 }
@@ -421,6 +424,31 @@ def _merge_unknown(document, unknown):
     return document
 
 
+def _fill_missing_defaults(document):
+    """Layer a stored document over the current defaults in place.
+
+    Backward compatibility (issue #459 review, MAJOR-1): a stored document
+    written by an *older* schema version (pre-migration, or a first
+    interaction served by an old pod during a rolling deploy) is missing
+    known keys outright. ``apply_patch`` and ``to_markdown`` must still
+    serve it, so any absent known key is backfilled from
+    :func:`default_preferences` before validation. Values the user actually
+    set are never clobbered, and unknown (additive, newer-version) keys are
+    left untouched — exactly the keys this schema version does not know are
+    skipped here and preserved by the callers' deep copy.
+    """
+    def fill(defaults, node):
+        if not isinstance(defaults, dict) or not isinstance(node, dict):
+            return
+        for key, default in defaults.items():
+            if key not in node:
+                node[key] = copy.deepcopy(default)
+            elif isinstance(default, dict) and isinstance(node[key], dict):
+                fill(default, node[key])
+
+    fill(default_preferences(), document)
+
+
 def _get(doc, path):
     parts = _split_path(path)
     node = doc
@@ -451,12 +479,19 @@ def _get_optional(document, path):
     return node
 
 
-def _criterion_is_set(spec, value):
+def _criterion_is_set(spec, value, default):
     """Whether *value* represents the user actually expressing this criterion,
-    as opposed to the field's un-set default."""
+    as opposed to the field's un-set default (or a missing key outright, for
+    a stored document that predates the key)."""
+    if value is None:
+        return False
     if spec in ("str_list", "float_map"):
         return bool(value)
-    return value is not None
+    if spec == "str":
+        # ``notes`` defaults to "" and enum leaves like ``basis``/``period``
+        # default to a concrete value; both count as unset at their default.
+        return bool(value) and value != default
+    return value != default
 
 
 def unsupported_criteria(document):
@@ -465,16 +500,17 @@ def unsupported_criteria(document):
     :data:`CRITERION_SUPPORT`).
 
     A criterion is considered "set" when it differs from its schema default
-    (a non-empty list/map, or a non-``None`` scalar). Order follows
+    (a non-empty list/map, or a non-default scalar). Order follows
     :data:`CRITERION_SUPPORT`'s definition order, which is deterministic.
     """
+    defaults = default_preferences()
     result = []
     for path, support in CRITERION_SUPPORT.items():
         if support != UNSUPPORTED:
             continue
         spec, _dynamic = _resolve_spec(path)
         value = _get_optional(document, path)
-        if _criterion_is_set(spec, value):
+        if _criterion_is_set(spec, value, _get_optional(defaults, path)):
             result.append(path)
     return result
 
@@ -599,6 +635,13 @@ def apply_patch(document, patch):
     """
     validate_patch(patch)
     new_doc = copy.deepcopy(document)
+    # Backward compatibility (issue #459 review, MAJOR-1): a stored document
+    # written by an older schema version is missing known keys outright
+    # (pre-migration, or a first interaction served by an old pod during a
+    # rolling deploy). Backfill only the absent keys from the current
+    # defaults so the document remains patchable and renderable; values the
+    # user set are never clobbered, and unknown additive keys are untouched.
+    _fill_missing_defaults(new_doc)
     # Forward compatibility (epic #454): validate only the known portion of
     # the stored document. Additive fields written by a newer schema version
     # ride along in ``new_doc`` untouched: they are never rejected, modified,
@@ -689,8 +732,13 @@ def to_markdown(document):
     Tolerates additive fields this schema version does not know (they are
     preserved in the stored JSON but never projected into markdown), so a
     document written by a newer schema version renders during a rolling
-    deploy.
+    deploy. Missing known keys (a stored document from an *older* schema
+    version) are backfilled from defaults on a scratch copy first, so the
+    same document also renders before its migration has run (issue #459
+    review, MAJOR-1).
     """
+    document = copy.deepcopy(document)
+    _fill_missing_defaults(document)
     _validate_known_fields(document)
     lines = ["# Career Preferences", ""]
     comp = document["compensation"]

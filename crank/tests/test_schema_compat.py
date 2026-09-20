@@ -111,21 +111,24 @@ class PreferenceSchemaCompatTests(TestCase):
         self.assertEqual(reset_result["preferences"], default_preferences())
 
     def test_v2_document_missing_v3_keys_is_still_served(self):
-        """A stored document missing the 0035-added keys (roles, importance,
-        scope, and the new compensation/work_location subkeys) still reads
-        and exports unchanged: the services do not require the additive v3
-        keys to serve old documents."""
-        v3_doc = default_preferences()
-        del v3_doc["roles"]
-        del v3_doc["importance"]
-        del v3_doc["scope"]
+        """AC-9: a stored document missing the 0035-added keys (roles,
+        importance, scope, and the new compensation/work_location subkeys)
+        still reads, exports, patches, and renders markdown: the services
+        do not require the additive v3 keys to serve old documents. The
+        patch path backfills missing known keys from defaults on write
+        (issue #459 review, MAJOR-1), so the stored document gains the v3
+        defaults on its first patch while the user's set values survive."""
+        v2_doc = default_preferences()
+        del v2_doc["roles"]
+        del v2_doc["importance"]
+        del v2_doc["scope"]
         for key in (
             "basis", "period", "minimum_total_compensation",
             "equity_liquidity_required", "acceptable_liquidity_events",
         ):
-            del v3_doc["compensation"][key]
-        del v3_doc["work_location"]["office_days_exact"]
-        UserPreference.objects.create(user=self.user, preferences=v3_doc, schema_version=2)
+            del v2_doc["compensation"][key]
+        del v2_doc["work_location"]["office_days_exact"]
+        UserPreference.objects.create(user=self.user, preferences=v2_doc, schema_version=2)
 
         read_doc = preferences_service.read(user=self.user)
         self.assertNotIn("roles", read_doc["preferences"])
@@ -136,7 +139,59 @@ class PreferenceSchemaCompatTests(TestCase):
 
         exported = preferences_service.export(user=self.user)
         self.assertEqual(exported["schema_version"], 2)
-        self.assertEqual(exported["preferences"], v3_doc)
+        self.assertEqual(exported["preferences"], v2_doc)
+
+        # The markdown render path must not raise on the missing v3 keys.
+        rendered = to_markdown(v2_doc)
+        self.assertIn("# Career Preferences", rendered)
+
+        # The patch path must not raise either; set values are applied and
+        # the missing v3 keys land at their defaults on the write.
+        patched = preferences_service.apply_patch_to_user(
+            self.user, {"set": {"notes": "prefers public transit"}}
+        )
+        self.assertTrue(patched["changed"])
+        self.assertEqual(patched["preferences"]["notes"], "prefers public transit")
+        self.assertEqual(patched["preferences"]["roles"], {"families": [], "titles": [], "seniority": []})
+        self.assertEqual(patched["preferences"]["importance"], {})
+        self.assertEqual(patched["preferences"]["scope"], {"countries": [], "role_families": []})
+        self.assertEqual(patched["preferences"]["compensation"]["basis"], "base")
+        self.assertIsNone(patched["preferences"]["work_location"]["office_days_exact"])
+        self.assertIn("prefers public transit", patched["markdown"])
+
+        reread = preferences_service.read(user=self.user)
+        self.assertEqual(reread["preferences"]["notes"], "prefers public transit")
+
+    def test_v1_document_missing_v2_and_v3_keys_still_patches_and_renders(self):
+        """AC-9: a stored v1 document (also missing the 0024 keys
+        require_public_company and max_in_office_days) still patches and
+        renders: the missing-key backfill covers every prior schema era,
+        not just the v2 era (issue #459 review, MAJOR-1)."""
+        v1_doc = default_preferences()
+        del v1_doc["roles"]
+        del v1_doc["importance"]
+        del v1_doc["scope"]
+        for key in (
+            "basis", "period", "minimum_total_compensation",
+            "equity_liquidity_required", "acceptable_liquidity_events",
+        ):
+            del v1_doc["compensation"][key]
+        del v1_doc["compensation"]["require_public_company"]
+        del v1_doc["work_location"]["office_days_exact"]
+        del v1_doc["work_location"]["max_in_office_days"]
+        UserPreference.objects.create(user=self.user, preferences=v1_doc, schema_version=1)
+
+        rendered = to_markdown(v1_doc)
+        self.assertIn("# Career Preferences", rendered)
+
+        patched = preferences_service.apply_patch_to_user(
+            self.user, {"set": {"notes": "v1 still works"}}
+        )
+        self.assertTrue(patched["changed"])
+        self.assertEqual(patched["preferences"]["notes"], "v1 still works")
+        self.assertIsNone(patched["preferences"]["compensation"]["require_public_company"])
+        self.assertIsNone(patched["preferences"]["work_location"]["max_in_office_days"])
+        self.assertEqual(patched["preferences"]["roles"], {"families": [], "titles": [], "seniority": []})
 
     def test_document_with_future_additive_field_still_reads_and_exports(self):
         """A document carrying an extra (future, additive) section is served

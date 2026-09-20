@@ -6,6 +6,16 @@ documents (schema v3, issue #459).
 """
 from django.db import migrations, models
 
+# Keys 0024 added (schema v2). A row still at v1 misses these; fold them in
+# here too so a migrated row is genuinely v3-shaped rather than mislabelled
+# (issue #459 review, MINOR-2).
+_V2_COMPENSATION_DEFAULTS = {
+    "require_public_company": None,
+}
+_V2_WORK_LOCATION_DEFAULTS = {
+    "max_in_office_days": None,
+}
+
 _COMPENSATION_DEFAULTS = {
     "basis": "base",
     "period": "year",
@@ -23,6 +33,28 @@ _TOP_LEVEL_DEFAULTS = {
 }
 
 
+def _normalize_currency(comp):
+    """Normalize a stored currency value to the v3 three-ASCII-letter form.
+
+    v2 accepted any non-empty string for ``compensation.currency``; v3
+    validates strictly. Uppercase the stored value, and reset anything that
+    is not exactly three ASCII letters to the ``"USD"`` default so the
+    tightened validator never rejects a pre-existing row outright
+    (issue #459 review, MINOR-1).
+    """
+    value = comp.get("currency")
+    if not isinstance(value, str) or not value.strip():
+        return False
+    normalized = value.strip().upper()
+    if len(normalized) == 3 and normalized.isascii() and normalized.isalpha():
+        if normalized != value:
+            comp["currency"] = normalized
+            return True
+        return False
+    comp["currency"] = "USD"
+    return True
+
+
 def migrate_to_v3(apps, schema_editor):
     UserPreference = apps.get_model("crank", "UserPreference")
     for pref in UserPreference.objects.all().iterator():
@@ -30,13 +62,23 @@ def migrate_to_v3(apps, schema_editor):
         changed = False
 
         comp = doc.get("compensation", {})
+        for key, default in _V2_COMPENSATION_DEFAULTS.items():
+            if key not in comp:
+                comp[key] = default
+                changed = True
         for key, default in _COMPENSATION_DEFAULTS.items():
             if key not in comp:
                 comp[key] = default
                 changed = True
+        if _normalize_currency(comp):
+            changed = True
         doc["compensation"] = comp
 
         wl = doc.get("work_location", {})
+        for key, default in _V2_WORK_LOCATION_DEFAULTS.items():
+            if key not in wl:
+                wl[key] = default
+                changed = True
         for key, default in _WORK_LOCATION_DEFAULTS.items():
             if key not in wl:
                 wl[key] = default
@@ -79,6 +121,9 @@ def reverse_migration(apps, schema_editor):
                 del doc[key]
                 changed = True
 
+        # Only rows that were v2 (or later) before the forward pass may be
+        # stamped back to 2. A row that was v1 gained the 0024 keys above,
+        # so reversing only the v3 keys leaves it at its genuine v2 shape.
         if changed:
             pref.preferences = doc
             pref.schema_version = 2

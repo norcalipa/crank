@@ -55,9 +55,11 @@ class PreferenceSchemaV3MigrationTests(TestCase):
     def _run_reverse(self):
         reverse_migration(django_apps, _FakeSchemaEditor())
 
-    def test_v1_default_document_gains_v3_keys(self):
-        """A v1-shaped document (also missing the 0024 v2 keys) gains the
-        full v3 key set and lands at schema_version 3."""
+    def test_v1_default_document_gains_v2_and_v3_keys(self):
+        """A v1-shaped document (also missing the 0024 v2 keys) gains both
+        the v2 and v3 key sets and lands at schema_version 3 genuinely
+        v3-shaped (issue #459 review, MINOR-2): a migrated row must not be
+        labelled v3 while structurally missing earlier-version keys."""
         doc = _v2_document()
         del doc["compensation"]["require_public_company"]
         del doc["work_location"]["max_in_office_days"]
@@ -67,18 +69,34 @@ class PreferenceSchemaV3MigrationTests(TestCase):
         pref.refresh_from_db()
 
         self.assertEqual(pref.schema_version, 3)
-        self.assertEqual(pref.preferences["roles"], {"families": [], "titles": [], "seniority": []})
-        self.assertEqual(pref.preferences["importance"], {})
-        self.assertEqual(pref.preferences["scope"], {"countries": [], "role_families": []})
-        self.assertEqual(pref.preferences["compensation"]["basis"], "base")
-        self.assertEqual(pref.preferences["compensation"]["period"], "year")
-        self.assertIsNone(pref.preferences["compensation"]["minimum_total_compensation"])
-        self.assertIsNone(pref.preferences["compensation"]["equity_liquidity_required"])
-        self.assertEqual(pref.preferences["compensation"]["acceptable_liquidity_events"], [])
-        self.assertIsNone(pref.preferences["work_location"]["office_days_exact"])
-        # 0024 keys are untouched by this migration (still absent).
-        self.assertNotIn("require_public_company", pref.preferences["compensation"])
-        self.assertNotIn("max_in_office_days", pref.preferences["work_location"])
+        self.assertEqual(pref.preferences, default_preferences())
+
+    def test_currency_is_normalized_to_three_ascii_letters(self):
+        """Issue #459 review, MINOR-1: v2 accepted any non-empty currency
+        string; the v3 validator is strict. The migration normalizes the
+        stored value (uppercase) and resets anything not exactly three
+        ASCII letters to the USD default, so the tightened validator never
+        rejects a pre-existing row."""
+        cases = [
+            ("usd", "USD"),       # lowercase -> uppercased
+            ("Eur", "EUR"),       # mixed case -> uppercased
+            ("Euro", "USD"),      # 4 letters -> reset to default
+            ("US", "USD"),        # 2 letters -> reset to default
+            ("U5D", "USD"),       # non-letter -> reset to default
+            ("USD", "USD"),       # already valid -> unchanged
+            ("  ", "  "),          # blank -> left untouched (validator never ran on write)
+        ]
+        for index, (stored, expected) in enumerate(cases):
+            with self.subTest(stored=stored):
+                doc = _v2_document()
+                doc["compensation"]["currency"] = stored
+                user = User.objects.create_user(f"currency-case-{index}")
+                pref = UserPreference.objects.create(
+                    user=user, preferences=doc, schema_version=2,
+                )
+                self._run_forward()
+                pref.refresh_from_db()
+                self.assertEqual(pref.preferences["compensation"]["currency"], expected)
 
     def test_v2_default_document_gains_v3_keys(self):
         doc = _v2_document()
