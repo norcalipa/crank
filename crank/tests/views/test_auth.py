@@ -115,6 +115,17 @@ class SafeNextUrlTests(TestCase):
     def test_rejects_accounts_logout_path(self):
         self.assertIsNone(safe_next_url(self._request(), "/accounts/logout/"))
 
+    def test_rejects_overlong_url_rejected_by_django_guard(self):
+        # Reaches the ``url_has_allowed_host_and_scheme`` rejection branch:
+        # the candidate passes every local check (root-relative, no
+        # backslash/control-char tricks, not under /accounts/) but exceeds
+        # Django's MAX_URL_LENGTH, so the guard itself says no.
+        from django.utils.http import MAX_URL_LENGTH
+
+        self.assertIsNone(
+            safe_next_url(self._request(), "/" + "a" * (MAX_URL_LENGTH + 1))
+        )
+
     def test_rejects_empty_string(self):
         self.assertIsNone(safe_next_url(self._request(), ""))
 

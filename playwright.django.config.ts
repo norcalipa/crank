@@ -54,6 +54,13 @@ export default defineConfig({
             // any deployed environment. Override with SECRET_KEY if desired.
             SECRET_KEY: process.env.SECRET_KEY || 'e2e-throwaway-dev-key',
             REDIS_MASTER_URL: process.env.REDIS_MASTER_URL || 'redis://localhost:6379/0',
+            // The seeded tier exercises the real assistant send path (demo
+            // provider in dev): the interactive-agent feature flag must be on
+            // or the advisory status endpoint classifies replies_disabled and
+            // the composer is gated (issue #491 tier repair for #465). The
+            // provider-outage pass still overrides the provider itself via
+            // CRANK_E2E_PROVIDER_FAILURE, so the outage contract is unchanged.
+            INTERACTIVE_AGENT_ENABLED: process.env.INTERACTIVE_AGENT_ENABLED || '1',
             CRANK_E2E_PROVIDER_FAILURE: providerFailure ? '1' : '0',
         },
     },

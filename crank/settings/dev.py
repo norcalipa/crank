@@ -49,3 +49,17 @@ LOGGING = {
         }
     }
 }
+
+# Dev-only (never staging/prod — this module is selected only when ENV is
+# unset or 'dev', see crank/settings/__init__.py): raise allauth's per-IP
+# login rate limit past what the seeded Django E2E tier needs. The tier
+# signs in through the real /accounts/login/ page once per test (~18 times
+# per spec run, all from 127.0.0.1); allauth's stock 30/minute ceiling then
+# answers 429 Too Many Requests at a nondeterministic position whenever two
+# runs (or a retry pass) land inside the same minute, flaking the
+# auth-handoff step of an otherwise deterministic suite. Brute-force
+# protection stays fully active: the per-account login_failed limiter is
+# unchanged, and this override never ships outside dev.
+ACCOUNT_RATE_LIMITS = {
+    "login": "600/m/ip",
+}
