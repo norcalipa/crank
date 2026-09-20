@@ -3022,6 +3022,101 @@ describe('signed-out visitor and account-switch purge (issue #465)', () => {
         settlePost(new Response(null, {status: 499}));
     });
 
+    test('the server-rendered accountKey purges the previous account before the resume can adopt its draft', async () => {
+        // The regression this covers: conversation resume and
+        // adoptPendingDraft() run from mount effects, while the whoami
+        // hydration that used to be the only account-switch signal resolves
+        // much later. Between the two, alice's pending draft could be
+        // adopted into bob's conversation (issue #465 AC-9/10). The trusted
+        // server-rendered accountKey is compared synchronously instead.
+        window.localStorage.setItem('crank:last-account', 'alice');
+        window.localStorage.setItem('crank:jobsearch:draft:pending', 'alice private draft');
+        window.localStorage.setItem('crank:jobsearch:draft:7', 'alice conversation draft');
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(77)));
+
+        render(<JobSearchChat isAuthenticated accountKey="bob"/>);
+
+        await screen.findByLabelText('Message');
+        await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+        expect(screen.getByLabelText('Message')).toHaveValue('');
+        expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBeNull();
+        expect(window.localStorage.getItem('crank:jobsearch:draft:7')).toBeNull();
+        expect(window.localStorage.getItem('crank:last-account')).toBe('bob');
+
+        // The delayed whoami finally lands and agrees: nothing further to
+        // purge, and alice's draft has never been on screen.
+        act(() => {
+            document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: true, username: 'bob'}}));
+        });
+        expect(screen.getByLabelText('Message')).toHaveValue('');
+    });
+
+    test('the same accountKey still adopts the pending draft (AC-8 is not over-purged)', async () => {
+        window.localStorage.setItem('crank:last-account', 'alice');
+        window.localStorage.setItem('crank:jobsearch:draft:pending', 'alice draft');
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({detail: 'not found'}, 404));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(99)));
+
+        render(<JobSearchChat isAuthenticated accountKey="alice"/>);
+
+        await waitFor(() => expect(screen.getByLabelText('Message')).toHaveValue('alice draft'));
+        expect(window.localStorage.getItem('crank:last-account')).toBe('alice');
+    });
+
+    test('a first sign-in records the account and keeps the draft composed while signed out', async () => {
+        // No prior crank:last-account: the signed-out draft belongs to the
+        // person who just signed in, so AC-8 restoration must still happen.
+        window.localStorage.setItem('crank:jobsearch:draft:pending', 'draft from before sign-in');
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({detail: 'not found'}, 404));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(101)));
+
+        render(<JobSearchChat isAuthenticated accountKey="alice"/>);
+
+        await waitFor(() => expect(screen.getByLabelText('Message')).toHaveValue('draft from before sign-in'));
+        expect(window.localStorage.getItem('crank:last-account')).toBe('alice');
+    });
+
+    test('an empty accountKey (signed-out render) neither purges nor records an account', async () => {
+        window.localStorage.setItem('crank:last-account', 'alice');
+        window.localStorage.setItem('crank:jobsearch:draft:pending', 'alice draft');
+
+        render(<JobSearchChat isAuthenticated={false} visitorState="session_expired"
+                               signedOutMessage="Your session has expired." accountKey=""/>);
+
+        await screen.findByTestId('signed-out-introduction');
+        expect(window.localStorage.getItem('crank:last-account')).toBe('alice');
+        // AC-8: the same person's draft survives their own session expiry.
+        await waitFor(() => expect(screen.getByLabelText('Message')).toHaveValue('alice draft'));
+    });
+
+    test('a resume response that arrives after an account switch is discarded, not rendered', async () => {
+        window.localStorage.setItem('crank:last-account', 'alice');
+        const mock = global.fetch as jest.Mock;
+        const settleResume = holdNextFetch(mock);
+        const abortSpy = jest.spyOn(AbortController.prototype, 'abort');
+
+        render(<JobSearchChat isAuthenticated accountKey="alice"/>);
+        await screen.findByLabelText('Message');
+
+        // The account switches while alice's resume is still in flight; the
+        // new account's own resume is queued behind it.
+        mock.mockResolvedValueOnce(jsonResponse(emptyConversation(88)));
+        act(() => {
+            document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: true, username: 'bob'}}));
+        });
+        expect(abortSpy).toHaveBeenCalled();
+
+        // alice's response lands late. The purge epoch moved on, so it must
+        // be dropped rather than rendered into bob's view.
+        await act(async () => {
+            settleResume(jsonResponse(emptyConversation(42, [userMessage('alice private message')])));
+            await Promise.resolve();
+        });
+
+        await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+        expect(screen.queryByText('alice private message')).not.toBeInTheDocument();
+    });
+
     test('crank:auth-hydrated tolerates a broken localStorage read without throwing', async () => {
         await renderChat([userMessage('alice message')]);
         const original = window.localStorage;

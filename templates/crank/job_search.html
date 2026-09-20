@@ -52,6 +52,12 @@
                      data-visitor-state="{{ visitor_state }}"
                      data-sign-in-url="{{ sign_in_url }}"
                      data-signed-out-message="{% if visitor_state == 'session_expired' %}{{ session_expired_message }}{% else %}{{ first_visit_intro }}{% endif %}"
+                     {# Trusted account discriminator for this uncached response
+                        (issue #465): JobSearchChat compares it against
+                        `crank:last-account` synchronously, before any effect
+                        reads a stored draft, so an account switch cannot race
+                        the async whoami hydration. #}
+                     data-account-key="{{ account_key }}"
                      data-selected-company-id="{% if selected_company_id %}{{ selected_company_id }}{% endif %}"></div>
             </div>
         </div>

@@ -151,6 +151,48 @@ function clearPendingDraft(): void {
     }
 }
 
+// Name of the account that last wrote private artefacts into this browser's
+// storage. Written by both the synchronous server-rendered reconciliation
+// below and the asynchronous whoami hydration, which agree on the value
+// (Django's username) so either can detect a switch the other missed.
+export const LAST_ACCOUNT_KEY = 'crank:last-account';
+
+/**
+ * Purge every private artefact when `accountKey` differs from the account
+ * that last used this browser, then record `accountKey` as the current one.
+ * Returns whether a purge happened.
+ *
+ * Deliberately synchronous (issue #465 AC-9/10): the resume fetch and
+ * `adoptPendingDraft()` read storage from mount effects, so any check that
+ * waits on the async whoami round trip loses the race and the previous
+ * account's pending draft can surface in the new account's conversation.
+ * An empty `accountKey` (signed-out render, or a caller with no trusted
+ * discriminator) is a no-op — there is nothing to compare against, and
+ * sign-out purges on its way out.
+ */
+export function reconcileAccountKey(accountKey: string): boolean {
+    if (!accountKey) return false;
+    let lastAccount: string | null = null;
+    try {
+        lastAccount = window.localStorage.getItem(LAST_ACCOUNT_KEY);
+    } catch {
+        // Storage unavailable: nothing durable was stored for any account,
+        // so there is nothing to leak and nothing to record.
+        return false;
+    }
+    const switched = !!lastAccount && lastAccount !== accountKey;
+    if (switched) {
+        purgePrivateClientState();
+    }
+    try {
+        window.localStorage.setItem(LAST_ACCOUNT_KEY, accountKey);
+    } catch {
+        // Storage unavailable; switch detection cannot persist across
+        // reloads, but nothing durable exists to expose either.
+    }
+    return switched;
+}
+
 // Timestamp of the last composer-draft write (issue #458 r2): lets
 // reconciliation tell a marker written at a failed send apart from a draft
 // the user typed/edited afterwards, so surfacing a recovered marker never
@@ -565,13 +607,35 @@ export interface JobSearchChatProps {
     // an anonymous-first-visit response must never leak the expiry copy (or
     // vice versa) into the DOM via an unused prop.
     signedOutMessage?: string;
+    // Trusted server-rendered account discriminator for this response
+    // (issue #465 AC-9/10). `/chat/` is @never_cache and
+    // server-authenticated, so this names the account the page was rendered
+    // for — available synchronously, unlike the whoami hydration. Empty for
+    // a signed-out visitor.
+    accountKey?: string;
 }
 
 const JobSearchChat: React.FC<JobSearchChatProps> = ({
     isAuthenticated = true,
     signInUrl = '/accounts/login/',
     signedOutMessage = '',
+    accountKey = '',
 }) => {
+    // Cross-account purge, synchronously, before the first render commits
+    // (issue #465 review round 2). Conversation resume and
+    // adoptPendingDraft() both read local storage from mount effects, which
+    // run long before the async whoami hydration below can compare
+    // `crank:last-account`; until it resolved, the *previous* account's
+    // pending draft could be adopted into the new account's conversation.
+    // Reconciling the trusted server-rendered key here happens first, so
+    // there is nothing stale left to read. Idempotent: the second call of a
+    // StrictMode double render sees the key already stored.
+    const accountGuardRef = React.useRef(false);
+    if (!accountGuardRef.current) {
+        accountGuardRef.current = true;
+        reconcileAccountKey(accountKey);
+    }
+
     const [effectiveAuthenticated, setEffectiveAuthenticated] = React.useState(isAuthenticated);
 
     const [conversationId, setConversationId] = React.useState<number | null>(null);
@@ -916,6 +980,16 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
     // navigation, so it never reaches this effect.
     const [purgeGeneration, setPurgeGeneration] = React.useState(0);
 
+    // Abort controller for the conversation resume/create requests, and a
+    // monotonic purge epoch (issue #465 review round 2). A purge aborts the
+    // in-flight resume and bumps the epoch, so a response that was already
+    // decoding when the account switched is discarded instead of being
+    // rendered — or having its pending draft adopted — into the new
+    // account's view. The epoch is the backstop for the window where the
+    // fetch has already resolved and `abort()` no longer has any effect.
+    const resumeAbortRef = React.useRef<AbortController | null>(null);
+    const purgeEpochRef = React.useRef(0);
+
     // Resume the user's most recent conversation on load. Skipped entirely
     // for a signed-out visitor (issue #465 AC-2): an anonymous GET must
     // create no JobSearchConversation/JobSearchMessage row, and the message
@@ -928,21 +1002,28 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
             return;
         }
         let cancelled = false;
+        const epoch = purgeEpochRef.current;
+        const controller = new AbortController();
+        resumeAbortRef.current = controller;
+        // Stale once this effect run was torn down *or* a purge superseded
+        // it: either way nothing from this response may reach the store.
+        const stale = () => cancelled || purgeEpochRef.current !== epoch;
         setLoading(true);
-        csrfFetch('/api/agent/conversations/')
+        csrfFetch('/api/agent/conversations/', {signal: controller.signal})
             .then(async (res) => {
-                if (cancelled) return;
+                if (stale()) return;
                 if (res.status === 404) {
                     // No existing conversation — create one so the user can start chatting.
                     try {
                         const createRes = await csrfFetch('/api/agent/conversations/', {
                             method: 'POST',
                             body: JSON.stringify({create_new: true}),
+                            signal: controller.signal,
                         });
-                        if (cancelled) return;
+                        if (stale()) return;
                         if (!createRes.ok) throw new Error('create-failed');
                         const createData = (await createRes.json()) as Conversation;
-                        if (cancelled) return;
+                        if (stale()) return;
                         setConversationId(createData.id);
                         setMessages(createData.messages);
                         reconcileDurableState(createData);
@@ -955,7 +1036,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
                         // zoom composer-focus race).
                         window.setTimeout(() => composerRef.current?.focus(), 0);
                     } catch {
-                        if (cancelled) return;
+                        if (stale()) return;
                         setInitError('Could not start a conversation. Please try again.');
                         setLoading(false);
                     }
@@ -965,7 +1046,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
                     throw new Error(`Resume failed (${res.status})`);
                 }
                 const data = (await res.json()) as Conversation;
-                if (cancelled) return;
+                if (stale()) return;
                 setConversationId(data.id);
                 setMessages(data.messages);
                 setPreferencesChanged(data.preferences_changed);
@@ -977,12 +1058,15 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
                 window.setTimeout(() => composerRef.current?.focus(), 0);
             })
             .catch(() => {
-                if (cancelled) return;
+                if (stale()) return;
                 setInitError('Could not load your conversation. Please refresh.');
                 setLoading(false);
             });
         return () => {
             cancelled = true;
+            if (resumeAbortRef.current === controller) {
+                resumeAbortRef.current = null;
+            }
         };
     }, [effectiveAuthenticated, purgeGeneration]);
 
@@ -992,7 +1076,12 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
     // wrong account's view), and every private artefact for the previous
     // account is discarded so it can never be exposed.
     const resetForPurge = () => {
+        // Bump first: a resume response already past `await` must see the
+        // new epoch and discard itself even though abort() came too late.
+        purgeEpochRef.current += 1;
         abortRef.current?.abort();
+        resumeAbortRef.current?.abort();
+        resumeAbortRef.current = null;
         surfacedDraftRef.current = null;
         lastSent.current = null;
         setMessages([]);
@@ -1017,31 +1106,19 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
         // Sign-out (issue #465 AC-9): app-nav.js purges storage and
         // dispatches this directly before its redirect.
         const handlePurged = () => resetForPurge();
-        // Account switch (issue #465 AC-9): app-nav.js's existing whoami
-        // hydration (static/js/app-nav.js) already dispatches this on every
-        // load; this is the only place that knows both the newly hydrated
-        // username and the previous one, so the compare-and-purge decision
-        // lives here rather than duplicated into the un-bundled app-nav.js.
+        // Account switch while this page is already open (issue #465 AC-9):
+        // app-nav.js's whoami hydration dispatches this on every load, and
+        // it is the only signal for a switch that happened after the server
+        // rendered `accountKey`. The load-time case is already handled
+        // synchronously by reconcileAccountKey() above — this covers the
+        // rest, using the same comparison so the two cannot disagree.
         const handleHydrated = (e: Event) => {
             const detail = (e as CustomEvent).detail as {authenticated?: boolean; username?: string} | undefined;
             if (!detail) return;
             setEffectiveAuthenticated(!!detail.authenticated);
             if (!detail.authenticated || !detail.username) return;
-            let lastAccount: string | null = null;
-            try {
-                lastAccount = window.localStorage.getItem('crank:last-account');
-            } catch {
-                lastAccount = null;
-            }
-            if (lastAccount && lastAccount !== detail.username) {
-                purgePrivateClientState();
+            if (reconcileAccountKey(detail.username)) {
                 resetForPurge();
-            }
-            try {
-                window.localStorage.setItem('crank:last-account', detail.username);
-            } catch {
-                // Storage unavailable; account-switch detection simply
-                // cannot persist across reloads, but this load is still safe.
             }
         };
         document.addEventListener('crank:private-state-purged', handlePurged);
@@ -1952,6 +2029,7 @@ document.addEventListener('DOMContentLoaded', () => {
             visitorState={container.dataset.visitorState}
             signInUrl={container.dataset.signInUrl}
             signedOutMessage={container.dataset.signedOutMessage}
+            accountKey={container.dataset.accountKey}
         />);
     }
 });

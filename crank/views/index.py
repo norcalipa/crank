@@ -7,10 +7,20 @@ from django.db import connection
 from django.views import generic
 from django.core.cache import cache
 from django.conf import settings
+from crank.auth import sign_in_url
 from crank.models.score import ScoreAlgorithm
 from crank.services.scores import algorithm_results_cache_key
 from crank.settings.base import CONTENT_DIR, DEFAULT_ALGORITHM_ID
 from crank.forms.organization_filter import OrganizationFilterForm
+
+#: Stand-in for the organization id inside the company sign-in URL template
+#: (issue #465 AC-7). The whole URL — including the ``next`` target and its
+#: encoding — is built and validated server-side by
+#: :func:`crank.auth.sign_in_url`; the client only substitutes an integer id
+#: it already holds, so no client-assembled path ever reaches the redirect
+#: guard. Contains only unreserved characters, so ``urlencode`` leaves it
+#: byte-identical and the client can find it in the emitted URL.
+COMPANY_ID_PLACEHOLDER = "__COMPANY_ID__"
 
 
 class IndexView(generic.ListView):
@@ -144,6 +154,17 @@ class IndexView(generic.ListView):
         # uncached whoami endpoint. Server-rendered pages keep the
         # user-specific branches.
         context['auth_neutral_shell'] = 'algorithm_id' in self.kwargs
+
+        # Sign-in handoff for the company details dialog (issue #465 AC-7):
+        # a signed-out visitor who opens a company gets a CTA that returns
+        # them to this same page with that company reopened. Built here, not
+        # in the client, so the `next` target passes the same
+        # `safe_next_url` guard as every other handoff. Carries no account
+        # identity, so it is safe in the shared cached shell.
+        context['company_sign_in_url_template'] = sign_in_url(
+            self.request,
+            next_url=f'{self.request.path}?company={COMPANY_ID_PLACEHOLDER}',
+        )
 
         return context
 

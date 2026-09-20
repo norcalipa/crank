@@ -43,6 +43,26 @@ def _selected_company_id(request) -> int | None:
     return company_id
 
 
+def _account_key(request) -> str:
+    """Return a trusted, synchronous account discriminator for this response.
+
+    ``/chat/`` is ``@never_cache`` and server-authenticated, so the username
+    rendered into the shell describes *this* response's account — unlike the
+    asynchronous whoami hydration, which only resolves long after
+    JobSearchChat has already read local storage. The client compares this
+    against ``crank:last-account`` before touching any stored draft, closing
+    the account-switch race that could otherwise adopt the previous
+    account's pending draft (issue #465 AC-9/10, review round 2). It is the
+    same value whoami reports, so the two agree on what "switched" means.
+
+    Empty for a signed-out visitor: there is no account to compare against,
+    and sign-out already purged on its way out.
+    """
+    if not request.user.is_authenticated:
+        return ""
+    return request.user.get_username()
+
+
 @never_cache
 def job_search_page(request):
     """Render the job search assistant page for any requester."""
@@ -55,5 +75,6 @@ def job_search_page(request):
         "first_visit_intro": FIRST_VISIT_INTRO,
         "session_expired_message": SESSION_EXPIRED_MESSAGE,
         "selected_company_id": selected_company_id,
+        "account_key": _account_key(request),
     }
     return render(request, "crank/job_search.html", context)

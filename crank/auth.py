@@ -45,20 +45,67 @@ AUTH_SEEN_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 * 5  # 5 years
 #: response (and therefore before anything can call ``set_cookie``) exists.
 _SEEN_AUTH_REQUEST_FLAG = "_crank_mark_seen_auth"
 
+#: Upper bound on percent-decoding rounds in :func:`_fully_decoded`. The
+#: request stack decodes once, but a candidate can be double-encoded
+#: (``/%2561ccounts/``) precisely to survive a single-decode comparison, so
+#: normalization decodes to a fixed point instead. Bounded so a pathological
+#: candidate cannot spin.
+_MAX_DECODE_ROUNDS = 5
+
+#: Path prefix the ``next`` handoff must never target: the login/logout
+#: machinery itself.
+_AUTH_PATH_PREFIX = "/accounts/"
+
+
+def _fully_decoded(value: str) -> str:
+    """Percent-decode ``value`` repeatedly until it stops changing.
+
+    A single ``unquote`` leaves double-encoded forms intact, so
+    ``/%2561ccounts/logout/`` would still read as an innocent path while the
+    request stack turns it back into ``/accounts/logout/``. Decoding to a
+    fixed point (bounded by :data:`_MAX_DECODE_ROUNDS`) compares what the
+    stack will actually route.
+    """
+    decoded = value
+    for _ in range(_MAX_DECODE_ROUNDS):
+        once = unquote(decoded)
+        if once == decoded:
+            break
+        decoded = once
+    return decoded
+
+
+def _targets_auth_machinery(value: str) -> bool:
+    """Return whether ``value``'s path component targets ``/accounts/``.
+
+    Checked against both the raw candidate and its fully decoded form:
+    ``/accounts/logout/``, ``/%61ccounts/logout/`` and
+    ``/accounts%2flogout/`` all reach the auth machinery once the request
+    stack has decoded them, so comparing only the raw spelling (the
+    pre-review behaviour) let the encoded variants through. Backslashes fold
+    to ``/`` so a Windows-style separator cannot hide the prefix either.
+    """
+    for variant in (value, _fully_decoded(value)):
+        path_only = variant.split("?", 1)[0].split("#", 1)[0].replace("\\", "/")
+        if path_only.startswith(_AUTH_PATH_PREFIX) or path_only == "/accounts":
+            return True
+    return False
+
 
 def safe_next_url(request, candidate: str | None) -> str | None:
     """Return ``candidate`` if it is a safe same-origin redirect target.
 
     Rejects anything that is not a same-origin, same-scheme, root-relative
     path, plus any path under ``/accounts/`` (the login/logout machinery
-    itself must never be a redirect target). Returns ``None`` for every
+    itself must never be a redirect target) — including percent-encoded and
+    double-encoded spellings of that prefix. Returns ``None`` for every
     other candidate, including ``None`` or an empty string.
     """
     if not candidate:
         return None
     if not candidate.startswith("/"):
         return None
-    decoded_candidate = unquote(candidate)
+    decoded_candidate = _fully_decoded(candidate)
     if (
         decoded_candidate.startswith("//")
         or decoded_candidate.startswith("/\\")
@@ -72,8 +119,7 @@ def safe_next_url(request, candidate: str | None) -> str | None:
         require_https=request.is_secure(),
     ):
         return None
-    path_only = candidate.split("?", 1)[0].split("#", 1)[0]
-    if path_only.startswith("/accounts/"):
+    if _targets_auth_machinery(candidate):
         return None
     return candidate
 

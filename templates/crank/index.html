@@ -44,8 +44,13 @@
                         <div id="organization-list"
                              data-authenticated="{% if auth_neutral_shell %}false{% else %}{{ user.is_authenticated|yesno:'true,false' }}{% endif %}"></div>
                         {{ top_organization_list|json_script:"organization-data" }}
+                        {# Server-built, server-validated sign-in URL for the
+                           company details dialog (issue #465 AC-7). Account-neutral,
+                           so it is safe in the shared cached shell; the client only
+                           substitutes the organization id it already holds. #}
                         <span id="organization-list-config"
-                              data-can-suggest-company="{% if auth_neutral_shell %}false{% else %}{{ user.is_authenticated|yesno:'true,false' }}{% endif %}"></span>
+                              data-can-suggest-company="{% if auth_neutral_shell %}false{% else %}{{ user.is_authenticated|yesno:'true,false' }}{% endif %}"
+                              data-sign-in-url-template="{{ company_sign_in_url_template }}"></span>
                     </div>
                 </div>
             </div>

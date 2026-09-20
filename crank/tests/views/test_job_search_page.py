@@ -122,3 +122,35 @@ class JobSearchPageTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(response.context["selected_company_id"])
+
+    def test_authenticated_response_carries_the_account_key(self):
+        # The client compares this against `crank:last-account` before any
+        # effect reads storage, so an account switch cannot race the async
+        # whoami hydration (issue #465 AC-9/10). It must be the same value
+        # whoami reports — the username.
+        user = User.objects.create_user("chat-user", password="password")
+        self.client.force_login(user)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.context["account_key"], "chat-user")
+        self.assertContains(response, 'data-account-key="chat-user"')
+
+    def test_signed_out_response_carries_an_empty_account_key(self):
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.context["account_key"], "")
+        self.assertContains(response, 'data-account-key=""')
+
+    def test_logout_form_is_marked_for_client_purge(self):
+        # Every logout form must reach app-nav.js's purge handler, including
+        # this server-rendered one, which keeps its own CSRF token and posts
+        # natively (issue #465 AC-9).
+        user = User.objects.create_user("chat-user", password="password")
+        self.client.force_login(user)
+
+        response = self.client.get(self.url)
+
+        self.assertContains(response, "data-nav-logout-form")
+        self.assertNotContains(response, "data-nav-js-logout")
+        self.assertContains(response, "csrfmiddlewaretoken")

@@ -46,6 +46,33 @@ interface OrganizationDetailsPopupProps {
     visible: boolean;
     onClose: () => void;
     isAuthenticated?: boolean;
+    // Server-built login URL carrying a validated `next` back to this page
+    // with `?company=<id>` (issue #465 AC-7). Contains
+    // COMPANY_ID_PLACEHOLDER where the organization id goes; see
+    // crank/views/index.py. Empty when the server emitted none, which
+    // simply hides the signed-out CTA rather than inventing a URL here.
+    signInUrlTemplate?: string;
+}
+
+//: Must match crank.views.index.COMPANY_ID_PLACEHOLDER.
+export const COMPANY_ID_PLACEHOLDER = '__COMPANY_ID__';
+
+/**
+ * Resolve the server's sign-in URL template for one organization.
+ *
+ * The only client-side contribution is the integer id: the path, the `next`
+ * parameter and its encoding all come from `crank.auth.sign_in_url`, so the
+ * open-redirect guard has already vetted the shape. Returns null when there
+ * is no usable template.
+ */
+export function companySignInUrl(template: string | undefined, companyId: number): string | null {
+    if (!template || !template.includes(COMPANY_ID_PLACEHOLDER)) return null;
+    return template.split(COMPANY_ID_PLACEHOLDER).join(String(companyId));
+}
+
+/** The chat route scoped to one company; the /chat/ view validates the id. */
+export function companyChatUrl(companyId: number): string {
+    return `/chat/?company=${companyId}`;
 }
 
 const formatRelativeTime = (isoString: string | null): string => {
@@ -79,7 +106,8 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     organization,
     visible,
     onClose,
-    isAuthenticated = false
+    isAuthenticated = false,
+    signInUrlTemplate = ''
 }) => {
     const [scores, setScores] = React.useState<ScoreDetail[]>([]);
     const [loading, setLoading] = React.useState(false);
@@ -306,6 +334,31 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                     ></button>
                 </div>
                 <div className="card-body">
+                    {/* The company handoff's initiating control (issue #465
+                        AC-7). Signed out, it carries the visitor through
+                        sign-in and back to this same dialog via the
+                        server-validated `next`; signed in, it starts the
+                        assistant conversation scoped to this company. Without
+                        it the handoff had only a receiving half —
+                        OrganizationList.openCompanyFromUrl() was unreachable
+                        through the UI. */}
+                    <div className="mb-3 popup-company-actions" data-testid="company-handoff-actions">
+                        {isAuthenticated ? (
+                            <a href={companyChatUrl(organization.id)}
+                               className="btn btn-sm btn-primary"
+                               data-testid="company-chat-cta">
+                                Ask the assistant about {organization.name}
+                            </a>
+                        ) : (
+                            companySignInUrl(signInUrlTemplate, organization.id) && (
+                                <a href={companySignInUrl(signInUrlTemplate, organization.id) as string}
+                                   className="btn btn-sm btn-primary"
+                                   data-testid="company-sign-in-cta">
+                                    Sign in to ask about {organization.name}
+                                </a>
+                            )
+                        )}
+                    </div>
                     <div className="row">
                         <div className="col-md-7">
                             <div className="row mb-3">

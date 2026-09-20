@@ -31,6 +31,10 @@ interface OrganizationListProps {
     itemsPerPage?: number;
     canSuggestCompany?: boolean;
     isAuthenticated?: boolean;
+    // Server-built, server-validated login URL template for the company
+    // details dialog's sign-in CTA (issue #465 AC-7); see
+    // crank/views/index.py.
+    signInUrlTemplate?: string;
 }
 
 interface OrganizationListState {
@@ -498,6 +502,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 visible={showPopup}
                 onClose={this.handleClosePopup}
                 isAuthenticated={this.props.isAuthenticated}
+                signInUrlTemplate={this.props.signInUrlTemplate}
             />
         </div>);
     }
@@ -520,7 +525,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const root = createRoot(container);
         const render = () => root.render(<OrganizationList organizations={organizationsData}
             canSuggestCompany={configElement?.getAttribute('data-can-suggest-company') === 'true'}
-            isAuthenticated={container.dataset.authenticated === 'true'}/>);
+            isAuthenticated={container.dataset.authenticated === 'true'}
+            signInUrlTemplate={configElement?.getAttribute('data-sign-in-url-template') || ''}/>);
         render();
         // The full-page-cached shell renders auth-neutral and app-nav.js
         // hydrates the auth flags per request (issue #470); re-render once

@@ -115,6 +115,31 @@ class SafeNextUrlTests(TestCase):
     def test_rejects_accounts_logout_path(self):
         self.assertIsNone(safe_next_url(self._request(), "/accounts/logout/"))
 
+    def test_rejects_encoded_accounts_paths(self):
+        # The exclusion used to compare the raw candidate only, so every
+        # spelling below was accepted even though the request stack decodes
+        # each one back onto the auth machinery the helper promises never to
+        # target (issue #465 review, MINOR).
+        for candidate in (
+            "/%61ccounts/logout/",
+            "/accounts%2flogout/",
+            "/accounts%2Flogout/",
+            "/%2561ccounts/logout/",
+            "/accounts%252flogout/",
+            "/accounts\\logout/",
+            "/accounts",
+        ):
+            with self.subTest(candidate=candidate):
+                self.assertIsNone(safe_next_url(self._request(), candidate))
+
+    def test_accepts_a_path_that_merely_mentions_accounts(self):
+        # Normalization must reject the auth machinery, not every path with
+        # "accounts" in it.
+        self.assertEqual(
+            safe_next_url(self._request(), "/?search=accounts%2Fpayable"),
+            "/?search=accounts%2Fpayable",
+        )
+
     def test_rejects_overlong_url_rejected_by_django_guard(self):
         # Reaches the ``url_has_allowed_host_and_scheme`` rejection branch:
         # the candidate passes every local check (root-relative, no

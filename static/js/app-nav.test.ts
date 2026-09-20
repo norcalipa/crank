@@ -75,7 +75,11 @@ describe('app-nav (issue #465 private-state purge)', () => {
         window.localStorage.setItem('unrelated-key', 'keep-me');
         window.sessionStorage.setItem('crank:auth-intent', '{"route":"/chat/"}');
 
-        document.body.innerHTML = '<form data-nav-js-logout action="/accounts/logout/">'
+        // Mirrors the cached auth-neutral shell's form in
+        // templates/_navigation.html: every logout form carries
+        // data-nav-logout-form; only the cached shell's also carries
+        // data-nav-js-logout.
+        document.body.innerHTML = '<form data-nav-logout-form data-nav-js-logout action="/accounts/logout/">'
             + '<button type="submit">Logout</button></form>';
 
         const purgeListener = jest.fn();
@@ -107,8 +111,51 @@ describe('app-nav (issue #465 private-state purge)', () => {
         expect(window.localStorage.getItem('unrelated-key')).toBe('keep-me');
     });
 
+    test('a server-rendered logout form purges without hijacking its native CSRF POST', async () => {
+        // The regression this covers: purge handling used to bind only to
+        // form[data-nav-js-logout], which _navigation.html emits for the
+        // cached auth-neutral shell alone. An authenticated, server-rendered
+        // page such as /chat/ carries its own {% csrf_token %} and posts
+        // natively, so its logout left every private artefact in storage and
+        // never told the mounted chat to abort (issue #465 AC-9).
+        window.localStorage.setItem('crank:jobsearch:draft:pending', 'secret draft');
+        window.localStorage.setItem('crank:jobsearch:draft:7', 'per-conversation draft');
+        window.localStorage.setItem('crank:last-account', 'alice');
+        window.localStorage.setItem('unrelated-key', 'keep-me');
+        window.sessionStorage.setItem('crank:auth-intent', '{"route":"/chat/"}');
+
+        // No data-nav-js-logout: exactly what an authenticated /chat/ renders.
+        document.body.innerHTML = '<form data-nav-logout-form method="post" action="/accounts/logout/">'
+            + '<input type="hidden" name="csrfmiddlewaretoken" value="tok">'
+            + '<button type="submit">Logout</button></form>';
+
+        const purgeListener = jest.fn();
+        document.addEventListener('crank:private-state-purged', purgeListener);
+
+        jest.isolateModules(() => {
+            require('./app-nav.js');
+        });
+        await flushMicrotasks();
+        (global.fetch as jest.Mock).mockClear();
+
+        const form = document.querySelector('form[data-nav-logout-form]') as HTMLFormElement;
+        const submitEvent = new Event('submit', {bubbles: true, cancelable: true});
+        form.dispatchEvent(submitEvent);
+
+        expect(purgeListener).toHaveBeenCalledTimes(1);
+        expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBeNull();
+        expect(window.localStorage.getItem('crank:jobsearch:draft:7')).toBeNull();
+        expect(window.localStorage.getItem('crank:last-account')).toBeNull();
+        expect(window.sessionStorage.getItem('crank:auth-intent')).toBeNull();
+        expect(window.localStorage.getItem('unrelated-key')).toBe('keep-me');
+        // The native POST must still happen: not prevented, and not replaced
+        // by the cached shell's token-less fetch.
+        expect(submitEvent.defaultPrevented).toBe(false);
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
     test('purgePrivateClientState tolerates a broken localStorage without throwing', async () => {
-        document.body.innerHTML = '<form data-nav-js-logout action="/accounts/logout/">'
+        document.body.innerHTML = '<form data-nav-logout-form data-nav-js-logout action="/accounts/logout/">'
             + '<button type="submit">Logout</button></form>';
 
         jest.isolateModules(() => {
