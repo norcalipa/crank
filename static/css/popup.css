@@ -1250,13 +1250,16 @@ body.app-nav-drawer-open {
     min-height: 2.75rem;
 }
 
-/* Round-2 critique fix: while the Stop control is rendered (pending), compact
-   Send to a 44px icon-only target on narrow phones so textarea + Send + Stop
-   fit in one row without clipping the placeholder. The visible label returns
-   in ordinary states; the button keeps aria-label="Send message" throughout,
-   and the target never drops below 44px. */
+/* Narrow-phone composer: on the smallest viewports (320–390px, including the
+   320 CSS px layout viewport reached at 400% browser zoom, WCAG 1.4.10), the
+   full "Send" label leaves the composer textarea under 160px wide, below the
+   usable minimum. Compact Send to a 44px icon-only target whenever the layout
+   is this tight — in the ordinary (non-pending) state the textarea then keeps
+   a usable width, and while the Stop control is rendered (pending) the whole
+   row still fits without clipping the placeholder. The button keeps
+   aria-label="Send message" throughout, and the target never drops below 44px. */
 @media (max-width: 390px) {
-    .chat-composer-pending .chat-send > span {
+    .chat-send > span {
         position: absolute;
         width: 1px;
         height: 1px;
@@ -1268,7 +1271,7 @@ body.app-nav-drawer-open {
         border: 0;
     }
 
-    .chat-composer-pending .chat-send {
+    .chat-send {
         width: 2.75rem;
         padding-inline: 0;
     }
