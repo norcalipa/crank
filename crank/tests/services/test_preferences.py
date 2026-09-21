@@ -1390,6 +1390,60 @@ class TestRevisionApply:
             )
 
 
+class TestStaleCarriesCurrentRevision:
+    """AC-5 (issue #466 review round 3): every ``StalePreferenceError`` —
+    revision path and legacy timestamp/absent path alike — carries a
+    machine-readable ``current_revision`` so the 409 envelope can offer a
+    fresh review path without a second read."""
+
+    def test_absent_sentinel_created_mid_turn_carries_current_revision(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "raced"}})
+        revision = UserPreference.objects.get(user=user).revision
+        before = UserPreference.objects.get(user=user).preferences
+        with pytest.raises(StalePreferenceError) as excinfo:
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "late"}},
+                expected_modified=prefs.PREFERENCE_ABSENT,
+            )
+        assert excinfo.value.current_revision == revision
+        # Nothing was written.
+        assert UserPreference.objects.get(user=user).preferences == before
+
+    def test_invalid_timestamp_carries_current_revision(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        revision = UserPreference.objects.get(user=user).revision
+        with pytest.raises(StalePreferenceError) as excinfo:
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "s"}}, expected_modified="not-a-date"
+            )
+        assert excinfo.value.current_revision == revision
+
+    def test_timestamp_mismatch_carries_current_revision(self, user):
+        first = prefs.apply_patch_to_user(user, {"set": {"notes": "one"}})
+        second = prefs.apply_patch_to_user(user, {"set": {"notes": "two"}})
+        with pytest.raises(StalePreferenceError) as excinfo:
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "three"}},
+                expected_modified=first["modified"],
+            )
+        assert excinfo.value.current_revision == second["revision"]
+        assert UserPreference.objects.get(user=user).preferences["notes"] == "two"
+
+    def test_deleted_mid_turn_legacy_path_carries_zero(self, user):
+        # The row is gone at apply time, so there is no live revision to
+        # carry: 0 signals "no committed revision", matching the other
+        # deleted-row raises.
+        prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        ts = UserPreference.objects.get(user=user).modified
+        prefs.delete_user_preference(user)
+        with pytest.raises(StalePreferenceError) as excinfo:
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "revive"}}, expected_modified=ts
+            )
+        assert excinfo.value.current_revision == 0
+        assert not UserPreference.objects.filter(user=user).exists()
+
+
 class TestUndo:
     def test_apply_result_carries_changes_undo_change_id(self, user):
         result = prefs.apply_patch_to_user(

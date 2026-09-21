@@ -71,9 +71,10 @@ class AmbiguousPatchError(PreferenceError):
 class StalePreferenceError(PreferenceError):
     """The preference changed since the caller's last read.
 
-    ``current_revision`` carries the revision observed at rejection time (when
-    the revision precondition ran) so the caller can offer a fresh review path
-    without a second read. It is ``None`` for timestamp-based rejections.
+    ``current_revision`` carries the revision observed at rejection time so
+    the caller can offer a fresh review path without a second read (AC-5).
+    Revision-path and timestamp-path rejections both carry the locked row's
+    revision; deleted-row rejections carry ``0`` (no committed revision).
     """
 
     def __init__(self, message="", *, current_revision=None):
@@ -1276,20 +1277,31 @@ def _check_stale_revision(pref, expected_revision):
 
 
 def _check_stale(pref, expected_modified):
+    # Every rejection carries the machine-readable ``current_revision`` (the
+    # revision observed on the locked row at rejection time) so the 409
+    # envelope can offer a fresh review path without a second read — the
+    # same AC-5 contract as the revision-precondition path (issue #466
+    # review round 3).
     if expected_modified is PREFERENCE_ABSENT:
         # No row existed at turn start, but one exists now: it was created
-        # (or re-created) mid-turn, so the patch must not overwrite it.
+        # (or re-created) mid-turn, so the patch must not overwrite it. The
+        # carried revision is the newly-created row's revision.
         raise StalePreferenceError(
-            "preference row was created while the turn was in flight"
+            "preference row was created while the turn was in flight",
+            current_revision=pref.revision,
         )
     if expected_modified is None:
         return
     expected = _normalize_ts(expected_modified)
     if expected is None:
-        raise StalePreferenceError("Expected an ISO-8601 modified timestamp")
+        raise StalePreferenceError(
+            "Expected an ISO-8601 modified timestamp",
+            current_revision=pref.revision,
+        )
     if pref.modified != expected:
         raise StalePreferenceError(
-            f"Preference version changed; expected {expected.isoformat()}, current {pref.modified.isoformat()}"
+            f"Preference version changed; expected {expected.isoformat()}, current {pref.modified.isoformat()}",
+            current_revision=pref.revision,
         )
 
 
@@ -1391,8 +1403,12 @@ def apply_patch_to_user(user, patch, expected_modified=None, *, expected_revisio
             else:
                 # The row existed at turn start but was deleted mid-turn;
                 # re-creating it would resurrect the deleted preference state.
+                # The row is gone, so there is no live revision to carry — 0
+                # signals "no committed revision", matching the other
+                # deleted-row raises (issue #466 review round 3).
                 raise StalePreferenceError(
-                    "preference row was deleted while the turn was in flight"
+                    "preference row was deleted while the turn was in flight",
+                    current_revision=0,
                 )
         else:
             if expected_revision is not None:

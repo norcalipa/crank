@@ -1869,6 +1869,98 @@ class StalePreferenceAndLateReplyTests(TestCase):
         stored = UserPreference.objects.get(user=self.user)
         self.assertEqual(stored.revision, 0)
 
+    def test_concurrent_apply_loser_gets_409_with_current_revision(self):
+        """Issue #466 review round 3: two proposals captured at the same
+        ``base_revision`` race to apply. The first commits and advances the
+        revision; the second loses the revision race and receives the stable
+        409 ``preference_stale`` envelope carrying the machine-readable
+        ``current_revision`` — and writes nothing."""
+        base = UserPreference.objects.get(user=self.user).revision
+        token_a = {
+            "patch": {"set": {"notes": "apply A"}},
+            "scope": "account",
+            "base_revision": base,
+        }
+        token_b = {
+            "patch": {"set": {"notes": "apply B"}},
+            "scope": "account",
+            "base_revision": base,
+        }
+        first = self.client.post(
+            reverse("agent-preference-apply"),
+            data=json.dumps({"proposal": token_a, "decision": "apply"}),
+            content_type="application/json",
+        )
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["revision"], base + 1)
+
+        second = self.client.post(
+            reverse("agent-preference-apply"),
+            data=json.dumps({"proposal": token_b, "decision": "apply"}),
+            content_type="application/json",
+        )
+        self.assertEqual(second.status_code, 409)
+        body = second.json()
+        self.assertEqual(body["error"]["type"], "preference_stale")
+        self.assertEqual(body["error"]["current_revision"], base + 1)
+
+        # The loser's patch was never applied; the winner's edit survived.
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "apply A")
+        self.assertEqual(stored.revision, base + 1)
+
+    def test_apply_endpoint_search_scope_reloads_with_effective_document(self):
+        """Issue #466 review round 3: a ``scope="search"`` apply computes the
+        in-memory effective document and drives exactly one match reload via
+        ``preferences_override`` — while persisting nothing (no revision or
+        modified change, no audit row)."""
+        from crank.models.preference import UserPreferenceAudit
+        from crank.services import preferences as pref_service
+
+        proposal_patch = {"set": {"notes": "remote only"}}
+        token = {"patch": proposal_patch, "scope": "search", "base_revision": 0}
+        stored = UserPreference.objects.get(user=self.user)
+        before_modified = stored.modified
+        audits_before = UserPreferenceAudit.objects.filter(user=self.user).count()
+        captured = {}
+
+        def fake_match_jobs(user, limit=None, preferences_override=None):
+            captured.setdefault("jobs", preferences_override)
+            return []
+
+        def fake_match_orgs(user, limit=None, preferences_override=None):
+            captured.setdefault("orgs", preferences_override)
+            return []
+
+        with patch(
+            "crank.services.job_matching.match_jobs", side_effect=fake_match_jobs
+        ), patch(
+            "crank.services.job_matching.match_organizations",
+            side_effect=fake_match_orgs,
+        ):
+            resp = self.client.post(
+                reverse("agent-preference-apply"),
+                data=json.dumps({"proposal": token, "decision": "apply"}),
+                content_type="application/json",
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["scope"], "search")
+
+        # Both reload queries ran against the in-memory effective document.
+        expected = pref_service.effective_document(self.user, proposal_patch)
+        self.assertEqual(captured["jobs"], expected)
+        self.assertEqual(captured["orgs"], expected)
+        self.assertEqual(captured["jobs"]["notes"], "remote only")
+
+        # Nothing persisted.
+        stored.refresh_from_db()
+        self.assertEqual(stored.revision, 0)
+        self.assertEqual(stored.modified, before_modified)
+        self.assertEqual(stored.preferences["notes"], "")
+        self.assertEqual(
+            UserPreferenceAudit.objects.filter(user=self.user).count(), audits_before
+        )
+
     def test_apply_endpoint_search_scope_never_persists(self):
         """A this-search-only apply returns a match reload computed against
         the in-memory effective document and persists nothing — no revision
@@ -3978,6 +4070,29 @@ class RetryableConflictTurnStateTests(TestCase):
         self._assert_failed_then_retryable(
             ServicePreferenceStale("stale"), "preference_stale", ""
         )
+
+    def test_preference_stale_409_carries_current_revision(self):
+        """AC-5 (issue #466 review round 3): the 409 ``preference_stale``
+        envelope carries the machine-readable ``current_revision`` for the
+        legacy in-turn (timestamp/absent) rejection path too, so the caller
+        can offer a fresh review path without a second read."""
+        from crank.agents.job_search.demo import ServicePreferenceStale
+
+        conv_id = self._start_conversation()
+        key = str(uuid.uuid4())
+        with patch.object(
+            JobSearchService,
+            "run_turn",
+            side_effect=ServicePreferenceStale("stale", current_revision=7),
+        ):
+            resp = self._submit(conv_id, key)
+        self.assertEqual(resp.status_code, 409)
+        body = resp.json()
+        self.assertEqual(body["error"]["type"], "preference_stale")
+        self.assertEqual(body["error"]["current_revision"], 7)
+        # The turn is still released for a same-key retry (stable contract).
+        turn = JobSearchTurn.objects.get(conversation_id=conv_id, turn_key=key)
+        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.FAILED)
 
     def test_preference_version_unavailable_releases_turn(self):
         from crank.agents.job_search.demo import ServicePreferenceVersionUnavailable
