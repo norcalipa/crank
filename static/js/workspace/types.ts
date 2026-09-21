@@ -1,0 +1,28 @@
+// Copyright (c) 2024 Isaac Adams
+// Licensed under the MIT License. See LICENSE file in the project root for full license information.
+//
+// Shared workspace contract (issue #472). Types and event-name constants
+// only — no runtime behaviour and no React import, so later waves can depend
+// on this module from any bundle without pulling the store in.
+
+export type WorkspaceMode = 'docked' | 'drawer' | 'sheet';
+export type AssistantVisibility = 'closed' | 'open' | 'minimized';
+
+export interface WorkspaceContext {
+    surface: 'rankings' | 'company' | 'jobs' | 'comparison' | 'help' | 'chat';
+    organizationId?: number;
+    organizationName?: string;
+    searchTerm?: string;
+    page?: number;
+}
+
+export interface WorkspaceSnapshot {
+    visibility: AssistantVisibility;
+    mode: WorkspaceMode;
+    context: WorkspaceContext | null;
+    // True once the lazy chat chunk has resolved.
+    loaded: boolean;
+}
+
+export const WORKSPACE_OPEN_EVENT = 'crank:assistant-open';       // detail?: Partial<WorkspaceContext>
+export const WORKSPACE_CONTEXT_EVENT = 'crank:workspace-context'; // detail: Partial<WorkspaceContext>

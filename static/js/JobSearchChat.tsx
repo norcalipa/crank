@@ -439,14 +439,14 @@ function AssistantStatusNotice({status, onRetry, checking}: {
 
     return (
         <div
-            className="alert alert-warning assistant-status-notice py-2 px-3"
-            role="status"
+            className="alert alert-danger assistant-status-notice py-2 px-3"
+            role="alert"
             data-testid="assistant-status-notice"
             data-status-state={status.state}
             aria-label="Assistant availability"
         >
             <div className="d-flex align-items-start gap-2">
-                <i className="fa-solid fa-circle-info mt-1" aria-hidden="true"></i>
+                <i className="fa-solid fa-circle-exclamation mt-1" aria-hidden="true"></i>
                 <div>
                     <strong className="d-block">{text.title}</strong>
                     <span className="d-block small">{text.body}</span>
@@ -462,10 +462,10 @@ function AssistantStatusNotice({status, onRetry, checking}: {
                     {canRetry && (
                         <button
                             type="button"
-                            // btn-dark keeps white-on-dark text on the light
-                            // warning surface; the previous btn-outline-warning
-                            // pairing failed AA contrast (~1.47:1).
-                            className="btn btn-dark assistant-status-notice-action"
+                            // btn-danger is the semantic recovery action: solid,
+                            // high-emphasis, and clearly the way out of the
+                            // unavailable state (visual review #472 round 1).
+                            className="btn btn-danger assistant-status-notice-action"
                             onClick={onRetry}
                             disabled={checking}
                             data-testid="assistant-status-retry"
@@ -613,14 +613,22 @@ export interface JobSearchChatProps {
     // for — available synchronously, unlike the whoami hydration. Empty for
     // a signed-out visitor.
     accountKey?: string;
+    // Shared workspace contract: opening the assistant must not create a
+    // conversation; the first send creates it.
+    createOnMount?: boolean;
 }
 
-const JobSearchChat: React.FC<JobSearchChatProps> = ({
-    isAuthenticated = true,
-    signInUrl = '/accounts/login/',
-    signedOutMessage = '',
-    accountKey = '',
-}) => {
+const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
+    const {
+        isAuthenticated = true,
+        signInUrl = '/accounts/login/',
+        signedOutMessage = '',
+        accountKey = '',
+    } = props;
+    // The shared workspace opts out explicitly. Direct authenticated mounts
+    // retain the legacy create-on-mount contract for compatibility; the
+    // prop-less workspace/test mount uses the issue #472 default of false.
+    const createOnMount = props.createOnMount ?? props.isAuthenticated !== undefined;
     // Cross-account purge, synchronously, before the first render commits
     // (issue #465 review round 2). Conversation resume and
     // adoptPendingDraft() both read local storage from mount effects, which
@@ -904,6 +912,13 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
     // Initial history, optimistic turns, replies, and the pending indicator all append
     // content to the same viewport. Do not interrupt someone reading older messages.
     React.useEffect(() => {
+        // Empty history (visual review #472 round 5): never auto-scroll — the
+        // empty state stays anchored at the top of the log so its lead is
+        // visible on first open, even on the shortest sheet viewports.
+        // Auto-scroll resumes once a conversation exists or content is added.
+        if (messages.length === 0) {
+            return;
+        }
         if (loading || !nearBottomRef.current) {
             if (!nearBottomRef.current) setShowJumpToLatest(true);
             return;
@@ -1012,6 +1027,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
         csrfFetch('/api/agent/conversations/', {signal: controller.signal})
             .then(async (res) => {
                 if (stale()) return;
+                if (res.status === 404 && !createOnMount) {
+                    setLoading(false);
+                    return;
+                }
                 if (res.status === 404) {
                     // No existing conversation — create one so the user can start chatting.
                     try {
@@ -1139,7 +1158,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
         }
     }, [messages.length]);
 
-    const isReady = conversationId !== null && !pending && !loading;
+    // With create-on-mount suppressed, a null conversation is a valid
+    // not-started state: the first send creates it.
+    const isReady = (conversationId !== null || !createOnMount) && !pending && !loading;
 
     // Composer gating from the advisory status (issue #457): only states where
     // sending is known-futile disable the input; a missing/failed status never
@@ -1583,15 +1604,24 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
     // turn when it now reports a futile state. The notice is already updated
     // by refreshStatus; a failed check (null) proceeds with the send.
     const submitTurn = async (content: string) => {
-        if (!conversationId) return;
         const status = await refreshStatus();
         if (status && isGatedState(status.state)) return;
+        let targetId = conversationId;
+        if (targetId === null) {
+            try {
+                targetId = await ensureConversation(true);
+                conversationIdRef.current = targetId;
+            } catch {
+                setInitError('Could not start a conversation. Please try again.');
+                return;
+            }
+        }
         // Explicit send resolves the surfaced recovery draft (issue #458 r2):
         // its content is being dealt with now, so it is no longer an unsent
         // turn to recover. Other unsent markers stay untouched. A gated
         // (aborted) send keeps the draft recoverable.
         clearSurfacedDraft();
-        await sendTurn(content, newId());
+        await sendTurn(content, newId(), {conversationId: targetId});
     };
 
     const handleRetryMessage = async (message: ChatMessage) => {
@@ -1812,14 +1842,20 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
                          ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
                         {effectiveAuthenticated && messages.length === 0 && !loading && (
                             <div data-testid="empty-history">
-                                <p className="text-muted mb-2">
+                                <p className="empty-history-lead mb-2">
                                     Ask about compensation, work location, funding, or culture to get started.
                                 </p>
-                                <p className="text-muted small mb-0">
+                                <p className="empty-history-note small mb-3">
                                     <i className="fa-solid fa-circle-info me-1"></i>
                                     Your matches are shown in the panel above. The assistant searches
                                     across real organizations and job listings to find the best fit.
                                 </p>
+                                <button type="button" className="btn btn-primary empty-history-cta"
+                                        data-testid="empty-history-cta"
+                                        onClick={() => composerRef.current?.focus()}>
+                                    <i className="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>
+                                    Ask your first question
+                                </button>
                             </div>
                         )}
                         {messages.map((m) => (
@@ -1980,13 +2016,13 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
                                     }
                                 }}
                                 onKeyDown={handleKeyDown}
-                                disabled={effectiveAuthenticated ? (!conversationId || pending || composerGated) : pending}
+                                disabled={effectiveAuthenticated ? ((createOnMount && !conversationId) || pending || composerGated) : pending}
                                 autoComplete="off"
                                 rows={1}
                                 style={{resize: 'none', overflowY: 'hidden'}}
                             />
                             <button type="submit" className="btn btn-primary chat-send chat-focus"
-                                    disabled={!effectiveAuthenticated || !conversationId || pending || composerGated || !input.trim()}
+                                    disabled={!effectiveAuthenticated || (createOnMount && !conversationId) || pending || composerGated || !input.trim()}
                                     aria-label="Send message" aria-describedby={!effectiveAuthenticated ? 'job-search-signed-out-reason' : undefined}>
                                 <i className="fa-solid fa-paper-plane" aria-hidden="true"></i>
                                 <span>Send</span>
@@ -2020,16 +2056,3 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
 
 export default JobSearchChat;
 
-document.addEventListener('DOMContentLoaded', () => {
-    const container = document.getElementById('job-search-chat');
-    if (container) {
-        const root = createRoot(container);
-        root.render(<JobSearchChat
-            isAuthenticated={container.dataset.authenticated === 'true'}
-            visitorState={container.dataset.visitorState}
-            signInUrl={container.dataset.signInUrl}
-            signedOutMessage={container.dataset.signedOutMessage}
-            accountKey={container.dataset.accountKey}
-        />);
-    }
-});

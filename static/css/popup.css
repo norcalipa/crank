@@ -4,6 +4,17 @@
 :root {
     --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
 
+    /* Shared workspace geometry (issue #472). The rail width collapses from
+       240px to 72px whenever the assistant is docked below 1440px so the
+       main region keeps a >=640px content box at 1280px. */
+    --app-rail-width: 240px;
+    --assistant-panel-width: clamp(360px, 28vw, 420px);
+    /* Secondary surface: fluid between 340-400px across the drawer band so
+       768px keeps a generous workspace beside it (visual review #472 round 2,
+       item 5). */
+    --assistant-drawer-width: clamp(340px, 42vw, 400px);
+    --z-assistant: 1050;
+
     /* Shared stacking-layer tokens (issue #464). Navigation chrome, blocking
        dialogs and the skip link consume these instead of inventing numbers.
        Blocking dialogs sit above every background layer (nav rail, toggle,
@@ -691,6 +702,17 @@ body.app-nav-drawer-open {
     flex-wrap: wrap;
 }
 
+/* Touch-target floor (visual review #472 round 5): every interactive
+   control in the chat panel keeps a >=44px hit height at every placement —
+   sheet, drawer and docked — matching the #job-match-panel floor from
+   issue #476. Visual size stays compact via padding; only the target
+   grows. Covers the Details toggle, jump-to-latest and the Export/Reset/
+   Delete group, which measured 31-32px tall in the 768px drawer. */
+#job-search-chat .btn,
+#job-search-chat .chat-note-toggle {
+    min-height: 44px;
+}
+
 #job-search-chat .alert {
     overflow-wrap: anywhere;
 }
@@ -728,12 +750,12 @@ body.app-nav-drawer-open {
        deductions are scoped here (issue #456) so collapsed-navigation
        viewports reflow to the full container width. */
     .app-content {
-        margin-left: 240px;
-        max-width: calc(100vw - 240px);
+        margin-left: var(--app-rail-width);
+        max-width: calc(100vw - var(--app-rail-width));
     }
 
     .app-messages {
-        margin-left: 240px;
+        margin-left: var(--app-rail-width);
     }
 }
 
@@ -928,7 +950,33 @@ body.app-nav-drawer-open {
 /* Assistant availability notice (issue #457): a short scannable state label
    plus supporting copy, with a comfortable touch target on every action. */
 #job-search-chat .card-body [data-testid='assistant-status-notice'] {
-    --assistant-notice-ink: #212529;
+    /* Semantic error treatment (visual review #472 round 1, item 12): the
+       notice is alert-danger now, so the scoped focus ring uses the danger
+       ink for clear contrast on the danger surface. */
+    --assistant-notice-ink: #842029;
+}
+
+/* Weight separation (visual review #472 round 2, item 9): the explanation
+   copy steps back (regular weight, muted on the danger surface) while the
+   recovery action gains emphasis, so the way out of the state reads first. */
+#job-search-chat .card-body [data-testid='assistant-status-notice'] strong {
+    font-weight: 700;
+}
+
+#job-search-chat .card-body [data-testid='assistant-status-notice'] .small {
+    /* Muted but AA-legible on the dark danger surface: the explanation copy
+       steps back from the title without disappearing. */
+    color: #f5c2c7;
+    font-weight: 400;
+}
+
+#job-search-chat .card-body [data-testid='assistant-status-notice'] .assistant-status-notice-action {
+    font-weight: 600;
+}
+
+#job-search-chat .card-body [data-testid='assistant-status-notice'] button.assistant-status-notice-action {
+    border: 1px solid #842029;
+    box-shadow: 0 1px 3px rgba(132, 32, 41, .35);
 }
 
 #job-search-chat .card-body [data-testid='assistant-status-notice'] a,
@@ -1350,5 +1398,643 @@ body.app-nav-drawer-open {
     }
     .job-card strong, .org-card strong {
         font-size: 0.9rem;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+   Shared assistant workspace (issue #472). One assistant per document, placed
+   by viewport: docked >=1280px, drawer 768-1279.98px, sheet <768px. The body
+   mode classes (assistant-docked / assistant-drawer / assistant-sheet) are
+   the only CSS hooks; WorkspaceShell.tsx owns them.
+   ------------------------------------------------------------------------ */
+
+.assistant-launcher {
+    position: fixed;
+    right: 1rem;
+    bottom: calc(1rem + var(--safe-area-inset-bottom));
+    z-index: var(--z-assistant);
+    display: inline-flex;
+    align-items: center;
+    gap: .5rem;
+    min-height: 44px;
+    padding: .625rem 1rem;
+    /* Defined boundary (visual review #472 round 2, item 10): the primary
+       blue sits close to the dark surfaces, so the closed launcher carries
+       a visible light border plus an outer dark ring that keeps the edge
+       legible on any background and reads as hover/focus-ready. */
+    /* Launcher perimeter (visual review #472 round 4, item 5): a bright
+       light border plus a dual ring — dark inner ring for light surfaces,
+       faint light halo for dark content — and a soft drop shadow, so the
+       launcher edge stays legible over dark content. */
+    border: 1px solid rgba(255, 255, 255, .6);
+    border-radius: 999px;
+    background: var(--bs-primary);
+    color: #fff;
+    font-size: .9375rem;
+    cursor: pointer;
+    box-shadow: 0 0 0 1px rgba(10, 15, 25, .85),
+        0 0 0 2px rgba(255, 255, 255, .18),
+        0 8px 24px rgba(0, 0, 0, .45);
+}
+
+.assistant-launcher:hover {
+    filter: brightness(1.1);
+    border-color: rgba(255, 255, 255, .65);
+}
+
+/* Pressed-state feedback: while the panel is open the launcher is the
+   control that opened it, so it keeps an explicit pressed treatment instead
+   of relying on the icon alone (visual review #472 round 1, item 9). */
+.assistant-launcher[aria-expanded="true"] {
+    background: #0b5ed7;
+    border-color: #9ec5fe;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, .35), 0 2px 8px rgba(0, 0, 0, .4);
+}
+
+/* Minimized restore control: icon alone was ambiguous (restore? open?
+   expand?), so the compact chip always carries a text cue. */
+.assistant-restore {
+    position: fixed;
+    right: 1rem;
+    bottom: calc(1rem + var(--safe-area-inset-bottom));
+    z-index: var(--z-assistant);
+    display: inline-flex;
+    align-items: center;
+    gap: .5rem;
+    min-height: 44px;
+    padding: .625rem 1rem;
+    border: 1px solid #b9d3fe;
+    border-radius: 999px;
+    background: #0b5ed7;
+    color: #fff;
+    font-size: .9375rem;
+    font-weight: 600;
+    cursor: pointer;
+    /* Same defined boundary as the launcher (visual review #472 round 2,
+       item 10; round 4, item 5): light border + dark inner ring + faint
+       light halo on dark surfaces. */
+    box-shadow: 0 0 0 1px rgba(10, 15, 25, .85),
+        0 0 0 2px rgba(255, 255, 255, .18),
+        0 8px 24px rgba(0, 0, 0, .45);
+}
+
+.assistant-restore:hover {
+    filter: brightness(1.1);
+}
+
+.assistant-restore:focus-visible {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
+}
+
+.assistant-launcher:focus-visible,
+.assistant-panel button:focus-visible {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
+}
+
+.assistant-panel {
+    display: flex;
+    flex-direction: column;
+    background: var(--bs-body-bg);
+    color: var(--bs-body-color);
+    z-index: var(--z-assistant);
+}
+
+.assistant-panel-inner {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.assistant-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .5rem;
+    min-height: 56px;
+    padding: .75rem 1rem;
+    border-bottom: 1px solid var(--bs-border-color);
+}
+
+.assistant-panel-heading {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.assistant-panel-title {
+    font-size: 1rem;
+    font-weight: 650;
+    line-height: 1.25;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.assistant-panel-context {
+    margin: .125rem 0 0;
+    font-size: .8125rem;
+    line-height: 1.45;
+    /* Secondary-copy token (visual review #472 round 2, item 4): AA on the
+       dark panel surface. */
+    color: #aeb8c8;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.assistant-panel-controls {
+    display: flex;
+    gap: .25rem;
+    flex-shrink: 0;
+}
+
+/* Header controls: identical 36x36 grid-centered hit areas with a visible
+   static boundary (visual review #472 round 2, item 3) — border, subtle
+   background and readable icon ink — so every icon-only control is legible
+   as a button before any hover/focus. Icon-only on the sheet; icon +
+   visible label on roomier placements. */
+.assistant-panel-controls .assistant-panel-control {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    min-height: 36px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, .14);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, .035);
+    color: #d7deea;
+    font-size: 1.125rem;
+    line-height: 1;
+}
+
+.assistant-panel-controls .assistant-panel-control:hover {
+    background: rgba(255, 255, 255, .09);
+    border-color: rgba(255, 255, 255, .24);
+}
+
+/* Scoped keyboard ring for the icon-only controls (visual review #472 round
+   2, item 3): the shared 3px warning ring overwhelms the 36px boundary; a
+   tighter 2px accent ring keeps focus visible without swallowing the hit
+   area. */
+.assistant-panel-controls .assistant-panel-control:focus-visible {
+    outline: 2px solid #7c9cff;
+    outline-offset: 2px;
+}
+
+/* The close control is the destructive-adjacent action (dismisses the whole
+   panel); give it a distinct hover so it never reads as a minimize twin. */
+.assistant-panel-controls .assistant-panel-control--close:hover {
+    background: rgba(220, 53, 69, .25);
+    border-color: #dc3545;
+}
+
+.assistant-panel-control-label {
+    display: none;
+}
+
+.assistant-back-to-results {
+    margin: .5rem 1rem 0;
+    min-height: 44px;
+}
+
+/* Empty state: the primary next action is a real, prominent button instead
+   of sparse muted copy (visual review #472 round 1, item 11). */
+/* Empty state rebalanced (visual review #472 round 2, item 8): the central
+   block carried more visual weight than the composer, so the lead/note
+   shrink to supporting copy and the composer surface (below) becomes the
+   visually elevated next action. */
+/* Empty state de-emphasized (visual review #472 round 4, item 4): the
+   block shrinks to supporting copy — quiet 40px icon at .8 opacity, a
+   compact 16px/600 title and a 28ch description column — so the composer
+   stays the decisive focal point. */
+#job-search-chat .empty-history-lead {
+    color: #d7dde5;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.45;
+}
+
+#job-search-chat .empty-history-note {
+    color: #b8c0cc;
+    font-size: .8125rem;
+    line-height: 1.45;
+    max-width: 28ch;
+}
+
+#job-search-chat .empty-history-note .fa-circle-info {
+    display: block;
+    font-size: 40px;
+    opacity: .8;
+    margin-bottom: .5rem;
+}
+
+#job-search-chat .empty-history-cta {
+    min-height: 44px;
+    padding: .5rem 1rem;
+    font-weight: 600;
+}
+
+/* Empty-state separation (visual review #472 round 4, item 4): clear air
+   below the empty state so it reads as its own region, distinct from the
+   anchored composer; the primary action keeps its weight. */
+#job-search-chat [data-testid='empty-history'] {
+    padding-bottom: 1.25rem;
+}
+
+.assistant-panel-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: .75rem 1rem;
+}
+
+.assistant-panel-body #job-search-chat {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* Shape-matched loading skeleton for the lazy chat chunk: mirrors the
+   header/history/composer stack the real chat renders. */
+.assistant-loading {
+    display: grid;
+    gap: .75rem;
+    padding: 1rem 0;
+}
+
+.assistant-loading-line {
+    height: 1rem;
+    border-radius: .375rem;
+    background: linear-gradient(90deg,
+        rgba(255, 255, 255, .08) 25%,
+        rgba(255, 255, 255, .16) 50%,
+        rgba(255, 255, 255, .08) 75%);
+    background-size: 200% 100%;
+    animation: assistant-loading-shimmer 1.4s linear infinite;
+}
+
+/* Differentiated placeholders (visual review #472 round 2, item 7; round 4,
+   item 3): the three tiers separate by luminance as well as shape — meta
+   bars sit near .38 opacity, body (message) bars near .58, and the composer
+   drops to .28 so the input never competes with the loading conversation. */
+.assistant-loading-line--header {
+    height: .5rem;
+    width: 38%;
+    opacity: .38;
+}
+
+.assistant-loading-line--message {
+    height: .75rem;
+    width: 88%;
+    opacity: .58;
+}
+
+.assistant-loading-line--message.short {
+    width: 52%;
+    height: .75rem;
+    opacity: .5;
+}
+
+.assistant-loading-line--composer {
+    height: 3rem;
+    width: 100%;
+    border-radius: .5rem;
+    opacity: .28;
+}
+
+.assistant-loading-line.short {
+    width: 60%;
+}
+
+@keyframes assistant-loading-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+}
+
+/* Docked: >=1280px. The panel sits at the right edge of the viewport in the
+   normal layout band; the main region gives up exactly its width. */
+@media (min-width: 1280px) {
+    body.assistant-docked .assistant-panel--docked {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: var(--assistant-panel-width);
+        border-left: 1px solid #d9dee7;
+        box-shadow: -8px 0 24px rgba(15, 23, 42, .35);
+    }
+
+    /* Docked vertical rhythm: roomier, balanced padding so the header and
+       conversation body share the density instead of a dense header over a
+       sparse body (visual review #472 round 1, item 6). */
+    body.assistant-docked .assistant-panel-header {
+        padding: .875rem 1rem;
+    }
+
+    body.assistant-docked .assistant-panel-body {
+        padding: 1rem;
+    }
+
+    /* Anchored composer (visual review #472 round 2, item 6): a sticky
+       surface with a top border closes the dead field between the
+       conversation and the input so the layout reads as one continuous
+       column flowing into the composer. */
+    body.assistant-docked #job-search-chat form {
+        margin: 0 -1rem -1rem;
+        padding: .875rem 1rem;
+        background: #111722;
+        border-top: 1px solid rgba(255, 255, 255, .10);
+    }
+
+    body.assistant-docked .app-content {
+        max-width: calc(100vw - var(--app-rail-width) - var(--assistant-panel-width));
+    }
+
+    body.assistant-docked .assistant-launcher {
+        right: calc(var(--assistant-panel-width) + 1rem);
+    }
+
+    /* Docked message rhythm (visual review #472 round 4, item 6): a steady
+       16px gap between turns and a 6px intra-message gap keep
+       message-to-message continuity even. */
+    body.assistant-docked #job-search-chat [role='log'] {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+    }
+
+    body.assistant-docked #job-search-chat [role='log'] > * {
+        margin-bottom: 0;
+    }
+
+    body.assistant-docked #job-search-chat .chat-failure-panel {
+        margin-top: 6px;
+    }
+}
+
+/* Collapsed rail: whenever the panel is docked below 1440px the nav rail
+   shrinks to its icon column so 1280px keeps a >=640px content box. */
+@media (min-width: 768px) and (max-width: 1439.98px) {
+    body.assistant-docked {
+        --app-rail-width: 72px;
+    }
+
+    body.assistant-docked .app-nav-rail {
+        width: 72px;
+    }
+
+    body.assistant-docked .app-nav-label,
+    body.assistant-docked .app-nav-brand-text,
+    body.assistant-docked .app-nav-user span,
+    body.assistant-docked .app-nav-logout-label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+
+    body.assistant-docked .app-nav-link,
+    body.assistant-docked .app-nav-brand,
+    body.assistant-docked .app-nav-user {
+        justify-content: center;
+        gap: 0;
+    }
+}
+
+/* Drawer: 768-1279.98px. Non-modal right-edge overlay; the background stays
+   focusable and scrollable, Escape closes. */
+@media (min-width: 768px) and (max-width: 1279.98px) {
+    .assistant-panel--drawer {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: var(--assistant-drawer-width);
+        max-width: calc(100vw - 320px);
+        /* Strong visible edge (visual review #472 round 2, item 5): a 2px
+           light border plus a deep shadow so the boundary with the
+           workspace never relies on the shadow alone. */
+        border-left: 2px solid #e3e8f0;
+        box-shadow: -12px 0 32px rgba(15, 23, 42, .55);
+    }
+
+    /* Tablet-band drawer (visual review #472 round 4, item 5): a narrower,
+       fluid width and a softer shadow reduce the drawer's dominance at
+       1024px, while the 2px border keeps the workspace boundary explicit. */
+    .assistant-panel--drawer {
+        width: clamp(320px, 34vw, 360px);
+        box-shadow: -8px 0 24px rgba(15, 23, 42, .40);
+    }
+}
+
+/* Composer touch floor (visual review #472 round 7): the autosizer at
+   JobSearchChat.tsx writes an inline height from scrollHeight, with no
+   floor above Bootstrap's .form-control 38px, so once the user types the
+   textarea falls to 42px tall at every width outside the two-line band
+   below. A min-height floors the inline height without changing the
+   grow-to-N-rows behaviour. */
+#job-search-chat textarea[aria-label='Message'] {
+    min-height: 44px;
+}
+
+/* Drawer composer fit (visual review #472 round 5): at the 320px drawer
+   floor the composer textarea is ~165px wide, so "Type your message…"
+   wraps onto a second line that the one-line box clips (clientHeight 42 <
+   scrollHeight 60) across 768-992px. Give the composer a two-line
+   min-height in exactly this band; wider drawers keep the compact one-line
+   composer. */
+@media (min-width: 768px) and (max-width: 999.98px) {
+    .assistant-panel--drawer #job-search-chat textarea[aria-label='Message'] {
+        min-height: 64px;
+    }
+}
+
+/* Sheet: <768px. Full-screen blocking dialog; lockBackground isolates the
+   background and the composer row clears the home-indicator safe area. */
+@media (max-width: 767.98px) {
+    .assistant-panel--sheet {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+    }
+
+    /* Narrow-sheet header: trim side padding so the title and controls stop
+       competing for width at 320px (visual review #472 round 1, item 1). */
+    .assistant-panel--sheet .assistant-panel-header {
+        padding: .625rem .75rem;
+    }
+
+    /* >=44x44px header action targets across the WHOLE sheet width range
+       (visual review #472 round 4, item 1; round 5: the fix previously sat
+       in the max-width:375px block, but sheet mode runs to 767.98px, so
+       376-767px phones fell back to the 36px base rule). */
+    .assistant-panel--sheet .assistant-panel-controls .assistant-panel-control {
+        width: 44px;
+        min-width: 44px;
+        height: 44px;
+        min-height: 44px;
+        border-radius: 10px;
+    }
+
+    .assistant-panel--sheet .assistant-back-to-results {
+        margin: .5rem .75rem 0;
+    }
+
+    /* Mobile secondary/placeholder copy: darker neutral at a readable size
+       against the dark surface (visual review #472 round 1, item 3). */
+    .assistant-panel--sheet .assistant-panel-context,
+    .assistant-panel--sheet .empty-history-note,
+    .assistant-panel--sheet .empty-history-lead {
+        font-size: .8125rem;
+        line-height: 1.45;
+        color: #b9c1cd;
+    }
+
+    /* Deliberate bottom buffer: the composer must clear the home-indicator
+       safe area with room to spare (visual review #472 round 1, item 2). */
+    .assistant-panel--sheet .assistant-panel-body {
+        padding: .75rem;
+        padding-bottom: calc(max(.75rem, env(safe-area-inset-bottom)) + .5rem);
+    }
+
+    /* Anchored composer (visual review #472 round 2, item 2): a solid
+       surface with a top border so the input never floats against the
+       viewport edge, plus explicit safe-area padding. */
+    .assistant-panel--sheet #job-search-chat form {
+        margin: 0 -.75rem calc(-1 * (max(.75rem, env(safe-area-inset-bottom)) + .5rem));
+        padding: .75rem .75rem calc(.75rem + env(safe-area-inset-bottom));
+        background: #111722;
+        border-top: 1px solid rgba(255, 255, 255, .10);
+    }
+
+    /* The history keeps its own scroll region; reserve room so the last
+       message never slides under the anchored composer surface. */
+    .assistant-panel--sheet #job-search-chat [role='log'] {
+        padding-bottom: calc(5.5rem + env(safe-area-inset-bottom));
+    }
+
+    /* Unavailable sheet: notice, recovery action and composer read as one
+       tight group (visual review #472 round 1, item 13). */
+    .assistant-panel--sheet [data-testid='assistant-status-notice'] {
+        margin-bottom: .25rem;
+    }
+
+    .assistant-panel--sheet [data-testid='assistant-status-notice'] .assistant-status-notice-actions {
+        margin-top: .5rem;
+    }
+}
+
+/* 320-375px sheet header (visual review #472 round 2, item 1; round 4,
+   item 1): the title/status block competed with the icon cluster, so the
+   header compresses to a single tight row — identity yields and truncates,
+   the action cluster stays fixed, and every icon-only control carries a
+   full 44x44px hit target. */
+@media (max-width: 375px) {
+    .assistant-panel--sheet .assistant-panel-header {
+        min-height: 56px;
+        padding: 10px 12px;
+        gap: 8px;
+    }
+
+    .assistant-panel--sheet .assistant-panel-heading {
+        min-width: 0;
+        flex: 1 1 auto;
+    }
+
+    .assistant-panel--sheet .assistant-panel-title {
+        min-width: 0;
+        font-size: 15px;
+        line-height: 20px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .assistant-panel--sheet .assistant-panel-context {
+        font-size: 12px;
+        line-height: 16px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .assistant-panel--sheet .assistant-panel-controls {
+        flex: 0 0 auto;
+        gap: 4px;
+    }
+}
+
+/* <=340px sheet density (visual review #472 round 4, item 2): tighten the
+   header, message region and composer so the conversation area keeps a
+   reasonable share of the composer-heavy lower third, and the composer
+   footer always clears the safe area. */
+@media (max-width: 340px) {
+    .assistant-panel--sheet .assistant-panel-header {
+        padding: 8px 10px;
+        gap: 4px;
+    }
+
+    .assistant-panel--sheet .assistant-panel-body,
+    .assistant-panel--sheet #job-search-chat [role='log'] {
+        padding: 12px;
+    }
+
+    .assistant-panel--sheet #job-search-chat form {
+        margin: 0 10px;
+        padding: 8px 10px;
+        min-height: 44px;
+        padding-bottom: max(12px, env(safe-area-inset-bottom));
+    }
+
+    /* Unavailable-sheet explanatory copy: AA token on the dark surface
+       (visual review #472 round 4, item 8). */
+    .assistant-panel--sheet [data-testid='assistant-status-notice'] .small {
+        color: #b8c0cc;
+    }
+}
+
+/* Roomier placements (docked 1280+ and drawer 768+): header controls gain a
+   visible text label next to the icon so affordances never depend on hover
+   tooltips (visual review #472 round 1, item 14). Round 6: apply the same
+   >=44px touch-target height floor the sheet mode already has — the 36px
+   base height fails the >=44x44 requirement on desktop touch/large-pointer
+   devices. Widths, spacing, icons and labels are unchanged. */
+@media (min-width: 768px) {
+    .assistant-panel-controls .assistant-panel-control {
+        grid-auto-flow: column;
+        gap: .375rem;
+        width: auto;
+        min-width: 36px;
+        height: 44px;
+        min-height: 44px;
+        padding: 0 .625rem;
+        font-size: .8125rem;
+    }
+
+    .assistant-panel-control-label {
+        display: inline;
+        font-weight: 600;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .assistant-loading-line {
+        animation: none;
+    }
+
+    .assistant-panel,
+    .assistant-launcher {
+        transition: none;
     }
 }

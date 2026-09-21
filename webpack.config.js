@@ -8,19 +8,33 @@ const options = {};
 module.exports = {
     entry: {
         main: './static/js/main.tsx',
-        jobsearch: './static/js/JobSearchChat.tsx',
-        jobmatch: './static/js/JobMatchPanel.tsx',
+        jobmatch: './static/js/jobmatch.tsx',
     },
     output: {
         path: path.resolve(__dirname, 'static/dist'),
         filename: '[name].[contenthash].js',
+        // React.lazy async chunks (issue #472): resolve against Django's
+        // static prefix instead of the page URL.
+        chunkFilename: '[name].[contenthash].chunk.js',
+        publicPath: '/static/dist/',
     },
     module: {
         rules: [
             {
                 test: /\.tsx?$/,
                 exclude: /node_modules/,
-                use: 'ts-loader',
+                use: {
+                    loader: 'ts-loader',
+                    options: {
+                        // Webpack needs ES modules to code-split React.lazy's
+                        // dynamic import (issue #472); the shared tsconfig
+                        // stays commonjs for ts-jest.
+                        compilerOptions: {module: 'esnext'},
+                        // Test files stay on the shared tsconfig (commonjs)
+                        // for ts-jest; webpack only checks what it bundles.
+                        onlyCompileBundledFiles: true,
+                    },
+                },
             },
         ],
     },

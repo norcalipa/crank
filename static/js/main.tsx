@@ -7,3 +7,4 @@
 // rather than in a dedicated bundle (see suggestCompany/controller.ts).
 import './OrganizationList';
 import './suggestCompany/mount';
+import './workspace/mount';

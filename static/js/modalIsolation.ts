@@ -62,6 +62,29 @@ let savedBodyPaddingRight = '';
 let bodyPaddingCompensated = false;
 let isolatedRoots: HTMLElement[] = [];
 
+// Lock-change subscribers (issue #472): the shared workspace sheet holds one
+// lock while open and must yield when ANOTHER blocking surface acquires one
+// — the refcount makes the second lock a silent no-op on the DOM, so the
+// count itself, not a DOM mutation, is the observable signal.
+type LockListener = (referenceCount: number) => void;
+const lockListeners = new Set<LockListener>();
+
+const notifyLockListeners = (): void => {
+    for (const listener of lockListeners) {
+        listener(referenceCount);
+    }
+};
+
+// Subscribes to lock-count changes; returns an unsubscribe. The count is the
+// number of ACTIVE holds, so a subscriber that holds one lock sees `> 1`
+// exactly when another blocking surface is open alongside it.
+export const subscribeBackgroundLock = (listener: LockListener): (() => void) => {
+    lockListeners.add(listener);
+    return () => {
+        lockListeners.delete(listener);
+    };
+};
+
 const findBackgroundRoots = (): HTMLElement[] =>
     Array.from(document.querySelectorAll<HTMLElement>(BACKGROUND_ROOT_SELECTOR));
 
@@ -83,6 +106,7 @@ export const lockBackground = (): void => {
     referenceCount += 1;
     if (isLocked) {
         // Already isolated by another open dialog.
+        notifyLockListeners();
         return;
     }
     isLocked = true;
@@ -106,6 +130,7 @@ export const lockBackground = (): void => {
     root.style.overflow = 'hidden';
     savedBodyOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
+    notifyLockListeners();
 };
 
 // Releases one hold on the background isolation; the inert/aria-hidden
@@ -116,6 +141,7 @@ export const lockBackground = (): void => {
 export const unlockBackground = (): void => {
     referenceCount = Math.max(0, referenceCount - 1);
     if (referenceCount > 0 || !isLocked) {
+        notifyLockListeners();
         return;
     }
     isLocked = false;
@@ -137,4 +163,5 @@ export const unlockBackground = (): void => {
         }
         bodyPaddingCompensated = false;
     }
+    notifyLockListeners();
 };
