@@ -1997,13 +1997,18 @@ body.app-nav-drawer-open {
 
 /* Roomier placements (docked 1280+ and drawer 768+): header controls gain a
    visible text label next to the icon so affordances never depend on hover
-   tooltips (visual review #472 round 1, item 14). */
+   tooltips (visual review #472 round 1, item 14). Round 6: apply the same
+   >=44px touch-target height floor the sheet mode already has — the 36px
+   base height fails the >=44x44 requirement on desktop touch/large-pointer
+   devices. Widths, spacing, icons and labels are unchanged. */
 @media (min-width: 768px) {
     .assistant-panel-controls .assistant-panel-control {
         grid-auto-flow: column;
         gap: .375rem;
         width: auto;
         min-width: 36px;
+        height: 44px;
+        min-height: 44px;
         padding: 0 .625rem;
         font-size: .8125rem;
     }
