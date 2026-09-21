@@ -108,13 +108,67 @@
         return match ? decodeURIComponent(match[1]) : null;
     }
 
-    function submitLogoutWithToken(event) {
+    // Removes every private client-side artefact (issue #465 AC-9): all
+    // `crank:jobsearch:` keys (drafts, turn-recovery markers) plus the
+    // sign-in intent. This is the plain-JS twin of
+    // static/js/authIntent.ts's purgePrivateClientState() — app-nav.js is a
+    // standalone script (not a webpack entry), so it cannot import that
+    // TS module and keeps its own copy instead.
+    function purgePrivateClientState() {
+        try {
+            window.sessionStorage.removeItem("crank:auth-intent");
+        } catch (e) {
+            // Storage unavailable; nothing durable to clear.
+        }
+        try {
+            var doomed = [];
+            for (var i = 0; i < window.localStorage.length; i++) {
+                var key = window.localStorage.key(i);
+                if (key && key.indexOf("crank:jobsearch:") === 0) {
+                    doomed.push(key);
+                }
+            }
+            doomed.forEach(function (key) {
+                window.localStorage.removeItem(key);
+            });
+        } catch (e) {
+            // Storage unavailable; nothing durable to purge.
+        }
+    }
+
+    // Discard every private artefact and tell the mounted chat to abort its
+    // in-flight request (issue #465 AC-9). Runs for *both* logout shapes:
+    // the cached shell's JS-submitted form and the server-rendered form on
+    // an authenticated page such as /chat/, which posts natively. Binding
+    // this only to the JS form (the pre-review behaviour) left drafts,
+    // in-flight markers and the sign-in intent in storage for every
+    // server-authenticated page.
+    function purgeForLogout() {
+        purgePrivateClientState();
+        try {
+            window.localStorage.removeItem("crank:last-account");
+        } catch (e) {
+            // Storage unavailable; nothing durable to clear.
+        }
+        document.dispatchEvent(new CustomEvent("crank:private-state-purged"));
+    }
+
+    function handleLogoutSubmit(event) {
+        var form = event.currentTarget;
+        // Purge before the request settles: sign-out must discard every
+        // private artefact regardless of whether the POST succeeds.
+        purgeForLogout();
+        if (!form.hasAttribute("data-nav-js-logout")) {
+            // Server-rendered form: it carries its own {% csrf_token %}, so
+            // let the native POST proceed untouched. The purge above has
+            // already run synchronously, before navigation.
+            return;
+        }
         // The shared cached shell carries no session-bound CSRF token; the
         // whoami response guarantees a CSRF cookie before this form is
         // revealed, so the logout POST passes the same token check as any
         // other form.
         event.preventDefault();
-        var form = event.currentTarget;
         fetch(form.action, {
             method: "POST",
             credentials: "same-origin",
@@ -147,8 +201,14 @@
         }
         // The React list mounts from the dataset attributes before this
         // async fetch resolves, so notify it to re-render with the hydrated
-        // auth state.
-        document.dispatchEvent(new CustomEvent("crank:auth-hydrated"));
+        // auth state. The username travels in the detail (issue #465 AC-9)
+        // so a mounted JobSearchChat can compare it against
+        // `crank:last-account` and purge on an account switch — the
+        // compare-and-purge decision lives there, not here, since it is the
+        // one place that can act on both the old and new value together.
+        document.dispatchEvent(new CustomEvent("crank:auth-hydrated", {
+            detail: { authenticated: authenticated, username: authenticated ? data.username : null },
+        }));
     }
 
     function hydrateAccountState() {
@@ -167,8 +227,9 @@
                 // anonymous controls so Login stays reachable.
                 applyAuthState({ authenticated: false });
             });
-        document.querySelectorAll("form[data-nav-js-logout]").forEach(function (form) {
-            form.addEventListener("submit", submitLogoutWithToken);
+        // Every logout form, not just the cached shell's JS-submitted one.
+        document.querySelectorAll("form[data-nav-logout-form]").forEach(function (form) {
+            form.addEventListener("submit", handleLogoutSubmit);
         });
     }
 

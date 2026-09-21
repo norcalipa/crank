@@ -20,3 +20,10 @@ class CrankConfig(AppConfig):
         # Importing the module triggers ``@register()`` on the check functions.
         from crank import checks  # noqa: F401
         from crank import capability  # noqa: F401
+
+        # Issue #465: connect the receiver that flags a request for the
+        # "has signed in before" cookie on every real login.
+        from django.contrib.auth.signals import user_logged_in
+        from crank.auth import mark_authenticated_visit
+
+        user_logged_in.connect(mark_authenticated_visit)

@@ -16,7 +16,7 @@ from allauth.socialaccount.models import SocialApp
 from django.contrib.sites.models import Site
 
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
-from crank.views.index import IndexView
+from crank.views.index import COMPANY_ID_PLACEHOLDER, IndexView
 from crank.settings import DEFAULT_ALGORITHM_ID
 from crank.auth import SESSION_EXPIRED_MESSAGE
 from crank.services.scores import SCORE_CACHE_KEY_VERSION, algorithm_results_cache_key
@@ -298,6 +298,27 @@ class IndexViewTests(TestCase):
         self.assertEqual(second.status_code, 200)
         self.assertIsNotNone(cache.get(page_key))
 
+    def _queue_flash_message(self, text):
+        """Queue a message the same way ``django.contrib.messages`` would,
+        without depending on any specific view to produce one (issue #465
+        removed the only production call site,
+        ``crank.auth.login_required_with_expiry``). Uses the default
+        ``CookieStorage`` backend directly to write the same cookie a real
+        view's response would carry, then transplants it onto the test
+        client so the next request reads it exactly as it would in
+        production."""
+        from django.contrib.messages import constants
+        from django.contrib.messages.storage.cookie import CookieStorage
+        from django.http import HttpResponse
+
+        request = RequestFactory().get("/")
+        response = HttpResponse()
+        storage = CookieStorage(request)
+        storage.add(constants.WARNING, text)
+        storage.update(response)
+        for key, morsel in response.cookies.items():
+            self.client.cookies[key] = morsel.value
+
     def test_cached_algo_shell_excludes_flash_messages(self):
         """The full-page-cached algo shell is shared across every account,
         so per-session flash messages must never render into it: a queued
@@ -308,10 +329,10 @@ class IndexViewTests(TestCase):
         algo_url = f"/algo/{DEFAULT_ALGORITHM_ID}/"
         page_key = f"algorithm_{DEFAULT_ALGORITHM_ID}_page"
 
-        # An anonymous request to a protected page queues the
-        # session-expired flash message (crank.auth.login_required_with_expiry).
-        expired = self.client.get("/chat/")
-        self.assertEqual(expired.status_code, 302)
+        # Queue a flash message the way any Django view might (issue #465
+        # removed /chat/'s own use of messages.warning; the shared-cache
+        # exclusion this test guards applies to any queued message).
+        self._queue_flash_message(SESSION_EXPIRED_MESSAGE)
 
         first = self.client.get(algo_url)
         self.assertEqual(first.status_code, 200)
@@ -534,3 +555,45 @@ class IndexViewTests(TestCase):
             any(expected_key in key for key in cache_keys),
             f'no page-cache entry under {expected_key!r}: {cache_keys}',
         )
+
+    def test_company_sign_in_url_template_is_server_validated(self):
+        """The company dialog's sign-in CTA is built server-side (issue #465
+        AC-7): the client only substitutes the organization id it already
+        holds, so the ``next`` target is vetted by ``safe_next_url`` exactly
+        like every other handoff."""
+        response = self.client.get(self.index_url)
+
+        template = response.context['company_sign_in_url_template']
+        self.assertIn(COMPANY_ID_PLACEHOLDER, template)
+        self.assertTrue(template.startswith('/accounts/login/?next='))
+        # The placeholder survives urlencode byte-identical, so the client
+        # can find it; the path and separators are encoded.
+        self.assertIn('next=%2F%3Fcompany%3D' + COMPANY_ID_PLACEHOLDER, template)
+        self.assertContains(
+            response, f'data-sign-in-url-template="{escape(template)}"'
+        )
+
+    def test_company_sign_in_url_template_returns_to_the_algo_shell_it_came_from(self):
+        """A visitor exploring /algo/<id>/ returns to that page, not to /."""
+        self.setup_scores()
+        algo_url = f'/algo/{DEFAULT_ALGORITHM_ID}/'
+
+        response = self.client.get(algo_url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(
+            response,
+            f'next=%2Falgo%2F{DEFAULT_ALGORITHM_ID}%2F%3Fcompany%3D{COMPANY_ID_PLACEHOLDER}',
+        )
+
+    def test_company_sign_in_url_template_carries_no_account_identity(self):
+        """It is embedded in the shared cached shell, so it must be the same
+        for every account."""
+        user = User.objects.create_user('rankings-user', password='password')
+        anonymous = self.client.get(self.index_url).context['company_sign_in_url_template']
+
+        self.client.force_login(user)
+        authenticated = self.client.get(self.index_url).context['company_sign_in_url_template']
+
+        self.assertEqual(anonymous, authenticated)
+        self.assertNotIn(user.username, authenticated)

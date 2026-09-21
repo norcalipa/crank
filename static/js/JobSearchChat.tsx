@@ -3,6 +3,8 @@
 import * as React from 'react';
 import {createRoot} from 'react-dom/client';
 
+import {purgePrivateClientState} from './authIntent';
+
 export interface JobResult {
     id: number;
     title: string;
@@ -112,6 +114,83 @@ function inflightStorageKey(conversationId: number, key: string): string {
 
 function draftKey(conversationId: number): string {
     return `crank:jobsearch:draft:${conversationId}`;
+}
+
+// Draft typed before the first conversation exists (issue #465): a
+// signed-out visitor has no conversation id to key a draft against, so this
+// single slot holds their in-progress text until the first conversation
+// created after sign-in adopts it. Never sent anywhere — draft text stays
+// out of every URL, including the sign-in `next`.
+const PENDING_DRAFT_KEY = 'crank:jobsearch:draft:pending';
+
+function readPendingDraft(): string {
+    try {
+        return window.localStorage.getItem(PENDING_DRAFT_KEY) || '';
+    } catch {
+        return '';
+    }
+}
+
+function writePendingDraft(text: string): void {
+    try {
+        if (text) {
+            window.localStorage.setItem(PENDING_DRAFT_KEY, text);
+        } else {
+            window.localStorage.removeItem(PENDING_DRAFT_KEY);
+        }
+    } catch {
+        // Storage unavailable; the draft stays memory-only.
+    }
+}
+
+function clearPendingDraft(): void {
+    try {
+        window.localStorage.removeItem(PENDING_DRAFT_KEY);
+    } catch {
+        // Storage unavailable; nothing durable to clear.
+    }
+}
+
+// Name of the account that last wrote private artefacts into this browser's
+// storage. Written by both the synchronous server-rendered reconciliation
+// below and the asynchronous whoami hydration, which agree on the value
+// (Django's username) so either can detect a switch the other missed.
+export const LAST_ACCOUNT_KEY = 'crank:last-account';
+
+/**
+ * Purge every private artefact when `accountKey` differs from the account
+ * that last used this browser, then record `accountKey` as the current one.
+ * Returns whether a purge happened.
+ *
+ * Deliberately synchronous (issue #465 AC-9/10): the resume fetch and
+ * `adoptPendingDraft()` read storage from mount effects, so any check that
+ * waits on the async whoami round trip loses the race and the previous
+ * account's pending draft can surface in the new account's conversation.
+ * An empty `accountKey` (signed-out render, or a caller with no trusted
+ * discriminator) is a no-op — there is nothing to compare against, and
+ * sign-out purges on its way out.
+ */
+export function reconcileAccountKey(accountKey: string): boolean {
+    if (!accountKey) return false;
+    let lastAccount: string | null = null;
+    try {
+        lastAccount = window.localStorage.getItem(LAST_ACCOUNT_KEY);
+    } catch {
+        // Storage unavailable: nothing durable was stored for any account,
+        // so there is nothing to leak and nothing to record.
+        return false;
+    }
+    const switched = !!lastAccount && lastAccount !== accountKey;
+    if (switched) {
+        purgePrivateClientState();
+    }
+    try {
+        window.localStorage.setItem(LAST_ACCOUNT_KEY, accountKey);
+    } catch {
+        // Storage unavailable; switch detection cannot persist across
+        // reloads, but nothing durable exists to expose either.
+    }
+    return switched;
 }
 
 // Timestamp of the last composer-draft write (issue #458 r2): lets
@@ -324,8 +403,10 @@ function AssistantStatusNotice({status, onRetry, checking}: {
     onRetry: () => void;
     checking: boolean;
 }) {
-    // No notice for the healthy baseline; signed_out is unreachable on /chat/
-    // (the page requires login) and would add nothing actionable.
+    // No notice for the healthy baseline. `signed_out` is now reachable on
+    // /chat/ (issue #465 made the page public) but adds nothing actionable
+    // here: the dedicated signed-out introduction below already explains the
+    // state and offers the sign-in CTA.
     if (status.state === 'ready' || status.state === 'signed_out') return null;
 
     // Short scannable state label plus one supporting sentence: the state and
@@ -509,7 +590,54 @@ function AvailabilityNotice({availability}: {availability: AvailabilityPayload})
     );
 }
 
-const JobSearchChat: React.FC = () => {
+export interface JobSearchChatProps {
+    // Hydrated server-side from `crank.auth.visitor_state` (issue #465):
+    // false for both anonymous states below. Gates the conversation
+    // resume/create fetch entirely — an anonymous GET must never create a
+    // JobSearchConversation row.
+    isAuthenticated?: boolean;
+    // 'authenticated' | 'session_expired' | 'anonymous_first_visit'. Not
+    // read by this component (the server already resolves it into
+    // signedOutMessage below); accepted so callers can pass the same
+    // dataset-derived props object used elsewhere without filtering it.
+    visitorState?: string;
+    signInUrl?: string;
+    // Pre-selected by the server for the current visitorState (issue #465):
+    // the first-visit intro or the expiry explanation, never both at once —
+    // an anonymous-first-visit response must never leak the expiry copy (or
+    // vice versa) into the DOM via an unused prop.
+    signedOutMessage?: string;
+    // Trusted server-rendered account discriminator for this response
+    // (issue #465 AC-9/10). `/chat/` is @never_cache and
+    // server-authenticated, so this names the account the page was rendered
+    // for — available synchronously, unlike the whoami hydration. Empty for
+    // a signed-out visitor.
+    accountKey?: string;
+}
+
+const JobSearchChat: React.FC<JobSearchChatProps> = ({
+    isAuthenticated = true,
+    signInUrl = '/accounts/login/',
+    signedOutMessage = '',
+    accountKey = '',
+}) => {
+    // Cross-account purge, synchronously, before the first render commits
+    // (issue #465 review round 2). Conversation resume and
+    // adoptPendingDraft() both read local storage from mount effects, which
+    // run long before the async whoami hydration below can compare
+    // `crank:last-account`; until it resolved, the *previous* account's
+    // pending draft could be adopted into the new account's conversation.
+    // Reconciling the trusted server-rendered key here happens first, so
+    // there is nothing stale left to read. Idempotent: the second call of a
+    // StrictMode double render sees the key already stored.
+    const accountGuardRef = React.useRef(false);
+    if (!accountGuardRef.current) {
+        accountGuardRef.current = true;
+        reconcileAccountKey(accountKey);
+    }
+
+    const [effectiveAuthenticated, setEffectiveAuthenticated] = React.useState(isAuthenticated);
+
     const [conversationId, setConversationId] = React.useState<number | null>(null);
     const [messages, setMessages] = React.useState<ChatMessage[]>([]);
     const [input, setInput] = React.useState('');
@@ -824,31 +952,82 @@ const JobSearchChat: React.FC = () => {
 
     // Fetch the status on mount. Declared before the conversation-resume
     // effect so the status request is issued first (a deterministic order the
-    // tests rely on).
+    // tests rely on). Advisory-only and read-only, so it is safe to run for
+    // signed-out visitors too — the server reports `signed_out` for them and
+    // the notice already renders nothing for that state.
     React.useEffect(() => {
         void refreshStatus();
     }, [refreshStatus]);
 
-    // Resume the user's most recent conversation on load.
+    // Adopt the pending pre-conversation draft (issue #465 AC-8) into
+    // whichever conversation just became active for this authenticated
+    // session, then clear the pending slot. A draft already typed into the
+    // composer for this load wins — adoption only fills an empty composer.
+    const adoptPendingDraft = (targetConversationId: number) => {
+        const pending = readPendingDraft();
+        if (!pending) return;
+        clearPendingDraft();
+        setInput((current) => {
+            if (current) return current;
+            writeComposerDraft(targetConversationId, pending);
+            return pending;
+        });
+    };
+
+    // Bumped by the purge listener below to force a fresh resume of the
+    // (possibly different) account's conversation after an account-switch
+    // purge (issue #465 AC-9). A sign-out purge is followed by a full
+    // navigation, so it never reaches this effect.
+    const [purgeGeneration, setPurgeGeneration] = React.useState(0);
+
+    // Abort controller for the conversation resume/create requests, and a
+    // monotonic purge epoch (issue #465 review round 2). A purge aborts the
+    // in-flight resume and bumps the epoch, so a response that was already
+    // decoding when the account switched is discarded instead of being
+    // rendered — or having its pending draft adopted — into the new
+    // account's view. The epoch is the backstop for the window where the
+    // fetch has already resolved and `abort()` no longer has any effect.
+    const resumeAbortRef = React.useRef<AbortController | null>(null);
+    const purgeEpochRef = React.useRef(0);
+
+    // Resume the user's most recent conversation on load. Skipped entirely
+    // for a signed-out visitor (issue #465 AC-2): an anonymous GET must
+    // create no JobSearchConversation/JobSearchMessage row, and the message
+    // history region must stay empty until an authenticated load succeeds
+    // (AC-10).
     React.useEffect(() => {
+        if (!effectiveAuthenticated) {
+            setLoading(false);
+            setInput((current) => current || readPendingDraft());
+            return;
+        }
         let cancelled = false;
-        csrfFetch('/api/agent/conversations/')
+        const epoch = purgeEpochRef.current;
+        const controller = new AbortController();
+        resumeAbortRef.current = controller;
+        // Stale once this effect run was torn down *or* a purge superseded
+        // it: either way nothing from this response may reach the store.
+        const stale = () => cancelled || purgeEpochRef.current !== epoch;
+        setLoading(true);
+        csrfFetch('/api/agent/conversations/', {signal: controller.signal})
             .then(async (res) => {
-                if (cancelled) return;
+                if (stale()) return;
                 if (res.status === 404) {
                     // No existing conversation — create one so the user can start chatting.
                     try {
                         const createRes = await csrfFetch('/api/agent/conversations/', {
                             method: 'POST',
                             body: JSON.stringify({create_new: true}),
+                            signal: controller.signal,
                         });
-                        if (cancelled) return;
+                        if (stale()) return;
                         if (!createRes.ok) throw new Error('create-failed');
                         const createData = (await createRes.json()) as Conversation;
-                        if (cancelled) return;
+                        if (stale()) return;
                         setConversationId(createData.id);
                         setMessages(createData.messages);
                         reconcileDurableState(createData);
+                        adoptPendingDraft(createData.id);
                         setLoading(false);
                         // Focus after React commits: a synchronous focus here
                         // lands on the still-disabled textarea (disabled until
@@ -857,7 +1036,7 @@ const JobSearchChat: React.FC = () => {
                         // zoom composer-focus race).
                         window.setTimeout(() => composerRef.current?.focus(), 0);
                     } catch {
-                        if (cancelled) return;
+                        if (stale()) return;
                         setInitError('Could not start a conversation. Please try again.');
                         setLoading(false);
                     }
@@ -867,25 +1046,88 @@ const JobSearchChat: React.FC = () => {
                     throw new Error(`Resume failed (${res.status})`);
                 }
                 const data = (await res.json()) as Conversation;
-                if (cancelled) return;
+                if (stale()) return;
                 setConversationId(data.id);
                 setMessages(data.messages);
                 setPreferencesChanged(data.preferences_changed);
                 reconcileDurableState(data);
+                adoptPendingDraft(data.id);
                 setLoading(false);
                 // Defer focus past the React commit (see above): the textarea
                 // is disabled until conversationId/loading land.
                 window.setTimeout(() => composerRef.current?.focus(), 0);
             })
             .catch(() => {
-                if (cancelled) return;
+                if (stale()) return;
                 setInitError('Could not load your conversation. Please refresh.');
                 setLoading(false);
             });
         return () => {
             cancelled = true;
+            if (resumeAbortRef.current === controller) {
+                resumeAbortRef.current = null;
+            }
         };
-    }, []);
+    }, [effectiveAuthenticated, purgeGeneration]);
+
+    // Account-switch / sign-out purge (issue #465 AC-9). Any in-flight
+    // submission is aborted (stopping only the client's wait — the server
+    // may still complete, but this tab must never attach that reply to the
+    // wrong account's view), and every private artefact for the previous
+    // account is discarded so it can never be exposed.
+    const resetForPurge = () => {
+        // Bump first: a resume response already past `await` must see the
+        // new epoch and discard itself even though abort() came too late.
+        purgeEpochRef.current += 1;
+        abortRef.current?.abort();
+        resumeAbortRef.current?.abort();
+        resumeAbortRef.current = null;
+        surfacedDraftRef.current = null;
+        lastSent.current = null;
+        setMessages([]);
+        setConversationId(null);
+        conversationIdRef.current = null;
+        setInput('');
+        setError(null);
+        setErrorType(null);
+        setRetrying(false);
+        setInitError(null);
+        setPreferencesChanged(false);
+        setPrefDismissed(false);
+        if (effectiveAuthenticated) {
+            // Force the resume effect to re-run so the (possibly different)
+            // account's own conversation loads fresh — never the stale
+            // conversation just cleared above.
+            setPurgeGeneration((g) => g + 1);
+        }
+    };
+
+    React.useEffect(() => {
+        // Sign-out (issue #465 AC-9): app-nav.js purges storage and
+        // dispatches this directly before its redirect.
+        const handlePurged = () => resetForPurge();
+        // Account switch while this page is already open (issue #465 AC-9):
+        // app-nav.js's whoami hydration dispatches this on every load, and
+        // it is the only signal for a switch that happened after the server
+        // rendered `accountKey`. The load-time case is already handled
+        // synchronously by reconcileAccountKey() above — this covers the
+        // rest, using the same comparison so the two cannot disagree.
+        const handleHydrated = (e: Event) => {
+            const detail = (e as CustomEvent).detail as {authenticated?: boolean; username?: string} | undefined;
+            if (!detail) return;
+            setEffectiveAuthenticated(!!detail.authenticated);
+            if (!detail.authenticated || !detail.username) return;
+            if (reconcileAccountKey(detail.username)) {
+                resetForPurge();
+            }
+        };
+        document.addEventListener('crank:private-state-purged', handlePurged);
+        document.addEventListener('crank:auth-hydrated', handleHydrated);
+        return () => {
+            document.removeEventListener('crank:private-state-purged', handlePurged);
+            document.removeEventListener('crank:auth-hydrated', handleHydrated);
+        };
+    }, [effectiveAuthenticated]);
 
     // Announce new assistant content to assistive tech.
     React.useEffect(() => {
@@ -1532,6 +1774,28 @@ const JobSearchChat: React.FC = () => {
                     </div>
                 )}
 
+                {!effectiveAuthenticated && (
+                    // Signed-out introduction (issue #465 AC-2/AC-6): mirrors
+                    // the server-rendered block above the card (present
+                    // before hydration and for no-JS/screen-reader-first
+                    // reads) so the mounted widget stays self-contained for
+                    // #472's later relocation. The message-history region
+                    // below never fetches or renders content for this
+                    // requester (AC-10) — an expired session must never
+                    // expose the previous account's conversation.
+                    <div data-testid="signed-out-introduction" className="mb-3">
+                        <p className="text-muted mb-2">
+                            {signedOutMessage}
+                        </p>
+                        <a href={signInUrl} className="btn btn-primary btn-sm" data-testid="chat-sign-in-cta">
+                            Sign in to save your search
+                        </a>
+                        <p id="job-search-signed-out-reason" className="text-muted small mt-2 mb-0">
+                            You can type a message below; sign in to send it and save your conversation.
+                        </p>
+                    </div>
+                )}
+
                 {initError && (
                     <div className="alert alert-danger" role="alert">
                         {initError}
@@ -1546,7 +1810,7 @@ const JobSearchChat: React.FC = () => {
                 <div className="position-relative d-flex flex-column flex-grow-1" style={{minHeight: 0}}>
                     <div className="bg-dark border rounded p-3 mb-3 flex-grow-1" style={{minHeight: 0, overflowY: 'auto'}}
                          ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
-                        {messages.length === 0 && !loading && (
+                        {effectiveAuthenticated && messages.length === 0 && !loading && (
                             <div data-testid="empty-history">
                                 <p className="text-muted mb-2">
                                     Ask about compensation, work location, funding, or culture to get started.
@@ -1691,10 +1955,22 @@ const JobSearchChat: React.FC = () => {
                                 className="form-control chat-focus"
                                 placeholder="Type your message…"
                                 aria-label="Message"
+                                aria-describedby={!effectiveAuthenticated ? 'job-search-signed-out-reason' : undefined}
                                 value={input}
                                 onChange={(e) => {
                                     setInput(e.target.value);
-                                    writeComposerDraft(conversationId, e.target.value);
+                                    if (effectiveAuthenticated) {
+                                        writeComposerDraft(conversationId, e.target.value);
+                                    } else {
+                                        // Sensitive draft text (issue #465 AC-8):
+                                        // kept client-side only, in a
+                                        // pre-conversation slot since a
+                                        // signed-out visitor has no
+                                        // conversation id to key it against.
+                                        // Never sent anywhere, including the
+                                        // sign-in `next`.
+                                        writePendingDraft(e.target.value);
+                                    }
                                     // Explicit discard (issue #458 r2): emptying the
                                     // composer throws the surfaced recovery draft
                                     // away for good — other unsent turns stay
@@ -1704,13 +1980,14 @@ const JobSearchChat: React.FC = () => {
                                     }
                                 }}
                                 onKeyDown={handleKeyDown}
-                                disabled={!conversationId || pending || composerGated}
+                                disabled={effectiveAuthenticated ? (!conversationId || pending || composerGated) : pending}
                                 autoComplete="off"
                                 rows={1}
                                 style={{resize: 'none', overflowY: 'hidden'}}
                             />
-                            <button type="submit" className="btn btn-primary chat-send chat-focus" disabled={!conversationId || pending || composerGated || !input.trim()}
-                                    aria-label="Send message">
+                            <button type="submit" className="btn btn-primary chat-send chat-focus"
+                                    disabled={!effectiveAuthenticated || !conversationId || pending || composerGated || !input.trim()}
+                                    aria-label="Send message" aria-describedby={!effectiveAuthenticated ? 'job-search-signed-out-reason' : undefined}>
                                 <i className="fa-solid fa-paper-plane" aria-hidden="true"></i>
                                 <span>Send</span>
                             </button>
@@ -1747,6 +2024,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const container = document.getElementById('job-search-chat');
     if (container) {
         const root = createRoot(container);
-        root.render(<JobSearchChat/>);
+        root.render(<JobSearchChat
+            isAuthenticated={container.dataset.authenticated === 'true'}
+            visitorState={container.dataset.visitorState}
+            signInUrl={container.dataset.signInUrl}
+            signedOutMessage={container.dataset.signedOutMessage}
+            accountKey={container.dataset.accountKey}
+        />);
     }
 });

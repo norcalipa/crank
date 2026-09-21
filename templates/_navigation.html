@@ -60,7 +60,7 @@
                             <i class="fa-solid fa-user-circle" aria-hidden="true"></i>
                             <span class="app-nav-label" data-nav-user-label>Account</span>
                         </div>
-                        <form method="post" action="{% url 'account_logout' %}" class="app-nav-logout-form"{% if auth_neutral_shell %} data-nav-js-logout{% endif %}>
+                        <form method="post" action="{% url 'account_logout' %}" class="app-nav-logout-form" data-nav-logout-form{% if auth_neutral_shell %} data-nav-js-logout{% endif %}>
                             {% if not auth_neutral_shell %}{% csrf_token %}{% endif %}
                             <button type="submit" class="app-nav-link app-nav-link--logout">
                                 <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>
@@ -154,7 +154,7 @@
                             <i class="fa-solid fa-user-circle" aria-hidden="true"></i>
                             <span class="app-nav-label" data-nav-user-label>Account</span>
                         </div>
-                        <form method="post" action="{% url 'account_logout' %}" class="app-nav-logout-form"{% if auth_neutral_shell %} data-nav-js-logout{% endif %}>
+                        <form method="post" action="{% url 'account_logout' %}" class="app-nav-logout-form" data-nav-logout-form{% if auth_neutral_shell %} data-nav-js-logout{% endif %}>
                             {% if not auth_neutral_shell %}{% csrf_token %}{% endif %}
                             <button type="submit" class="app-nav-link app-nav-link--logout">
                                 <i class="fa-solid fa-right-from-bracket" aria-hidden="true"></i>

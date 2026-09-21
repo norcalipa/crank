@@ -824,6 +824,116 @@ describe('OrganizationList', () => {
         });
     });
 
+    describe('deep-linked company dialog (issue #465 AC-7)', () => {
+        afterEach(() => {
+            window.history.replaceState({}, '', '/');
+        });
+
+        test('?company=<id> matching a listed organization opens that dialog on mount', async () => {
+            window.history.replaceState({}, '', '/?company=1');
+
+            render(<OrganizationList organizations={organizations} />);
+
+            await waitFor(() => {
+                expect(screen.getByRole('dialog')).toBeInTheDocument();
+            });
+        });
+
+        test('?company=<unknown id> mounts cleanly with no dialog and no console error', async () => {
+            const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+            window.history.replaceState({}, '', '/?company=999999');
+
+            render(<OrganizationList organizations={organizations} />);
+
+            await waitFor(() => {
+                expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+            });
+            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            expect(consoleError).not.toHaveBeenCalled();
+            consoleError.mockRestore();
+        });
+
+        test('?company=abc mounts cleanly with no dialog and no console error', async () => {
+            const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+            window.history.replaceState({}, '', '/?company=abc');
+
+            render(<OrganizationList organizations={organizations} />);
+
+            await waitFor(() => {
+                expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+            });
+            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            expect(consoleError).not.toHaveBeenCalled();
+            consoleError.mockRestore();
+        });
+
+        test('?company=<id> combined with ?page=2&search=acme preserves the existing filter state', async () => {
+            window.history.replaceState({}, '', '/?company=1&page=2&search=Organization%202');
+
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+
+            await waitFor(() => {
+                expect(screen.getByRole('dialog')).toBeInTheDocument();
+            });
+            expect(screen.getByRole('textbox', {name: 'Search organizations'})).toHaveValue('Organization 2');
+            expect(screen.getByText('Page 1 of 1')).toBeInTheDocument();
+        });
+    });
+
+    describe('company handoff CTA (issue #465 AC-7)', () => {
+        // The regression this covers: the dialog implemented only the
+        // receiving half of the handoff (openCompanyFromUrl). Nothing in the
+        // UI ever produced the `?company=<id>` URL, so a signed-out visitor
+        // could not start the journey at all.
+        const signInTemplate = '/accounts/login/?next=%2F%3Fcompany%3D__COMPANY_ID__';
+
+        afterEach(() => {
+            window.history.replaceState({}, '', '/');
+        });
+
+        async function openFirstCompany(props: Record<string, unknown> = {}) {
+            render(<OrganizationList organizations={organizations} {...props} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+        }
+
+        test('a signed-out visitor gets a sign-in CTA carrying this company in the validated next', async () => {
+            await openFirstCompany({signInUrlTemplate: signInTemplate});
+
+            const cta = screen.getByTestId('company-sign-in-cta');
+            expect(cta).toHaveAttribute('href', '/accounts/login/?next=%2F%3Fcompany%3D1');
+            expect(cta).toHaveTextContent('Sign in to ask about Organization 1');
+            expect(screen.queryByTestId('company-chat-cta')).not.toBeInTheDocument();
+        });
+
+        test('the returning signed-in visitor gets a CTA that starts the conversation for that company', async () => {
+            window.history.replaceState({}, '', '/?company=1');
+
+            render(<OrganizationList organizations={organizations} isAuthenticated
+                                     signInUrlTemplate={signInTemplate} />);
+
+            // The dialog reopens itself from the URL the sign-in CTA built.
+            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+            const cta = screen.getByTestId('company-chat-cta');
+            expect(cta).toHaveAttribute('href', '/chat/?company=1');
+            expect(cta).toHaveTextContent('Ask the assistant about Organization 1');
+            expect(screen.queryByTestId('company-sign-in-cta')).not.toBeInTheDocument();
+        });
+
+        test('no sign-in CTA is invented when the server emitted no template', async () => {
+            await openFirstCompany();
+
+            expect(screen.queryByTestId('company-sign-in-cta')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('company-chat-cta')).not.toBeInTheDocument();
+        });
+
+        test('a template without the placeholder is ignored rather than linked verbatim', async () => {
+            await openFirstCompany({signInUrlTemplate: '/accounts/login/'});
+
+            expect(screen.queryByTestId('company-sign-in-cta')).not.toBeInTheDocument();
+        });
+    });
+
     test('normalizes an out-of-range page in the URL', async () => {
         window.history.replaceState({}, '', '/?page=99');
 

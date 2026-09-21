@@ -1257,9 +1257,18 @@ body.app-nav-drawer-open {
    is this tight — in the ordinary (non-pending) state the textarea then keeps
    a usable width, and while the Stop control is rendered (pending) the whole
    row still fits without clipping the placeholder. The button keeps
-   aria-label="Send message" throughout, and the target never drops below 44px. */
+   aria-label="Send message" throughout, and the target never drops below 44px.
+
+   Width-invariant repair (issue #465 matrix, converging with the #471 fix on
+   main): the 320px viewport (and the 400%-browser-zoom equivalent) leaves the
+   composer row 246px wide; with the visible label the Send button measures
+   87.55px and the textarea lands at 159.45px — just under the 160px WCAG
+   1.4.10 floor asserted by e2e/django/viewport-zoom.spec.ts. Compacting Send
+   to its 44px icon-only target at <=390px in every state (not just pending)
+   keeps the textarea comfortably above the floor (~203px) with no layout
+   change at wider widths. */
 @media (max-width: 390px) {
-    .chat-send > span {
+    .input-group .chat-send > span {
         position: absolute;
         width: 1px;
         height: 1px;
@@ -1271,7 +1280,7 @@ body.app-nav-drawer-open {
         border: 0;
     }
 
-    .chat-send {
+    .input-group .chat-send {
         width: 2.75rem;
         padding-inline: 0;
     }
