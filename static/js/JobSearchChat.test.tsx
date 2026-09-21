@@ -280,6 +280,11 @@ describe('JobSearchChat', () => {
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-busy', 'false');
             expect(screen.getByTestId('empty-history')).toBeInTheDocument();
             expect(screen.getByTestId('empty-history')).toHaveTextContent(/matches are shown in the panel above/i);
+            // Prominent primary next action (visual review #472 round 1, item 11).
+            const cta = screen.getByTestId('empty-history-cta');
+            expect(cta).toHaveClass('btn', 'btn-primary');
+            fireEvent.click(cta);
+            expect(document.activeElement).toBe(screen.getByLabelText('Message'));
         });
 
         test('renders existing message history', async () => {
@@ -1666,9 +1671,9 @@ describe('assistant availability status (issue #457)', () => {
         expect(notice).toHaveTextContent(/temporarily unavailable/i);
         expect(screen.getByLabelText('Message')).toBeEnabled();
         const retry = screen.getByTestId('assistant-status-retry');
-        // High-contrast treatment: white-on-dark pairs with the light warning
-        // surface (the previous btn-outline-warning pairing failed AA).
-        expect(retry).toHaveClass('btn-dark');
+        // Semantic recovery action: solid danger button matching the
+        // alert-danger treatment (visual review #472 round 1, item 12).
+        expect(retry).toHaveClass('btn-danger');
         expect(retry).not.toHaveClass('btn-outline-warning');
         expect(retry).toHaveClass('assistant-status-notice-action');
         // Recovery: the re-check now reports ready, so the notice disappears.

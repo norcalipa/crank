@@ -71,15 +71,17 @@ const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context}) => {
                     )}
                 </div>
                 <div className="assistant-panel-controls">
-                    <button type="button" className="btn btn-sm btn-outline-light"
+                    <button type="button" className="btn btn-sm btn-outline-light assistant-panel-control"
                             onClick={minimizeAssistant} aria-label="Minimize assistant"
                             data-testid="assistant-minimize">
                         <i className="fa-solid fa-window-minimize" aria-hidden="true"></i>
+                        <span className="assistant-panel-control-label" aria-hidden="true">Minimize</span>
                     </button>
-                    <button type="button" className="btn btn-sm btn-outline-light"
+                    <button type="button" className="btn btn-sm btn-outline-light assistant-panel-control assistant-panel-control--close"
                             onClick={closeAssistant} aria-label="Close assistant"
                             data-testid="assistant-close">
                         <i className="fa-solid fa-xmark" aria-hidden="true"></i>
+                        <span className="assistant-panel-control-label" aria-hidden="true">Close</span>
                     </button>
                 </div>
             </div>
@@ -88,9 +90,10 @@ const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context}) => {
                     fallback={(
                         <div className="assistant-loading" role="status" aria-live="polite"
                              data-testid="assistant-loading">
-                            <span className="assistant-loading-line" aria-hidden="true"></span>
-                            <span className="assistant-loading-line" aria-hidden="true"></span>
-                            <span className="assistant-loading-line short" aria-hidden="true"></span>
+                            <span className="assistant-loading-line assistant-loading-line--header" aria-hidden="true"></span>
+                            <span className="assistant-loading-line assistant-loading-line--message" aria-hidden="true"></span>
+                            <span className="assistant-loading-line assistant-loading-line--message short" aria-hidden="true"></span>
+                            <span className="assistant-loading-line assistant-loading-line--composer" aria-hidden="true"></span>
                             <span className="visually-hidden">Loading the assistant…</span>
                         </div>
                     )}

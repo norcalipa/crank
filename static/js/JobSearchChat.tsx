@@ -439,14 +439,14 @@ function AssistantStatusNotice({status, onRetry, checking}: {
 
     return (
         <div
-            className="alert alert-warning assistant-status-notice py-2 px-3"
-            role="status"
+            className="alert alert-danger assistant-status-notice py-2 px-3"
+            role="alert"
             data-testid="assistant-status-notice"
             data-status-state={status.state}
             aria-label="Assistant availability"
         >
             <div className="d-flex align-items-start gap-2">
-                <i className="fa-solid fa-circle-info mt-1" aria-hidden="true"></i>
+                <i className="fa-solid fa-circle-exclamation mt-1" aria-hidden="true"></i>
                 <div>
                     <strong className="d-block">{text.title}</strong>
                     <span className="d-block small">{text.body}</span>
@@ -462,10 +462,10 @@ function AssistantStatusNotice({status, onRetry, checking}: {
                     {canRetry && (
                         <button
                             type="button"
-                            // btn-dark keeps white-on-dark text on the light
-                            // warning surface; the previous btn-outline-warning
-                            // pairing failed AA contrast (~1.47:1).
-                            className="btn btn-dark assistant-status-notice-action"
+                            // btn-danger is the semantic recovery action: solid,
+                            // high-emphasis, and clearly the way out of the
+                            // unavailable state (visual review #472 round 1).
+                            className="btn btn-danger assistant-status-notice-action"
                             onClick={onRetry}
                             disabled={checking}
                             data-testid="assistant-status-retry"
@@ -1820,14 +1820,20 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
                          ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
                         {effectiveAuthenticated && messages.length === 0 && !loading && (
                             <div data-testid="empty-history">
-                                <p className="text-muted mb-2">
+                                <p className="empty-history-lead mb-2">
                                     Ask about compensation, work location, funding, or culture to get started.
                                 </p>
-                                <p className="text-muted small mb-0">
+                                <p className="empty-history-note small mb-3">
                                     <i className="fa-solid fa-circle-info me-1"></i>
                                     Your matches are shown in the panel above. The assistant searches
                                     across real organizations and job listings to find the best fit.
                                 </p>
+                                <button type="button" className="btn btn-primary empty-history-cta"
+                                        data-testid="empty-history-cta"
+                                        onClick={() => composerRef.current?.focus()}>
+                                    <i className="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>
+                                    Ask your first question
+                                </button>
                             </div>
                         )}
                         {messages.map((m) => (

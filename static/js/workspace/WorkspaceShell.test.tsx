@@ -160,4 +160,20 @@ describe('WorkspaceShell', () => {
         expect(launcher).toHaveAttribute('aria-expanded', 'false');
         expect(launcher).toHaveAttribute('aria-controls', 'assistant-panel');
     });
+
+    test('minimized swaps the panel for a labelled compact restore control', async () => {
+        renderShell();
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-panel')).toBeInTheDocument());
+        fireEvent.click(screen.getByTestId('assistant-minimize'));
+        // The panel unmounts and an unambiguous text-cued chip replaces it
+        // (visual review #472 round 1, item 7: icon-only was ambiguous).
+        await waitFor(() => expect(screen.queryByTestId('assistant-panel')).not.toBeInTheDocument());
+        const restore = screen.getByTestId('assistant-restore');
+        expect(restore).toHaveTextContent('Reopen assistant');
+        expect(document.body.classList.contains('assistant-sheet')).toBe(false);
+        fireEvent.click(restore);
+        await waitFor(() => expect(screen.getByTestId('assistant-panel')).toBeInTheDocument());
+        expect(screen.queryByTestId('assistant-restore')).not.toBeInTheDocument();
+    });
 });

@@ -12,7 +12,7 @@ import * as React from 'react';
 import {lockBackground, subscribeBackgroundLock, unlockBackground} from '../modalIsolation';
 import AssistantLauncher from './AssistantLauncher';
 import AssistantPanel from './AssistantPanel';
-import {closeAssistant, getWorkspaceSnapshot, subscribeWorkspace} from './store';
+import {closeAssistant, getWorkspaceSnapshot, openAssistant, subscribeWorkspace} from './store';
 import {useWorkspaceLayout} from './useWorkspaceLayout';
 import {WorkspaceMode, WorkspaceSnapshot} from './types';
 
@@ -32,7 +32,11 @@ function useWorkspaceSnapshot(): WorkspaceSnapshot {
 const WorkspaceShell: React.FC = () => {
     const snapshot = useWorkspaceSnapshot();
     const mode = useWorkspaceLayout();
-    const open = snapshot.visibility !== 'closed';
+    // Minimized is NOT open: the panel unmounts (the loaded flag in the store
+    // keeps the chunk warm) and a labelled compact restore control takes its
+    // place so the state is never an ambiguous icon-only affordance.
+    const open = snapshot.visibility === 'open';
+    const minimized = snapshot.visibility === 'minimized';
     const launcherRef = React.useRef<HTMLButtonElement>(null);
     const panelRef = React.useRef<HTMLElement>(null);
     // Saved window scroll position while the sheet owns the viewport.
@@ -137,6 +141,18 @@ const WorkspaceShell: React.FC = () => {
     return (
         <>
             <AssistantLauncher ref={launcherRef} visibility={snapshot.visibility}/>
+            {minimized && (
+                <button
+                    type="button"
+                    className="assistant-restore"
+                    data-testid="assistant-restore"
+                    aria-label="Reopen assistant"
+                    onClick={() => openAssistant()}
+                >
+                    <i className="fa-solid fa-comments" aria-hidden="true"></i>
+                    <span className="assistant-restore-label">Reopen assistant</span>
+                </button>
+            )}
             {open && (
                 mode === 'sheet' ? (
                     <section

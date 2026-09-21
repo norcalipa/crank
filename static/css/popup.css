@@ -9,7 +9,9 @@
        main region keeps a >=640px content box at 1280px. */
     --app-rail-width: 240px;
     --assistant-panel-width: clamp(360px, 28vw, 420px);
-    --assistant-drawer-width: min(420px, 100vw - 48px);
+    /* Secondary surface: narrow enough at 768px that it never competes with
+       the workspace for the viewport (visual review #472 round 1, item 4). */
+    --assistant-drawer-width: min(360px, 100vw - 48px);
     --z-assistant: 1050;
 }
 
@@ -937,7 +939,10 @@ body.app-nav-drawer-open {
 /* Assistant availability notice (issue #457): a short scannable state label
    plus supporting copy, with a comfortable touch target on every action. */
 #job-search-chat .card-body [data-testid='assistant-status-notice'] {
-    --assistant-notice-ink: #212529;
+    /* Semantic error treatment (visual review #472 round 1, item 12): the
+       notice is alert-danger now, so the scoped focus ring uses the danger
+       ink for clear contrast on the danger surface. */
+    --assistant-notice-ink: #842029;
 }
 
 #job-search-chat .card-body [data-testid='assistant-status-notice'] a,
@@ -1392,6 +1397,46 @@ body.app-nav-drawer-open {
     filter: brightness(1.1);
 }
 
+/* Pressed-state feedback: while the panel is open the launcher is the
+   control that opened it, so it keeps an explicit pressed treatment instead
+   of relying on the icon alone (visual review #472 round 1, item 9). */
+.assistant-launcher[aria-expanded="true"] {
+    background: #0b5ed7;
+    border-color: #9ec5fe;
+    box-shadow: inset 0 2px 4px rgba(0, 0, 0, .35), 0 2px 8px rgba(0, 0, 0, .4);
+}
+
+/* Minimized restore control: icon alone was ambiguous (restore? open?
+   expand?), so the compact chip always carries a text cue. */
+.assistant-restore {
+    position: fixed;
+    right: 1rem;
+    bottom: calc(1rem + var(--safe-area-inset-bottom));
+    z-index: var(--z-assistant);
+    display: inline-flex;
+    align-items: center;
+    gap: .5rem;
+    min-height: 44px;
+    padding: .625rem 1rem;
+    border: 1px solid #9ec5fe;
+    border-radius: 999px;
+    background: #0b5ed7;
+    color: #fff;
+    font-size: .9375rem;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .4);
+}
+
+.assistant-restore:hover {
+    filter: brightness(1.1);
+}
+
+.assistant-restore:focus-visible {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
+}
+
 .assistant-launcher:focus-visible,
 .assistant-panel button:focus-visible {
     outline: 3px solid var(--bs-warning);
@@ -1415,22 +1460,37 @@ body.app-nav-drawer-open {
 
 .assistant-panel-header {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     justify-content: space-between;
     gap: .5rem;
+    min-height: 56px;
     padding: .75rem 1rem;
     border-bottom: 1px solid var(--bs-border-color);
 }
 
+.assistant-panel-heading {
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
 .assistant-panel-title {
     font-size: 1rem;
+    font-weight: 650;
+    line-height: 1.25;
     margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .assistant-panel-context {
     margin: .125rem 0 0;
     font-size: .8125rem;
-    color: var(--bs-secondary-color);
+    line-height: 1.45;
+    color: #b9c1cd;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .assistant-panel-controls {
@@ -1439,14 +1499,63 @@ body.app-nav-drawer-open {
     flex-shrink: 0;
 }
 
-.assistant-panel-controls .btn {
-    min-width: 44px;
-    min-height: 44px;
+/* Header controls: identical 40x40 grid-centered hit areas so no control
+   competes with the title; icon-only on the sheet, icon + visible label on
+   roomier placements so touch users never depend on hover tooltips. */
+.assistant-panel-controls .assistant-panel-control {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0;
+    border-radius: .5rem;
+    font-size: 1.125rem;
+    line-height: 1;
+}
+
+.assistant-panel-controls .assistant-panel-control:hover {
+    background: rgba(255, 255, 255, .12);
+    border-color: rgba(255, 255, 255, .35);
+}
+
+/* The close control is the destructive-adjacent action (dismisses the whole
+   panel); give it a distinct hover so it never reads as a minimize twin. */
+.assistant-panel-controls .assistant-panel-control--close:hover {
+    background: rgba(220, 53, 69, .25);
+    border-color: #dc3545;
+}
+
+.assistant-panel-control-label {
+    display: none;
 }
 
 .assistant-back-to-results {
     margin: .5rem 1rem 0;
     min-height: 44px;
+}
+
+/* Empty state: the primary next action is a real, prominent button instead
+   of sparse muted copy (visual review #472 round 1, item 11). */
+#job-search-chat .empty-history-lead {
+    color: #d7dde5;
+    font-size: .9375rem;
+    line-height: 1.45;
+}
+
+#job-search-chat .empty-history-note {
+    /* WCAG AA on the dark history surface (visual review item 15): the
+       Bootstrap .text-muted default is too faint here. */
+    color: #b9c1cd;
+    font-size: .8125rem;
+    line-height: 1.45;
+}
+
+#job-search-chat .empty-history-cta {
+    min-height: 44px;
+    padding: .625rem 1.25rem;
+    font-weight: 600;
 }
 
 .assistant-panel-body {
@@ -1484,6 +1593,30 @@ body.app-nav-drawer-open {
     animation: assistant-loading-shimmer 1.4s linear infinite;
 }
 
+/* Differentiated placeholders: header/message/composer bars carry distinct
+   weights so the skeleton reproduces the layout hierarchy instead of a row
+   of identical stripes (visual review #472 round 1, item 10). */
+.assistant-loading-line--header {
+    height: .75rem;
+    width: 45%;
+    opacity: .7;
+}
+
+.assistant-loading-line--message {
+    height: 2.5rem;
+}
+
+.assistant-loading-line--message.short {
+    width: 60%;
+    height: 2rem;
+}
+
+.assistant-loading-line--composer {
+    height: 2.75rem;
+    border-radius: .5rem;
+    opacity: .85;
+}
+
 .assistant-loading-line.short {
     width: 60%;
 }
@@ -1502,7 +1635,19 @@ body.app-nav-drawer-open {
         right: 0;
         bottom: 0;
         width: var(--assistant-panel-width);
-        border-left: 1px solid var(--bs-border-color);
+        border-left: 1px solid #d9dee7;
+        box-shadow: -8px 0 24px rgba(15, 23, 42, .35);
+    }
+
+    /* Docked vertical rhythm: roomier, balanced padding so the header and
+       conversation body share the density instead of a dense header over a
+       sparse body (visual review #472 round 1, item 6). */
+    body.assistant-docked .assistant-panel-header {
+        padding: .875rem 1rem;
+    }
+
+    body.assistant-docked .assistant-panel-body {
+        padding: 1rem;
     }
 
     body.assistant-docked .app-content {
@@ -1555,8 +1700,11 @@ body.app-nav-drawer-open {
         right: 0;
         bottom: 0;
         width: var(--assistant-drawer-width);
-        border-left: 1px solid var(--bs-border-color);
-        box-shadow: -4px 0 16px rgba(0, 0, 0, .4);
+        /* A visible border plus a stronger shadow: the boundary with the
+           workspace must not rely on a near-invisible shadow alone (visual
+           review #472 round 1, item 5). */
+        border-left: 1px solid #d9dee7;
+        box-shadow: -8px 0 24px rgba(15, 23, 42, .45);
     }
 }
 
@@ -1569,12 +1717,63 @@ body.app-nav-drawer-open {
         width: 100%;
     }
 
+    /* Narrow-sheet header: trim side padding so the title and controls stop
+       competing for width at 320px (visual review #472 round 1, item 1). */
+    .assistant-panel--sheet .assistant-panel-header {
+        padding: .625rem .75rem;
+    }
+
+    .assistant-panel--sheet .assistant-back-to-results {
+        margin: .5rem .75rem 0;
+    }
+
+    /* Mobile secondary/placeholder copy: darker neutral at a readable size
+       against the dark surface (visual review #472 round 1, item 3). */
+    .assistant-panel--sheet .assistant-panel-context,
+    .assistant-panel--sheet .empty-history-note,
+    .assistant-panel--sheet .empty-history-lead {
+        font-size: .8125rem;
+        line-height: 1.45;
+        color: #b9c1cd;
+    }
+
+    /* Deliberate bottom buffer: the composer must clear the home-indicator
+       safe area with room to spare (visual review #472 round 1, item 2). */
     .assistant-panel--sheet .assistant-panel-body {
-        padding-bottom: max(.5rem, env(safe-area-inset-bottom));
+        padding: .75rem;
+        padding-bottom: calc(max(.75rem, env(safe-area-inset-bottom)) + .5rem);
     }
 
     .assistant-panel--sheet #job-search-chat form {
-        padding-bottom: max(.5rem, env(safe-area-inset-bottom));
+        padding-bottom: calc(max(.75rem, env(safe-area-inset-bottom)) + .5rem);
+    }
+
+    /* Unavailable sheet: notice, recovery action and composer read as one
+       tight group (visual review #472 round 1, item 13). */
+    .assistant-panel--sheet [data-testid='assistant-status-notice'] {
+        margin-bottom: .25rem;
+    }
+
+    .assistant-panel--sheet [data-testid='assistant-status-notice'] .assistant-status-notice-actions {
+        margin-top: .5rem;
+    }
+}
+
+/* Roomier placements (docked 1280+ and drawer 768+): header controls gain a
+   visible text label next to the icon so affordances never depend on hover
+   tooltips (visual review #472 round 1, item 14). */
+@media (min-width: 768px) {
+    .assistant-panel-controls .assistant-panel-control {
+        grid-auto-flow: column;
+        gap: .375rem;
+        width: auto;
+        padding: 0 .625rem;
+        font-size: .8125rem;
+    }
+
+    .assistant-panel-control-label {
+        display: inline;
+        font-weight: 600;
     }
 }
 
