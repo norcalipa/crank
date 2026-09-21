@@ -1259,33 +1259,52 @@ body.app-nav-drawer-open {
 }
 
 /* 44px touch-target floor for the dismiss control at every breakpoint and
-   state; the visible X stays ~16px while the whole 44px box is clickable. */
+   state; the visible X stays 16px while the whole 44px box is clickable.
+   The 44px box gets a visible boundary on hover/focus so the hit area is
+   demonstrable, not just reserved. */
 .pref-change-dismiss {
+    min-inline-size: 44px;
+    min-block-size: 44px;
     inline-size: 44px;
     block-size: 44px;
-    padding: 0;
-    display: grid;
+    display: inline-grid;
     place-items: center;
+    flex: 0 0 44px;
+    padding: 0;
+    cursor: pointer;
     align-self: start;
     justify-self: end;
-    background: transparent;
+    background-color: transparent;
+    box-shadow: none;
     border: 0;
     border-radius: 0.375rem;
     color: #a7f3d0;
-    font-size: 1rem; /* visible X ≈16px */
     line-height: 1;
-    cursor: pointer;
+}
+
+/* Dismiss icon rendered at exactly 16px × 16px inside the 44px target. */
+.pref-change-dismiss .fa-xmark {
+    font-size: 16px;
+    inline-size: 16px;
+    block-size: 16px;
+    line-height: 16px;
 }
 
 .pref-change-dismiss:hover {
     color: #ecfdf5;
     background-color: rgba(167, 243, 208, 0.12);
+    /* Inset boundary makes the full 44px hit area visible on hover. */
+    box-shadow: inset 0 0 0 1px #699479;
 }
 
-/* Consistent visible focus ring on every notice control. */
+/* Consistent visible keyboard-focus ring on every notice control.
+   #f59e0b (amber-500) is ~8:1 against the #051b11 notice surface and the
+   #0f172a page — well above the 3:1 non-text floor — and stays distinct
+   from the green success palette. The shared .chat-btn rule keeps the
+   44px min-block-size target floor on every action control. */
 .pref-change-notice button:focus-visible,
 .pref-change-notice a:focus-visible {
-    outline: 2px solid #a7f3d0;
+    outline: 3px solid #f59e0b;
     outline-offset: 2px;
 }
 
