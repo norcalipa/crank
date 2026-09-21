@@ -11,7 +11,10 @@ from django.utils import timezone
 import pytest
 
 from crank.admin import CompanyProfileObservationAdmin
-from crank.models.company_profile import CompanyProfileObservation
+from crank.models.company_profile import (
+    CompanyFieldEvidence,
+    CompanyProfileObservation,
+)
 from crank.models.employer import EmployerAlias
 from crank.models.job import JobSourceCatalog
 from crank.models.organization import Organization
@@ -295,6 +298,67 @@ class CompanyCrawlerTests(TestCase):
             result = crawl_company_profile(self.source, client=FakeClient([item]))
             self.assertEqual(result.errors, 1)
             self.assertEqual(CompanyProfileObservation.objects.count(), 0)
+
+    def test_auto_applied_observation_creates_accepted_evidence(self):
+        Organization.objects.create(name="Example Labs", url="https://example.test")
+
+        result = crawl_company_profile(self.source, client=FakeClient([profile()]))
+
+        self.assertEqual(result.auto_applied, 1)
+        self.assertGreater(result.evidence_accepted, 0)
+        evidence = CompanyFieldEvidence.objects.filter(
+            state=CompanyFieldEvidence.State.ACCEPTED
+        )
+        self.assertEqual(evidence.count(), result.evidence_accepted)
+        rto = evidence.get(field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY)
+        self.assertEqual(rto.value_text, "Remote first")
+        self.assertEqual(rto.source_domain, "example.test")
+        self.assertIsNotNone(rto.last_verified_at)
+
+    def test_conflicted_observation_creates_no_accepted_evidence(self):
+        Organization.objects.create(name="Example Labs", url="https://example.test")
+        CompanyProfileObservation.objects.create(
+            organization=Organization.objects.get(),
+            source_url="https://jobs.example.test/about",
+            observed_domain="example.test",
+            observed_name="Example Labs",
+            description="Human reviewed description",
+            observed_at=timezone.now(),
+            extraction_version="old.v1",
+            fingerprint="prior-fingerprint",
+        )
+
+        result = crawl_company_profile(
+            self.source, client=FakeClient([profile(description="Different description")])
+        )
+
+        self.assertEqual(result.conflicted, 1)
+        self.assertEqual(result.evidence_accepted, 0)
+        self.assertEqual(
+            CompanyFieldEvidence.objects.filter(
+                state=CompanyFieldEvidence.State.ACCEPTED
+            ).count(),
+            0,
+        )
+
+    def test_pending_observation_creates_no_evidence(self):
+        result = crawl_company_profile(self.source, client=FakeClient([profile()]))
+
+        self.assertEqual(result.pending, 1)
+        self.assertEqual(result.evidence_accepted, 0)
+        self.assertEqual(CompanyFieldEvidence.objects.count(), 0)
+
+    def test_failing_crawl_creates_no_evidence(self):
+        class RaisingClient:
+            def crawl_url(self, url, **kwargs):
+                raise RuntimeError("provider unavailable")
+
+        Organization.objects.create(name="Example Labs", url="https://example.test")
+        result = crawl_company_profile(self.source, client=RaisingClient())
+
+        self.assertEqual(result.errors, 1)
+        self.assertEqual(result.evidence_accepted, 0)
+        self.assertEqual(CompanyFieldEvidence.objects.count(), 0)
 
     def test_crawl_never_changes_scores(self):
         organization = Organization.objects.create(name="Example Labs", url="https://example.test")

@@ -25,7 +25,7 @@ from crank.models.employer import EmployerAlias, normalize_employer_domain, norm
 from crank.models.job import JobSourceCatalog
 from crank.models.organization import Organization
 from crank.models.publication import PublicationEvent
-from crank.services import monitoring, publication
+from crank.services import company_evidence, monitoring, publication
 
 EXTRACTION_VERSION = "firecrawl-company-profile.v1"
 MAX_ITEMS = 10
@@ -62,6 +62,7 @@ class CompanyCrawlResult:
     pending: int = 0
     duplicates: int = 0
     errors: int = 0
+    evidence_accepted: int = 0
     freshness_seconds: float | None = None
     error_reasons: tuple[str, ...] = field(default_factory=tuple)
 
@@ -258,7 +259,8 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
         return CompanyCrawlResult(errors=1, error_reasons=(_safe_reason(exc),))
 
     counts = {"observations": 0, "accepted": 0, "auto_applied": 0, "rejected": 0,
-              "conflicted": 0, "pending": 0, "duplicates": 0, "errors": 0}
+              "conflicted": 0, "pending": 0, "duplicates": 0, "errors": 0,
+              "evidence_accepted": 0}
     reasons: list[str] = []
     for item in items[:MAX_ITEMS]:
         try:
@@ -292,12 +294,44 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
                     fingerprint=fp,
                     **data,
                 )
+                # Accepted field-level evidence (issue #460): only an
+                # observation that landed AUTO_APPLIED/ACCEPTED can produce
+                # accepted evidence rows; a CONFLICTED observation still
+                # records a freshness check (fetch succeeded, value not
+                # verified) on any existing accepted evidence, and a PENDING
+                # observation has no organization scope at all.
+                evidence_rows: list = []
+                if organization is not None and status in (
+                    CompanyProfileObservation.Status.AUTO_APPLIED,
+                    CompanyProfileObservation.Status.ACCEPTED,
+                ):
+                    evidence_rows = company_evidence.accept_observation_fields(
+                        observation, now=observed_at
+                    )
+                    counts["evidence_accepted"] += len(evidence_rows)
+                elif (
+                    organization is not None
+                    and status == CompanyProfileObservation.Status.CONFLICTED
+                ):
+                    for field_key, value in company_evidence.observation_field_values(
+                        observation
+                    ).items():
+                        company_evidence.record_check(
+                            organization,
+                            field_key,
+                            success=True,
+                            value=value,
+                            verified=False,
+                            now=observed_at,
+                        )
                 # Durable outbox row in this same transaction: the provenance
                 # API payload changed for this organization (any non-rejected
                 # observation surfaces as latest_observation), so its cache
                 # keys must be invalidated after commit. Unresolved identities
-                # have no organization scope to invalidate.
-                if organization is not None:
+                # have no organization scope to invalidate. When accepting
+                # evidence already recorded the organization's event above
+                # (issue #460), that single event covers the invalidation.
+                if organization is not None and not evidence_rows:
                     publication.record_event(
                         target_type=PublicationEvent.TargetType.ORGANIZATION,
                         target_id=organization.pk,
