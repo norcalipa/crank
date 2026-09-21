@@ -1412,13 +1412,16 @@ body.app-nav-drawer-open {
        blue sits close to the dark surfaces, so the closed launcher carries
        a visible light border plus an outer dark ring that keeps the edge
        legible on any background and reads as hover/focus-ready. */
-    border: 1px solid rgba(255, 255, 255, .45);
+    /* Launcher perimeter (visual review #472 round 4, item 5): a muted
+       slate border plus a dual shadow — deep drop shadow for lift and a
+       faint inner light ring — so the launcher reads over dark content. */
+    border: 1px solid #46505f;
     border-radius: 999px;
     background: var(--bs-primary);
     color: #fff;
     font-size: .9375rem;
     cursor: pointer;
-    box-shadow: 0 0 0 1px rgba(10, 15, 25, .85), 0 2px 10px rgba(0, 0, 0, .5);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 45%), 0 0 0 1px rgb(255 255 255 / 4%);
 }
 
 .assistant-launcher:hover {
@@ -1589,18 +1592,29 @@ body.app-nav-drawer-open {
    block carried more visual weight than the composer, so the lead/note
    shrink to supporting copy and the composer surface (below) becomes the
    visually elevated next action. */
+/* Empty state de-emphasized (visual review #472 round 4, item 4): the
+   block shrinks to supporting copy — quiet 40px icon at .8 opacity, a
+   compact 16px/600 title and a 28ch description column — so the composer
+   stays the decisive focal point. */
 #job-search-chat .empty-history-lead {
     color: #d7dde5;
-    font-size: .875rem;
+    font-size: 16px;
+    font-weight: 600;
     line-height: 1.45;
 }
 
 #job-search-chat .empty-history-note {
-    /* Tertiary-copy token (visual review #472 round 2, item 4): still AA on
-       the dark history surface. */
-    color: #929eaf;
+    color: #b8c0cc;
     font-size: .8125rem;
     line-height: 1.45;
+    max-width: 28ch;
+}
+
+#job-search-chat .empty-history-note .fa-circle-info {
+    display: block;
+    font-size: 40px;
+    opacity: .8;
+    margin-bottom: .5rem;
 }
 
 #job-search-chat .empty-history-cta {
@@ -1644,33 +1658,33 @@ body.app-nav-drawer-open {
     animation: assistant-loading-shimmer 1.4s linear infinite;
 }
 
-/* Differentiated placeholders (visual review #472 round 2, item 7):
-   header/message/composer bars carry clearly distinct heights, widths and
-   opacities so the skeleton mirrors the loaded layout's identity/history/
-   composer hierarchy instead of a row of near-identical stripes. */
+/* Differentiated placeholders (visual review #472 round 2, item 7; round 4,
+   item 3): the three tiers separate by luminance as well as shape — meta
+   bars sit near .38 opacity, body (message) bars near .58, and the composer
+   drops to .28 so the input never competes with the loading conversation. */
 .assistant-loading-line--header {
-    height: .625rem;
+    height: .5rem;
     width: 38%;
-    opacity: .55;
+    opacity: .38;
 }
 
 .assistant-loading-line--message {
-    height: 2.75rem;
+    height: .75rem;
     width: 88%;
-    opacity: .9;
+    opacity: .58;
 }
 
 .assistant-loading-line--message.short {
     width: 52%;
-    height: 1.75rem;
-    opacity: .7;
+    height: .75rem;
+    opacity: .5;
 }
 
 .assistant-loading-line--composer {
     height: 3rem;
     width: 100%;
     border-radius: .5rem;
-    opacity: 1;
+    opacity: .28;
 }
 
 .assistant-loading-line.short {
@@ -1724,6 +1738,23 @@ body.app-nav-drawer-open {
     body.assistant-docked .assistant-launcher {
         right: calc(var(--assistant-panel-width) + 1rem);
     }
+
+    /* Docked message rhythm (visual review #472 round 4, item 6): a steady
+       16px gap between turns and a 6px intra-message gap keep
+       message-to-message continuity even. */
+    body.assistant-docked #job-search-chat [role='log'] {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+    }
+
+    body.assistant-docked #job-search-chat [role='log'] > * {
+        margin-bottom: 0;
+    }
+
+    body.assistant-docked #job-search-chat .chat-failure-panel {
+        margin-top: 6px;
+    }
 }
 
 /* Collapsed rail: whenever the panel is docked below 1440px the nav rail
@@ -1773,6 +1804,13 @@ body.app-nav-drawer-open {
            workspace never relies on the shadow alone. */
         border-left: 2px solid #e3e8f0;
         box-shadow: -12px 0 32px rgba(15, 23, 42, .55);
+    }
+
+    /* Tablet-band drawer width (visual review #472 round 4, item 7):
+       fluid 42vw capped at 400px so the drawer tracks the viewport instead
+       of pinning at the floor. */
+    .assistant-panel--drawer {
+        width: min(42vw, 400px);
     }
 }
 
@@ -1839,10 +1877,11 @@ body.app-nav-drawer-open {
     }
 }
 
-/* 320-375px sheet header (visual review #472 round 2, item 1): the
-   title/status block competed with the icon cluster, so the header
-   compresses to a single tight row — identity yields and truncates, the
-   action cluster stays fixed. */
+/* 320-375px sheet header (visual review #472 round 2, item 1; round 4,
+   item 1): the title/status block competed with the icon cluster, so the
+   header compresses to a single tight row — identity yields and truncates,
+   the action cluster stays fixed, and every icon-only control carries a
+   full 44x44px hit target. */
 @media (max-width: 375px) {
     .assistant-panel--sheet .assistant-panel-header {
         min-height: 56px;
@@ -1856,8 +1895,12 @@ body.app-nav-drawer-open {
     }
 
     .assistant-panel--sheet .assistant-panel-title {
+        min-width: 0;
         font-size: 15px;
         line-height: 20px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
     .assistant-panel--sheet .assistant-panel-context {
@@ -1871,6 +1914,44 @@ body.app-nav-drawer-open {
     .assistant-panel--sheet .assistant-panel-controls {
         flex: 0 0 auto;
         gap: 4px;
+    }
+
+    /* >=44x44px header action targets (visual review #472 round 4, item 1). */
+    .assistant-panel--sheet .assistant-panel-controls .assistant-panel-control {
+        width: 44px;
+        min-width: 44px;
+        height: 44px;
+        min-height: 44px;
+        border-radius: 10px;
+    }
+}
+
+/* <=340px sheet density (visual review #472 round 4, item 2): tighten the
+   header, message region and composer so the conversation area keeps a
+   reasonable share of the composer-heavy lower third, and the composer
+   footer always clears the safe area. */
+@media (max-width: 340px) {
+    .assistant-panel--sheet .assistant-panel-header {
+        padding: 8px 10px;
+        gap: 4px;
+    }
+
+    .assistant-panel--sheet .assistant-panel-body,
+    .assistant-panel--sheet #job-search-chat [role='log'] {
+        padding: 12px;
+    }
+
+    .assistant-panel--sheet #job-search-chat form {
+        margin: 0 10px;
+        padding: 8px 10px;
+        min-height: 44px;
+        padding-bottom: max(12px, env(safe-area-inset-bottom));
+    }
+
+    /* Unavailable-sheet explanatory copy: AA token on the dark surface
+       (visual review #472 round 4, item 8). */
+    .assistant-panel--sheet [data-testid='assistant-status-notice'] .small {
+        color: #b8c0cc;
     }
 }
 
