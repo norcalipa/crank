@@ -38,6 +38,7 @@ const WorkspaceShell: React.FC = () => {
     const open = snapshot.visibility === 'open';
     const minimized = snapshot.visibility === 'minimized';
     const launcherRef = React.useRef<HTMLButtonElement>(null);
+    const restoreRef = React.useRef<HTMLButtonElement>(null);
     const panelRef = React.useRef<HTMLElement>(null);
     // Saved window scroll position while the sheet owns the viewport.
     const savedScrollRef = React.useRef<number | null>(null);
@@ -133,16 +134,23 @@ const WorkspaceShell: React.FC = () => {
             target?.focus();
         }
         if (!sheetActive && wasSheetActiveRef.current) {
-            launcherRef.current?.focus();
+            // The launcher leaves the DOM while minimized, so the sheet's
+            // return focus lands on the restore pill in that state.
+            (launcherRef.current ?? restoreRef.current)?.focus();
         }
         wasSheetActiveRef.current = sheetActive;
     }, [sheetActive]);
 
     return (
         <>
-            <AssistantLauncher ref={launcherRef} visibility={snapshot.visibility}/>
+            {/* Minimized state (visual review #472 round 5): exactly one
+                entry point — the restore pill. The launcher leaves the DOM
+                so the two co-located controls never stack in the same
+                corner with the launcher's focus ring painted underneath. */}
+            {!minimized && <AssistantLauncher ref={launcherRef} visibility={snapshot.visibility}/>}
             {minimized && (
                 <button
+                    ref={restoreRef}
                     type="button"
                     className="assistant-restore"
                     data-testid="assistant-restore"

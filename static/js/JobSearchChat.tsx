@@ -908,6 +908,13 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
     // Initial history, optimistic turns, replies, and the pending indicator all append
     // content to the same viewport. Do not interrupt someone reading older messages.
     React.useEffect(() => {
+        // Empty history (visual review #472 round 5): never auto-scroll — the
+        // empty state stays anchored at the top of the log so its lead is
+        // visible on first open, even on the shortest sheet viewports.
+        // Auto-scroll resumes once a conversation exists or content is added.
+        if (messages.length === 0) {
+            return;
+        }
         if (loading || !nearBottomRef.current) {
             if (!nearBottomRef.current) setShowJumpToLatest(true);
             return;

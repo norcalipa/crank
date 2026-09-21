@@ -703,6 +703,17 @@ body.app-nav-drawer-open {
     flex-wrap: wrap;
 }
 
+/* Touch-target floor (visual review #472 round 5): every interactive
+   control in the chat panel keeps a >=44px hit height at every placement —
+   sheet, drawer and docked — matching the #job-match-panel floor from
+   issue #476. Visual size stays compact via padding; only the target
+   grows. Covers the Details toggle, jump-to-latest and the Export/Reset/
+   Delete group, which measured 31-32px tall in the 768px drawer. */
+#job-search-chat .btn,
+#job-search-chat .chat-note-toggle {
+    min-height: 44px;
+}
+
 #job-search-chat .alert {
     overflow-wrap: anywhere;
 }
@@ -1828,6 +1839,18 @@ body.app-nav-drawer-open {
     }
 }
 
+/* Drawer composer fit (visual review #472 round 5): at the 320px drawer
+   floor the composer textarea is ~165px wide, so "Type your message…"
+   wraps onto a second line that the one-line box clips (clientHeight 42 <
+   scrollHeight 60) across 768-992px. Give the composer a two-line
+   min-height in exactly this band; wider drawers keep the compact one-line
+   composer. */
+@media (min-width: 768px) and (max-width: 999.98px) {
+    .assistant-panel--drawer #job-search-chat textarea[aria-label='Message'] {
+        min-height: 64px;
+    }
+}
+
 /* Sheet: <768px. Full-screen blocking dialog; lockBackground isolates the
    background and the composer row clears the home-indicator safe area. */
 @media (max-width: 767.98px) {
@@ -1841,6 +1864,18 @@ body.app-nav-drawer-open {
        competing for width at 320px (visual review #472 round 1, item 1). */
     .assistant-panel--sheet .assistant-panel-header {
         padding: .625rem .75rem;
+    }
+
+    /* >=44x44px header action targets across the WHOLE sheet width range
+       (visual review #472 round 4, item 1; round 5: the fix previously sat
+       in the max-width:375px block, but sheet mode runs to 767.98px, so
+       376-767px phones fell back to the 36px base rule). */
+    .assistant-panel--sheet .assistant-panel-controls .assistant-panel-control {
+        width: 44px;
+        min-width: 44px;
+        height: 44px;
+        min-height: 44px;
+        border-radius: 10px;
     }
 
     .assistant-panel--sheet .assistant-back-to-results {
@@ -1928,15 +1963,6 @@ body.app-nav-drawer-open {
     .assistant-panel--sheet .assistant-panel-controls {
         flex: 0 0 auto;
         gap: 4px;
-    }
-
-    /* >=44x44px header action targets (visual review #472 round 4, item 1). */
-    .assistant-panel--sheet .assistant-panel-controls .assistant-panel-control {
-        width: 44px;
-        min-width: 44px;
-        height: 44px;
-        min-height: 44px;
-        border-radius: 10px;
     }
 }
 
