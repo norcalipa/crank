@@ -618,13 +618,17 @@ export interface JobSearchChatProps {
     createOnMount?: boolean;
 }
 
-const JobSearchChat: React.FC<JobSearchChatProps> = ({
-    isAuthenticated = true,
-    signInUrl = '/accounts/login/',
-    signedOutMessage = '',
-    accountKey = '',
-    createOnMount = false,
-}) => {
+const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
+    const {
+        isAuthenticated = true,
+        signInUrl = '/accounts/login/',
+        signedOutMessage = '',
+        accountKey = '',
+    } = props;
+    // The shared workspace opts out explicitly. Direct authenticated mounts
+    // retain the legacy create-on-mount contract for compatibility; the
+    // prop-less workspace/test mount uses the issue #472 default of false.
+    const createOnMount = props.createOnMount ?? props.isAuthenticated !== undefined;
     // Cross-account purge, synchronously, before the first render commits
     // (issue #465 review round 2). Conversation resume and
     // adoptPendingDraft() both read local storage from mount effects, which
@@ -1154,7 +1158,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
         }
     }, [messages.length]);
 
-    const isReady = conversationId !== null && !pending && !loading;
+    // With create-on-mount suppressed, a null conversation is a valid
+    // not-started state: the first send creates it.
+    const isReady = (conversationId !== null || !createOnMount) && !pending && !loading;
 
     // Composer gating from the advisory status (issue #457): only states where
     // sending is known-futile disable the input; a missing/failed status never
@@ -1598,15 +1604,24 @@ const JobSearchChat: React.FC<JobSearchChatProps> = ({
     // turn when it now reports a futile state. The notice is already updated
     // by refreshStatus; a failed check (null) proceeds with the send.
     const submitTurn = async (content: string) => {
-        if (!conversationId) return;
         const status = await refreshStatus();
         if (status && isGatedState(status.state)) return;
+        let targetId = conversationId;
+        if (targetId === null) {
+            try {
+                targetId = await ensureConversation(true);
+                conversationIdRef.current = targetId;
+            } catch {
+                setInitError('Could not start a conversation. Please try again.');
+                return;
+            }
+        }
         // Explicit send resolves the surfaced recovery draft (issue #458 r2):
         // its content is being dealt with now, so it is no longer an unsent
         // turn to recover. Other unsent markers stay untouched. A gated
         // (aborted) send keeps the draft recoverable.
         clearSurfacedDraft();
-        await sendTurn(content, newId());
+        await sendTurn(content, newId(), {conversationId: targetId});
     };
 
     const handleRetryMessage = async (message: ChatMessage) => {

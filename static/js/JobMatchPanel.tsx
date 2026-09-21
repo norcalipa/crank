@@ -371,19 +371,15 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 window.location.href = '/help/';
                 break;
             case 'chat': {
-                const input = document.querySelector<HTMLInputElement>('input[aria-label="Message"]');
-                if (input) {
-                    input.focus();
-                    input.scrollIntoView({behavior: 'smooth', block: 'center'});
-                }
+                window.dispatchEvent(new CustomEvent('crank:assistant-open', {
+                    detail: {surface: 'jobs'},
+                }));
                 break;
             }
             case 'complete_profile': {
-                const input = document.querySelector<HTMLInputElement>('input[aria-label="Message"]');
-                if (input) {
-                    input.focus();
-                    input.scrollIntoView({behavior: 'smooth', block: 'center'});
-                }
+                window.dispatchEvent(new CustomEvent('crank:assistant-open', {
+                    detail: {surface: 'jobs'},
+                }));
                 break;
             }
             case 'explore_companies': {

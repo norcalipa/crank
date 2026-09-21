@@ -72,5 +72,4 @@ def navigation_context(request):
             or path.startswith("/accounts/")
         ),
         "assistant_workspace_pinned": is_job_search,
-        "assistant_workspace_pinned": is_job_search,
     }
