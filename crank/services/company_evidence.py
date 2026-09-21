@@ -17,17 +17,27 @@ Invariants enforced here:
 - Exactly one evidence row per ``(organization, field_key)`` is in state
   ``accepted``. MySQL cannot emit a partial unique constraint (W036), so the
   invariant is serialized with ``select_for_update`` — the same shape as
-  ``crank.services.scores._persist_locked``.
+  ``crank.services.scores._persist_locked``. The *organization* row is
+  locked as well, because locking only the evidence rows locks nothing on a
+  first accept (there are none yet); and every accepted row for the field is
+  superseded, not just the newest, so a duplicate left by any earlier race
+  heals back to exactly one on the next accept.
 - ``record_check`` is the sole writer of the four freshness timestamps:
   ``last_checked_at`` moves on every attempt, ``last_successful_fetch_at``
   only on a successful fetch, ``last_changed_at`` only when the extracted
   value differs, and ``last_verified_at`` only when the fetch succeeded and
-  the value still validates.
+  the value still validates. It never writes a value unless the caller
+  passes ``accept_value=True`` to assert the value came from an accepted
+  observation, so an unaccepted reading (a conflicted crawl, say) can record
+  freshness without ever mutating the accepted claim.
+- Provenance (``source_url``/``source_domain``) comes from the host that was
+  actually fetched, never from what the crawled page claims about itself.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from urllib.parse import urlsplit
 
 from django.db import transaction
 from django.utils import timezone
@@ -36,6 +46,7 @@ from crank.models.company_profile import (
     CompanyFieldEvidence,
     CompanyProfileObservation,
 )
+from crank.models.organization import Organization
 from crank.models.publication import PublicationEvent
 from crank.services import publication
 
@@ -45,10 +56,12 @@ ObservationStatus = CompanyProfileObservation.Status
 
 DEFAULT_FRESHNESS_DAYS = 180
 
-# Maximum accepted age of ``last_verified_at`` per field key, in days. Keys
-# absent from this map fall back to ``DEFAULT_FRESHNESS_DAYS``. The policy is
-# data (not scattered literals) so the API payload, the crawler, and any
-# future consumer compute staleness identically.
+# Maximum accepted age of ``last_verified_at`` per field key, in days. The
+# policy is data (not scattered literals) so the API payload, the crawler,
+# and any future consumer compute staleness identically. This map enumerates
+# every ``FieldKey``, so the ``DEFAULT_FRESHNESS_DAYS`` fallback in
+# ``is_stale`` is future-proofing for a key added here later — it is not
+# reachable from any registered field key today.
 FIELD_FRESHNESS_POLICY: dict[str, int] = {
     FieldKey.RTO_POLICY: 90,
     FieldKey.FUNDING_ROUND: 180,
@@ -78,7 +91,7 @@ class EvidenceNotAcceptable(Exception):
     """Raised when an observation cannot produce accepted evidence."""
 
 
-def _field_value_text(field_key: str, raw) -> str:
+def _field_value_text(raw) -> str:
     """Normalize one observation attribute into bounded ``value_text``."""
     if raw is None:
         return ""
@@ -93,7 +106,7 @@ def observation_field_values(observation: CompanyProfileObservation) -> dict[str
     """Return the non-empty field values an observation carries, by key."""
     values: dict[str, str] = {}
     for field_key, attribute in _OBSERVATION_FIELD_MAP.items():
-        value = _field_value_text(field_key, getattr(observation, attribute, None))
+        value = _field_value_text(getattr(observation, attribute, None))
         if value:
             values[field_key] = value
     return values
@@ -109,15 +122,17 @@ def accept_observation_fields(
     pending, rejected, or conflicted observation can never produce an
     accepted evidence row.
 
-    Within one transaction, the organization's existing evidence rows are
-    locked with ``select_for_update``, the current ``accepted`` row per
-    carried field is marked ``superseded``, and one replacement row is
-    created. ``last_changed_at`` is set on first accept and otherwise only
-    advances when the value actually differs, so an unchanged re-acceptance
-    refreshes freshness without claiming the value changed. One
-    ``PublicationEvent`` per organization is recorded in the same
-    transaction so the provenance cache is invalidated through the existing
-    outbox path.
+    Within one transaction the organization row is locked, every
+    ``accepted`` row for each carried field is marked ``superseded``, and one
+    replacement row is created. ``last_changed_at`` is set on first accept
+    and otherwise only advances when the value actually differs, so an
+    unchanged re-acceptance refreshes freshness without claiming the value
+    changed. Provenance is taken from the host the crawler actually fetched
+    (``source_url``); the page's self-claimed domain is kept in
+    ``scope_json['claimed_domain']``, where it reads as a claim rather than
+    as attribution. One ``PublicationEvent`` per organization is recorded in
+    the same transaction so the provenance cache is invalidated through the
+    existing outbox path.
     """
     if observation.organization_id is None:
         raise EvidenceNotAcceptable("observation has no resolved organization")
@@ -131,29 +146,35 @@ def accept_observation_fields(
     now = now or timezone.now()
     organization_id = observation.organization_id
     values = observation_field_values(observation)
+    fetched_domain = (urlsplit(observation.source_url).hostname or "").lower()
+    claimed_domain = _field_value_text(observation.observed_domain)
+    scope_json = {"claimed_domain": claimed_domain} if claimed_domain else {}
     created: list[CompanyFieldEvidence] = []
     with transaction.atomic():
-        # Lock every evidence row for this organization for the whole
-        # transaction, so concurrent accepts serialize and always reconcile
-        # against the winner's committed state (locking reads; see
+        # Lock the organization row, not just its evidence rows: on a first
+        # accept there are no evidence rows to lock, so two concurrent
+        # accepts would both see no current row and both create one. Locking
+        # the parent serializes that case too (locking reads; see
         # crank.services.scores._persist_locked for the precedent).
-        locked_rows = list(
-            CompanyFieldEvidence.objects.filter(
-                organization_id=organization_id
-            ).select_for_update()
-        )
+        Organization.objects.select_for_update().filter(pk=organization_id).first()
         for field_key, value in values.items():
-            current = next(
-                (
-                    row
-                    for row in locked_rows
-                    if row.field_key == field_key and row.state == State.ACCEPTED
-                ),
-                None,
+            locked_rows = list(
+                CompanyFieldEvidence.objects.filter(
+                    organization_id=organization_id,
+                    field_key=field_key,
+                    state=State.ACCEPTED,
+                )
+                .select_for_update()
+                .order_by("-observed_at", "-id")
             )
-            if current is not None:
-                current.state = State.SUPERSEDED
-                current.save(update_fields=["state", "modified"])
+            current = locked_rows[0] if locked_rows else None
+            if locked_rows:
+                # Supersede the whole accepted set, not only ``current``: if
+                # an earlier race left duplicates, this accept heals them
+                # back to exactly one accepted row.
+                CompanyFieldEvidence.objects.filter(
+                    pk__in=[row.pk for row in locked_rows]
+                ).update(state=State.SUPERSEDED, modified=now)
             if current is None:
                 # First accept: the value appears now, so it changed now.
                 last_changed_at = now
@@ -168,9 +189,9 @@ def accept_observation_fields(
                     field_key=field_key,
                     value_text=value,
                     source_url=observation.source_url,
-                    source_domain=observation.observed_domain,
+                    source_domain=fetched_domain,
                     observation=observation,
-                    scope_json={},
+                    scope_json=dict(scope_json),
                     observed_at=observation.observed_at,
                     validation_version=observation.extraction_version,
                     extractor_version=observation.extraction_version,
@@ -186,7 +207,10 @@ def accept_observation_fields(
                 target_type=PublicationEvent.TargetType.ORGANIZATION,
                 target_id=organization_id,
                 event_kind=PublicationEvent.EventKind.OBSERVED,
-                payload={"observation_id": observation.pk},
+                payload={
+                    "observation_id": observation.pk,
+                    "status": observation.status,
+                },
             )
     return created
 
@@ -198,19 +222,26 @@ def record_check(
     success: bool,
     value=None,
     verified: bool = False,
+    accept_value: bool = False,
     now: datetime | None = None,
 ) -> CompanyFieldEvidence | None:
     """Record one re-check of the accepted claim for ``field_key``.
 
     The sole writer of the four freshness timestamps. ``last_checked_at``
     advances on every attempt; ``last_successful_fetch_at`` only when
-    ``success``; ``last_changed_at`` (and the stored ``value_text``) only
-    when the extracted ``value`` differs from the stored one;
-    ``last_verified_at`` only when the fetch succeeded *and* the value still
-    validates. A failed or rejected fetch therefore advances
-    ``last_checked_at`` alone and leaves the other three untouched. Returns
-    the updated row, or ``None`` when no accepted evidence exists for the
-    field (missing evidence is explicit — no row is created here).
+    ``success``; ``last_verified_at`` only when the fetch succeeded *and* the
+    value still validates. A failed or rejected fetch therefore advances
+    ``last_checked_at`` alone and leaves the other three untouched.
+
+    ``last_changed_at`` (and the stored ``value_text``) move only when the
+    caller passes ``accept_value=True`` *and* the value differs. That opt-in
+    is the guard on AC-2: a re-check is a freshness signal, and only a caller
+    that has already established acceptance may also make it a value signal.
+    Without it an unaccepted reading — a conflicted crawl, say — can never be
+    smuggled into the accepted row.
+
+    Returns the updated row, or ``None`` when no accepted evidence exists for
+    the field (missing evidence is explicit — no row is created here).
     """
     now = now or timezone.now()
     with transaction.atomic():
@@ -231,8 +262,8 @@ def record_check(
         if success:
             row.last_successful_fetch_at = now
             update_fields.append("last_successful_fetch_at")
-            if value is not None:
-                value_text = _field_value_text(field_key, value)
+            if accept_value and value is not None:
+                value_text = _field_value_text(value)
                 if value_text and value_text != row.value_text:
                     row.value_text = value_text
                     row.last_changed_at = now

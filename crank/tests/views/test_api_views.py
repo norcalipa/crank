@@ -200,9 +200,11 @@ class ApiViewsTest(TestCase):
         entry = by_key['rto_policy']
         self.assertEqual(entry['state'], 'accepted')
         self.assertEqual(entry['value'], 'Remote first')
-        self.assertEqual(entry['source_domain'], 'example.test')
+        # Attribution is the host actually fetched, not the domain the page
+        # claims for itself — that is carried in scope, as a claim.
+        self.assertEqual(entry['source_domain'], 'jobs.example.test')
         self.assertIsNotNone(entry['observed_at'])
-        self.assertEqual(entry['scope'], {})
+        self.assertEqual(entry['scope'], {'claimed_domain': 'example.test'})
         for key in ('last_checked_at', 'last_successful_fetch_at',
                     'last_changed_at', 'last_verified_at'):
             self.assertIsNotNone(entry[key])
@@ -294,3 +296,32 @@ class ApiViewsTest(TestCase):
 
         refreshed = self._provenance(organization)
         self.assertIn('unverified_fields', refreshed)
+
+    def test_pre_deploy_cached_payload_without_fields_is_rebuilt(self):
+        organization = Organization.objects.create(
+            name='Detail Org', url='https://example.test', status=1
+        )
+        observation = self._observation(
+            organization, status=CompanyProfileObservation.Status.AUTO_APPLIED
+        )
+        accept_observation_fields(observation)
+        # An entry written before this deploy: same key, older payload shape
+        # with no evidence arrays. Serving it would render the modal with no
+        # evidence section at all for the rest of the TTL.
+        cache.set(
+            organization_provenance_api_cache_key(organization.pk),
+            {
+                'organization_id': organization.pk,
+                'organization_modified': None,
+                'organization_created': None,
+                'latest_observation': None,
+            },
+        )
+
+        data = self._provenance(organization)
+
+        self.assertIn('fields', data)
+        self.assertIn(
+            'rto_policy', {entry['field_key'] for entry in data['fields']}
+        )
+        self.assertIsNotNone(data['latest_observation'])

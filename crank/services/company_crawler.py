@@ -309,18 +309,42 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
                         observation, now=observed_at
                     )
                     counts["evidence_accepted"] += len(evidence_rows)
-                elif (
-                    organization is not None
-                    and status == CompanyProfileObservation.Status.CONFLICTED
-                ):
-                    for field_key, value in company_evidence.observation_field_values(
-                        observation
-                    ).items():
+                    # The fetch succeeded for the whole page, so every
+                    # registered field was checked — including any the page
+                    # stopped carrying. Recording the attempt on those keeps
+                    # a dropped statement aging honestly instead of freezing
+                    # last_checked_at and drifting into stale while the
+                    # source is in fact being polled successfully. No value
+                    # and no verification: this fetch carried neither.
+                    accepted_keys = {row.field_key for row in evidence_rows}
+                    for field_key in company_evidence.FieldKey.values:
+                        if field_key in accepted_keys:
+                            continue
                         company_evidence.record_check(
                             organization,
                             field_key,
                             success=True,
-                            value=value,
+                            verified=False,
+                            now=observed_at,
+                        )
+                elif (
+                    organization is not None
+                    and status == CompanyProfileObservation.Status.CONFLICTED
+                ):
+                    # Freshness only. An observation is CONFLICTED precisely
+                    # because its value differs from the accepted one, so
+                    # passing that value here would replace a reviewed claim
+                    # with never-reviewed content (AC-2 violation). No value
+                    # is passed and ``accept_value`` stays False, so
+                    # record_check can only move last_checked_at /
+                    # last_successful_fetch_at.
+                    for field_key in company_evidence.observation_field_values(
+                        observation
+                    ):
+                        company_evidence.record_check(
+                            organization,
+                            field_key,
+                            success=True,
                             verified=False,
                             now=observed_at,
                         )

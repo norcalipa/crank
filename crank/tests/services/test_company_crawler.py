@@ -2,10 +2,12 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 """Tests for review-first company profile crawling."""
 
+import json
 from datetime import timedelta
 
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth.models import User
+from django.core.cache import cache
 from django.test import RequestFactory, TestCase, override_settings
 from django.utils import timezone
 import pytest
@@ -312,8 +314,94 @@ class CompanyCrawlerTests(TestCase):
         self.assertEqual(evidence.count(), result.evidence_accepted)
         rto = evidence.get(field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY)
         self.assertEqual(rto.value_text, "Remote first")
-        self.assertEqual(rto.source_domain, "example.test")
+        # The fetched host, not the domain the page claims for itself.
+        self.assertEqual(rto.source_domain, "jobs.example.test")
+        self.assertEqual(rto.scope_json, {"claimed_domain": "example.test"})
         self.assertIsNotNone(rto.last_verified_at)
+
+    def test_successful_crawl_checks_fields_the_page_stopped_carrying(self):
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        first_at = timezone.now() - timedelta(days=30)
+        crawl_company_profile(self.source, client=FakeClient([profile()]), now=first_at)
+        rto = CompanyFieldEvidence.objects.get(
+            organization=organization,
+            field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
+            state=CompanyFieldEvidence.State.ACCEPTED,
+        )
+        self.assertEqual(rto.last_checked_at, first_at)
+
+        # The company drops its RTO statement from the page. The fetch still
+        # succeeded, so the claim *was* checked — it just was not re-verified,
+        # and it must not freeze at the old last_checked_at and drift stale.
+        second_at = timezone.now()
+        crawl_company_profile(
+            self.source,
+            client=FakeClient([profile(rto_evidence="")]),
+            now=second_at,
+        )
+
+        rto.refresh_from_db()
+        self.assertEqual(rto.state, CompanyFieldEvidence.State.ACCEPTED)
+        self.assertEqual(rto.value_text, "Remote first")
+        self.assertEqual(rto.last_checked_at, second_at)
+        self.assertEqual(rto.last_successful_fetch_at, second_at)
+        self.assertEqual(rto.last_verified_at, first_at)
+        self.assertEqual(rto.last_changed_at, first_at)
+
+    @override_settings(
+        CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}}
+    )
+    def test_conflicted_crawl_never_touches_the_accepted_value(self):
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        first_at = timezone.now() - timedelta(days=3)
+        crawl_company_profile(self.source, client=FakeClient([profile()]), now=first_at)
+        accepted = CompanyFieldEvidence.objects.get(
+            organization=organization,
+            field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
+            state=CompanyFieldEvidence.State.ACCEPTED,
+        )
+        self.assertEqual(accepted.value_text, "Remote first")
+
+        # The page now conflicts with the accepted reading *and* claims a
+        # different RTO policy. A conflicted observation is unreviewed, so it
+        # is a freshness signal only — it must never become the claim.
+        second_at = timezone.now()
+        result = crawl_company_profile(
+            self.source,
+            client=FakeClient([profile(
+                description="Totally different description",
+                rto_evidence="Five days in office, no exceptions",
+            )]),
+            now=second_at,
+        )
+
+        self.assertEqual(result.conflicted, 1)
+        self.assertEqual(result.evidence_accepted, 0)
+        accepted.refresh_from_db()
+        self.assertEqual(accepted.state, CompanyFieldEvidence.State.ACCEPTED)
+        self.assertEqual(accepted.value_text, "Remote first")
+        self.assertEqual(accepted.last_changed_at, first_at)
+        self.assertEqual(accepted.last_verified_at, first_at)
+        # The attempt itself is still recorded.
+        self.assertEqual(accepted.last_checked_at, second_at)
+        self.assertEqual(accepted.last_successful_fetch_at, second_at)
+
+        # And the API keeps serving the accepted value, not the conflict.
+        cache.clear()
+        response = self.client.get(f"/api/organizations/{organization.pk}/provenance/")
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.content.decode("utf-8"))
+        entry = next(
+            item for item in payload["fields"] if item["field_key"] == "rto_policy"
+        )
+        self.assertEqual(entry["state"], "accepted")
+        self.assertEqual(entry["value"], "Remote first")
+        self.assertFalse(entry["stale"])
+        self.assertFalse(payload["latest_observation"]["is_verified"])
 
     def test_conflicted_observation_creates_no_accepted_evidence(self):
         Organization.objects.create(name="Example Labs", url="https://example.test")
@@ -392,6 +480,87 @@ class CompanyProfileAdminTests(TestCase):
         self.assertEqual(observation.status, CompanyProfileObservation.Status.ACCEPTED)
         self.assertEqual(observation.reviewed_by, user)
         self.assertIsNotNone(observation.reviewed_at)
+        # No resolved organization: the review outcome records, but there is
+        # no scope to attach evidence to, and the action must not blow up.
+        self.assertEqual(CompanyFieldEvidence.objects.count(), 0)
+
+    def test_operator_accept_creates_accepted_evidence(self):
+        user = User.objects.create_user(
+            username="operator3", password="password", is_staff=True
+        )
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        observation = CompanyProfileObservation.objects.create(
+            organization=organization,
+            source_url="https://jobs.example.test/about",
+            observed_domain="example.test",
+            observed_name="Example Labs",
+            locations=["Remote"],
+            rto_evidence="Remote first",
+            observed_at=timezone.now(),
+            extraction_version=EXTRACTION_VERSION,
+            fingerprint="admin-fingerprint-accept",
+        )
+        request = RequestFactory().post("/admin/crank/companyprofileobservation/")
+        request.user = user
+        model_admin = CompanyProfileObservationAdmin(CompanyProfileObservation, AdminSite())
+        model_admin.message_user = lambda *_args, **_kwargs: None
+
+        model_admin.accept_observations(
+            request, CompanyProfileObservation.objects.filter(pk=observation.pk)
+        )
+
+        observation.refresh_from_db()
+        self.assertEqual(observation.status, CompanyProfileObservation.Status.ACCEPTED)
+        rto = CompanyFieldEvidence.objects.get(
+            organization=organization,
+            field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
+            state=CompanyFieldEvidence.State.ACCEPTED,
+        )
+        self.assertEqual(rto.value_text, "Remote first")
+        self.assertEqual(rto.observation, observation)
+        self.assertIsNotNone(rto.last_verified_at)
+        # The provenance cache is invalidated through the same outbox event
+        # the crawler uses — not a bespoke cache.delete.
+        self.assertTrue(
+            PublicationEvent.objects.filter(
+                target_type=PublicationEvent.TargetType.ORGANIZATION,
+                target_id=organization.pk,
+                event_kind=PublicationEvent.EventKind.OBSERVED,
+            ).exists()
+        )
+
+    def test_operator_reject_creates_no_evidence(self):
+        user = User.objects.create_user(
+            username="operator4", password="password", is_staff=True
+        )
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        observation = CompanyProfileObservation.objects.create(
+            organization=organization,
+            source_url="https://jobs.example.test/about",
+            observed_domain="example.test",
+            observed_name="Example Labs",
+            rto_evidence="Remote first",
+            observed_at=timezone.now(),
+            extraction_version=EXTRACTION_VERSION,
+            fingerprint="admin-fingerprint-reject",
+        )
+        request = RequestFactory().post("/admin/crank/companyprofileobservation/")
+        request.user = user
+        model_admin = CompanyProfileObservationAdmin(CompanyProfileObservation, AdminSite())
+        model_admin.message_user = lambda *_args, **_kwargs: None
+
+        model_admin.reject_observations(
+            request, CompanyProfileObservation.objects.filter(pk=observation.pk)
+        )
+        model_admin.conflict_observations(
+            request, CompanyProfileObservation.objects.filter(pk=observation.pk)
+        )
+
+        self.assertEqual(CompanyFieldEvidence.objects.count(), 0)
 
     def test_reject_and_conflict_review_actions(self):
         user = User.objects.create_user(username="operator2", password="password", is_staff=True)

@@ -19,7 +19,7 @@ from crank.models.preference import UserPreference, UserPreferenceAudit
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
 from crank.models.source import ApprovalState, SourceCatalog, SourceRun, SourceCatalogAudit
 from crank.models.monitoring import CapabilitySwitch, OperationalChangeAudit
-from crank.services import monitoring
+from crank.services import company_evidence, monitoring
 from crank.services.crawl_runs import CrawlRequestError, trigger_crawl
 
 
@@ -420,7 +420,22 @@ class CompanyProfileObservationAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     def _review(self, request, queryset, status):
         count = 0
         for observation in queryset:
-            observation.mark_reviewed(status=status, user=request.user)
+            with transaction.atomic():
+                observation.mark_reviewed(status=status, user=request.user)
+                if status == CompanyProfileObservation.Status.ACCEPTED:
+                    # An operator accept is an ACCEPTED-producing surface, so
+                    # it must create the same field-level evidence the
+                    # crawler does (issue #460, AC-4) — and, through the same
+                    # outbox event, the same provenance cache invalidation.
+                    # Same transaction as the review state: evidence is never
+                    # recorded for a review that did not commit.
+                    try:
+                        company_evidence.accept_observation_fields(observation)
+                    except company_evidence.EvidenceNotAcceptable:
+                        # Unresolved organization: the review outcome still
+                        # records, there is just no organization scope to
+                        # attach evidence to until the identity resolves.
+                        pass
             count += 1
         self.message_user(request, f"{count} company profile observation(s) marked {status}.")
 

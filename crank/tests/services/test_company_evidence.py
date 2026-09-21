@@ -104,7 +104,10 @@ class AcceptObservationFieldsTests(TestCase):
         self.assertEqual(row.state, State.ACCEPTED)
         self.assertEqual(row.value_text, "Remote first")
         self.assertEqual(row.source_url, "https://jobs.example.test/about")
-        self.assertEqual(row.source_domain, "example.test")
+        # Attribution comes from the host actually fetched, never from what
+        # the page claims about itself.
+        self.assertEqual(row.source_domain, "jobs.example.test")
+        self.assertEqual(row.scope_json, {"claimed_domain": "example.test"})
         self.assertEqual(row.observation, observation)
         self.assertEqual(row.observed_at, observation.observed_at)
         self.assertEqual(row.validation_version, observation.extraction_version)
@@ -196,6 +199,9 @@ class AcceptObservationFieldsTests(TestCase):
         self.assertEqual(event.target_id, self.organization.pk)
         self.assertEqual(event.event_kind, PublicationEvent.EventKind.OBSERVED)
         self.assertEqual(event.payload["observation_id"], observation.pk)
+        # Same payload shape as the crawler's non-evidence fallback event, so
+        # the ORGANIZATION/OBSERVED outbox contract does not vary by path.
+        self.assertEqual(event.payload["status"], observation.status)
         self.assertEqual(
             CompanyFieldEvidence.objects.filter(state=State.ACCEPTED).count(), 6
         )
@@ -214,6 +220,60 @@ class AcceptObservationFieldsTests(TestCase):
         created = accept_observation_fields(observation)
         self.assertEqual(created, [])
         self.assertEqual(PublicationEvent.objects.count(), 0)
+
+    def test_page_claimed_domain_never_becomes_the_attribution(self):
+        # The crawled page claims an authoritative-looking domain for itself.
+        # source_url is allowlist-checked against the fetch host; the claim
+        # is not, so it must never be presented as provenance.
+        observation = make_observation(
+            self.organization,
+            status=Status.AUTO_APPLIED,
+            source_url="https://sketchy-aggregator.example/acme",
+            observed_domain="sec.gov",
+        )
+
+        accept_observation_fields(observation)
+
+        for row in CompanyFieldEvidence.objects.filter(state=State.ACCEPTED):
+            self.assertEqual(row.source_domain, "sketchy-aggregator.example")
+            self.assertNotEqual(row.source_domain, "sec.gov")
+            self.assertEqual(row.scope_json, {"claimed_domain": "sec.gov"})
+
+    def test_accept_heals_duplicate_accepted_rows_to_exactly_one(self):
+        # Two accepted rows for one field, as an earlier unserialized race
+        # could have left behind. The next legitimate accept must reconcile
+        # them, not supersede one and add another.
+        for index in range(2):
+            CompanyFieldEvidence.objects.create(
+                organization=self.organization,
+                field_key=FieldKey.RTO_POLICY,
+                value_text=f"Racer {index}",
+                source_url="https://jobs.example.test/about",
+                source_domain="jobs.example.test",
+                observed_at=timezone.now() - timedelta(days=2 + index),
+                validation_version="v1",
+                extractor_version="v1",
+                state=State.ACCEPTED,
+            )
+        observation = make_observation(
+            self.organization, status=Status.AUTO_APPLIED, fingerprint="fp-heal"
+        )
+
+        accept_observation_fields(observation)
+
+        accepted = CompanyFieldEvidence.objects.filter(
+            organization=self.organization,
+            field_key=FieldKey.RTO_POLICY,
+            state=State.ACCEPTED,
+        )
+        self.assertEqual(accepted.count(), 1)
+        self.assertEqual(accepted.get().observation, observation)
+        self.assertEqual(
+            CompanyFieldEvidence.objects.filter(
+                field_key=FieldKey.RTO_POLICY, state=State.SUPERSEDED
+            ).count(),
+            2,
+        )
 
 
 class RecordCheckTests(TestCase):
@@ -291,6 +351,7 @@ class RecordCheckTests(TestCase):
             success=True,
             value="Hybrid 2 days",
             verified=True,
+            accept_value=True,
             now=checked_at,
         )
 
@@ -299,6 +360,28 @@ class RecordCheckTests(TestCase):
         self.assertEqual(row.value_text, "Hybrid 2 days")
         self.assertGreater(row.last_changed_at, before.last_changed_at)
 
+    def test_value_is_ignored_unless_the_caller_accepts_it(self):
+        # AC-2: freshness is recordable from any fetch, but the accepted
+        # value may only be rewritten by a caller that has established
+        # acceptance. Without accept_value the value is inert.
+        before = self._row()
+        checked_at = timezone.now()
+
+        row = record_check(
+            self.organization,
+            FieldKey.RTO_POLICY,
+            success=True,
+            value="Five days in office, no exceptions",
+            verified=False,
+            now=checked_at,
+        )
+
+        self.assertEqual(row.value_text, before.value_text)
+        self.assertEqual(row.last_changed_at, before.last_changed_at)
+        self.assertEqual(row.last_verified_at, before.last_verified_at)
+        self.assertEqual(row.last_checked_at, checked_at)
+        self.assertEqual(row.last_successful_fetch_at, checked_at)
+
     def test_record_check_without_accepted_evidence_returns_none(self):
         result = record_check(
             self.organization,
@@ -306,6 +389,7 @@ class RecordCheckTests(TestCase):
             success=True,
             value="yes",
             verified=True,
+            accept_value=True,
         )
         self.assertIsNone(result)
         self.assertEqual(
