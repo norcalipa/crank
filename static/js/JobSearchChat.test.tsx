@@ -3262,6 +3262,8 @@ describe('preference change diff & undo (issue #466)', () => {
         });
         expect(screen.getByTestId('preference-change-empty')).toBeInTheDocument();
         expect(screen.queryByLabelText('Changed preferences')).not.toBeInTheDocument();
+        // Empty diff: the undo action says what it restores (issue #466 round 2).
+        expect(screen.getByTestId('preference-undo-button')).toHaveTextContent('Restore previous preferences');
     });
 
     test('loading state: undo button is disabled and busy while the request is in flight', async () => {
@@ -3327,6 +3329,12 @@ describe('preference change diff & undo (issue #466)', () => {
         // The notice stays populated so the user can see what was not undone.
         expect(screen.getByTestId('preference-change-notice')).toBeInTheDocument();
         expect(screen.getByRole('button', {name: 'Undo preference update'})).toBeEnabled();
+        // The primary recovery after a stale conflict is reviewing the
+        // current preferences, not retrying the dead undo token.
+        const reviewButton = screen.getByTestId('preference-review-button');
+        expect(reviewButton).toHaveTextContent('Review current preferences');
+        fireEvent.click(reviewButton);
+        expect(screen.getByLabelText('Message')).toHaveFocus();
     });
 
     test('error state: a network failure shows generic copy and allows retry', async () => {
@@ -3340,6 +3348,9 @@ describe('preference change diff & undo (issue #466)', () => {
         fireEvent.click(screen.getByRole('button', {name: 'Undo preference update'}));
         const errorPanel = await screen.findByTestId('preference-undo-error');
         expect(errorPanel).toHaveTextContent(/check your connection/i);
+        // Transient failure: retry stays possible and the review action appears.
+        expect(screen.getByRole('button', {name: 'Undo preference update'})).toBeEnabled();
+        expect(screen.getByTestId('preference-review-button')).toBeInTheDocument();
     });
 
     test('dismiss hides the notice and discards the token', async () => {

@@ -410,39 +410,50 @@ export function preferenceValueLabel(value: unknown): string {
  * populated (diff list + Undo), loading (undo request in flight), empty
  * (update reported but no field diff), and error (undo rejected, e.g. a
  * stale-revision conflict). */
-export function PreferenceChangeNotice({changes, undoState, undoError, onUndo, onDismiss}: {
+export function PreferenceChangeNotice({changes, undoState, undoError, onUndo, onDismiss, onReview}: {
     changes: PreferenceChange[];
     undoState: PreferenceUndoState;
     undoError: string | null;
     onUndo: () => void;
     onDismiss: () => void;
+    // Stale-conflict recovery (issue #466 round 2): focus the composer so the
+    // user can ask the assistant for the current preferences.
+    onReview?: () => void;
 }) {
     if (undoState === 'done') {
         return (
-            <div className="alert alert-info d-flex justify-content-between align-items-center"
+            <div className="alert alert-success pref-change-notice"
                  role="status" aria-label="Preference update undone" data-testid="preference-change-undone">
-                <span>
-                    <i className="fa-solid fa-rotate-left me-1" aria-hidden="true"></i>
-                    The preference update was undone.
-                </span>
-                <button type="button" className="btn-close" aria-label="Dismiss undo notice"
-                        onClick={onDismiss}></button>
+                <div className="pref-change-header">
+                    <span className="pref-change-summary">
+                        <i className="fa-solid fa-rotate-left me-1" aria-hidden="true"></i>
+                        The preference update was undone.
+                    </span>
+                    <button type="button" className="pref-change-dismiss" aria-label="Dismiss undo notice"
+                            onClick={onDismiss}>
+                        <i className="fa-solid fa-xmark" aria-hidden="true"></i>
+                    </button>
+                </div>
             </div>
         );
     }
     const pending = undoState === 'pending';
+    const staleConflict = undoState === 'error' && undoError !== null;
+    const emptyDiff = changes.length === 0;
     return (
         <div className="alert alert-success pref-change-notice" role="status"
              aria-label="Preference update details" data-testid="preference-change-notice">
-            <div className="d-flex justify-content-between align-items-start">
-                <span>
+            <div className="pref-change-header">
+                <span className="pref-change-summary">
                     <i className="fa-solid fa-circle-check me-1" aria-hidden="true"></i>
                     Your saved preferences were updated based on this conversation.
                 </span>
-                <button type="button" className="btn-close" aria-label="Dismiss preference notice"
-                        onClick={onDismiss}></button>
+                <button type="button" className="pref-change-dismiss" aria-label="Dismiss preference notice"
+                        onClick={onDismiss}>
+                    <i className="fa-solid fa-xmark" aria-hidden="true"></i>
+                </button>
             </div>
-            {changes.length > 0 ? (
+            {!emptyDiff ? (
                 <ul className="pref-change-list" aria-label="Changed preferences">
                     {changes.map((change) => (
                         <li key={change.path} className="pref-change-item">
@@ -468,6 +479,16 @@ export function PreferenceChangeNotice({changes, undoState, undoError, onUndo, o
                 </div>
             )}
             <div className="chat-actions mt-2" role="group" aria-label="Preference update actions">
+                {staleConflict && onReview && (
+                    // After a stale conflict the undo token is dead, so the
+                    // primary recovery is reviewing the current preferences
+                    // (focuses the composer); Undo drops to secondary.
+                    <button type="button" className="chat-btn chat-btn-primary pref-review-btn"
+                            onClick={onReview} data-testid="preference-review-button">
+                        <i className="fa-solid fa-list-check me-1" aria-hidden="true"></i>
+                        Review current preferences
+                    </button>
+                )}
                 <button type="button" className="chat-btn chat-btn-secondary chat-focus pref-undo-btn"
                         onClick={onUndo} disabled={pending}
                         aria-label={pending ? 'Undoing preference update' : 'Undo preference update'}
@@ -476,6 +497,12 @@ export function PreferenceChangeNotice({changes, undoState, undoError, onUndo, o
                         <>
                             <span className="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
                             Undoing…
+                        </>
+                    ) : emptyDiff ? (
+                        // Empty diff: say what the undo restores.
+                        <>
+                            <i className="fa-solid fa-rotate-left me-1" aria-hidden="true"></i>
+                            Restore previous preferences
                         </>
                     ) : (
                         <>
@@ -2003,6 +2030,12 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                             setPrefUndoToken(null);
                             setPrefUndoState('idle');
                             setPrefUndoError(null);
+                        }}
+                        onReview={() => {
+                            // Stale-conflict recovery: the current
+                            // preferences are reviewed through the
+                            // assistant, so focus the composer.
+                            composerRef.current?.focus();
                         }}
                     />
                 )}
