@@ -14,7 +14,6 @@
        item 5). */
     --assistant-drawer-width: clamp(340px, 42vw, 400px);
     --z-assistant: 1050;
-}
 
     /* Shared stacking-layer tokens (issue #464). Navigation chrome, blocking
        dialogs and the skip link consume these instead of inventing numbers.

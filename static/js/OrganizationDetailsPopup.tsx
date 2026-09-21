@@ -16,6 +16,21 @@ interface ProvenanceObservation {
     observed_at: string;
     extraction_version: string;
     status: string;
+    is_verified?: boolean;
+}
+
+interface ProvenanceFieldEvidence {
+    field_key: string;
+    state: string;
+    value: string;
+    source_domain: string;
+    observed_at: string;
+    scope: Record<string, unknown>;
+    last_checked_at: string | null;
+    last_successful_fetch_at: string | null;
+    last_changed_at: string | null;
+    last_verified_at: string | null;
+    stale: boolean;
 }
 
 interface ProvenanceData {
@@ -23,6 +38,8 @@ interface ProvenanceData {
     organization_modified: string | null;
     organization_created: string | null;
     latest_observation: ProvenanceObservation | null;
+    fields?: ProvenanceFieldEvidence[];
+    unverified_fields?: string[];
 }
 
 interface Organization {
@@ -74,6 +91,31 @@ export function companySignInUrl(template: string | undefined, companyId: number
 export function companyChatUrl(companyId: number): string {
     return `/chat/?company=${companyId}`;
 }
+
+// Display labels for accepted field-level evidence keys (issue #460).
+const fieldKeyMap: Record<string, string> = {
+    rto_policy: 'RTO Policy',
+    funding_round: 'Funding Round',
+    public_status: 'Public Status',
+    accelerated_vesting: 'Accelerated Vesting',
+    locations: 'Locations',
+    company_name: 'Company Name',
+    company_domain: 'Company Domain',
+};
+
+const fieldKeyLabel = (key: string): string => fieldKeyMap[key] || key;
+
+// Render an evidence scope (e.g. {"countries": [...], "roles": [...]}) as a
+// short human-readable suffix; empty scope renders nothing.
+const formatScope = (scope: Record<string, unknown>): string => {
+    const parts: string[] = [];
+    for (const [key, value] of Object.entries(scope)) {
+        if (Array.isArray(value) && value.length > 0) {
+            parts.push(`${key}: ${value.join(', ')}`);
+        }
+    }
+    return parts.length > 0 ? ` (${parts.join('; ')})` : '';
+};
 
 const formatRelativeTime = (isoString: string | null): string => {
     if (!isoString) return 'Unknown';
@@ -471,9 +513,58 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                                 <div className="col-5 text-end fw-bold">Observation Status:</div>
                                                 <div className="col-7">{provenance.latest_observation.status || 'Unknown'}</div>
                                             </div>
+                                            {provenance.latest_observation.is_verified === false && (
+                                                <div className="row mb-2">
+                                                    <div className="col-5 text-end fw-bold">Verification:</div>
+                                                    <div className="col-7 text-muted" data-testid="observation-not-verified">
+                                                        Not accepted evidence — shown for inspection only.
+                                                    </div>
+                                                </div>
+                                            )}
                                         </div>
                                     ) : (
                                         <p className="text-muted small mb-2" data-testid="no-observation">No crawl observations recorded. Data is curated from submitted reviews.</p>
+                                    )}
+                                    {provenance.fields && provenance.fields.length > 0 && (
+                                        <div className="mt-2" data-testid="field-evidence">
+                                            {provenance.fields.map(fieldEvidence => (
+                                                <div className="row mb-2" key={fieldEvidence.field_key}
+                                                     data-testid={`field-evidence-${fieldEvidence.field_key}`}>
+                                                    <div className="col-5 text-end fw-bold">
+                                                        {fieldKeyLabel(fieldEvidence.field_key)}:
+                                                    </div>
+                                                    <div className="col-7">
+                                                        <span data-testid={`field-value-${fieldEvidence.field_key}`}>
+                                                            {fieldEvidence.value}
+                                                        </span>
+                                                        <span className="text-muted small">
+                                                            {' '}— {fieldEvidence.source_domain || 'unknown source'},
+                                                            observed {formatDate(fieldEvidence.observed_at)}
+                                                            {formatScope(fieldEvidence.scope)}
+                                                        </span>
+                                                        {fieldEvidence.stale && (
+                                                            <span className="badge bg-warning text-dark ms-1"
+                                                                  data-testid={`field-stale-${fieldEvidence.field_key}`}>
+                                                                Stale — last verified {formatDate(fieldEvidence.last_verified_at)}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    {provenance.unverified_fields && provenance.unverified_fields.length > 0 && (
+                                        <div className="mt-2" data-testid="unverified-fields">
+                                            {provenance.unverified_fields.map(fieldKey => (
+                                                <div className="row mb-2" key={fieldKey}
+                                                     data-testid={`field-unverified-${fieldKey}`}>
+                                                    <div className="col-5 text-end fw-bold">
+                                                        {fieldKeyLabel(fieldKey)}:
+                                                    </div>
+                                                    <div className="col-7 text-muted">No accepted evidence</div>
+                                                </div>
+                                            ))}
+                                        </div>
                                     )}
                                     {isAuthenticated && (
                                         <div className="mt-2" data-testid="correction-action">

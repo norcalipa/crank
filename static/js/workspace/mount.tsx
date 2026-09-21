@@ -14,6 +14,29 @@ import WorkspaceShell from './WorkspaceShell';
 import {installWorkspaceBridge, openAssistant, setWorkspaceContext} from './store';
 import {WorkspaceContext} from './types';
 
+// Server-rendered auth context for the pinned /chat/ host (issue #465 AC-9/10,
+// restored after the workspace rebase). The workspace hands these to
+// JobSearchChat so its accountKey reconciliation runs before any effect reads
+// a stored draft — the contract main's `#job-search-chat` div used to provide.
+function authPropsFrom(host: HTMLElement): {
+    isAuthenticated?: boolean;
+    visitorState?: string;
+    signInUrl?: string;
+    signedOutMessage?: string;
+    accountKey?: string;
+} {
+    if (host.dataset.assistantPinned !== 'true') {
+        return {};
+    }
+    return {
+        isAuthenticated: host.dataset.authenticated === 'true',
+        visitorState: host.dataset.visitorState,
+        signInUrl: host.dataset.signInUrl,
+        signedOutMessage: host.dataset.signedOutMessage,
+        accountKey: host.dataset.accountKey,
+    };
+}
+
 // Derives the surface context from the request path so every page reports
 // the same shape through setWorkspaceContext (issue #472 AC-2).
 export function surfaceFromPath(pathname: string): WorkspaceContext['surface'] {
@@ -37,7 +60,7 @@ document.addEventListener('DOMContentLoaded', () => {
     installWorkspaceBridge();
     setWorkspaceContext({surface: surfaceFromPath(window.location.pathname)});
     const root = createRoot(host);
-    root.render(<WorkspaceShell/>);
+    root.render(<WorkspaceShell authProps={authPropsFrom(host)}/>);
     // /chat/ is the pinned case of the shared workspace: the panel opens
     // docked (or as the viewport-appropriate placement) on load instead of
     // behind the launcher.

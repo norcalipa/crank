@@ -8,8 +8,10 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 
 from crank.models.organization import Organization
 from crank.models.company_profile import CompanyProfileObservation
+from crank.services.company_evidence import field_evidence_payload
 from crank.services.scores import (
     organization_api_cache_key,
+    organization_provenance_api_cache_key,
     organization_scores_api_cache_key,
 )
 
@@ -44,10 +46,26 @@ def organization_provenance(request, pk):
     - Organization created/modified timestamps (curated data freshness).
     - Latest CompanyProfileObservation source label, observed_at, extraction_version,
       and status — without exposing raw crawl HTML, credentials, or unsafe URLs.
+      ``is_verified`` marks whether that observation is accepted evidence; a
+      pending/rejected/conflicted observation stays inspectable but is never
+      presented as verification (issue #460).
+    - ``fields``: one entry per field with accepted evidence, including scope,
+      the four freshness timestamps, and a per-response ``stale`` flag.
+    - ``unverified_fields``: registered field keys with no accepted evidence —
+      missing evidence is explicit.
     - Profile completeness percentage for trust context.
     """
-    cache_key = f'organization_provenance_api_{pk}'
+    cache_key = organization_provenance_api_cache_key(pk)
     prov_data = cache.get(cache_key)
+    if prov_data and 'fields' not in prov_data:
+        # Entry written before this deploy: the key is unchanged (the shared
+        # constructor also drives outbox invalidation, so versioning it here
+        # would desynchronize that), and the payload predates the evidence
+        # arrays. The frontend guards on ``provenance.fields``, so serving it
+        # would render the modal with no evidence section at all —
+        # indistinguishable from "no evidence exists". Treat it as a miss and
+        # rebuild once, instead of degrading for the rest of the TTL.
+        prov_data = None
 
     if not prov_data:
         organization = get_object_or_404(Organization, pk=pk, status=1)
@@ -71,7 +89,13 @@ def organization_provenance(request, pk):
                 'observed_at': latest_obs.observed_at.isoformat(),
                 'extraction_version': latest_obs.extraction_version,
                 'status': latest_obs.status,
+                'is_verified': latest_obs.status in (
+                    CompanyProfileObservation.Status.ACCEPTED,
+                    CompanyProfileObservation.Status.AUTO_APPLIED,
+                ),
             }
+
+        prov_data.update(field_evidence_payload(organization))
 
         cache.set(cache_key, prov_data, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
 

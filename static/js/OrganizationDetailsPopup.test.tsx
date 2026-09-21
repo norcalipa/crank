@@ -806,6 +806,160 @@ describe('OrganizationDetailsPopup', () => {
         });
     });
 
+    const provenanceWithEvidence = (overrides: Record<string, unknown> = {}) => {
+        global.fetch = jest.fn().mockImplementation((url) => {
+            if (url.includes('/api/organizations/1/scores/')) {
+                return Promise.resolve({ json: () => Promise.resolve([]) });
+            }
+            if (url.includes('/api/organizations/1/provenance/')) {
+                return Promise.resolve({
+                    json: () => Promise.resolve({
+                        organization_id: 1,
+                        organization_modified: '2025-01-15T10:00:00Z',
+                        organization_created: '2024-06-01T00:00:00Z',
+                        latest_observation: {
+                            source_url: 'https://example.com/about',
+                            observed_domain: 'example.com',
+                            observed_at: '2025-01-10T12:00:00Z',
+                            extraction_version: 'v1.2.3',
+                            status: 'auto_applied',
+                            is_verified: true,
+                        },
+                        fields: [
+                            {
+                                field_key: 'rto_policy',
+                                state: 'accepted',
+                                value: 'Remote first',
+                                source_domain: 'example.com',
+                                observed_at: '2025-01-10T12:00:00Z',
+                                scope: { countries: ['US'] },
+                                last_checked_at: '2025-01-10T12:00:00Z',
+                                last_successful_fetch_at: '2025-01-10T12:00:00Z',
+                                last_changed_at: '2025-01-10T12:00:00Z',
+                                last_verified_at: '2025-01-10T12:00:00Z',
+                                stale: false,
+                            },
+                        ],
+                        unverified_fields: ['funding_round', 'public_status'],
+                        ...overrides,
+                    }),
+                });
+            }
+            return Promise.reject(new Error('not mocked'));
+        });
+    };
+
+    test('renders verified field rows with value, source domain and observed date', async () => {
+        provenanceWithEvidence();
+
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={() => {}}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('field-evidence')).toBeInTheDocument();
+        });
+
+        expect(screen.getByTestId('field-evidence-rto_policy')).toBeInTheDocument();
+        expect(screen.getByTestId('field-value-rto_policy')).toHaveTextContent('Remote first');
+        expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('example.com');
+        expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('observed');
+        expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('countries: US');
+        expect(screen.queryByTestId('field-stale-rto_policy')).not.toBeInTheDocument();
+    });
+
+    test('renders explicit no-evidence rows for unverified fields', async () => {
+        provenanceWithEvidence();
+
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={() => {}}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('unverified-fields')).toBeInTheDocument();
+        });
+
+        const unverified = screen.getByTestId('field-unverified-funding_round');
+        expect(unverified).toHaveTextContent('Funding Round');
+        expect(unverified).toHaveTextContent('No accepted evidence');
+        expect(screen.getByTestId('field-unverified-public_status')).toBeInTheDocument();
+    });
+
+    test('renders stale marker on stale field rows', async () => {
+        provenanceWithEvidence({
+            fields: [
+                {
+                    field_key: 'rto_policy',
+                    state: 'accepted',
+                    value: 'Remote first',
+                    source_domain: 'example.com',
+                    observed_at: '2024-01-10T12:00:00Z',
+                    scope: {},
+                    last_checked_at: '2025-01-10T12:00:00Z',
+                    last_successful_fetch_at: '2025-01-10T12:00:00Z',
+                    last_changed_at: '2024-01-10T12:00:00Z',
+                    last_verified_at: '2024-06-01T00:00:00Z',
+                    stale: true,
+                },
+            ],
+            unverified_fields: [],
+        });
+
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={() => {}}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('field-stale-rto_policy')).toBeInTheDocument();
+        });
+
+        expect(screen.getByTestId('field-stale-rto_policy')).toHaveTextContent('Stale');
+        expect(screen.getByTestId('field-value-rto_policy')).toHaveTextContent('Remote first');
+        expect(screen.queryByTestId('unverified-fields')).not.toBeInTheDocument();
+    });
+
+    test('marks a pending latest observation as not verified evidence', async () => {
+        provenanceWithEvidence({
+            latest_observation: {
+                source_url: 'https://example.com/about',
+                observed_domain: 'example.com',
+                observed_at: '2025-01-10T12:00:00Z',
+                extraction_version: 'v1.2.3',
+                status: 'pending',
+                is_verified: false,
+            },
+            fields: [],
+            unverified_fields: ['rto_policy'],
+        });
+
+        render(
+            <OrganizationDetailsPopup
+                organization={mockOrganization}
+                visible={true}
+                onClose={() => {}}
+            />
+        );
+
+        await waitFor(() => {
+            expect(screen.getByTestId('observation-not-verified')).toBeInTheDocument();
+        });
+
+        expect(screen.getByTestId('observation-details')).toBeInTheDocument();
+        expect(screen.getByTestId('observation-not-verified')).toHaveTextContent('Not accepted evidence');
+    });
+
     test('shows suggest correction link when authenticated', async () => {
         render(
             <OrganizationDetailsPopup

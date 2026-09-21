@@ -29,7 +29,19 @@ function useWorkspaceSnapshot(): WorkspaceSnapshot {
     return snapshot;
 }
 
-const WorkspaceShell: React.FC = () => {
+interface WorkspaceShellProps {
+    // Server-rendered auth context from the pinned /chat/ workspace host
+    // (issue #465 AC-9/10), forwarded to JobSearchChat. Absent everywhere else.
+    authProps?: {
+        isAuthenticated?: boolean;
+        visitorState?: string;
+        signInUrl?: string;
+        signedOutMessage?: string;
+        accountKey?: string;
+    };
+}
+
+const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
     const snapshot = useWorkspaceSnapshot();
     const mode = useWorkspaceLayout();
     // Minimized is NOT open: the panel unmounts (the loaded flag in the store
@@ -172,7 +184,7 @@ const WorkspaceShell: React.FC = () => {
                         aria-labelledby="assistant-panel-title"
                         data-testid="assistant-panel"
                     >
-                        <AssistantPanel mode={mode} context={snapshot.context}/>
+                        <AssistantPanel mode={mode} context={snapshot.context} authProps={authProps}/>
                     </section>
                 ) : (
                     <section
@@ -182,7 +194,7 @@ const WorkspaceShell: React.FC = () => {
                         aria-labelledby="assistant-panel-title"
                         data-testid="assistant-panel"
                     >
-                        <AssistantPanel mode={mode} context={snapshot.context}/>
+                        <AssistantPanel mode={mode} context={snapshot.context} authProps={authProps}/>
                     </section>
                 )
             )}

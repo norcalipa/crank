@@ -44,9 +44,18 @@ const LoadMarker: React.FC = () => {
 interface AssistantPanelProps {
     mode: WorkspaceMode;
     context: WorkspaceContext | null;
+    // Server-rendered auth context from the pinned /chat/ workspace host
+    // (issue #465 AC-9/10), forwarded verbatim to JobSearchChat.
+    authProps?: {
+        isAuthenticated?: boolean;
+        visitorState?: string;
+        signInUrl?: string;
+        signedOutMessage?: string;
+        accountKey?: string;
+    };
 }
 
-const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context}) => {
+const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps}) => {
     const line = contextLine(context);
     return (
         <div className="assistant-panel-inner">
@@ -102,7 +111,7 @@ const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context}) => {
                     {/* Wrapper id preserves the popup.css rules and Django e2e
                         selectors that key off #job-search-chat (issue #472 AC-11). */}
                     <div id="job-search-chat">
-                        <LazyJobSearchChat/>
+                        <LazyJobSearchChat {...(authProps ?? {})}/>
                     </div>
                 </React.Suspense>
             </div>
