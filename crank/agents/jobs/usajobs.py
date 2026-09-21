@@ -148,6 +148,12 @@ class USAJobsAdapter(JobSourceAdapter):
         offset = 0
         pages = 0
         items_seen = 0
+        # Completeness contract (issue #469): only the adapter knows why it
+        # stopped paging. ``complete`` is set only when the source itself
+        # reported the end of inventory; hitting a configured bound first
+        # marks the snapshot truncated instead.
+        complete = False
+        truncated = False
         while pages < query.max_pages and len(listings) < query.max_listings:
             limit = min(MAX_PAGE_SIZE, query.max_listings - len(listings))
             params: dict[str, Any] = {"offset": offset, "limit": limit}
@@ -166,8 +172,17 @@ class USAJobsAdapter(JobSourceAdapter):
                 listings.append(self._listing(entry))
             offset += limit
             if not entries or (total is not None and offset >= total) or (total is None and len(entries) < limit):
+                complete = True
                 break
-        return JobSourceResult(listings=tuple(listings), pages_fetched=pages, items_seen=items_seen)
+        if not complete and (pages >= query.max_pages or len(listings) >= query.max_listings):
+            truncated = True
+        return JobSourceResult(
+            listings=tuple(listings),
+            pages_fetched=pages,
+            items_seen=items_seen,
+            complete_snapshot=complete,
+            truncated=truncated,
+        )
 
     @staticmethod
     def _payload(body: bytes) -> Mapping[str, Any]:

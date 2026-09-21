@@ -345,3 +345,181 @@ class JobAdminAuthorizationTests(TestCase):
         self.assertFalse(source_admin.has_view_permission(request))
         self.assertFalse(listing_admin.has_view_permission(request))
         self.assertNotIn("description_excerpt", listing_admin.list_display)
+
+
+class JobIdentityHardeningTests(TestCase):
+    """Issue #469: stable identity, regression gating, and absence closure."""
+
+    def test_upsert_reports_created_updated_unchanged(self):
+        from crank.models.job import OUTCOME_CREATED, OUTCOME_UNCHANGED, OUTCOME_UPDATED
+
+        source = make_source()
+        listing, outcome = JobListing.ingest_with_outcome(source, raw())
+        self.assertEqual(outcome, OUTCOME_CREATED)
+        replay, outcome = JobListing.ingest_with_outcome(source, raw())
+        self.assertEqual(replay.pk, listing.pk)
+        self.assertEqual(outcome, OUTCOME_UNCHANGED)
+        newer = raw(
+            title="Newer Title",
+            last_seen_at=timezone.now() + timedelta(hours=1),
+        )
+        _, outcome = JobListing.ingest_with_outcome(source, newer)
+        self.assertEqual(outcome, OUTCOME_UPDATED)
+
+    def test_two_empty_external_id_listings_both_persist(self):
+        """AC-2: empty external_id never matches an unrelated listing."""
+        source = make_source()
+        first = JobListing.ingest(
+            source,
+            raw(external_id="", canonical_url="https://jobs.example.test/jobs/one"),
+        )
+        second = JobListing.ingest(
+            source,
+            raw(external_id="", canonical_url="https://jobs.example.test/jobs/two"),
+        )
+        self.assertNotEqual(first.pk, second.pk)
+        self.assertEqual(JobListing.all_objects.filter(source=source).count(), 2)
+        # A replay of the first is matched by canonical_url, not by "".
+        replay = JobListing.ingest(
+            source,
+            raw(external_id="", canonical_url="https://jobs.example.test/jobs/one"),
+        )
+        self.assertEqual(replay.pk, first.pk)
+        self.assertEqual(JobListing.all_objects.filter(source=source).count(), 2)
+
+    def test_out_of_order_observation_does_not_regress_fields(self):
+        """AC-3/AC-4: stale observed_at leaves stored content untouched."""
+        source = make_source()
+        now = timezone.now()
+        current = raw(
+            title="Current Title",
+            employer_name="Current Employer",
+            location_text="Current Location",
+            description_excerpt="Current excerpt",
+            compensation_min=100,
+            compensation_max=200,
+            compensation_currency="USD",
+            compensation_interval="year",
+            first_seen_at=now - timedelta(days=2),
+            last_seen_at=now,
+            source_metadata={"compensation_basis": "base", "scope": {"countries": ["US"]}},
+        )
+        listing = JobListing.ingest(source, current)
+        stale = raw(
+            title="Stale Title",
+            employer_name="Stale Employer",
+            location_text="Stale Location",
+            description_excerpt="Stale excerpt",
+            compensation_min=1,
+            compensation_max=2,
+            compensation_currency="EUR",
+            compensation_interval="hour",
+            first_seen_at=now - timedelta(days=3),
+            last_seen_at=now - timedelta(days=1),
+            source_metadata={"compensation_basis": "total"},
+        )
+        result = JobListing.ingest(source, stale)
+        result.refresh_from_db()
+        self.assertEqual(result.pk, listing.pk)
+        self.assertEqual(result.title, "Current Title")
+        self.assertEqual(result.employer_name, "Current Employer")
+        self.assertEqual(result.location_text, "Current Location")
+        self.assertEqual(result.description_excerpt, "Current excerpt")
+        self.assertEqual(result.compensation_min, Decimal("100.00"))
+        self.assertEqual(result.compensation_max, Decimal("200.00"))
+        self.assertEqual(result.compensation_currency, "USD")
+        self.assertEqual(result.compensation_interval, "year")
+        self.assertEqual(result.source_metadata["compensation_basis"], "base")
+        self.assertEqual(result.source_metadata["scope"], {"countries": ["US"]})
+        self.assertEqual(result.last_seen_at, listing.last_seen_at)
+        self.assertEqual(result.first_seen_at, current.first_seen_at)
+
+    def test_round_trip_preserves_identity_and_compensation_fields(self):
+        """AC-4: canonical URL, timestamps, compensation units/basis, scope."""
+        source = make_source()
+        metadata = {
+            "compensation_basis": "total",
+            "scope": {"countries": ["US", "CA"], "role_families": ["engineering"]},
+        }
+        first = raw(
+            compensation_currency="usd",
+            compensation_interval="year",
+            source_metadata=metadata,
+        )
+        listing = JobListing.ingest(source, first)
+        self.assertEqual(listing.compensation_currency, "USD")
+        self.assertEqual(listing.source_metadata["compensation_basis"], "total")
+        self.assertEqual(
+            listing.source_metadata["scope"],
+            {"countries": ["US", "CA"], "role_families": ["engineering"]},
+        )
+        replay = JobListing.ingest(source, raw(
+            compensation_currency="usd",
+            compensation_interval="year",
+            source_metadata=metadata,
+            first_seen_at=first.first_seen_at,
+            last_seen_at=first.last_seen_at,
+        ))
+        replay.refresh_from_db()
+        self.assertEqual(replay.canonical_url, listing.canonical_url)
+        self.assertEqual(replay.first_seen_at, listing.first_seen_at)
+        self.assertEqual(replay.last_seen_at, listing.last_seen_at)
+        self.assertEqual(replay.source_metadata, listing.source_metadata)
+
+    def test_reserved_metadata_keys_are_normalized_or_dropped(self):
+        with self.assertRaises(JobSchemaError):
+            raw(source_metadata={"response_body": "raw"})
+        listing = raw(source_metadata={
+            "compensation_basis": " BASE ",
+            "scope": {
+                "countries": [" us ", "ca", "", 42],
+                "role_families": ["Engineering"],
+                "unexpected": ["dropped"],
+            },
+        })
+        self.assertEqual(listing.source_metadata["compensation_basis"], "base")
+        self.assertEqual(
+            listing.source_metadata["scope"],
+            {"countries": ["us", "ca"], "role_families": ["Engineering"]},
+        )
+        dropped = raw(source_metadata={
+            "compensation_basis": "gross",
+            "scope": "not-a-mapping",
+        })
+        self.assertNotIn("compensation_basis", dropped.source_metadata)
+        self.assertNotIn("scope", dropped.source_metadata)
+        empty_scope = raw(source_metadata={"scope": {"countries": []}})
+        self.assertNotIn("scope", empty_scope.source_metadata)
+
+    def test_close_absent_closes_only_absent_active_of_source(self):
+        source = make_source()
+        other = make_source(name="Other jobs")
+        seen = JobListing.ingest(source, raw())
+        absent = JobListing.ingest(
+            source,
+            raw(external_id="absent-1", canonical_url="https://jobs.example.test/jobs/absent"),
+        )
+        terminal = JobListing.ingest(
+            source,
+            raw(external_id="closed-1", canonical_url="https://jobs.example.test/jobs/closed",
+                status=JobListing.Status.CLOSED),
+        )
+        foreign = JobListing.ingest(other, raw())
+        closed = JobListing.all_objects.close_absent(source, {seen.pk})
+        self.assertEqual(closed, 1)
+        absent.refresh_from_db()
+        self.assertEqual(absent.status, JobListing.Status.CLOSED)
+        seen.refresh_from_db()
+        self.assertEqual(seen.status, JobListing.Status.ACTIVE)
+        terminal.refresh_from_db()
+        self.assertEqual(terminal.status, JobListing.Status.CLOSED)
+        foreign.refresh_from_db()
+        self.assertEqual(foreign.status, JobListing.Status.ACTIVE)
+        # Idempotent on a second call.
+        self.assertEqual(JobListing.all_objects.close_absent(source, {seen.pk}), 0)
+
+
+class ReservedMetadataEdgeTests(TestCase):
+    def test_non_mapping_metadata_still_raises_typed_error(self):
+        with self.assertRaises(JobSchemaError):
+            raw(source_metadata=["not", "a", "mapping"])

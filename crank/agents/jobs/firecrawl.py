@@ -310,6 +310,11 @@ class FirecrawlCareersAdapter(JobSourceAdapter):
                 listings=tuple(listings),
                 pages_fetched=min(max_pages, len(data)),
                 items_seen=len(data),
+                # The crawler has no end-of-inventory signal, so it never
+                # claims a complete snapshot (issue #469); a sliced payload
+                # is explicitly truncated.
+                complete_snapshot=False,
+                truncated=len(data) > max_listings,
             )
         except (SourceBudgetExceededError, SourceTimeoutError, UnauthorizedSourceError, BlockedRedirectError, SchemaDriftError, SourceServerError):
             raise

@@ -146,7 +146,48 @@ For every future adapter, record `last_seen_at`, source update/closing timestamp
 
 If a source is later approved, its record must define a source-supported expiry and deletion policy before ingestion. The USAJOBS candidate's proposed 30-day purge is not permission and cannot be used while the source is pending. Pending sources must not be retained or invoked at all until their obligations are approved.
 
-## 6. Change log
+## 6. Reserved metadata contracts (issue #469)
+
+### `JobSourceCatalog.catalog_metadata` keys
+
+Operator-controlled per-source policy, sanitized and byte-bounded by
+`validate_catalog_metadata` (credentials and raw bodies are never accepted):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `expiry_days` | int | An `active` listing whose `last_seen_at` is older than this transitions to `expired` in the bounded retention sweep. Default when absent: 30. |
+| `deletion_days` | int | A terminal (`closed`/`expired`) listing older than this is deleted with its derived artifacts (`JobMatch`, `UnresolvedEmployer`). Must exceed `expiry_days`; a misconfiguration falls back to the defaults rather than deleting early. Default: 90. |
+| `supports_complete_snapshot` | bool | Operator kill switch. `false` forces absence-based closure off for the source regardless of what its adapter claims. Absent: the adapter's own claim is honoured. |
+
+### Completeness contract
+
+Adapters declare fetch completeness on `JobSourceResult`:
+
+- `complete_snapshot` (default `False`): the adapter asserts the payload is
+  the source's full current inventory. Only an adapter with a real
+  end-of-inventory signal may set this (USAJOBS: the loop ended because the
+  source reported no more pages, not because a bound was hit).
+- `truncated` (default `False`): the fetch stopped at a configured bound
+  (`max_pages`/`max_listings`) before the source reported its end.
+
+Absence-based closure fires **only** when `complete_snapshot=True`,
+`truncated=False`, no listing errors occurred, and the operator kill switch
+is not `false`. A failed fetch returns zero listings with
+`complete_snapshot=False`, so a 429/5xx/timeout can never close a source's
+inventory.
+
+### `JobListing.source_metadata` reserved keys
+
+Normalized by the adapter at the `RawJobListing` boundary; bounded values
+only, never raw response bodies:
+
+- `compensation_basis` — `"base"` or `"total"`; absent when the source does
+  not say. Unrecognized values are dropped.
+- `scope` — `{"countries": [...], "role_families": [...]}`, bounded lists of
+  short normalized strings; absent means unscoped. Malformed values are
+  dropped.
+
+## 7. Change log
 
 - **2026-08-23** — Issue #441: reconciled source policy, code allowlist, adapter registry, and SEED_SOURCES into one machine-validated catalog.  USAJOBS approved as the policy-approved credentialed source after documenting access, display, retention, rate-limit, canonical-link, and credential requirements.  Seed command no longer elevates pending/blocked sources to approved+enabled.  Fixture-backed adapter smoke and contract tests cover registration → explicit approval → ingestion → matching without live network calls.  Recurring freshness schedule, kill switches, alerting, and runbook with rollback are wired.
 - **2026-08-10** — Initial catalog for #316; USAJOBS, Remote OK, Hacker News, Greenhouse, and Lever pending; blocked generic direct career-site scraping. No source currently meets the approval criteria and live access remains disabled.

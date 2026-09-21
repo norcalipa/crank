@@ -267,6 +267,10 @@ class Command(BaseCommand):
                 "enabled": True,
                 "catalog_metadata": {
                     "description": "E2E fixture source (approved+enabled, dev only).",
+                    # Reserved retention keys (issue #469); fixture listings
+                    # are re-seeded every run, so keep deletion conservative.
+                    "expiry_days": 30,
+                    "deletion_days": 90,
                 },
             },
         )
@@ -282,6 +286,8 @@ class Command(BaseCommand):
                 "enabled": True,
                 "catalog_metadata": {
                     "description": "E2E fixture source (approved+enabled, dev only).",
+                    "expiry_days": 30,
+                    "deletion_days": 90,
                 },
             },
         )

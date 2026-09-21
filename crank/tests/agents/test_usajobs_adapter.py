@@ -498,3 +498,49 @@ class USAJobsAdapterTests(TestCase):
         http, _ = http_for([json_response(payload([entry]))])
         result = self.adapter(http, source_obj).fetch(JobSourceQuery())
         assert result.listings[0].description_excerpt == "Fallback summary."
+
+
+class CompletenessFlagTests(TestCase):
+    """Issue #469 AC-7: the adapter declares why it stopped paging."""
+
+    def adapter(self, http, source_obj=None):
+        return USAJobsAdapter(
+            source_obj or source(),
+            http=http,
+            auth_key="fixture-key",
+            user_agent_email="fixture@example.test",
+        )
+
+    def test_natural_end_of_inventory_is_complete(self):
+        http, _ = http_for([json_response(payload([make_entry()], count=1))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=10))
+        assert result.complete_snapshot is True
+        assert result.truncated is False
+
+    def test_empty_result_is_complete_not_truncated(self):
+        http, _ = http_for([json_response(payload([], count=0))])
+        result = self.adapter(http).fetch(JobSourceQuery())
+        assert result.complete_snapshot is True
+        assert result.truncated is False
+
+    def test_max_pages_bound_is_truncated(self):
+        entries = [make_entry(object_id=f"p-{i}") for i in range(2)]
+        http, _ = http_for([json_response(payload(entries, count=100))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=1))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_max_listings_bound_is_truncated(self):
+        entries = [make_entry(object_id=f"cap-{i}") for i in range(5)]
+        http, _ = http_for([json_response(payload(entries, count=100))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=3, max_pages=10))
+        assert len(result.listings) == 3
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_count_reached_exactly_is_complete(self):
+        entries = [make_entry(object_id=f"exact-{i}") for i in range(2)]
+        http, _ = http_for([json_response(payload(entries, count=2))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is True
+        assert result.truncated is False

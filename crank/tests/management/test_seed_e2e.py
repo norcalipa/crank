@@ -257,7 +257,11 @@ class SeedE2ECommandTests(TestCase):
         self.assertEqual(source.base_url, "https://data.usajobs.gov/")
         self.assertEqual(
             source.catalog_metadata,
-            {"description": "E2E fixture source (approved+enabled, dev only)."},
+            {
+                "description": "E2E fixture source (approved+enabled, dev only).",
+                "expiry_days": 30,
+                "deletion_days": 90,
+            },
         )
 
         listing.refresh_from_db()

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 import logging
 import time
 from typing import Any, Mapping
@@ -35,6 +36,9 @@ COUNT_KEYS = (
     "sources_skipped",
     "listings_ingested",
     "listings_updated",
+    "listings_closed",
+    "listings_expired",
+    "listings_deleted",
     "employers_resolved",
     "employers_unresolved",
     "users_total",
@@ -43,6 +47,17 @@ COUNT_KEYS = (
     "matches_persisted",
     "deadline_reached",
 )
+
+# Retention sweep defaults (issue #469), overridable per source through the
+# reserved ``catalog_metadata`` keys documented in
+# ``docs/job-source-catalog.md``. ``deletion_days`` must exceed
+# ``expiry_days``; a misconfiguration falls back to these defaults rather
+# than deleting early. Each phase is bounded per run so a large backlog
+# cannot blow the pipeline deadline, and the sweep is resumable: the next
+# run continues where the bounded run stopped.
+DEFAULT_EXPIRY_DAYS = 30
+DEFAULT_DELETION_DAYS = 90
+RETENTION_SWEEP_LIMIT = 500
 
 
 class JobPipelineError(RuntimeError):
@@ -207,6 +222,56 @@ def _record_source_publication(source, result, resolved, unresolved, before_org_
         )
 
 
+def _retention_days(source: Any) -> tuple[int, int]:
+    """Per-source retention windows with a safe fallback (issue #469)."""
+    metadata = getattr(source, "catalog_metadata", None) or {}
+    expiry = metadata.get("expiry_days", DEFAULT_EXPIRY_DAYS)
+    deletion = metadata.get("deletion_days", DEFAULT_DELETION_DAYS)
+    try:
+        expiry = int(expiry)
+        deletion = int(deletion)
+    except (TypeError, ValueError):
+        return DEFAULT_EXPIRY_DAYS, DEFAULT_DELETION_DAYS
+    if expiry < 1 or deletion <= expiry:
+        return DEFAULT_EXPIRY_DAYS, DEFAULT_DELETION_DAYS
+    return expiry, deletion
+
+
+def _retention_sweep(source: Any, *, limit: int = RETENTION_SWEEP_LIMIT) -> tuple[int, int]:
+    """Expire stale active listings and delete aged terminal ones (issue #469).
+
+    Bounded per run and resumable. Expiry uses the source's retention window
+    on ``last_seen_at``; deletion applies only to terminal (closed/expired)
+    listings past the longer deletion window and cascades to derived
+    artifacts (``JobMatch``, ``UnresolvedEmployer``). An ``active`` listing
+    is never deleted.
+    """
+    expiry_days, deletion_days = _retention_days(source)
+    now = timezone.now()
+    expired = JobListing.all_objects.filter(
+        source=source,
+        status=JobListing.Status.ACTIVE,
+        last_seen_at__lt=now - timedelta(days=expiry_days),
+    ).order_by("pk")[:limit]
+    expired_ids = list(expired.values_list("pk", flat=True))
+    expired_count = 0
+    if expired_ids:
+        expired_count = JobListing.all_objects.filter(pk__in=expired_ids).update(
+            status=JobListing.Status.EXPIRED
+        )
+    terminal = JobListing.all_objects.filter(
+        source=source,
+        status__in=[JobListing.Status.CLOSED, JobListing.Status.EXPIRED],
+        last_seen_at__lt=now - timedelta(days=deletion_days),
+    ).order_by("pk")[:limit]
+    deleted_count = 0
+    for listing in terminal:
+        # Row-by-row delete so JobMatch/UnresolvedEmployer cascades fire.
+        listing.delete()
+        deleted_count += 1
+    return expired_count, deleted_count
+
+
 def _ingest_source(
     source: Any, options: Mapping[str, Any], before_ids: set[int]
 ) -> tuple[JobIngestResult | None, int, int, bool]:
@@ -317,12 +382,16 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                 if skipped:
                     counts["sources_skipped"] += 1
                     continue
+                expired_count, deleted_count = _retention_sweep(source)
                 if int(result.ingested) or int(result.updated) or resolved or unresolved:
                     _record_source_publication(
                         source, result, resolved, unresolved, before_org_ids
                     )
             counts["listings_ingested"] += int(result.ingested)
             counts["listings_updated"] += int(result.updated)
+            counts["listings_closed"] += int(result.absent_closed)
+            counts["listings_expired"] += expired_count
+            counts["listings_deleted"] += deleted_count
             counts["employers_resolved"] += resolved
             counts["employers_unresolved"] += unresolved
             if int(result.errors):
@@ -346,6 +415,10 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                         "source_key": source.adapter_key,
                         "status": "succeeded",
                         "items_succeeded": int(result.ingested) + int(result.updated),
+                        "listings_closed": int(result.absent_closed),
+                        "listings_expired": expired_count,
+                        "listings_deleted": deleted_count,
+                        "reason_code": result.closure_skipped_reason or "none",
                     },
                 )
         except Exception as exc:  # noqa: BLE001 - isolate source failures

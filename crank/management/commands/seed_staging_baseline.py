@@ -254,6 +254,11 @@ class Command(BaseCommand):
                 "enabled": True,
                 "catalog_metadata": {
                     "description": "Staging baseline fixture source (approved+enabled).",
+                    # Reserved retention keys (issue #469): the baseline's
+                    # expired fixture listing must survive the bounded sweep,
+                    # so deletion stays well past the fixture's age.
+                    "expiry_days": 30,
+                    "deletion_days": 90,
                 },
             },
         )

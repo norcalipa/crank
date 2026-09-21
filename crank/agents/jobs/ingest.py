@@ -7,9 +7,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from crank.agents.jobs.base import JobSourceQuery
+from crank.agents.jobs.base import (
+    CATALOG_SUPPORTS_COMPLETE_SNAPSHOT_KEY,
+    JobSourceQuery,
+)
 from crank.agents.jobs.registry import build_job_adapter
-from crank.models.job import JobListing
+from crank.models.job import (
+    OUTCOME_CREATED,
+    OUTCOME_UPDATED,
+    JobListing,
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +31,10 @@ class JobIngestResult:
     pages_fetched: int = 0
     items_seen: int = 0
     error_summary: str = ""
+    absent_closed: int = 0
+    complete_snapshot: bool = False
+    truncated: bool = False
+    closure_skipped_reason: str = ""
 
     @property
     def total(self) -> int:
@@ -35,34 +46,27 @@ def _safe_error(exc: Exception) -> str:
     return f"{exc.__class__.__name__} ({category})"
 
 
-def _existing_listing(source: Any, raw: Any):
-    listing = JobListing.all_objects.filter(source=source, external_id=raw.external_id).first()
-    if listing is None:
-        listing = JobListing.all_objects.filter(source=source, canonical_url=raw.canonical_url).first()
-    return listing
+# Low-cardinality absence-closure skip reasons (issue #469). Closure is
+# default-deny: it runs only when the fetch succeeded, the adapter asserts a
+# complete, untruncated snapshot, and the operator has not disabled it.
+SKIP_INCOMPLETE_SNAPSHOT = "incomplete_snapshot"
+SKIP_TRUNCATED = "truncated"
+SKIP_LISTING_ERRORS = "listing_errors"
+SKIP_DISABLED_BY_CATALOG = "disabled_by_catalog"
 
 
-def _changed(existing: Any, raw: Any) -> bool:
-    if existing is None:
-        return False
-    fields = (
-        "canonical_url", "employer_external_id", "employer_name", "employer_domain", "title",
-        "location_text", "is_remote", "compensation_min", "compensation_max",
-        "compensation_currency", "compensation_interval", "description_excerpt",
-        "source_metadata",
-    )
-    for field in fields:
-        if getattr(existing, field) != getattr(raw, field):
-            return True
-    observed_at = raw.last_seen_at or raw.first_seen_at
-    if observed_at and observed_at > existing.last_seen_at:
-        return True
-    if raw.status != existing.status and not (
-        existing.status in {JobListing.Status.CLOSED, JobListing.Status.EXPIRED}
-        and raw.status == JobListing.Status.ACTIVE
-    ):
-        return True
-    return False
+def _closure_decision(source: Any, fetched: Any, errors: int) -> tuple[bool, str]:
+    """Return ``(may_close, skipped_reason)`` for absence-based closure."""
+    catalog_metadata = getattr(source, "catalog_metadata", None) or {}
+    if not bool(getattr(fetched, "complete_snapshot", False)):
+        return False, SKIP_INCOMPLETE_SNAPSHOT
+    if bool(getattr(fetched, "truncated", False)):
+        return False, SKIP_TRUNCATED
+    if errors:
+        return False, SKIP_LISTING_ERRORS
+    if catalog_metadata.get(CATALOG_SUPPORTS_COMPLETE_SNAPSHOT_KEY) is False:
+        return False, SKIP_DISABLED_BY_CATALOG
+    return True, ""
 
 
 def ingest_jobs(source: Any, query: JobSourceQuery, *, adapter=None) -> JobIngestResult:
@@ -71,7 +75,9 @@ def ingest_jobs(source: Any, query: JobSourceQuery, *, adapter=None) -> JobInges
     The adapter and model boundaries perform validation.  This service does
     not log or retain exception text because source payloads are untrusted.
     Fetch failures are represented in the typed result so a scheduler can
-    distinguish a failed run without losing sanitized counters.
+    distinguish a failed run without losing sanitized counters. A failed
+    fetch returns zero listings with ``complete_snapshot=False``, so a 429,
+    5xx, or timeout can never be read as "every absent posting closed".
     """
 
     try:
@@ -82,19 +88,19 @@ def ingest_jobs(source: Any, query: JobSourceQuery, *, adapter=None) -> JobInges
 
     ingested = updated = closed = expired = errors = 0
     summaries: list[str] = []
+    seen_ids: set[int] = set()
     for raw in fetched.listings:
         try:
-            existing = _existing_listing(source, raw)
-            changed = _changed(existing, raw)
-            listing = JobListing.ingest(source, raw)
+            listing, outcome = JobListing.ingest_with_outcome(source, raw)
             # Employer resolution is deliberately separate from listing
             # identity/upsert: a corrected reviewed alias can reprocess the
             # same listing without creating another row.
             from crank.agents.jobs.employer import resolve_employer
             resolve_employer(listing)
-            if existing is None:
+            seen_ids.add(listing.pk)
+            if outcome == OUTCOME_CREATED:
                 ingested += 1
-            elif changed:
+            elif outcome == OUTCOME_UPDATED:
                 updated += 1
             if listing.status == JobListing.Status.CLOSED:
                 closed += 1
@@ -103,6 +109,12 @@ def ingest_jobs(source: Any, query: JobSourceQuery, *, adapter=None) -> JobInges
         except Exception as exc:
             errors += 1
             summaries.append(_safe_error(exc))
+
+    may_close, skip_reason = _closure_decision(source, fetched, errors)
+    absent_closed = (
+        JobListing.all_objects.close_absent(source, seen_ids) if may_close else 0
+    )
+    closed += absent_closed
 
     return JobIngestResult(
         ingested=ingested,
@@ -113,6 +125,10 @@ def ingest_jobs(source: Any, query: JobSourceQuery, *, adapter=None) -> JobInges
         pages_fetched=fetched.pages_fetched,
         items_seen=fetched.items_seen,
         error_summary=", ".join(summaries),
+        absent_closed=absent_closed,
+        complete_snapshot=bool(getattr(fetched, "complete_snapshot", False)),
+        truncated=bool(getattr(fetched, "truncated", False)),
+        closure_skipped_reason=skip_reason,
     )
 
 

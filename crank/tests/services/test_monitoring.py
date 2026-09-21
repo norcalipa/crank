@@ -214,3 +214,22 @@ class MonitoringContractTests(TestCase):
             doc = yaml.safe_load(fh)
         alert = next(a for a in doc["alerts"] if a["name"] == "recurring-helpfulness-gaps")
         self.assertEqual(alert.get("operator"), "above")
+
+
+class ListingLifecycleAttributeTests(TestCase):
+    def test_listing_lifecycle_attributes_are_allowlisted(self):
+        payload = monitoring.event_attributes(
+            "source_stage",
+            {
+                "stage": "job_ingest",
+                "source_key": "usajobs",
+                "status": "succeeded",
+                "listings_closed": 3,
+                "listings_expired": 1,
+                "listings_deleted": 2,
+                "reason_code": "none",
+            },
+        )
+        self.assertEqual(payload["listings_closed"], 3)
+        self.assertEqual(payload["listings_expired"], 1)
+        self.assertEqual(payload["listings_deleted"], 2)

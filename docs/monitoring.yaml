@@ -61,6 +61,11 @@ widgets:
     nrql: >-
       SELECT count(*), average(turns_without_result)
       FROM CrankOperation WHERE event_name = 'job_search_helpfulness_gap' SINCE 7 days ago
+  - name: Listing lifecycle closure and retention
+    nrql: >-
+      SELECT sum(listings_closed), sum(listings_expired), sum(listings_deleted)
+      FROM CrankOperation WHERE event_name = 'source_stage'
+      FACET source_key, reason_code SINCE 24 hours ago
   - name: Deadline, rejection, and backlog pressure
     nrql: >-
       SELECT sum(deadline_reached), sum(items_failed), sum(users_failed),

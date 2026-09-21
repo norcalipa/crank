@@ -53,13 +53,24 @@ def _organizations_for_alias(kind: str, value: str) -> list[Organization]:
     return [by_id[key] for key in sorted(by_id)]
 
 
+# Bound for the fallback exact-name scan below: an organization table larger
+# than this is already pathological for the deterministic resolver, and the
+# bound keeps a misconfigured deployment from scanning unbounded rows.
+_EXACT_NAME_SCAN_LIMIT = 1000
+
+
 def _organizations_for_exact_name(value: str) -> list[Organization]:
     wanted = normalize_employer_name(value)
     # Organization names are operator-controlled but may differ only by case;
     # normalize in Python so Unicode and whitespace have identical semantics on
-    # every supported database backend.
-    organizations = Organization.objects.all().order_by("pk")
-    return [org for org in organizations if normalize_employer_name(org.name) == wanted]
+    # every supported database backend. The fast path lets the database narrow
+    # candidates case-insensitively instead of scanning the whole table; the
+    # bounded fallback preserves Unicode/whitespace parity when the collation
+    # cannot (issue #469).
+    shortlist = list(Organization.objects.filter(name__iexact=value).order_by("pk"))
+    if not shortlist:
+        shortlist = list(Organization.objects.all().order_by("pk")[:_EXACT_NAME_SCAN_LIMIT])
+    return [org for org in shortlist if normalize_employer_name(org.name) == wanted]
 
 
 def _resolve_candidates(
@@ -151,17 +162,45 @@ def resolve_employer(
         else:
             listing.organization = None
             listing.save(update_fields=["organization", "modified"])
-            UnresolvedEmployer.objects.update_or_create(
-                listing=listing,
-                resolved=False,
-                defaults={
-                    "employer_name": sanitize_employer_text(listing.employer_name),
-                    "employer_domain": normalize_employer_domain(listing.employer_domain),
-                    "reason": result.reason,
-                    "candidates": _bounded_candidates(result),
-                },
-            )
+            _persist_open_unresolved(listing, result)
     return result
+
+
+def _persist_open_unresolved(
+    listing: JobListing, result: EmployerResolution
+) -> UnresolvedEmployer:
+    """Maintain exactly one open ``UnresolvedEmployer`` row per listing.
+
+    The caller already holds ``select_for_update`` on the listing row, which
+    serializes concurrent resolutions of this listing — the partial unique
+    constraint on ``(listing) WHERE resolved=False`` is not emitted on MySQL
+    (W036), so the row lock is the real invariant (the
+    ``crank.services.scores._persist_locked`` precedent). The whole open set
+    is reconciled rather than just the newest row, so duplicates left by an
+    earlier race heal back to one open row (the
+    ``company_evidence.accept_observation_fields`` heal shape).
+    """
+    open_rows = list(
+        UnresolvedEmployer.objects.filter(listing=listing, resolved=False).order_by("pk")
+    )
+    defaults = {
+        "employer_name": sanitize_employer_text(listing.employer_name),
+        "employer_domain": normalize_employer_domain(listing.employer_domain),
+        "reason": result.reason,
+        "candidates": _bounded_candidates(result),
+    }
+    if open_rows:
+        keep, duplicates = open_rows[0], open_rows[1:]
+        for field, value in defaults.items():
+            setattr(keep, field, value)
+        keep.save(update_fields=[*defaults, "modified"])
+        if duplicates:
+            now = timezone.now()
+            UnresolvedEmployer.objects.filter(
+                pk__in=[row.pk for row in duplicates]
+            ).update(resolved=True, resolved_at=now)
+        return keep
+    return UnresolvedEmployer.objects.create(listing=listing, resolved=False, **defaults)
 
 
 def reprocess_employer_alias(alias: EmployerAlias) -> int:

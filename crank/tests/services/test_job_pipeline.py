@@ -654,3 +654,182 @@ def test_job_pipeline_manifest_has_disabled_safe_schedule():
     ]
     assert "db-connect-credentials" in secret_refs
     assert "crank-secrets" not in secret_refs
+
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+)
+class RetentionSweepTests(TestCase):
+    """Issue #469 AC-12/13: bounded retention sweep and cascade behavior."""
+
+    def setUp(self):
+        from crank.models import AgentRun
+
+        self.run = AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.RUNNING,
+        )
+
+    def source(self, name="sweep", **metadata):
+        return JobSourceCatalog.objects.create(
+            name=name,
+            adapter_key="fake.v1",
+            base_url="https://jobs.example.test",
+            enabled=True,
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            catalog_metadata=metadata or None,
+        )
+
+    def _listing(self, source, external_id, *, status=JobListing.Status.ACTIVE, seen_days=0):
+        from datetime import timedelta
+
+        now = timezone.now()
+        return JobListing.all_objects.create(
+            source=source,
+            external_id=external_id,
+            canonical_url=f"https://jobs.example.test/{external_id}",
+            employer_name="Sweep Co",
+            title="Engineer",
+            first_seen_at=now - timedelta(days=seen_days + 1),
+            last_seen_at=now - timedelta(days=seen_days),
+            status=status,
+        )
+
+    def test_retention_days_fallbacks(self):
+        from crank.services.job_pipeline import (
+            DEFAULT_DELETION_DAYS,
+            DEFAULT_EXPIRY_DAYS,
+            _retention_days,
+        )
+
+        plain = self.source("plain")
+        self.assertEqual(_retention_days(plain), (DEFAULT_EXPIRY_DAYS, DEFAULT_DELETION_DAYS))
+        tuned = self.source("tuned", expiry_days=10, deletion_days=40)
+        self.assertEqual(_retention_days(tuned), (10, 40))
+        bad_order = self.source("bad-order", expiry_days=50, deletion_days=20)
+        self.assertEqual(_retention_days(bad_order), (DEFAULT_EXPIRY_DAYS, DEFAULT_DELETION_DAYS))
+        bad_type = self.source("bad-type", expiry_days="soon", deletion_days=None)
+        self.assertEqual(_retention_days(bad_type), (DEFAULT_EXPIRY_DAYS, DEFAULT_DELETION_DAYS))
+
+    def test_sweep_expires_stale_and_deletes_terminal(self):
+        from crank.services.job_pipeline import _retention_sweep
+
+        source = self.source("sweep-src", expiry_days=10, deletion_days=40)
+        fresh = self._listing(source, "fresh", seen_days=1)
+        stale = self._listing(source, "stale", seen_days=30)
+        old_terminal = self._listing(
+            source, "old-terminal", status=JobListing.Status.CLOSED, seen_days=50
+        )
+        recent_terminal = self._listing(
+            source, "recent-terminal", status=JobListing.Status.EXPIRED, seen_days=20
+        )
+        expired, deleted = _retention_sweep(source)
+        self.assertEqual((expired, deleted), (1, 1))
+        fresh.refresh_from_db()
+        stale.refresh_from_db()
+        self.assertEqual(fresh.status, JobListing.Status.ACTIVE)
+        self.assertEqual(stale.status, JobListing.Status.EXPIRED)
+        self.assertFalse(JobListing.all_objects.filter(pk=old_terminal.pk).exists())
+        recent_terminal.refresh_from_db()
+        self.assertEqual(recent_terminal.status, JobListing.Status.EXPIRED)
+        # Resumable: a second run is a no-op for these rows.
+        self.assertEqual(_retention_sweep(source), (0, 0))
+
+    def test_sweep_is_bounded_and_never_deletes_active(self):
+        from crank.services.job_pipeline import _retention_sweep
+
+        source = self.source("bounded", expiry_days=10, deletion_days=40)
+        for index in range(5):
+            self._listing(source, f"stale-{index}", seen_days=30)
+            self._listing(
+                source, f"term-{index}", status=JobListing.Status.CLOSED, seen_days=50
+            )
+        expired, deleted = _retention_sweep(source, limit=2)
+        self.assertEqual((expired, deleted), (2, 2))
+        self.assertEqual(
+            JobListing.all_objects.filter(
+                source=source, status=JobListing.Status.ACTIVE
+            ).count(),
+            3,
+        )
+        expired, deleted = _retention_sweep(source, limit=10)
+        self.assertEqual((expired, deleted), (3, 3))
+
+    def test_deletion_cascades_to_match_and_unresolved(self):
+        from crank.models.job_match import JobMatch
+        from crank.models.employer import UnresolvedEmployer
+        from crank.services.job_pipeline import _retention_sweep
+
+        source = self.source("cascade", expiry_days=10, deletion_days=40)
+        listing = self._listing(
+            source, "cascade-1", status=JobListing.Status.CLOSED, seen_days=50
+        )
+        user = User.objects.create_user("cascade-user")
+        JobMatch.objects.create(
+            user=user,
+            listing=listing,
+            preference_version=3,
+            ranker_version="v1",
+            score=0.5,
+            first_matched_at=timezone.now(),
+            last_matched_at=timezone.now(),
+        )
+        UnresolvedEmployer.objects.create(
+            listing=listing,
+            employer_name="Cascade Co",
+            reason=UnresolvedEmployer.Reason.NO_MATCH,
+        )
+        expired, deleted = _retention_sweep(source)
+        self.assertEqual(deleted, 1)
+        self.assertEqual(JobMatch.objects.filter(listing_id=listing.pk).count(), 0)
+        self.assertEqual(
+            UnresolvedEmployer.objects.filter(listing_id=listing.pk).count(), 0
+        )
+
+    def test_pipeline_threads_closure_and_sweep_counts(self):
+        source = self.source("counts", expiry_days=10, deletion_days=40)
+        stale = self._listing(source, "stale", seen_days=30)
+        result = JobIngestResult(ingested=1, absent_closed=2)
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(result),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings", return_value=(0, 0)
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            counts = run_job_pipeline(self.run)
+        self.assertEqual(counts["listings_ingested"], 1)
+        self.assertEqual(counts["listings_closed"], 2)
+        self.assertEqual(counts["listings_expired"], 1)
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, JobListing.Status.EXPIRED)
+
+    def test_seen_and_dismissed_survive_close_and_reactivation(self):
+        """AC-13: recomputed matches preserve user seen/dismissed state."""
+        from crank.models.job_match import JobMatch
+        from crank.agents.jobs.match_persist import persist_matches
+        from crank.agents.jobs.matching import JobCriteria
+        from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
+
+        source = self.source("seen")
+        listing = self._listing(source, "seen-1")
+        organization = Organization.objects.create(name="Seen Co", public=True)
+        listing.organization = organization
+        listing.save(update_fields=["organization"])
+        user = User.objects.create_user("seen-user")
+        criteria = JobCriteria(criteria_version=3)
+        self.assertEqual(
+            persist_matches(user, [listing], criteria, DEFAULT_CONFIG), 1
+        )
+        match = JobMatch.objects.get(user=user, listing=listing)
+        match.seen_at = timezone.now()
+        match.dismissed = True
+        match.save(update_fields=["seen_at", "dismissed"])
+        # Close the listing, then re-observe it active and recompute.
+        listing.status = JobListing.Status.CLOSED
+        listing.save(update_fields=["status"])
+        listing.status = JobListing.Status.ACTIVE
+        listing.save(update_fields=["status"])
+        persist_matches(user, [listing], criteria, DEFAULT_CONFIG)
+        match.refresh_from_db()
+        self.assertIsNotNone(match.seen_at)
+        self.assertTrue(match.dismissed)

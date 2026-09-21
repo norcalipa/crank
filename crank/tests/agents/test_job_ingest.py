@@ -12,7 +12,11 @@ from django.utils import timezone
 
 from crank.agents.jobs.base import JobSourceQuery, JobSourceResult, RawJobListing
 from crank.agents.jobs.ingest import ingest_jobs
-from crank.agents.sources.errors import SourceTimeoutError
+from crank.agents.sources.errors import (
+    SourceServerError,
+    SourceThrottledError,
+    SourceTimeoutError,
+)
 from crank.models.job import JobListing, JobSourceCatalog
 
 
@@ -64,8 +68,9 @@ class JobIngestTests(TestCase):
         replay = ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([raw()]))
         assert first.ingested == 1
         assert first.updated == 0
+        # AC-1 (issue #469): an unchanged replay is neither created nor updated.
         assert replay.ingested == 0
-        assert replay.updated == 1
+        assert replay.updated == 0
         assert JobListing.all_objects.filter(source=source).count() == 1
 
     def test_updates_freshness_and_terminal_states(self):
@@ -116,14 +121,14 @@ class JobIngestTests(TestCase):
     def test_listing_errors_do_not_abort_other_listings(self):
         source = make_source()
         invalid = raw(external_id="fixture-invalid")
-        original_ingest = JobListing.ingest
+        original_ingest = JobListing.ingest_with_outcome
 
         def ingest_with_one_error(source_obj, listing):
             if listing.external_id == "fixture-invalid":
                 raise UnapprovedJobSource("unapproved fixture URL")
             return original_ingest(source_obj, listing)
 
-        with patch.object(JobListing, "ingest", side_effect=ingest_with_one_error):
+        with patch.object(JobListing, "ingest_with_outcome", side_effect=ingest_with_one_error):
             result = ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([raw(), invalid]))
         assert result.ingested == 1
         assert result.errors == 1
@@ -152,36 +157,188 @@ class JobIngestTests(TestCase):
         assert listing.status == JobListing.Status.EXPIRED
 
     def test_status_change_with_matching_timestamps(self):
-        """_changed returns True for status change with same timestamps (line 64)."""
-        from crank.agents.jobs.ingest import _changed
-
+        """Same-timestamp terminal observation still counts as an update."""
         source = make_source()
         original = raw()
         ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([original]))
         listing = JobListing.all_objects.get(source=source, external_id="fixture-1")
-        # Same timestamps, different status (active→expired) — should hit line 64
         expired_raw = raw(
             status=JobListing.Status.EXPIRED,
             last_seen_at=listing.last_seen_at,
             first_seen_at=listing.first_seen_at,
         )
-        assert _changed(listing, expired_raw) is True
+        result = ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([expired_raw]))
+        assert result.updated == 1
+        listing.refresh_from_db()
+        assert listing.status == JobListing.Status.EXPIRED
 
     def test_terminal_to_active_not_counted_as_changed(self):
-        """_changed returns False for terminal→active when timestamps match (lines 60-65)."""
-        from crank.agents.jobs.ingest import _changed
-
+        """Terminal listings are never resurrected by an active observation."""
         source = make_source()
         original = raw()
         ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([original]))
         listing = JobListing.all_objects.get(source=source, external_id="fixture-1")
-        # Simulate terminal state
         listing.status = JobListing.Status.CLOSED
         listing.save(update_fields=["status"])
-        # Raw says active again with SAME timestamp — _changed should return False
-        # because terminal→active is explicitly excluded from status-change detection.
         active_raw = raw(
             last_seen_at=listing.last_seen_at,
             first_seen_at=listing.first_seen_at,
         )
-        assert _changed(listing, active_raw) is False
+        result = ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([active_raw]))
+        assert result.updated == 0
+        listing.refresh_from_db()
+        assert listing.status == JobListing.Status.CLOSED
+
+
+class CompleteStubAdapter(StubAdapter):
+    def __init__(self, listings=(), error=None, complete=True, truncated=False):
+        super().__init__(listings, error)
+        self.complete = complete
+        self.truncated = truncated
+
+    def fetch(self, query):
+        if self.error:
+            raise self.error
+        return JobSourceResult(
+            listings=self.listings,
+            pages_fetched=1,
+            items_seen=len(self.listings),
+            complete_snapshot=self.complete,
+            truncated=self.truncated,
+        )
+
+
+class AbsenceClosureTests(TestCase):
+    """Issue #469 AC-7/8/9: closure only behind a proven complete snapshot."""
+
+    def test_complete_snapshot_closes_absent_active_listings(self):
+        source = make_source()
+        present = raw()
+        absent = raw(external_id="fixture-absent")
+        ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([present, absent]))
+        result = ingest_jobs(
+            source, JobSourceQuery(), adapter=CompleteStubAdapter([present])
+        )
+        assert result.absent_closed == 1
+        assert result.closure_skipped_reason == ""
+        assert result.complete_snapshot is True
+        listing = JobListing.all_objects.get(source=source, external_id="fixture-absent")
+        assert listing.status == JobListing.Status.CLOSED
+        kept = JobListing.all_objects.get(source=source, external_id="fixture-1")
+        assert kept.status == JobListing.Status.ACTIVE
+
+    def test_incomplete_snapshot_closes_nothing(self):
+        source = make_source()
+        ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([raw()]))
+        result = ingest_jobs(
+            source,
+            JobSourceQuery(),
+            adapter=CompleteStubAdapter([], complete=False),
+        )
+        assert result.absent_closed == 0
+        assert result.closure_skipped_reason == "incomplete_snapshot"
+        assert JobListing.all_objects.filter(
+            source=source, status=JobListing.Status.ACTIVE
+        ).count() == 1
+
+    def test_truncated_snapshot_closes_nothing(self):
+        source = make_source()
+        ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([raw()]))
+        result = ingest_jobs(
+            source,
+            JobSourceQuery(),
+            adapter=CompleteStubAdapter([], complete=True, truncated=True),
+        )
+        assert result.absent_closed == 0
+        assert result.closure_skipped_reason == "truncated"
+
+    def test_catalog_kill_switch_disables_closure(self):
+        source = make_source()
+        source.catalog_metadata = {"supports_complete_snapshot": False}
+        source.save()
+        ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([raw()]))
+        result = ingest_jobs(
+            source, JobSourceQuery(), adapter=CompleteStubAdapter([])
+        )
+        assert result.absent_closed == 0
+        assert result.closure_skipped_reason == "disabled_by_catalog"
+
+    def test_fetch_failure_closes_nothing_and_leaves_rows_untouched(self):
+        source = make_source()
+        first = ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([raw()]))
+        assert first.ingested == 1
+        before = JobListing.all_objects.get(source=source, external_id="fixture-1")
+        before_seen = before.last_seen_at
+        for error in (
+            SourceThrottledError("rate limited"),
+            SourceServerError("upstream 500"),
+            SourceTimeoutError("timeout"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                result = ingest_jobs(
+                    source, JobSourceQuery(), adapter=StubAdapter(error=error)
+                )
+                assert result.errors == 1
+                assert result.absent_closed == 0
+                assert result.complete_snapshot is False
+                after = JobListing.all_objects.get(pk=before.pk)
+                assert after.status == JobListing.Status.ACTIVE
+                assert after.last_seen_at == before_seen
+
+    def test_explicit_terminal_observation_is_honoured(self):
+        source = make_source()
+        ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([raw()]))
+        closed = raw(
+            status=JobListing.Status.CLOSED,
+            last_seen_at=timezone.now() + timedelta(hours=1),
+        )
+        result = ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([closed]))
+        listing = JobListing.all_objects.get(source=source, external_id="fixture-1")
+        assert listing.status == JobListing.Status.CLOSED
+        assert result.closed == 1
+        # A later active observation cannot resurrect it (AC-10).
+        active = raw(last_seen_at=timezone.now() + timedelta(hours=2))
+        ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([active]))
+        listing.refresh_from_db()
+        assert listing.status == JobListing.Status.CLOSED
+
+    def test_mixed_and_missing_external_id_replay_is_stable(self):
+        source = make_source()
+        identified = raw()
+        anonymous = raw(
+            external_id="", canonical_url="https://jobs.example.test/anon-1"
+        )
+        first = ingest_jobs(
+            source, JobSourceQuery(), adapter=StubAdapter([identified, anonymous])
+        )
+        assert first.ingested == 2
+        replay = ingest_jobs(
+            source, JobSourceQuery(), adapter=StubAdapter([identified, anonymous])
+        )
+        assert replay.ingested == 0
+        assert replay.updated == 0
+        assert JobListing.all_objects.filter(source=source).count() == 2
+
+
+class ListingErrorClosureTests(TestCase):
+    def test_listing_errors_skip_closure(self):
+        source = make_source()
+        ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([raw()]))
+        invalid = raw(external_id="fixture-invalid")
+
+        def ingest_with_one_error(source_obj, listing):
+            if listing.external_id == "fixture-invalid":
+                raise UnapprovedJobSource("unapproved fixture URL")
+            return JobListing.ingest_with_outcome(source_obj, listing)
+
+        with patch.object(
+            JobListing, "ingest_with_outcome", side_effect=ingest_with_one_error
+        ):
+            result = ingest_jobs(
+                source,
+                JobSourceQuery(),
+                adapter=CompleteStubAdapter([invalid], complete=True),
+            )
+        assert result.errors == 1
+        assert result.absent_closed == 0
+        assert result.closure_skipped_reason == "listing_errors"

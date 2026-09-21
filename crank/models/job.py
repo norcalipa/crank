@@ -103,9 +103,30 @@ class ActiveJobListingManager(models.Manager):
         return super().get_queryset().filter(status=JobListing.Status.ACTIVE)
 
 
+# Ingestion outcomes returned by ``upsert_from_raw`` (issue #469): the single
+# identity implementation also reports what it did, so callers never maintain
+# a second (unguarded) lookup to compute counters.
+OUTCOME_CREATED = "created"
+OUTCOME_UPDATED = "updated"
+OUTCOME_UNCHANGED = "unchanged"
+
+
 class JobListingQuerySet(models.QuerySet):
     def active(self):
         return self.filter(status=JobListing.Status.ACTIVE)
+
+    def close_absent(self, source, seen_ids) -> int:
+        """Close active listings of ``source`` whose pk is not in ``seen_ids``.
+
+        Runs under one transaction and is idempotent: a second call with the
+        same ``seen_ids`` closes nothing more. Only ever transitions
+        ``active`` listings; terminal rows are untouched.
+        """
+        with transaction.atomic():
+            return self.filter(
+                source=source,
+                status=JobListing.Status.ACTIVE,
+            ).exclude(pk__in=set(seen_ids)).update(status=JobListing.Status.CLOSED)
 
     def upsert_from_raw(self, source, raw: RawJobListing):
         """Create/update a listing safely under concurrent ingestion.
@@ -134,7 +155,7 @@ class JobListingQuerySet(models.QuerySet):
                     # The savepoint lets us reconcile a concurrent insert while
                     # keeping the surrounding ingestion transaction usable.
                     with transaction.atomic():
-                        return self.model.all_objects.create(
+                        created = self.model.all_objects.create(
                             source=source,
                             external_id=raw.external_id,
                             employer_external_id=raw.employer_external_id,
@@ -154,6 +175,7 @@ class JobListingQuerySet(models.QuerySet):
                             status=raw.status,
                             source_metadata=dict(raw.source_metadata or {}),
                         )
+                        return created, OUTCOME_CREATED
                 except IntegrityError:
                     # Another worker won the unique-key race. It is now safe
                     # to read and reconcile the committed row.
@@ -174,33 +196,50 @@ class JobListingQuerySet(models.QuerySet):
             else:
                 status = listing.status
 
+            # Regression gate (issue #469): an out-of-order observation may
+            # advance freshness and honour an explicit terminal status, but it
+            # never overwrites stored content with older values.
             values = {
-                "canonical_url": raw.canonical_url,
-                "employer_external_id": raw.employer_external_id,
-                "employer_name": raw.employer_name,
-                "employer_domain": raw.employer_domain,
-                "title": raw.title,
-                "location_text": raw.location_text,
-                "is_remote": raw.is_remote,
-                "compensation_min": raw.compensation_min,
-                "compensation_max": raw.compensation_max,
-                "compensation_currency": raw.compensation_currency,
-                "compensation_interval": raw.compensation_interval,
-                "description_excerpt": raw.description_excerpt,
                 "last_seen_at": max(listing.last_seen_at, observed_at),
                 "status": status,
-                "source_metadata": dict(raw.source_metadata or {}),
             }
+            if incoming_is_newer:
+                values.update(
+                    {
+                        "canonical_url": raw.canonical_url,
+                        "employer_external_id": raw.employer_external_id,
+                        "employer_name": raw.employer_name,
+                        "employer_domain": raw.employer_domain,
+                        "title": raw.title,
+                        "location_text": raw.location_text,
+                        "is_remote": raw.is_remote,
+                        "compensation_min": raw.compensation_min,
+                        "compensation_max": raw.compensation_max,
+                        "compensation_currency": raw.compensation_currency,
+                        "compensation_interval": raw.compensation_interval,
+                        "description_excerpt": raw.description_excerpt,
+                        "source_metadata": dict(raw.source_metadata or {}),
+                    }
+                )
+            # A freshness-only advance (last_seen_at) is not an "update": an
+            # unchanged replay reports OUTCOME_UNCHANGED so ingestion counters
+            # reflect content changes, not clock ticks (issue #469 AC-1).
+            changed = any(
+                getattr(listing, field) != value
+                for field, value in values.items()
+                if field != "last_seen_at"
+            )
             # first_seen_at is immutable provenance. A canonical-URL fallback
             # may fill a previously unavailable source ID.
             for field, value in values.items():
                 setattr(listing, field, value)
             update_fields = [*values, "modified"]
             if not listing.external_id and raw.external_id:
+                changed = True
                 listing.external_id = raw.external_id
                 update_fields.append("external_id")
             listing.save(update_fields=update_fields)
-            return listing
+            return listing, OUTCOME_UPDATED if changed else OUTCOME_UNCHANGED
 
 
 
@@ -304,6 +343,18 @@ class JobListing(TimeStampedModel):
 
     @classmethod
     def ingest(cls, source, raw: RawJobListing):
+        """Upsert ``raw`` and return the listing (outcome discarded)."""
+        listing, _outcome = cls.all_objects.get_queryset().upsert_from_raw(source, raw)
+        return listing
+
+    @classmethod
+    def ingest_with_outcome(cls, source, raw: RawJobListing):
+        """Upsert ``raw`` and return ``(listing, outcome)``.
+
+        ``outcome`` is one of ``OUTCOME_CREATED``, ``OUTCOME_UPDATED``, or
+        ``OUTCOME_UNCHANGED`` so ingestion counters come from the single
+        identity implementation instead of a second lookup.
+        """
         return cls.all_objects.get_queryset().upsert_from_raw(source, raw)
 
     @property

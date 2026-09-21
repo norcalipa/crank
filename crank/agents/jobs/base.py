@@ -50,6 +50,18 @@ MAX_INTERVAL = 32
 MAX_DESCRIPTION_EXCERPT = 2000
 MAX_METADATA_BYTES = 8192
 MAX_CATALOG_METADATA_BYTES = 8192
+# Reserved ``source_metadata`` keys (issue #469): bounded, normalized values
+# written by adapters so downstream evaluation (#467) can compare like with
+# like. They are validated by ``validate_source_metadata`` like every other
+# key and never carry raw response bodies.
+COMPENSATION_BASIS_VALUES = frozenset({"base", "total"})
+SCOPE_KEYS = frozenset({"countries", "role_families"})
+MAX_SCOPE_ITEMS = 32
+MAX_SCOPE_ITEM_LENGTH = 64
+# Reserved ``JobSourceCatalog.catalog_metadata`` keys (operator policy).
+CATALOG_EXPIRY_DAYS_KEY = "expiry_days"
+CATALOG_DELETION_DAYS_KEY = "deletion_days"
+CATALOG_SUPPORTS_COMPLETE_SNAPSHOT_KEY = "supports_complete_snapshot"
 COMPENSATION_MAX_DIGITS = 14
 COMPENSATION_DECIMAL_PLACES = 2
 
@@ -178,8 +190,49 @@ class RawJobListing:
         object.__setattr__(
             self,
             "source_metadata",
-            validate_source_metadata(self.source_metadata),
+            validate_source_metadata(_normalize_reserved_metadata(self.source_metadata)),
         )
+
+
+def _normalize_reserved_metadata(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Bound the reserved ``compensation_basis``/``scope`` metadata keys.
+
+    ``compensation_basis`` is kept only when it normalizes to ``"base"`` or
+    ``"total"``; ``scope`` is kept only as a mapping of the documented keys to
+    bounded lists of short strings. Unknown or malformed reserved values are
+    dropped rather than persisted, so a misbehaving adapter can never widen
+    the contract.
+    """
+    try:
+        metadata = dict(value or {})
+    except (TypeError, ValueError):
+        return value  # validate_source_metadata raises the typed error
+    if "compensation_basis" in metadata:
+        basis = str(metadata.get("compensation_basis") or "").strip().lower()
+        if basis in COMPENSATION_BASIS_VALUES:
+            metadata["compensation_basis"] = basis
+        else:
+            metadata.pop("compensation_basis", None)
+    if "scope" in metadata:
+        scope = metadata.get("scope")
+        normalized: dict[str, list[str]] = {}
+        if isinstance(scope, Mapping):
+            for key in SCOPE_KEYS:
+                items = scope.get(key)
+                if isinstance(items, (list, tuple)):
+                    cleaned = [
+                        text
+                        for item in items[:MAX_SCOPE_ITEMS]
+                        if isinstance(item, str)
+                        and (text := " ".join(item.split())[:MAX_SCOPE_ITEM_LENGTH])
+                    ]
+                    if cleaned:
+                        normalized[key] = cleaned
+        if normalized:
+            metadata["scope"] = normalized
+        else:
+            metadata.pop("scope", None)
+    return metadata
 
 
 def _is_finite_number(value: int | float | Decimal) -> bool:
@@ -309,9 +362,20 @@ class JobSourceQuery:
 
 @dataclass(frozen=True)
 class JobSourceResult:
+    """One adapter fetch, including its completeness claim.
+
+    ``complete_snapshot`` is the adapter's assertion that the payload is the
+    source's full current inventory; it defaults to ``False`` so an adapter
+    that does not opt in — and every failed fetch — can never trigger
+    absence-based closure. ``truncated`` marks a fetch that stopped at a
+    configured bound before the source reported its end.
+    """
+
     listings: Sequence[RawJobListing]
     pages_fetched: int = 0
     items_seen: int = 0
+    complete_snapshot: bool = False
+    truncated: bool = False
 
 
 class JobSourceAdapter(ABC):
