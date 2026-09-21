@@ -68,6 +68,10 @@ class UserPreference(TimeStampedModel):
     - `preferences_markdown` is a server-generated projection for prompts and
       user review; it is never trusted as an input source.
     - `schema_version` tracks the JSON document schema for migrations/validation.
+    - `revision` is the monotonic per-user document revision (issue #466): it
+      advances by exactly one on every committed change and drives optimistic
+      concurrency, undo preconditions, and recompute identity. It is distinct
+      from `schema_version`, which tracks the document *shape*.
 
     Retention note: preference rows are owned by the user and are cascade
     deleted with the owning user. No provider reasoning, hidden prompts, API
@@ -101,6 +105,13 @@ class UserPreference(TimeStampedModel):
         default=SCHEMA_VERSION,
         verbose_name=_("schema version"),
         help_text=_("Version of the preferences JSON document schema."),
+    )
+    revision = models.PositiveBigIntegerField(
+        default=0,
+        verbose_name=_("revision"),
+        help_text=_(
+            "Monotonic document revision; advances by one per committed change."
+        ),
     )
 
     def __str__(self):

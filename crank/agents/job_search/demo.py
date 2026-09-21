@@ -242,7 +242,7 @@ class JobSearchService:
                 p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
             )
             if accepts_hook:
-                reply_text, changed, results = self.provider.generate_reply(
+                outcome = self.provider.generate_reply(
                     conversation=conversation,
                     user_message=user_message,
                     persist_reply=self._bound_persist_hook(persist_reply),
@@ -250,9 +250,17 @@ class JobSearchService:
             else:
                 # Legacy provider signature: no guarded persistence hook; the
                 # view's post-turn transaction handles the reply.
-                reply_text, changed, results = self.provider.generate_reply(
+                outcome = self.provider.generate_reply(
                     conversation=conversation, user_message=user_message
                 )
+            # Issue #466: orchestrator-backed providers also return an
+            # ``extras`` payload (applied preference ``changes``/``undo``);
+            # legacy providers return the plain 3-tuple.
+            if len(outcome) == 4:
+                reply_text, changed, results, extras = outcome
+            else:
+                reply_text, changed, results = outcome
+                extras = None
         except JobSearchServiceError:
             # Already a typed service error (e.g. from generate_reply);
             # let it propagate without re-wrapping.
@@ -336,7 +344,7 @@ class JobSearchService:
                 "The assistant could not produce a grounded reply. "
                 "Please try again later or contact support."
             )
-        return (reply_text or "").strip(), bool(changed), results
+        return (reply_text or "").strip(), bool(changed), results, extras
 
     @staticmethod
     def _bound_persist_hook(persist_reply):

@@ -122,6 +122,8 @@ class OrchestratorResult:
     cited_job_listing_ids: tuple = ()
     preference_patch: dict[str, Any] | None = None
     preferences_changed: bool = False
+    preference_changes: tuple | None = None
+    preference_undo: dict[str, Any] | None = None
     prompt_id: str = prompt.prompt_id()
     results: Optional[StructuredResults] = None
     # Bounded operator telemetry (issue #397). Counts/names only, never content.
@@ -195,6 +197,7 @@ class JobSearchOrchestrator:
         conversation: list[dict[str, str]],
         preference_markdown: str,
         expected_modified: Any = None,
+        expected_revision: Any = None,
         lifecycle_guard: Callable[[], None] | None = None,
         persist_reply: Callable[..., None] | None = None,
         token_budget: int | None = None,
@@ -205,7 +208,10 @@ class JobSearchOrchestrator:
         ``expected_modified`` is the preference baseline captured at turn
         start (alongside the ``preference_markdown`` snapshot, before any turn
         work); a proposed patch is applied only if the preference row still
-        carries that version at commit time. ``lifecycle_guard``, when given,
+        carries that version at commit time. ``expected_revision`` (issue
+        #466) is the monotonic document revision captured in the same read;
+        ports that accept it enforce the revision precondition instead of the
+        timestamp. ``lifecycle_guard``, when given,
         runs inside the same transaction as the preference write and raises
         :class:`ConversationClosedError` to abort when the conversation was
         reset or deleted mid-turn (issue #487 review, MAJOR-2).
@@ -222,6 +228,7 @@ class JobSearchOrchestrator:
                 conversation=conversation,
                 preference_markdown=preference_markdown,
                 expected_modified=expected_modified,
+                expected_revision=expected_revision,
                 lifecycle_guard=lifecycle_guard,
                 persist_reply=persist_reply,
                 token_budget=token_budget,
@@ -272,6 +279,7 @@ class JobSearchOrchestrator:
         conversation: list[dict[str, str]],
         preference_markdown: str,
         expected_modified: Any = None,
+        expected_revision: Any = None,
         lifecycle_guard: Callable[[], None] | None = None,
         persist_reply: Callable[..., None] | None = None,
         token_budget: int | None = None,
@@ -410,6 +418,7 @@ class JobSearchOrchestrator:
                     else None
                 ),
                 expected_modified=expected_modified,
+                expected_revision=expected_revision,
                 lifecycle_guard=lifecycle_guard,
                 persist_reply=persist_reply,
                 reply_text=completion.message,
@@ -430,12 +439,23 @@ class JobSearchOrchestrator:
             completion.cited_job_listing_ids,
             preferences_changed,
         )
+        # Carry the applied field-level diff and undo token (issue #466)
+        # through the result when the preference port exposed them; they are
+        # returned to the owner only and never logged.
+        apply_meta = getattr(self._preference_service, "last_apply_result", None)
+        preference_changes = None
+        preference_undo = None
+        if preferences_changed and isinstance(apply_meta, dict):
+            preference_changes = tuple(apply_meta.get("changes") or ()) or None
+            preference_undo = apply_meta.get("undo")
         return OrchestratorResult(
             message=completion.message,
             cited_organization_ids=completion.cited_organization_ids,
             cited_job_listing_ids=completion.cited_job_listing_ids,
             preference_patch=applied_patch,
             preferences_changed=preferences_changed,
+            preference_changes=preference_changes,
+            preference_undo=preference_undo,
             results=structured_results,
             tools_used=tools_used,
             result_counts=result_counts,
@@ -664,6 +684,7 @@ class JobSearchOrchestrator:
         *,
         patch: dict[str, Any] | None,
         expected_modified: Any,
+        expected_revision: Any = None,
         lifecycle_guard: Callable[[], None] | None,
         persist_reply: Callable[..., None] | None,
         reply_text: str,
@@ -721,7 +742,9 @@ class JobSearchOrchestrator:
         if lifecycle_guard is None and persist_reply is None:
             if patch is not None:
                 try:
-                    changed = self._apply_patch_with_version(patch, expected_modified)
+                    changed = self._apply_patch_with_version(
+                        patch, expected_modified, expected_revision
+                    )
                 except PreferenceStaleError:
                     raise
                 except PreferenceVersionUnavailableError:
@@ -751,7 +774,7 @@ class JobSearchOrchestrator:
                 if patch is not None:
                     try:
                         changed = self._apply_patch_with_version(
-                            patch, expected_modified
+                            patch, expected_modified, expected_revision
                         )
                     except PreferenceStaleError:
                         # Fail closed: a stale patch is never applied and
@@ -831,9 +854,9 @@ class JobSearchOrchestrator:
         return patch, bool(changed)
 
     def _apply_patch_with_version(
-        self, patch: dict[str, Any], expected_modified: Any
+        self, patch: dict[str, Any], expected_modified: Any, expected_revision: Any = None
     ) -> bool:
-        """Call the port's ``apply_patch``, passing the version when supported.
+        """Call the port's ``apply_patch``, passing the versions when supported.
 
         Fail closed (issue #487 review, MAJOR-4): a port whose ``apply_patch``
         does not accept the ``expected_modified`` parameter is a legacy port.
@@ -842,6 +865,9 @@ class JobSearchOrchestrator:
         port the patch path aborts with
         :class:`PreferenceVersionUnavailableError` instead of silently
         dropping the version and disabling the stale check.
+
+        ``expected_revision`` (issue #466) is forwarded only to ports that
+        declare the parameter; legacy ports keep the timestamp behaviour.
         """
         import inspect
 
@@ -849,10 +875,18 @@ class JobSearchOrchestrator:
             params = inspect.signature(self._preference_service.apply_patch).parameters
         except (TypeError, ValueError):  # pragma: no cover - builtins etc.
             params = {}
-        accepts_version = "expected_modified" in params or any(
+        has_var_keyword = any(
             p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
         )
+        accepts_version = "expected_modified" in params or has_var_keyword
+        accepts_revision = "expected_revision" in params or has_var_keyword
         if accepts_version:
+            if accepts_revision:
+                return self._preference_service.apply_patch(
+                    patch,
+                    expected_modified=expected_modified,
+                    expected_revision=expected_revision,
+                )
             return self._preference_service.apply_patch(
                 patch, expected_modified=expected_modified
             )

@@ -388,6 +388,143 @@ class MatchingServiceIntegrationTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
+# preferences_override seam tests (issue #466)
+# ---------------------------------------------------------------------------
+
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+)
+class PreferencesOverrideTests(TestCase):
+    """``preferences_override`` (issue #466): an in-memory effective document
+    drives one search with zero preference-row reads — the stored canonical
+    row is neither read nor written.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user("overrideuser", password="secret")
+        self.org_public = Organization.objects.create(
+            name="PublicCo", funding_round="P", rto_policy="R"
+        )
+        self.org_private = Organization.objects.create(
+            name="StartupCo", funding_round="A", rto_policy="R"
+        )
+        self.source = JobSourceCatalog.objects.create(
+            name="Synthetic",
+            adapter_key="synthetic.v1",
+            base_url="https://jobs.example.test",
+            enabled=True,
+        )
+        now = timezone.now()
+        self.listing_public = JobListing.all_objects.create(
+            source=self.source,
+            external_id="pub-1",
+            canonical_url="https://jobs.example.test/pub-1",
+            employer_name="PublicCo",
+            title="Senior Engineer",
+            first_seen_at=now - timedelta(days=1),
+            last_seen_at=now,
+            status=JobListing.Status.ACTIVE,
+            organization=self.org_public,
+            compensation_min=Decimal(150000),
+            compensation_max=Decimal(180000),
+            compensation_currency="USD",
+            is_remote=True,
+        )
+        self.listing_private = JobListing.all_objects.create(
+            source=self.source,
+            external_id="priv-2",
+            canonical_url="https://jobs.example.test/priv-2",
+            employer_name="StartupCo",
+            title="Staff Engineer",
+            first_seen_at=now - timedelta(days=1),
+            last_seen_at=now,
+            status=JobListing.Status.ACTIVE,
+            organization=self.org_private,
+            compensation_min=Decimal(150000),
+            compensation_max=Decimal(180000),
+            compensation_currency="USD",
+            is_remote=True,
+        )
+        # Stored document is deliberately permissive: any filtering observed
+        # under an override can only have come from the override itself.
+        UserPreference.objects.create(
+            user=self.user, preferences=preferences(), schema_version=3,
+        )
+
+    def _public_only_override(self):
+        return preferences(compensation={"require_public_company": True})
+
+    def test_match_jobs_override_filters_without_reading_stored_row(self):
+        from unittest import mock
+
+        with mock.patch("crank.services.job_matching.UserPreference") as pref_model:
+            results = match_jobs(
+                self.user, limit=10,
+                preferences_override=self._public_only_override(),
+            )
+        pref_model.objects.get.assert_not_called()
+        listing_ids = [r.listing_id for r in results]
+        assert self.listing_public.pk in listing_ids
+        assert self.listing_private.pk not in listing_ids
+
+    def test_match_organizations_override_filters_without_reading_stored_row(self):
+        from unittest import mock
+
+        with mock.patch("crank.services.job_matching.UserPreference") as pref_model:
+            results = match_organizations(
+                self.user, limit=10,
+                preferences_override=self._public_only_override(),
+            )
+        pref_model.objects.get.assert_not_called()
+        org_ids = [r.organization_id for r in results]
+        assert self.org_public.pk in org_ids
+        assert self.org_private.pk not in org_ids
+
+    def test_match_jobs_override_ignores_stored_document(self):
+        """The override, not the stored row, drives the search: a stored
+        document that would exclude everything still yields matches when the
+        override is permissive."""
+        UserPreference.objects.filter(user=self.user).update(
+            preferences=preferences(compensation={"require_public_company": True}),
+        )
+        results = match_jobs(self.user, limit=10, preferences_override=preferences())
+        listing_ids = [r.listing_id for r in results]
+        assert self.listing_public.pk in listing_ids
+        assert self.listing_private.pk in listing_ids
+
+    def test_match_jobs_override_does_not_write_stored_row(self):
+        stored_before = UserPreference.objects.get(user=self.user)
+        match_jobs(
+            self.user, limit=10,
+            preferences_override=self._public_only_override(),
+        )
+        stored_after = UserPreference.objects.get(user=self.user)
+        assert stored_after.preferences == stored_before.preferences
+        assert stored_after.revision == stored_before.revision
+
+    def test_get_criteria_override_projects_document_without_db(self):
+        from unittest import mock
+
+        with mock.patch("crank.services.job_matching.UserPreference") as pref_model:
+            criteria = _get_criteria(self.user, self._public_only_override())
+        pref_model.objects.get.assert_not_called()
+        assert criteria is not None
+        assert criteria.require_public_company is True
+
+    def test_match_jobs_without_override_still_reads_stored_row(self):
+        """Control: the default path is unchanged — no override means the
+        stored row drives filtering exactly as before."""
+        UserPreference.objects.filter(user=self.user).update(
+            preferences=preferences(compensation={"require_public_company": True}),
+        )
+        results = match_jobs(self.user, limit=10)
+        listing_ids = [r.listing_id for r in results]
+        assert self.listing_public.pk in listing_ids
+        assert self.listing_private.pk not in listing_ids
+
+
+# ---------------------------------------------------------------------------
 # Empty-inventory fallback tests
 # ---------------------------------------------------------------------------
 

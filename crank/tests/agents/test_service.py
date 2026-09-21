@@ -820,3 +820,128 @@ class TestAvailabilityContext:
         # The tool-block marker must be absent; the system prompt's honesty
         # rule mentions "AVAILABILITY STATE" by name, so match the prefix.
         assert "AVAILABILITY STATE (server-controlled" not in joined
+
+
+# ---------------------------------------------------------------------------
+# Revision forwarding and changes/undo carriage (issue #466)
+# ---------------------------------------------------------------------------
+def _patch_completion():
+    return {
+        "message": "Noted.",
+        "cited_organization_ids": [],
+        "cited_job_listing_ids": [],
+        "preference_patch": {"set": {"notes": "remote only"}},
+    }
+
+
+class TestRevisionAndUndoCarriage:
+    def test_expected_revision_forwarded_when_port_accepts(self):
+        captured = {}
+
+        class RevisionPort:
+            writable = True
+
+            def validate_patch(self, patch):
+                pass
+
+            def apply_patch(self, patch, expected_modified=None, expected_revision=None):
+                captured["expected_modified"] = expected_modified
+                captured["expected_revision"] = expected_revision
+                return True
+
+        gateway = FakeGateway(_patch_completion())
+        orch = make_orchestrator(gateway, RevisionPort())
+        result = orch.run(
+            user_prompt="prefer remote",
+            conversation=[],
+            preference_markdown="",
+            expected_modified="ts-marker",
+            expected_revision=3,
+        )
+        assert captured == {"expected_modified": "ts-marker", "expected_revision": 3}
+        assert result.preferences_changed is True
+
+    def test_expected_revision_falls_back_for_legacy_port(self):
+        class LegacyPort:
+            writable = True
+
+            def __init__(self):
+                self.seen = None
+
+            def validate_patch(self, patch):
+                pass
+
+            def apply_patch(self, patch, expected_modified=None):
+                self.seen = expected_modified
+                return True
+
+        port = LegacyPort()
+        gateway = FakeGateway(_patch_completion())
+        orch = make_orchestrator(gateway, port)
+        orch.run(
+            user_prompt="prefer remote",
+            conversation=[],
+            preference_markdown="",
+            expected_modified="ts-marker",
+            expected_revision=3,
+        )
+        # A legacy (timestamp-only) port keeps the timestamp behaviour; the
+        # revision is simply not forwarded to it.
+        assert port.seen == "ts-marker"
+
+    def test_result_carries_changes_and_undo(self):
+        class MetaPort:
+            writable = True
+            last_apply_result = None
+
+            def validate_patch(self, patch):
+                pass
+
+            def apply_patch(self, patch, expected_modified=None, expected_revision=None):
+                self.last_apply_result = {
+                    "changed": True,
+                    "changes": [{"path": "notes", "old": "", "new": "remote only"}],
+                    "undo": {"expected_revision": 2, "patch": {"set": {"notes": ""}}},
+                }
+                return True
+
+        gateway = FakeGateway(_patch_completion())
+        orch = make_orchestrator(gateway, MetaPort())
+        result = orch.run(
+            user_prompt="prefer remote",
+            conversation=[],
+            preference_markdown="",
+            expected_modified="ts",
+            expected_revision=1,
+        )
+        assert result.preferences_changed is True
+        assert result.preference_changes == (
+            {"path": "notes", "old": "", "new": "remote only"},
+        )
+        assert result.preference_undo == {
+            "expected_revision": 2, "patch": {"set": {"notes": ""}},
+        }
+
+    def test_result_no_changes_on_unchanged_apply(self):
+        class UnchangedPort:
+            writable = True
+            last_apply_result = {"changed": False, "changes": [], "undo": None}
+
+            def validate_patch(self, patch):
+                pass
+
+            def apply_patch(self, patch, expected_modified=None, expected_revision=None):
+                return False
+
+        gateway = FakeGateway(_patch_completion())
+        orch = make_orchestrator(gateway, UnchangedPort())
+        result = orch.run(
+            user_prompt="prefer remote",
+            conversation=[],
+            preference_markdown="",
+            expected_modified="ts",
+            expected_revision=1,
+        )
+        assert result.preferences_changed is False
+        assert result.preference_changes is None
+        assert result.preference_undo is None

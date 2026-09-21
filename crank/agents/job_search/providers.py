@@ -209,23 +209,39 @@ class _PreferenceServiceAdapter:
 
     def __init__(self, user: Any) -> None:
         self._user = user
+        # Last successful apply result, exposed so the orchestrator can carry
+        # the field-level ``changes``/``undo`` token (issue #466) through its
+        # result without changing the port's bool return contract. Metadata
+        # only flows outward to the owner; it is never logged.
+        self.last_apply_result: dict[str, Any] | None = None
 
     def validate_patch(self, patch: dict[str, Any]) -> None:
         from crank.services.preferences import validate_patch
 
         validate_patch(patch)
 
-    def apply_patch(self, patch: dict[str, Any], expected_modified: Any = None) -> bool:
+    def apply_patch(
+        self,
+        patch: dict[str, Any],
+        expected_modified: Any = None,
+        expected_revision: Any = None,
+    ) -> bool:
         from crank.services.preferences import StalePreferenceError, apply_patch_to_user
 
         try:
-            result = apply_patch_to_user(self._user, patch, expected_modified)
+            result = apply_patch_to_user(
+                self._user,
+                patch,
+                expected_modified,
+                expected_revision=expected_revision,
+            )
         except StalePreferenceError as exc:
             # Map the concrete store's typed error to the orchestrator-level
             # error so the transport layer stays provider-independent.
             raise PreferenceStaleError(
                 "preference changed while the assistant was responding"
             ) from exc
+        self.last_apply_result = result
         return bool(result.get("changed", False))
 
 
@@ -654,9 +670,11 @@ class OrchestratorJobSearchProvider:
         orchestrator = self._ensure_orchestrator(user)
         try:
             history = self._build_conversation_history(conversation)
-            preference_markdown, expected_modified = self._read_preference_snapshot(
-                conversation
-            )
+            (
+                preference_markdown,
+                expected_modified,
+                expected_revision,
+            ) = self._read_preference_snapshot(conversation)
         except Exception as exc:
             logger.error(
                 "orchestrator provider history error conversation=%s error_type=%s",
@@ -671,6 +689,7 @@ class OrchestratorJobSearchProvider:
                 conversation=history,
                 preference_markdown=preference_markdown,
                 expected_modified=expected_modified,
+                expected_revision=expected_revision,
                 lifecycle_guard=self._make_lifecycle_guard(conversation),
                 persist_reply=persist_reply,
             )
@@ -707,7 +726,13 @@ class OrchestratorJobSearchProvider:
                 ) from exc
             raise
 
-        return result.message, result.preferences_changed, result.results
+        extras = None
+        if result.preference_changes is not None or result.preference_undo is not None:
+            extras = {
+                "changes": result.preference_changes,
+                "undo": result.preference_undo,
+            }
+        return result.message, result.preferences_changed, result.results, extras
 
     # -- helpers -----------------------------------------------------------
 
@@ -723,23 +748,25 @@ class OrchestratorJobSearchProvider:
         return messages
 
     @staticmethod
-    def _read_preference_snapshot(conversation) -> tuple[str, Any]:
-        """Read the owner's preference markdown AND row version in ONE read.
+    def _read_preference_snapshot(conversation) -> tuple[str, Any, Any]:
+        """Read the owner's preference markdown AND row versions in ONE read.
 
-        The pair is captured at turn start, before any turn work, so the
+        The triple is captured at turn start, before any turn work, so the
         prompt snapshot and the optimistic-concurrency baseline can never
         drift apart: a mid-turn edit cannot pair a stale prompt with a fresh
         version (or vice versa) and slip past the stale check (issue #487
         review, MAJOR-3).
 
-        Returns ``(markdown, version)`` where ``version`` is:
+        Returns ``(markdown, modified, revision)`` where the version pair is:
 
-        * the row's ``modified`` timestamp when a preference row exists;
-        * :data:`crank.services.preferences.PREFERENCE_ABSENT` when the owner
-          has no row yet (the patch then applies only if the row is still
-          absent at commit time);
-        * ``None`` when the read failed — writer ports fail closed on a
-          proposed patch in that case (MAJOR-4), no-writer ports proceed.
+        * the row's ``modified`` timestamp and ``revision`` when a preference
+          row exists;
+        * :data:`crank.services.preferences.PREFERENCE_ABSENT` and ``None``
+          when the owner has no row yet (the patch then applies only if the
+          row is still absent at commit time; the revision check is unused);
+        * ``None`` and ``None`` when the read failed — writer ports fail
+          closed on a proposed patch in that case (MAJOR-4), no-writer ports
+          proceed.
         """
         try:
             from crank.models.preference import UserPreference
@@ -749,8 +776,8 @@ class OrchestratorJobSearchProvider:
                 user_id=conversation.owner_id
             ).first()
             if pref is None:
-                return "", PREFERENCE_ABSENT
-            return pref.preferences_markdown or "", pref.modified
+                return "", PREFERENCE_ABSENT, None
+            return pref.preferences_markdown or "", pref.modified, pref.revision
         except Exception:  # noqa: BLE001
             # Preference model/table may not be ready in test contexts; the
             # missing baseline fails closed at patch time for writer ports.
@@ -758,4 +785,4 @@ class OrchestratorJobSearchProvider:
                 "Preference lookup unavailable for user=%s",
                 getattr(conversation, "owner_id", None),
             )
-            return "", None
+            return "", None, None

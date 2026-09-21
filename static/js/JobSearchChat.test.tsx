@@ -3203,3 +3203,208 @@ describe('signed-out visitor and account-switch purge (issue #465)', () => {
         }
     });
 });
+
+describe('preference change diff & undo (issue #466)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    const undoToken = {expected_revision: 3, patch: {set: {notes: ''}}};
+    const changes = [
+        {path: 'compensation.minimum_salary', old: null, new: 200000},
+        {path: 'work_location.modes', old: [], new: ['remote']},
+        {path: 'notes', old: '', new: 'prefers remote-first teams'},
+    ];
+
+    async function submitTurnWithPreferences(payload: object) {
+        await renderChat();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(payload, 201));
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'only remote, 200k+'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await screen.findByTestId('preference-change-notice');
+    }
+
+    test('renders the populated diff list with old → new values', async () => {
+        await submitTurnWithPreferences({
+            message: assistantMessage(9, 'Preferences saved.', true),
+            preferences_changed: true,
+            changes,
+            undo: undoToken,
+        });
+
+        const notice = screen.getByTestId('preference-change-notice');
+        expect(notice).toHaveAttribute('role', 'status');
+        expect(screen.getByText('Compensation › minimum salary')).toBeInTheDocument();
+        expect(screen.getByText('Work location › modes')).toBeInTheDocument();
+        expect(screen.getByText('Notes')).toBeInTheDocument();
+        // Null/empty old values render as "Not set"; new values are readable.
+        expect(screen.getAllByText('Not set').length).toBeGreaterThanOrEqual(2);
+        expect(screen.getByText('200,000')).toBeInTheDocument();
+        expect(screen.getByText('remote')).toBeInTheDocument();
+        expect(screen.getByText('prefers remote-first teams')).toBeInTheDocument();
+        // The plain banner is superseded by the detailed notice.
+        expect(screen.queryByRole('status', {name: 'Preference update'})).not.toBeInTheDocument();
+        // Undo control is a labelled, enabled button.
+        expect(screen.getByRole('button', {name: 'Undo preference update'})).toBeEnabled();
+    });
+
+    test('empty state: update reported with an explicitly empty diff', async () => {
+        await submitTurnWithPreferences({
+            message: assistantMessage(10, 'Nothing new.', true),
+            preferences_changed: true,
+            changes: [],
+            undo: null,
+        });
+        expect(screen.getByTestId('preference-change-empty')).toBeInTheDocument();
+        expect(screen.queryByLabelText('Changed preferences')).not.toBeInTheDocument();
+    });
+
+    test('loading state: undo button is disabled and busy while the request is in flight', async () => {
+        await submitTurnWithPreferences({
+            message: assistantMessage(11, 'Saved.', true),
+            preferences_changed: true,
+            changes,
+            undo: undoToken,
+        });
+        let resolveUndo: (response: Response) => void = () => {};
+        (global.fetch as jest.Mock).mockImplementationOnce(
+            () => new Promise<Response>((resolve) => { resolveUndo = resolve; }),
+        );
+        fireEvent.click(screen.getByRole('button', {name: 'Undo preference update'}));
+        const busyButton = await screen.findByRole('button', {name: 'Undoing preference update'});
+        expect(busyButton).toBeDisabled();
+        expect(busyButton).toHaveAttribute('aria-busy', 'true');
+
+        await act(async () => {
+            resolveUndo(jsonResponse({undone: true, revision: 4, changes: []}));
+        });
+        expect(await screen.findByTestId('preference-change-undone')).toBeInTheDocument();
+    });
+
+    test('successful undo posts the token and confirms', async () => {
+        await submitTurnWithPreferences({
+            message: assistantMessage(12, 'Saved.', true),
+            preferences_changed: true,
+            changes,
+            undo: undoToken,
+        });
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse({undone: true, revision: 4, changes: [{path: 'notes', old: 'x', new: ''}]}),
+        );
+        fireEvent.click(screen.getByRole('button', {name: 'Undo preference update'}));
+        expect(await screen.findByTestId('preference-change-undone')).toHaveTextContent(/undone/i);
+
+        const undoBodies = postBodies(global.fetch as jest.Mock, '/api/agent/preferences/undo/');
+        expect(undoBodies).toHaveLength(1);
+        expect(undoBodies[0]).toEqual({undo: undoToken});
+        // The diff list is replaced by the confirmation.
+        expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+    });
+
+    test('error state: a stale-revision conflict (409) surfaces the server copy and undoes nothing', async () => {
+        await submitTurnWithPreferences({
+            message: assistantMessage(13, 'Saved.', true),
+            preferences_changed: true,
+            changes,
+            undo: undoToken,
+        });
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            error: {
+                type: 'preference_stale',
+                message: 'Your preferences changed since this update. Please review the current preferences before undoing.',
+                request_id: 'req-1',
+            },
+        }, 409));
+        fireEvent.click(screen.getByRole('button', {name: 'Undo preference update'}));
+        const errorPanel = await screen.findByTestId('preference-undo-error');
+        expect(errorPanel).toHaveAttribute('role', 'alert');
+        expect(errorPanel).toHaveTextContent(/changed since this update/i);
+        // The notice stays populated so the user can see what was not undone.
+        expect(screen.getByTestId('preference-change-notice')).toBeInTheDocument();
+        expect(screen.getByRole('button', {name: 'Undo preference update'})).toBeEnabled();
+    });
+
+    test('error state: a network failure shows generic copy and allows retry', async () => {
+        await submitTurnWithPreferences({
+            message: assistantMessage(14, 'Saved.', true),
+            preferences_changed: true,
+            changes,
+            undo: undoToken,
+        });
+        (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('offline'));
+        fireEvent.click(screen.getByRole('button', {name: 'Undo preference update'}));
+        const errorPanel = await screen.findByTestId('preference-undo-error');
+        expect(errorPanel).toHaveTextContent(/check your connection/i);
+    });
+
+    test('dismiss hides the notice and discards the token', async () => {
+        await submitTurnWithPreferences({
+            message: assistantMessage(15, 'Saved.', true),
+            preferences_changed: true,
+            changes,
+            undo: undoToken,
+        });
+        fireEvent.click(screen.getByRole('button', {name: 'Dismiss preference notice'}));
+        expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+        // The plain banner stays hidden too — the dismiss covers both.
+        expect(screen.queryByRole('status', {name: 'Preference update'})).not.toBeInTheDocument();
+    });
+
+    test('legacy response without extras still shows the plain banner', async () => {
+        await renderChat();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            message: assistantMessage(16, 'Saved.', true),
+            preferences_changed: true,
+        }, 201));
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'legacy'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        // preferences_changed without changes/undo extras keeps the pre-#466
+        // banner (older providers and post-reload turns carry no diff).
+        expect(await screen.findByRole('status', {name: 'Preference update'})).toBeInTheDocument();
+        expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+    });
+
+    test('keyboard: undo and dismiss controls are focusable buttons', async () => {
+        await submitTurnWithPreferences({
+            message: assistantMessage(17, 'Saved.', true),
+            preferences_changed: true,
+            changes,
+            undo: undoToken,
+        });
+        const undoButton = screen.getByRole('button', {name: 'Undo preference update'});
+        undoButton.focus();
+        expect(undoButton).toHaveFocus();
+        const dismissButton = screen.getByRole('button', {name: 'Dismiss preference notice'});
+        dismissButton.focus();
+        expect(dismissButton).toHaveFocus();
+    });
+});
+
+describe('preference diff formatting helpers (issue #466)', () => {
+    test('preferencePathLabel prettifies dotted paths', async () => {
+        const {preferencePathLabel} = await import('./JobSearchChat');
+        expect(preferencePathLabel('compensation.minimum_salary')).toBe('Compensation › minimum salary');
+        expect(preferencePathLabel('notes')).toBe('Notes');
+        expect(preferencePathLabel('work_location.modes')).toBe('Work location › modes');
+    });
+
+    test('preferenceValueLabel renders every value shape', async () => {
+        const {preferenceValueLabel} = await import('./JobSearchChat');
+        expect(preferenceValueLabel(null)).toBe('Not set');
+        expect(preferenceValueLabel(undefined)).toBe('Not set');
+        expect(preferenceValueLabel('')).toBe('Not set');
+        expect(preferenceValueLabel(true)).toBe('Yes');
+        expect(preferenceValueLabel(false)).toBe('No');
+        expect(preferenceValueLabel(200000)).toBe('200,000');
+        expect(preferenceValueLabel('remote')).toBe('remote');
+        expect(preferenceValueLabel([])).toBe('None');
+        expect(preferenceValueLabel(['remote', 'hybrid'])).toBe('remote, hybrid');
+        expect(preferenceValueLabel({channel: 'email'})).toBe('{"channel":"email"}');
+    });
+});

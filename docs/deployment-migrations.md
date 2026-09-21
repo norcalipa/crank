@@ -197,7 +197,13 @@ Verified at commit `d62183acd4a7f93c662c1368f9aec6aeb1f839b8` (2026-09-14):
    - **0036 → #460** (UX-18, accepted field-level evidence) —
      `0036_company_field_evidence`, parent `0035_preference_schema_v3`;
      assigned 2026-09-20.
-   - **0037+** — remaining schema tickets take numbers in controller merge
+   - **0037 → #466** (UX-15, preference propose/apply/revision/undo) —
+     `0037_userpreference_revision`, parent `0036_company_field_evidence`;
+     assigned 2026-09-21 (reassigned from the earlier "0037+ controller
+     merge order" placeholder: #466 is the preference-lifecycle ticket and
+     `UserPreference.revision` is a preference-lifecycle field that #467
+     merely reads; one owning ticket per file).
+   - **0038+** — remaining schema tickets take numbers in controller merge
      order at implementation time: **#467** (UX-17, result revisions),
      **#475** (UX-29, versioned recompute fields).
 3. Cross-branch numbering collisions are resolved with a **numbered merge
@@ -221,6 +227,7 @@ bounded reviewed backfill, and contract only after all old pods are gone.
 | Preference fields | #459 (UX-14, "Version the preference schema") | 0035 (assigned 2026-09-19) | Add nullable/defaulted JSON keys and columns first; deploy code that serves both document shapes; bounded resumable backfill of existing v2 documents; no removal in the same release. |
 | Turn lifecycle | #458 (UX-05, "Persist turn delivery state") | 0030 (claimed on `fix/issue-458`) | Additive turn/status columns; code tolerates missing values on old rows; backfill lifecycle timestamps separately; old conversations stay replayable via `idempotency_key`. |
 | Accepted field-level evidence | #460 (UX-18, "Model accepted field-level evidence, scope and freshness timestamps") | 0036 (`0036_company_field_evidence`, parent `0035`) | Additive evidence model/rows; accepted evidence is resolved per field, never by blanket latest-row; pending/rejected/conflicting observations stay inspectable. The provenance API payload gains `fields`/`unverified_fields` without a cache-key change — the key constructor also drives outbox invalidation, so versioning it would desynchronize the sweep; instead `crank.views.api.organization_provenance` treats a cached entry with no `fields` key as a miss and rebuilds it, so pre-deploy entries never serve an evidence-less modal for the rest of the TTL. Both `ACCEPTED`-producing surfaces — the crawler's `AUTO_APPLIED` path and the admin accept action — write evidence in the same transaction as the review state. |
+| Preference revision | #466 (UX-15, "Implement preference propose, apply, revision checks and undo services") | 0037 (`0037_userpreference_revision`, parent `0036`) | Additive defaulted `revision` column (existing rows start at 0); no backfill, no index; old pods never select or write the column and their `expected_modified` path keeps working; the service accepts both `expected_modified` and `expected_revision` during the mixed-pod window, and chat callers flip to `expected_revision` after the column is everywhere. |
 | Publication outbox | #470 (UX-28, publication after commit) | 0031 | Create `PublicationEvent` additively; the consumer is gated by its own switch (see the capability registry in `docs/rollout-gates.md`); pending work survives restart; an incompatible consumer rollback is addressed before enablement. |
 | Result revisions | #467 (UX-17, "Unify deterministic eligibility, match reasons and result revisions") | 0037+ | Additive revision rows/fields; readers fall back to the un-revised result; bounded backfill of revisions for existing matches. |
 | Versioned recomputation | #475 (UX-29, "Recompute versioned matches") | 0037+ | Additive revision-tag fields on match work/results (preference revision, accepted-data revision, ranking version); obsolete-run rejection via compare-and-swap; preserve seen/dismissed across upserts. |

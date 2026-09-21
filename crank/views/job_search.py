@@ -660,11 +660,19 @@ def agent_conversation_detail(request, conversation_id):
 
     try:
         service = JobSearchService()
-        reply_text, changed, results = service.run_turn(
+        turn_outcome = service.run_turn(
             conversation=conversation,
             user_message=user_message.content,
             persist_reply=_persist_reply,
         )
+        # Issue #466: orchestrator-backed providers also return an extras
+        # payload (applied preference ``changes``/``undo``); legacy providers
+        # and test doubles return the plain 3-tuple.
+        if len(turn_outcome) == 4:
+            reply_text, changed, results, pref_extras = turn_outcome
+        else:
+            reply_text, changed, results = turn_outcome
+            pref_extras = None
     except AssistantUnavailable:
         _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.FAILED, JobSearchTurn.FailureCode.ASSISTANT_UNAVAILABLE)
         monitoring.record_event("interactive_call", {
@@ -920,11 +928,21 @@ def agent_conversation_detail(request, conversation_id):
             },
         )
 
+    response_payload = {
+        "message": serialize_message(assistant_message),
+        "preferences_changed": changed,
+    }
+    # Issue #466: surface the applied field-level diff and undo token
+    # alongside ``preferences_changed``. Additive only — an older server
+    # (or a legacy provider with no extras) simply omits the keys, and the
+    # client guards on their presence.
+    if pref_extras:
+        if pref_extras.get("changes") is not None:
+            response_payload["changes"] = pref_extras["changes"]
+        if pref_extras.get("undo") is not None:
+            response_payload["undo"] = pref_extras["undo"]
     return JsonResponse(
-        {
-            "message": serialize_message(assistant_message),
-            "preferences_changed": changed,
-        },
+        response_payload,
         status=201,
         headers={"X-Request-ID": request_id},
     )
@@ -1037,6 +1055,49 @@ def agent_conversation_delete(request, conversation_id):
         )
     return JsonResponse(
         {"deleted": True}, status=200, headers={"X-Request-ID": request_id}
+    )
+
+
+@login_required
+@require_POST
+def agent_preference_undo(request):
+    """Apply a client-held undo token under its revision precondition (issue #466).
+
+    The token is an ordinary owner-scoped preference patch: it is re-validated
+    by the canonical validator and applied for the authenticated owner only,
+    so a tampered token grants no authority the user does not already have.
+    A revision conflict (an intervening edit) returns the stable
+    ``409 preference_stale`` envelope and writes nothing.
+    """
+    request_id = _request_id(request)
+    payload, error = _body(request, request_id)
+    if error:
+        return error
+    token = payload.get("undo")
+    from crank.services import preferences as pref_services
+
+    try:
+        result = pref_services.undo_preference_change(request.user, token)
+    except pref_services.StalePreferenceError:
+        return _error(
+            request, 409, "preference_stale",
+            "Your preferences changed since this update. Please review the "
+            "current preferences before undoing.",
+            request_id,
+        )
+    except pref_services.PreferenceError:
+        return _error(
+            request, 400, "invalid_request",
+            "The undo request is no longer valid.",
+            request_id,
+        )
+    return JsonResponse(
+        {
+            "undone": bool(result.get("changed")),
+            "revision": result.get("revision"),
+            "changes": result.get("changes"),
+        },
+        headers={"X-Request-ID": request_id},
     )
 
 

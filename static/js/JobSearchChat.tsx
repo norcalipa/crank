@@ -66,10 +66,33 @@ interface Conversation {
     preferences_changed: boolean;
 }
 
+/** Field-level preference diff entry (issue #466): one changed path with
+ * its previous and current values, as returned by the turn endpoint. */
+export interface PreferenceChange {
+    path: string;
+    old: unknown;
+    new: unknown;
+}
+
+/** Opaque undo token (issue #466): an inverse set-only patch plus the
+ * post-apply revision it may be applied against. Client-held only; the
+ * server re-validates it as an ordinary owner-scoped patch. */
+export interface PreferenceUndoToken {
+    expected_revision: number;
+    patch: {set?: Record<string, unknown>};
+}
+
 interface SubmitResponse {
     message: ChatMessage;
     preferences_changed: boolean;
+    // Additive (issue #466): present only when the turn applied a
+    // preference patch through an orchestrator-backed provider.
+    changes?: PreferenceChange[] | null;
+    undo?: PreferenceUndoToken | null;
 }
+
+/** Undo lifecycle for the preference-change notice (issue #466). */
+export type PreferenceUndoState = 'idle' | 'pending' | 'done' | 'error';
 
 interface ApiError {
     error?: {type?: string; message?: string; request_id?: string};
@@ -350,6 +373,120 @@ async function csrfFetch(url: string, init: RequestInit = {}): Promise<Response>
         headers['Content-Type'] = 'application/json';
     }
     return fetch(url, {...init, headers});
+}
+
+/** Human label for a preference path (issue #466):
+ * "compensation.minimum_salary" → "Compensation › minimum salary". */
+export function preferencePathLabel(path: string): string {
+    return path
+        .split('.')
+        .map((segment, i) => {
+            const words = segment.replace(/_/g, ' ');
+            return i === 0 ? words.charAt(0).toUpperCase() + words.slice(1) : words;
+        })
+        .join(' › ');
+}
+
+/** Human rendering of a preference value (issue #466). */
+export function preferenceValueLabel(value: unknown): string {
+    if (value === null || value === undefined) return 'Not set';
+    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+    if (typeof value === 'string') return value === '' ? 'Not set' : value;
+    if (typeof value === 'number') {
+        return Number.isFinite(value) ? value.toLocaleString('en-US') : String(value);
+    }
+    if (Array.isArray(value)) {
+        return value.length ? value.map(preferenceValueLabel).join(', ') : 'None';
+    }
+    try {
+        return JSON.stringify(value);
+    } catch {
+        return String(value);
+    }
+}
+
+/** Preference-change notice (issue #466): the field-level diff of what the
+ * assistant just changed, with a one-click Undo. Four rendered states:
+ * populated (diff list + Undo), loading (undo request in flight), empty
+ * (update reported but no field diff), and error (undo rejected, e.g. a
+ * stale-revision conflict). */
+export function PreferenceChangeNotice({changes, undoState, undoError, onUndo, onDismiss}: {
+    changes: PreferenceChange[];
+    undoState: PreferenceUndoState;
+    undoError: string | null;
+    onUndo: () => void;
+    onDismiss: () => void;
+}) {
+    if (undoState === 'done') {
+        return (
+            <div className="alert alert-info d-flex justify-content-between align-items-center"
+                 role="status" aria-label="Preference update undone" data-testid="preference-change-undone">
+                <span>
+                    <i className="fa-solid fa-rotate-left me-1" aria-hidden="true"></i>
+                    The preference update was undone.
+                </span>
+                <button type="button" className="btn-close" aria-label="Dismiss undo notice"
+                        onClick={onDismiss}></button>
+            </div>
+        );
+    }
+    const pending = undoState === 'pending';
+    return (
+        <div className="alert alert-success pref-change-notice" role="status"
+             aria-label="Preference update details" data-testid="preference-change-notice">
+            <div className="d-flex justify-content-between align-items-start">
+                <span>
+                    <i className="fa-solid fa-circle-check me-1" aria-hidden="true"></i>
+                    Your saved preferences were updated based on this conversation.
+                </span>
+                <button type="button" className="btn-close" aria-label="Dismiss preference notice"
+                        onClick={onDismiss}></button>
+            </div>
+            {changes.length > 0 ? (
+                <ul className="pref-change-list" aria-label="Changed preferences">
+                    {changes.map((change) => (
+                        <li key={change.path} className="pref-change-item">
+                            <span className="pref-change-path">{preferencePathLabel(change.path)}</span>
+                            <span className="pref-change-values">
+                                <span className="pref-change-old">{preferenceValueLabel(change.old)}</span>
+                                <i className="fa-solid fa-arrow-right pref-change-arrow" aria-hidden="true"></i>
+                                <span className="visually-hidden">changed to</span>
+                                <span className="pref-change-new">{preferenceValueLabel(change.new)}</span>
+                            </span>
+                        </li>
+                    ))}
+                </ul>
+            ) : (
+                <p className="pref-change-empty" data-testid="preference-change-empty">
+                    The update did not change any individual preference fields.
+                </p>
+            )}
+            {undoState === 'error' && undoError && (
+                <div className="pref-change-error" role="alert" data-testid="preference-undo-error">
+                    <i className="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>
+                    {undoError}
+                </div>
+            )}
+            <div className="chat-actions mt-2" role="group" aria-label="Preference update actions">
+                <button type="button" className="chat-btn chat-btn-secondary chat-focus pref-undo-btn"
+                        onClick={onUndo} disabled={pending}
+                        aria-label={pending ? 'Undoing preference update' : 'Undo preference update'}
+                        aria-busy={pending} data-testid="preference-undo-button">
+                    {pending ? (
+                        <>
+                            <span className="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+                            Undoing…
+                        </>
+                    ) : (
+                        <>
+                            <i className="fa-solid fa-rotate-left me-1" aria-hidden="true"></i>
+                            Undo this update
+                        </>
+                    )}
+                </button>
+            </div>
+        </div>
+    );
 }
 
 function formatCompensation(comp: JobResult['compensation']): string {
@@ -664,6 +801,12 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const [dataNoteOpen, setDataNoteOpen] = React.useState(false);
     const [preferencesChanged, setPreferencesChanged] = React.useState(false);
     const [prefDismissed, setPrefDismissed] = React.useState(false);
+    // Issue #466: the latest applied field-level diff and its undo token.
+    // Client-held only; the server re-validates the token on undo.
+    const [prefChanges, setPrefChanges] = React.useState<PreferenceChange[] | null>(null);
+    const [prefUndoToken, setPrefUndoToken] = React.useState<PreferenceUndoToken | null>(null);
+    const [prefUndoState, setPrefUndoState] = React.useState<PreferenceUndoState>('idle');
+    const [prefUndoError, setPrefUndoError] = React.useState<string | null>(null);
     // Advisory assistant availability (issue #457). null means the status is
     // unknown — e.g. the fetch failed — and the chat stays fully usable.
     const [assistantStatus, setAssistantStatus] = React.useState<AssistantStatus | null>(null);
@@ -1113,6 +1256,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         setInitError(null);
         setPreferencesChanged(false);
         setPrefDismissed(false);
+        setPrefChanges(null);
+        setPrefUndoToken(null);
+        setPrefUndoState('idle');
+        setPrefUndoError(null);
         if (effectiveAuthenticated) {
             // Force the resume effect to re-run so the (possibly different)
             // account's own conversation loads fresh — never the stale
@@ -1526,6 +1673,17 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 setPreferencesChanged(true);
                 setPrefDismissed(false);
             }
+            // Issue #466: adopt the field-level diff + undo token when the
+            // server surfaced them; clear any prior turn's notice otherwise.
+            if (data.changes || data.undo) {
+                // An explicit (possibly empty) diff supersedes the plain
+                // banner; without extras the banner renders unchanged.
+                setPrefChanges(data.changes || []);
+                setPrefUndoToken(data.undo || null);
+                setPrefUndoState('idle');
+                setPrefUndoError(null);
+                setPrefDismissed(false);
+            }
             clearInflightTurn(turnConversationId, key);
             writeComposerDraft(turnConversationId, '');
             lastSent.current = null;
@@ -1753,7 +1911,51 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
     };
 
+    // Issue #466: apply the client-held undo token. The server re-validates
+    // it as an ordinary owner-scoped patch under its revision precondition;
+    // a 409 preference_stale means an intervening edit and undoes nothing.
+    const handleUndoPreferenceChange = async () => {
+        if (!prefUndoToken || prefUndoState === 'pending') return;
+        setPrefUndoState('pending');
+        setPrefUndoError(null);
+        try {
+            const res = await csrfFetch('/api/agent/preferences/undo/', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({undo: prefUndoToken}),
+            });
+            if (res.ok) {
+                setPrefUndoState('done');
+                setPrefChanges(null);
+                setPrefUndoToken(null);
+                setPreferencesChanged(false);
+                return;
+            }
+            let serverType: string | null = null;
+            let serverMsg = '';
+            try {
+                const parsed = (await res.json()) as ApiError;
+                serverType = parsed?.error?.type || null;
+                serverMsg = parsed?.error?.message || '';
+            } catch { /* non-JSON body: fall through to generic copy */ }
+            setPrefUndoState('error');
+            setPrefUndoError(
+                serverType === 'preference_stale'
+                    ? (serverMsg || 'Your preferences changed since this update. Please review the current preferences before undoing.')
+                    : (serverMsg || 'The undo request is no longer valid.'),
+            );
+        } catch {
+            setPrefUndoState('error');
+            setPrefUndoError('Could not undo the preference update. Please check your connection and try again.');
+        }
+    };
+
     const revealingPrefs = preferencesChanged && !prefDismissed;
+    // Issue #466: the detailed diff notice supersedes the plain banner when
+    // the turn surfaced a field-level diff; the plain banner remains the
+    // fallback for legacy providers (and post-reload turns, where the diff
+    // is not persisted in the message history).
+    const revealingPrefChanges = !prefDismissed && (prefChanges !== null || prefUndoState === 'done');
 
     return (
         <section className="card bg-dark d-flex flex-column" data-testid="job-search-chat"
@@ -1789,7 +1991,23 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     </div>
                 </div>
 
-                {revealingPrefs && (
+                {revealingPrefChanges && (
+                    <PreferenceChangeNotice
+                        changes={prefChanges || []}
+                        undoState={prefUndoState}
+                        undoError={prefUndoError}
+                        onUndo={handleUndoPreferenceChange}
+                        onDismiss={() => {
+                            setPrefDismissed(true);
+                            setPrefChanges(null);
+                            setPrefUndoToken(null);
+                            setPrefUndoState('idle');
+                            setPrefUndoError(null);
+                        }}
+                    />
+                )}
+
+                {!revealingPrefChanges && revealingPrefs && (
                     <div className="alert alert-success d-flex justify-content-between align-items-center"
                          role="status" aria-label="Preference update" aria-describedby="preference-update-help">
                         <span>

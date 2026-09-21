@@ -37,6 +37,11 @@ class TestUserPreferenceModel:
         with pytest.raises(InvalidValueError):
             validate_document(pref.preferences)
 
+    def test_revision_defaults_to_zero_and_not_in_str(self, user):
+        pref = UserPreference.objects.create(user=user, preferences=default_preferences())
+        assert pref.revision == 0
+        assert "revision" not in str(pref)
+
     def test_cascade_delete_from_user(self, user):
         uid = user.pk
         pref = UserPreference.objects.create(user=user, preferences=default_preferences())

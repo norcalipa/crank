@@ -189,7 +189,7 @@ class JobSearchApiTestCase(TestCase):
         with patch.object(
             JobSearchService, "run_turn", autospec=True,
             side_effect=lambda self, conversation, user_message: (
-                "Here's a match", False, _FakeResults(),
+                "Here's a match", False, _FakeResults(), None,
             ),
         ):
             self._submit(conversation_id, "give me matches", self._uuid(99))
@@ -484,7 +484,7 @@ class JobSearchCoverageEdges(TestCase):
         from crank.agents.job_search.quality import is_echo
         conv = JobSearchConversation.objects.create(owner=self.user)
         svc = JobSearchService(DemoJobSearchProvider())
-        reply, changed, results = svc.run_turn(conversation=conv, user_message="salary")
+        reply, changed, results, _extras = svc.run_turn(conversation=conv, user_message="salary")
         self.assertTrue(reply)
         # NIT-4: verify the reply is genuinely non-echo, not just non-empty.
         self.assertFalse(is_echo("salary", reply))
@@ -495,10 +495,10 @@ class JobSearchCoverageEdges(TestCase):
         JobSearchMessage.objects.create(
             conversation=conv, role="user", content="culture"
         )
-        reply2, _, _ = svc.run_turn(conversation=conv, user_message="more")
+        reply2, _, _, _ = svc.run_turn(conversation=conv, user_message="more")
         self.assertIn("more", reply2)
         with override_settings(JOB_SEARCH_RESPONSE_MAX_LEN=10):
-            reply3, _, _ = svc.run_turn(conversation=conv, user_message="again")
+            reply3, _, _, _ = svc.run_turn(conversation=conv, user_message="again")
             self.assertLessEqual(len(reply3), 10)
 
     def test_provider_failure_is_stable_service_error(self):
@@ -2010,7 +2010,7 @@ class StalePreferenceAndLateReplyTests(TestCase):
             with patch.object(
                 OrchestratorJobSearchProvider,
                 "_read_preference_snapshot",
-                return_value=("", None),
+                return_value=("", None, None),
             ):
                 resp = self._submit(conversation_pk, "prefer remote", str(uuid.uuid4()))
 
@@ -3402,7 +3402,7 @@ class TurnDeliveryStateTests(TestCase):
         def reset_then_reply(*args, **kwargs):
             # The reset lands while the provider is still running.
             JobSearchConversation.objects.filter(pk=conv_id).update(active=False)
-            return ("late reply", False, None)
+            return ("late reply", False, None, None)
 
         with patch.object(
             JobSearchService, "run_turn", autospec=True,
@@ -3468,7 +3468,7 @@ class TurnDeliveryStateTests(TestCase):
 
         def delete_then_reply(*args, **kwargs):
             JobSearchConversation.objects.filter(pk=conv_id).delete()
-            return ("late reply", False, None)
+            return ("late reply", False, None, None)
 
         with patch.object(
             JobSearchService, "run_turn", autospec=True,
@@ -3873,3 +3873,188 @@ class RetryableConflictTurnStateTests(TestCase):
         ):
             with self.assertRaises(OperationalError):
                 job_search_views._release_failed_turn(1)
+
+
+class PreferenceChangesUndoSurfaceTests(TestCase):
+    """Issue #466 AC-13: the turn envelope carries applied changes + undo token."""
+
+    def setUp(self):
+        self.alice = User.objects.create_user("alice466", "alice466@example.com", "pw")
+        self.client = Client()
+        self.client.force_login(self.alice)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _post_json(self, url, payload):
+        return self.client.post(
+            url, data=json.dumps(payload), content_type="application/json"
+        )
+
+    def _start_conversation(self):
+        resp = self._post_json(
+            reverse("agent-conversation-list"), {"create_new": True}
+        )
+        self.assertEqual(resp.status_code, 201)
+        return resp.json()["id"]
+
+    def _submit(self, conversation_id, content, key):
+        return self._post_json(
+            reverse("agent-conversation-detail", args=[conversation_id]),
+            {"content": content, "idempotency_key": key},
+        )
+
+    def test_turn_response_includes_changes_and_undo(self):
+        conv_id = self._start_conversation()
+        undo_token = {"expected_revision": 1, "patch": {"set": {"notes": ""}}}
+        changes = [{"path": "notes", "old": "", "new": "remote only"}]
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True,
+            side_effect=lambda self, conversation, user_message, persist_reply=None: (
+                "Noted.", True, None, {"changes": changes, "undo": undo_token},
+            ),
+        ):
+            resp = self._submit(conv_id, "I only want remote", str(uuid.uuid4()))
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()
+        self.assertTrue(body["preferences_changed"])
+        self.assertEqual(body["changes"], changes)
+        self.assertEqual(body["undo"], undo_token)
+
+    def test_turn_response_omits_changes_for_legacy_provider(self):
+        conv_id = self._start_conversation()
+        with patch.object(
+            JobSearchService, "run_turn", autospec=True,
+            side_effect=lambda self, conversation, user_message, persist_reply=None: (
+                "Reply.", False, None,
+            ),
+        ):
+            resp = self._submit(conv_id, "hello", str(uuid.uuid4()))
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()
+        self.assertNotIn("changes", body)
+        self.assertNotIn("undo", body)
+
+    def test_undo_endpoint_applies_token(self):
+        from crank.services.preferences import apply_patch_to_user
+
+        applied = apply_patch_to_user(self.alice, {"set": {"notes": "remote only"}})
+        resp = self._post_json(
+            reverse("agent-preference-undo"), {"undo": applied["undo"]}
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertTrue(body["undone"])
+        self.assertEqual(body["revision"], 2)
+        from crank.models.preference import UserPreference
+        row = UserPreference.objects.get(user=self.alice)
+        self.assertEqual(row.preferences["notes"], "")
+
+    def test_undo_endpoint_revision_conflict_returns_stable_409(self):
+        from crank.services.preferences import apply_patch_to_user
+
+        applied = apply_patch_to_user(self.alice, {"set": {"notes": "v1"}})
+        apply_patch_to_user(self.alice, {"set": {"notes": "v2"}})
+        resp = self._post_json(
+            reverse("agent-preference-undo"), {"undo": applied["undo"]}
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.json()["error"]["type"], "preference_stale")
+        from crank.models.preference import UserPreference
+        row = UserPreference.objects.get(user=self.alice)
+        # The stale undo wrote nothing; the retry path stays available.
+        self.assertEqual(row.preferences["notes"], "v2")
+        self.assertEqual(row.revision, 2)
+
+    def test_undo_endpoint_malformed_body_returns_400(self):
+        resp = self.client.post(
+            reverse("agent-preference-undo"),
+            data="not-json{",
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_undo_endpoint_invalid_token_400_and_anonymous_rejected(self):
+        resp = self._post_json(reverse("agent-preference-undo"), {"undo": None})
+        self.assertEqual(resp.status_code, 400)
+        self.client.logout()
+        resp = self._post_json(reverse("agent-preference-undo"), {"undo": {}})
+        self.assertEqual(resp.status_code, 302)
+
+
+class PreferenceReplayIdempotencyTests(TransactionTestCase):
+    """Issue #466 AC-11: replaying a turn applies preferences exactly once.
+
+    TransactionTestCase: the recompute hook fires from transaction.on_commit,
+    which never runs under a plain TestCase's wrapping transaction.
+    """
+
+    def setUp(self):
+        self.alice = User.objects.create_user("replay466", "replay466@example.com", "pw")
+        self.client = Client()
+        self.client.force_login(self.alice)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _post_json(self, url, payload):
+        return self.client.post(
+            url, data=json.dumps(payload), content_type="application/json"
+        )
+
+    def test_same_key_replay_applies_once_and_emits_one_change_id(self):
+        from crank.models.preference import UserPreference
+        from crank.services import preferences as pref_services
+
+        resp = self._post_json(
+            reverse("agent-conversation-list"), {"create_new": True}
+        )
+        conv_id = resp.json()["id"]
+        hook_calls = []
+        real_apply = pref_services.apply_patch_to_user
+        run_calls = []
+
+        def counting_run_turn(self, conversation, user_message, persist_reply=None):
+            run_calls.append(1)
+            result = real_apply(
+                self_user, {"set": {"notes": "from turn"}}
+            )
+            return "Saved.", True, None, {
+                "changes": result["changes"], "undo": result["undo"],
+            }
+
+        self_user = self.alice
+        key = str(uuid.uuid4())
+        with self.settings(
+            PREFERENCE_RECOMPUTE_HOOK=(
+                "crank.tests.views.test_job_search._replay_hook"
+            )
+        ):
+            import crank.tests.views.test_job_search as this_module
+            this_module._replay_hook_calls = hook_calls
+            with patch.object(
+                JobSearchService, "run_turn",
+                autospec=True, side_effect=counting_run_turn,
+            ):
+                first = self._post_json(
+                    reverse("agent-conversation-detail", args=[conv_id]),
+                    {"content": "save my prefs", "idempotency_key": key},
+                )
+                second = self._post_json(
+                    reverse("agent-conversation-detail", args=[conv_id]),
+                    {"content": "save my prefs", "idempotency_key": key},
+                )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        # The replay branch returned the stored assistant message without a
+        # second provider run or a second apply.
+        self.assertEqual(len(run_calls), 1)
+        row = UserPreference.objects.get(user=self.alice)
+        self.assertEqual(row.revision, 1)
+        self.assertEqual(hook_calls, [f"{self.alice.pk}:1"])
+        self.assertEqual(second.json()["message"]["content"], "Saved.")
+
+
+def _replay_hook(change_id):
+    import crank.tests.views.test_job_search as this_module
+    this_module._replay_hook_calls.append(change_id)
