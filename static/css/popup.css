@@ -1839,6 +1839,16 @@ body.app-nav-drawer-open {
     }
 }
 
+/* Composer touch floor (visual review #472 round 7): the autosizer at
+   JobSearchChat.tsx writes an inline height from scrollHeight, with no
+   floor above Bootstrap's .form-control 38px, so once the user types the
+   textarea falls to 42px tall at every width outside the two-line band
+   below. A min-height floors the inline height without changing the
+   grow-to-N-rows behaviour. */
+#job-search-chat textarea[aria-label='Message'] {
+    min-height: 44px;
+}
+
 /* Drawer composer fit (visual review #472 round 5): at the 320px drawer
    floor the composer textarea is ~165px wide, so "Type your message…"
    wraps onto a second line that the one-line box clips (clientHeight 42 <
