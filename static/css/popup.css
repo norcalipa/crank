@@ -1412,16 +1412,19 @@ body.app-nav-drawer-open {
        blue sits close to the dark surfaces, so the closed launcher carries
        a visible light border plus an outer dark ring that keeps the edge
        legible on any background and reads as hover/focus-ready. */
-    /* Launcher perimeter (visual review #472 round 4, item 5): a muted
-       slate border plus a dual shadow — deep drop shadow for lift and a
-       faint inner light ring — so the launcher reads over dark content. */
-    border: 1px solid #46505f;
+    /* Launcher perimeter (visual review #472 round 4, item 5): a bright
+       light border plus a dual ring — dark inner ring for light surfaces,
+       faint light halo for dark content — and a soft drop shadow, so the
+       launcher edge stays legible over dark content. */
+    border: 1px solid rgba(255, 255, 255, .6);
     border-radius: 999px;
     background: var(--bs-primary);
     color: #fff;
     font-size: .9375rem;
     cursor: pointer;
-    box-shadow: 0 8px 24px rgb(0 0 0 / 45%), 0 0 0 1px rgb(255 255 255 / 4%);
+    box-shadow: 0 0 0 1px rgba(10, 15, 25, .85),
+        0 0 0 2px rgba(255, 255, 255, .18),
+        0 8px 24px rgba(0, 0, 0, .45);
 }
 
 .assistant-launcher:hover {
@@ -1458,8 +1461,11 @@ body.app-nav-drawer-open {
     font-weight: 600;
     cursor: pointer;
     /* Same defined boundary as the launcher (visual review #472 round 2,
-       item 10): light border + dark outer ring on dark surfaces. */
-    box-shadow: 0 0 0 1px rgba(10, 15, 25, .85), 0 2px 10px rgba(0, 0, 0, .5);
+       item 10; round 4, item 5): light border + dark inner ring + faint
+       light halo on dark surfaces. */
+    box-shadow: 0 0 0 1px rgba(10, 15, 25, .85),
+        0 0 0 2px rgba(255, 255, 255, .18),
+        0 8px 24px rgba(0, 0, 0, .45);
 }
 
 .assistant-restore:hover {
@@ -1621,6 +1627,13 @@ body.app-nav-drawer-open {
     min-height: 44px;
     padding: .5rem 1rem;
     font-weight: 600;
+}
+
+/* Empty-state separation (visual review #472 round 4, item 4): clear air
+   below the empty state so it reads as its own region, distinct from the
+   anchored composer; the primary action keeps its weight. */
+#job-search-chat [data-testid='empty-history'] {
+    padding-bottom: 1.25rem;
 }
 
 .assistant-panel-body {
@@ -1806,11 +1819,12 @@ body.app-nav-drawer-open {
         box-shadow: -12px 0 32px rgba(15, 23, 42, .55);
     }
 
-    /* Tablet-band drawer width (visual review #472 round 4, item 7):
-       fluid 42vw capped at 400px so the drawer tracks the viewport instead
-       of pinning at the floor. */
+    /* Tablet-band drawer (visual review #472 round 4, item 5): a narrower,
+       fluid width and a softer shadow reduce the drawer's dominance at
+       1024px, while the 2px border keeps the workspace boundary explicit. */
     .assistant-panel--drawer {
-        width: min(42vw, 400px);
+        width: clamp(320px, 34vw, 360px);
+        box-shadow: -8px 0 24px rgba(15, 23, 42, .40);
     }
 }
 
