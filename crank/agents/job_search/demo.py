@@ -79,7 +79,15 @@ class ServicePreferenceStale(JobSearchServiceError):
     or reset preferences, or another request patched them), so the patch was
     NOT applied. The view maps this to a stable 409 ``preference_stale``
     envelope; the persisted user turn remains retryable (issue #487).
+
+    ``current_revision`` carries the revision observed at rejection time (when
+    known) so the client can offer a fresh review path without a second read
+    (issue #466 review).
     """
+
+    def __init__(self, message="", *, current_revision=None):
+        super().__init__(message)
+        self.current_revision = current_revision
 
 
 class ServicePreferenceVersionUnavailable(JobSearchServiceError):
@@ -298,7 +306,8 @@ class JobSearchService:
             )
             raise ServicePreferenceStale(
                 "Your preferences changed while the assistant was responding. "
-                "Please retry."
+                "Please retry.",
+                current_revision=getattr(exc, "current_revision", None),
             ) from exc
         except _OrchestratorConversationClosed as exc:
             logger.info(

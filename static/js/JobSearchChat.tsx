@@ -74,21 +74,40 @@ export interface PreferenceChange {
     new: unknown;
 }
 
-/** Opaque undo token (issue #466): an inverse set-only patch plus the
- * post-apply revision it may be applied against. Client-held only; the
- * server re-validates it as an ordinary owner-scoped patch. */
+/** Opaque undo token (issue #466 review): the full pre-apply document plus
+ * the post-apply revision it may be restored against. Client-held only; the
+ * server re-validates it owner-scoped under the revision precondition. */
 export interface PreferenceUndoToken {
     expected_revision: number;
-    patch: {set?: Record<string, unknown>};
+    document: Record<string, unknown>;
+}
+
+/** Client-held proposal token (issue #466 review): the model-proposed patch,
+ * its scope, and the base revision the apply must be preconditioned on. */
+export interface PreferenceProposalToken {
+    patch: Record<string, unknown>;
+    scope: 'account' | 'search';
+    base_revision: number;
+}
+
+/** Read-only preference proposal (issue #466 review): the chat turn never
+ * persists a model-proposed patch; the user applies or dismisses it. */
+export interface PreferenceProposal {
+    id: string;
+    scope: 'account' | 'search';
+    changes: PreferenceChange[];
+    change_count: number;
+    base_revision: number;
+    unsupported_criteria: string[];
+    token: PreferenceProposalToken;
 }
 
 interface SubmitResponse {
     message: ChatMessage;
     preferences_changed: boolean;
-    // Additive (issue #466): present only when the turn applied a
-    // preference patch through an orchestrator-backed provider.
-    changes?: PreferenceChange[] | null;
-    undo?: PreferenceUndoToken | null;
+    // Additive (issue #466 review): present only when the turn produced a
+    // read-only preference proposal through an orchestrator-backed provider.
+    preference_proposal?: PreferenceProposal | null;
 }
 
 /** Undo lifecycle for the preference-change notice (issue #466). */
@@ -410,10 +429,13 @@ export function preferenceValueLabel(value: unknown): string {
  * populated (diff list + Undo), loading (undo request in flight), empty
  * (update reported but no field diff), and error (undo rejected, e.g. a
  * stale-revision conflict). */
-export function PreferenceChangeNotice({changes, undoState, undoError, onUndo, onDismiss, onReview}: {
+export function PreferenceChangeNotice({changes, undoState, undoError, undoErrorType, onUndo, onDismiss, onReview}: {
     changes: PreferenceChange[];
     undoState: PreferenceUndoState;
     undoError: string | null;
+    // Server error type of the failed undo (issue #466 review): the review
+    // action is stale-only; other failures stay retry-oriented.
+    undoErrorType: string | null;
     onUndo: () => void;
     onDismiss: () => void;
     // Stale-conflict recovery (issue #466 round 2): focus the composer so the
@@ -438,7 +460,10 @@ export function PreferenceChangeNotice({changes, undoState, undoError, onUndo, o
         );
     }
     const pending = undoState === 'pending';
-    const staleConflict = undoState === 'error' && undoError !== null;
+    // Only a server-confirmed stale revision renders the stale-only review
+    // action (issue #466 review): connectivity/5xx failures keep the
+    // retry-oriented Undo path instead.
+    const staleConflict = undoState === 'error' && undoErrorType === 'preference_stale';
     const emptyDiff = changes.length === 0;
     return (
         <div className="alert alert-success pref-change-notice" role="status"
@@ -510,6 +535,95 @@ export function PreferenceChangeNotice({changes, undoState, undoError, onUndo, o
                             Undo this update
                         </>
                     )}
+                </button>
+            </div>
+        </div>
+    );
+}
+
+/** Preference proposal notice (issue #466 review): the read-only field-level
+ * diff of a model-proposed change with Apply/Dismiss. Nothing is persisted
+ * until the user explicitly applies; a this-search-only proposal is labelled
+ * as never saved. */
+export function PreferenceProposalNotice({proposal, state, error, errorType, onDecision, onReview}: {
+    proposal: PreferenceProposal;
+    state: 'idle' | 'pending' | 'error';
+    error: string | null;
+    errorType: string | null;
+    onDecision: (decision: 'apply' | 'dismiss') => void;
+    onReview?: () => void;
+}) {
+    const pending = state === 'pending';
+    const isSearch = proposal.scope === 'search';
+    const staleConflict = state === 'error' && errorType === 'preference_stale';
+    return (
+        <div className="alert alert-warning pref-change-notice" role="status"
+             aria-label="Proposed preference change" data-testid="preference-proposal-notice">
+            <div className="pref-change-header">
+                <span className="pref-change-summary">
+                    <i className="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>
+                    {isSearch
+                        ? 'The assistant suggests a filter for this search only — it will not be saved.'
+                        : 'The assistant suggests updating your saved preferences.'}
+                </span>
+                <button type="button" className="pref-change-dismiss" aria-label="Dismiss preference proposal"
+                        onClick={() => onDecision('dismiss')} disabled={pending}>
+                    <i className="fa-solid fa-xmark" aria-hidden="true"></i>
+                </button>
+            </div>
+            {proposal.changes.length > 0 ? (
+                <ul className="pref-change-list" aria-label="Proposed preference changes">
+                    {proposal.changes.map((change) => (
+                        <li key={change.path} className="pref-change-item">
+                            <span className="pref-change-path">{preferencePathLabel(change.path)}</span>
+                            <span className="pref-change-values">
+                                <span className="pref-change-old">{preferenceValueLabel(change.old)}</span>
+                                <i className="fa-solid fa-arrow-right pref-change-arrow" aria-hidden="true"></i>
+                                <span className="visually-hidden">changed to</span>
+                                <span className="pref-change-new">{preferenceValueLabel(change.new)}</span>
+                            </span>
+                        </li>
+                    ))}
+                </ul>
+            ) : (
+                <p className="pref-change-empty" data-testid="preference-proposal-empty">
+                    The suggestion does not change any individual preference fields.
+                </p>
+            )}
+            {state === 'error' && error && (
+                <div className="pref-change-error" role="alert" data-testid="preference-proposal-error">
+                    <i className="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>
+                    {error}
+                </div>
+            )}
+            <div className="chat-actions mt-2" role="group" aria-label="Preference proposal actions">
+                {staleConflict && onReview && (
+                    <button type="button" className="chat-btn chat-btn-primary pref-review-btn"
+                            onClick={onReview} data-testid="preference-proposal-review-button">
+                        <i className="fa-solid fa-list-check me-1" aria-hidden="true"></i>
+                        Review current preferences
+                    </button>
+                )}
+                <button type="button" className="chat-btn chat-btn-primary chat-focus pref-apply-btn"
+                        onClick={() => onDecision('apply')} disabled={pending}
+                        aria-label={pending ? 'Applying preference proposal' : 'Apply preference proposal'}
+                        aria-busy={pending} data-testid="preference-apply-button">
+                    {pending ? (
+                        <>
+                            <span className="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
+                            Applying…
+                        </>
+                    ) : (
+                        <>
+                            <i className="fa-solid fa-check me-1" aria-hidden="true"></i>
+                            {isSearch ? 'Apply to this search' : 'Apply'}
+                        </>
+                    )}
+                </button>
+                <button type="button" className="chat-btn chat-btn-secondary chat-focus pref-dismiss-btn"
+                        onClick={() => onDecision('dismiss')} disabled={pending}
+                        data-testid="preference-proposal-dismiss-button">
+                    Dismiss
                 </button>
             </div>
         </div>
@@ -834,6 +948,19 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const [prefUndoToken, setPrefUndoToken] = React.useState<PreferenceUndoToken | null>(null);
     const [prefUndoState, setPrefUndoState] = React.useState<PreferenceUndoState>('idle');
     const [prefUndoError, setPrefUndoError] = React.useState<string | null>(null);
+    // Server error type of the failed undo (issue #466 review): tracked
+    // separately from the message so only `preference_stale` renders the
+    // stale-only review action; network/5xx failures stay retry-oriented.
+    const [prefUndoErrorType, setPrefUndoErrorType] = React.useState<string | null>(null);
+    // Issue #466 review: the latest read-only preference proposal awaiting
+    // the user's Apply/Dismiss decision. Client-held token; the server
+    // re-validates and revision-guards it on apply.
+    const [prefProposal, setPrefProposal] = React.useState<PreferenceProposal | null>(null);
+    const [prefProposalState, setPrefProposalState] = React.useState<'idle' | 'pending' | 'error'>('idle');
+    const [prefProposalError, setPrefProposalError] = React.useState<string | null>(null);
+    const [prefProposalErrorType, setPrefProposalErrorType] = React.useState<string | null>(null);
+    // Confirmation for an applied this-search-only proposal (never saved).
+    const [prefSearchApplied, setPrefSearchApplied] = React.useState<number | null>(null);
     // Advisory assistant availability (issue #457). null means the status is
     // unknown — e.g. the fetch failed — and the chat stays fully usable.
     const [assistantStatus, setAssistantStatus] = React.useState<AssistantStatus | null>(null);
@@ -1700,15 +1827,14 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 setPreferencesChanged(true);
                 setPrefDismissed(false);
             }
-            // Issue #466: adopt the field-level diff + undo token when the
-            // server surfaced them; clear any prior turn's notice otherwise.
-            if (data.changes || data.undo) {
-                // An explicit (possibly empty) diff supersedes the plain
-                // banner; without extras the banner renders unchanged.
-                setPrefChanges(data.changes || []);
-                setPrefUndoToken(data.undo || null);
-                setPrefUndoState('idle');
-                setPrefUndoError(null);
+            // Issue #466 review: adopt the read-only proposal when the server
+            // surfaced one; the user applies or dismisses it explicitly.
+            if (data.preference_proposal) {
+                setPrefProposal(data.preference_proposal);
+                setPrefProposalState('idle');
+                setPrefProposalError(null);
+                setPrefProposalErrorType(null);
+                setPrefSearchApplied(null);
                 setPrefDismissed(false);
             }
             clearInflightTurn(turnConversationId, key);
@@ -1945,6 +2071,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         if (!prefUndoToken || prefUndoState === 'pending') return;
         setPrefUndoState('pending');
         setPrefUndoError(null);
+        setPrefUndoErrorType(null);
         try {
             const res = await csrfFetch('/api/agent/preferences/undo/', {
                 method: 'POST',
@@ -1966,14 +2093,80 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 serverMsg = parsed?.error?.message || '';
             } catch { /* non-JSON body: fall through to generic copy */ }
             setPrefUndoState('error');
+            setPrefUndoErrorType(serverType);
             setPrefUndoError(
                 serverType === 'preference_stale'
                     ? (serverMsg || 'Your preferences changed since this update. Please review the current preferences before undoing.')
-                    : (serverMsg || 'The undo request is no longer valid.'),
+                    : (serverMsg || 'The undo request is no longer valid. Please try again.'),
             );
         } catch {
             setPrefUndoState('error');
+            setPrefUndoErrorType(null);
             setPrefUndoError('Could not undo the preference update. Please check your connection and try again.');
+        }
+    };
+
+    // Issue #466 review: apply or dismiss the read-only proposal. Only an
+    // explicit Apply persists (scope=account) or runs one unsaved search
+    // (scope=search); Dismiss discards the client-held token.
+    const handlePreferenceProposalDecision = async (decision: 'apply' | 'dismiss') => {
+        if (!prefProposal || prefProposalState === 'pending') return;
+        if (decision === 'dismiss') {
+            setPrefProposal(null);
+            setPrefProposalState('idle');
+            setPrefProposalError(null);
+            setPrefProposalErrorType(null);
+            return;
+        }
+        setPrefProposalState('pending');
+        setPrefProposalError(null);
+        setPrefProposalErrorType(null);
+        try {
+            const res = await csrfFetch('/api/agent/preferences/apply/', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({proposal: prefProposal.token, decision}),
+            });
+            if (res.ok) {
+                const data = await res.json();
+                if (data.scope === 'search') {
+                    // This-search-only: never saved; show the confirmation
+                    // with the number of matches the temporary filter found.
+                    const matchCount =
+                        (data.matches?.job_matches?.length || 0) +
+                        (data.matches?.organization_matches?.length || 0);
+                    setPrefSearchApplied(matchCount);
+                } else {
+                    setPrefChanges(data.changes || []);
+                    setPrefUndoToken(data.undo || null);
+                    setPrefUndoState('idle');
+                    setPrefUndoError(null);
+                    setPrefUndoErrorType(null);
+                    setPreferencesChanged(true);
+                }
+                setPrefProposal(null);
+                setPrefProposalState('idle');
+                setPrefDismissed(false);
+                return;
+            }
+            let serverType: string | null = null;
+            let serverMsg = '';
+            try {
+                const parsed = (await res.json()) as ApiError;
+                serverType = parsed?.error?.type || null;
+                serverMsg = parsed?.error?.message || '';
+            } catch { /* non-JSON body: fall through to generic copy */ }
+            setPrefProposalState('error');
+            setPrefProposalErrorType(serverType);
+            setPrefProposalError(
+                serverType === 'preference_stale'
+                    ? (serverMsg || 'Your preferences changed since this proposal was prepared. Please review the current preferences before applying.')
+                    : (serverMsg || 'The proposal could not be applied. Please try again.'),
+            );
+        } catch {
+            setPrefProposalState('error');
+            setPrefProposalErrorType(null);
+            setPrefProposalError('Could not apply the preference proposal. Please check your connection and try again.');
         }
     };
 
@@ -2018,11 +2211,47 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     </div>
                 </div>
 
+                {prefProposal && !prefDismissed && (
+                    <PreferenceProposalNotice
+                        proposal={prefProposal}
+                        state={prefProposalState}
+                        error={prefProposalError}
+                        errorType={prefProposalErrorType}
+                        onDecision={handlePreferenceProposalDecision}
+                        onReview={() => {
+                            // Stale-conflict recovery: review the current
+                            // preferences through the assistant.
+                            composerRef.current?.focus();
+                        }}
+                    />
+                )}
+
+                {prefSearchApplied !== null && !prefDismissed && !prefProposal && (
+                    <div className="alert alert-info pref-change-notice" role="status"
+                         aria-label="Temporary search filter applied" data-testid="preference-search-applied">
+                        <div className="pref-change-header">
+                            <span className="pref-change-summary">
+                                <i className="fa-solid fa-filter me-1" aria-hidden="true"></i>
+                                Applied to this search only — not saved to your preferences
+                                {prefSearchApplied > 0 ? ` (${prefSearchApplied} matches)` : ''}.
+                            </span>
+                            <button type="button" className="pref-change-dismiss" aria-label="Dismiss search filter notice"
+                                    onClick={() => {
+                                        setPrefSearchApplied(null);
+                                        setPrefDismissed(true);
+                                    }}>
+                                <i className="fa-solid fa-xmark" aria-hidden="true"></i>
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 {revealingPrefChanges && (
                     <PreferenceChangeNotice
                         changes={prefChanges || []}
                         undoState={prefUndoState}
                         undoError={prefUndoError}
+                        undoErrorType={prefUndoErrorType}
                         onUndo={handleUndoPreferenceChange}
                         onDismiss={() => {
                             setPrefDismissed(true);
@@ -2030,6 +2259,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                             setPrefUndoToken(null);
                             setPrefUndoState('idle');
                             setPrefUndoError(null);
+                            setPrefUndoErrorType(null);
                         }}
                         onReview={() => {
                             // Stale-conflict recovery: the current

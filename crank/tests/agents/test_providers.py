@@ -201,17 +201,23 @@ class FakeGateway:
 
 
 class FakePreferenceService:
-    def __init__(self, apply_result=False):
-        self.apply_result = apply_result
+    def __init__(self, proposal=None):
+        self.proposal = proposal or {
+            "base_revision": 0,
+            "changes": [{"path": "notes", "old": "", "new": "x"}],
+            "change_count": 1,
+            "scope": "account",
+            "unsupported_criteria": [],
+        }
         self.validate_calls = 0
-        self.apply_calls = 0
+        self.propose_calls = 0
 
     def validate_patch(self, patch):
         self.validate_calls += 1
 
-    def apply_patch(self, patch, expected_modified=None):
-        self.apply_calls += 1
-        return self.apply_result
+    def propose_patch(self, patch, scope="account"):
+        self.propose_calls += 1
+        return self.proposal
 
 
 class _OwnerScopedPref:
@@ -223,8 +229,14 @@ class _OwnerScopedPref:
     def validate_patch(self, patch):
         pass
 
-    def apply_patch(self, patch, expected_modified=None):
-        return False
+    def propose_patch(self, patch, scope="account"):
+        return {
+            "base_revision": None,
+            "changes": [],
+            "change_count": 0,
+            "scope": scope,
+            "unsupported_criteria": [],
+        }
 
 
 class _NullPreferenceServiceTests(SimpleTestCase):
@@ -232,15 +244,14 @@ class _NullPreferenceServiceTests(SimpleTestCase):
         svc = _NullPreferenceService()
         svc.validate_patch({"any": "thing"})
 
-    def test_null_preference_service_apply_returns_false(self):
+    def test_null_preference_service_propose_returns_empty_proposal(self):
         svc = _NullPreferenceService()
-        self.assertFalse(svc.apply_patch({"any": "thing"}))
-
-    def test_null_preference_service_is_a_documented_no_writer(self):
-        """Issue #487 review MAJOR-4: the null service demonstrably has no
-        writer, so it is the one port allowed to skip the version baseline."""
-        svc = _NullPreferenceService()
-        self.assertFalse(svc.writable)
+        proposal = svc.propose_patch({"any": "thing"})
+        self.assertEqual(
+            proposal["changes"], [],
+        )
+        self.assertEqual(proposal["change_count"], 0)
+        self.assertIsNone(proposal["base_revision"])
 
 
 class OrchestratorProviderTests(SimpleTestCase):
@@ -281,7 +292,7 @@ class OrchestratorProviderTests(SimpleTestCase):
         with patch.object(
             OrchestratorJobSearchProvider,
             "_read_preference_snapshot",
-            return_value=("", None, None),
+            return_value="",
         ):
             reply, changed, _, _extras = provider.generate_reply(
                 conversation=conv, user_message="recommend seed startups"
@@ -289,7 +300,9 @@ class OrchestratorProviderTests(SimpleTestCase):
         self.assertIn("Globex", reply)
         self.assertFalse(changed)
 
-    def test_preference_patch_maps_to_changed_flag(self):
+    def test_preference_patch_maps_to_proposal_extras(self):
+        """Issue #466 review: a proposed patch surfaces as a read-only
+        proposal in the extras payload; the turn itself changes nothing."""
         provider = self._make_provider(
             gateway_result={
                 "message": "Updated your preferences.",
@@ -297,7 +310,7 @@ class OrchestratorProviderTests(SimpleTestCase):
                 "cited_job_listing_ids": [],
                 "preference_patch": {"set": {"funding_stage": ["S"]}},
             },
-            pref=FakePreferenceService(apply_result=True),
+            pref=FakePreferenceService(),
         )
         conv = SimpleNamespace(
             pk=1,
@@ -307,13 +320,27 @@ class OrchestratorProviderTests(SimpleTestCase):
         with patch.object(
             OrchestratorJobSearchProvider,
             "_read_preference_snapshot",
-            return_value=("", "2026-09-14T00:00:00Z", 0),
+            return_value="",
         ):
             reply, changed, _, _extras = provider.generate_reply(
                 conversation=conv, user_message="prefer seed"
             )
-        self.assertTrue(changed)
+        self.assertFalse(changed)
         self.assertIn("Updated", reply)
+        self.assertIsNotNone(_extras)
+        proposal = _extras["proposal"]
+        self.assertEqual(proposal["scope"], "account")
+        self.assertEqual(
+            proposal["changes"], [{"path": "notes", "old": "", "new": "x"}],
+        )
+        self.assertEqual(
+            proposal["token"],
+            {
+                "patch": {"set": {"funding_stage": ["S"]}},
+                "scope": "account",
+                "base_revision": 0,
+            },
+        )
 
     def test_provider_error_propagates(self):
         provider = self._make_provider(gateway_exc=ProviderError("down"))
@@ -325,7 +352,7 @@ class OrchestratorProviderTests(SimpleTestCase):
         with patch.object(
             OrchestratorJobSearchProvider,
             "_read_preference_snapshot",
-            return_value=("", None, None),
+            return_value="",
         ), pytest.raises(ProviderError):
             provider.generate_reply(conversation=conv, user_message="hi")
 
@@ -339,7 +366,7 @@ class OrchestratorProviderTests(SimpleTestCase):
         with patch.object(
             OrchestratorJobSearchProvider,
             "_read_preference_snapshot",
-            return_value=("", None, None),
+            return_value="",
         ), pytest.raises(ProviderTimeoutError):
             provider.generate_reply(conversation=conv, user_message="hi")
 
@@ -360,7 +387,7 @@ class OrchestratorProviderTests(SimpleTestCase):
         with patch.object(
             OrchestratorJobSearchProvider,
             "_read_preference_snapshot",
-            return_value=("", None, None),
+            return_value="",
         ), pytest.raises(InvalidOrganizationReferenceError):
             provider.generate_reply(conversation=conv, user_message="hi")
 
@@ -776,7 +803,7 @@ class OrchestratorProviderErrorMappingTests(SimpleTestCase):
         def _build_failing(conversation):
             raise ValueError("bad conversation")
         provider._build_conversation_history = _build_failing
-        provider._read_preference_snapshot = lambda conv: ("", None, None)
+        provider._read_preference_snapshot = lambda conv: ""
 
         conv = SimpleNamespace(pk=1, owner_id=1, messages=SimpleNamespace(
             order_by=lambda *a, **kw: []))
@@ -818,7 +845,7 @@ class OrchestratorProviderIntegrationTests(TestCase):
         with patch.object(
             OrchestratorJobSearchProvider,
             "_read_preference_snapshot",
-            return_value=("", None, None),
+            return_value="",
         ):
             reply, changed, results, _extras = provider.generate_reply(
                 conversation=conv, user_message="what about seed startups?"
@@ -826,54 +853,48 @@ class OrchestratorProviderIntegrationTests(TestCase):
         self.assertIn("Globex", reply)
         self.assertFalse(changed)
 
-    def test_read_preference_snapshot_pairs_markdown_with_version(self):
-        """The snapshot returns the markdown AND the row version from one read.
+    def test_read_preference_snapshot_returns_markdown(self):
+        """The snapshot returns the owner's preference markdown for the prompt.
 
-        Issue #487 review, MAJOR-3: the prompt snapshot and the optimistic-
-        concurrency baseline must come from the same row state so a mid-turn
-        edit can never pair stale prompt data with a fresh version.
+        Issue #466 review: the turn no longer applies preference patches, so
+        no optimistic-concurrency baseline is captured; the apply endpoint
+        enforces the revision precondition against the proposal token.
         """
         from crank.models.preference import UserPreference
-        from crank.services.preferences import PREFERENCE_ABSENT
 
         conv = JobSearchConversation.objects.create(owner=self.user)
-        # No preference row yet → ("", PREFERENCE_ABSENT, None).
+        # No preference row yet → empty markdown.
         self.assertEqual(
-            OrchestratorJobSearchProvider._read_preference_snapshot(conv),
-            ("", PREFERENCE_ABSENT, None),
+            OrchestratorJobSearchProvider._read_preference_snapshot(conv), "",
         )
-        # Create a preference → (markdown, modified, revision) from the same row.
+        # Create a preference → the row's markdown.
         UserPreference.objects.create(
             user=self.user,
             preferences_markdown="**Remote only**",
         )
-        row = UserPreference.objects.get(user=self.user)
-        markdown, version, revision = (
-            OrchestratorJobSearchProvider._read_preference_snapshot(conv)
+        self.assertEqual(
+            OrchestratorJobSearchProvider._read_preference_snapshot(conv),
+            "**Remote only**",
         )
-        self.assertEqual(markdown, "**Remote only**")
-        self.assertEqual(version, row.modified)
-        self.assertEqual(revision, row.revision)
 
-    def test_read_preference_snapshot_exception_returns_no_baseline(self):
-        """If the preference model is unavailable, the snapshot degrades to a
-        missing baseline — which fails closed at patch time for writer ports."""
+    def test_read_preference_snapshot_exception_returns_empty_markdown(self):
+        """If the preference model is unavailable, the snapshot degrades to
+        empty markdown — the prompt simply has no preference section."""
         import sys
         conv = JobSearchConversation.objects.create(owner=self.user)
         # Remove preference module to force ImportError inside the try block
         with patch.dict(sys.modules, {"crank.models.preference": None}):
             self.assertEqual(
                 OrchestratorJobSearchProvider._read_preference_snapshot(conv),
-                ("", None, None),
+                "",
             )
 
-    def test_generate_reply_passes_turn_start_baseline_to_run(self):
-        """The snapshot pair is what generate_reply feeds orchestrator.run.
+    def test_generate_reply_passes_markdown_to_run(self):
+        """The snapshot markdown is what generate_reply feeds orchestrator.run.
 
         Pins the turn-start ordering (issue #487 review, MAJOR-3): the
-        ``expected_modified`` given to the orchestrator is the value captured
-        alongside the preference markdown BEFORE any turn work, never a
-        mid-turn re-read.
+        preference markdown given to the orchestrator is captured BEFORE any
+        turn work, never a mid-turn re-read.
         """
         from crank.models.preference import UserPreference
 
@@ -881,7 +902,6 @@ class OrchestratorProviderIntegrationTests(TestCase):
             user=self.user,
             preferences_markdown="**Remote only**",
         )
-        row = UserPreference.objects.get(user=self.user)
         conv = JobSearchConversation.objects.create(owner=self.user)
 
         gateway = FakeGateway(result={
@@ -899,7 +919,7 @@ class OrchestratorProviderIntegrationTests(TestCase):
         )
         provider = OrchestratorJobSearchProvider(orchestrator=orchestrator)
 
-        # Wrap orchestrator.run to capture the baseline as actually passed.
+        # Wrap orchestrator.run to capture the markdown as actually passed.
         recorded = {}
         original_run = orchestrator.run
 
@@ -916,7 +936,6 @@ class OrchestratorProviderIntegrationTests(TestCase):
             orchestrator.run = original_run
 
         self.assertEqual(recorded["preference_markdown"], "**Remote only**")
-        self.assertEqual(recorded["expected_modified"], row.modified)
         # A persisted conversation wires the per-turn lifecycle guard.
         self.assertTrue(callable(recorded["lifecycle_guard"]))
 
@@ -1111,72 +1130,31 @@ class ResponseSchemaTests(SimpleTestCase):
         )
 
 
-class PreferenceServiceAdapterRevisionTests(TestCase):
-    """Issue #466: the owner-scoped adapter captures and forwards revisions."""
+class PreferenceServiceAdapterProposeTests(TestCase):
+    """Issue #466 review: the owner-scoped adapter is read-only propose."""
 
     def setUp(self):
         self.user = User.objects.create_user("revuser", "rev@example.com", "pw")
 
-    def test_apply_patch_forwards_expected_revision_and_captures_result(self):
+    def test_propose_patch_delegates_and_writes_nothing(self):
         from crank.agents.job_search.providers import _PreferenceServiceAdapter
-        from crank.services.preferences import apply_patch_to_user
-
-        apply_patch_to_user(self.user, {"set": {"notes": "seed"}})
-        adapter = _PreferenceServiceAdapter(self.user)
-        changed = adapter.apply_patch(
-            {"set": {"notes": "edited"}},
-            expected_modified=None,
-            expected_revision=1,
-        )
-        self.assertTrue(changed)
-        meta = adapter.last_apply_result
-        self.assertEqual(meta["revision"], 2)
-        self.assertEqual(meta["changes"][0]["new"], "edited")
-        self.assertEqual(
-            meta["undo"],
-            {"expected_revision": 2, "patch": {"set": {"notes": "seed"}}},
-        )
-
-    def test_apply_patch_stale_revision_maps_to_preference_stale(self):
-        from crank.agents.job_search.providers import _PreferenceServiceAdapter
-        from crank.services.preferences import apply_patch_to_user
-
-        apply_patch_to_user(self.user, {"set": {"notes": "seed"}})
-        adapter = _PreferenceServiceAdapter(self.user)
-        with self.assertRaises(PreferenceStaleError):
-            adapter.apply_patch(
-                {"set": {"notes": "edited"}},
-                expected_modified=None,
-                expected_revision=99,
-            )
-        self.assertIsNone(adapter.last_apply_result)
-
-
-class ReadPreferenceSnapshotRevisionTests(TestCase):
-    """Issue #466: the snapshot returns markdown, modified AND revision in one read."""
-
-    def setUp(self):
-        self.user = User.objects.create_user("snapuser", "snap@example.com", "pw")
-
-    def test_snapshot_returns_revision_from_same_row(self):
         from crank.models.preference import UserPreference
         from crank.services.preferences import apply_patch_to_user
 
-        apply_patch_to_user(self.user, {"set": {"notes": "x"}})
-        conv = JobSearchConversation.objects.create(owner=self.user)
-        markdown, modified, revision = (
-            OrchestratorJobSearchProvider._read_preference_snapshot(conv)
-        )
+        apply_patch_to_user(self.user, {"set": {"notes": "seed"}})
+        adapter = _PreferenceServiceAdapter(self.user)
+        result = adapter.propose_patch({"set": {"notes": "edited"}})
+        self.assertEqual(result["change_count"], 1)
+        self.assertEqual(result["base_revision"], 1)
+        self.assertEqual(result["changes"][0]["new"], "edited")
         row = UserPreference.objects.get(user=self.user)
-        self.assertEqual(markdown, row.preferences_markdown)
-        self.assertEqual(modified, row.modified)
-        self.assertEqual(revision, row.revision)
+        self.assertEqual(row.preferences["notes"], "seed")
+        self.assertEqual(row.revision, 1)
 
-    def test_snapshot_absent_row_keeps_absent_sentinel(self):
-        from crank.services.preferences import PREFERENCE_ABSENT
+    def test_validate_patch_delegates(self):
+        from crank.agents.job_search.providers import _PreferenceServiceAdapter
+        from crank.services.preferences import AmbiguousPatchError
 
-        conv = JobSearchConversation.objects.create(owner=self.user)
-        self.assertEqual(
-            OrchestratorJobSearchProvider._read_preference_snapshot(conv),
-            ("", PREFERENCE_ABSENT, None),
-        )
+        adapter = _PreferenceServiceAdapter(self.user)
+        with self.assertRaises(AmbiguousPatchError):
+            adapter.validate_patch({"set": {}})

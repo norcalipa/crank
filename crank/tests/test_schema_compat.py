@@ -335,7 +335,10 @@ class PreferenceSchemaCompatTests(TestCase):
             {"channel": "email", "quiet_hours": "22:00-07:00"},
         )
         self.assertEqual(applied["undo"]["expected_revision"], 1)
-        self.assertEqual(applied["undo"]["patch"], {"set": {"notes": ""}})
+        # The undo token captures the full pre-apply document (issue #466
+        # review), so the restore is byte-identical including the additive
+        # field — not an inverse patch rebuilt from the diff.
+        self.assertEqual(applied["undo"]["document"], doc)
 
         # A replayed (stale) precondition fails closed and writes nothing.
         with self.assertRaises(preferences_service.StalePreferenceError) as ctx:

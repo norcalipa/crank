@@ -50,7 +50,15 @@ class PreferenceStaleError(JobSearchError):
     would overwrite a newer change the user made (or a reset) mid-turn. The
     patch is NOT applied; the transport maps this to a stable 409
     ``preference_stale`` envelope and the persisted user turn stays retryable.
+
+    ``current_revision`` carries the revision observed at rejection time (when
+    known) so the caller can offer a fresh review path without a second read
+    (issue #466 review); it is ``None`` for contention-mapped rejections.
     """
+
+    def __init__(self, message="", *, current_revision=None):
+        super().__init__(message)
+        self.current_revision = current_revision
 
 
 class PreferenceVersionUnavailableError(JobSearchError):

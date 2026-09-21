@@ -71,19 +71,30 @@ class ScriptedGateway:
 
 
 class RecordingPreferenceService:
-    """Preference port that records validate/apply calls for assertions."""
+    """Preference port that records validate/propose calls for assertions.
+
+    The chat turn never persists a model-proposed patch (issue #466 review):
+    the port exposes a read-only ``propose_patch`` and persistence happens
+    only when the user applies the proposal through the apply endpoint.
+    """
 
     def __init__(self, apply_result=False):
         self.apply_result = apply_result
         self.validate_calls = 0
-        self.apply_calls = 0
+        self.propose_calls = 0
 
     def validate_patch(self, patch) -> None:
         self.validate_calls += 1
 
-    def apply_patch(self, patch, expected_modified=None) -> bool:
-        self.apply_calls += 1
-        return self.apply_result
+    def propose_patch(self, patch, scope="account") -> dict:
+        self.propose_calls += 1
+        return {
+            "base_revision": 0,
+            "changes": [],
+            "change_count": 0,
+            "scope": scope,
+            "unsupported_criteria": [],
+        }
 
 
 def make_orchestrator(
@@ -169,13 +180,17 @@ class TestPreferenceElicitation:
             user_prompt="I mainly want remote seed-stage startups.",
             conversation=[],
             preference_markdown="",
-            expected_modified="2026-09-14T00:00:00Z",
         )
-        # Structure: the patch was validated and applied (saved).
+        # Structure: the patch was validated and surfaced as a read-only
+        # proposal (issue #466 review); nothing is persisted in-turn — the
+        # user applies it through the apply endpoint.
         assert pref.validate_calls == 1
-        assert pref.apply_calls == 1
-        assert result.preferences_changed is True
+        assert pref.propose_calls == 1
+        assert result.preferences_changed is False
         assert result.preference_patch["replace"]["funding_round"] == "S"
+        assert result.preference_proposal is not None
+        assert result.preference_proposal["token"]["patch"]["replace"]["funding_round"] == "S"
+        assert result.preference_proposal["scope"] == "account"
 
     def test_clarifying_question_does_not_mutate_preferences(self):
         """A pure elicitation question side-steps the patch path but stays valid."""
@@ -192,7 +207,7 @@ class TestPreferenceElicitation:
             preference_markdown="",
         )
         assert pref.validate_calls == 0
-        assert pref.apply_calls == 0
+        assert pref.propose_calls == 0
         assert result.message != ""
         assert result.empty_result is True  # no result card yet, and that's fine.
 

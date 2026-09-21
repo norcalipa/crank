@@ -3204,7 +3204,7 @@ describe('signed-out visitor and account-switch purge (issue #465)', () => {
     });
 });
 
-describe('preference change diff & undo (issue #466)', () => {
+describe('preference proposal → apply → undo (issue #466 review)', () => {
     beforeEach(() => {
         global.fetch = jest.fn();
     });
@@ -3213,66 +3213,254 @@ describe('preference change diff & undo (issue #466)', () => {
         jest.restoreAllMocks();
     });
 
-    const undoToken = {expected_revision: 3, patch: {set: {notes: ''}}};
+    const undoToken = {expected_revision: 3, document: {notes: ''}};
     const changes = [
         {path: 'compensation.minimum_salary', old: null, new: 200000},
         {path: 'work_location.modes', old: [], new: ['remote']},
         {path: 'notes', old: '', new: 'prefers remote-first teams'},
     ];
+    const proposal = {
+        id: 'prop-1',
+        scope: 'account',
+        changes,
+        change_count: 3,
+        base_revision: 2,
+        unsupported_criteria: [],
+        token: {patch: {"set": {"notes": "prefers remote-first teams"}}, scope: 'account', base_revision: 2},
+    };
 
-    async function submitTurnWithPreferences(payload: object) {
+    async function submitTurnWithProposal(payload: object) {
         await renderChat();
         (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
         (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(payload, 201));
         fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'only remote, 200k+'}});
         fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-        await screen.findByTestId('preference-change-notice');
+        await screen.findByTestId('preference-proposal-notice');
     }
 
-    test('renders the populated diff list with old → new values', async () => {
-        await submitTurnWithPreferences({
-            message: assistantMessage(9, 'Preferences saved.', true),
-            preferences_changed: true,
-            changes,
-            undo: undoToken,
+    async function submitAndApply(applyResponse: object, status = 200) {
+        await submitTurnWithProposal({
+            message: assistantMessage(9, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: proposal,
+        });
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(applyResponse, status));
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+    }
+
+    test('the turn renders the read-only proposal diff with Apply/Dismiss', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(9, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: proposal,
         });
 
-        const notice = screen.getByTestId('preference-change-notice');
+        const notice = screen.getByTestId('preference-proposal-notice');
         expect(notice).toHaveAttribute('role', 'status');
         expect(screen.getByText('Compensation › minimum salary')).toBeInTheDocument();
         expect(screen.getByText('Work location › modes')).toBeInTheDocument();
         expect(screen.getByText('Notes')).toBeInTheDocument();
-        // Null/empty old values render as "Not set"; new values are readable.
         expect(screen.getAllByText('Not set').length).toBeGreaterThanOrEqual(2);
         expect(screen.getByText('200,000')).toBeInTheDocument();
-        expect(screen.getByText('remote')).toBeInTheDocument();
         expect(screen.getByText('prefers remote-first teams')).toBeInTheDocument();
-        // The plain banner is superseded by the detailed notice.
+        // Nothing was applied yet: no applied notice, no plain banner.
+        expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
         expect(screen.queryByRole('status', {name: 'Preference update'})).not.toBeInTheDocument();
-        // Undo control is a labelled, enabled button.
-        expect(screen.getByRole('button', {name: 'Undo preference update'})).toBeEnabled();
+        expect(screen.getByTestId('preference-apply-button')).toBeEnabled();
+        expect(screen.getByTestId('preference-proposal-dismiss-button')).toBeEnabled();
     });
 
-    test('empty state: update reported with an explicitly empty diff', async () => {
-        await submitTurnWithPreferences({
-            message: assistantMessage(10, 'Nothing new.', true),
-            preferences_changed: true,
-            changes: [],
-            undo: null,
+    test('dismiss discards the proposal without any apply request', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(10, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: proposal,
         });
-        expect(screen.getByTestId('preference-change-empty')).toBeInTheDocument();
-        expect(screen.queryByLabelText('Changed preferences')).not.toBeInTheDocument();
-        // Empty diff: the undo action says what it restores (issue #466 round 2).
-        expect(screen.getByTestId('preference-undo-button')).toHaveTextContent('Restore previous preferences');
+        fireEvent.click(screen.getByTestId('preference-proposal-dismiss-button'));
+        expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument();
+        const applyBodies = postBodies(global.fetch as jest.Mock, '/api/agent/preferences/apply/');
+        expect(applyBodies).toHaveLength(0);
+    });
+
+    test('apply posts the token and renders the applied diff with Undo', async () => {
+        await submitAndApply({
+            applied: true, scope: 'account', revision: 3, changes, undo: undoToken,
+        });
+        const notice = await screen.findByTestId('preference-change-notice');
+        expect(notice).toBeInTheDocument();
+        expect(screen.getByText('Compensation › minimum salary')).toBeInTheDocument();
+        expect(screen.getByRole('button', {name: 'Undo preference update'})).toBeEnabled();
+        const applyBodies = postBodies(global.fetch as jest.Mock, '/api/agent/preferences/apply/');
+        expect(applyBodies).toHaveLength(1);
+        expect(applyBodies[0]).toEqual({proposal: proposal.token, decision: 'apply'});
+        // The proposal is consumed.
+        expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument();
+    });
+
+    test('apply button is disabled and busy while the request is in flight', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(11, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: proposal,
+        });
+        let resolveApply: (response: Response) => void = () => {};
+        (global.fetch as jest.Mock).mockImplementationOnce(
+            () => new Promise<Response>((resolve) => { resolveApply = resolve; }),
+        );
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        const busyButton = await screen.findByRole('button', {name: 'Applying preference proposal'});
+        expect(busyButton).toBeDisabled();
+        expect(busyButton).toHaveAttribute('aria-busy', 'true');
+        await act(async () => {
+            resolveApply(jsonResponse({
+                applied: true, scope: 'account', revision: 3, changes, undo: undoToken,
+            }));
+        });
+        expect(await screen.findByTestId('preference-change-notice')).toBeInTheDocument();
+    });
+
+    test('a stale conflict on apply surfaces the review action and applies nothing', async () => {
+        await submitAndApply({
+            error: {
+                type: 'preference_stale',
+                message: 'Your preferences changed since this proposal was prepared.',
+                request_id: 'req-1',
+            },
+        }, 409);
+        const errorPanel = await screen.findByTestId('preference-proposal-error');
+        expect(errorPanel).toHaveAttribute('role', 'alert');
+        expect(errorPanel).toHaveTextContent(/changed since this proposal/i);
+        // The proposal stays visible; nothing was applied.
+        expect(screen.getByTestId('preference-proposal-notice')).toBeInTheDocument();
+        expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+        const reviewButton = screen.getByTestId('preference-proposal-review-button');
+        expect(reviewButton).toHaveTextContent('Review current preferences');
+        fireEvent.click(reviewButton);
+        expect(screen.getByLabelText('Message')).toHaveFocus();
+    });
+
+    test('a network failure on apply shows retry copy, not the stale-only review action', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(14, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: proposal,
+        });
+        (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('offline'));
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        const errorPanel = await screen.findByTestId('preference-proposal-error');
+        expect(errorPanel).toHaveTextContent(/check your connection/i);
+        // Transient failure: retry stays possible; the stale-only review
+        // action does NOT appear for a connectivity failure (issue #466 review).
+        expect(screen.getByTestId('preference-apply-button')).toBeEnabled();
+        expect(screen.queryByTestId('preference-proposal-review-button')).not.toBeInTheDocument();
+    });
+
+    test('a this-search-only proposal applies unsaved and confirms', async () => {
+        const searchProposal = {...proposal, scope: 'search', token: {...proposal.token, scope: 'search'}};
+        await submitTurnWithProposal({
+            message: assistantMessage(15, 'Try this filter.', false),
+            preferences_changed: false,
+            preference_proposal: searchProposal,
+        });
+        expect(screen.getByText(/will not be saved/i)).toBeInTheDocument();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            applied: false, scope: 'search',
+            matches: {job_matches: [{listing_id: 1}], organization_matches: []},
+        }));
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        const confirmation = await screen.findByTestId('preference-search-applied');
+        expect(confirmation).toHaveTextContent(/this search only/i);
+        expect(confirmation).toHaveTextContent(/not saved/i);
+        // Nothing persisted: no applied notice with Undo.
+        expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+    });
+
+    test('legacy response without a proposal renders no proposal notice', async () => {
+        await renderChat();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            message: assistantMessage(16, 'Reply.', false),
+            preferences_changed: false,
+        }, 201));
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'legacy'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await screen.findByText('Reply.');
+        expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument();
+    });
+
+    test('keyboard: apply and dismiss controls are focusable buttons', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(17, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: proposal,
+        });
+        const applyButton = screen.getByTestId('preference-apply-button');
+        applyButton.focus();
+        expect(applyButton).toHaveFocus();
+        const dismissButton = screen.getByTestId('preference-proposal-dismiss-button');
+        dismissButton.focus();
+        expect(dismissButton).toHaveFocus();
+    });
+});
+
+describe('preference change undo (issue #466)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+    });
+
+    const undoToken = {expected_revision: 3, document: {notes: ''}};
+    const changes = [
+        {path: 'compensation.minimum_salary', old: null, new: 200000},
+        {path: 'notes', old: '', new: 'prefers remote-first teams'},
+    ];
+    const proposal = {
+        id: 'prop-undo',
+        scope: 'account',
+        changes,
+        change_count: 2,
+        base_revision: 2,
+        unsupported_criteria: [],
+        token: {patch: {"set": {"notes": "prefers remote-first teams"}}, scope: 'account', base_revision: 2},
+    };
+
+    async function applyProposalThen() {
+        await renderChat();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            message: assistantMessage(20, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: proposal,
+        }, 201));
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'only remote'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await screen.findByTestId('preference-proposal-notice');
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            applied: true, scope: 'account', revision: 3, changes, undo: undoToken,
+        }));
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        await screen.findByTestId('preference-change-notice');
+    }
+
+    test('successful undo posts the token and confirms', async () => {
+        await applyProposalThen();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse({undone: true, revision: 4, changes: [{path: 'notes', old: 'x', new: ''}]}),
+        );
+        fireEvent.click(screen.getByRole('button', {name: 'Undo preference update'}));
+        expect(await screen.findByTestId('preference-change-undone')).toHaveTextContent(/undone/i);
+
+        const undoBodies = postBodies(global.fetch as jest.Mock, '/api/agent/preferences/undo/');
+        expect(undoBodies).toHaveLength(1);
+        expect(undoBodies[0]).toEqual({undo: undoToken});
+        expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
     });
 
     test('loading state: undo button is disabled and busy while the request is in flight', async () => {
-        await submitTurnWithPreferences({
-            message: assistantMessage(11, 'Saved.', true),
-            preferences_changed: true,
-            changes,
-            undo: undoToken,
-        });
+        await applyProposalThen();
         let resolveUndo: (response: Response) => void = () => {};
         (global.fetch as jest.Mock).mockImplementationOnce(
             () => new Promise<Response>((resolve) => { resolveUndo = resolve; }),
@@ -3288,33 +3476,8 @@ describe('preference change diff & undo (issue #466)', () => {
         expect(await screen.findByTestId('preference-change-undone')).toBeInTheDocument();
     });
 
-    test('successful undo posts the token and confirms', async () => {
-        await submitTurnWithPreferences({
-            message: assistantMessage(12, 'Saved.', true),
-            preferences_changed: true,
-            changes,
-            undo: undoToken,
-        });
-        (global.fetch as jest.Mock).mockResolvedValueOnce(
-            jsonResponse({undone: true, revision: 4, changes: [{path: 'notes', old: 'x', new: ''}]}),
-        );
-        fireEvent.click(screen.getByRole('button', {name: 'Undo preference update'}));
-        expect(await screen.findByTestId('preference-change-undone')).toHaveTextContent(/undone/i);
-
-        const undoBodies = postBodies(global.fetch as jest.Mock, '/api/agent/preferences/undo/');
-        expect(undoBodies).toHaveLength(1);
-        expect(undoBodies[0]).toEqual({undo: undoToken});
-        // The diff list is replaced by the confirmation.
-        expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
-    });
-
-    test('error state: a stale-revision conflict (409) surfaces the server copy and undoes nothing', async () => {
-        await submitTurnWithPreferences({
-            message: assistantMessage(13, 'Saved.', true),
-            preferences_changed: true,
-            changes,
-            undo: undoToken,
-        });
+    test('error state: a stale-revision conflict (409) surfaces the review action', async () => {
+        await applyProposalThen();
         (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
             error: {
                 type: 'preference_stale',
@@ -3326,7 +3489,6 @@ describe('preference change diff & undo (issue #466)', () => {
         const errorPanel = await screen.findByTestId('preference-undo-error');
         expect(errorPanel).toHaveAttribute('role', 'alert');
         expect(errorPanel).toHaveTextContent(/changed since this update/i);
-        // The notice stays populated so the user can see what was not undone.
         expect(screen.getByTestId('preference-change-notice')).toBeInTheDocument();
         expect(screen.getByRole('button', {name: 'Undo preference update'})).toBeEnabled();
         // The primary recovery after a stale conflict is reviewing the
@@ -3337,63 +3499,23 @@ describe('preference change diff & undo (issue #466)', () => {
         expect(screen.getByLabelText('Message')).toHaveFocus();
     });
 
-    test('error state: a network failure shows generic copy and allows retry', async () => {
-        await submitTurnWithPreferences({
-            message: assistantMessage(14, 'Saved.', true),
-            preferences_changed: true,
-            changes,
-            undo: undoToken,
-        });
+    test('error state: a network failure shows retry copy and NOT the stale-only review action', async () => {
+        await applyProposalThen();
         (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('offline'));
         fireEvent.click(screen.getByRole('button', {name: 'Undo preference update'}));
         const errorPanel = await screen.findByTestId('preference-undo-error');
         expect(errorPanel).toHaveTextContent(/check your connection/i);
-        // Transient failure: retry stays possible and the review action appears.
+        // Transient failure: retry stays possible; the stale-only review
+        // action does NOT appear for a connectivity failure (issue #466 review).
         expect(screen.getByRole('button', {name: 'Undo preference update'})).toBeEnabled();
-        expect(screen.getByTestId('preference-review-button')).toBeInTheDocument();
+        expect(screen.queryByTestId('preference-review-button')).not.toBeInTheDocument();
     });
 
     test('dismiss hides the notice and discards the token', async () => {
-        await submitTurnWithPreferences({
-            message: assistantMessage(15, 'Saved.', true),
-            preferences_changed: true,
-            changes,
-            undo: undoToken,
-        });
+        await applyProposalThen();
         fireEvent.click(screen.getByRole('button', {name: 'Dismiss preference notice'}));
         expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
-        // The plain banner stays hidden too — the dismiss covers both.
         expect(screen.queryByRole('status', {name: 'Preference update'})).not.toBeInTheDocument();
-    });
-
-    test('legacy response without extras still shows the plain banner', async () => {
-        await renderChat();
-        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
-        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
-            message: assistantMessage(16, 'Saved.', true),
-            preferences_changed: true,
-        }, 201));
-        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'legacy'}});
-        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-        // preferences_changed without changes/undo extras keeps the pre-#466
-        // banner (older providers and post-reload turns carry no diff).
-        expect(await screen.findByRole('status', {name: 'Preference update'})).toBeInTheDocument();
-        expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
-    });
-
-    test('keyboard: undo and dismiss controls are focusable buttons', async () => {
-        await submitTurnWithPreferences({
-            message: assistantMessage(17, 'Saved.', true),
-            preferences_changed: true,
-            changes,
-            undo: undoToken,
-        });
-        const undoButton = screen.getByRole('button', {name: 'Undo preference update'});
-        undoButton.focus();
-        expect(undoButton).toHaveFocus();
-        const dismissButton = screen.getByRole('button', {name: 'Dismiss preference notice'});
-        dismissButton.focus();
-        expect(dismissButton).toHaveFocus();
     });
 });
 

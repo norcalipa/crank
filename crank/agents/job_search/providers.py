@@ -36,7 +36,6 @@ from crank.agents.job_search.errors import (
     InvalidOrganizationReferenceError,
     InvalidPreferencePatchError,
     JobSearchError,
-    PreferenceStaleError,
     ProviderError,
     ProviderTimeoutError,
 )
@@ -180,6 +179,10 @@ _RESPONSE_SCHEMA: dict[str, Any] = {
         "preference_patch": {
             "type": ["object", "null"],
         },
+        "preference_scope": {
+            "type": "string",
+            "enum": ["account", "search"],
+        },
     },
     "required": ["message", "cited_organization_ids", "cited_job_listing_ids", "preference_patch"],
     "additionalProperties": False,
@@ -195,79 +198,49 @@ class _PreferenceServiceAdapter:
     """Owner-scoped adapter over the production preference store.
 
     Wires :mod:`crank.services.preferences` — the same store the preference
-    editor uses — so chat preference changes are validated against the
-    version-1 schema and persisted for the conversation owner.
-    ``apply_patch`` returns whether the stored document actually changed, so
-    ``preferences_changed`` accurately reflects persistence.
-
-    ``writable`` marks this as a writer port: the orchestrator's fail-closed
-    guard (issue #487 review, MAJOR-4) requires a captured ``expected_modified``
-    baseline for every writer port before a proposed patch may apply.
+    editor uses — so chat preference proposals are validated against the
+    versioned schema. The chat turn never persists a model-proposed patch
+    (issue #466 review): ``propose_patch`` is read-only by construction, and
+    persistence happens only when the user applies the proposal through the
+    dedicated endpoint.
     """
-
-    writable = True
 
     def __init__(self, user: Any) -> None:
         self._user = user
-        # Last successful apply result, exposed so the orchestrator can carry
-        # the field-level ``changes``/``undo`` token (issue #466) through its
-        # result without changing the port's bool return contract. Metadata
-        # only flows outward to the owner; it is never logged.
-        self.last_apply_result: dict[str, Any] | None = None
 
     def validate_patch(self, patch: dict[str, Any]) -> None:
         from crank.services.preferences import validate_patch
 
         validate_patch(patch)
 
-    def apply_patch(
-        self,
-        patch: dict[str, Any],
-        expected_modified: Any = None,
-        expected_revision: Any = None,
-    ) -> bool:
-        from crank.services.preferences import StalePreferenceError, apply_patch_to_user
+    def propose_patch(self, patch: dict[str, Any], scope: str = "account") -> dict:
+        from crank.services.preferences import propose_patch_for_user
 
-        try:
-            result = apply_patch_to_user(
-                self._user,
-                patch,
-                expected_modified,
-                expected_revision=expected_revision,
-            )
-        except StalePreferenceError as exc:
-            # Map the concrete store's typed error to the orchestrator-level
-            # error so the transport layer stays provider-independent.
-            raise PreferenceStaleError(
-                "preference changed while the assistant was responding"
-            ) from exc
-        self.last_apply_result = result
-        return bool(result.get("changed", False))
+        return propose_patch_for_user(self._user, patch, scope=scope)
 
 
 class _NullPreferenceService:
     """Fallback preference service used when no owner can be resolved.
 
     Only reachable when ``conversation.owner`` is unavailable (so there is no
-    user to persist to). ``apply_patch`` returns ``False`` to signal nothing
-    was applied, so ``preferences_changed`` accurately reports degradation
-    rather than silently claiming a change persisted.
-
-    ``writable = False`` is the documented, demonstrable no-writer assertion:
-    this port can never persist a preference change, so it is the one port the
-    orchestrator allows to apply a patch without a captured version baseline
-    (the call is a no-op; issue #487 review, MAJOR-4).
+    user to propose for). ``propose_patch`` returns an empty, changeless
+    proposal so the turn degrades gracefully rather than claiming a change
+    that can never persist.
     """
-
-    writable = False
 
     def validate_patch(self, patch: dict[str, Any]) -> None:
         # No user is available to persist to, so there is nothing meaningful
         # to validate against. The orchestrator already bounds the patch shape.
         pass
 
-    def apply_patch(self, patch: dict[str, Any], expected_modified: Any = None) -> bool:
-        return False
+    def propose_patch(self, patch: dict[str, Any], scope: str = "account") -> dict:
+        return {
+            "base_revision": None,
+            "changes": [],
+            "change_count": 0,
+            "scope": scope,
+            "unsupported_criteria": [],
+        }
 
 
 def _matches_for_user(user: Any):
@@ -670,11 +643,7 @@ class OrchestratorJobSearchProvider:
         orchestrator = self._ensure_orchestrator(user)
         try:
             history = self._build_conversation_history(conversation)
-            (
-                preference_markdown,
-                expected_modified,
-                expected_revision,
-            ) = self._read_preference_snapshot(conversation)
+            preference_markdown = self._read_preference_snapshot(conversation)
         except Exception as exc:
             logger.error(
                 "orchestrator provider history error conversation=%s error_type=%s",
@@ -688,8 +657,6 @@ class OrchestratorJobSearchProvider:
                 user_prompt=user_message or "",
                 conversation=history,
                 preference_markdown=preference_markdown,
-                expected_modified=expected_modified,
-                expected_revision=expected_revision,
                 lifecycle_guard=self._make_lifecycle_guard(conversation),
                 persist_reply=persist_reply,
             )
@@ -727,11 +694,11 @@ class OrchestratorJobSearchProvider:
             raise
 
         extras = None
-        if result.preference_changes is not None or result.preference_undo is not None:
-            extras = {
-                "changes": result.preference_changes,
-                "undo": result.preference_undo,
-            }
+        if result.preference_proposal is not None:
+            # Issue #466 review: the turn surfaces a read-only preference
+            # proposal (field-level diff + scope + client-held token); the
+            # user applies or dismisses it through the apply endpoint.
+            extras = {"proposal": result.preference_proposal}
         return result.message, result.preferences_changed, result.results, extras
 
     # -- helpers -----------------------------------------------------------
@@ -748,41 +715,27 @@ class OrchestratorJobSearchProvider:
         return messages
 
     @staticmethod
-    def _read_preference_snapshot(conversation) -> tuple[str, Any, Any]:
-        """Read the owner's preference markdown AND row versions in ONE read.
+    def _read_preference_snapshot(conversation) -> str:
+        """Read the owner's preference markdown snapshot for the prompt.
 
-        The triple is captured at turn start, before any turn work, so the
-        prompt snapshot and the optimistic-concurrency baseline can never
-        drift apart: a mid-turn edit cannot pair a stale prompt with a fresh
-        version (or vice versa) and slip past the stale check (issue #487
-        review, MAJOR-3).
-
-        Returns ``(markdown, modified, revision)`` where the version pair is:
-
-        * the row's ``modified`` timestamp and ``revision`` when a preference
-          row exists;
-        * :data:`crank.services.preferences.PREFERENCE_ABSENT` and ``None``
-          when the owner has no row yet (the patch then applies only if the
-          row is still absent at commit time; the revision check is unused);
-        * ``None`` and ``None`` when the read failed — writer ports fail
-          closed on a proposed patch in that case (MAJOR-4), no-writer ports
-          proceed.
+        Captured at turn start, before any turn work. The turn no longer
+        applies preference patches (issue #466 review), so no version
+        baseline is captured here; the apply endpoint enforces the revision
+        precondition against the proposal's ``base_revision`` instead.
         """
         try:
             from crank.models.preference import UserPreference
-            from crank.services.preferences import PREFERENCE_ABSENT
 
             pref = UserPreference.objects.filter(
                 user_id=conversation.owner_id
             ).first()
             if pref is None:
-                return "", PREFERENCE_ABSENT, None
-            return pref.preferences_markdown or "", pref.modified, pref.revision
+                return ""
+            return pref.preferences_markdown or ""
         except Exception:  # noqa: BLE001
-            # Preference model/table may not be ready in test contexts; the
-            # missing baseline fails closed at patch time for writer ports.
+            # Preference model/table may not be ready in test contexts.
             logger.debug(
                 "Preference lookup unavailable for user=%s",
                 getattr(conversation, "owner_id", None),
             )
-            return "", None, None
+            return ""

@@ -893,8 +893,14 @@ class OrchestratorE2ESmokeTests(TestCase):
             def validate_patch(self, patch):
                 pass
 
-            def apply_patch(self, patch, expected_modified=None):
-                return True
+            def propose_patch(self, patch, scope="account"):
+                return {
+                    "base_revision": 0,
+                    "changes": [],
+                    "change_count": 0,
+                    "scope": scope,
+                    "unsupported_criteria": [],
+                }
 
         default_orgs = orgs or [
             SimpleNamespace(id=1, name="Acme Inc", url="https://acme.example",
@@ -943,12 +949,12 @@ class OrchestratorE2ESmokeTests(TestCase):
         )
         return OrchestratorJobSearchProvider(orchestrator=orchestrator), gw
 
-    def test_provider_preference_adapter_persists_to_real_store(self):
-        """MAJOR-1: the production preference adapter writes to the real store.
+    def test_provider_preference_adapter_proposes_against_real_store(self):
+        """Issue #466 review: the production preference adapter is read-only.
 
-        Ensures the adapter (not a null stub) persists chat preference changes
-        to the authenticated user's ``UserPreference`` row and reports
-        ``changed`` truthfully, so ``preferences_changed`` is meaningful.
+        The adapter (not a null stub) diffs chat-proposed patches against the
+        authenticated user's real ``UserPreference`` row and writes nothing;
+        persistence happens only through the user-driven apply endpoint.
         """
         from crank.agents.job_search.providers import _PreferenceServiceAdapter
 
@@ -956,12 +962,13 @@ class OrchestratorE2ESmokeTests(TestCase):
         adapter = _PreferenceServiceAdapter(user)
 
         adapter.validate_patch({"set": {"compensation.minimum_salary": 180000}})
-        self.assertTrue(adapter.apply_patch({"set": {"compensation.minimum_salary": 180000}}))
+        proposal = adapter.propose_patch({"set": {"compensation.minimum_salary": 180000}})
+        self.assertEqual(proposal["change_count"], 1)
+        self.assertEqual(proposal["base_revision"], 0)
 
-        # The change actually persisted to the owner-scoped preference store.
+        # Nothing persisted: the row was never even created.
         from crank.models.preference import UserPreference
-        pref = UserPreference.objects.get(user=user)
-        self.assertEqual(pref.preferences["compensation"]["minimum_salary"], 180000)
+        self.assertFalse(UserPreference.objects.filter(user=user).exists())
 
         # An invalid patch is rejected by the real validator.
         with self.assertRaises(Exception):
@@ -983,11 +990,12 @@ class OrchestratorE2ESmokeTests(TestCase):
         adapter = _PreferenceServiceAdapter(user)
 
         adapter.validate_patch({"set": {"roles.families": ["engineering"]}})
-        self.assertTrue(adapter.apply_patch({"set": {"roles.families": ["engineering"]}}))
-
-        from crank.models.preference import UserPreference
-        pref = UserPreference.objects.get(user=user)
-        self.assertEqual(pref.preferences["roles"]["families"], ["engineering"])
+        proposal = adapter.propose_patch({"set": {"roles.families": ["engineering"]}})
+        self.assertEqual(proposal["change_count"], 1)
+        self.assertEqual(
+            proposal["changes"],
+            [{"path": "roles.families", "old": [], "new": ["engineering"]}],
+        )
 
         with self.assertRaises(UnknownFieldError):
             adapter.validate_patch({"set": {"roles.unknown_path": ["x"]}})
@@ -1071,11 +1079,14 @@ class OrchestratorE2ESmokeTests(TestCase):
             self.assertEqual(resp.status_code, 201)
             body = resp.json()
 
-            # 3. Verify the assistant reply is grounded
+            # 3. Verify the assistant reply is grounded. A model-proposed
+            # patch is never applied in-turn (issue #466 review): the turn
+            # surfaces a read-only proposal instead.
             self.assertEqual(body["message"]["role"], "assistant")
             self.assertIn("Acme", body["message"]["content"])
             self.assertIn("Globex", body["message"]["content"])
-            self.assertTrue(body["preferences_changed"])
+            self.assertFalse(body["preferences_changed"])
+            self.assertIn("preference_proposal", body)
 
             # 4. Verify ranked/cited results are present
             results = body["message"]["results"]
@@ -1626,75 +1637,24 @@ class StalePreferenceAndLateReplyTests(TestCase):
         )
 
     @patch("crank.views.job_search.monitoring.record_event")
-    def test_stale_preference_patch_returns_409_and_never_overwrites(self, record):
-        """A late reply's patch is rejected when the row changed mid-turn."""
+    def test_stale_proposal_apply_returns_409_and_never_overwrites(self, record):
+        """Issue #466 review: a proposal applied after an intervening edit is
+        rejected by the revision precondition — 409 ``preference_stale``
+        carrying the machine-readable ``current_revision`` — and writes
+        nothing. The turn itself never persisted anything."""
         from crank.services import preferences as pref_service
 
-        class ConcurrentlyEditingGateway:
-            """Simulates a user preference edit racing a slow provider reply."""
-
-            def __init__(self, user):
-                self.user = user
-                self.payload = {
-                    "message": "I noted your preference update.",
-                    "cited_organization_ids": [],
-                    "cited_job_listing_ids": [],
-                    "preference_patch": {"set": {"notes": "late patch"}},
-                }
-
+        class ProposingGateway:
             def complete(self, request):
-                # Mid-turn: the user (or another request) edits preferences,
-                # bumping the row's ``modified`` past the turn-start capture.
-                pref_service.apply_patch_to_user(
-                    self.user, {"set": {"notes": "concurrent edit"}}
-                )
                 from crank.agents.job_search.gateway import GatewayResponse
 
-                return GatewayResponse(text=json.dumps(self.payload))
-
-            def close(self):
-                return None
-
-        provider = self._build_orchestrator_provider(
-            ConcurrentlyEditingGateway(self.user)
-        )
-        conv_id = self._start_conversation()
-        key = str(uuid.uuid4())
-
-        with self._patch_service_provider(provider):
-            resp = self._submit(conv_id, "please prefer remote work", key)
-
-        self.assertEqual(resp.status_code, 409)
-        body = resp.json()
-        self.assertEqual(body["error"]["type"], "preference_stale")
-        self.assertIn("request_id", body["error"])
-        self.assertTrue(resp.headers.get("X-Request-ID"))
-
-        # The stale patch was never applied; the concurrent edit survived.
-        stored = UserPreference.objects.get(user=self.user)
-        self.assertEqual(stored.preferences["notes"], "concurrent edit")
-
-        # The user turn persisted exactly once; no assistant message.
-        conv = JobSearchConversation.objects.get(pk=conv_id)
-        self.assertEqual(conv.messages.filter(role="user").count(), 1)
-        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
-
-        # Telemetry records the reason without any content.
-        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
-        self.assertTrue(any(c.args[1].get("reason_code") == "preference_stale" for c in calls))
-
-        # The persisted user turn stays retryable with the same key.
-        from crank.agents.job_search.gateway import GatewayResponse
-
-        class CleanGateway:
-            def complete(self, request):
                 return GatewayResponse(
                     text=json.dumps(
                         {
-                            "message": "Got it — remote work noted.",
+                            "message": "I noted your preference update.",
                             "cited_organization_ids": [],
                             "cited_job_listing_ids": [],
-                            "preference_patch": {"set": {"notes": "retry patch"}},
+                            "preference_patch": {"set": {"notes": "proposed patch"}},
                         }
                     )
                 )
@@ -1702,18 +1662,43 @@ class StalePreferenceAndLateReplyTests(TestCase):
             def close(self):
                 return None
 
-        retry_provider = self._build_orchestrator_provider(CleanGateway())
-        with self._patch_service_provider(retry_provider):
-            retry = self._submit(conv_id, "please prefer remote work", key)
-        self.assertEqual(retry.status_code, 201)
-        conv = JobSearchConversation.objects.get(pk=conv_id)
-        self.assertEqual(conv.messages.filter(role="user").count(), 1)
-        self.assertEqual(conv.messages.filter(role="assistant").count(), 1)
-        stored.refresh_from_db()
-        self.assertEqual(stored.preferences["notes"], "retry patch")
+        provider = self._build_orchestrator_provider(ProposingGateway())
+        conv_id = self._start_conversation()
 
-    def test_matching_preference_version_applies_patch(self):
-        """Both branches: a matching ``expected_modified`` applies the patch."""
+        with self._patch_service_provider(provider):
+            resp = self._submit(conv_id, "please prefer remote work", str(uuid.uuid4()))
+
+        # The turn succeeded and surfaced a read-only proposal; nothing was
+        # persisted in-turn.
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()
+        self.assertFalse(body["preferences_changed"])
+        proposal = body["preference_proposal"]
+        self.assertEqual(proposal["token"]["base_revision"], 0)
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "")
+        self.assertEqual(stored.revision, 0)
+
+        # An intervening edit advances the revision before the user applies.
+        pref_service.apply_patch_to_user(self.user, {"set": {"notes": "concurrent edit"}})
+
+        apply_resp = self.client.post(
+            reverse("agent-preference-apply"),
+            data=json.dumps({"proposal": proposal["token"], "decision": "apply"}),
+            content_type="application/json",
+        )
+        self.assertEqual(apply_resp.status_code, 409)
+        apply_body = apply_resp.json()
+        self.assertEqual(apply_body["error"]["type"], "preference_stale")
+        self.assertEqual(apply_body["error"]["current_revision"], 1)
+
+        # The stale proposal was never applied; the concurrent edit survived.
+        stored.refresh_from_db()
+        self.assertEqual(stored.preferences["notes"], "concurrent edit")
+        self.assertEqual(stored.revision, 1)
+
+    def test_matching_revision_applies_proposal(self):
+        """A proposal applied while the revision still matches persists."""
         from crank.agents.job_search.gateway import GatewayResponse
 
         class CleanGateway:
@@ -1737,60 +1722,225 @@ class StalePreferenceAndLateReplyTests(TestCase):
         with self._patch_service_provider(provider):
             resp = self._submit(conv_id, "prefer remote", str(uuid.uuid4()))
         self.assertEqual(resp.status_code, 201)
-        self.assertTrue(resp.json()["preferences_changed"])
+        self.assertFalse(resp.json()["preferences_changed"])
+        proposal = resp.json()["preference_proposal"]
+        self.assertEqual(
+            proposal["changes"],
+            [{"path": "notes", "old": "", "new": "accepted patch"}],
+        )
+
+        apply_resp = self.client.post(
+            reverse("agent-preference-apply"),
+            data=json.dumps({"proposal": proposal["token"], "decision": "apply"}),
+            content_type="application/json",
+        )
+        self.assertEqual(apply_resp.status_code, 200)
+        apply_body = apply_resp.json()
+        self.assertTrue(apply_body["applied"])
+        self.assertEqual(apply_body["revision"], 1)
+        self.assertEqual(
+            apply_body["undo"]["expected_revision"], 1,
+        )
         stored = UserPreference.objects.get(user=self.user)
         self.assertEqual(stored.preferences["notes"], "accepted patch")
 
-    def test_preference_adapter_maps_stale_error_and_versions(self):
-        """Unit: the production adapter maps store errors to typed errors.
+    def test_apply_endpoint_revision_precondition_edges(self):
+        """The apply endpoint enforces the revision precondition at the edges:
+        a row deleted after the proposal fails closed (never re-creates
+        deleted state), and a tampered/null/missing ``base_revision`` is
+        rejected 400 instead of silently downgrading to the unchecked legacy
+        path (issue #466 review)."""
+        from crank.services import preferences as pref_service
 
-        Also pins the baseline semantics (issue #487 review, MAJOR-3/MAJOR-4):
-        ``PREFERENCE_ABSENT`` applies only while the row stays absent; a row
-        deleted mid-turn fails closed instead of being silently re-created.
-        """
-        from crank.agents.job_search.errors import PreferenceStaleError
-        from crank.agents.job_search.providers import _PreferenceServiceAdapter
-        from crank.services.preferences import PREFERENCE_ABSENT, StalePreferenceError as _StoreStale
+        patch = {"set": {"notes": "v-proposed"}}
+        token = {"patch": patch, "scope": "account", "base_revision": 0}
 
-        fresh = User.objects.create_user("adapteruser", "adapter@example.com", "pw")
-        adapter = _PreferenceServiceAdapter(fresh)
-        self.assertTrue(adapter.writable)
-
-        # No row yet: the ABSENT baseline applies and creates the row.
-        self.assertTrue(adapter.apply_patch({"set": {"notes": "v-first"}}, expected_modified=PREFERENCE_ABSENT))
-        self.assertEqual(UserPreference.objects.get(user=fresh).preferences["notes"], "v-first")
-        version = UserPreference.objects.get(user=fresh).modified
-
-        # Correct version applies; wrong version raises the orchestrator-level
-        # typed error (mapped from the store's StalePreferenceError).
-        self.assertTrue(
-            adapter.apply_patch({"set": {"notes": "v-ok"}}, expected_modified=version)
-        )
-        self.assertEqual(UserPreference.objects.get(user=fresh).preferences["notes"], "v-ok")
-        with self.assertRaises(PreferenceStaleError) as ctx:
-            adapter.apply_patch(
-                {"set": {"notes": "v-stale"}}, expected_modified=version
+        # Tampered / null / missing preconditions are rejected outright.
+        for bad in (None, True, "0", -1):
+            bad_token = dict(token, base_revision=bad)
+            resp = self.client.post(
+                reverse("agent-preference-apply"),
+                data=json.dumps({"proposal": bad_token, "decision": "apply"}),
+                content_type="application/json",
             )
-        # The underlying store error is a StalePreferenceError (chained).
-        self.assertIsInstance(ctx.exception.__cause__, _StoreStale)
-        # The stale patch was not applied.
-        self.assertEqual(UserPreference.objects.get(user=fresh).preferences["notes"], "v-ok")
-
-        # A row existing at capture but deleted mid-turn fails closed: the
-        # patch never re-creates the deleted preference state.
-        current = UserPreference.objects.get(user=fresh).modified
-        preferences.delete_user_preference(fresh)
-        with self.assertRaises(PreferenceStaleError):
-            adapter.apply_patch({"set": {"notes": "v-resurrect"}}, expected_modified=current)
-        self.assertFalse(UserPreference.objects.filter(user=fresh).exists())
-
-        # ABSENT against a row created after capture is stale, not overwrite.
-        preferences.read(fresh)  # the row appears mid-turn, after the capture
-        with self.assertRaises(PreferenceStaleError):
-            adapter.apply_patch({"set": {"notes": "v-overwrite"}}, expected_modified=PREFERENCE_ABSENT)
-        self.assertEqual(
-            UserPreference.objects.get(user=fresh).preferences["notes"], ""
+            self.assertEqual(resp.status_code, 400, bad)
+        missing = {"patch": patch, "scope": "account"}
+        resp = self.client.post(
+            reverse("agent-preference-apply"),
+            data=json.dumps({"proposal": missing, "decision": "apply"}),
+            content_type="application/json",
         )
+        self.assertEqual(resp.status_code, 400)
+        # None of the rejected calls wrote anything.
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "")
+        self.assertEqual(stored.revision, 0)
+
+        # A row deleted after the proposal fails closed instead of being
+        # silently re-created (revision 0 with an existing row ≠ the
+        # still-absent precondition).
+        pref_service.delete_user_preference(self.user)
+        resp = self.client.post(
+            reverse("agent-preference-apply"),
+            data=json.dumps({"proposal": token, "decision": "apply"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        # base_revision 0 = "no committed revision yet": the row is still
+        # absent, so the apply creates it — continuing the monotonic lineage
+        # above the delete's recorded floor (issue #466 review).
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.preferences["notes"], "v-proposed")
+        self.assertEqual(stored.revision, 2)  # floor(1) + one apply
+
+    def test_apply_endpoint_dismiss_writes_nothing(self):
+        """A dismissed proposal persists nothing and needs no token."""
+        resp = self.client.post(
+            reverse("agent-preference-apply"),
+            data=json.dumps({"decision": "dismiss"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["dismissed"])
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.revision, 0)
+
+    def test_apply_endpoint_rejects_malformed_body(self):
+        """A non-JSON body returns the stable 400 envelope (issue #466 review)."""
+        resp = self.client.post(
+            reverse("agent-preference-apply"),
+            data="not-json",
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["type"], "malformed_json")
+
+    def test_apply_endpoint_rejects_unknown_decision(self):
+        """A decision other than apply/dismiss is a 400, never a write."""
+        resp = self.client.post(
+            reverse("agent-preference-apply"),
+            data=json.dumps({"decision": "maybe"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["type"], "invalid_request")
+
+    def test_apply_endpoint_rejects_malformed_token(self):
+        """A proposal token that is not an object with a patch dict is a 400."""
+        for bad_token in ("not-a-dict", {"scope": "account"}, {"patch": "x"}):
+            resp = self.client.post(
+                reverse("agent-preference-apply"),
+                data=json.dumps({"proposal": bad_token, "decision": "apply"}),
+                content_type="application/json",
+            )
+            self.assertEqual(resp.status_code, 400, bad_token)
+            self.assertEqual(resp.json()["error"]["type"], "invalid_request")
+
+    def test_apply_endpoint_rejects_unknown_scope(self):
+        """A scope outside account/search is a 400 (issue #466 review)."""
+        token = {
+            "patch": {"set": {"notes": "x"}},
+            "scope": "everywhere",
+            "base_revision": 0,
+        }
+        resp = self.client.post(
+            reverse("agent-preference-apply"),
+            data=json.dumps({"proposal": token, "decision": "apply"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["type"], "invalid_request")
+
+    def test_apply_endpoint_rejects_invalid_patch(self):
+        """A token whose patch fails the canonical validator is a 400 and
+        writes nothing (issue #466 review)."""
+        token = {
+            "patch": {"set": {"unknown_field": 1}},
+            "scope": "account",
+            "base_revision": 0,
+        }
+        resp = self.client.post(
+            reverse("agent-preference-apply"),
+            data=json.dumps({"proposal": token, "decision": "apply"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["type"], "invalid_request")
+        stored = UserPreference.objects.get(user=self.user)
+        self.assertEqual(stored.revision, 0)
+
+    def test_apply_endpoint_search_scope_never_persists(self):
+        """A this-search-only apply returns a match reload computed against
+        the in-memory effective document and persists nothing — no revision
+        or modified change, no audit row (issue #466 review, AC-9)."""
+        from crank.models.preference import UserPreferenceAudit
+
+        stored = UserPreference.objects.get(user=self.user)
+        before_modified = stored.modified
+        audits_before = UserPreferenceAudit.objects.filter(user=self.user).count()
+        token = {
+            "patch": {"set": {"notes": "remote only"}},
+            "scope": "search",
+            "base_revision": 0,
+        }
+        resp = self.client.post(
+            reverse("agent-preference-apply"),
+            data=json.dumps({"proposal": token, "decision": "apply"}),
+            content_type="application/json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertFalse(body["applied"])
+        self.assertEqual(body["scope"], "search")
+        self.assertIn("matches", body)
+        stored.refresh_from_db()
+        self.assertEqual(stored.revision, 0)
+        self.assertEqual(stored.modified, before_modified)
+        self.assertEqual(stored.preferences["notes"], "")
+        self.assertEqual(
+            UserPreferenceAudit.objects.filter(user=self.user).count(), audits_before
+        )
+
+    def test_apply_endpoint_search_scope_rejects_invalid_patch(self):
+        """A search-scope token whose patch fails validation at the
+        effective-document step is a 400 (issue #466 review)."""
+        token = {
+            "patch": {"set": {"notes": "x"}},
+            "scope": "search",
+            "base_revision": 0,
+        }
+        with patch(
+            "crank.services.preferences.effective_document",
+            side_effect=preferences.AmbiguousPatchError("ambiguous"),
+        ):
+            resp = self.client.post(
+                reverse("agent-preference-apply"),
+                data=json.dumps({"proposal": token, "decision": "apply"}),
+                content_type="application/json",
+            )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["type"], "invalid_request")
+
+    def test_apply_endpoint_apply_preference_error_is_400(self):
+        """A PreferenceError from the apply itself (not stale, not a backend
+        failure) maps to the 400 invalid-proposal envelope (issue #466
+        review)."""
+        token = {
+            "patch": {"set": {"notes": "x"}},
+            "scope": "account",
+            "base_revision": 0,
+        }
+        with patch(
+            "crank.services.preferences.apply_patch_to_user",
+            side_effect=preferences.AmbiguousPatchError("ambiguous"),
+        ):
+            resp = self.client.post(
+                reverse("agent-preference-apply"),
+                data=json.dumps({"proposal": token, "decision": "apply"}),
+                content_type="application/json",
+            )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"]["type"], "invalid_request")
 
     @patch("crank.views.job_search.monitoring.record_event")
     def test_reply_after_midturn_reset_attaches_to_nothing(self, record):
@@ -1980,10 +2130,11 @@ class StalePreferenceAndLateReplyTests(TestCase):
         self.assertTrue(any(c.args[1].get("reason_code") == "conversation_closed" for c in calls))
 
     @patch("crank.views.job_search.monitoring.record_event")
-    def test_preference_baseline_capture_failure_fails_closed(self, record):
-        """MAJOR-4 (view level): when the baseline cannot be captured at turn
-        start, a proposed patch aborts with the stable retryable 409 — the
-        stale check is never silently skipped for a writer port."""
+    def test_unavailable_preference_snapshot_still_proposes(self, record):
+        """Issue #466 review: the turn never applies patches, so a missing
+        preference snapshot no longer aborts the turn — the proposal is
+        still read-only, and the revision precondition is enforced later at
+        the apply endpoint."""
         from crank.agents.job_search.providers import OrchestratorJobSearchProvider
 
         class PatchProposingGateway:
@@ -1996,7 +2147,7 @@ class StalePreferenceAndLateReplyTests(TestCase):
                             "message": "Noted your preference.",
                             "cited_organization_ids": [],
                             "cited_job_listing_ids": [],
-                            "preference_patch": {"set": {"notes": "unverified patch"}},
+                            "preference_patch": {"set": {"notes": "proposed patch"}},
                         }
                     )
                 )
@@ -2010,21 +2161,17 @@ class StalePreferenceAndLateReplyTests(TestCase):
             with patch.object(
                 OrchestratorJobSearchProvider,
                 "_read_preference_snapshot",
-                return_value=("", None, None),
+                return_value="",
             ):
                 resp = self._submit(conversation_pk, "prefer remote", str(uuid.uuid4()))
 
-        self.assertEqual(resp.status_code, 409)
-        self.assertEqual(resp.json()["error"]["type"], "preference_stale")
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()
+        self.assertFalse(body["preferences_changed"])
+        self.assertIn("preference_proposal", body)
         stored = UserPreference.objects.get(user=self.user)
         self.assertEqual(stored.preferences["notes"], "")
-        conv = JobSearchConversation.objects.get(pk=conversation_pk)
-        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
-        self.assertEqual(conv.messages.filter(role="user").count(), 1)
-        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
-        self.assertTrue(
-            any(c.args[1].get("reason_code") == "preference_version_unavailable" for c in calls)
-        )
+        self.assertEqual(stored.revision, 0)
 
     @patch("crank.views.job_search.monitoring.record_event")
     def test_reset_landing_between_recheck_and_insert_discards_reply(self, record):
@@ -2215,39 +2362,33 @@ class GuardedTurnCommitTests(TestCase):
         self.assertTrue(conv.active)
 
     @patch("crank.views.job_search.monitoring.record_event")
-    def test_database_locked_on_patch_write_maps_to_retryable_409(self, record):
-        """MAJOR-2: lock contention during the preference write surfaces as
-        the retryable 409 ``preference_stale`` envelope, never a 500."""
+    def test_database_locked_on_apply_maps_to_retryable_409(self, record):
+        """MAJOR-2: lock contention during the apply endpoint's preference
+        write surfaces as the retryable 409 ``preference_stale`` envelope,
+        never a 500."""
         from django.db import OperationalError
 
-        conversation_pk = self._start_conversation()
-        gateway = self._patch_gateway(
-            {
-                "message": "Noted your preference.",
-                "cited_organization_ids": [],
-                "cited_job_listing_ids": [],
-                "preference_patch": {"set": {"notes": "contended patch"}},
-            }
-        )
-        with self._patch_gateway_provider(gateway):
-            with patch(
-                "crank.services.preferences.apply_patch_to_user",
-                side_effect=OperationalError("database is locked"),
-            ):
-                resp = self._submit(
-                    conversation_pk, "prefer remote", str(uuid.uuid4())
-                )
+        self._start_conversation()
+        token = {
+            "patch": {"set": {"notes": "contended patch"}},
+            "scope": "account",
+            "base_revision": 0,
+        }
+        with patch(
+            "crank.services.preferences.apply_patch_to_user",
+            side_effect=OperationalError("database is locked"),
+        ):
+            resp = self.client.post(
+                reverse("agent-preference-apply"),
+                data=json.dumps({"proposal": token, "decision": "apply"}),
+                content_type="application/json",
+            )
 
         self.assertEqual(resp.status_code, 409)
         self.assertEqual(resp.json()["error"]["type"], "preference_stale")
         stored = UserPreference.objects.get(user=self.user)
         self.assertEqual(stored.preferences["notes"], "")
-        conv = JobSearchConversation.objects.get(pk=conversation_pk)
-        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
-        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
-        self.assertTrue(
-            any(c.args[1].get("reason_code") == "preference_stale" for c in calls)
-        )
+        self.assertEqual(stored.revision, 0)
 
     @patch("crank.views.job_search.monitoring.record_event")
     def test_database_locked_on_lifecycle_claim_maps_to_retryable_409(self, record):
@@ -2297,40 +2438,33 @@ class GuardedTurnCommitTests(TestCase):
     def test_non_lock_operational_error_is_not_translated(self, record):
         """Review round 3 MAJOR (narrowness / MySQL probe): a NON-contention
         backend failure (e.g. a MySQL connection error) is never translated
-        into the retryable 409 envelopes — it keeps the existing stable 500
-        ``invalid_output`` path. The outer-commit translation shares the same
-        narrow ``is_database_locked`` predicate as the inner guarded blocks,
-        so the mapping cannot mask genuine backend faults as "retry"."""
+        into the retryable 409 envelope — it propagates as a 500. The
+        translation shares the same narrow ``is_database_locked`` predicate
+        as the guarded commit, so the mapping cannot mask genuine backend
+        faults as "retry"."""
         from django.db import OperationalError
 
-        conversation_pk = self._start_conversation()
-        gateway = self._patch_gateway(
-            {
-                "message": "Noted your preference.",
-                "cited_organization_ids": [],
-                "cited_job_listing_ids": [],
-                "preference_patch": {"set": {"notes": "unrelated failure"}},
-            }
-        )
-        with self._patch_gateway_provider(gateway):
-            with patch(
-                "crank.services.preferences.apply_patch_to_user",
-                side_effect=OperationalError("connection refused"),
-            ):
-                resp = self._submit(
-                    conversation_pk, "prefer remote", str(uuid.uuid4())
-                )
+        self._start_conversation()
+        token = {
+            "patch": {"set": {"notes": "unrelated failure"}},
+            "scope": "account",
+            "base_revision": 0,
+        }
+        with patch(
+            "crank.services.preferences.apply_patch_to_user",
+            side_effect=OperationalError("connection refused"),
+        ):
+            resp = self.client.post(
+                reverse("agent-preference-apply"),
+                data=json.dumps({"proposal": token, "decision": "apply"}),
+                content_type="application/json",
+            )
 
         self.assertEqual(resp.status_code, 500)
-        self.assertEqual(resp.json()["error"]["type"], "invalid_output")
+        self.assertEqual(resp.json()["error"]["type"], "service_error")
         stored = UserPreference.objects.get(user=self.user)
         self.assertEqual(stored.preferences["notes"], "")
-        conv = JobSearchConversation.objects.get(pk=conversation_pk)
-        self.assertEqual(conv.messages.filter(role="assistant").count(), 0)
-        calls = [c for c in record.call_args_list if c.args[0] == "interactive_call"]
-        self.assertTrue(
-            any(c.args[1].get("reason_code") == "invalid_output" for c in calls)
-        )
+        self.assertEqual(stored.revision, 0)
 
     @override_settings(JOB_SEARCH_RESPONSE_MAX_LEN=10)
     @patch("crank.views.job_search.monitoring.record_event")
@@ -2556,32 +2690,37 @@ class GuardedTurnCommitConcurrencyTests(TransactionTestCase):
         cleanup = []
 
         if pause_in_pref_write:
-            # MAJOR-2 probe pause point: after the guard claim, before the
-            # preference write.
-            from crank.agents.job_search.providers import _PreferenceServiceAdapter
+            # MAJOR-2 probe pause point: after the guard claim, inside the
+            # guarded commit window (before the reply write). The turn no
+            # longer writes preferences (issue #466 review), so the pause
+            # wraps the lifecycle guard itself: the claim runs, then the turn
+            # blocks inside the guarded transaction.
+            from crank.agents.job_search.providers import OrchestratorJobSearchProvider
 
-            class PausingPreferenceService:
-                writable = True
+            real_make_guard = OrchestratorJobSearchProvider._make_lifecycle_guard
 
-                def __init__(self, inner):
-                    self._inner = inner
+            def pausing_make_guard(conversation):
+                guard = real_make_guard(conversation)
+                if guard is None:
+                    return None
 
-                def validate_patch(self, patch):
-                    self._inner.validate_patch(patch)
-
-                def apply_patch(self, patch, expected_modified=None):
+                def pausing_guard():
+                    guard()
                     reached.set()
                     if not resume.wait(timeout=20):
                         raise RuntimeError("turn was never resumed")
-                    return self._inner.apply_patch(
-                        patch, expected_modified=expected_modified
-                    )
 
-            preference_service = PausingPreferenceService(
-                _PreferenceServiceAdapter(user)
+                return pausing_guard
+
+            cleanup.append(
+                patch.object(
+                    OrchestratorJobSearchProvider,
+                    "_make_lifecycle_guard",
+                    staticmethod(pausing_make_guard),
+                )
             )
             provider = self._build_orchestrator_provider(
-                user, self._patch_gateway(patch_payload), preference_service
+                user, self._patch_gateway(patch_payload)
             )
         else:
             # MAJOR-1 repro pause point: after the patch write, before the
@@ -2646,11 +2785,12 @@ class GuardedTurnCommitConcurrencyTests(TransactionTestCase):
             cm.__exit__(None, None, None)
         return responses
 
-    def test_reset_landing_between_claim_and_patch_write_lands_after_commit(self):
+    def test_reset_landing_between_claim_and_reply_write_lands_after_commit(self):
         """MAJOR-2 two-connection probe: a reset racing the guarded window
         after the guard claim cannot turn the reply into ``500 invalid_output``;
-        the turn completes (patch + reply in one commit) and the reset's
-        bounded retry lands it after that commit."""
+        the turn completes (reply commit) and the reset's bounded retry lands
+        it after that commit. The turn persists no preferences either way
+        (issue #466 review)."""
         user, client, conv_id = self._setup_user_and_conversation("probe1")
         provider = self._build_orchestrator_provider(user, self._patch_gateway({}))
 
@@ -2660,10 +2800,11 @@ class GuardedTurnCommitConcurrencyTests(TransactionTestCase):
 
         self.assertEqual(responses["turn"].status_code, 201)
         self.assertEqual(responses["reset"].status_code, 201)
-        # The patch and the reply committed together inside the guarded
-        # transaction — no 500, no lost patch.
+        # The reply committed inside the guarded transaction — no 500 — and
+        # the proposed patch was never persisted in-turn.
         stored = UserPreference.objects.get(user=user)
-        self.assertEqual(stored.preferences["notes"], "late patch")
+        self.assertEqual(stored.preferences["notes"], "")
+        self.assertEqual(stored.revision, 0)
         old = JobSearchConversation.objects.get(pk=conv_id)
         self.assertEqual(old.messages.filter(role="assistant").count(), 1)
         # The reset then closed the conversation and created a fresh one.
@@ -2672,12 +2813,11 @@ class GuardedTurnCommitConcurrencyTests(TransactionTestCase):
         self.assertIsNotNone(fresh)
         self.assertNotEqual(fresh.pk, conv_id)
 
-    def test_reset_landing_after_patch_write_blocks_until_single_commit(self):
-        """MAJOR-1 (reviewer repro): a reset landing after the patch write but
-        before the single commit blocks until the commit — the patch and the
-        reply persist together on the still-active conversation, and the reset
-        closes it afterwards. The old post-patch/pre-reply window (patch
-        committed, reply discarded with 409) is gone."""
+    def test_reset_landing_before_reply_write_blocks_until_single_commit(self):
+        """MAJOR-1 (reviewer repro): a reset landing before the reply write
+        blocks until the single commit — the reply persists on the
+        still-active conversation, and the reset closes it afterwards. The
+        old post-write/pre-commit window is gone."""
         user, client, conv_id = self._setup_user_and_conversation("probe2")
 
         responses = self._race_turn_against_reset(
@@ -2687,7 +2827,8 @@ class GuardedTurnCommitConcurrencyTests(TransactionTestCase):
         self.assertEqual(responses["turn"].status_code, 201)
         self.assertEqual(responses["reset"].status_code, 201)
         stored = UserPreference.objects.get(user=user)
-        self.assertEqual(stored.preferences["notes"], "late patch")
+        self.assertEqual(stored.preferences["notes"], "")
+        self.assertEqual(stored.revision, 0)
         old = JobSearchConversation.objects.get(pk=conv_id)
         self.assertEqual(old.messages.filter(role="assistant").count(), 1)
         self.assertFalse(old.active)
@@ -3904,24 +4045,34 @@ class PreferenceChangesUndoSurfaceTests(TestCase):
             {"content": content, "idempotency_key": key},
         )
 
-    def test_turn_response_includes_changes_and_undo(self):
+    def test_turn_response_includes_preference_proposal(self):
         conv_id = self._start_conversation()
-        undo_token = {"expected_revision": 1, "patch": {"set": {"notes": ""}}}
-        changes = [{"path": "notes", "old": "", "new": "remote only"}]
+        proposal = {
+            "id": "abc123",
+            "scope": "account",
+            "changes": [{"path": "notes", "old": "", "new": "remote only"}],
+            "change_count": 1,
+            "base_revision": 0,
+            "unsupported_criteria": [],
+            "token": {
+                "patch": {"set": {"notes": "remote only"}},
+                "scope": "account",
+                "base_revision": 0,
+            },
+        }
         with patch.object(
             JobSearchService, "run_turn", autospec=True,
             side_effect=lambda self, conversation, user_message, persist_reply=None: (
-                "Noted.", True, None, {"changes": changes, "undo": undo_token},
+                "Noted.", False, None, {"proposal": proposal},
             ),
         ):
             resp = self._submit(conv_id, "I only want remote", str(uuid.uuid4()))
         self.assertEqual(resp.status_code, 201)
         body = resp.json()
-        self.assertTrue(body["preferences_changed"])
-        self.assertEqual(body["changes"], changes)
-        self.assertEqual(body["undo"], undo_token)
+        self.assertFalse(body["preferences_changed"])
+        self.assertEqual(body["preference_proposal"], proposal)
 
-    def test_turn_response_omits_changes_for_legacy_provider(self):
+    def test_turn_response_omits_proposal_for_legacy_provider(self):
         conv_id = self._start_conversation()
         with patch.object(
             JobSearchService, "run_turn", autospec=True,
@@ -3932,8 +4083,7 @@ class PreferenceChangesUndoSurfaceTests(TestCase):
             resp = self._submit(conv_id, "hello", str(uuid.uuid4()))
         self.assertEqual(resp.status_code, 201)
         body = resp.json()
-        self.assertNotIn("changes", body)
-        self.assertNotIn("undo", body)
+        self.assertNotIn("preference_proposal", body)
 
     def test_undo_endpoint_applies_token(self):
         from crank.services.preferences import apply_patch_to_user

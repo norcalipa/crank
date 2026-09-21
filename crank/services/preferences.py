@@ -676,6 +676,14 @@ def apply_patch(document, patch):
         else:
             normalized = validate_value(path, spec, value)
         current = _get(new_doc, path)
+        if isinstance(spec, dict):
+            # Forward compatibility (issue #466 review): replacing a known
+            # subtree must not drop additive nested keys a newer schema
+            # version wrote inside it; they are preserved verbatim, exactly
+            # like top-level unknown keys. The patch itself stays strict —
+            # it may not *address* unknown keys — but a replace never
+            # destroys them.
+            normalized = _merge_unknown(normalized, _extract_unknown(current, spec))
         if not _is_value_equal(spec, normalized, current):
             _set(new_doc, path, normalized)
             changes += 1
@@ -785,22 +793,25 @@ def diff_patch(document, patch):
     return _diff_changes(base, new_doc, patch), change_count
 
 
-def build_undo_token(expected_revision, changes):
-    """Build an opaque undo token from a diff's ``old`` values.
+def build_undo_token(expected_revision, prior_document):
+    """Build an opaque undo token capturing the full pre-apply document.
 
-    The token is a ``set``-only inverse patch — always expressible because
-    :func:`validate_patch` allows ``set`` on whole subtrees, lists, and maps —
-    plus the post-apply revision the inverse may be applied against. Returns
+    The token carries the stored document exactly as it was before the apply
+    (byte-identical, including any pre-v3 missing keys and any additive keys
+    written by a newer schema version) plus the post-apply revision the
+    restore may be applied against. Capturing the whole prior document —
+    rather than an inverse patch reconstructed from the diff — is what makes
+    a byte-identical restore possible for every supported stored shape
+    (issue #466 review): an inverse ``set``-only patch can never un-backfill
+    keys :func:`apply_patch` layered onto an older document, nor restore
+    unknown additive nested keys a subtree replace had to preserve. Returns
     ``None`` when nothing changed (there is nothing to undo).
     """
-    if not changes:
+    if prior_document is None:
         return None
-    set_part = {}
-    for change in changes:
-        set_part[change["path"]] = copy.deepcopy(change["old"])
     return {
         "expected_revision": expected_revision,
-        "patch": {"set": set_part},
+        "document": copy.deepcopy(prior_document),
     }
 
 
@@ -851,27 +862,112 @@ def effective_document(user, patch):
     return new_doc
 
 
-def undo_preference_change(user, undo_token):
-    """Apply an undo token under its revision precondition.
+def _validate_stored_shape(document, spec=_FIELD_SPEC, prefix=""):
+    """Validate the known keys present in a previously-stored document.
 
-    The token's inverse ``set``-only patch is re-validated by the normal
-    patch machinery and applied only when the stored revision still equals
-    the token's post-apply revision; an intervening edit raises
+    Tolerant in both directions, exactly like the store's forward/backward
+    compatibility stance: keys this schema version knows but the document
+    lacks (a pre-v3 stored shape) are skipped, and additive keys written by a
+    newer schema version are opaque and preserved verbatim. Every known key
+    that IS present is strictly type-checked, so a tampered undo token cannot
+    smuggle a corrupt value into a known field. Returns nothing; raises on a
+    corrupt known value.
+    """
+    if not isinstance(document, dict):
+        raise InvalidValueError("Preferences must be a JSON object")
+    for key, sub_spec in spec.items():
+        if key not in document:
+            continue  # older stored shape: absent known keys are tolerated
+        child = "{}.{}".format(prefix, key) if prefix else key
+        if isinstance(sub_spec, dict):
+            _validate_stored_shape(document[key], sub_spec, child)
+        else:
+            validate_value(child, sub_spec, document[key])
+
+
+#: Ceiling on a client-held undo token's serialized size. A legitimate token
+#: is one stored document (bounded by the field caps) plus a revision; this
+#: leaves generous headroom while rejecting unbounded payloads.
+_MAX_UNDO_DOCUMENT_BYTES = 64 * 1024
+
+
+def undo_preference_change(user, undo_token):
+    """Restore an undo token's captured document under its revision precondition.
+
+    The token's captured pre-apply document is restored byte-identically —
+    including any pre-v3 missing keys and additive newer-version keys — but
+    only when the stored revision still equals the token's post-apply
+    revision; an intervening edit (including a reset or a delete/recreate,
+    both of which advance the revision lineage) raises
     :class:`StalePreferenceError` (with ``current_revision``) and writes
     nothing, so an old undo can never overwrite a later edit. A ``None`` or
-    malformed token raises :class:`AmbiguousPatchError`.
+    malformed token — including one whose ``expected_revision`` is missing,
+    null, a boolean, or negative — raises :class:`AmbiguousPatchError`.
+
+    The restored document is owner-scoped and shape-checked
+    (:func:`_validate_stored_shape`): known fields present in the document
+    are type-checked, absent known keys (older shapes) and unknown additive
+    keys (newer shapes) ride along untouched, so the restore is byte-identical
+    across every supported stored shape.
     """
+    if not isinstance(undo_token, dict):
+        raise AmbiguousPatchError("Invalid undo token")
+    expected_revision = undo_token.get("expected_revision")
     if (
-        not isinstance(undo_token, dict)
-        or not isinstance(undo_token.get("patch"), dict)
-        or "expected_revision" not in undo_token
+        expected_revision is None
+        or isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 0
     ):
         raise AmbiguousPatchError("Invalid undo token")
-    return apply_patch_to_user(
-        user,
-        undo_token["patch"],
-        expected_revision=undo_token["expected_revision"],
-    )
+    document = undo_token.get("document")
+    if not isinstance(document, dict):
+        raise AmbiguousPatchError("Invalid undo token")
+    try:
+        import json as _json
+
+        if len(_json.dumps(document).encode("utf-8")) > _MAX_UNDO_DOCUMENT_BYTES:
+            raise AmbiguousPatchError("Invalid undo token")
+    except (TypeError, ValueError):
+        raise AmbiguousPatchError("Invalid undo token")
+    _validate_stored_shape(document)
+    with transaction.atomic():
+        pref = _lock(user)
+        if pref is None:
+            raise StalePreferenceError(
+                "preference row was deleted while the undo was in flight",
+                current_revision=0,
+            )
+        _check_stale_revision(pref, expected_revision)
+        restored = copy.deepcopy(document)
+        change_count = _count_differences(pref.preferences, restored)
+        change_id = None
+        if change_count:
+            pref.preferences = restored
+            pref.preferences_markdown = to_markdown(restored)
+            pref.revision = pref.revision + 1
+            pref.save(update_fields=[
+                "preferences", "preferences_markdown", "revision", "modified",
+            ])
+            _audit(user, UserPreferenceAudit.Action.PATCHED, change_count)
+            change_id = "{}:{}".format(user.pk, pref.revision)
+            _schedule_recompute(change_id)
+        result = _serialize(pref)
+        result["changed"] = bool(change_count)
+        result["revision"] = pref.revision
+        result["changes"] = []
+        result["undo"] = None
+        result["change_id"] = change_id
+        return result
+
+
+def _count_differences(a, b):
+    """Count leaf-level differences between two documents (audit metadata only)."""
+    if a == b:
+        return 0
+    if isinstance(a, dict) and isinstance(b, dict):
+        return sum(_count_differences(a.get(k), b.get(k)) for k in set(a) | set(b))
+    return 1
 
 
 # ---------------------------------------------------------------------------
@@ -1097,6 +1193,7 @@ def _create_or_fetch(user):
                 preferences=doc,
                 preferences_markdown=to_markdown(doc),
                 schema_version=SCHEMA_VERSION,
+                revision=_recreate_revision_floor(user),
             )
         created = True
     except IntegrityError:
@@ -1113,11 +1210,52 @@ def _fetch_or_create_pending(user):
     return _create_or_fetch(user)
 
 
+def _recreate_revision_floor(user):
+    """Return the starting revision for a newly created preference row.
+
+    ``0`` for a genuine first interaction. After a delete, the delete's audit
+    row recorded ``revision + 1`` as the floor (issue #466 review), so a
+    re-created row continues the monotonic lineage instead of restarting at
+    0 — an undo token captured before the delete can never match the new row.
+    """
+    floor = (
+        UserPreferenceAudit.objects.filter(
+            user=user, action=UserPreferenceAudit.Action.DELETED
+        )
+        .order_by("-change_count", "-id")
+        .values_list("change_count", flat=True)
+        .first()
+    )
+    return floor or 0
+
+
 def _lock(user):
     """Return the row under an active transaction with a row lock, or None."""
     return (
         UserPreference.objects.select_for_update().filter(user=user).first()
     )
+
+
+def _validate_expected_revision(expected_revision):
+    """Validate a revision precondition value.
+
+    ``None`` is the explicit low-level opt-out (legacy timestamp path) and is
+    returned unchanged. Every other value must be a real non-negative
+    integer: booleans, strings, floats, and negatives are rejected so a
+    tampered or malformed precondition can never silently downgrade to the
+    unchecked legacy path (issue #466 review).
+    """
+    if expected_revision is None:
+        return None
+    if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+        raise InvalidValueError(
+            "expected_revision must be a non-negative integer"
+        )
+    if expected_revision < 0:
+        raise InvalidValueError(
+            "expected_revision must be a non-negative integer"
+        )
+    return expected_revision
 
 
 def _check_stale_revision(pref, expected_revision):
@@ -1227,7 +1365,13 @@ def apply_patch_to_user(user, patch, expected_modified=None, *, expected_revisio
     ``change_id = f"{user_id}:{post_apply_revision}"``. A no-op apply
     (``change_count == 0``) leaves ``revision``, ``modified``, and the audit
     trail untouched, returns ``undo = None``, and schedules nothing.
+
+    ``expected_revision`` is validated before any lock is taken: a non-``None``
+    value that is not a non-negative integer (booleans, null tokens, strings,
+    negatives) raises :class:`InvalidValueError` instead of silently falling
+    back to the unchecked legacy path (issue #466 review).
     """
+    _validate_expected_revision(expected_revision)
     with transaction.atomic():
         pref = _lock(user)
         if pref is None:
@@ -1262,7 +1406,10 @@ def apply_patch_to_user(user, patch, expected_modified=None, *, expected_revisio
         if changes:
             change_entries = _diff_changes(_diff_base(pref.preferences), new_doc, patch)
             new_revision = pref.revision + 1
-            undo_token = build_undo_token(new_revision, change_entries)
+            # The undo token captures the full pre-apply stored document so
+            # the restore is byte-identical for every supported shape
+            # (issue #466 review), not an inverse patch rebuilt from the diff.
+            undo_token = build_undo_token(new_revision, pref.preferences)
             pref.preferences = new_doc
             pref.preferences_markdown = to_markdown(new_doc)
             pref.revision = new_revision
@@ -1308,10 +1455,19 @@ def reset(user, expected_modified=None):
         if changed:
             pref.preferences = fresh
             pref.preferences_markdown = to_markdown(fresh)
-            pref.save(update_fields=["preferences", "preferences_markdown", "modified"])
+            # A reset is a committed canonical document change, so it advances
+            # the monotonic revision exactly like a patch (issue #466 review):
+            # an undo token captured before the reset no longer matches and
+            # can never overwrite the reset state.
+            pref.revision = pref.revision + 1
+            pref.save(update_fields=[
+                "preferences", "preferences_markdown", "revision", "modified",
+            ])
             _audit(user, UserPreferenceAudit.Action.RESET)
+            _schedule_recompute("{}:{}".format(user.pk, pref.revision))
         result = _serialize(pref)
         result["changed"] = bool(changed)
+        result["revision"] = pref.revision
         return result
 
 
@@ -1333,8 +1489,15 @@ def delete_user_preference(user, expected_modified=None):
         if pref is None:
             return {"deleted": False, "existed": False}
         _check_stale(pref, expected_modified)
+        # Record the revision floor a future re-create must start above
+        # (issue #466 review): deleting the row must not restart the
+        # monotonic revision lineage at 0, or an undo token captured before
+        # the delete could match a re-created row that climbed back to the
+        # same revision and overwrite it. The floor survives the row itself
+        # because audit rows belong to the user, not the preference row.
+        floor = pref.revision + 1
         pref.delete()
-        _audit(user, UserPreferenceAudit.Action.DELETED)
+        _audit(user, UserPreferenceAudit.Action.DELETED, floor)
         return {"deleted": True, "existed": True}
 
 

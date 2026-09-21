@@ -7,6 +7,14 @@
 {% block head_title %}Job Search{% endblock %}
 
 {% block content %}
+    {% comment %}
+        Explicit stylesheet import for the preference-change / proposal
+        notice classes (``.pref-change-*``) rendered by JobSearchChat.tsx
+        (issue #466 review). base.html already links popup.css globally;
+        this page-local link keeps the chat template's dependency explicit
+        so the committed component always renders styled.
+    {% endcomment %}
+    <link href="{% static 'css/popup.css' %}" rel="stylesheet" type="text/css">
     <div class="container py-4 page-container">
         <div class="row">
             <div class="col-12">

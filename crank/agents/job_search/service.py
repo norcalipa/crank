@@ -30,8 +30,6 @@ from crank.agents.job_search.errors import (
     InvalidOrganizationReferenceError,
     InvalidPreferencePatchError,
     JobSearchError,
-    PreferenceStaleError,
-    PreferenceVersionUnavailableError,
     ProviderError,
     ProviderTimeoutError,
     is_database_locked,
@@ -83,34 +81,18 @@ class PreferenceService(Protocol):
     def validate_patch(self, patch: dict[str, Any]) -> None:
         ...  # pragma: no cover - structural Protocol stub, never called directly
 
-    def apply_patch(
-        self, patch: dict[str, Any], expected_modified: Any = None
-    ) -> bool:
-        """Apply an accepted patch transactionally; return whether it changed.
+    def propose_patch(self, patch: dict[str, Any], scope: str = "account") -> dict:
+        """Return a read-only proposal for an accepted patch; never writes.
 
-        Raises :class:`PreferenceStaleError` when ``expected_modified`` is
-        given and the preference row changed since the turn captured it. The
-        ``expected_modified`` baseline is captured at **turn start** by the
-        transport provider (one read, alongside the preference markdown
-        snapshot) and passed through :meth:`JobSearchOrchestrator.run`.
-
-        Ports that can never persist a change may declare ``writable = False``
-        (e.g. the no-owner null service); such no-writer ports are the only
-        ports allowed to apply a patch without a captured baseline (issue #487
-        review, MAJOR-4). Writer ports without a baseline abort fail-closed
-        with :class:`PreferenceVersionUnavailableError`.
+        The chat turn never persists a model-proposed patch (issue #466
+        review): the orchestrator turns it into a proposal — field-level
+        ``changes``, ``base_revision``, ``scope``, and (for
+        ``scope="search"``) the in-memory ``effective_document`` — which the
+        user later applies or dismisses through a dedicated endpoint. Returns
+        the proposal payload; raises :class:`InvalidPreferencePatchError` for
+        a patch the canonical validator rejects.
         """
         ...  # pragma: no cover - structural Protocol stub, never called directly
-
-
-def _is_writer_port(service: Any) -> bool:
-    """Return True unless the port explicitly asserts it can never persist.
-
-    Ports are presumed writers (fail closed, issue #487 review MAJOR-4): only
-    a port declaring ``writable = False`` — e.g. the no-owner null preference
-    service, which demonstrably has no writer — may skip the version check.
-    """
-    return bool(getattr(service, "writable", True))
 
 
 @dataclass(frozen=True)
@@ -122,8 +104,7 @@ class OrchestratorResult:
     cited_job_listing_ids: tuple = ()
     preference_patch: dict[str, Any] | None = None
     preferences_changed: bool = False
-    preference_changes: tuple | None = None
-    preference_undo: dict[str, Any] | None = None
+    preference_proposal: dict[str, Any] | None = None
     prompt_id: str = prompt.prompt_id()
     results: Optional[StructuredResults] = None
     # Bounded operator telemetry (issue #397). Counts/names only, never content.
@@ -196,8 +177,6 @@ class JobSearchOrchestrator:
         user_prompt: str,
         conversation: list[dict[str, str]],
         preference_markdown: str,
-        expected_modified: Any = None,
-        expected_revision: Any = None,
         lifecycle_guard: Callable[[], None] | None = None,
         persist_reply: Callable[..., None] | None = None,
         token_budget: int | None = None,
@@ -205,21 +184,16 @@ class JobSearchOrchestrator:
     ) -> OrchestratorResult:
         """Run one turn and emit only bounded interactive-call telemetry.
 
-        ``expected_modified`` is the preference baseline captured at turn
-        start (alongside the ``preference_markdown`` snapshot, before any turn
-        work); a proposed patch is applied only if the preference row still
-        carries that version at commit time. ``expected_revision`` (issue
-        #466) is the monotonic document revision captured in the same read;
-        ports that accept it enforce the revision precondition instead of the
-        timestamp. ``lifecycle_guard``, when given,
-        runs inside the same transaction as the preference write and raises
-        :class:`ConversationClosedError` to abort when the conversation was
-        reset or deleted mid-turn (issue #487 review, MAJOR-2).
-        ``persist_reply``, when given, is invoked inside that SAME transaction
-        after the patch write, so the guard claim, the patch, and the
-        assistant reply share one commit boundary (issue #487 review round 2,
-        MAJOR-1); it raises :class:`ConversationClosedError` to discard the
-        whole turn.
+        A model-proposed preference patch is never applied in-turn (issue
+        #466 review): the turn returns a read-only proposal the user applies
+        or dismisses afterwards, so no version baseline is needed here.
+        ``lifecycle_guard``, when given, runs inside the same transaction as
+        the reply persistence and raises :class:`ConversationClosedError` to
+        abort when the conversation was reset or deleted mid-turn (issue #487
+        review, MAJOR-2). ``persist_reply``, when given, is invoked inside
+        that SAME transaction, so the guard claim and the assistant reply
+        share one commit boundary (issue #487 review round 2, MAJOR-1); it
+        raises :class:`ConversationClosedError` to discard the whole turn.
         """
         started = time.monotonic()
         try:
@@ -227,8 +201,6 @@ class JobSearchOrchestrator:
                 user_prompt=user_prompt,
                 conversation=conversation,
                 preference_markdown=preference_markdown,
-                expected_modified=expected_modified,
-                expected_revision=expected_revision,
                 lifecycle_guard=lifecycle_guard,
                 persist_reply=persist_reply,
                 token_budget=token_budget,
@@ -278,8 +250,6 @@ class JobSearchOrchestrator:
         user_prompt: str,
         conversation: list[dict[str, str]],
         preference_markdown: str,
-        expected_modified: Any = None,
-        expected_revision: Any = None,
         lifecycle_guard: Callable[[], None] | None = None,
         persist_reply: Callable[..., None] | None = None,
         token_budget: int | None = None,
@@ -363,10 +333,6 @@ class JobSearchOrchestrator:
         )
 
         # 3. Provider call (maps provider failures to typed errors).
-        # (The preference ``expected_modified`` baseline was captured at turn
-        # start alongside the markdown snapshot — before any turn work — so a
-        # slow reply can never pair fresh prompt data with a stale version
-        # check, and vice versa; issue #487 review, MAJOR-3.)
         response = self._invoke_gateway(model_context, token_budget, max_tokens)
 
         # 4. Schema-validate the raw output.
@@ -401,24 +367,22 @@ class JobSearchOrchestrator:
             listing_rows,
         )
 
-        # 7. Validate + apply the optional preference patch and persist the
-        # reply in ONE transaction (issue #487 review round 2, MAJOR-1): the
-        # lifecycle guard's write-first conversation-row claim, the patch
-        # write, and the reply persistence share a single commit boundary, so
-        # a mid-turn reset/delete can never leave a committed patch on a
-        # closed conversation — it either blocks on the row lock until the
-        # single commit or aborts the whole turn with nothing persisted.
-        preferences_changed = False
-        applied_patch: dict[str, Any] | None = None
-        if completion.has_preference_patch or persist_reply is not None:
-            applied_patch, preferences_changed = self._commit_turn_writes(
-                patch=(
-                    completion.preference_patch
-                    if completion.has_preference_patch
-                    else None
-                ),
-                expected_modified=expected_modified,
-                expected_revision=expected_revision,
+        # 7. A model-proposed preference patch is NEVER applied in-turn
+        # (issue #466 review): the turn produces a read-only proposal —
+        # field-level diff, base revision, scope — which the user reviews and
+        # applies or dismisses through a dedicated endpoint. The reply itself
+        # still persists inside the guarded single transaction (issue #487
+        # review round 2, MAJOR-1): the lifecycle guard's write-first
+        # conversation-row claim and the reply persistence share one commit
+        # boundary, so a mid-turn reset/delete can never attach a reply to a
+        # closed conversation.
+        preference_proposal: dict[str, Any] | None = None
+        if completion.has_preference_patch:
+            preference_proposal = self._propose_preference_patch(
+                completion.preference_patch, completion.preference_scope
+            )
+        if persist_reply is not None:
+            self._commit_turn_writes(
                 lifecycle_guard=lifecycle_guard,
                 persist_reply=persist_reply,
                 reply_text=completion.message,
@@ -433,29 +397,21 @@ class JobSearchOrchestrator:
 
         logger.info(
             "job_search_complete prompt_id=%s cited_orgs=%s cited_listings=%s "
-            "preferences_changed=%s",
+            "preference_proposal=%s",
             model_context.prompt_id,
             completion.cited_organization_ids,
             completion.cited_job_listing_ids,
-            preferences_changed,
+            preference_proposal is not None,
         )
-        # Carry the applied field-level diff and undo token (issue #466)
-        # through the result when the preference port exposed them; they are
-        # returned to the owner only and never logged.
-        apply_meta = getattr(self._preference_service, "last_apply_result", None)
-        preference_changes = None
-        preference_undo = None
-        if preferences_changed and isinstance(apply_meta, dict):
-            preference_changes = tuple(apply_meta.get("changes") or ()) or None
-            preference_undo = apply_meta.get("undo")
         return OrchestratorResult(
             message=completion.message,
             cited_organization_ids=completion.cited_organization_ids,
             cited_job_listing_ids=completion.cited_job_listing_ids,
-            preference_patch=applied_patch,
-            preferences_changed=preferences_changed,
-            preference_changes=preference_changes,
-            preference_undo=preference_undo,
+            preference_patch=(
+                completion.preference_patch if completion.has_preference_patch else None
+            ),
+            preferences_changed=False,
+            preference_proposal=preference_proposal,
             results=structured_results,
             tools_used=tools_used,
             result_counts=result_counts,
@@ -463,6 +419,60 @@ class JobSearchOrchestrator:
             empty_result=cited_ids_count == 0,
             inventory_nonempty=inventory_nonempty,
         )
+
+    def _propose_preference_patch(
+        self, patch: dict[str, Any], scope: str
+    ) -> dict[str, Any]:
+        """Build the read-only proposal for a model-proposed patch.
+
+        Validation goes through the same canonical validator the apply path
+        uses (no chat-only branch). The proposal carries a fresh proposal id,
+        the field-level diff, the base revision the eventual apply must be
+        preconditioned on, the scope, and an opaque client-held token the
+        apply endpoint re-validates (owner-scoped, revision-guarded — the
+        same contract as the undo token). For ``scope="search"`` the
+        in-memory effective document is computed here and used to drive one
+        match reload via ``preferences_override`` — never persisted (AC-9).
+        """
+        import uuid
+
+        # Schema validation gates before any proposal work, preserving the
+        # stable InvalidPreferencePatchError precedence.
+        try:
+            self._preference_service.validate_patch(patch)
+        except InvalidPreferencePatchError:
+            raise
+        except Exception as exc:  # defensive: port must raise typed error
+            raise InvalidPreferencePatchError(str(exc)) from exc
+        try:
+            proposal = self._preference_service.propose_patch(patch, scope=scope)
+        except InvalidPreferencePatchError:
+            raise
+        except Exception as exc:  # defensive: port must raise typed error
+            raise InvalidPreferencePatchError(str(exc)) from exc
+        token = {
+            "patch": patch,
+            "scope": scope,
+            "base_revision": proposal.get("base_revision"),
+        }
+        result = {
+            "id": uuid.uuid4().hex,
+            "scope": scope,
+            "changes": proposal.get("changes") or [],
+            "change_count": proposal.get("change_count", 0),
+            "base_revision": proposal.get("base_revision"),
+            "unsupported_criteria": proposal.get("unsupported_criteria") or [],
+            "token": token,
+        }
+        if scope == "search":
+            # This-search-only filter: run one match reload against the
+            # in-memory effective document (never saved) so the proposal can
+            # show what the temporary filter would match (issue #466 review,
+            # AC-9).
+            effective = proposal.get("effective_document")
+            if effective is not None:
+                result["matches"] = self._load_matches(preferences_override=effective)
+        return result
 
     # -- internals ------------------------------------------------------------
 
@@ -492,13 +502,33 @@ class JobSearchOrchestrator:
         rows = self._job_listing_datasource(filters, capped)
         return tools.normalize_job_listing_rows(rows)
 
-    def _load_matches(self) -> dict[str, Any]:
-        """Load preference-grounded matches for the current user."""
+    def _load_matches(self, preferences_override: Any = None) -> dict[str, Any]:
+        """Load preference-grounded matches for the current user.
+
+        ``preferences_override`` (issue #466 review) supplies an in-memory
+        effective document for a this-search-only proposal: the match service
+        evaluates it without any preference store write. Ports that do not
+        declare the parameter are called without it (legacy doubles).
+        """
         if self._match_service is None or self._user is None:
             return {"job_matches": [], "organization_matches": []}
         capped = tools.clamp_result_limit(
             self._max_match_results, maximum=tools.MAX_MATCH_RESULTS
         )
+        if preferences_override is not None:
+            import inspect
+
+            try:
+                params = inspect.signature(self._match_service).parameters
+            except (TypeError, ValueError):  # pragma: no cover - builtins etc.
+                params = {}
+            if "preferences_override" in params or any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+            ):
+                return self._match_service(
+                    user=self._user, limit=capped,
+                    preferences_override=preferences_override,
+                )
         return self._match_service(user=self._user, limit=capped)
 
     def _build_model_context(self, **kwargs: Any) -> ctx.ModelContext:
@@ -682,76 +712,34 @@ class JobSearchOrchestrator:
     def _commit_turn_writes(
         self,
         *,
-        patch: dict[str, Any] | None,
-        expected_modified: Any,
-        expected_revision: Any = None,
         lifecycle_guard: Callable[[], None] | None,
         persist_reply: Callable[..., None] | None,
         reply_text: str,
         results: Any,
-    ) -> tuple:
-        """Commit the turn's persistence domains in ONE transaction.
+    ) -> None:
+        """Commit the turn's reply persistence in ONE guarded transaction.
 
         Issue #487 review round 2 (MAJOR-1/MAJOR-2): the lifecycle guard's
-        write-first conversation-row claim, the preference-patch write, and
-        the reply persistence share a single transaction and therefore ONE
-        commit boundary. A reset/delete landing after the claim blocks on the
-        row lock until that commit — it can never leave a committed patch on
-        a closed conversation; one landing before the claim makes the claim
-        match no active row and the whole turn aborts with
-        :class:`ConversationClosedError`, nothing persisted.
+        write-first conversation-row claim and the reply persistence share a
+        single transaction and therefore ONE commit boundary. A reset/delete
+        landing after the claim blocks on the row lock until that commit; one
+        landing before the claim makes the claim match no active row and the
+        whole turn aborts with :class:`ConversationClosedError`, nothing
+        persisted. (The turn no longer writes preferences here — issue #466
+        review moved preference persistence to the user-driven apply
+        endpoint — so the reply is the only write domain left to serialize.)
 
         SQLite contention (MAJOR-2): the claim is write-first, so this
         transaction's first statement takes SQLite's writer reservation — no
         read→write upgrade can raise ``database is locked`` — and any
         residual lock contention with a concurrent writer is mapped to the
-        documented retryable 409 envelopes (:class:`ConversationClosedError`
-        for lifecycle writes, :class:`PreferenceStaleError` for the patch
-        write) instead of surfacing as a 500 ``invalid_output``.
+        documented retryable 409 ``conversation_closed`` envelope instead of
+        surfacing as a 500 ``invalid_output``.
         """
-        if patch is not None:
-            # Schema validation gates before any lock is taken, preserving the
-            # stable InvalidPreferencePatchError precedence.
-            try:
-                self._preference_service.validate_patch(patch)
-            except InvalidPreferencePatchError:
-                raise
-            except Exception as exc:  # defensive: port must raise typed error
-                raise InvalidPreferencePatchError(str(exc)) from exc
-            if expected_modified is None and _is_writer_port(self._preference_service):
-                # Fail closed: the baseline could not be captured at turn
-                # start, so applying the patch would silently disable the
-                # stale check the ticket exists to enforce. No-writer ports
-                # are the only exception (MAJOR-4).
-                logger.warning(
-                    "preference version baseline missing; aborting patch path fail-closed"
-                )
-                raise PreferenceVersionUnavailableError(
-                    "preference version could not be captured at turn start; "
-                    "patch rejected"
-                )
         # Lazy import keeps this module importable without Django configured;
         # every runtime path (including tests) runs under Django settings.
         from django.db import IntegrityError, transaction
 
-        changed = False
-        # The single guarded transaction exists to serialize multiple write
-        # domains (lifecycle claim + patch + reply). With neither a guard nor
-        # a reply hook there is nothing to serialize: the bare patch applies
-        # under the port's own transactional boundary (test doubles included).
-        if lifecycle_guard is None and persist_reply is None:
-            if patch is not None:
-                try:
-                    changed = self._apply_patch_with_version(
-                        patch, expected_modified, expected_revision
-                    )
-                except PreferenceStaleError:
-                    raise
-                except PreferenceVersionUnavailableError:
-                    raise
-                except Exception as exc:  # defensive: port must raise typed error
-                    raise InvalidPreferencePatchError(str(exc)) from exc
-            return patch, bool(changed)
         try:
             with transaction.atomic():
                 if lifecycle_guard is not None:
@@ -771,39 +759,17 @@ class JobSearchOrchestrator:
                                 "the guarded turn; retry"
                             ) from exc
                         raise
-                if patch is not None:
-                    try:
-                        changed = self._apply_patch_with_version(
-                            patch, expected_modified, expected_revision
-                        )
-                    except PreferenceStaleError:
-                        # Fail closed: a stale patch is never applied and
-                        # never retried silently inside the turn. The
-                        # transport maps this to a stable 409
-                        # ``preference_stale`` envelope; the user turn stays
-                        # retryable.
-                        raise
-                    except PreferenceVersionUnavailableError:
-                        # Fail-closed abort (MAJOR-4) propagates as its own
-                        # typed error, not as a malformed patch.
-                        raise
-                    except Exception as exc:  # defensive + contention mapping
-                        if is_database_locked(exc):
-                            raise PreferenceStaleError(
-                                "preference write contended with a concurrent "
-                                "writer; retry"
-                            ) from exc
-                        raise InvalidPreferencePatchError(str(exc)) from exc
                 if persist_reply is not None:
-                    # The reply joins the patch transaction (MAJOR-1): the
-                    # hook claims the conversation row (already held from the
-                    # guard claim), inserts the assistant message, and
-                    # re-verifies lifecycle state before the single commit.
+                    # The reply persists inside the guarded transaction
+                    # (MAJOR-1): the hook claims the conversation row
+                    # (already held from the guard claim), inserts the
+                    # assistant message, and re-verifies lifecycle state
+                    # before the single commit.
                     try:
                         persist_reply(
                             reply_text=reply_text,
                             results=results,
-                            preferences_changed=bool(changed),
+                            preferences_changed=False,
                         )
                     except ConversationClosedError:
                         raise
@@ -819,80 +785,21 @@ class JobSearchOrchestrator:
                         raise
         except ConversationClosedError:
             raise
-        except PreferenceStaleError:
-            raise
-        except PreferenceVersionUnavailableError:
-            raise
-        except InvalidPreferencePatchError:
-            raise
         except Exception as exc:  # defensive: port must raise typed error
             if is_database_locked(exc):
-                # Review round 3 (MAJOR): an ``OperationalError("database is
-                # locked")`` raised by the guarded transaction's own COMMIT
-                # lands here AFTER every inner guarded block has run and been
-                # mapped — the outer boundary bypasses the inner checks. The
-                # atomic block has already rolled back, so nothing persisted;
-                # map the residual contention to the documented retryable 409
-                # envelope instead of the 500 ``invalid_output`` path:
-                # ``conversation_closed`` when the guarded transaction claimed
-                # the conversation row (contention there is a lifecycle
-                # writer), else ``preference_stale`` for the patch write.
-                # Narrow by construction: only ``is_database_locked`` matches
-                # (SQLite "database is locked", MySQL lock-wait/deadlock);
-                # genuine validation errors and non-contention backend
-                # failures keep their existing typed paths.
-                if lifecycle_guard is not None or patch is None:
-                    raise ConversationClosedError(
-                        "turn commit contended with a concurrent writer; the "
-                        "turn rolled back and is retryable"
-                    ) from exc
-                raise PreferenceStaleError(
+                # An ``OperationalError("database is locked")`` raised by the
+                # guarded transaction's own COMMIT lands here AFTER every
+                # inner guarded block has run and been mapped — the outer
+                # boundary bypasses the inner checks. The atomic block has
+                # already rolled back, so nothing persisted; map the residual
+                # contention to the documented retryable 409 envelope instead
+                # of the 500 ``invalid_output`` path. Narrow by construction:
+                # only ``is_database_locked`` matches (SQLite "database is
+                # locked", MySQL lock-wait/deadlock); genuine validation
+                # errors and non-contention backend failures keep their
+                # existing typed paths.
+                raise ConversationClosedError(
                     "turn commit contended with a concurrent writer; the "
                     "turn rolled back and is retryable"
                 ) from exc
             raise InvalidPreferencePatchError(str(exc)) from exc
-        return patch, bool(changed)
-
-    def _apply_patch_with_version(
-        self, patch: dict[str, Any], expected_modified: Any, expected_revision: Any = None
-    ) -> bool:
-        """Call the port's ``apply_patch``, passing the versions when supported.
-
-        Fail closed (issue #487 review, MAJOR-4): a port whose ``apply_patch``
-        does not accept the ``expected_modified`` parameter is a legacy port.
-        A legacy port is only allowed when it demonstrably has no writer
-        (``writable = False``, e.g. the no-owner null service); for any writer
-        port the patch path aborts with
-        :class:`PreferenceVersionUnavailableError` instead of silently
-        dropping the version and disabling the stale check.
-
-        ``expected_revision`` (issue #466) is forwarded only to ports that
-        declare the parameter; legacy ports keep the timestamp behaviour.
-        """
-        import inspect
-
-        try:
-            params = inspect.signature(self._preference_service.apply_patch).parameters
-        except (TypeError, ValueError):  # pragma: no cover - builtins etc.
-            params = {}
-        has_var_keyword = any(
-            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
-        )
-        accepts_version = "expected_modified" in params or has_var_keyword
-        accepts_revision = "expected_revision" in params or has_var_keyword
-        if accepts_version:
-            if accepts_revision:
-                return self._preference_service.apply_patch(
-                    patch,
-                    expected_modified=expected_modified,
-                    expected_revision=expected_revision,
-                )
-            return self._preference_service.apply_patch(
-                patch, expected_modified=expected_modified
-            )
-        if not _is_writer_port(self._preference_service):
-            # Demonstrably no writer: the call is a documented no-op.
-            return self._preference_service.apply_patch(patch)
-        raise PreferenceVersionUnavailableError(
-            "preference port cannot enforce the version check; patch rejected"
-        )

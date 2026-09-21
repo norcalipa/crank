@@ -1117,7 +1117,7 @@ class TestDiffPatch:
         }]
 
     def test_build_undo_token_returns_none_for_empty_changes(self):
-        assert prefs.build_undo_token(7, []) is None
+        assert prefs.build_undo_token(7, None) is None
 
     def test_check_stale_revision_noops_when_expected_revision_is_none(self, user):
         prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
@@ -1400,7 +1400,7 @@ class TestUndo:
         }]
         assert result["undo"] == {
             "expected_revision": 1,
-            "patch": {"set": {"compensation.minimum_salary": None}},
+            "document": prefs.default_preferences(),
         }
         assert result["change_id"] == f"{user.pk}:1"
 
@@ -1457,14 +1457,244 @@ class TestUndo:
         applied = prefs.apply_patch_to_user(
             user, {"remove": {"priorities.comp": None}}
         )
-        # The token anchors at the parent map so it survives validate_patch.
-        assert applied["undo"]["patch"] == {
-            "set": {"priorities": {"comp": 0.9, "culture": 0.3}}
+        # The token captures the full pre-apply document (byte-identical
+        # restore, issue #466 review).
+        assert applied["undo"]["document"]["priorities"] == {
+            "comp": 0.9, "culture": 0.3,
         }
         prefs.undo_preference_change(user, applied["undo"])
         assert UserPreference.objects.get(user=user).preferences["priorities"] == {
             "comp": 0.9, "culture": 0.3,
         }
+
+
+@pytest.mark.django_db
+class TestExpectedRevisionValidation:
+    """Issue #466 review: a tampered/null/missing revision precondition must
+    never silently downgrade to the unchecked legacy path."""
+
+    def test_apply_rejects_bool_revision(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        with pytest.raises(InvalidValueError):
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "x"}}, expected_revision=True
+            )
+
+    def test_apply_rejects_string_and_negative_revision(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        for bad in ("1", -1, 1.5):
+            with pytest.raises(InvalidValueError):
+                prefs.apply_patch_to_user(
+                    user, {"set": {"notes": "x"}}, expected_revision=bad
+                )
+
+    def test_undo_rejects_null_or_bool_revision(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = applied["undo"]
+        for bad in (None, True, "1", -1):
+            with pytest.raises(AmbiguousPatchError):
+                prefs.undo_preference_change(
+                    user, dict(token, expected_revision=bad)
+                )
+        # A tampered token never followed the legacy no-precondition path.
+        assert UserPreference.objects.get(user=user).preferences["notes"] == "seed"
+
+    def test_undo_rejects_missing_or_malformed_document(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        with pytest.raises(AmbiguousPatchError):
+            prefs.undo_preference_change(user, {"expected_revision": 1})
+        with pytest.raises(AmbiguousPatchError):
+            prefs.undo_preference_change(
+                user, {"expected_revision": 1, "document": "not-a-dict"}
+            )
+
+    def test_undo_rejects_oversized_document(self, user):
+        """A token whose captured document exceeds the serialized-size
+        ceiling is rejected before any store access (issue #466 review)."""
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = dict(applied["undo"])
+        token["document"] = dict(token["document"], notes="x" * (65 * 1024))
+        with pytest.raises(AmbiguousPatchError):
+            prefs.undo_preference_change(user, token)
+
+    def test_undo_rejects_non_serializable_document(self, user):
+        """A token whose document cannot be JSON-serialized at all is
+        rejected, never reaching the row lock (issue #466 review)."""
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = dict(applied["undo"])
+        token["document"] = dict(token["document"], notes=object())
+        with pytest.raises(AmbiguousPatchError):
+            prefs.undo_preference_change(user, token)
+
+    def test_undo_rejects_corrupt_known_value(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = dict(applied["undo"])
+        document = copy.deepcopy(token["document"])
+        document["culture"] = "not-a-list"
+        with pytest.raises(InvalidValueError):
+            prefs.undo_preference_change(
+                user, dict(token, document=document)
+            )
+
+    def test_undo_rejects_non_dict_known_subtree(self, user):
+        """A tampered token whose known subtree is not a JSON object is
+        rejected by the stored-shape check (issue #466 review)."""
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = dict(applied["undo"])
+        document = copy.deepcopy(token["document"])
+        document["compensation"] = "not-a-dict"
+        with pytest.raises(InvalidValueError):
+            prefs.undo_preference_change(
+                user, dict(token, document=document)
+            )
+
+    def test_undo_after_row_deleted_is_stale_not_recreate(self, user):
+        """An undo landing after the preference row was deleted fails closed
+        with StalePreferenceError (current_revision 0) instead of silently
+        re-creating deleted state (issue #466 review)."""
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = applied["undo"]
+        UserPreference.objects.filter(user=user).delete()
+        with pytest.raises(prefs.StalePreferenceError) as exc_info:
+            prefs.undo_preference_change(user, token)
+        assert exc_info.value.current_revision == 0
+        assert not UserPreference.objects.filter(user=user).exists()
+
+
+@pytest.mark.django_db
+class TestRevisionLifecycle:
+    """Issue #466 review: every committed canonical document change advances
+    the monotonic revision, so an old undo token can never overwrite a reset
+    or a delete/recreate."""
+
+    def test_reset_advances_revision_and_invalidates_undo(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = applied["undo"]
+        result = prefs.reset(user)
+        assert result["revision"] == 2
+        with pytest.raises(StalePreferenceError) as excinfo:
+            prefs.undo_preference_change(user, token)
+        assert excinfo.value.current_revision == 2
+        assert UserPreference.objects.get(user=user).preferences["notes"] == ""
+
+    def test_idempotent_reset_does_not_advance_revision(self, user):
+        prefs.reset(user)
+        pref = UserPreference.objects.get(user=user)
+        assert pref.revision == 0
+
+    def test_delete_recreate_continues_revision_lineage(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = applied["undo"]  # expected_revision == 1
+        prefs.delete_user_preference(user)
+        # Re-create on next interaction: the row must NOT restart at 0, or
+        # the old token could match once the new row climbs back to 1.
+        prefs.read(user)
+        pref = UserPreference.objects.get(user=user)
+        assert pref.revision == 2  # delete's floor (1 + 1), not a restart
+        # The old token's precondition never matches the re-created lineage.
+        with pytest.raises(StalePreferenceError):
+            prefs.undo_preference_change(user, token)
+        # A fresh apply advances from the floor.
+        result = prefs.apply_patch_to_user(user, {"set": {"notes": "new"}})
+        assert result["revision"] == 3
+
+    def test_first_interaction_still_starts_at_zero(self, user):
+        prefs.read(user)
+        assert UserPreference.objects.get(user=user).revision == 0
+
+
+@pytest.mark.django_db
+class TestUndoByteIdenticalShapes:
+    """Issue #466 review: undo restores the prior document byte-identically
+    across every supported stored shape, and additive unknown nested keys
+    ride along through propose/apply/undo untouched."""
+
+    def _store_document(self, user, document):
+        pref = UserPreference.objects.get(user=user)
+        pref.preferences = document
+        pref.save(update_fields=["preferences"])
+        return pref
+
+    def test_undo_restores_pre_v3_shape_byte_identically(self, user):
+        prefs.read(user)
+        # A pre-v3 stored document: no roles/importance/scope and no nested
+        # v3 keys (e.g. work_location.office_days_exact).
+        legacy = {
+            "compensation": {
+                "minimum_salary": 150000,
+                "currency": "USD",
+                "equity_minimum_percent": None,
+                "require_public_company": None,
+                "basis": "base",
+                "period": "year",
+            },
+            "culture": ["remote-first"],
+            "work_location": {"modes": ["remote"], "countries": [],
+                              "require_onsite": None, "max_in_office_days": None},
+            "geography": {"regions": [], "remote_friendly": None},
+            "industry": [],
+            "funding_stage": [],
+            "vesting": {"max_cliff_months": None, "max_vesting_months": None,
+                        "prefer_accelerated": None},
+            "exclusions": {"companies": [], "titles": [], "industries": [],
+                           "locations": []},
+            "priorities": {},
+            "notes": "legacy note",
+        }
+        self._store_document(user, legacy)
+        # A notes-only apply backfills the v3 keys on the stored document.
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "edited"}})
+        row = UserPreference.objects.get(user=user)
+        assert "roles" in row.preferences  # backfilled by apply_patch
+        # Undo restores the exact pre-v3 shape — no backfilled keys remain.
+        restored = prefs.undo_preference_change(user, applied["undo"])
+        assert restored["changed"] is True
+        row.refresh_from_db()
+        assert row.preferences == legacy
+
+    def test_subtree_set_preserves_unknown_nested_keys(self, user):
+        prefs.read(user)
+        document = prefs.default_preferences()
+        document["compensation"]["future_additive"] = {"nested": True}
+        self._store_document(user, document)
+        new_comp = copy.deepcopy(document["compensation"])
+        del new_comp["future_additive"]
+        new_comp["minimum_salary"] = 200000
+        applied = prefs.apply_patch_to_user(
+            user, {"set": {"compensation": new_comp}}
+        )
+        row = UserPreference.objects.get(user=user)
+        # The subtree replace preserved the additive nested key.
+        assert row.preferences["compensation"]["future_additive"] == {"nested": True}
+        assert row.preferences["compensation"]["minimum_salary"] == 200000
+        # Undo restores the prior document byte-identically, additive key and all.
+        prefs.undo_preference_change(user, applied["undo"])
+        row.refresh_from_db()
+        assert row.preferences == document
+
+    def test_undo_restores_document_with_unknown_top_level_keys(self, user):
+        prefs.read(user)
+        document = prefs.default_preferences()
+        document["future_section"] = {"anything": [1, 2, 3]}
+        self._store_document(user, document)
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "edited"}})
+        prefs.undo_preference_change(user, applied["undo"])
+        row = UserPreference.objects.get(user=user)
+        assert row.preferences == document
+
+    def test_undo_noop_when_document_already_matches(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = applied["undo"]
+        # Manually restore the document without advancing the revision, so
+        # the undo precondition matches but nothing differs.
+        pref = UserPreference.objects.get(user=user)
+        pref.preferences = copy.deepcopy(token["document"])
+        pref.save(update_fields=["preferences"])
+        audits = UserPreferenceAudit.objects.count()
+        result = prefs.undo_preference_change(user, token)
+        assert result["changed"] is False
+        assert result["revision"] == 1
+        assert UserPreferenceAudit.objects.count() == audits
 
 
 @pytest.mark.django_db(transaction=True)
