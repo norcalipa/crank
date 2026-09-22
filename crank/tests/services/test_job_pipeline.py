@@ -789,7 +789,7 @@ class RetentionSweepTests(TestCase):
     def test_pipeline_threads_closure_and_sweep_counts(self):
         source = self.source("counts", expiry_days=10, deletion_days=40)
         stale = self._listing(source, "stale", seen_days=30)
-        result = JobIngestResult(ingested=1, absent_closed=2)
+        result = JobIngestResult(ingested=1, absent_closed=2, complete_snapshot=True)
         with patch(
             "crank.services.job_pipeline.ingest_job_source",
             return_value=ingestion(result),
@@ -802,6 +802,79 @@ class RetentionSweepTests(TestCase):
         self.assertEqual(counts["listings_expired"], 1)
         stale.refresh_from_db()
         self.assertEqual(stale.status, JobListing.Status.EXPIRED)
+
+    def test_sweep_never_deletes_rows_that_entered_as_active(self):
+        """Issue #469 review CRITICAL: a row that entered the sweep active
+        is expired, never deleted in the same run, even when its
+        last_seen_at is already past the deletion window."""
+        from crank.services.job_pipeline import _retention_sweep
+
+        source = self.source("active-old", expiry_days=10, deletion_days=40)
+        active_old = self._listing(source, "active-old", seen_days=50)
+        expired, deleted = _retention_sweep(source)
+        self.assertEqual((expired, deleted), (1, 0))
+        active_old.refresh_from_db()
+        self.assertEqual(active_old.status, JobListing.Status.EXPIRED)
+
+    def test_failed_fetch_runs_no_retention(self):
+        """Issue #469 review CRITICAL: a 429/5xx/timeout fetch (errors=1)
+        neither expires nor deletes rows."""
+        source = self.source("failed-retention", expiry_days=10, deletion_days=40)
+        stale = self._listing(source, "stale", seen_days=30)
+        old_terminal = self._listing(
+            source, "old-term", status=JobListing.Status.CLOSED, seen_days=50
+        )
+        result = JobIngestResult(errors=1)
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(result),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings", return_value=(0, 0)
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            with self.assertRaises(JobPipelineError):
+                run_job_pipeline(self.run)
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, JobListing.Status.ACTIVE)
+        self.assertTrue(JobListing.all_objects.filter(pk=old_terminal.pk).exists())
+
+    def test_incomplete_snapshot_runs_no_retention(self):
+        source = self.source("incomplete-retention", expiry_days=10, deletion_days=40)
+        stale = self._listing(source, "stale", seen_days=30)
+        result = JobIngestResult(ingested=1, complete_snapshot=False)
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(result),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings", return_value=(0, 0)
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            counts = run_job_pipeline(self.run)
+        self.assertEqual(counts["listings_expired"], 0)
+        self.assertEqual(counts["listings_deleted"], 0)
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, JobListing.Status.ACTIVE)
+
+    def test_absent_closure_records_publication_event(self):
+        """Issue #469 review MAJOR: a lifecycle-only write (complete empty
+        snapshot closing every row) still emits the publication event that
+        invalidates organization-scoped caches."""
+        source = self.source("closure-pub")
+        employer = Organization.objects.create(
+            name="Closure Co", url="https://closure.test"
+        )
+        listing = self._listing(source, "ext-closure")
+        listing.organization = employer
+        listing.save(update_fields=["organization"])
+        result = JobIngestResult(absent_closed=1, complete_snapshot=True)
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(result),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings", return_value=(0, 0)
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            run_job_pipeline(self.run)
+        events = PublicationEvent.objects.all()
+        self.assertEqual(events.count(), 1)
+        self.assertEqual(events.get().payload["organization_ids"], [employer.id])
 
     def test_seen_and_dismissed_survive_close_and_reactivation(self):
         """AC-13: recomputed matches preserve user seen/dismissed state."""

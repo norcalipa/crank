@@ -237,6 +237,21 @@ def _retention_days(source: Any) -> tuple[int, int]:
     return expiry, deletion
 
 
+def _proven_complete_snapshot(result: JobIngestResult) -> bool:
+    """Whether a fetch constitutes a proven, complete inventory snapshot.
+
+    Retention and absence-based closure are both gated on this (issue #469
+    review): a failed, incomplete, or truncated fetch must never expire or
+    delete rows, or it would read a partial page as "everything absent" and
+    destroy accepted inventory and match history.
+    """
+    return bool(
+        getattr(result, "complete_snapshot", False)
+        and not getattr(result, "truncated", False)
+        and not getattr(result, "errors", 0)
+    )
+
+
 def _retention_sweep(source: Any, *, limit: int = RETENTION_SWEEP_LIMIT) -> tuple[int, int]:
     """Expire stale active listings and delete aged terminal ones (issue #469).
 
@@ -263,7 +278,7 @@ def _retention_sweep(source: Any, *, limit: int = RETENTION_SWEEP_LIMIT) -> tupl
         source=source,
         status__in=[JobListing.Status.CLOSED, JobListing.Status.EXPIRED],
         last_seen_at__lt=now - timedelta(days=deletion_days),
-    ).order_by("pk")[:limit]
+    ).exclude(pk__in=expired_ids).order_by("pk")[:limit]
     deleted_count = 0
     for listing in terminal:
         # Row-by-row delete so JobMatch/UnresolvedEmployer cascades fire.
@@ -382,8 +397,21 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                 if skipped:
                     counts["sources_skipped"] += 1
                     continue
-                expired_count, deleted_count = _retention_sweep(source)
-                if int(result.ingested) or int(result.updated) or resolved or unresolved:
+                if _proven_complete_snapshot(result):
+                    expired_count, deleted_count = _retention_sweep(source)
+                else:
+                    # A failed, incomplete, or truncated fetch must never
+                    # expire or delete rows (issue #469 review).
+                    expired_count = deleted_count = 0
+                if (
+                    int(result.ingested)
+                    or int(result.updated)
+                    or resolved
+                    or unresolved
+                    or int(result.absent_closed)
+                    or expired_count
+                    or deleted_count
+                ):
                     _record_source_publication(
                         source, result, resolved, unresolved, before_org_ids
                     )

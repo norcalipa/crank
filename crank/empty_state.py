@@ -452,7 +452,7 @@ def derive_state(
             title="Tell us what you're looking for",
             message=(
                 "There are active job listings, but you haven't shared your "
-                "preferences yet. Chat with the assistant above to set your "
+                "preferences yet. Chat with the assistant to set your "
                 "criteria—compensation, location, culture, and more."
             ),
             actions=["chat", "help"],

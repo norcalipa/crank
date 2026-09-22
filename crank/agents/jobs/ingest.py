@@ -48,22 +48,33 @@ def _safe_error(exc: Exception) -> str:
 
 # Low-cardinality absence-closure skip reasons (issue #469). Closure is
 # default-deny: it runs only when the fetch succeeded, the adapter asserts a
-# complete, untruncated snapshot, and the operator has not disabled it.
-SKIP_INCOMPLETE_SNAPSHOT = "incomplete_snapshot"
+# complete, untruncated, unfiltered snapshot, and the operator has not
+# disabled it.
 SKIP_TRUNCATED = "truncated"
+SKIP_FETCH_ERROR = "fetch_error"
 SKIP_LISTING_ERRORS = "listing_errors"
+SKIP_INCOMPLETE_SNAPSHOT = "incomplete_snapshot"
+SKIP_FILTERED_QUERY = "filtered_query"
 SKIP_DISABLED_BY_CATALOG = "disabled_by_catalog"
 
 
-def _closure_decision(source: Any, fetched: Any, errors: int) -> tuple[bool, str]:
-    """Return ``(may_close, skipped_reason)`` for absence-based closure."""
+def _closure_decision(source: Any, fetched: Any, query: JobSourceQuery, errors: int) -> tuple[bool, str]:
+    """Return ``(may_close, skipped_reason)`` for absence-based closure.
+
+    Order matters (issue #469 review): truncation and listing errors are
+    reported before the generic incomplete-snapshot reason, and a filtered
+    query can never drive source-wide absence closure because a complete
+    filtered result is completeness for that filter, not the whole source.
+    """
     catalog_metadata = getattr(source, "catalog_metadata", None) or {}
-    if not bool(getattr(fetched, "complete_snapshot", False)):
-        return False, SKIP_INCOMPLETE_SNAPSHOT
     if bool(getattr(fetched, "truncated", False)):
         return False, SKIP_TRUNCATED
     if errors:
         return False, SKIP_LISTING_ERRORS
+    if not bool(getattr(fetched, "complete_snapshot", False)):
+        return False, SKIP_INCOMPLETE_SNAPSHOT
+    if bool(getattr(query, "keyword", "") or getattr(query, "location", "")):
+        return False, SKIP_FILTERED_QUERY
     if catalog_metadata.get(CATALOG_SUPPORTS_COMPLETE_SNAPSHOT_KEY) is False:
         return False, SKIP_DISABLED_BY_CATALOG
     return True, ""
@@ -84,7 +95,11 @@ def ingest_jobs(source: Any, query: JobSourceQuery, *, adapter=None) -> JobInges
         adapter = adapter or build_job_adapter(source)
         fetched = adapter.fetch(query)
     except Exception as exc:
-        return JobIngestResult(errors=1, error_summary=_safe_error(exc))
+        return JobIngestResult(
+            errors=1,
+            error_summary=_safe_error(exc),
+            closure_skipped_reason=SKIP_FETCH_ERROR,
+        )
 
     ingested = updated = closed = expired = errors = 0
     summaries: list[str] = []
@@ -110,7 +125,7 @@ def ingest_jobs(source: Any, query: JobSourceQuery, *, adapter=None) -> JobInges
             errors += 1
             summaries.append(_safe_error(exc))
 
-    may_close, skip_reason = _closure_decision(source, fetched, errors)
+    may_close, skip_reason = _closure_decision(source, fetched, query, errors)
     absent_closed = (
         JobListing.all_objects.close_absent(source, seen_ids) if may_close else 0
     )

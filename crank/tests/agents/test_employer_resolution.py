@@ -556,7 +556,7 @@ class OpenUnresolvedInvariantTests(TestCase):
                     "WHERE resolved = 0"
                 )
 
-    def test_bounded_exact_name_lookup_matches_full_scan(self):
+    def test_exact_name_lookup_matches_full_scan(self):
         from crank.agents.jobs.employer import _organizations_for_exact_name
 
         org = make_org(name="Café  Müller")
@@ -564,8 +564,24 @@ class OpenUnresolvedInvariantTests(TestCase):
             with self.subTest(variant=variant):
                 assert _organizations_for_exact_name(variant) == [org]
 
-    def test_bounded_exact_name_lookup_unicode_fallback(self):
+    def test_exact_name_lookup_unicode_fallback(self):
         from crank.agents.jobs.employer import _organizations_for_exact_name
 
         org = make_org(name="ＡＣＭＥ")  # fullwidth letters need NFKC folding
         assert _organizations_for_exact_name("acme") == [org]
+
+    def test_exact_name_lookup_preserves_whitespace_variant_ambiguity(self):
+        """Issue #469 review: two organizations that differ only by
+        whitespace must both be returned so the resolver reports an
+        ambiguity instead of mis-attributing to the case-only match."""
+        from crank.agents.jobs.employer import _organizations_for_exact_name
+        from crank.models.organization import Organization as OrgModel
+
+        OrgModel.objects.create(name="Acme", public=True)
+        OrgModel.objects.create(name=" Acme ", public=True)
+        candidates = _organizations_for_exact_name("Acme")
+        self.assertEqual(len(candidates), 2)
+        listing = make_listing(self.source, employer_name="Acme")
+        result = resolve_employer(listing, persist=False)
+        self.assertFalse(result.resolved)
+        self.assertEqual(result.reason, UnresolvedEmployer.Reason.AMBIGUOUS)

@@ -184,10 +184,21 @@ class JobListingQuerySet(models.QuerySet):
                         raise
 
             incoming_is_newer = observed_at >= listing.last_seen_at
-            if listing.status in {
+            # Terminal status is computed independently of freshness
+            # (issue #469 review): an explicit ``closed``/``expired``
+            # observation is honoured immediately even when the observation
+            # is out of order, while only content fields stay freshness-gated.
+            # The no-resurrection rule still prevents a later ``active``
+            # observation from reviving a terminal row.
+            if raw.status in {
                 self.model.Status.CLOSED,
                 self.model.Status.EXPIRED,
-            } and raw.status == self.model.Status.ACTIVE:
+            }:
+                status = raw.status
+            elif listing.status in {
+                self.model.Status.CLOSED,
+                self.model.Status.EXPIRED,
+            }:
                 # Terminal states are explicit and ingestion must never
                 # resurrect them, even if a source reports a newer active row.
                 status = listing.status

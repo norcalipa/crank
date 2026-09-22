@@ -252,6 +252,51 @@ class AbsenceClosureTests(TestCase):
         assert result.absent_closed == 0
         assert result.closure_skipped_reason == "truncated"
 
+    def test_filtered_query_skips_source_wide_closure(self):
+        """Issue #469 review: a complete filtered result is completeness
+        for that filter, not the whole source, so a keyword/location query
+        must never close rows outside the filter."""
+        source = make_source()
+        ingest_jobs(
+            source, JobSourceQuery(), adapter=StubAdapter([raw(), raw(external_id="fixture-other")])
+        )
+        result = ingest_jobs(
+            source,
+            JobSourceQuery(keyword="engineer"),
+            adapter=CompleteStubAdapter([raw()], complete=True),
+        )
+        assert result.absent_closed == 0
+        assert result.closure_skipped_reason == "filtered_query"
+        assert JobListing.all_objects.filter(
+            source=source, status=JobListing.Status.ACTIVE
+        ).count() == 2
+
+    def test_fetch_error_sets_closure_skip_reason(self):
+        """Issue #469 review: a fetch exception reports a low-cardinality
+        skip reason instead of an empty string."""
+        source = make_source()
+        result = ingest_jobs(
+            source,
+            JobSourceQuery(),
+            adapter=StubAdapter(error=SourceTimeoutError("timeout")),
+        )
+        assert result.errors == 1
+        assert result.closure_skipped_reason == "fetch_error"
+
+    def test_truncated_reports_truncated_not_incomplete(self):
+        """Issue #469 review: truncation is reported before the generic
+        incomplete-snapshot reason, even though a truncated adapter also
+        leaves complete_snapshot False."""
+        source = make_source()
+        ingest_jobs(source, JobSourceQuery(), adapter=StubAdapter([raw()]))
+        result = ingest_jobs(
+            source,
+            JobSourceQuery(),
+            adapter=CompleteStubAdapter([], complete=False, truncated=True),
+        )
+        assert result.absent_closed == 0
+        assert result.closure_skipped_reason == "truncated"
+
     def test_catalog_kill_switch_disables_closure(self):
         source = make_source()
         source.catalog_metadata = {"supports_complete_snapshot": False}

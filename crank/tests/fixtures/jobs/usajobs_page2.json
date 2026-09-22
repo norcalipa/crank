@@ -1,6 +1,7 @@
 {
   "SearchResult": {
-    "SearchResultCount": 3,
+    "SearchResultCount": 1,
+    "SearchResultCountAll": 2,
     "SearchResultItems": [
       {
         "MatchedObjectId": "fixture-1002",

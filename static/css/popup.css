@@ -932,19 +932,24 @@ body.app-nav-drawer-open {
 /* The chat card is a dark surface; the default danger red is hard to read
    on it, so use a lighter treatment with sufficient contrast (icon + text). */
 #job-search-chat .btn-outline-danger {
-    color: #ff9ba3;
-    border-color: #ff9ba3;
+    color: #ffb3ba;
+    border-color: #ffb3ba;
 }
 
 #job-search-chat .btn-outline-danger:hover,
 #job-search-chat .btn-outline-danger:focus-visible {
     color: #212529;
-    background-color: #ff9ba3;
+    background-color: #ffb3ba;
 }
 
+/* Genuinely disabled (issue #469 round-2 critique): a neutral, clearly-off
+   treatment so a no-conversation Delete never reads as an enabled danger
+   action. The enabled state above keeps >=4.5:1 contrast on the dark card. */
 #job-search-chat .btn-outline-danger:disabled {
-    color: rgba(255, 155, 163, .65);
-    border-color: rgba(255, 155, 163, .65);
+    color: #8b95a7;
+    border-color: #4b5563;
+    background: transparent;
+    opacity: 1;
 }
 
 /* Assistant availability notice (issue #457): a short scannable state label
@@ -1119,6 +1124,23 @@ body.app-nav-drawer-open {
 #job-match-panel .btn {
     min-height: 44px;
     min-width: 44px;
+}
+
+/* Issue #469 round-2 critique: match-name links were a single text line
+   relying on cyan color alone. Give each name a >=44px hit target and an
+   underline affordance so interactivity never depends on color. */
+#job-match-panel .job-match-name {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    overflow-wrap: anywhere;
+}
+
+#job-match-panel .job-match-name:hover,
+#job-match-panel .job-match-name:focus-visible {
+    text-decoration-thickness: 2px;
 }
 
 @media (max-width: 390px) {
@@ -1780,21 +1802,30 @@ body.app-nav-drawer-open {
     }
 }
 
-/* Collapsed rail: whenever the panel is docked below 1440px the nav rail
-   shrinks to its icon column so 1280px keeps a >=640px content box. */
+/* Collapsed rail: whenever the panel is docked OR drawn below 1440px the
+   nav rail shrinks to its icon column so the workspace keeps a usable
+   content box beside the panel (issue #469 round-2 critique: the drawer band
+   left the rail expanded, so a 320px drawer overlapped nearly all of the
+   content at 768-1279px). */
 @media (min-width: 768px) and (max-width: 1439.98px) {
-    body.assistant-docked {
+    body.assistant-docked,
+    body.assistant-drawer {
         --app-rail-width: 72px;
     }
 
-    body.assistant-docked .app-nav-rail {
+    body.assistant-docked .app-nav-rail,
+    body.assistant-drawer .app-nav-rail {
         width: 72px;
     }
 
     body.assistant-docked .app-nav-label,
     body.assistant-docked .app-nav-brand-text,
     body.assistant-docked .app-nav-user span,
-    body.assistant-docked .app-nav-logout-label {
+    body.assistant-docked .app-nav-logout-label,
+    body.assistant-drawer .app-nav-label,
+    body.assistant-drawer .app-nav-brand-text,
+    body.assistant-drawer .app-nav-user span,
+    body.assistant-drawer .app-nav-logout-label {
         position: absolute;
         width: 1px;
         height: 1px;
@@ -1806,7 +1837,10 @@ body.app-nav-drawer-open {
 
     body.assistant-docked .app-nav-link,
     body.assistant-docked .app-nav-brand,
-    body.assistant-docked .app-nav-user {
+    body.assistant-docked .app-nav-user,
+    body.assistant-drawer .app-nav-link,
+    body.assistant-drawer .app-nav-brand,
+    body.assistant-drawer .app-nav-user {
         justify-content: center;
         gap: 0;
     }
@@ -1835,6 +1869,15 @@ body.app-nav-drawer-open {
     .assistant-panel--drawer {
         width: clamp(320px, 34vw, 360px);
         box-shadow: -8px 0 24px rgba(15, 23, 42, .40);
+    }
+
+    /* Reserve the drawer's width in the main region (issue #469 round-2
+       critique): without this the fixed drawer overlapped and occluded the
+       match card's title, subtitle, listings, metadata and scores at
+       768-1279px. */
+    body.assistant-drawer .app-content,
+    body.assistant-drawer .app-messages {
+        max-width: calc(100vw - var(--app-rail-width) - clamp(320px, 34vw, 360px));
     }
 }
 
@@ -1867,6 +1910,15 @@ body.app-nav-drawer-open {
         position: fixed;
         inset: 0;
         width: 100%;
+        /* Round-2 critique: contain the sheet so the underlying match-list
+           content never bleeds through and its scroll never chains into the
+           document. */
+        overflow: hidden;
+        overscroll-behavior: contain;
+    }
+
+    .assistant-panel--sheet .assistant-panel-body {
+        overscroll-behavior: contain;
     }
 
     /* Narrow-sheet header: trim side padding so the title and controls stop

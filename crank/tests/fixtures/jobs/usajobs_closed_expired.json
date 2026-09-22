@@ -1,6 +1,7 @@
 {
   "SearchResult": {
     "SearchResultCount": 2,
+    "SearchResultCountAll": 2,
     "SearchResultItems": [
       {
         "MatchedObjectId": "fixture-closed",

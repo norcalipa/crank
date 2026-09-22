@@ -279,7 +279,7 @@ describe('JobSearchChat', () => {
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-live', 'polite');
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-busy', 'false');
             expect(screen.getByTestId('empty-history')).toBeInTheDocument();
-            expect(screen.getByTestId('empty-history')).toHaveTextContent(/matches are shown in the panel above/i);
+            expect(screen.getByTestId('empty-history')).toHaveTextContent(/matches are shown in the Job Matches panel/i);
             // Prominent primary next action (visual review #472 round 1, item 11).
             const cta = screen.getByTestId('empty-history-cta');
             expect(cta).toHaveClass('btn', 'btn-primary');

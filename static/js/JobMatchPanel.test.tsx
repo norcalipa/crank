@@ -704,7 +704,7 @@ describe('JobMatchPanel round-2 visual fixes (contrast + icons)', () => {
         expect(refresh).toHaveAttribute('aria-label', 'Refresh match status');
     });
 
-    test('empty states render a visible inline status glyph', async () => {
+    test('empty state renders as a plain block, not a list item', async () => {
         await renderPanel('no_matches', {
             statusOverrides: {
                 title: 'No matches',
@@ -713,9 +713,11 @@ describe('JobMatchPanel round-2 visual fixes (contrast + icons)', () => {
             },
         });
         const empty = screen.getByTestId('empty-state-no_matches');
-        const glyph = empty.querySelector('svg[data-icon]');
-        expect(glyph).not.toBeNull();
-        expect(glyph?.getAttribute('data-icon')).toBe('search');
+        // Round-2 critique: a single-item message is a plain block — no
+        // leading list-bullet glyph and no indent.
+        expect(empty.querySelector('svg[data-icon]')).toBeNull();
+        expect(empty).toHaveTextContent('No matches');
+        expect(empty).toHaveTextContent('Test');
     });
 });
 

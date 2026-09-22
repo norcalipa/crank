@@ -239,7 +239,10 @@ class JobListingModelTests(TestCase):
         listing = JobListing.ingest(source, observed)
         self.assertEqual(listing.status, JobListing.Status.CLOSED)
 
-    def test_ingest_keeps_state_for_stale_observation(self):
+    def test_stale_observation_honors_terminal_but_not_content(self):
+        """An explicit terminal status is honoured immediately (AC-10) even
+        when the observation is out of order, while content fields remain
+        freshness-gated (AC-3)."""
         source = make_source()
         current = raw(status=JobListing.Status.ACTIVE)
         listing = JobListing.ingest(source, current)
@@ -250,7 +253,10 @@ class JobListingModelTests(TestCase):
             last_seen_at=current.last_seen_at - timedelta(hours=1),
         )
         changed = JobListing.ingest(source, stale)
-        self.assertEqual(changed.status, JobListing.Status.ACTIVE)
+        self.assertEqual(changed.status, JobListing.Status.CLOSED)
+        # Content is freshness-gated: the stale title must not regress the
+        # stored value.
+        self.assertEqual(changed.title, "Senior Python Developer")
 
     def test_ingest_reconciles_concurrent_insert(self):
         source = make_source()

@@ -53,24 +53,19 @@ def _organizations_for_alias(kind: str, value: str) -> list[Organization]:
     return [by_id[key] for key in sorted(by_id)]
 
 
-# Bound for the fallback exact-name scan below: an organization table larger
-# than this is already pathological for the deterministic resolver, and the
-# bound keeps a misconfigured deployment from scanning unbounded rows.
-_EXACT_NAME_SCAN_LIMIT = 1000
-
-
+# The deterministic resolver scans the full organization table and normalizes
+# in Python, so Unicode/whitespace/case variants share identical semantics on
+# every supported database backend. A case-insensitive shortlist cannot be
+# authoritative: the database collation does not apply ``normalize_employer_name``
+# (NFKC + whitespace collapse + casefold), so it would miss normalization-
+# equivalent candidates and turn an ambiguity into a trusted mis-attribution.
 def _organizations_for_exact_name(value: str) -> list[Organization]:
     wanted = normalize_employer_name(value)
-    # Organization names are operator-controlled but may differ only by case;
-    # normalize in Python so Unicode and whitespace have identical semantics on
-    # every supported database backend. The fast path lets the database narrow
-    # candidates case-insensitively instead of scanning the whole table; the
-    # bounded fallback preserves Unicode/whitespace parity when the collation
-    # cannot (issue #469).
-    shortlist = list(Organization.objects.filter(name__iexact=value).order_by("pk"))
-    if not shortlist:
-        shortlist = list(Organization.objects.all().order_by("pk")[:_EXACT_NAME_SCAN_LIMIT])
-    return [org for org in shortlist if normalize_employer_name(org.name) == wanted]
+    return [
+        org
+        for org in Organization.objects.all().order_by("pk")
+        if normalize_employer_name(org.name) == wanted
+    ]
 
 
 def _resolve_candidates(

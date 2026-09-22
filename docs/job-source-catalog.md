@@ -171,10 +171,14 @@ Adapters declare fetch completeness on `JobSourceResult`:
   (`max_pages`/`max_listings`) before the source reported its end.
 
 Absence-based closure fires **only** when `complete_snapshot=True`,
-`truncated=False`, no listing errors occurred, and the operator kill switch
-is not `false`. A failed fetch returns zero listings with
+`truncated=False`, no listing errors occurred, the query is unfiltered
+(no `keyword`/`location`, since a complete filtered result is completeness
+for that filter, not the whole source), and the operator kill switch is not
+`false`. A failed fetch returns zero listings with
 `complete_snapshot=False`, so a 429/5xx/timeout can never close a source's
-inventory.
+inventory. Retention (expiry/deletion) is gated on the same proven snapshot
+and a row that entered a sweep `active` is expired, never deleted, in that
+run.
 
 ### `JobListing.source_metadata` reserved keys
 
@@ -186,6 +190,14 @@ only, never raw response bodies:
 - `scope` — `{"countries": [...], "role_families": [...]}`, bounded lists of
   short normalized strings; absent means unscoped. Malformed values are
   dropped.
+
+Emission (issue #469): the USAJOBS adapter emits `scope` from the documented
+`PositionLocation[].CountryCode` (countries) and `JobCategory[].Code`
+(role_families) fields. `compensation_basis` is not yet derivable from either
+registered adapter's payload — USAJOBS has no base/total field and Firecrawl's
+extraction schema carries no basis — and Firecrawl emits neither key because
+its schema has no geography/category fields, so both remain absent until a
+source that reports them is onboarded (recorded plan deviation).
 
 ## 7. Change log
 

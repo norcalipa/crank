@@ -111,7 +111,7 @@ const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps
                     {/* Wrapper id preserves the popup.css rules and Django e2e
                         selectors that key off #job-search-chat (issue #472 AC-11). */}
                     <div id="job-search-chat">
-                        <LazyJobSearchChat {...(authProps ?? {})}/>
+                        <LazyJobSearchChat {...(authProps ?? {})} workspaceMode={mode}/>
                     </div>
                 </React.Suspense>
             </div>

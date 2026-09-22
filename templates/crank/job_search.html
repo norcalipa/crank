@@ -47,13 +47,15 @@
                 <div id="job-match-panel"
                      data-authenticated="{% if visitor_state == 'authenticated' %}true{% else %}false{% endif %}"
                      data-sign-in-url="{{ sign_in_url }}"></div>
-                {# The shared workspace host in _assistant_workspace.html carries
-                   the account discriminator (`data-account-key`, issue #465) for
-                   this uncached response: JobSearchChat compares it against
-                   `crank:last-account` synchronously, before any effect reads a
-                   stored draft. Do NOT re-add a `#job-search-chat` div here — the
-                   workspace renders the live chat mount and the id must stay
-                   unique (issue #472 AC-11). #}
+                {% comment %}
+                The shared workspace host in _assistant_workspace.html carries
+                the account discriminator (`data-account-key`, issue #465) for
+                this uncached response: JobSearchChat compares it against
+                `crank:last-account` synchronously, before any effect reads a
+                stored draft. Do NOT re-add a `#job-search-chat` div here — the
+                workspace renders the live chat mount and the id must stay
+                unique (issue #472 AC-11).
+                {% endcomment %}
             </div>
         </div>
         <noscript>

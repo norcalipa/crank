@@ -87,6 +87,38 @@ def _date(value: Any, field: str) -> datetime | None:
     return parsed
 
 
+def _scope(descriptor: Mapping[str, Any]) -> dict[str, list[str]]:
+    """Map USAJOBS geography/category fields into the reserved ``scope`` key.
+
+    ``scope`` is the reserved ``source_metadata`` contract (issue #469); the
+    adapter emits it from the documented ``PositionLocation[].CountryCode``
+    and ``JobCategory[].Code`` fields. Values are deduplicated short codes,
+    further bounded by ``RawJobListing``'s reserved-metadata normalizer.
+    """
+    countries: list[str] = []
+    locations = descriptor.get("PositionLocation", [])
+    if isinstance(locations, list):
+        for location in locations:
+            if isinstance(location, Mapping):
+                code = location.get("CountryCode")
+                if isinstance(code, str) and code.strip() and code.strip() not in countries:
+                    countries.append(code.strip())
+    role_families: list[str] = []
+    categories = descriptor.get("JobCategory", [])
+    if isinstance(categories, list):
+        for category in categories:
+            if isinstance(category, Mapping):
+                code = category.get("Code")
+                if isinstance(code, str) and code.strip() and code.strip() not in role_families:
+                    role_families.append(code.strip())
+    scope: dict[str, list[str]] = {}
+    if countries:
+        scope["countries"] = countries
+    if role_families:
+        scope["role_families"] = role_families
+    return scope
+
+
 def _nested(mapping: Mapping[str, Any], *path: str) -> Any:
     value: Any = mapping
     for key in path:
@@ -145,18 +177,20 @@ class USAJobsAdapter(JobSourceAdapter):
 
     def fetch(self, query: JobSourceQuery) -> JobSourceResult:
         listings: list[RawJobListing] = []
-        offset = 0
-        pages = 0
+        page = 0
         items_seen = 0
         # Completeness contract (issue #469): only the adapter knows why it
-        # stopped paging. ``complete`` is set only when the source itself
-        # reported the end of inventory; hitting a configured bound first
-        # marks the snapshot truncated instead.
+        # stopped paging. ``complete`` is set only when every page the source
+        # reported has been consumed; hitting a configured bound first marks
+        # the snapshot truncated instead. USAJOBS Search pages with
+        # ``Page``/``ResultsPerPage`` and reports the total as
+        # ``SearchResultCountAll`` (``SearchResultCount`` is only the current
+        # page's row count and must never drive completeness).
         complete = False
         truncated = False
-        while pages < query.max_pages and len(listings) < query.max_listings:
-            limit = min(MAX_PAGE_SIZE, query.max_listings - len(listings))
-            params: dict[str, Any] = {"offset": offset, "limit": limit}
+        while page < query.max_pages and len(listings) < query.max_listings:
+            page += 1
+            params: dict[str, Any] = {"Page": page, "ResultsPerPage": MAX_PAGE_SIZE}
             if query.keyword:
                 params["Keyword"] = query.keyword
             if query.location:
@@ -164,21 +198,25 @@ class USAJobsAdapter(JobSourceAdapter):
             _, _, body = self._http.get(self.search_url, params=params)
             payload = self._payload(body)
             entries, total = self._entries(payload)
-            pages += 1
             items_seen += len(entries)
             for entry in entries:
                 if len(listings) >= query.max_listings:
                     break
                 listings.append(self._listing(entry))
-            offset += limit
-            if not entries or (total is not None and offset >= total) or (total is None and len(entries) < limit):
+            if total is not None:
+                if items_seen >= total:
+                    complete = True
+                    break
+            elif not entries or len(entries) < MAX_PAGE_SIZE:
+                # No total reported: a short or empty page is the only
+                # end-of-inventory signal available.
                 complete = True
                 break
-        if not complete and (pages >= query.max_pages or len(listings) >= query.max_listings):
+        if not complete and (page >= query.max_pages or len(listings) >= query.max_listings):
             truncated = True
         return JobSourceResult(
             listings=tuple(listings),
-            pages_fetched=pages,
+            pages_fetched=page,
             items_seen=items_seen,
             complete_snapshot=complete,
             truncated=truncated,
@@ -204,9 +242,16 @@ class USAJobsAdapter(JobSourceAdapter):
             raise source_errors.SchemaDriftError("SearchResultItems must be a list")
         if any(not isinstance(item, Mapping) for item in raw_entries):
             raise source_errors.SchemaDriftError("SearchResultItems must contain objects")
-        total = result.get("SearchResultCount")
-        if total is not None and (isinstance(total, bool) or not isinstance(total, int) or total < 0):
+        # SearchResultCount is the number of rows in the current response;
+        # SearchResultCountAll is the total matching the query. Completeness
+        # must key off the total (issue #469): the current-page count is 250
+        # on a normal page and would certify a truncated page one as complete.
+        page_count = result.get("SearchResultCount")
+        if page_count is not None and (isinstance(page_count, bool) or not isinstance(page_count, int) or page_count < 0):
             raise source_errors.SchemaDriftError("SearchResultCount must be a non-negative integer")
+        total = result.get("SearchResultCountAll")
+        if total is not None and (isinstance(total, bool) or not isinstance(total, int) or total < 0):
+            raise source_errors.SchemaDriftError("SearchResultCountAll must be a non-negative integer")
         return list(raw_entries), total
 
     def _listing(self, item: Mapping[str, Any]) -> RawJobListing:
@@ -245,6 +290,9 @@ class USAJobsAdapter(JobSourceAdapter):
         if end_date is not None and end_date < now:
             status = "expired"
         metadata = {"adapter": self.key, "adapter_version": self.version}
+        scope = _scope(descriptor)
+        if scope:
+            metadata["scope"] = scope
         return RawJobListing(
             external_id=external_id,
             canonical_url=canonical_url,

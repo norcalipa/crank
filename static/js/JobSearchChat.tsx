@@ -616,6 +616,11 @@ export interface JobSearchChatProps {
     // Shared workspace contract: opening the assistant must not create a
     // conversation; the first send creates it.
     createOnMount?: boolean;
+    // Workspace placement (issue #472): 'sheet' means the full-screen mobile
+    // surface where the Job Matches panel is behind a "Back to results"
+    // control, so directional microcopy must not claim the panel is beside
+    // the chat. Undefined outside the workspace (legacy mount).
+    workspaceMode?: 'docked' | 'drawer' | 'sheet';
 }
 
 const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
@@ -624,8 +629,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         signInUrl = '/accounts/login/',
         signedOutMessage = '',
         accountKey = '',
-    } = props;
-    // The shared workspace opts out explicitly. Direct authenticated mounts
+    } = props;    // The shared workspace opts out explicitly. Direct authenticated mounts
     // retain the legacy create-on-mount contract for compatibility; the
     // prop-less workspace/test mount uses the issue #472 default of false.
     const createOnMount = props.createOnMount ?? props.isAuthenticated !== undefined;
@@ -1837,18 +1841,19 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     </div>
                 )}
 
-                <div className="position-relative d-flex flex-column flex-grow-1" style={{minHeight: 0}}>
+                <div className="d-flex flex-column flex-grow-1" style={{minHeight: 0}}>
                     <div className="bg-dark border rounded p-3 mb-3 flex-grow-1" style={{minHeight: 0, overflowY: 'auto'}}
                          ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
-                        {effectiveAuthenticated && messages.length === 0 && !loading && (
+                        {effectiveAuthenticated && messages.length === 0 && !loading && !initError && (
                             <div data-testid="empty-history">
                                 <p className="empty-history-lead mb-2">
                                     Ask about compensation, work location, funding, or culture to get started.
                                 </p>
                                 <p className="empty-history-note small mb-3">
                                     <i className="fa-solid fa-circle-info me-1"></i>
-                                    Your matches are shown in the panel above. The assistant searches
-                                    across real organizations and job listings to find the best fit.
+                                    {props.workspaceMode === 'sheet'
+                                        ? 'Tap Back to results to see your matches. The assistant searches across real organizations and job listings to find the best fit.'
+                                        : 'Your matches are shown in the Job Matches panel. The assistant searches across real organizations and job listings to find the best fit.'}
                                 </p>
                                 <button type="button" className="btn btn-primary empty-history-cta"
                                         data-testid="empty-history-cta"
@@ -1950,11 +1955,16 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         )}
                     </div>
                     {showJumpToLatest && (
-                        <button type="button" className="btn btn-sm btn-primary position-absolute bottom-0 end-0 mb-4 me-2"
-                                onClick={() => scrollToLatest('auto')} aria-label="Jump to latest message"
-                                data-testid="jump-to-latest">
-                            New messages · Jump to latest
-                        </button>
+                        /* Reserved footer slot (round-2 critique): the control
+                           sits in its own row below the history instead of
+                           floating over message content. */
+                        <div className="flex-shrink-0 text-end mb-2">
+                            <button type="button" className="btn btn-sm btn-primary"
+                                    onClick={() => scrollToLatest('auto')} aria-label="Jump to latest message"
+                                    data-testid="jump-to-latest">
+                                New messages · Jump to latest
+                            </button>
+                        </div>
                     )}
                 </div>
 

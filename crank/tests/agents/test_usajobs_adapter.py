@@ -116,7 +116,13 @@ def make_entry(
 def payload(entries, count=None):
     if count is None:
         count = len(entries)
-    return {"SearchResult": {"SearchResultCount": count, "SearchResultItems": entries}}
+    return {
+        "SearchResult": {
+            "SearchResultCount": len(entries),
+            "SearchResultCountAll": count,
+            "SearchResultItems": entries,
+        }
+    }
 
 
 class USAJobsAdapterTests(TestCase):
@@ -166,7 +172,8 @@ class USAJobsAdapterTests(TestCase):
             "fixture-1002",
         ]
         assert result.pages_fetched == 2
-        assert calls[1][1]["offset"] == 2
+        assert calls[1][1]["Page"] == 2
+        assert calls[0][1]["ResultsPerPage"] == 500
         empty_http, _ = http_for([response("usajobs_empty.json")])
         empty = self.adapter(empty_http, source_obj).fetch(JobSourceQuery())
         assert empty.listings == ()
@@ -500,6 +507,36 @@ class USAJobsAdapterTests(TestCase):
         assert result.listings[0].description_excerpt == "Fallback summary."
 
 
+    def test_scope_metadata_emitted_from_location_and_category(self):
+        """Issue #469 review: the adapter emits the reserved ``scope`` key
+        from the documented PositionLocation[].CountryCode and
+        JobCategory[].Code fields, not only adapter provenance."""
+        source_obj = source()
+        entry = make_entry()
+        entry["MatchedObjectDescriptor"]["PositionLocation"] = [
+            {"LocationName": "San Francisco, CA", "CountryCode": "US"},
+            {"LocationName": "Remote", "CountryCode": "US"},
+        ]
+        entry["MatchedObjectDescriptor"]["JobCategory"] = [
+            {"Name": "Engineering", "Code": "2210"},
+            {"Name": "Engineering", "Code": "2210"},
+        ]
+        http, _ = http_for([json_response(payload([entry], count=1))])
+        result = self.adapter(http, source_obj).fetch(JobSourceQuery())
+        listing = result.listings[0]
+        assert listing.source_metadata["scope"]["countries"] == ["US"]
+        assert listing.source_metadata["scope"]["role_families"] == ["2210"]
+
+    def test_scope_metadata_absent_without_fields(self):
+        """No scope key is emitted when the payload carries no geography or
+        category fields."""
+        source_obj = source()
+        http, _ = http_for([json_response(payload([make_entry()], count=1))])
+        result = self.adapter(http, source_obj).fetch(JobSourceQuery())
+        listing = result.listings[0]
+        assert "scope" not in listing.source_metadata
+
+
 class CompletenessFlagTests(TestCase):
     """Issue #469 AC-7: the adapter declares why it stopped paging."""
 
@@ -544,3 +581,22 @@ class CompletenessFlagTests(TestCase):
         result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
         assert result.complete_snapshot is True
         assert result.truncated is False
+
+    def test_page_one_not_complete_when_total_unreached(self):
+        """Issue #469 review CRITICAL: a page whose current count is below
+        the reported total (SearchResultCountAll) must not be certified
+        complete, or absence closure would mass-close every row outside
+        page one."""
+        entry = make_entry()
+        http, _ = http_for(
+            [json_response({
+                "SearchResult": {
+                    "SearchResultCount": 1,
+                    "SearchResultCountAll": 2,
+                    "SearchResultItems": [entry],
+                }
+            })]
+        )
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=1))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
