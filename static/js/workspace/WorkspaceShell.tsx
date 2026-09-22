@@ -14,7 +14,7 @@ import AssistantLauncher from './AssistantLauncher';
 import AssistantPanel from './AssistantPanel';
 import {closeAssistant, getWorkspaceSnapshot, openAssistant, subscribeWorkspace} from './store';
 import {useWorkspaceLayout} from './useWorkspaceLayout';
-import {WorkspaceMode, WorkspaceSnapshot} from './types';
+import {WORKSPACE_FOCUS_EVENT, WorkspaceMode, WorkspaceSnapshot} from './types';
 
 const MODE_CLASS: Record<WorkspaceMode, string> = {
     docked: 'assistant-docked',
@@ -152,6 +152,36 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
         }
         wasSheetActiveRef.current = sheetActive;
     }, [sheetActive]);
+
+    // Explicit focus request (issue #469 review): the "Focus assistant"
+    // affordance must move keyboard focus to the assistant panel even when it
+    // is already open, where drawer/docked have no open-transition focus. A
+    // monotonic counter (rather than a boolean guard) means a request that
+    // races the open transition is still honoured once the panel commits.
+    const [focusRequest, setFocusRequest] = React.useState(0);
+    React.useEffect(() => {
+        const handleFocusRequest = (): void => setFocusRequest((n) => n + 1);
+        window.addEventListener(WORKSPACE_FOCUS_EVENT, handleFocusRequest);
+        return () => window.removeEventListener(WORKSPACE_FOCUS_EVENT, handleFocusRequest);
+    }, []);
+    React.useEffect(() => {
+        if (!open || focusRequest === 0) {
+            return;
+        }
+        // Prefer the composer (the assistant's primary input); fall back to the
+        // first focusable control when it is not present (e.g. sheet mode or
+        // a chat that has not finished loading). querySelector honours document
+        // order, so a single combined selector would catch the header buttons
+        // ahead of the composer.
+        const target =
+            panelRef.current?.querySelector<HTMLElement>(
+                '[data-testid="assistant-composer"]',
+            ) ??
+            panelRef.current?.querySelector<HTMLElement>(
+                '[data-testid="assistant-back-to-results"], textarea, button, [href], [tabindex]:not([tabindex="-1"])',
+            );
+        target?.focus();
+    }, [open, focusRequest]);
 
     return (
         <>

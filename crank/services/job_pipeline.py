@@ -207,24 +207,49 @@ def _proven_complete_snapshot(result: JobIngestResult) -> bool:
     )
 
 
+def _pre_ingest_deletion_candidates(
+    source: Any, *, limit: int = RETENTION_SWEEP_LIMIT
+) -> set[int]:
+    """Bounded snapshot of rows already terminal and past the deletion window.
+
+    Taken *before* ingestion runs absence closure (issue #469 review). The
+    deletion phase deletes only ids in this set, so a row that entered the
+    source run active (and is absence-closed by ingestion, or expired by the
+    sweep itself) is never deleted in the same run — without materializing the
+    source's entire active inventory. Bounded to ``limit`` so a large source
+    never serializes O(all rows) into the terminal query.
+    """
+    _, deletion_days = _retention_days(source)
+    cutoff = timezone.now() - timedelta(days=deletion_days)
+    return set(
+        JobListing.all_objects.filter(
+            source=source,
+            status__in=[JobListing.Status.CLOSED, JobListing.Status.EXPIRED],
+            last_seen_at__lt=cutoff,
+        )
+        .order_by("pk")
+        .values_list("pk", flat=True)[:limit]
+    )
+
+
 def _retention_sweep(
     source: Any,
     *,
     limit: int = RETENTION_SWEEP_LIMIT,
-    protected_ids: set[int] | None = None,
+    deletion_candidates: set[int] | None = None,
 ) -> tuple[int, int]:
     """Expire stale active listings and delete aged terminal ones (issue #469).
 
     Bounded per run and resumable. Expiry uses the source's retention window
-    on ``last_seen_at``; deletion applies only to terminal (closed/expired)
-    listings past the longer deletion window and cascades to derived
-    artifacts (``JobMatch``, ``UnresolvedEmployer``). An ``active`` listing
-    is never deleted, and ``protected_ids`` (the ids that were active at the
-    start of the source run, before any absence closure) are also excluded
-    from deletion: a row closed by absence closure earlier in the same run is
-    expired, never deleted, in that run.
+    on ``last_seen_at``; deletion applies only to terminal listings past the
+    longer deletion window that were already candidate-before this run's
+    ingestion, via ``deletion_candidates`` (the bounded pre-ingest snapshot;
+    recomputed on the spot when the caller has not run ingestion first). An
+    ``active`` listing is never deleted, and a row that was active when the
+    run began is expired, never deleted, in that same run.
     """
-    protected_ids = protected_ids or set()
+    if deletion_candidates is None:
+        deletion_candidates = _pre_ingest_deletion_candidates(source, limit=limit)
     expiry_days, deletion_days = _retention_days(source)
     now = timezone.now()
     expired = JobListing.all_objects.filter(
@@ -240,9 +265,10 @@ def _retention_sweep(
         )
     terminal = JobListing.all_objects.filter(
         source=source,
+        pk__in=deletion_candidates,
         status__in=[JobListing.Status.CLOSED, JobListing.Status.EXPIRED],
         last_seen_at__lt=now - timedelta(days=deletion_days),
-    ).exclude(pk__in=expired_ids).exclude(pk__in=protected_ids).order_by("pk")[:limit]
+    ).order_by("pk")[:limit]
     deleted_count = 0
     for listing in terminal:
         # Row-by-row delete so JobMatch/UnresolvedEmployer cascades fire.
@@ -336,15 +362,13 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
         before_ids = set(
             JobListing.all_objects.filter(source=source).values_list("pk", flat=True)
         )
-        # Snapshot the source's pre-stage active ids too (issue #469 review):
-        # a row active at the start of the run that is absence-closed by
-        # ingestion and is older than the deletion window must be expired,
-        # never deleted, in this same run.
-        active_before_ids = set(
-            JobListing.all_objects.filter(
-                source=source, status=JobListing.Status.ACTIVE
-            ).values_list("pk", flat=True)
-        )
+        # Bounded pre-ingest snapshot of terminal rows already past the
+        # deletion window (issue #469 review): the deletion phase deletes
+        # only these ids, so a row active at the start of the run that is
+        # absence-closed by ingestion (and is older than the deletion window)
+        # is expired, never deleted, in this same run — without materializing
+        # the source's entire active inventory.
+        deletion_candidates = _pre_ingest_deletion_candidates(source)
         # Snapshot the source's pre-stage organization ids too: a listing
         # reassigned or unresolved during this stage makes its *former*
         # organization affected, and only the union of the before/after ids
@@ -372,7 +396,7 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                     continue
                 if _proven_complete_snapshot(result):
                     expired_count, deleted_count = _retention_sweep(
-                        source, protected_ids=active_before_ids
+                        source, deletion_candidates=deletion_candidates
                     )
                 else:
                     # A failed, incomplete, truncated, filtered, or disabled

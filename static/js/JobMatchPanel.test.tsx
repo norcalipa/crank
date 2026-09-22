@@ -654,6 +654,24 @@ describe('JobMatchPanel combined states (#476)', () => {
         expect(help).toHaveTextContent('View help');
     });
 
+    test('chat action dispatches an assistant focus request alongside open', async () => {
+        // Issue #469 review MINOR: the "Focus assistant"/chat action must ask
+        // the workspace to move keyboard focus to the assistant, not merely
+        // re-notify its open state.
+        const dispatch = jest.spyOn(window, 'dispatchEvent');
+        await renderPanel('no_matches', {
+            statusOverrides: {actions: ['chat']},
+        });
+        fireEvent.click(screen.getByTestId('action-chat'));
+        expect(dispatch).toHaveBeenCalledWith(
+            expect.objectContaining({type: 'crank:assistant-open'}),
+        );
+        expect(dispatch).toHaveBeenCalledWith(
+            expect.objectContaining({type: 'crank:assistant-focus'}),
+        );
+        dispatch.mockRestore();
+    });
+
     test('explore_companies action renders with label and navigates to rankings', async () => {
         const originalHref = window.location;
         // jsdom location is read-only; replace it to observe navigation.

@@ -161,12 +161,26 @@ def _execute(source, source_type: str):
         # so they must emit the publication outbox event themselves
         # (issue #469 review): a lifecycle-only write (closing/expiring rows
         # on a complete empty snapshot) still invalidates organization-scoped
-        # caches.
+        # caches. ``ingest_jobs`` also resolves employers on every replay, so
+        # an otherwise unchanged listing can gain, lose, or change its
+        # organization after an alias/catalog edit while all lifecycle
+        # counters stay zero — publishing whenever the before/after
+        # organization set changed keeps those caches honest too.
+        after_org_ids = set(
+            JobListing.all_objects.filter(
+                source=source, organization__isnull=False
+            )
+            .order_by()
+            .values_list("organization_id", flat=True)
+            .distinct()
+        )
+        relationship_changed = bool(before_org_ids ^ after_org_ids)
         if (
             int(result.ingested)
             or int(result.updated)
             or int(result.closed)
             or int(result.expired)
+            or relationship_changed
         ):
             record_source_publication(source, result, 0, 0, before_org_ids)
     return result

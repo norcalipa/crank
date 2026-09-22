@@ -638,3 +638,35 @@ class CompletenessFlagTests(TestCase):
         assert result.items_seen == 250
         assert result.complete_snapshot is False
         assert result.truncated is True
+
+    def test_contradictory_zero_total_is_truncated(self):
+        """Issue #469 review MAJOR: a response that delivered rows while
+        SearchResultCountAll reports zero is over-delivery — a contradictory
+        total must never certify completeness."""
+        http, _ = http_for([json_response(payload([make_entry()], count=0))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_drifting_total_across_pages_is_truncated(self):
+        """Issue #469 review MAJOR: a total that changes between pages is a
+        contradictory inventory claim and must never certify completeness."""
+        first = payload([make_entry()], count=5)
+        second = payload([make_entry(object_id="drift-2")], count=3)
+        http, _ = http_for([json_response(first), json_response(second)])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_search_result_count_mismatch_is_schema_drift(self):
+        """Issue #469 review MAJOR: SearchResultCount must equal the number
+        of returned entries; a self-contradictory page is schema drift."""
+        http, _ = http_for([json_response({
+            "SearchResult": {
+                "SearchResultCount": 5,
+                "SearchResultCountAll": 5,
+                "SearchResultItems": [make_entry()],
+            }
+        })])
+        with pytest.raises(errors.SchemaDriftError, match="SearchResultCount"):
+            self.adapter(http).fetch(JobSourceQuery())

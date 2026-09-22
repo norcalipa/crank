@@ -131,6 +131,40 @@ class CrawlRunTests(TestCase):
         self.assertEqual(event.target_type, PublicationEvent.TargetType.LISTING)
         self.assertEqual(event.event_kind, PublicationEvent.EventKind.INGESTED)
 
+    @patch("crank.services.crawl_runs.ingest_job_source")
+    def test_execute_records_publication_for_relationship_change(self, ingest):
+        """Issue #469 review MAJOR: a manual crawl whose replay resolves an
+        employer (changing a listing's organization) with every lifecycle
+        counter zero must still emit the publication event that invalidates
+        organization-scoped caches."""
+        from crank.models import JobListing, PublicationEvent
+
+        listing = JobListing.objects.create(
+            source=self.job_source,
+            external_id="rel-1",
+            canonical_url="https://jobs.example.test/rel-1",
+            title="Relationship",
+            employer_name="Rel Co",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+        )
+        organization = Organization.objects.create(
+            name="Rel Org", url="https://rel.example.test"
+        )
+
+        def fake_ingest(*args, **kwargs):
+            listing.organization = organization
+            listing.save(update_fields=["organization", "modified"])
+            return JobSourceIngestion(
+                result=JobIngestResult(),
+                skipped=False,
+                reason="",
+            )
+
+        ingest.side_effect = fake_ingest
+        _execute(self.job_source, "job")
+        self.assertEqual(PublicationEvent.objects.count(), 1)
+
     def test_policy_rejects_unknown_source_type(self):
         with self.assertRaises(CrawlRequestError):
             resolve_source("fixture-adapter", "invalid")

@@ -13,7 +13,12 @@ import * as modalIsolation from '../modalIsolation';
 
 jest.mock('../JobSearchChat', () => ({
     __esModule: true,
-    default: () => <section data-testid="job-search-chat">chat</section>,
+    default: () => (
+        <section data-testid="job-search-chat">
+            <textarea data-testid="assistant-composer" aria-label="Message" />
+            chat
+        </section>
+    ),
 }));
 
 let mockMode: 'docked' | 'drawer' | 'sheet' = 'sheet';
@@ -126,6 +131,21 @@ describe('WorkspaceShell', () => {
         await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-back-to-results')));
         act(() => closeAssistant());
         await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-launcher')));
+    });
+
+    test('a focus request moves focus into the already-open assistant panel', async () => {
+        // Issue #469 review MINOR: the "Focus assistant" affordance must move
+        // keyboard focus to the assistant even when it is already open (e.g.
+        // a docked panel has no open-transition focus effect).
+        renderShell();
+        mockMode = 'docked';
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-panel')).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
+        act(() => {
+            window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-composer')));
     });
 
     test('another blocking dialog acquiring a lock closes the sheet, and keeps its isolation', async () => {

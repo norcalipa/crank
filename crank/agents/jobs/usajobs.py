@@ -188,6 +188,7 @@ class USAJobsAdapter(JobSourceAdapter):
         # page's row count and must never drive completeness).
         complete = False
         truncated = False
+        declared_total: int | None = None
         while page < query.max_pages and len(listings) < query.max_listings:
             page += 1
             params: dict[str, Any] = {"Page": page, "ResultsPerPage": MAX_PAGE_SIZE}
@@ -198,6 +199,15 @@ class USAJobsAdapter(JobSourceAdapter):
             _, _, body = self._http.get(self.search_url, params=params)
             payload = self._payload(body)
             entries, total = self._entries(payload)
+            if total is not None:
+                if declared_total is None:
+                    declared_total = total
+                elif declared_total != total:
+                    # The provider's total drifted between pages: its
+                    # inventory claim is contradictory and can never certify
+                    # completeness (issue #469 review).
+                    truncated = True
+                    break
             items_seen += len(entries)
             for entry in entries:
                 if len(listings) >= query.max_listings:
@@ -208,19 +218,30 @@ class USAJobsAdapter(JobSourceAdapter):
             # ``max_listings`` must mark the snapshot truncated, never
             # complete, or absence closure would close the discarded rows.
             retained_all = len(listings) == items_seen
-            if total is not None:
-                if items_seen >= total:
+            if declared_total is not None:
+                if items_seen > declared_total:
+                    # Over-delivery: the provider returned more rows than its
+                    # own total reports (e.g. SearchResultCountAll=0 with
+                    # retained items). A contradictory total is never complete.
+                    truncated = True
+                    break
+                if items_seen == declared_total:
                     complete = retained_all
+                    if not retained_all:
+                        truncated = True
                     break
                 if not entries:
                     # The source reported more inventory than it delivered; an
                     # inconsistent total is never read as complete.
+                    truncated = True
                     break
             elif not entries or len(entries) < MAX_PAGE_SIZE:
                 # No total reported: a short or empty page is the only
                 # end-of-inventory signal available, and only when nothing
                 # was discarded.
                 complete = retained_all
+                if not retained_all:
+                    truncated = True
                 break
         if not complete and (
             page >= query.max_pages
@@ -266,6 +287,13 @@ class USAJobsAdapter(JobSourceAdapter):
         total = result.get("SearchResultCountAll")
         if total is not None and (isinstance(total, bool) or not isinstance(total, int) or total < 0):
             raise source_errors.SchemaDriftError("SearchResultCountAll must be a non-negative integer")
+        if page_count is not None and page_count != len(raw_entries):
+            # The current-page count must match the rows actually returned;
+            # a self-contradiction is schema drift, never a completeness
+            # signal (issue #469 review).
+            raise source_errors.SchemaDriftError(
+                "SearchResultCount does not match the returned entry count"
+            )
         return list(raw_entries), total
 
     def _listing(self, item: Mapping[str, Any]) -> RawJobListing:
