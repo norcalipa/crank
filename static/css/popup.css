@@ -1160,6 +1160,130 @@ body.app-nav-drawer-open {
     text-decoration-thickness: 2px;
 }
 
+/* -------------------------------------------------------------------------
+   Issue #467 round-2 visual fixes.
+   ------------------------------------------------------------------------- */
+
+/* One interactive color family (sky/cyan). The primary action moves off
+   Bootstrap blue (#0D6EFD) onto a sky fill with dark ink, so primary +
+   outline-info + text-info links share one cyan/sky family and green/amber/
+   rose stay reserved for semantic states. Dark ink #082f49 on sky-500
+   #0ea5e9 is ~4.7:1; hover (#38bdf8) and active (#0284c7) stay >=4.5:1. */
+#job-match-panel .btn-primary {
+    --bs-btn-color: #082f49;
+    --bs-btn-bg: #0ea5e9;
+    --bs-btn-border-color: #0ea5e9;
+    --bs-btn-hover-color: #082f49;
+    --bs-btn-hover-bg: #38bdf8;
+    --bs-btn-hover-border-color: #38bdf8;
+    --bs-btn-active-color: #082f49;
+    --bs-btn-active-bg: #0284c7;
+    --bs-btn-active-border-color: #0284c7;
+    --bs-btn-disabled-color: #082f49;
+    --bs-btn-disabled-bg: #0ea5e9;
+    --bs-btn-disabled-border-color: #0ea5e9;
+    --bs-btn-focus-shadow-rgb: 14, 165, 233;
+}
+
+/* Requirement chips: three semantically distinct states. Match = emerald,
+   mismatch = rose, unknown = amber. Unknown is a distinct outcome and must
+   never share the neutral gray metadata treatment; ordinary attributes
+   (e.g. the "Remote" badge) stay neutral via Bootstrap bg-secondary. Ink
+   colors keep >=4.5:1 on the #212529 card surface. */
+.job-match-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.375rem;
+    font-size: 0.8125rem;
+    font-weight: 400;
+    line-height: 1.35;
+}
+
+.job-match-chip--match {
+    color: #6ee7b7; /* emerald-300, ~11:1 on #212529 */
+    background-color: rgba(16, 185, 129, 0.16);
+    border: 1px solid rgba(110, 231, 183, 0.45);
+}
+
+.job-match-chip--mismatch {
+    color: #fda4af; /* rose-300, ~9.5:1 on #212529 */
+    background-color: rgba(244, 63, 94, 0.16);
+    border: 1px solid rgba(253, 164, 175, 0.45);
+}
+
+.job-match-chip--unknown {
+    color: #fcd34d; /* amber-300, ~11:1 on #212529 */
+    background-color: rgba(245, 158, 11, 0.16);
+    border: 1px solid rgba(252, 211, 77, 0.45);
+}
+
+/* Visible keyboard-focus rings on every panel control. The sky ring
+   (#38bdf8) stays distinct from the semantic amber/rose/green and reads
+   against the dark surface at >=3:1 non-text contrast. */
+#job-match-panel .btn:focus-visible,
+#job-match-panel a.job-match-name:focus-visible,
+#job-match-panel a.btn:focus-visible {
+    outline: 3px solid #38bdf8;
+    outline-offset: 2px;
+}
+
+/* Desktop layout: constrain and center the panel inside a large canvas so the
+   three-figure/three-chip rows never clip and the content reads coherently
+   from 768px up; balanced inline margins center it instead of left-weighting
+   against an empty right gutter. */
+#job-match-panel {
+    max-width: 46rem;
+    margin-inline: auto;
+}
+
+/* Consistent vertical rhythm: notices, timestamp, and section headings no
+   longer sit flush against each other or the results. */
+.job-match-card {
+    padding-block: 0.75rem;
+}
+
+/* Loading state: an emphasized spinner with a visible label plus skeleton
+   rows. The spin and the skeleton pulse are both disabled under reduced
+   motion (matching the repo's existing reduced-motion patterns). */
+.job-match-loading-label {
+    font-size: 0.9375rem;
+}
+
+.job-match-skeleton {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.job-match-skeleton-row {
+    height: 0.875rem;
+    border-radius: 0.375rem;
+    background-color: rgba(248, 249, 250, 0.14);
+    animation: job-match-skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+.job-match-skeleton-row:nth-child(2) {
+    width: 82%;
+}
+
+.job-match-skeleton-row:nth-child(3) {
+    width: 64%;
+}
+
+@keyframes job-match-skeleton-pulse {
+    0%, 100% { opacity: 0.45; }
+    50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .job-match-skeleton-row {
+        animation: none;
+        opacity: 0.7;
+    }
+}
+
 @media (max-width: 390px) {
     .app-content,
     .app-messages {

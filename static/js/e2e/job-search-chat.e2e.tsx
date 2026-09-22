@@ -95,6 +95,7 @@ const PANEL_RANKED_JOBS = [
             {path: 'compensation.minimum_salary', status: 'match', observed: 150000},
             {path: 'work_location.modes', status: 'match', observed: 'remote'},
             {path: 'industry', status: 'unknown', observed: null},
+            {path: 'work_location.max_in_office_days', status: 'mismatch', observed: '3 in-office days'},
         ],
         unsupported: ['compensation.minimum_total_compensation'],
         revision: {stale: false, generated_at: '2026-09-22T08:00:00Z', preference_revision: 4, ranking_version: '1.0.0', data_revision: null},
