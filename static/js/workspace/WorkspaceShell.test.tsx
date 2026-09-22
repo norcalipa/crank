@@ -16,7 +16,11 @@ jest.mock('../JobSearchChat', () => ({
     __esModule: true,
     default: () => (
         <section data-testid="job-search-chat">
-            <textarea data-testid="assistant-composer" aria-label="Message" />
+            <textarea
+                data-testid="assistant-composer"
+                aria-label="Message"
+                disabled={mockComposerDisabled || undefined}
+            />
             chat
         </section>
     ),
@@ -27,10 +31,13 @@ jest.mock('./useWorkspaceLayout', () => ({
     useWorkspaceLayout: () => mockMode,
 }));
 
+let mockComposerDisabled = false;
+
 beforeEach(() => {
     resetWorkspaceForTests();
     document.body.className = '';
     mockMode = 'sheet';
+    mockComposerDisabled = false;
     // The shell observer needs the background roots to exist.
     document.body.innerHTML = '<div class="app-shell"></div><main class="app-content"></main>';
 });
@@ -168,6 +175,30 @@ describe('WorkspaceShell', () => {
         await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
         // Consumed request: a docked reopen must not steal focus to the composer.
         expect(document.activeElement).not.toBe(screen.getByTestId('assistant-composer'));
+    });
+
+    test('a focus request with the composer disabled falls back to an enabled control', async () => {
+        // Issue #469 review MINOR: a pending/gated turn disables the composer;
+        // the focus request must fall back to an enabled control instead of
+        // being silently consumed with focus landing nowhere.
+        mockComposerDisabled = true;
+        renderShell();
+        mockMode = 'docked';
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
+        expect(screen.getByTestId('assistant-composer')).toBeDisabled();
+        act(() => {
+            window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        // Focus lands on the first enabled control, never the disabled composer.
+        await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-minimize')));
+        expect(document.activeElement).not.toBe(screen.getByTestId('assistant-composer'));
+        // The request was consumed so a later ordinary reopen does not re-focus.
+        act(() => closeAssistant());
+        await waitFor(() => expect(screen.queryByTestId('assistant-panel')).not.toBeInTheDocument());
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
+        expect(document.activeElement).not.toBe(screen.getByTestId('assistant-minimize'));
     });
 
     test('a focus request during cold load focuses the composer once it is ready', async () => {

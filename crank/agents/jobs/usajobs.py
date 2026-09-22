@@ -60,6 +60,21 @@ def _optional_text(value: Any, field: str) -> str:
     return _text(value, field)
 
 
+def _storage_identity(value: str) -> str:
+    """Fold an identity into the MySQL persistence collation domain.
+
+    ``JobListing.external_id`` / ``canonical_url`` are compared case-
+    insensitively by the unique constraints in ``crank/models/job.py`` (the
+    supported MySQL target uses ``utf8mb4_general_ci`` and neither field
+    selects a binary ``db_collation``). Python ``set`` and ``==`` are
+    case-sensitive, so completeness must account identities the same way
+    persistence will collapse them — otherwise ``Case-ID``/``case-id`` pass
+    the bijection here yet still upsert to one row, recreating the
+    one-seen-id/false-closure failure (issue #469 review).
+    """
+    return value.casefold()
+
+
 def _number(value: Any, field: str) -> Decimal | None:
     if value is None or value == "":
         return None
@@ -198,6 +213,7 @@ class USAJobsAdapter(JobSourceAdapter):
         complete = False
         truncated = False
         declared_total: int | None = None
+        saw_total: bool | None = None
         seen_ids: set[str] = set()
         seen_urls: set[str] = set()
         while page < query.max_pages and len(listings) < query.max_listings:
@@ -210,6 +226,19 @@ class USAJobsAdapter(JobSourceAdapter):
             _, _, body = self._http.get(self.search_url, params=params)
             payload = self._payload(body)
             entries, total = self._entries(payload)
+            page_has_total = total is not None
+            if saw_total is None:
+                saw_total = page_has_total
+            elif saw_total != page_has_total:
+                # Mixed total/no-total pagination (issue #469 review): a page
+                # that drops SearchResultCountAll after an earlier page carried
+                # one — or introduces it after total-less pages — has stopped
+                # providing the stable repeated inventory claim completeness
+                # relies on. Presence drift in either direction is a
+                # contradictory pagination and defaults to truncated, never
+                # complete.
+                truncated = True
+                break
             if total is not None:
                 if declared_total is None:
                     declared_total = total
@@ -224,8 +253,8 @@ class USAJobsAdapter(JobSourceAdapter):
                 if len(listings) >= query.max_listings:
                     break
                 listing = self._listing(entry)
-                seen_ids.add(listing.external_id)
-                seen_urls.add(listing.canonical_url)
+                seen_ids.add(_storage_identity(listing.external_id))
+                seen_urls.add(_storage_identity(listing.canonical_url))
                 listings.append(listing)
             # Completeness additionally requires that every fetched row was
             # retained (issue #469 review): discarding rows beyond

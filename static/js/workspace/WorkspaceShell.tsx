@@ -178,21 +178,29 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
         }
         // Prefer the composer (the assistant's primary input); fall back to the
         // first focusable control when it is not present (e.g. sheet mode or
-        // a chat that has not finished loading). querySelector honours document
-        // order, so a single combined selector would catch the header buttons
-        // ahead of the composer.
-        const target =
+        // a chat that has not finished loading). A disabled composer (pending
+        // or gated turn) cannot take focus, so it is excluded and the request
+        // falls back to an enabled control rather than being silently consumed
+        // with focus landing nowhere (issue #469 review). querySelector honours
+        // document order, so a single combined selector would catch the header
+        // buttons ahead of the composer.
+        const composer =
             panelRef.current?.querySelector<HTMLElement>(
-                '[data-testid="assistant-composer"]',
-            ) ??
-            panelRef.current?.querySelector<HTMLElement>(
-                '[data-testid="assistant-back-to-results"], textarea, button, [href], [tabindex]:not([tabindex="-1"])',
+                '[data-testid="assistant-composer"]:not(:disabled)',
             );
-        target?.focus();
-        // Consume the request exactly once: a later ordinary drawer/docked
-        // open leaves focus alone and must not re-focus the composer without
-        // a new explicit request.
-        setFocusRequest(0);
+        const target =
+            composer ??
+            panelRef.current?.querySelector<HTMLElement>(
+                '[data-testid="assistant-back-to-results"]:not(:disabled), textarea:not(:disabled), button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+            );
+        if (target) {
+            target.focus();
+            // Consume the request exactly once, and only after focus actually
+            // landed on an enabled target: a later ordinary drawer/docked open
+            // leaves focus alone, and a request that finds no enabled control
+            // stays pending to be retried once one commits.
+            setFocusRequest(0);
+        }
     }, [open, focusRequest, snapshot.loaded]);
 
     return (
