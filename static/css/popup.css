@@ -1298,18 +1298,29 @@ body.app-nav-drawer-open {
     font-weight: 600;
 }
 
-/* Score grid (r3 item 4): three labelled columns with legible xs uppercase
-   labels and sm semibold values carrying explicit scales (/5, /100, %). */
+/* Score grid (r3 item 4, r4): three labelled columns with legible xs uppercase
+   labels and sm semibold values carrying explicit scales (/5, /100, %). Each
+   figure cell is a mini-grid whose first row is a fixed ~2rem label row so a
+   two-line label ("COMPANY SCORE") can never push its value one baseline below
+   the others; tabular-nums keeps the figures on a steady numeric baseline. */
 #job-match-panel .job-match-figures {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0.75rem;
+    grid-template-columns: 1.15fr 1fr 1fr;
+    column-gap: 0.5rem;
+    row-gap: 0.25rem;
     max-width: 24rem;
+}
+
+#job-match-panel .job-match-figure {
+    display: grid;
+    grid-template-rows: 2rem auto;
+    min-width: 0;
 }
 
 #job-match-panel .job-match-figure-label {
     display: block;
     font-size: 0.75rem;
+    line-height: 1rem;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: rgba(248, 249, 250, 0.75);
@@ -1319,7 +1330,20 @@ body.app-nav-drawer-open {
     display: block;
     font-size: 0.875rem;
     font-weight: 600;
+    font-variant-numeric: tabular-nums;
     color: #f8f9fa;
+}
+
+@media (min-width: 576px) {
+    #job-match-panel .job-match-figures {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        column-gap: 0.75rem;
+        row-gap: 0.75rem;
+    }
+
+    #job-match-panel .job-match-figure {
+        grid-template-rows: auto auto;
+    }
 }
 
 /* Empty-state action grid (r3 item 5): a responsive 1-col/2-col grid so four

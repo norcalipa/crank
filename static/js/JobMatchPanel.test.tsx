@@ -1013,4 +1013,27 @@ describe('JobMatchPanel round-3 visual fixes (type hierarchy + grids)', () => {
         const spinner = loading.querySelector('svg.job-match-loading-spinner');
         expect(spinner).not.toBeNull();
     });
+
+    test('each score figure is a labelled mini-grid cell with tabular value for stable baselines', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [
+            {...sampleJobMatch, fit_score: 85.5, company_score: 4.2, coverage: 0.75},
+        ]});
+        const figures = screen.getByRole('list', {name: 'Match figures'});
+        expect(figures).toHaveClass('job-match-figures');
+        // Three figure cells, each a mini-grid so a wrapping first label can
+        // never shift its value onto a different baseline than the others.
+        const cells = figures.querySelectorAll(':scope > .job-match-figure');
+        expect(cells.length).toBe(3);
+        cells.forEach((cell) => {
+            expect(cell.querySelector('.job-match-figure-label')).not.toBeNull();
+            const value = cell.querySelector('.job-match-figure-value');
+            expect(value).not.toBeNull();
+            expect(value).toHaveClass('job-match-figure-value');
+        });
+        // Company score keeps the wider first column label from wrapping past
+        // the fixed label row: the value still reads as a single scalar.
+        expect(screen.getByTestId('job-42-company-score')).toHaveClass('job-match-figure-value');
+        expect(screen.getByTestId('job-42-fit-score')).toHaveClass('job-match-figure-value');
+        expect(screen.getByTestId('job-42-coverage')).toHaveClass('job-match-figure-value');
+    });
 });

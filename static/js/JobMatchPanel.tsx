@@ -325,15 +325,15 @@ function ThreeFigures({fit, company, coverage, scope}: {fit: number | null | und
     const companyText = company == null ? '—' : `${company.toFixed(1)} / 5`;
     return (
         <div className="job-match-figures mt-1" role="list" aria-label="Match figures">
-            <span role="listitem">
+            <span role="listitem" className="job-match-figure">
                 <span className="job-match-figure-label">Company score</span>
                 <strong className="job-match-figure-value" data-testid={`${scope}-company-score`}>{companyText}</strong>
             </span>
-            <span role="listitem">
+            <span role="listitem" className="job-match-figure">
                 <span className="job-match-figure-label">Fit</span>
                 <strong className="job-match-figure-value" data-testid={`${scope}-fit-score`}>{fitText}</strong>
             </span>
-            <span role="listitem">
+            <span role="listitem" className="job-match-figure">
                 <span className="job-match-figure-label">Coverage</span>
                 <strong className="job-match-figure-value" data-testid={`${scope}-coverage`}>{covText}</strong>
             </span>
