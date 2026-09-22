@@ -173,3 +173,28 @@ class MatchPersistenceTests(TestCase):
         self.assertEqual(match.requirements, [])
         self.assertEqual(match.evidence_ids, [])
         self.assertIsNone(match.data_revision)
+
+    def test_data_revision_includes_listing_publication_events(self):
+        """data_revision is the greatest PublicationEvent.id touching the row,
+        counting both the organization's events and the listing's own ingest
+        events (not just the organization)."""
+        from crank.services.publication import record_event
+        from crank.models.publication import PublicationEvent
+
+        # Organization event and a later listing ingest event.
+        org_event = record_event(
+            target_type=PublicationEvent.TargetType.ORGANIZATION,
+            target_id=self.organization.pk,
+            event_kind=PublicationEvent.EventKind.CHANGED,
+        )
+        listing_event = record_event(
+            target_type=PublicationEvent.TargetType.LISTING,
+            target_id=self.listing.pk,
+            event_kind=PublicationEvent.EventKind.INGESTED,
+        )
+        UserPreference.objects.create(user=self.user, revision=0)
+        persist_matches(self.user, [self.listing], self.criteria, DEFAULT_CONFIG)
+        match = JobMatch.objects.get()
+        # The listing's ingest event must win over the organization's event.
+        self.assertGreater(listing_event.pk, org_event.pk)
+        self.assertEqual(match.data_revision, listing_event.pk)

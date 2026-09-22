@@ -71,9 +71,16 @@ PROFILES = {
         users=10,
         transient_failures_per_source=1,
         budget=BenchmarkBudget(
-            run_window_ms=10000.0,
+            # Re-baselined for issue #467: the deterministic eligibility pass
+            # adds an unconditional per-listing requirement evaluation on top
+            # of the soft ranking. Measured on seed 7, the staging match stage
+            # grew from ~1.7s (pre-#467) to ~2.7s (bare, no coverage), a ~1.6x
+            # increase in legitimate work. The ``ci`` ``--assert-budgets`` gate
+            # is unchanged and still passes; these bounds only raise headroom
+            # for the larger, correct workload (and coverage instrumentation).
+            run_window_ms=20000.0,
             peak_memory_mb=512.0,
-            cpu_seconds=10.0,
+            cpu_seconds=20.0,
             query_count=0,
             external_calls=0,
         ),

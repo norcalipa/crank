@@ -346,10 +346,10 @@ function ThreeFigures({fit, company, coverage, scope}: {fit: number | null | und
 // share the neutral gray metadata treatment — it is a distinct outcome, not
 // missing data. Colors live in popup.css (scoped, contrast-checked) so the
 // component keeps a single source of truth for the palette.
-const REQUIREMENT_STATUS_META: Record<RequirementOutcome['status'], {marker: string; className: string}> = {
-    match: {marker: '✓', className: 'job-match-chip job-match-chip--match'},
-    mismatch: {marker: '✗', className: 'job-match-chip job-match-chip--mismatch'},
-    unknown: {marker: '?', className: 'job-match-chip job-match-chip--unknown'},
+const REQUIREMENT_STATUS_META: Record<RequirementOutcome['status'], {marker: string; word: string; className: string}> = {
+    match: {marker: '✓', word: 'match', className: 'job-match-chip job-match-chip--match'},
+    mismatch: {marker: '✗', word: 'mismatch', className: 'job-match-chip job-match-chip--mismatch'},
+    unknown: {marker: '?', word: 'unknown', className: 'job-match-chip job-match-chip--unknown'},
 };
 
 /** Per-requirement chips in three visually distinct, non-color-duplicated states. */
@@ -365,8 +365,9 @@ function RequirementChips({requirements}: {requirements?: RequirementOutcome[]})
                     <span key={idx} role="listitem"
                           className={`${meta.className} me-1 mb-1 small fw-normal`}
                           data-testid={`requirement-${req.path}`}
-                          data-status={req.status}>
-                        {meta.marker} {requirementLabel(req.path)}
+                          data-status={req.status}
+                          aria-label={`${requirementLabel(req.path)}: ${meta.word}`}>
+                        <span aria-hidden="true">{meta.marker}</span> {requirementLabel(req.path)}
                     </span>
                 );
             })}
@@ -531,6 +532,10 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     const [matchCount, setMatchCount] = React.useState<number>(0);
     const [rankedMatches, setRankedMatches] = React.useState<RankedMatchesPayload | null>(null);
     const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
+    // Revision block of the persisted result list (/api/job-matches/), which is
+    // the only surface that can flag a stale result (the ranked endpoint is
+    // recomputed live and is never stale).
+    const [storedRevision, setStoredRevision] = React.useState<RevisionBlock | null>(null);
 
     // Mirror the workspace assistant's open/closed state (issue #469
     // re-critique): while the panel is open the floating launcher leaves the
@@ -563,8 +568,9 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             setEmptyState(statusData);
 
             if (matchRes.ok) {
-                const matchData = await parseJson<{count?: number}>(matchRes);
+                const matchData = await parseJson<{count?: number; results?: RankedJobMatch[]}>(matchRes);
                 setMatchCount(matchData.count || 0);
+                setStoredRevision(matchData.results?.[0]?.revision ?? null);
             }
             if (rankedRes.ok) {
                 const rankedData: RankedMatchesPayload = await parseJson<RankedMatchesPayload>(rankedRes);
@@ -805,6 +811,8 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 </div>
                 <div className="card-body">
                     <ResultNotices emptyState={emptyState!} />
+                    <StaleNotice revision={storedRevision} onRefresh={fetchStatus} />
+                    <ResultTimestamp revision={storedRevision} />
                     <p className="mb-0" role="status" aria-live="polite">
                         <Icon name="check-circle" className="text-success me-1" />
                         You have <strong>{matchCount}</strong> job match{matchCount === 1 ? '' : 'es'} ready to review.

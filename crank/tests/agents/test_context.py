@@ -1,10 +1,28 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
-from crank.agents.job_search.context import build_model_context, truncate_conversation
+from crank.agents.job_search.context import build_model_context, truncate_conversation, _requirements_text
 
 
 def _msg(role, content):
     return {"role": role, "content": content}
+
+
+def test_requirements_text_exposes_evidence_ids_and_sources():
+    """The bounded requirement context exposes the evidence/source id tied to
+    each outcome so the model can make a validated citation (AC-11)."""
+    rendered = _requirements_text([
+        {"path": "compensation.minimum_salary", "status": "match",
+         "source_kind": "field", "source_id": "listing.compensation_min"},
+        {"path": "compensation.require_public_company", "status": "match",
+         "source_kind": "evidence", "source_id": 12},
+    ])
+    assert "compensation.minimum_salary=match[source=listing.compensation_min]" in rendered
+    assert "compensation.require_public_company=match[evidence=12]" in rendered
+
+
+def test_requirements_text_omits_empty():
+    assert _requirements_text([]) == "[]"
+    assert _requirements_text([{"status": "match"}]) == "[]"
 
 
 class TestTruncateConversation:

@@ -9,6 +9,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from enum import Enum
+from functools import lru_cache
 from typing import Any
 
 from crank.agents.jobs.ranking_config import DEFAULT_CONFIG, RankingConfig
@@ -17,15 +18,29 @@ _WS = re.compile(r"\s+")
 _NON_WORD = re.compile(r"[^\w\s-]+", re.UNICODE)
 
 
+@lru_cache(maxsize=8192)
+def _text_cached(value: str) -> str:
+    return _WS.sub(" ", value.strip()).casefold()
+
+
+@lru_cache(maxsize=8192)
+def _normalized_cached(value: str) -> str:
+    return _text_cached(_NON_WORD.sub(" ", value))
+
+
 def _text(value: Any) -> str:
     if value is None:
         return ""
+    if isinstance(value, str):
+        return _text_cached(value)
     return _WS.sub(" ", str(value).strip()).casefold()
 
 
 def _normalized(value: Any) -> str:
     if value is None:
         return ""
+    if isinstance(value, str):
+        return _normalized_cached(value)
     return _text(_NON_WORD.sub(" ", str(value)))
 
 
@@ -34,6 +49,9 @@ def _canonical_stage(value: Any) -> str:
 
     stage = _normalized(value).replace("_", " ")
     aliases = {
+        "pre seed": "s",
+        "pre-seed": "s",
+        "seed": "s",
         "series a": "a",
         "series b": "b",
         "series c": "c",
@@ -41,6 +59,7 @@ def _canonical_stage(value: Any) -> str:
         "series e": "e",
         "series f": "f",
         "series g or later": "x",
+        "series g": "x",
         "series x": "x",
         "other private": "o",
         "public": "p",
@@ -53,7 +72,7 @@ def _values(value: Any) -> tuple[Any, ...]:
         return ()
     if isinstance(value, (str, bytes)):
         return (value,) if str(value).strip() else ()
-    if isinstance(value, Mapping):
+    if isinstance(value, dict):
         return tuple(value.keys())
     try:
         return tuple(value)
@@ -263,7 +282,7 @@ def _contains(text: str, candidates: Iterable[str]) -> bool:
 def _metadata(listing: Any, organization: Any) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for source in (getattr(listing, "source_metadata", None), getattr(organization, "source_metadata", None)):
-        if isinstance(source, Mapping):
+        if isinstance(source, dict):
             result.update(source)
     return result
 
@@ -277,6 +296,46 @@ def _organization_value(listing: Any, organization: Any, *names: str) -> Any:
         if name in metadata and metadata[name] not in (None, ""):
             return metadata[name]
     return None
+
+
+def _organization_value_source(
+    listing: Any,
+    organization: Any,
+    *names: str,
+    metadata: dict[str, Any] | None = None,
+) -> tuple[Any, str | None]:
+    """Like :func:`_organization_value` but also names the supplying field.
+
+    Returns ``(value, source_id)`` where ``source_id`` is the model field
+    (``organization.<name>``) or merged metadata key
+    (``source_metadata.<name>``) that actually supplied the value, so a
+    requirement outcome can report the field that justified the observation
+    instead of a guessed ``organization.*``/``listing.*`` name. ``metadata``
+    may be precomputed once per listing with :func:`_metadata` to avoid the
+    redundant per-call merge.
+    """
+    if metadata is None:
+        metadata = _metadata(listing, organization)
+    for name in names:
+        value = getattr(organization, name, None)
+        if value not in (None, ""):
+            return value, f"organization.{name}"
+        if name in metadata and metadata[name] not in (None, ""):
+            return metadata[name], f"source_metadata.{name}"
+    return None, None
+
+
+def _contains_token(haystack: str, term: str) -> bool:
+    """Whole-token containment: a term matches only on word boundaries.
+
+    The previous ``term in haystack`` substring test had false positives such
+    as scope country ``US`` matching listing location ``Russia`` (``'us' in
+    'russia'``). A ``\\b``-bounded match means ``us`` matches a standalone
+    ``us`` token but never the interior of ``russia``.
+    """
+    if not haystack or not term:
+        return False
+    return re.search(r"\b" + re.escape(term) + r"\b", haystack) is not None
 
 
 def _missing_value(config: RankingConfig) -> float:
@@ -450,9 +509,6 @@ def _score_organization(listing: Any, criteria: JobCriteria, config: RankingConf
     return _factor("organization_scores", average / 5.0, f"average={average:.4g}/5", criteria, config)
 
 
-# RTO policy to assumed in-office days mapping.
-_RTO_DAYS = {"R": 0, "H": 3, "O": 5}
-
 #: Human-readable labels used by the single reason renderer.
 _FUNDING_LABELS = {
     "S": "Seed",
@@ -489,7 +545,7 @@ REQUIREMENT_ORDER = (
 #: Which criterion path may be backed by accepted ``CompanyFieldEvidence`` and,
 #: if so, under which field key.
 _EVIDENCE_FIELD_KEY = {
-    "compensation.require_public_company": "funding_round",
+    "compensation.require_public_company": "public_status",
     "work_location.modes": "rto_policy",
     "work_location.max_in_office_days": "rto_policy",
     "work_location.countries": "locations",
@@ -517,30 +573,62 @@ def _evidence_in_scope(evidence_row: Any, listing: Any) -> bool:
     countries = scope.get("countries")
     if countries:
         location = _normalized(getattr(listing, "location_text", ""))
-        if not any(_normalized(c) and _normalized(c) in location for c in _values(countries) if c):
+        if not any(_contains_token(location, _normalized(c)) for c in _values(countries) if c):
             return False
     role_families = scope.get("role_families")
     if role_families:
         title = _normalized(getattr(listing, "title", ""))
-        if not any(_normalized(r) and _normalized(r) in title for r in _values(role_families) if r):
+        if not any(_contains_token(title, _normalized(r)) for r in _values(role_families) if r):
             return False
     return True
 
 
 def _rto_days(value: Any) -> int | None:
-    """Map a normalized RTO policy (code or label) to in-office days."""
+    """Map an RTO policy (code, label, or producer prose) to in-office days."""
     normalized = _normalized(value).replace("_", " ")
     mapping = {
         "r": 0, "remote": 0,
         "h": 3, "hybrid": 3,
         "o": 5, "in-office": 5, "in office": 5, "onsite": 5,
     }
-    return mapping.get(normalized)
+    if normalized in mapping:
+        return mapping[normalized]
+    # CompanyFieldEvidence stores prose (e.g. "Remote first", "Hybrid 3 days",
+    # "Five days in office, no exceptions"). Match the strongest explicit
+    # signal; an explicit office term wins, then hybrid, then remote.
+    if any(token in normalized for token in ("in-office", "in office", "onsite", "office")):
+        return 5
+    if "hybrid" in normalized:
+        return 3
+    if "remote" in normalized:
+        return 0
+    return None
 
 
 def _mode_from_rto(value: Any) -> str | None:
     """Map a normalized RTO value to a work mode."""
     return {0: "remote", 3: "hybrid", 5: "in-office"}.get(_rto_days(value))
+
+
+def _public_status(value: Any) -> bool | None:
+    """Classify public-status ``value_text`` prose as public / private / unknown.
+
+    ``CompanyFieldEvidence`` for ``public_status`` stores prose such as
+    ``Public company`` or ``Private company``; a value that cannot be classified
+    yields ``None`` (unknown).
+    """
+    text = _normalized(value).replace("_", " ")
+    if not text:
+        return None
+    negative = ("private", "privately held", "closely held", "not public")
+    positive = ("public", "publicly", "listed", "ticker", "nasdaq", "nyse", "ipo")
+    for token in negative:
+        if token in text:
+            return False
+    for token in positive:
+        if token in text:
+            return True
+    return None
 
 
 def _resolve_value(
@@ -551,13 +639,15 @@ def _resolve_value(
     direct_names: tuple[str, ...],
     *,
     default_guard: Any = None,
+    metadata: dict[str, Any] | None = None,
 ) -> tuple[Any, str, Any, bool] | None:
     """Resolve a requirement datum: accepted evidence first, then a direct field.
 
     Returns ``(observed, source_kind, source_id, scope_ok)`` or ``None`` when
     the datum is absent or falls back to an unstated model default (so it can
     never establish a verified result). ``default_guard`` marks a direct value
-    equal to a model default as unknown.
+    equal to a model default as unknown. ``metadata`` may be precomputed once
+    per listing with :func:`_metadata`.
     """
     if evidence and field_key and field_key in evidence:
         row = evidence[field_key]
@@ -567,41 +657,64 @@ def _resolve_value(
             row.pk,
             _evidence_in_scope(row, listing),
         )
-    value = _organization_value(listing, organization, *direct_names)
+    value, src = _organization_value_source(listing, organization, *direct_names, metadata=metadata)
     if value in (None, ""):
         return None
     if default_guard is not None and default_guard(value):
         return None
-    return value, "field", direct_names[0], True
+    return value, "field", src, True
 
 
-def _equity_value(listing: Any, organization: Any) -> Any:
-    return _metadata(listing, organization).get("equity_percent")
+def _equity_value(listing: Any, organization: Any, *, metadata: dict[str, Any] | None = None) -> Any:
+    if metadata is None:
+        metadata = _metadata(listing, organization)
+    return metadata.get("equity_percent")
 
 
-def _is_set(path: str, criteria: JobCriteria) -> bool:
-    if path in criteria.importance:
-        return True
-    return {
-        "compensation.minimum_salary": criteria.min_salary is not None,
-        "compensation.equity_minimum_percent": criteria.equity_minimum is not None,
-        "compensation.require_public_company": criteria.require_public_company is True,
-        "work_location.modes": bool(criteria.work_modes),
-        "work_location.countries": bool(criteria.countries),
-        "work_location.max_in_office_days": criteria.max_in_office_days is not None,
-        "geography.regions": bool(criteria.regions),
-        "geography.remote_friendly": criteria.remote_friendly is not None,
-        "industry": bool(criteria.industries),
-        "funding_stage": bool(criteria.funding_stages),
-        "culture": bool(criteria.culture_tags),
-        "vesting.max_cliff_months": criteria.max_cliff_months is not None,
-        "vesting.max_vesting_months": criteria.max_vesting_months is not None,
-        "vesting.prefer_accelerated": criteria.prefer_accelerated is not None,
-    }[path]
+def _requirement_set_paths(criteria: JobCriteria) -> tuple[str, ...]:
+    """Return the criterion paths whose *value* is actually set, in order.
+
+    ``importance`` is a weight, not a value: a document that names a criterion
+    in ``importance`` without its value (e.g. importance.minimum_salary=1.0
+    with no ``minimum_salary``) must not be evaluated — it previously reached
+    the evaluator with ``threshold=None`` and raised a bare ``TypeError``.
+    """
+    paths: list[str] = []
+    if criteria.min_salary is not None:
+        paths.append("compensation.minimum_salary")
+    if criteria.equity_minimum is not None:
+        paths.append("compensation.equity_minimum_percent")
+    if criteria.require_public_company is True:
+        paths.append("compensation.require_public_company")
+    if criteria.work_modes:
+        paths.append("work_location.modes")
+    if criteria.countries:
+        paths.append("work_location.countries")
+    if criteria.max_in_office_days is not None:
+        paths.append("work_location.max_in_office_days")
+    if criteria.regions:
+        paths.append("geography.regions")
+    if criteria.remote_friendly is not None:
+        paths.append("geography.remote_friendly")
+    if criteria.industries:
+        paths.append("industry")
+    if criteria.funding_stages:
+        paths.append("funding_stage")
+    if criteria.culture_tags:
+        paths.append("culture")
+    if criteria.max_cliff_months is not None:
+        paths.append("vesting.max_cliff_months")
+    if criteria.max_vesting_months is not None:
+        paths.append("vesting.max_vesting_months")
+    if criteria.prefer_accelerated is not None:
+        paths.append("vesting.prefer_accelerated")
+    return tuple(paths)
 
 
 def _eval_requirement(
-    path: str, listing: Any, organization: Any, criteria: JobCriteria, evidence: Mapping[str, Any] | None
+    path: str, listing: Any, organization: Any, criteria: JobCriteria, evidence: Mapping[str, Any] | None,
+    *,
+    metadata: dict[str, Any] | None = None,
 ) -> RequirementOutcome | None:
     """Evaluate one canonical requirement into a :class:`RequirementOutcome`."""
     fk = _EVIDENCE_FIELD_KEY.get(path)
@@ -610,6 +723,14 @@ def _eval_requirement(
         minimum = _decimal(getattr(listing, "compensation_min", None))
         maximum = _decimal(getattr(listing, "compensation_max", None))
         threshold = criteria.min_salary
+        if threshold is None:
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
+        currency = _text(getattr(listing, "compensation_currency", "")).upper()
+        if currency and currency != criteria.currency:
+            # Amounts in different currencies are incomparable: a hard salary
+            # in the user's currency can never be verified against a listing
+            # published in another.
+            return RequirementOutcome(path, MISMATCH, currency, "field", "listing.compensation_currency")
         if minimum is None and maximum is None:
             return RequirementOutcome(path, UNKNOWN, None, None, None)
         if minimum is not None and minimum >= threshold:
@@ -619,7 +740,7 @@ def _eval_requirement(
         return RequirementOutcome(path, UNKNOWN, None, None, None)
 
     if path == "compensation.equity_minimum_percent":
-        equity = _decimal(_equity_value(listing, organization))
+        equity = _decimal(_equity_value(listing, organization, metadata=metadata))
         if equity is None:
             return RequirementOutcome(path, UNKNOWN, None, None, None)
         threshold = Decimal(str(criteria.equity_minimum))
@@ -627,15 +748,30 @@ def _eval_requirement(
         return RequirementOutcome(path, status, float(equity), "field", "source_metadata.equity_percent")
 
     if path == "compensation.require_public_company":
+        # Public status is its own evidence field (``public_status``), whose
+        # prose ("Public company" / "Private company") is the direct answer.
+        # ``funding_round`` evidence ("Series A", "Seed") says nothing about
+        # public status, so it must never back this requirement.
+        if evidence and fk and fk in evidence:
+            row = evidence[fk]
+            if not _evidence_in_scope(row, listing):
+                return RequirementOutcome(path, UNKNOWN, None, "evidence", row.pk, scope_ok=False)
+            is_public = _public_status(row.value_text)
+            if is_public is None:
+                return RequirementOutcome(path, UNKNOWN, None, "evidence", row.pk)
+            status = MATCH if is_public else MISMATCH
+            return RequirementOutcome(path, status, row.value_text, "evidence", row.pk)
+        # Direct: ``funding_round == "P"`` is the model default, so it cannot
+        # verify public status; an explicit private stage is a verified "not
+        # public".
         resolved = _resolve_value(
-            listing, organization, evidence, fk, ("funding_round",),
-            default_guard=lambda v: v == "P",
+            listing, organization, None, None, ("funding_round",),
+            default_guard=lambda v: _normalized(v) == "p",
+            metadata=metadata,
         )
         if resolved is None:
             return RequirementOutcome(path, UNKNOWN, None, None, None)
         observed, sk, sid, scope_ok = resolved
-        if not scope_ok:
-            return RequirementOutcome(path, UNKNOWN, None, sk, sid, scope_ok=False)
         status = MATCH if str(observed) == "P" else MISMATCH
         return RequirementOutcome(path, status, str(observed), sk, sid)
 
@@ -649,29 +785,54 @@ def _eval_requirement(
                 return RequirementOutcome(path, UNKNOWN, None, "evidence", row.pk)
             status = MATCH if mode in criteria.work_modes else MISMATCH
             return RequirementOutcome(path, status, mode, "evidence", row.pk)
-        mode = _location_mode(listing, organization)
-        if mode is None:
-            return RequirementOutcome(path, UNKNOWN, None, None, None)
-        source = "listing.is_remote" if getattr(listing, "is_remote", None) in (True, False) else "organization.rto_policy"
-        status = MATCH if mode in criteria.work_modes else MISMATCH
-        return RequirementOutcome(path, status, mode, "field", source)
-
-    if path == "work_location.countries":
-        resolved = _resolve_value(listing, organization, evidence, fk, ("location_text",))
+        is_remote = getattr(listing, "is_remote", None)
+        if is_remote is True:
+            status = MATCH if "remote" in criteria.work_modes else MISMATCH
+            return RequirementOutcome(path, status, "remote", "field", "listing.is_remote")
+        # Non-remote or unknown: refine via the organization RTO policy, but an
+        # unstated default ``H`` must never establish a "hybrid" match (AC-5).
+        resolved = _resolve_value(
+            listing, organization, None, None, ("rto_policy",),
+            default_guard=lambda v: _normalized(v) == "h",
+            metadata=metadata,
+        )
         if resolved is None:
             return RequirementOutcome(path, UNKNOWN, None, None, None)
         observed, sk, sid, scope_ok = resolved
-        if not scope_ok:
-            return RequirementOutcome(path, UNKNOWN, None, sk, sid, scope_ok=False)
+        mode = _mode_from_rto(observed)
+        if mode is None:
+            return RequirementOutcome(path, UNKNOWN, None, sk, sid)
+        status = MATCH if mode in criteria.work_modes else MISMATCH
+        return RequirementOutcome(path, status, mode, sk, sid)
+
+    if path == "work_location.countries":
+        # Accepted company "locations" evidence first, then the listing's own
+        # ``location_text`` — a listing attribute the organization resolver
+        # never reads.
+        observed: Any = None
+        sk: Any = None
+        sid: Any = None
+        if evidence and fk and fk in evidence:
+            row = evidence[fk]
+            if not _evidence_in_scope(row, listing):
+                return RequirementOutcome(path, UNKNOWN, None, "evidence", row.pk, scope_ok=False)
+            observed, sk, sid = row.value_text, "evidence", row.pk
+        else:
+            observed = getattr(listing, "location_text", None)
+            if observed not in (None, ""):
+                sk, sid = "field", "listing.location_text"
+        if observed in (None, ""):
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
         location = _normalized(observed)
         matched = [c for c in criteria.countries if _normalized(c) and _normalized(c) in location]
         status = MATCH if matched else MISMATCH
-        return RequirementOutcome(path, status, matched[0] if matched else None, sk, sid)
+        return RequirementOutcome(path, status, matched[0] if matched else observed, sk, sid)
 
     if path == "work_location.max_in_office_days":
         resolved = _resolve_value(
             listing, organization, evidence, fk, ("rto_policy",),
             default_guard=lambda v: v == "H",
+            metadata=metadata,
         )
         if resolved is None:
             return RequirementOutcome(path, UNKNOWN, None, None, None)
@@ -700,17 +861,20 @@ def _eval_requirement(
         return RequirementOutcome(path, status, remote, "field", "listing.is_remote")
 
     if path == "industry":
-        actual = _strings(_organization_value(listing, organization, "industry", "industries"))
+        value, src = _organization_value_source(listing, organization, "industry", "industries", metadata=metadata)
+        actual = _strings(value)
         if not actual:
             return RequirementOutcome(path, UNKNOWN, None, None, None)
         matched = sorted(actual & criteria.industries)
         status = MATCH if matched else MISMATCH
-        return RequirementOutcome(path, status, matched[0] if matched else None, "field", "organization.industry")
+        observed = matched[0] if matched else (sorted(actual)[0] if actual else None)
+        return RequirementOutcome(path, status, observed, "field", src)
 
     if path == "funding_stage":
         resolved = _resolve_value(
             listing, organization, evidence, fk, ("funding_round", "funding_stage"),
             default_guard=lambda v: v == "P",
+            metadata=metadata,
         )
         if resolved is None:
             return RequirementOutcome(path, UNKNOWN, None, None, None)
@@ -723,26 +887,34 @@ def _eval_requirement(
         return RequirementOutcome(path, status, stage, sk, sid)
 
     if path == "culture":
-        metadata = _metadata(listing, organization)
-        tags = _strings(_organization_value(listing, organization, "culture_tags", "culture"))
-        haystack = " ".join((_text(getattr(listing, "description_excerpt", "")), _text(metadata.get("culture"))))
+        tags_value, tag_src = _organization_value_source(listing, organization, "culture_tags", "culture", metadata=metadata)
+        tags = _strings(tags_value)
+        haystack = " ".join((_text(getattr(listing, "description_excerpt", "")), _text((metadata or {}).get("culture"))))
         matched = [tag for tag in criteria.culture_tags if tag in haystack or tag in tags]
         if not haystack.strip() and not tags:
             return RequirementOutcome(path, UNKNOWN, None, None, None)
         status = MATCH if matched else MISMATCH
-        return RequirementOutcome(path, status, matched[0] if matched else None, "field", "listing.description_excerpt")
+        observed = matched[0] if matched else (sorted(tags)[0] if tags else None)
+        # Cite the field that supplied the value: organization culture tags
+        # when they carried the match, otherwise the listing description.
+        if matched and tag_src and matched[0] in tags:
+            source = tag_src
+        else:
+            source = "listing.description_excerpt"
+        return RequirementOutcome(path, status, observed, "field", source)
 
     if path in ("vesting.max_cliff_months", "vesting.max_vesting_months"):
         field_name = "cliff_months" if path == "vesting.max_cliff_months" else "vesting_months"
         maximum = criteria.max_cliff_months if path == "vesting.max_cliff_months" else criteria.max_vesting_months
-        actual = _decimal(_organization_value(listing, organization, field_name, f"max_{field_name}"))
+        value, src = _organization_value_source(listing, organization, field_name, f"max_{field_name}", metadata=metadata)
+        actual = _decimal(value)
         if actual is None:
             return RequirementOutcome(path, UNKNOWN, None, None, None)
         status = MATCH if actual <= maximum else MISMATCH
-        return RequirementOutcome(path, status, int(actual), "field", f"organization.{field_name}")
+        return RequirementOutcome(path, status, int(actual), "field", src)
 
     if path == "vesting.prefer_accelerated":
-        resolved = _resolve_value(listing, organization, evidence, fk, ("accelerated_vesting",))
+        resolved = _resolve_value(listing, organization, evidence, fk, ("accelerated_vesting",), metadata=metadata)
         if resolved is None:
             return RequirementOutcome(path, UNKNOWN, None, None, None)
         observed, sk, sid, scope_ok = resolved
@@ -761,20 +933,24 @@ def evaluate_requirements(
     *,
     organization: Any = None,
     evidence: Mapping[str, Any] | None = None,
+    paths: tuple[str, ...] | None = None,
 ) -> list[RequirementOutcome]:
     """Evaluate every user-set canonical requirement for one listing.
 
     Returns a :class:`RequirementOutcome` per set requirement in
     :data:`REQUIREMENT_ORDER` order. Accepted evidence resolves first, then a
     documented direct field; an unstated model default or absent datum yields
-    ``unknown`` and can never produce a verified ``match``.
+    ``unknown`` and can never produce a verified ``match``. ``paths`` may be
+    precomputed with :func:`_requirement_set_paths` to avoid recomputing it per
+    listing in a bulk ranking pass.
     """
     organization = organization if organization is not None else getattr(listing, "organization", None)
+    if paths is None:
+        paths = _requirement_set_paths(criteria)
+    metadata = _metadata(listing, organization)
     outcomes: list[RequirementOutcome] = []
-    for path in REQUIREMENT_ORDER:
-        if not _is_set(path, criteria):
-            continue
-        outcome = _eval_requirement(path, listing, organization, criteria, evidence)
+    for path in paths:
+        outcome = _eval_requirement(path, listing, organization, criteria, evidence, metadata=metadata)
         if outcome is not None:
             outcomes.append(outcome)
     return outcomes
@@ -805,7 +981,7 @@ def hard_exclusion_reasons(
 def _funding_label(code: Any) -> str:
     if not code:
         return "Unknown"
-    return _FUNDING_LABELS.get(str(code), str(code))
+    return _FUNDING_LABELS.get(str(code).upper(), str(code))
 
 
 def _rto_label(code: Any) -> str:
@@ -915,11 +1091,14 @@ def rank_listing(
     config: RankingConfig = DEFAULT_CONFIG,
     *,
     evidence: Mapping[str, Any] | None = None,
+    paths: tuple[str, ...] | None = None,
 ) -> MatchResult:
     """Apply hard exclusions, then calculate deterministic factor contributions."""
 
     organization = getattr(listing, "organization", None)
-    outcomes = evaluate_requirements(listing, criteria, organization=organization, evidence=evidence)
+    outcomes = evaluate_requirements(
+        listing, criteria, organization=organization, evidence=evidence, paths=paths
+    )
     reasons = _excluded(listing, criteria, outcomes)
     listing_id = int(getattr(listing, "pk", getattr(listing, "id", 0)) or 0)
     if reasons:
@@ -955,6 +1134,7 @@ def rank_listings(
     """Rank listings by descending score and ascending ID for ties."""
 
     evidence = evidence or {}
+    paths = _requirement_set_paths(criteria)
 
     def _evidence_for(listing: Any) -> Mapping[str, Any]:
         organization = getattr(listing, "organization", None)
@@ -962,7 +1142,7 @@ def rank_listings(
         return evidence.get(org_id) or {}
 
     results = [
-        rank_listing(listing, criteria, config, evidence=_evidence_for(listing))
+        rank_listing(listing, criteria, config, evidence=_evidence_for(listing), paths=paths)
         for listing in listings
     ]
     return sorted(results, key=lambda result: (-result.score, result.listing_id))

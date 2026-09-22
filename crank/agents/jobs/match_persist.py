@@ -3,15 +3,14 @@
 """Persist deterministic job-ranking results for an owner."""
 
 from django.db import transaction
-from django.db.models import Max
 from django.utils import timezone
 
 from crank.agents.jobs.matching import rank_listings
 from crank.models.job import JobListing
 from crank.models.job_match import JobMatch
 from crank.models.preference import UserPreference
-from crank.models.publication import PublicationEvent
 from crank.services.company_evidence import resolve_field_evidence_for_orgs
+from crank.services.publication import listing_data_revisions
 
 
 def _factor_data(factors):
@@ -42,21 +41,6 @@ def _preference_revision(user):
         return None
 
 
-def _data_revisions(org_ids):
-    """Latest ``PublicationEvent.id`` per organization (the data revision)."""
-    if not org_ids:
-        return {}
-    rows = (
-        PublicationEvent.objects.filter(
-            target_type=PublicationEvent.TargetType.ORGANIZATION,
-            target_id__in=org_ids,
-        )
-        .values("target_id")
-        .annotate(max_id=Max("id"))
-    )
-    return {row["target_id"]: row["max_id"] for row in rows}
-
-
 def persist_matches(user, listings, criteria, config):
     """Rank and persist non-excluded, active listings for ``user``.
 
@@ -71,7 +55,7 @@ def persist_matches(user, listings, criteria, config):
     active = [listing for listing in listings if listing.status == active_status]
     org_ids = {_org_id(listing) for listing in active if _org_id(listing) is not None}
     evidence = resolve_field_evidence_for_orgs(org_ids)
-    data_revisions = _data_revisions(list(org_ids))
+    data_revisions = listing_data_revisions(active)
     preference_revision = _preference_revision(user)
 
     ranked = rank_listings(active, criteria, config, evidence=evidence)
@@ -104,7 +88,7 @@ def persist_matches(user, listings, criteria, config):
                 "score": result.score,
                 "factors": _factor_data(result.factors),
                 "preference_revision": preference_revision,
-                "data_revision": data_revisions.get(org_id),
+                "data_revision": data_revisions.get(listing.pk),
                 "generated_at": now,
                 "requirements": [outcome.as_dict() for outcome in result.requirements],
                 "evidence_ids": evidence_ids,
@@ -120,7 +104,7 @@ def persist_matches(user, listings, criteria, config):
                 match.score = result.score
                 match.factors = defaults["factors"]
                 match.preference_revision = preference_revision
-                match.data_revision = data_revisions.get(org_id)
+                match.data_revision = data_revisions.get(listing.pk)
                 match.generated_at = now
                 match.requirements = defaults["requirements"]
                 match.evidence_ids = evidence_ids

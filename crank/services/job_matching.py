@@ -377,24 +377,6 @@ def _resolve_evidence(org_ids: list[int]) -> dict[int, dict[str, Any]]:
     return resolve_field_evidence_for_orgs(org_ids)
 
 
-def _data_revisions(org_ids: list[int]) -> dict[int, int]:
-    if not org_ids:
-        return {}
-    from django.db.models import Max
-
-    from crank.models.publication import PublicationEvent
-
-    rows = (
-        PublicationEvent.objects.filter(
-            target_type=PublicationEvent.TargetType.ORGANIZATION,
-            target_id__in=org_ids,
-        )
-        .values("target_id")
-        .annotate(max_id=Max("id"))
-    )
-    return {r["target_id"]: r["max_id"] for r in rows}
-
-
 # ---------------------------------------------------------------------------
 # Bounded relaxation preview (issue #476)
 # ---------------------------------------------------------------------------
@@ -614,7 +596,9 @@ def match_jobs(
 
     org_ids = _org_ids_from(listings)
     evidence = _resolve_evidence(org_ids)
-    data_revisions = _data_revisions(org_ids)
+    from crank.services.publication import listing_data_revisions
+
+    data_revisions = listing_data_revisions(listings)
 
     ranked = rank_listings_with_reasons(
         listings,
@@ -660,7 +644,9 @@ def match_organizations(
 
     org_ids = {int(org.pk) for org in orgs if getattr(org, "pk", None)}
     evidence = _resolve_evidence(list(org_ids))
-    data_revisions = _data_revisions(list(org_ids))
+    from crank.services.publication import organization_data_revisions
+
+    data_revisions = organization_data_revisions(list(org_ids))
     generated_at = timezone.now()
 
     survivors = [
@@ -784,7 +770,7 @@ def rank_listings_with_reasons(
             evidence_ids=evidence_ids,
             preference_revision=preference_revision,
             ranking_version=config.version,
-            data_revision=data_revisions.get(org_id),
+            data_revision=data_revisions.get(match.listing_id),
             generated_at=generated_at,
             stale=False,
         ))

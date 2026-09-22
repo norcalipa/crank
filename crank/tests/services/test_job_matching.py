@@ -141,7 +141,7 @@ class HardFilterTests(TestCase):
             2,
         )
         public_org = org(funding_round="P")
-        evidence = {"funding_round": evidence_row("P")}
+        evidence = {"public_status": evidence_row("Public company")}
         result = rank_listing(listing(organization=public_org), criteria, evidence=evidence)
         assert not result.excluded
 
@@ -271,7 +271,7 @@ class ReasonStringTests(TestCase):
         results = rank_listings_with_reasons(
             [listing(organization=org(pk=7, funding_round="P"))],
             criteria,
-            evidence={7: {"funding_round": evidence_row("P")}},
+            evidence={7: {"public_status": evidence_row("Public company")}},
         )
         assert len(results) == 1
         assert "Public company" in results[0].reasons
@@ -390,7 +390,7 @@ class MatchingServiceIntegrationTests(TestCase):
         )
         # The public requirement is only verified by accepted evidence (AC-5):
         # an unstated ``funding_round`` default of "P" is otherwise unknown.
-        make_evidence(self.org_public, "funding_round", "P")
+        make_evidence(self.org_public, "public_status", "Public company")
 
     def test_match_jobs_returns_only_matching_listings(self):
         """match_jobs should exclude pre-IPO and in-office when filters are set."""
@@ -459,7 +459,7 @@ class PreferencesOverrideTests(TestCase):
             name="StartupCo", funding_round="A", rto_policy="R"
         )
         # The public-only override is only verified by accepted evidence (AC-5).
-        make_evidence(self.org_public, "funding_round", "P")
+        make_evidence(self.org_public, "public_status", "Public company")
         self.source = JobSourceCatalog.objects.create(
             name="Synthetic",
             adapter_key="synthetic.v1",
@@ -1282,7 +1282,7 @@ class CrossSurfaceReasonTests(TestCase):
         self.org = Organization.objects.create(
             name="PublicCo", funding_round="P", rto_policy="R",
         )
-        make_evidence(self.org, "funding_round", "P")
+        make_evidence(self.org, "public_status", "Public company")
         self.source = JobSourceCatalog.objects.create(
             name="Synthetic", adapter_key="synthetic.v1",
             base_url="https://jobs.example.test", enabled=True,

@@ -36,8 +36,8 @@ function statusPayload(state: string, overrides: Partial<{
     };
 }
 
-function matchPayload(count: number) {
-    return {count, next: null, previous: null, results: []};
+function matchPayload(count: number, results: any[] = []) {
+    return {count, next: null, previous: null, results};
 }
 
 function rankedPayload(jobs: any[] = [], orgs: any[] = []) {
@@ -71,7 +71,7 @@ const sampleOrgMatch = {
 // Hoisted to module scope so every describe block in this file can reuse it.
 async function renderPanel(
     statusState: string = 'ok',
-    opts: { count?: number; staffDetail?: string; statusOverrides?: Record<string, unknown>; rankedJobs?: any[]; rankedOrgs?: any[]; rankedStatus?: number } = {},
+    opts: { count?: number; staffDetail?: string; statusOverrides?: Record<string, unknown>; rankedJobs?: any[]; rankedOrgs?: any[]; rankedStatus?: number; storedResults?: any[] } = {},
 ) {
     const count = opts.count ?? 0;
     const rankedJobs = opts.rankedJobs ?? [];
@@ -91,7 +91,7 @@ async function renderPanel(
             return Promise.resolve(jsonResponse(rankedPayload(rankedJobs, rankedOrgs), rankedStatus));
         }
         if (url.includes('/api/job-matches/')) {
-            return Promise.resolve(jsonResponse(matchPayload(count)));
+            return Promise.resolve(jsonResponse(matchPayload(count, opts.storedResults ?? [])));
         }
         return Promise.resolve(jsonResponse({}));
     });
@@ -278,6 +278,34 @@ describe('JobMatchPanel', () => {
             await renderPanel('ok', { count: 1 });
             const panel = screen.getByTestId('job-match-panel');
             await waitFor(() => expect(panel).toHaveTextContent('1 job match ready to review'));
+        });
+
+        test('shows stale notice + timestamp from the persisted result revision', async () => {
+            // The ranked endpoint is recomputed live (never stale); the persisted
+            // list is the only surface that can flag a stale result. Feed a
+            // stored result whose revision is behind the current document.
+            await renderPanel('ok', {
+                count: 1,
+                storedResults: [{
+                    id: 1,
+                    revision: {
+                        preference_revision: 1,
+                        stale: true,
+                        generated_at: '2026-09-22T08:00:00Z',
+                    },
+                }],
+            });
+            expect(await screen.findByTestId('stale-notice')).toBeInTheDocument();
+            expect(screen.getByTestId('stale-refresh')).toHaveTextContent('Refresh matches');
+            expect(screen.getByTestId('results-timestamp')).toBeInTheDocument();
+        });
+
+        test('omits stale notice when persisted revision is not stale', async () => {
+            await renderPanel('ok', {
+                count: 1,
+                storedResults: [{id: 1, revision: {preference_revision: 1, stale: false}}],
+            });
+            expect(screen.queryByTestId('stale-notice')).not.toBeInTheDocument();
         });
     });
 
@@ -894,6 +922,16 @@ describe('JobMatchPanel requirement figures and states (issue #467)', () => {
         // metadata treatment or the green satisfied treatment.
         expect(unknownChip).not.toHaveClass('bg-secondary', 'job-match-chip--match');
         expect(unknownChip).toHaveTextContent('?');
+    });
+
+    test('requirement chips expose status in their accessible name', async () => {
+        // The status must not be conveyed by the punctuation glyph alone (which
+        // screen readers announce inconsistently): the accessible name carries
+        // the outcome word, e.g. "Industry: mismatch".
+        await renderPanel('ok', {count: 1, rankedJobs: [jobWithRequirements]});
+        expect(screen.getByTestId('requirement-industry')).toHaveAttribute('aria-label', 'Industry: mismatch');
+        expect(screen.getByTestId('requirement-compensation.minimum_salary')).toHaveAttribute('aria-label', 'Minimum salary: match');
+        expect(screen.getByTestId('requirement-work_location.max_in_office_days')).toHaveAttribute('aria-label', 'In-office days: unknown');
     });
 
     test('renders unsupported-criteria notice with human labels, never raw field names', async () => {

@@ -1035,3 +1035,47 @@ class TestMatchReferenceValidation:
         )
         result = orch.run(user_prompt="q", conversation=[], preference_markdown="")
         assert result.message == "Your compensation.minimum_salary requirement is met."
+
+    def test_unexposed_top_level_requirement_is_rejected(self):
+        """Bare top-level paths (industry/funding_stage/culture) are validated too,
+        not just the dotted compensation/work_location/geography/vesting paths."""
+        orch, _gw = self._orchestrator(
+            "Your funding_stage requirement is unmet.",
+            requirements=[{"path": "compensation.minimum_salary", "status": "match"}],
+        )
+        with pytest.raises(InvalidRequirementReferenceError):
+            orch.run(user_prompt="q", conversation=[], preference_markdown="")
+
+    def test_unexposed_culture_requirement_is_rejected(self):
+        orch, _gw = self._orchestrator(
+            "The culture requirement failed.",
+            requirements=[{"path": "compensation.minimum_salary", "status": "match"}],
+        )
+        with pytest.raises(InvalidRequirementReferenceError):
+            orch.run(user_prompt="q", conversation=[], preference_markdown="")
+
+    def test_evidence_id_bypass_wording_is_rejected(self):
+        """The "evidence id N" wording must not escape citation validation."""
+        orch, _gw = self._orchestrator(
+            "This is backed by evidence id 999.",
+            requirements=[{"path": "compensation.minimum_salary", "status": "match"}],
+            evidence_ids=[7],
+        )
+        with pytest.raises(InvalidRequirementReferenceError):
+            orch.run(user_prompt="q", conversation=[], preference_markdown="")
+
+    def test_outcome_evidence_id_is_exposed_for_citation(self):
+        """An evidence id tied to an outcome (source_kind='evidence') is citable,
+        even when it is not in the row-level evidence_ids list."""
+        orch, gw = self._orchestrator(
+            "This is backed by evidence #9.",
+            requirements=[{
+                "path": "compensation.require_public_company",
+                "status": "match",
+                "source_kind": "evidence",
+                "source_id": 9,
+            }],
+            evidence_ids=[],
+        )
+        result = orch.run(user_prompt="q", conversation=[], preference_markdown="")
+        assert result.message == "This is backed by evidence #9."

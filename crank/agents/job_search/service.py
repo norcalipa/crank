@@ -46,10 +46,16 @@ from crank.agents.job_search.types import (
 from crank.services import monitoring
 
 #: Requirement paths the assistant may reference only when the match tool
-#: actually exposed them (issue #467 AC-11).
-_REQUIREMENT_PATH_RE = re.compile(r"\b(?:compensation|work_location|geography|vesting)\.[a-z_]+\b")
-#: A bounded "evidence #<id>" reference form.
-_EVIDENCE_REF_RE = re.compile(r"\bevidence\s*[#:]?\s*(\d+)", re.IGNORECASE)
+#: actually exposed them (issue #467 AC-11). Matches the dotted paths and the
+#: three bare top-level paths (``industry``, ``funding_stage``, ``culture``)
+#: that the earlier regex overlooked.
+_REQUIREMENT_PATH_RE = re.compile(
+    r"\b(?:compensation|work_location|geography|vesting)\.[a-z_]+\b"
+    r"|\b(?:industry|funding_stage|culture)\b"
+)
+#: A bounded "evidence #<id>" reference form. Accepts the ``id`` wording
+#: ("evidence id 999") the earlier regex silently let through unvalidated.
+_EVIDENCE_REF_RE = re.compile(r"\bevidence\s*(?:id\s+)?[#:]?\s*(\d+)", re.IGNORECASE)
 
 logger = logging.getLogger("crank.agents.job_search")
 
@@ -661,6 +667,12 @@ class JobSearchOrchestrator:
                 for req in row.get("requirements", []) or []:
                     if isinstance(req, dict) and req.get("path"):
                         exposed_paths.add(req["path"])
+                    # Evidence ids are tied to the individual outcome that
+                    # cited them, not just the row-level list.
+                    if isinstance(req, dict) and req.get("source_kind") == "evidence":
+                        src_id = req.get("source_id")
+                        if isinstance(src_id, int) and not isinstance(src_id, bool):
+                            exposed_evidence_ids.add(src_id)
                 for eid in row.get("evidence_ids", []) or []:
                     if isinstance(eid, bool):
                         continue
