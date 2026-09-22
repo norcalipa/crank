@@ -19,7 +19,12 @@ from crank.agents.job_search.errors import InvalidModelOutputError
 _REQUIRED_KEYS = frozenset(
     {"message", "cited_organization_ids", "cited_job_listing_ids", "preference_patch"}
 )
-_ALLOWED_KEYS = _REQUIRED_KEYS
+_ALLOWED_KEYS = _REQUIRED_KEYS | {"preference_scope"}
+#: Valid values for the optional ``preference_scope`` key (issue #466 review):
+#: ``account`` proposes a saved preference change (applied only after the user
+#: reviews and applies the proposal); ``search`` proposes a this-search-only
+#: filter that is never persisted.
+_PREFERENCE_SCOPES = frozenset({"account", "search"})
 #: Absolute ceiling on how many cited organization IDs are accepted.
 _MAX_CITED_ORGANIZATIONS = 200
 #: Absolute ceiling on how many cited job-listing IDs are accepted.
@@ -183,13 +188,20 @@ class AssistantCompletion:
         Unique, ordered job-listing IDs the reply references. These are
         validated downstream against the server-controlled listing tools.
     preference_patch:
-        Optional typed preference update forwarded to the preference service.
+        Optional typed preference update proposed to the preference service.
+        It is never applied in-turn: the orchestrator turns it into a
+        read-only proposal the user reviews and applies (or dismisses)
+        afterwards (issue #466 review).
+    preference_scope:
+        ``"account"`` (default) proposes a saved change; ``"search"``
+        proposes a this-search-only filter that is never persisted.
     """
 
     message: str
     cited_organization_ids: tuple[int, ...] = ()
     cited_job_listing_ids: tuple[int, ...] = ()
     preference_patch: dict[str, Any] | None = None
+    preference_scope: str = "account"
 
     @classmethod
     def from_json(cls, raw: Any) -> AssistantCompletion:
@@ -291,11 +303,22 @@ class AssistantCompletion:
                     f"preference_patch exceeds {_MAX_PATCH_JSON_BYTES} bytes"
                 )
 
+        scope = payload.get("preference_scope", "account")
+        if scope is None:
+            scope = "account"
+        if not isinstance(scope, str) or scope not in _PREFERENCE_SCOPES:
+            raise InvalidModelOutputError(
+                "model output 'preference_scope' must be one of: {}".format(
+                    ", ".join(sorted(_PREFERENCE_SCOPES))
+                )
+            )
+
         return cls(
             message=message.strip(),
             cited_organization_ids=tuple(sorted(org_ids)),
             cited_job_listing_ids=tuple(sorted(listing_ids)),
             preference_patch=_freeze_patch(patch) if patch is not None else None,
+            preference_scope=scope,
         )
 
     @property

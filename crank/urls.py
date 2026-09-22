@@ -49,6 +49,8 @@ from crank.views.job_search import (
     agent_conversation_export,
     agent_conversation_list,
     agent_conversation_reset,
+    agent_preference_apply,
+    agent_preference_undo,
 )
 from crank.views.job_search_page import job_search_page
 from crank.views.logout import CustomLogoutView
@@ -84,6 +86,8 @@ urlpatterns = [
     path('api/agent/conversations/<int:conversation_id>/export/', agent_conversation_export, name='agent-conversation-export'),
     path('api/agent/conversations/<int:conversation_id>/reset/', agent_conversation_reset, name='agent-conversation-reset'),
     path('api/agent/conversations/<int:conversation_id>/delete/', agent_conversation_delete, name='agent-conversation-delete'),
+    path('api/agent/preferences/apply/', agent_preference_apply, name='agent-preference-apply'),
+    path('api/agent/preferences/undo/', agent_preference_undo, name='agent-preference-undo'),
     path('api/job-matches/', job_match_list, name='job-match-list'),
     path('api/job-matches/<int:match_id>/', job_match_detail, name='job-match-detail'),
     path('api/job-matches/<int:match_id>/seen/', job_match_seen, name='job-match-seen'),

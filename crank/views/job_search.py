@@ -194,10 +194,18 @@ def _request_id(request):
     return rid[:128]
 
 
-def _error(request, status, error_type, message, request_id):
-    """Return the stable error envelope used by every failing request."""
+def _error(request, status, error_type, message, request_id, extra=None):
+    """Return the stable error envelope used by every failing request.
+
+    ``extra`` merges additional machine-readable keys into the error object
+    (e.g. ``current_revision`` on a 409 ``preference_stale`` so the caller can
+    offer a fresh review path without a second read, issue #466 review).
+    """
+    body = {"type": error_type, "message": message, "request_id": request_id}
+    if extra:
+        body.update(extra)
     return JsonResponse(
-        {"error": {"type": error_type, "message": message, "request_id": request_id}},
+        {"error": body},
         status=status,
         headers={"X-Request-ID": request_id},
     )
@@ -660,11 +668,19 @@ def agent_conversation_detail(request, conversation_id):
 
     try:
         service = JobSearchService()
-        reply_text, changed, results = service.run_turn(
+        turn_outcome = service.run_turn(
             conversation=conversation,
             user_message=user_message.content,
             persist_reply=_persist_reply,
         )
+        # Issue #466: orchestrator-backed providers also return an extras
+        # payload (applied preference ``changes``/``undo``); legacy providers
+        # and test doubles return the plain 3-tuple.
+        if len(turn_outcome) == 4:
+            reply_text, changed, results, pref_extras = turn_outcome
+        else:
+            reply_text, changed, results = turn_outcome
+            pref_extras = None
     except AssistantUnavailable:
         _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.FAILED, JobSearchTurn.FailureCode.ASSISTANT_UNAVAILABLE)
         monitoring.record_event("interactive_call", {
@@ -715,7 +731,7 @@ def agent_conversation_detail(request, conversation_id):
             "The assistant produced an unexpected response. Please try again.",
             request_id,
         )
-    except ServicePreferenceStale:
+    except ServicePreferenceStale as exc:
         # No dedicated failure code: the turn is simply failed-and-retryable
         # (the code is internal; clients read only the delivery state).
         _release_failed_turn(turn.pk)
@@ -727,12 +743,15 @@ def agent_conversation_detail(request, conversation_id):
         # The proposed patch was rejected by the optimistic-concurrency check:
         # the preference row changed while the turn was in flight, so nothing
         # was overwritten. The user turn remains persisted; the client can
-        # retry with the same idempotency key (issue #487).
+        # retry with the same idempotency key (issue #487). The envelope
+        # carries the machine-readable ``current_revision`` so the caller can
+        # offer a fresh review path without a second read (issue #466 review).
         return _error(
             request, 409, "preference_stale",
             "Your preferences changed while the assistant was responding. "
             "Please retry.",
             request_id,
+            extra={"current_revision": exc.current_revision},
         )
     except ServicePreferenceVersionUnavailable:
         _release_failed_turn(turn.pk)
@@ -920,11 +939,20 @@ def agent_conversation_detail(request, conversation_id):
             },
         )
 
+    response_payload = {
+        "message": serialize_message(assistant_message),
+        "preferences_changed": changed,
+    }
+    # Issue #466 review: surface the read-only preference proposal (proposal
+    # id, field-level diff, scope, client-held token) alongside the turn.
+    # Nothing was persisted in-turn; the user applies or dismisses the
+    # proposal through the apply endpoint. Additive only — an older server
+    # (or a legacy provider with no extras) simply omits the key, and the
+    # client guards on its presence.
+    if pref_extras and pref_extras.get("proposal") is not None:
+        response_payload["preference_proposal"] = pref_extras["proposal"]
     return JsonResponse(
-        {
-            "message": serialize_message(assistant_message),
-            "preferences_changed": changed,
-        },
+        response_payload,
         status=201,
         headers={"X-Request-ID": request_id},
     )
@@ -1037,6 +1065,215 @@ def agent_conversation_delete(request, conversation_id):
         )
     return JsonResponse(
         {"deleted": True}, status=200, headers={"X-Request-ID": request_id}
+    )
+
+
+@login_required
+@require_POST
+def agent_preference_apply(request):
+    """Apply or dismiss a chat-turn preference proposal (issue #466 review).
+
+    The chat turn never persists a model-proposed patch; it returns a
+    read-only proposal whose client-held token is ``{patch, scope,
+    base_revision}``. This endpoint carries the user's decision:
+
+    * ``decision="dismiss"`` — nothing is persisted; the proposal is simply
+      discarded (the token is client-held, so there is no server state to
+      clear).
+    * ``decision="apply"`` with ``scope="account"`` — the patch is applied
+      under the proposal's revision precondition
+      (``expected_revision=base_revision``); a conflict returns the stable
+      ``409 preference_stale`` envelope with the machine-readable
+      ``current_revision`` and writes nothing.
+    * ``decision="apply"`` with ``scope="search"`` — a this-search-only
+      filter: the in-memory effective document drives one match reload via
+      ``preferences_override`` and is NEVER saved (no revision/modified
+      change, no audit row, nothing in a later ``export()``).
+
+    The token is an ordinary owner-scoped preference patch: it is
+    re-validated by the canonical validator and applied for the
+    authenticated owner only, so a tampered token grants no authority the
+    user does not already have, and the revision precondition still blocks
+    overwriting a later edit.
+    """
+    request_id = _request_id(request)
+    payload, error = _body(request, request_id)
+    if error:
+        return error
+    token = payload.get("proposal")
+    decision = payload.get("decision", "apply")
+    from crank.services import preferences as pref_services
+
+    if decision == "dismiss":
+        return JsonResponse(
+            {"dismissed": True}, headers={"X-Request-ID": request_id}
+        )
+    if decision != "apply":
+        return _error(
+            request, 400, "invalid_request",
+            "Unknown proposal decision.", request_id,
+        )
+    if not isinstance(token, dict) or not isinstance(token.get("patch"), dict):
+        return _error(
+            request, 400, "invalid_request",
+            "The preference proposal is no longer valid.", request_id,
+        )
+    scope = token.get("scope", "account")
+    if scope not in ("account", "search"):
+        return _error(
+            request, 400, "invalid_request",
+            "The preference proposal is no longer valid.", request_id,
+        )
+    patch = token["patch"]
+    try:
+        pref_services.validate_patch(patch)
+    except pref_services.PreferenceError:
+        return _error(
+            request, 400, "invalid_request",
+            "The preference proposal is no longer valid.", request_id,
+        )
+
+    if scope == "search":
+        # This-search-only: compute the in-memory effective document and run
+        # one match reload against it. Nothing is persisted — no revision or
+        # modified change, no audit row, and a later export shows none of it.
+        try:
+            effective = pref_services.effective_document(request.user, patch)
+        except pref_services.PreferenceError:
+            return _error(
+                request, 400, "invalid_request",
+                "The preference proposal is no longer valid.", request_id,
+            )
+        from crank.agents.job_search import tools as js_tools
+        from crank.services import job_matching
+
+        def _override_match_service(user, limit):
+            return (
+                job_matching.match_jobs(
+                    user, limit=limit, preferences_override=effective
+                ),
+                job_matching.match_organizations(
+                    user, limit=limit, preferences_override=effective
+                ),
+            )
+
+        matches = js_tools.get_matches_for_user(
+            request.user,
+            limit=js_tools.MAX_MATCH_RESULTS,
+            match_service=_override_match_service,
+        )
+        return JsonResponse(
+            {
+                "applied": False,
+                "scope": "search",
+                "matches": matches,
+            },
+            headers={"X-Request-ID": request_id},
+        )
+
+    base_revision = token.get("base_revision")
+    if (
+        base_revision is None
+        or isinstance(base_revision, bool)
+        or not isinstance(base_revision, int)
+        or base_revision < 0
+    ):
+        # A missing/null/tampered precondition must never silently downgrade
+        # to the unchecked legacy path (issue #466 review).
+        return _error(
+            request, 400, "invalid_request",
+            "The preference proposal is no longer valid.", request_id,
+        )
+    try:
+        result = pref_services.apply_patch_to_user(
+            request.user, patch, expected_revision=base_revision
+        )
+    except pref_services.StalePreferenceError as exc:
+        return _error(
+            request, 409, "preference_stale",
+            "Your preferences changed since this proposal was prepared. "
+            "Please review the current preferences before applying.",
+            request_id,
+            extra={"current_revision": exc.current_revision},
+        )
+    except pref_services.PreferenceError:
+        return _error(
+            request, 400, "invalid_request",
+            "The preference proposal is no longer valid.", request_id,
+        )
+    except Exception as exc:
+        if is_database_locked(exc):
+            # Backend lock contention maps to the retryable 409 envelope
+            # (same contract as the guarded turn commit), never a 500.
+            return _error(
+                request, 409, "preference_stale",
+                "Your preferences could not be updated right now. Please retry.",
+                request_id,
+            )
+        # A NON-contention backend failure is never translated into the
+        # retryable 409 envelope; it keeps the stable 500 path.
+        logger.exception("preference apply failed")
+        return _error(
+            request, 500, "service_error",
+            "We couldn't update your preferences right now. Please retry.",
+            request_id,
+        )
+    return JsonResponse(
+        {
+            "applied": bool(result.get("changed")),
+            "scope": "account",
+            "revision": result.get("revision"),
+            "changes": result.get("changes"),
+            "undo": result.get("undo"),
+        },
+        headers={"X-Request-ID": request_id},
+    )
+
+
+@login_required
+@require_POST
+def agent_preference_undo(request):
+    """Apply a client-held undo token under its revision precondition (issue #466).
+
+    The token is an ordinary owner-scoped preference patch: it is re-validated
+    by the canonical validator and applied for the authenticated owner only,
+    so a tampered token grants no authority the user does not already have.
+    A revision conflict (an intervening edit) returns the stable
+    ``409 preference_stale`` envelope and writes nothing.
+    """
+    request_id = _request_id(request)
+    payload, error = _body(request, request_id)
+    if error:
+        return error
+    token = payload.get("undo")
+    from crank.services import preferences as pref_services
+
+    try:
+        result = pref_services.undo_preference_change(request.user, token)
+    except pref_services.StalePreferenceError as exc:
+        # The envelope carries the machine-readable ``current_revision`` so
+        # the caller can offer a fresh review path without a second read
+        # (issue #466 review, AC-5).
+        return _error(
+            request, 409, "preference_stale",
+            "Your preferences changed since this update. Please review the "
+            "current preferences before undoing.",
+            request_id,
+            extra={"current_revision": exc.current_revision},
+        )
+    except pref_services.PreferenceError:
+        return _error(
+            request, 400, "invalid_request",
+            "The undo request is no longer valid.",
+            request_id,
+        )
+    return JsonResponse(
+        {
+            "undone": bool(result.get("changed")),
+            "revision": result.get("revision"),
+            "changes": result.get("changes"),
+        },
+        headers={"X-Request-ID": request_id},
     )
 
 

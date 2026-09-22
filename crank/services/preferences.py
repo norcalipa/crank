@@ -26,10 +26,15 @@ Design rules from the issue:
 * Preference contents are never written to logs; audit rows store metadata only.
 """
 import copy
+import logging
 from datetime import timezone as _dt_tz
 
+from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+from django.utils.module_loading import import_string
+
+logger = logging.getLogger(__name__)
 
 from crank.models.preference import (
     SCHEMA_VERSION,
@@ -64,7 +69,17 @@ class AmbiguousPatchError(PreferenceError):
 
 
 class StalePreferenceError(PreferenceError):
-    """The preference changed since the caller's last read."""
+    """The preference changed since the caller's last read.
+
+    ``current_revision`` carries the revision observed at rejection time so
+    the caller can offer a fresh review path without a second read (AC-5).
+    Revision-path and timestamp-path rejections both carry the locked row's
+    revision; deleted-row rejections carry ``0`` (no committed revision).
+    """
+
+    def __init__(self, message="", *, current_revision=None):
+        super().__init__(message)
+        self.current_revision = current_revision
 
 
 #: Sentinel ``expected_modified`` value meaning "no preference row existed
@@ -662,6 +677,14 @@ def apply_patch(document, patch):
         else:
             normalized = validate_value(path, spec, value)
         current = _get(new_doc, path)
+        if isinstance(spec, dict):
+            # Forward compatibility (issue #466 review): replacing a known
+            # subtree must not drop additive nested keys a newer schema
+            # version wrote inside it; they are preserved verbatim, exactly
+            # like top-level unknown keys. The patch itself stays strict —
+            # it may not *address* unknown keys — but a replace never
+            # destroys them.
+            normalized = _merge_unknown(normalized, _extract_unknown(current, spec))
         if not _is_value_equal(spec, normalized, current):
             _set(new_doc, path, normalized)
             changes += 1
@@ -701,6 +724,281 @@ def apply_patch(document, patch):
                 changes += 1
 
     return new_doc, changes
+
+
+# ---------------------------------------------------------------------------
+# Diff / propose / undo lifecycle (issue #466)
+# ---------------------------------------------------------------------------
+def _diff_base(document):
+    """Deep-copy *document* with absent known keys backfilled from defaults.
+
+    Mirrors the scratch normalization :func:`apply_patch` performs before
+    applying a patch, so diff old-values match the document the patch ran
+    against exactly.
+    """
+    base = copy.deepcopy(document)
+    _fill_missing_defaults(base)
+    return base
+
+
+def _diff_anchor_path(path):
+    """Return the set-able anchor path for a patch path.
+
+    A dynamic float_map key (``priorities.<criterion>``) cannot be addressed
+    by a ``set`` operation, so its diff (and inverse undo patch) anchors on
+    the parent map path instead.
+    """
+    _spec, dynamic = _resolve_spec(path)
+    if dynamic:
+        return ".".join(_split_path(path)[:-1])
+    return path
+
+
+def _diff_changes(base, new_doc, patch):
+    """Walk a validated patch's touched paths and return changed entries.
+
+    Each entry is ``{"path", "old", "new"}`` for exactly the paths the patch
+    altered, anchored at set-able paths (dynamic float_map keys collapse to
+    their parent map). Paths whose value did not change are omitted.
+    """
+    changes = []
+    seen = set()
+    for section in ("set", "remove"):
+        for path in (patch.get(section) or {}):
+            anchor = _diff_anchor_path(path)
+            if anchor in seen:
+                continue
+            seen.add(anchor)
+            old = _get_optional(base, anchor)
+            new = _get_optional(new_doc, anchor)
+            if old != new:
+                changes.append({
+                    "path": anchor,
+                    "old": copy.deepcopy(old),
+                    "new": copy.deepcopy(new),
+                })
+    return changes
+
+
+def diff_patch(document, patch):
+    """Pure field-level diff of a patch against a document.
+
+    Returns ``(changes, change_count)`` where ``changes`` is a list of
+    ``{"path", "old", "new"}`` entries and ``change_count`` is exactly the
+    second element of :func:`apply_patch` for the same inputs. Performs no
+    I/O and mutates nothing; invalid patches raise the same errors
+    :func:`apply_patch` raises.
+    """
+    base = _diff_base(document)
+    new_doc, change_count = apply_patch(document, patch)
+    return _diff_changes(base, new_doc, patch), change_count
+
+
+def build_undo_token(expected_revision, prior_document):
+    """Build an opaque undo token capturing the full pre-apply document.
+
+    The token carries the stored document exactly as it was before the apply
+    (byte-identical, including any pre-v3 missing keys and any additive keys
+    written by a newer schema version) plus the post-apply revision the
+    restore may be applied against. Capturing the whole prior document —
+    rather than an inverse patch reconstructed from the diff — is what makes
+    a byte-identical restore possible for every supported stored shape
+    (issue #466 review): an inverse ``set``-only patch can never un-backfill
+    keys :func:`apply_patch` layered onto an older document, nor restore
+    unknown additive nested keys a subtree replace had to preserve. Returns
+    ``None`` when nothing changed (there is nothing to undo).
+    """
+    if prior_document is None:
+        return None
+    return {
+        "expected_revision": expected_revision,
+        "document": copy.deepcopy(prior_document),
+    }
+
+
+def propose_patch_for_user(user, patch, *, scope="account"):
+    """Read-only proposal of a patch: diff + base revision, never a write.
+
+    Performs no database write of any kind: the stored row (when one exists),
+    its ``modified``/``revision``, and the audit trail are all untouched, and
+    no row is created for a user without one. Validation is identical to the
+    apply path — the same :func:`validate_patch`/:func:`apply_patch`
+    machinery runs here — so a patch rejected on apply is rejected here too.
+
+    ``scope="search"`` additionally returns the in-memory
+    ``effective_document`` the patch would produce (for a this-search-only
+    filter); it is never persisted.
+    """
+    if scope not in ("account", "search"):
+        raise AmbiguousPatchError(f"Unknown proposal scope: {scope!r}")
+    pref = UserPreference.objects.filter(user=user).first()
+    if pref is None:
+        document = default_preferences()
+        base_revision = 0
+        base_modified = None
+    else:
+        document = pref.preferences
+        base_revision = pref.revision
+        base_modified = pref.modified
+    base = _diff_base(document)
+    new_doc, change_count = apply_patch(document, patch)
+    result = {
+        "base_revision": base_revision,
+        "base_modified": base_modified,
+        "changes": _diff_changes(base, new_doc, patch),
+        "change_count": change_count,
+        "scope": scope,
+        "unsupported_criteria": unsupported_criteria(new_doc),
+    }
+    if scope == "search":
+        result["effective_document"] = new_doc
+    return result
+
+
+def effective_document(user, patch):
+    """Pure effective document for a this-search-only patch (never persisted)."""
+    pref = UserPreference.objects.filter(user=user).first()
+    document = pref.preferences if pref is not None else default_preferences()
+    new_doc, _changes = apply_patch(document, patch)
+    return new_doc
+
+
+def _validate_stored_shape(document, spec=_FIELD_SPEC, prefix=""):
+    """Validate the known keys present in a previously-stored document.
+
+    Tolerant in both directions, exactly like the store's forward/backward
+    compatibility stance: keys this schema version knows but the document
+    lacks (a pre-v3 stored shape) are skipped, and additive keys written by a
+    newer schema version are opaque and preserved verbatim. Every known key
+    that IS present is strictly type-checked, so a tampered undo token cannot
+    smuggle a corrupt value into a known field. Returns nothing; raises on a
+    corrupt known value.
+    """
+    if not isinstance(document, dict):
+        raise InvalidValueError("Preferences must be a JSON object")
+    for key, sub_spec in spec.items():
+        if key not in document:
+            continue  # older stored shape: absent known keys are tolerated
+        child = "{}.{}".format(prefix, key) if prefix else key
+        if isinstance(sub_spec, dict):
+            _validate_stored_shape(document[key], sub_spec, child)
+        else:
+            validate_value(child, sub_spec, document[key])
+
+
+#: Ceiling on a client-held undo token's serialized size. A legitimate token
+#: is one stored document (bounded by the field caps) plus a revision; this
+#: leaves generous headroom while rejecting unbounded payloads.
+_MAX_UNDO_DOCUMENT_BYTES = 64 * 1024
+
+
+def undo_preference_change(user, undo_token):
+    """Restore an undo token's captured document under its revision precondition.
+
+    The token's captured pre-apply document is restored byte-identically —
+    including any pre-v3 missing keys and additive newer-version keys — but
+    only when the stored revision still equals the token's post-apply
+    revision; an intervening edit (including a reset or a delete/recreate,
+    both of which advance the revision lineage) raises
+    :class:`StalePreferenceError` (with ``current_revision``) and writes
+    nothing, so an old undo can never overwrite a later edit. A ``None`` or
+    malformed token — including one whose ``expected_revision`` is missing,
+    null, a boolean, or negative — raises :class:`AmbiguousPatchError`.
+
+    The restored document is owner-scoped and shape-checked
+    (:func:`_validate_stored_shape`): known fields present in the document
+    are type-checked, absent known keys (older shapes) and unknown additive
+    keys (newer shapes) ride along untouched, so the restore is byte-identical
+    across every supported stored shape.
+    """
+    if not isinstance(undo_token, dict):
+        raise AmbiguousPatchError("Invalid undo token")
+    expected_revision = undo_token.get("expected_revision")
+    if (
+        expected_revision is None
+        or isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision < 0
+    ):
+        raise AmbiguousPatchError("Invalid undo token")
+    document = undo_token.get("document")
+    if not isinstance(document, dict):
+        raise AmbiguousPatchError("Invalid undo token")
+    try:
+        import json as _json
+
+        if len(_json.dumps(document).encode("utf-8")) > _MAX_UNDO_DOCUMENT_BYTES:
+            raise AmbiguousPatchError("Invalid undo token")
+    except (TypeError, ValueError):
+        raise AmbiguousPatchError("Invalid undo token")
+    _validate_stored_shape(document)
+    with transaction.atomic():
+        pref = _lock(user)
+        if pref is None:
+            raise StalePreferenceError(
+                "preference row was deleted while the undo was in flight",
+                current_revision=0,
+            )
+        _check_stale_revision(pref, expected_revision)
+        restored = copy.deepcopy(document)
+        change_count = _count_differences(pref.preferences, restored)
+        change_id = None
+        if change_count:
+            pref.preferences = restored
+            pref.preferences_markdown = to_markdown(restored)
+            pref.revision = pref.revision + 1
+            pref.save(update_fields=[
+                "preferences", "preferences_markdown", "revision", "modified",
+            ])
+            _audit(user, UserPreferenceAudit.Action.PATCHED, change_count)
+            change_id = "{}:{}".format(user.pk, pref.revision)
+            _schedule_recompute(change_id)
+        result = _serialize(pref)
+        result["changed"] = bool(change_count)
+        result["revision"] = pref.revision
+        result["changes"] = []
+        result["undo"] = None
+        result["change_id"] = change_id
+        return result
+
+
+def _count_differences(a, b):
+    """Count leaf-level differences between two documents (audit metadata only)."""
+    if a == b:
+        return 0
+    if isinstance(a, dict) and isinstance(b, dict):
+        return sum(_count_differences(a.get(k), b.get(k)) for k in set(a) | set(b))
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# Recompute hook (issue #466; the durable consumer belongs to #475)
+# ---------------------------------------------------------------------------
+def _resolve_recompute_hook():
+    """Resolve the settings-named recompute hook, or ``None`` when unset."""
+    path = (getattr(settings, "PREFERENCE_RECOMPUTE_HOOK", "") or "").strip()
+    if not path:
+        return None
+    return import_string(path)
+
+
+def _schedule_recompute(change_id):
+    """Schedule exactly one logical recomputation for a committed change.
+
+    Fires from ``transaction.on_commit`` — never on a rolled-back apply —
+    with ``change_id = f"{user_id}:{post_apply_revision}"``. Hook failures
+    are logged and swallowed: preference saves must never depend on the
+    recompute consumer's availability (the durable mechanism is #475).
+    """
+    def _fire():
+        try:
+            hook = _resolve_recompute_hook()
+            if hook is not None:
+                hook(change_id)
+        except Exception:  # noqa: BLE001 - best-effort boundary, never raise
+            logger.exception("preference recompute hook failed")
+
+    transaction.on_commit(_fire)
 
 
 # ---------------------------------------------------------------------------
@@ -896,6 +1194,7 @@ def _create_or_fetch(user):
                 preferences=doc,
                 preferences_markdown=to_markdown(doc),
                 schema_version=SCHEMA_VERSION,
+                revision=_recreate_revision_floor(user),
             )
         created = True
     except IntegrityError:
@@ -912,6 +1211,25 @@ def _fetch_or_create_pending(user):
     return _create_or_fetch(user)
 
 
+def _recreate_revision_floor(user):
+    """Return the starting revision for a newly created preference row.
+
+    ``0`` for a genuine first interaction. After a delete, the delete's audit
+    row recorded ``revision + 1`` as the floor (issue #466 review), so a
+    re-created row continues the monotonic lineage instead of restarting at
+    0 — an undo token captured before the delete can never match the new row.
+    """
+    floor = (
+        UserPreferenceAudit.objects.filter(
+            user=user, action=UserPreferenceAudit.Action.DELETED
+        )
+        .order_by("-change_count", "-id")
+        .values_list("change_count", flat=True)
+        .first()
+    )
+    return floor or 0
+
+
 def _lock(user):
     """Return the row under an active transaction with a row lock, or None."""
     return (
@@ -919,21 +1237,71 @@ def _lock(user):
     )
 
 
+def _validate_expected_revision(expected_revision):
+    """Validate a revision precondition value.
+
+    ``None`` is the explicit low-level opt-out (legacy timestamp path) and is
+    returned unchanged. Every other value must be a real non-negative
+    integer: booleans, strings, floats, and negatives are rejected so a
+    tampered or malformed precondition can never silently downgrade to the
+    unchecked legacy path (issue #466 review).
+    """
+    if expected_revision is None:
+        return None
+    if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+        raise InvalidValueError(
+            "expected_revision must be a non-negative integer"
+        )
+    if expected_revision < 0:
+        raise InvalidValueError(
+            "expected_revision must be a non-negative integer"
+        )
+    return expected_revision
+
+
+def _check_stale_revision(pref, expected_revision):
+    """Enforce the revision precondition (issue #466).
+
+    Raises :class:`StalePreferenceError` carrying the machine-readable
+    ``current_revision`` when the stored revision no longer matches.
+    """
+    if expected_revision is None:
+        return
+    if pref.revision != expected_revision:
+        raise StalePreferenceError(
+            "Preference revision changed; expected {}, current {}".format(
+                expected_revision, pref.revision
+            ),
+            current_revision=pref.revision,
+        )
+
+
 def _check_stale(pref, expected_modified):
+    # Every rejection carries the machine-readable ``current_revision`` (the
+    # revision observed on the locked row at rejection time) so the 409
+    # envelope can offer a fresh review path without a second read — the
+    # same AC-5 contract as the revision-precondition path (issue #466
+    # review round 3).
     if expected_modified is PREFERENCE_ABSENT:
         # No row existed at turn start, but one exists now: it was created
-        # (or re-created) mid-turn, so the patch must not overwrite it.
+        # (or re-created) mid-turn, so the patch must not overwrite it. The
+        # carried revision is the newly-created row's revision.
         raise StalePreferenceError(
-            "preference row was created while the turn was in flight"
+            "preference row was created while the turn was in flight",
+            current_revision=pref.revision,
         )
     if expected_modified is None:
         return
     expected = _normalize_ts(expected_modified)
     if expected is None:
-        raise StalePreferenceError("Expected an ISO-8601 modified timestamp")
+        raise StalePreferenceError(
+            "Expected an ISO-8601 modified timestamp",
+            current_revision=pref.revision,
+        )
     if pref.modified != expected:
         raise StalePreferenceError(
-            f"Preference version changed; expected {expected.isoformat()}, current {pref.modified.isoformat()}"
+            f"Preference version changed; expected {expected.isoformat()}, current {pref.modified.isoformat()}",
+            current_revision=pref.revision,
         )
 
 
@@ -974,14 +1342,19 @@ def export(user):
     }
 
 
-def apply_patch_to_user(user, patch, expected_modified=None):
+def apply_patch_to_user(user, patch, expected_modified=None, *, expected_revision=None):
     """Validate and transactionally apply a typed patch for the user.
 
-    Returns a dict: ``{preferences, markdown, modified, changed}``. Raises
-    ``StalePreferenceError`` if ``expected_modified`` no longer matches (the
-    change is not applied). Regenerates markdown after every accepted patch.
+    Returns a dict: ``{preferences, markdown, modified, changed, revision,
+    changes, undo, change_id}``. Raises ``StalePreferenceError`` if the
+    optimistic precondition no longer matches (the change is not applied).
+    Regenerates markdown after every accepted patch.
 
-    ``expected_modified`` is the turn-start baseline and may be:
+    ``expected_revision`` (issue #466) is the revision precondition: the patch
+    applies only when the stored ``revision`` still equals it, and a mismatch
+    raises :class:`StalePreferenceError` carrying the machine-readable
+    ``current_revision``. ``expected_modified`` is the turn-start baseline and
+    may be:
 
     * the row's ``modified`` datetime — the row must still carry it at commit;
     * :data:`PREFERENCE_ABSENT` — no row existed at turn start; the patch is
@@ -989,32 +1362,85 @@ def apply_patch_to_user(user, patch, expected_modified=None):
       concurrent first-interaction, makes the patch stale);
     * ``None`` — explicit opt-out of the check (legacy low-level callers).
 
+    When ``expected_revision`` is supplied it wins and ``expected_modified``
+    is ignored; when it is not supplied, ``expected_modified`` behaves
+    exactly as before (including the sentinel and the ``None`` opt-out).
+
     If the row existed at turn start but is gone at apply time (the user
     deleted their preferences mid-turn), the patch fails closed with
     ``StalePreferenceError`` instead of silently re-creating the row.
+
+    A committed apply that changes at least one field advances ``revision``
+    by exactly one, returns the field-level ``changes`` and a ``set``-only
+    inverse ``undo`` token, and schedules exactly one logical recomputation
+    via ``transaction.on_commit`` with
+    ``change_id = f"{user_id}:{post_apply_revision}"``. A no-op apply
+    (``change_count == 0``) leaves ``revision``, ``modified``, and the audit
+    trail untouched, returns ``undo = None``, and schedules nothing.
+
+    ``expected_revision`` is validated before any lock is taken: a non-``None``
+    value that is not a non-negative integer (booleans, null tokens, strings,
+    negatives) raises :class:`InvalidValueError` instead of silently falling
+    back to the unchecked legacy path (issue #466 review).
     """
+    _validate_expected_revision(expected_revision)
     with transaction.atomic():
         pref = _lock(user)
         if pref is None:
-            if expected_modified is PREFERENCE_ABSENT or expected_modified is None:
+            if expected_revision is not None:
+                if expected_revision == 0:
+                    # Revision 0 = "no committed revision yet": the row is
+                    # still absent, so creating it satisfies the precondition.
+                    pref = _fetch_or_create_pending(user)
+                else:
+                    raise StalePreferenceError(
+                        "preference row was deleted while the turn was in flight",
+                        current_revision=0,
+                    )
+            elif expected_modified is PREFERENCE_ABSENT or expected_modified is None:
                 # Still absent since the turn-start capture: safe to create.
                 pref = _fetch_or_create_pending(user)
             else:
                 # The row existed at turn start but was deleted mid-turn;
                 # re-creating it would resurrect the deleted preference state.
+                # The row is gone, so there is no live revision to carry — 0
+                # signals "no committed revision", matching the other
+                # deleted-row raises (issue #466 review round 3).
                 raise StalePreferenceError(
-                    "preference row was deleted while the turn was in flight"
+                    "preference row was deleted while the turn was in flight",
+                    current_revision=0,
                 )
         else:
-            _check_stale(pref, expected_modified)
+            if expected_revision is not None:
+                _check_stale_revision(pref, expected_revision)
+            else:
+                _check_stale(pref, expected_modified)
         new_doc, changes = apply_patch(pref.preferences, patch)
+        change_entries = []
+        undo_token = None
+        change_id = None
         if changes:
+            change_entries = _diff_changes(_diff_base(pref.preferences), new_doc, patch)
+            new_revision = pref.revision + 1
+            # The undo token captures the full pre-apply stored document so
+            # the restore is byte-identical for every supported shape
+            # (issue #466 review), not an inverse patch rebuilt from the diff.
+            undo_token = build_undo_token(new_revision, pref.preferences)
             pref.preferences = new_doc
             pref.preferences_markdown = to_markdown(new_doc)
-            pref.save(update_fields=["preferences", "preferences_markdown", "modified"])
+            pref.revision = new_revision
+            pref.save(update_fields=[
+                "preferences", "preferences_markdown", "revision", "modified",
+            ])
             _audit(user, UserPreferenceAudit.Action.PATCHED, changes)
+            change_id = "{}:{}".format(user.pk, new_revision)
+            _schedule_recompute(change_id)
         result = _serialize(pref)
         result["changed"] = bool(changes)
+        result["revision"] = pref.revision
+        result["changes"] = change_entries
+        result["undo"] = undo_token
+        result["change_id"] = change_id
         return result
 
 
@@ -1045,10 +1471,19 @@ def reset(user, expected_modified=None):
         if changed:
             pref.preferences = fresh
             pref.preferences_markdown = to_markdown(fresh)
-            pref.save(update_fields=["preferences", "preferences_markdown", "modified"])
+            # A reset is a committed canonical document change, so it advances
+            # the monotonic revision exactly like a patch (issue #466 review):
+            # an undo token captured before the reset no longer matches and
+            # can never overwrite the reset state.
+            pref.revision = pref.revision + 1
+            pref.save(update_fields=[
+                "preferences", "preferences_markdown", "revision", "modified",
+            ])
             _audit(user, UserPreferenceAudit.Action.RESET)
+            _schedule_recompute("{}:{}".format(user.pk, pref.revision))
         result = _serialize(pref)
         result["changed"] = bool(changed)
+        result["revision"] = pref.revision
         return result
 
 
@@ -1070,8 +1505,15 @@ def delete_user_preference(user, expected_modified=None):
         if pref is None:
             return {"deleted": False, "existed": False}
         _check_stale(pref, expected_modified)
+        # Record the revision floor a future re-create must start above
+        # (issue #466 review): deleting the row must not restart the
+        # monotonic revision lineage at 0, or an undo token captured before
+        # the delete could match a re-created row that climbed back to the
+        # same revision and overwrite it. The floor survives the row itself
+        # because audit rows belong to the user, not the preference row.
+        floor = pref.revision + 1
         pref.delete()
-        _audit(user, UserPreferenceAudit.Action.DELETED)
+        _audit(user, UserPreferenceAudit.Action.DELETED, floor)
         return {"deleted": True, "existed": True}
 
 

@@ -297,6 +297,78 @@ class PreferenceSchemaCompatTests(TestCase):
         reread = preferences_service.read(user=self.user)
         self.assertEqual(reread["preferences"]["notifications"], {"channel": "email"})
 
+    def test_v3_document_with_additive_field_round_trips_through_propose_apply_and_undo(self):
+        """Issue #466: the propose/apply/undo lifecycle is safe on a v3
+        document carrying an unknown additive field — the proposal writes
+        nothing, the apply preserves the additive field verbatim, a stale
+        revision precondition fails closed with the machine-readable current
+        revision, and the undo token restores the old value without touching
+        the additive field."""
+        doc = default_preferences()
+        doc["notifications"] = {"channel": "email", "quiet_hours": "22:00-07:00"}
+        pref = UserPreference.objects.create(user=self.user, preferences=doc)
+
+        patch = {"set": {"notes": "prefers remote-first teams"}}
+
+        # Propose: read-only — base revision 0, diff computed, nothing stored.
+        proposal = preferences_service.propose_patch_for_user(self.user, patch)
+        self.assertEqual(proposal["base_revision"], 0)
+        self.assertEqual(proposal["change_count"], 1)
+        self.assertEqual(
+            proposal["changes"],
+            [{"path": "notes", "old": "", "new": "prefers remote-first teams"}],
+        )
+        pref.refresh_from_db()
+        self.assertEqual(pref.revision, 0)
+        self.assertEqual(pref.preferences, doc)
+
+        # Apply under the revision precondition from the proposal.
+        applied = preferences_service.apply_patch_to_user(
+            self.user, patch, expected_revision=proposal["base_revision"]
+        )
+        self.assertTrue(applied["changed"])
+        self.assertEqual(applied["revision"], 1)
+        self.assertEqual(applied["preferences"]["notes"], "prefers remote-first teams")
+        # The additive field survives the write verbatim.
+        self.assertEqual(
+            applied["preferences"]["notifications"],
+            {"channel": "email", "quiet_hours": "22:00-07:00"},
+        )
+        self.assertEqual(applied["undo"]["expected_revision"], 1)
+        # The undo token captures the full pre-apply document (issue #466
+        # review), so the restore is byte-identical including the additive
+        # field — not an inverse patch rebuilt from the diff.
+        self.assertEqual(applied["undo"]["document"], doc)
+
+        # A replayed (stale) precondition fails closed and writes nothing.
+        with self.assertRaises(preferences_service.StalePreferenceError) as ctx:
+            preferences_service.apply_patch_to_user(
+                self.user, patch, expected_revision=0
+            )
+        self.assertEqual(ctx.exception.current_revision, 1)
+        pref.refresh_from_db()
+        self.assertEqual(pref.revision, 1)
+        self.assertEqual(pref.preferences["notes"], "prefers remote-first teams")
+
+        # Undo restores the pre-apply value under its own precondition and
+        # leaves the additive field untouched.
+        undone = preferences_service.undo_preference_change(self.user, applied["undo"])
+        self.assertTrue(undone["changed"])
+        self.assertEqual(undone["revision"], 2)
+        self.assertEqual(undone["preferences"]["notes"], "")
+        self.assertEqual(
+            undone["preferences"]["notifications"],
+            {"channel": "email", "quiet_hours": "22:00-07:00"},
+        )
+
+        # The spent undo token is itself stale now: it can never overwrite
+        # the undo it just performed.
+        with self.assertRaises(preferences_service.StalePreferenceError) as ctx:
+            preferences_service.undo_preference_change(self.user, applied["undo"])
+        self.assertEqual(ctx.exception.current_revision, 2)
+        pref.refresh_from_db()
+        self.assertEqual(pref.preferences["notes"], "")
+
 
 class ConversationIdempotencyCompatTests(TestCase):
     """Conversation replay via idempotency_key stays duplicate-free.

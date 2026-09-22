@@ -352,8 +352,18 @@ def _org_excluded(organization: Any, criteria: JobCriteria) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _get_criteria(user) -> JobCriteria | None:
-    """Read the user's preference document and project it to JobCriteria."""
+def _get_criteria(user, preferences_override=None) -> JobCriteria | None:
+    """Read the user's preference document and project it to JobCriteria.
+
+    ``preferences_override`` (issue #466) supplies an in-memory effective
+    document (e.g. a this-search-only patch result) to drive one search
+    without touching the stored canonical row; when given, no preference
+    row is read at all.
+    """
+    if preferences_override is not None:
+        from crank.models.preference import SCHEMA_VERSION as _PREF_SCHEMA
+
+        return project_criteria(preferences_override, _PREF_SCHEMA)
     try:
         pref = UserPreference.objects.get(user=user)
     except UserPreference.DoesNotExist:
@@ -552,6 +562,7 @@ def match_jobs(
     limit: int = MAX_MATCH_RESULTS,
     config: RankingConfig = DEFAULT_CONFIG,
     queryset: Any = None,
+    preferences_override: Any = None,
 ) -> list[JobMatchResult]:
     """Return ranked job-listing matches for *user*.
 
@@ -561,8 +572,12 @@ def match_jobs(
     4. Rank survivors with the deterministic engine.
     5. Attach human-readable reasons.
     6. Return a bounded, stable-ordered list.
+
+    ``preferences_override`` is a thin additive seam (issue #466): an
+    in-memory effective preference document drives this one search without
+    a stored-preference read or write.
     """
-    criteria = _get_criteria(user)
+    criteria = _get_criteria(user, preferences_override)
     if criteria is None:
         return []
 
@@ -583,6 +598,7 @@ def match_organizations(
     limit: int = MAX_MATCH_RESULTS,
     config: RankingConfig = DEFAULT_CONFIG,
     queryset: Any = None,
+    preferences_override: Any = None,
 ) -> list[OrgMatchResult]:
     """Return ranked organization matches for *user*.
 
@@ -592,8 +608,12 @@ def match_organizations(
     4. Score survivors.
     5. Attach human-readable reasons.
     6. Return a bounded, stable-ordered list.
+
+    ``preferences_override`` is a thin additive seam (issue #466): an
+    in-memory effective preference document drives this one search without
+    a stored-preference read or write.
     """
-    criteria = _get_criteria(user)
+    criteria = _get_criteria(user, preferences_override)
     if criteria is None:
         return []
 

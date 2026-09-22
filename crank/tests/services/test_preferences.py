@@ -1082,3 +1082,768 @@ class TestCoverageEdges:
         prefs.apply_patch_to_user(u, {"set": {"notes": "first"}})
         with pytest.raises(prefs.StalePreferenceError):
             prefs.apply_patch_to_user(u, {"set": {"notes": "s"}}, expected_modified="not-a-date")
+
+
+# ---------------------------------------------------------------------------
+# Propose / diff / revision / undo lifecycle (issue #466)
+# ---------------------------------------------------------------------------
+class TestDiffPatch:
+    def test_diff_scalar_int(self):
+        changes, count = prefs.diff_patch(
+            prefs.default_preferences(),
+            {"set": {"compensation.minimum_salary": 150000}},
+        )
+        assert count == 1
+        assert changes == [{
+            "path": "compensation.minimum_salary",
+            "old": None,
+            "new": 150000,
+        }]
+
+    def test_diff_dedupes_dynamic_map_keys_to_one_parent_anchor(self):
+        # Two dynamic float_map keys in one patch collapse to the single
+        # set-able parent anchor; the second visit hits the seen-continue.
+        doc = prefs.default_preferences()
+        doc["priorities"] = {"comp": 0.9, "culture": 0.5, "growth": 0.25}
+        changes, count = prefs.diff_patch(
+            doc,
+            {"remove": {"priorities.comp": None, "priorities.culture": None}},
+        )
+        assert count == 2
+        assert changes == [{
+            "path": "priorities",
+            "old": {"comp": 0.9, "culture": 0.5, "growth": 0.25},
+            "new": {"growth": 0.25},
+        }]
+
+    def test_build_undo_token_returns_none_for_empty_changes(self):
+        assert prefs.build_undo_token(7, None) is None
+
+    def test_check_stale_revision_noops_when_expected_revision_is_none(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        pref = UserPreference.objects.get(user=user)
+        # Defensive guard: the precondition is skipped entirely.
+        prefs._check_stale_revision(pref, None)
+
+    def test_diff_float_bool_str(self):
+        doc = prefs.default_preferences()
+        changes, count = prefs.diff_patch(doc, {"set": {
+            "compensation.equity_minimum_percent": 2.5,
+            "work_location.require_onsite": True,
+            "notes": "remote only",
+        }})
+        assert count == 3
+        by_path = {c["path"]: c for c in changes}
+        assert by_path["compensation.equity_minimum_percent"]["new"] == 2.5
+        assert by_path["work_location.require_onsite"] == {
+            "path": "work_location.require_onsite", "old": None, "new": True,
+        }
+        assert by_path["notes"]["old"] == ""
+
+    def test_diff_str_list_and_remove_items(self):
+        doc = prefs.apply_patch(
+            prefs.default_preferences(), {"set": {"culture": ["a", "b", "c"]}}
+        )[0]
+        changes, count = prefs.diff_patch(doc, {"remove": {"culture": ["a", "c"]}})
+        assert count == 2  # apply_patch's per-item count
+        assert changes == [{
+            "path": "culture", "old": ["a", "b", "c"], "new": ["b"],
+        }]
+
+    def test_diff_float_map_and_dynamic_key_remove(self):
+        doc = prefs.apply_patch(
+            prefs.default_preferences(),
+            {"set": {"priorities": {"comp": 0.9, "culture": 0.3}}},
+        )[0]
+        changes, count = prefs.diff_patch(doc, {"remove": {"priorities.comp": None}})
+        assert count == 1
+        # Dynamic keys collapse to the set-able parent map path.
+        assert changes == [{
+            "path": "priorities",
+            "old": {"comp": 0.9, "culture": 0.3},
+            "new": {"culture": 0.3},
+        }]
+
+    def test_diff_whole_subtree_set(self):
+        doc = prefs.default_preferences()
+        subtree = copy.deepcopy(doc["work_location"])
+        subtree["modes"] = ["remote"]
+        changes, count = prefs.diff_patch(doc, {"set": {"work_location": subtree}})
+        assert count == 1
+        assert changes[0]["path"] == "work_location"
+        assert changes[0]["new"]["modes"] == ["remote"]
+
+    def test_diff_subtree_reset_remove(self):
+        doc = prefs.apply_patch(
+            prefs.default_preferences(), {"set": {"geography.regions": ["EMEA"]}}
+        )[0]
+        changes, count = prefs.diff_patch(doc, {"remove": {"geography": None}})
+        assert count == 1
+        assert changes[0]["path"] == "geography"
+        assert changes[0]["old"]["regions"] == ["EMEA"]
+        assert changes[0]["new"]["regions"] == []
+
+    def test_diff_noop_is_empty(self):
+        changes, count = prefs.diff_patch(
+            prefs.default_preferences(), {"set": {"notes": ""}}
+        )
+        assert count == 0
+        assert changes == []
+
+    def test_diff_invalid_patch_raises_same_errors(self):
+        with pytest.raises(UnknownFieldError):
+            prefs.diff_patch(prefs.default_preferences(), {"set": {"bogus": 1}})
+        with pytest.raises(InvalidValueError):
+            prefs.diff_patch(
+                prefs.default_preferences(),
+                {"set": {"compensation.minimum_salary": -1}},
+            )
+        with pytest.raises(AmbiguousPatchError):
+            prefs.diff_patch(prefs.default_preferences(), {})
+
+
+class TestPropose:
+    def _snapshot(self, user):
+        row = UserPreference.objects.filter(user=user).first()
+        audits = UserPreferenceAudit.objects.count()
+        if row is None:
+            return None, audits
+        return (row.modified, row.revision, copy.deepcopy(row.preferences)), audits
+
+    def test_propose_writes_nothing_valid_patch(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        before = self._snapshot(user)
+        result = prefs.propose_patch_for_user(
+            user, {"set": {"compensation.minimum_salary": 200000}}
+        )
+        assert self._snapshot(user) == before
+        assert result["base_revision"] == 1  # the seed apply advanced it
+        assert result["change_count"] == 1
+        assert result["scope"] == "account"
+        assert result["changes"][0]["new"] == 200000
+        assert "unsupported_criteria" in result
+
+    def test_propose_writes_nothing_and_no_row_created(self, user):
+        before = self._snapshot(user)
+        result = prefs.propose_patch_for_user(user, {"set": {"notes": "hi"}})
+        assert self._snapshot(user) == before  # still no row, no audit rows
+        assert result["base_revision"] == 0
+        assert result["base_modified"] is None
+
+    @pytest.mark.parametrize("patch,exc", [
+        ({"set": {"bogus": 1}}, UnknownFieldError),
+        ({"set": {"compensation.minimum_salary": -5}}, InvalidValueError),
+        ({}, AmbiguousPatchError),
+    ])
+    def test_propose_invalid_patch_writes_nothing(self, user, patch, exc):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        before = self._snapshot(user)
+        with pytest.raises(exc):
+            prefs.propose_patch_for_user(user, patch)
+        assert self._snapshot(user) == before
+
+    def test_propose_change_count_matches_apply_patch(self, user):
+        patch = {"set": {"culture": ["a", "b"]}, "remove": {"notes": None}}
+        doc = prefs.default_preferences()
+        expected_count = prefs.apply_patch(doc, patch)[1]
+        result = prefs.propose_patch_for_user(user, patch)
+        assert result["change_count"] == expected_count
+
+    def test_propose_noop_patch(self, user):
+        result = prefs.propose_patch_for_user(user, {"set": {"notes": ""}})
+        assert result["change_count"] == 0
+        assert result["changes"] == []
+
+    def test_propose_unknown_scope_rejected(self, user):
+        with pytest.raises(AmbiguousPatchError):
+            prefs.propose_patch_for_user(user, {"set": {"notes": "x"}}, scope="bogus")
+
+
+class TestScopeSearch:
+    def test_effective_document_not_persisted(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "canonical"}})
+        patch = {"set": {"work_location.modes": ["remote"]}}
+        result = prefs.propose_patch_for_user(user, patch, scope="search")
+        effective = result["effective_document"]
+        assert effective["work_location"]["modes"] == ["remote"]
+        row = UserPreference.objects.get(user=user)
+        assert row.preferences["work_location"]["modes"] == []
+        assert row.revision == 1  # only the seed apply advanced it
+        assert UserPreferenceAudit.objects.count() == 2  # only the seed apply
+        export = prefs.export(user)
+        assert export["preferences"]["work_location"]["modes"] == []
+
+    def test_effective_document_helper(self, user):
+        effective = prefs.effective_document(user, {"set": {"industry": ["ai"]}})
+        assert effective["industry"] == ["ai"]
+        assert not UserPreference.objects.filter(user=user).exists()
+
+
+class TestRevisionApply:
+    def test_apply_advances_revision_by_one(self, user):
+        result = prefs.apply_patch_to_user(user, {"set": {"notes": "one"}})
+        assert result["changed"] is True
+        assert result["revision"] == 1
+        assert UserPreference.objects.get(user=user).revision == 1
+        result2 = prefs.apply_patch_to_user(user, {"set": {"notes": "two"}})
+        assert result2["revision"] == 2
+
+    def test_noop_apply_leaves_revision_modified_audit(self, user):
+        first = prefs.apply_patch_to_user(user, {"set": {"notes": "x"}})
+        row = UserPreference.objects.get(user=user)
+        modified_before = row.modified
+        audits_before = UserPreferenceAudit.objects.count()
+        again = prefs.apply_patch_to_user(user, {"set": {"notes": "x"}})
+        row.refresh_from_db()
+        assert again["changed"] is False
+        assert again["revision"] == 1
+        assert again["undo"] is None
+        assert again["change_id"] is None
+        assert again["changes"] == []
+        assert row.revision == 1
+        assert row.modified == modified_before
+        assert UserPreferenceAudit.objects.count() == audits_before
+        assert first["change_id"] == f"{user.pk}:1"
+
+    def test_expected_revision_mismatch_raises_and_writes_nothing(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "one"}})
+        before = UserPreference.objects.get(user=user).preferences
+        audits = UserPreferenceAudit.objects.count()
+        with pytest.raises(StalePreferenceError) as excinfo:
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "two"}}, expected_revision=7
+            )
+        assert excinfo.value.current_revision == 1
+        row = UserPreference.objects.get(user=user)
+        assert row.preferences == before
+        assert row.revision == 1
+        assert UserPreferenceAudit.objects.count() == audits
+
+    def test_expected_revision_match_applies(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "one"}})
+        result = prefs.apply_patch_to_user(
+            user, {"set": {"notes": "two"}}, expected_revision=1
+        )
+        assert result["revision"] == 2
+
+    def test_expected_revision_zero_allows_absent_row(self, user):
+        result = prefs.apply_patch_to_user(
+            user, {"set": {"notes": "x"}}, expected_revision=0
+        )
+        assert result["revision"] == 1
+
+    def test_expected_revision_nonzero_absent_row_stale(self, user):
+        with pytest.raises(StalePreferenceError) as excinfo:
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "x"}}, expected_revision=3
+            )
+        assert excinfo.value.current_revision == 0
+        assert not UserPreference.objects.filter(user=user).exists()
+
+    def test_both_preconditions_revision_wins(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "one"}})
+        row = UserPreference.objects.get(user=user)
+        stale_ts = "2020-01-01T00:00:00Z"
+        # Matching revision + mismatching timestamp -> applies (timestamp ignored).
+        result = prefs.apply_patch_to_user(
+            user, {"set": {"notes": "two"}},
+            expected_modified=stale_ts, expected_revision=row.revision,
+        )
+        assert result["revision"] == 2
+        # Mismatching revision + matching timestamp -> stale.
+        row.refresh_from_db()
+        with pytest.raises(StalePreferenceError):
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "three"}},
+                expected_modified=row.modified, expected_revision=99,
+            )
+
+    def test_expected_modified_legacy_behaviour_unchanged(self, user):
+        # Old-caller path: no expected_revision anywhere.
+        result = prefs.apply_patch_to_user(user, {"set": {"notes": "first"}})
+        modified = result["modified"]
+        ok = prefs.apply_patch_to_user(
+            user, {"set": {"notes": "second"}}, expected_modified=modified
+        )
+        assert ok["changed"] is True
+        with pytest.raises(StalePreferenceError):
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "third"}}, expected_modified=modified
+            )
+
+    def test_expected_modified_absent_sentinel_unchanged(self, user):
+        # Row created mid-turn -> PREFERENCE_ABSENT caller goes stale.
+        prefs.apply_patch_to_user(user, {"set": {"notes": "raced"}})
+        with pytest.raises(StalePreferenceError):
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "late"}},
+                expected_modified=prefs.PREFERENCE_ABSENT,
+            )
+        # Row deleted mid-turn -> fail closed.
+        other = get_user_model().objects.create_user(username="gone", password="x")
+        prefs.apply_patch_to_user(other, {"set": {"notes": "seed"}})
+        ts = UserPreference.objects.get(user=other).modified
+        prefs.delete_user_preference(other)
+        with pytest.raises(StalePreferenceError):
+            prefs.apply_patch_to_user(
+                other, {"set": {"notes": "revive"}}, expected_modified=ts
+            )
+
+
+class TestStaleCarriesCurrentRevision:
+    """AC-5 (issue #466 review round 3): every ``StalePreferenceError`` —
+    revision path and legacy timestamp/absent path alike — carries a
+    machine-readable ``current_revision`` so the 409 envelope can offer a
+    fresh review path without a second read."""
+
+    def test_absent_sentinel_created_mid_turn_carries_current_revision(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "raced"}})
+        revision = UserPreference.objects.get(user=user).revision
+        before = UserPreference.objects.get(user=user).preferences
+        with pytest.raises(StalePreferenceError) as excinfo:
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "late"}},
+                expected_modified=prefs.PREFERENCE_ABSENT,
+            )
+        assert excinfo.value.current_revision == revision
+        # Nothing was written.
+        assert UserPreference.objects.get(user=user).preferences == before
+
+    def test_invalid_timestamp_carries_current_revision(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        revision = UserPreference.objects.get(user=user).revision
+        with pytest.raises(StalePreferenceError) as excinfo:
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "s"}}, expected_modified="not-a-date"
+            )
+        assert excinfo.value.current_revision == revision
+
+    def test_timestamp_mismatch_carries_current_revision(self, user):
+        first = prefs.apply_patch_to_user(user, {"set": {"notes": "one"}})
+        second = prefs.apply_patch_to_user(user, {"set": {"notes": "two"}})
+        with pytest.raises(StalePreferenceError) as excinfo:
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "three"}},
+                expected_modified=first["modified"],
+            )
+        assert excinfo.value.current_revision == second["revision"]
+        assert UserPreference.objects.get(user=user).preferences["notes"] == "two"
+
+    def test_deleted_mid_turn_legacy_path_carries_zero(self, user):
+        # The row is gone at apply time, so there is no live revision to
+        # carry: 0 signals "no committed revision", matching the other
+        # deleted-row raises.
+        prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        ts = UserPreference.objects.get(user=user).modified
+        prefs.delete_user_preference(user)
+        with pytest.raises(StalePreferenceError) as excinfo:
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "revive"}}, expected_modified=ts
+            )
+        assert excinfo.value.current_revision == 0
+        assert not UserPreference.objects.filter(user=user).exists()
+
+
+class TestUndo:
+    def test_apply_result_carries_changes_undo_change_id(self, user):
+        result = prefs.apply_patch_to_user(
+            user, {"set": {"compensation.minimum_salary": 180000}}
+        )
+        assert result["changes"] == [{
+            "path": "compensation.minimum_salary", "old": None, "new": 180000,
+        }]
+        assert result["undo"] == {
+            "expected_revision": 1,
+            "document": prefs.default_preferences(),
+        }
+        assert result["change_id"] == f"{user.pk}:1"
+
+    def test_undo_restores_document_byte_for_byte(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "seed", "culture": ["x"]}})
+        before = copy.deepcopy(UserPreference.objects.get(user=user).preferences)
+        applied = prefs.apply_patch_to_user(
+            user,
+            {"set": {"notes": "edited"}, "remove": {"culture": ["x"]}},
+        )
+        restored = prefs.undo_preference_change(user, applied["undo"])
+        assert restored["changed"] is True
+        row = UserPreference.objects.get(user=user)
+        assert row.preferences == before
+        assert row.revision == 3
+
+    def test_undo_after_intervening_edit_stale_and_writes_nothing(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "v1"}})
+        prefs.apply_patch_to_user(user, {"set": {"notes": "v2"}})
+        before = copy.deepcopy(UserPreference.objects.get(user=user).preferences)
+        audits = UserPreferenceAudit.objects.count()
+        with pytest.raises(StalePreferenceError) as excinfo:
+            prefs.undo_preference_change(user, applied["undo"])
+        assert excinfo.value.current_revision == 2
+        row = UserPreference.objects.get(user=user)
+        assert row.preferences == before
+        assert UserPreferenceAudit.objects.count() == audits
+
+    def test_undo_none_token_raises_ambiguous(self, user):
+        result = prefs.apply_patch_to_user(user, {"set": {"notes": ""}})
+        assert result["undo"] is None
+        with pytest.raises(AmbiguousPatchError):
+            prefs.undo_preference_change(user, None)
+        with pytest.raises(AmbiguousPatchError):
+            prefs.undo_preference_change(user, {"patch": {"set": {}}})
+
+    def test_undo_round_trips_list_remove_order(self, user):
+        prefs.apply_patch_to_user(
+            user, {"set": {"culture": ["a", "b", "c", "d"]}}
+        )
+        applied = prefs.apply_patch_to_user(
+            user, {"remove": {"culture": ["b", "d"]}}
+        )
+        assert UserPreference.objects.get(user=user).preferences["culture"] == ["a", "c"]
+        prefs.undo_preference_change(user, applied["undo"])
+        assert UserPreference.objects.get(user=user).preferences["culture"] == [
+            "a", "b", "c", "d",
+        ]
+
+    def test_undo_round_trips_dynamic_priority_remove(self, user):
+        prefs.apply_patch_to_user(
+            user, {"set": {"priorities": {"comp": 0.9, "culture": 0.3}}}
+        )
+        applied = prefs.apply_patch_to_user(
+            user, {"remove": {"priorities.comp": None}}
+        )
+        # The token captures the full pre-apply document (byte-identical
+        # restore, issue #466 review).
+        assert applied["undo"]["document"]["priorities"] == {
+            "comp": 0.9, "culture": 0.3,
+        }
+        prefs.undo_preference_change(user, applied["undo"])
+        assert UserPreference.objects.get(user=user).preferences["priorities"] == {
+            "comp": 0.9, "culture": 0.3,
+        }
+
+
+@pytest.mark.django_db
+class TestExpectedRevisionValidation:
+    """Issue #466 review: a tampered/null/missing revision precondition must
+    never silently downgrade to the unchecked legacy path."""
+
+    def test_apply_rejects_bool_revision(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        with pytest.raises(InvalidValueError):
+            prefs.apply_patch_to_user(
+                user, {"set": {"notes": "x"}}, expected_revision=True
+            )
+
+    def test_apply_rejects_string_and_negative_revision(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        for bad in ("1", -1, 1.5):
+            with pytest.raises(InvalidValueError):
+                prefs.apply_patch_to_user(
+                    user, {"set": {"notes": "x"}}, expected_revision=bad
+                )
+
+    def test_undo_rejects_null_or_bool_revision(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = applied["undo"]
+        for bad in (None, True, "1", -1):
+            with pytest.raises(AmbiguousPatchError):
+                prefs.undo_preference_change(
+                    user, dict(token, expected_revision=bad)
+                )
+        # A tampered token never followed the legacy no-precondition path.
+        assert UserPreference.objects.get(user=user).preferences["notes"] == "seed"
+
+    def test_undo_rejects_missing_or_malformed_document(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        with pytest.raises(AmbiguousPatchError):
+            prefs.undo_preference_change(user, {"expected_revision": 1})
+        with pytest.raises(AmbiguousPatchError):
+            prefs.undo_preference_change(
+                user, {"expected_revision": 1, "document": "not-a-dict"}
+            )
+
+    def test_undo_rejects_oversized_document(self, user):
+        """A token whose captured document exceeds the serialized-size
+        ceiling is rejected before any store access (issue #466 review)."""
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = dict(applied["undo"])
+        token["document"] = dict(token["document"], notes="x" * (65 * 1024))
+        with pytest.raises(AmbiguousPatchError):
+            prefs.undo_preference_change(user, token)
+
+    def test_undo_rejects_non_serializable_document(self, user):
+        """A token whose document cannot be JSON-serialized at all is
+        rejected, never reaching the row lock (issue #466 review)."""
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = dict(applied["undo"])
+        token["document"] = dict(token["document"], notes=object())
+        with pytest.raises(AmbiguousPatchError):
+            prefs.undo_preference_change(user, token)
+
+    def test_undo_rejects_corrupt_known_value(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = dict(applied["undo"])
+        document = copy.deepcopy(token["document"])
+        document["culture"] = "not-a-list"
+        with pytest.raises(InvalidValueError):
+            prefs.undo_preference_change(
+                user, dict(token, document=document)
+            )
+
+    def test_undo_rejects_non_dict_known_subtree(self, user):
+        """A tampered token whose known subtree is not a JSON object is
+        rejected by the stored-shape check (issue #466 review)."""
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = dict(applied["undo"])
+        document = copy.deepcopy(token["document"])
+        document["compensation"] = "not-a-dict"
+        with pytest.raises(InvalidValueError):
+            prefs.undo_preference_change(
+                user, dict(token, document=document)
+            )
+
+    def test_undo_after_row_deleted_is_stale_not_recreate(self, user):
+        """An undo landing after the preference row was deleted fails closed
+        with StalePreferenceError (current_revision 0) instead of silently
+        re-creating deleted state (issue #466 review)."""
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = applied["undo"]
+        UserPreference.objects.filter(user=user).delete()
+        with pytest.raises(prefs.StalePreferenceError) as exc_info:
+            prefs.undo_preference_change(user, token)
+        assert exc_info.value.current_revision == 0
+        assert not UserPreference.objects.filter(user=user).exists()
+
+
+@pytest.mark.django_db
+class TestRevisionLifecycle:
+    """Issue #466 review: every committed canonical document change advances
+    the monotonic revision, so an old undo token can never overwrite a reset
+    or a delete/recreate."""
+
+    def test_reset_advances_revision_and_invalidates_undo(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = applied["undo"]
+        result = prefs.reset(user)
+        assert result["revision"] == 2
+        with pytest.raises(StalePreferenceError) as excinfo:
+            prefs.undo_preference_change(user, token)
+        assert excinfo.value.current_revision == 2
+        assert UserPreference.objects.get(user=user).preferences["notes"] == ""
+
+    def test_idempotent_reset_does_not_advance_revision(self, user):
+        prefs.reset(user)
+        pref = UserPreference.objects.get(user=user)
+        assert pref.revision == 0
+
+    def test_delete_recreate_continues_revision_lineage(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = applied["undo"]  # expected_revision == 1
+        prefs.delete_user_preference(user)
+        # Re-create on next interaction: the row must NOT restart at 0, or
+        # the old token could match once the new row climbs back to 1.
+        prefs.read(user)
+        pref = UserPreference.objects.get(user=user)
+        assert pref.revision == 2  # delete's floor (1 + 1), not a restart
+        # The old token's precondition never matches the re-created lineage.
+        with pytest.raises(StalePreferenceError):
+            prefs.undo_preference_change(user, token)
+        # A fresh apply advances from the floor.
+        result = prefs.apply_patch_to_user(user, {"set": {"notes": "new"}})
+        assert result["revision"] == 3
+
+    def test_first_interaction_still_starts_at_zero(self, user):
+        prefs.read(user)
+        assert UserPreference.objects.get(user=user).revision == 0
+
+
+@pytest.mark.django_db
+class TestUndoByteIdenticalShapes:
+    """Issue #466 review: undo restores the prior document byte-identically
+    across every supported stored shape, and additive unknown nested keys
+    ride along through propose/apply/undo untouched."""
+
+    def _store_document(self, user, document):
+        pref = UserPreference.objects.get(user=user)
+        pref.preferences = document
+        pref.save(update_fields=["preferences"])
+        return pref
+
+    def test_undo_restores_pre_v3_shape_byte_identically(self, user):
+        prefs.read(user)
+        # A pre-v3 stored document: no roles/importance/scope and no nested
+        # v3 keys (e.g. work_location.office_days_exact).
+        legacy = {
+            "compensation": {
+                "minimum_salary": 150000,
+                "currency": "USD",
+                "equity_minimum_percent": None,
+                "require_public_company": None,
+                "basis": "base",
+                "period": "year",
+            },
+            "culture": ["remote-first"],
+            "work_location": {"modes": ["remote"], "countries": [],
+                              "require_onsite": None, "max_in_office_days": None},
+            "geography": {"regions": [], "remote_friendly": None},
+            "industry": [],
+            "funding_stage": [],
+            "vesting": {"max_cliff_months": None, "max_vesting_months": None,
+                        "prefer_accelerated": None},
+            "exclusions": {"companies": [], "titles": [], "industries": [],
+                           "locations": []},
+            "priorities": {},
+            "notes": "legacy note",
+        }
+        self._store_document(user, legacy)
+        # A notes-only apply backfills the v3 keys on the stored document.
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "edited"}})
+        row = UserPreference.objects.get(user=user)
+        assert "roles" in row.preferences  # backfilled by apply_patch
+        # Undo restores the exact pre-v3 shape — no backfilled keys remain.
+        restored = prefs.undo_preference_change(user, applied["undo"])
+        assert restored["changed"] is True
+        row.refresh_from_db()
+        assert row.preferences == legacy
+
+    def test_subtree_set_preserves_unknown_nested_keys(self, user):
+        prefs.read(user)
+        document = prefs.default_preferences()
+        document["compensation"]["future_additive"] = {"nested": True}
+        self._store_document(user, document)
+        new_comp = copy.deepcopy(document["compensation"])
+        del new_comp["future_additive"]
+        new_comp["minimum_salary"] = 200000
+        applied = prefs.apply_patch_to_user(
+            user, {"set": {"compensation": new_comp}}
+        )
+        row = UserPreference.objects.get(user=user)
+        # The subtree replace preserved the additive nested key.
+        assert row.preferences["compensation"]["future_additive"] == {"nested": True}
+        assert row.preferences["compensation"]["minimum_salary"] == 200000
+        # Undo restores the prior document byte-identically, additive key and all.
+        prefs.undo_preference_change(user, applied["undo"])
+        row.refresh_from_db()
+        assert row.preferences == document
+
+    def test_undo_restores_document_with_unknown_top_level_keys(self, user):
+        prefs.read(user)
+        document = prefs.default_preferences()
+        document["future_section"] = {"anything": [1, 2, 3]}
+        self._store_document(user, document)
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "edited"}})
+        prefs.undo_preference_change(user, applied["undo"])
+        row = UserPreference.objects.get(user=user)
+        assert row.preferences == document
+
+    def test_undo_noop_when_document_already_matches(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})
+        token = applied["undo"]
+        # Manually restore the document without advancing the revision, so
+        # the undo precondition matches but nothing differs.
+        pref = UserPreference.objects.get(user=user)
+        pref.preferences = copy.deepcopy(token["document"])
+        pref.save(update_fields=["preferences"])
+        audits = UserPreferenceAudit.objects.count()
+        result = prefs.undo_preference_change(user, token)
+        assert result["changed"] is False
+        assert result["revision"] == 1
+        assert UserPreferenceAudit.objects.count() == audits
+
+
+@pytest.mark.django_db(transaction=True)
+class TestRecomputeHook:
+    @pytest.fixture
+    def captured(self, settings, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            "crank.tests.services.test_preferences._record_hook", calls.append,
+            raising=False,
+        )
+        settings.PREFERENCE_RECOMPUTE_HOOK = (
+            "crank.tests.services.test_preferences._record_hook"
+        )
+        # Attach a module-level callable the dotted path resolves to.
+        import crank.tests.services.test_preferences as this_module
+        this_module._hook_calls = calls
+        return calls
+
+    def test_hook_fires_once_with_change_id(self, user, captured):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "x"}})
+        assert captured == [f"{user.pk}:1"]
+
+    def test_hook_not_fired_for_noop(self, user, captured):
+        prefs.apply_patch_to_user(user, {"set": {"notes": "x"}})
+        captured.clear()
+        prefs.apply_patch_to_user(user, {"set": {"notes": "x"}})
+        assert captured == []
+
+    def test_hook_not_fired_on_rollback(self, user, captured):
+        from django.db import transaction as tx
+
+        class _Boom(Exception):
+            pass
+
+        with pytest.raises(_Boom):
+            with tx.atomic():
+                prefs.apply_patch_to_user(user, {"set": {"notes": "x"}})
+                raise _Boom()
+        assert captured == []
+        assert not UserPreference.objects.filter(user=user).exists()
+
+    def test_hook_observes_committed_revision(self, user, settings):
+        seen = []
+        settings.PREFERENCE_RECOMPUTE_HOOK = (
+            "crank.tests.services.test_preferences._revision_observing_hook"
+        )
+        import crank.tests.services.test_preferences as this_module
+        this_module._revision_observer = (user.pk, seen)
+        prefs.apply_patch_to_user(user, {"set": {"notes": "x"}})
+        prefs.apply_patch_to_user(user, {"set": {"notes": "y"}})
+        assert seen == [1, 2]
+
+    def test_hook_exception_swallowed(self, user, settings, caplog):
+        settings.PREFERENCE_RECOMPUTE_HOOK = (
+            "crank.tests.services.test_preferences._exploding_hook"
+        )
+        with caplog.at_level("ERROR", logger="crank.services.preferences"):
+            result = prefs.apply_patch_to_user(user, {"set": {"notes": "x"}})
+        assert result["changed"] is True  # save never depends on the hook
+        assert "preference recompute hook failed" in caplog.text
+
+    def test_empty_hook_is_noop(self, user, settings):
+        settings.PREFERENCE_RECOMPUTE_HOOK = ""
+        result = prefs.apply_patch_to_user(user, {"set": {"notes": "x"}})
+        assert result["changed"] is True
+
+
+class TestNoContentsLogging:
+    def test_changes_undo_never_logged(self, user, caplog):
+        secret = "s3kr3t-notes-payload"
+        with caplog.at_level("DEBUG"):
+            result = prefs.apply_patch_to_user(user, {"set": {"notes": secret}})
+            prefs.undo_preference_change(user, result["undo"])
+            prefs.propose_patch_for_user(user, {"set": {"notes": "other"}})
+        for record in caplog.records:
+            assert secret not in record.getMessage()
+            assert "undo" not in record.getMessage().lower()
+
+
+def _record_hook(change_id):
+    import crank.tests.services.test_preferences as this_module
+    this_module._hook_calls.append(change_id)
+
+
+def _revision_observing_hook(change_id):
+    from crank.models.preference import UserPreference as _UP
+    import crank.tests.services.test_preferences as this_module
+    user_pk, seen = this_module._revision_observer
+    user_id, revision = change_id.split(":")
+    assert int(user_id) == user_pk
+    # The hook fires after commit: the stored row already carries the revision.
+    assert _UP.objects.get(user_id=user_id).revision == int(revision)
+    seen.append(int(revision))
+
+
+def _exploding_hook(change_id):
+    raise RuntimeError("hook exploded")

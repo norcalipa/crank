@@ -423,6 +423,13 @@ JOB_MATCH_RELAXATION_PROBES = _env_int("JOB_MATCH_RELAXATION_PROBES", 3)
 # crashed/stale lock and reclaimed by the next claim for the same run type.
 AGENT_RUN_STALE_AFTER_SECONDS = _env_int("AGENT_RUN_STALE_AFTER_SECONDS", 3600)
 
+# Preference recompute hook (issue #466). Dotted path to a callable invoked
+# via transaction.on_commit after every committed preference change with
+# change_id = f"{user_id}:{post_apply_revision}"; empty (the default) is a
+# no-op. The durable recompute consumer belongs to #475; this is only the
+# identity emission point, so it is deliberately NOT a CapabilitySwitch key.
+PREFERENCE_RECOMPUTE_HOOK = os.environ.get("PREFERENCE_RECOMPUTE_HOOK", "").strip()
+
 # Transactional publication outbox consumer (issue #470). The consumer is off
 # by default: rollout is migrate -> record events -> enable the flag -> wire
 # the cron. The publication_consumer CapabilitySwitch independently stops the
