@@ -181,3 +181,72 @@ class MySqlConcurrentTurnReplayTests(TransactionTestCase):
             ).count(),
             2,
         )
+
+
+@skipUnless(connection.vendor == "mysql", "requires a MySQL (InnoDB) test database")
+class MySqlUnresolvedEmployerRaceTests(TransactionTestCase):
+    """Two-connection race for one open UnresolvedEmployer per listing (#469).
+
+    Production MySQL cannot create the partial unique constraint
+    ``unique_open_unresolved_employer_listing`` (W036), so the invariant is
+    serialized by ``select_for_update`` on the parent ``JobListing`` row in
+    ``crank.agents.jobs.employer.resolve_employer``. Two threads resolving
+    the same listing concurrently must leave exactly one open row. Run with
+    the same procedure as the module docstring above.
+    """
+
+    def setUp(self):
+        from crank.models.job import JobListing, JobSourceCatalog
+
+        self.source = JobSourceCatalog.objects.create(
+            name="mysql-race-source",
+            adapter_key="fixture-adapter",
+            base_url="https://jobs.example.test",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+        )
+        now = __import__("django.utils.timezone", fromlist=["now"]).now()
+        self.listing = JobListing.all_objects.create(
+            source=self.source,
+            external_id="mysql-race-1",
+            canonical_url="https://jobs.example.test/mysql-race-1",
+            employer_name="Race Co",
+            title="Race Engineer",
+            first_seen_at=now,
+            last_seen_at=now,
+        )
+
+    def tearDown(self):
+        connections.close_all()
+
+    def test_concurrent_resolution_yields_one_open_row(self):
+        from crank.agents.jobs.employer import resolve_employer
+        from crank.models.employer import UnresolvedEmployer
+
+        barrier = threading.Barrier(2)
+        outcomes = [None, None]
+
+        def resolve(index):
+            try:
+                barrier.wait(timeout=10.0)
+                outcomes[index] = resolve_employer(self.listing)
+            except Exception as exc:  # surfaced to the main thread below
+                outcomes[index] = exc
+
+        threads = [
+            threading.Thread(target=resolve, args=(index,), name=f"employer-race-{index}")
+            for index in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        for outcome in outcomes:
+            self.assertNotIsInstance(outcome, Exception, f"resolver failed: {outcome!r}")
+        self.assertEqual(
+            UnresolvedEmployer.objects.filter(
+                listing=self.listing, resolved=False
+            ).count(),
+            1,
+        )

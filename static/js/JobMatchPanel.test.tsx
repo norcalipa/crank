@@ -5,6 +5,7 @@ import {render, screen, fireEvent, waitFor} from '@testing-library/react';
 import * as React from 'react';
 
 import JobMatchPanel from './JobMatchPanel';
+import {closeAssistant, openAssistant, resetWorkspaceForTests} from './workspace/store';
 
 function jsonResponse(payload: unknown, status = 200): Response {
     return new Response(JSON.stringify(payload), {
@@ -105,6 +106,8 @@ describe('JobMatchPanel', () => {
 
     afterEach(() => {
         jest.restoreAllMocks();
+        resetWorkspaceForTests();
+        closeAssistant();
     });
 
     describe('loading state', () => {
@@ -133,6 +136,23 @@ describe('JobMatchPanel', () => {
             render(<JobMatchPanel/>);
             const error = await screen.findByTestId('job-match-error');
             expect(error).toHaveTextContent('Network down');
+        });
+
+        test('translates a non-JSON status body into friendly copy', async () => {
+            // A login redirect or HTML error page makes res.json() reject with
+            // a DOMException; parseJson must rewrite it as truthful copy.
+            (global.fetch as jest.Mock).mockImplementation((url: string) => {
+                if (url.includes('/status/')) {
+                    return Promise.resolve(new Response('<html><body>Redirecting…</body></html>', {
+                        status: 200,
+                        headers: {'Content-Type': 'text/html'},
+                    }));
+                }
+                return Promise.resolve(jsonResponse(matchPayload(0)));
+            });
+            render(<JobMatchPanel/>);
+            const error = await screen.findByTestId('job-match-error');
+            expect(error).toHaveTextContent(/couldn.t load your job matches/i);
         });
 
         test('retry button re-fetches status', async () => {
@@ -615,6 +635,25 @@ describe('JobMatchPanel combined states (#476)', () => {
         expect(screen.getByTestId('action-explore_companies')).toHaveClass('btn-outline-info');
     });
 
+    test('chat action becomes a secondary Focus assistant affordance while the panel is open', async () => {
+        // Issue #469 re-critique: with the assistant panel open the
+        // floating launcher is gone from the DOM, so the match panel's
+        // "chat" action is no longer an open affordance — it relabels to a
+        // quieter outline/cyan-text "Focus assistant" action (>=44px via
+        // the .btn rule) instead of a redundant primary "open" button.
+        openAssistant();
+        await renderPanel('no_matches', {
+            statusOverrides: {actions: ['chat', 'help']},
+        });
+        const chat = screen.getByTestId('action-chat');
+        expect(chat).toHaveTextContent('Focus assistant');
+        expect(chat).toHaveAccessibleName('Focus assistant');
+        expect(chat).toHaveClass('btn-outline-info', 'job-match-focus-assistant');
+        expect(chat).not.toHaveClass('btn-primary');
+        const help = screen.getByTestId('action-help');
+        expect(help).toHaveTextContent('View help');
+    });
+
     test('explore_companies action renders with label and navigates to rankings', async () => {
         const originalHref = window.location;
         // jsdom location is read-only; replace it to observe navigation.
@@ -704,7 +743,7 @@ describe('JobMatchPanel round-2 visual fixes (contrast + icons)', () => {
         expect(refresh).toHaveAttribute('aria-label', 'Refresh match status');
     });
 
-    test('empty states render a visible inline status glyph', async () => {
+    test('empty state renders as a plain block, not a list item', async () => {
         await renderPanel('no_matches', {
             statusOverrides: {
                 title: 'No matches',
@@ -713,9 +752,11 @@ describe('JobMatchPanel round-2 visual fixes (contrast + icons)', () => {
             },
         });
         const empty = screen.getByTestId('empty-state-no_matches');
-        const glyph = empty.querySelector('svg[data-icon]');
-        expect(glyph).not.toBeNull();
-        expect(glyph?.getAttribute('data-icon')).toBe('search');
+        // Round-2 critique: a single-item message is a plain block — no
+        // leading list-bullet glyph and no indent.
+        expect(empty.querySelector('svg[data-icon]')).toBeNull();
+        expect(empty).toHaveTextContent('No matches');
+        expect(empty).toHaveTextContent('Test');
     });
 });
 

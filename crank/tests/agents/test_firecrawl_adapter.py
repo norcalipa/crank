@@ -309,6 +309,10 @@ class FirecrawlAdapterTests(TestCase):
 
         replay = ingest_jobs(source_obj, JobSourceQuery(), adapter=first)
         assert replay.ingested == 0
+        # AC-1 (issue #469): an identical replay through the real adapter is
+        # neither created nor updated, even though Firecrawl re-emits a fresh
+        # observed_at (volatile provenance) on every fetch.
+        assert replay.updated == 0
         assert JobListing.all_objects.filter(source=source_obj, external_id="job-123").count() == 1
 
     @override_settings(
@@ -526,3 +530,36 @@ class FirecrawlClientTests(TestCase):
             credit_budget=2, extraction_schema=EXTRACTION_SCHEMA,
         )
         assert result["status"] == "cancelled"
+
+
+class FirecrawlCompletenessFlagTests(TestCase):
+    """Issue #469 AC-7: the crawler never claims a complete snapshot."""
+
+    def make_adapter(self, client):
+        from django.test import override_settings
+
+        with override_settings(FIRECRAWL_ENABLED=True, FIRECRAWL_API_KEY="fixture-secret"):
+            return FirecrawlCareersAdapter(source(), client=client)
+
+    def test_never_complete_and_truncated_when_sliced(self):
+        data = [
+            {"extract": extracted(source_id=f"job-{i}"), "metadata": {}}
+            for i in range(3)
+        ]
+        client = FakeClient({"id": "crawl-1", "status": "completed", "data": data})
+        result = self.make_adapter(client).fetch(
+            JobSourceQuery(max_pages=10, max_listings=2)
+        )
+        assert len(result.listings) == 2
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_never_complete_and_not_truncated_within_bounds(self):
+        client = FakeClient({"id": "crawl-1", "status": "completed", "data": [
+            {"extract": extracted(), "metadata": {}}
+        ]})
+        result = self.make_adapter(client).fetch(
+            JobSourceQuery(max_pages=10, max_listings=10)
+        )
+        assert result.complete_snapshot is False
+        assert result.truncated is False

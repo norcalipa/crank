@@ -116,7 +116,13 @@ def make_entry(
 def payload(entries, count=None):
     if count is None:
         count = len(entries)
-    return {"SearchResult": {"SearchResultCount": count, "SearchResultItems": entries}}
+    return {
+        "SearchResult": {
+            "SearchResultCount": len(entries),
+            "SearchResultCountAll": count,
+            "SearchResultItems": entries,
+        }
+    }
 
 
 class USAJobsAdapterTests(TestCase):
@@ -166,7 +172,8 @@ class USAJobsAdapterTests(TestCase):
             "fixture-1002",
         ]
         assert result.pages_fetched == 2
-        assert calls[1][1]["offset"] == 2
+        assert calls[1][1]["Page"] == 2
+        assert calls[0][1]["ResultsPerPage"] == 500
         empty_http, _ = http_for([response("usajobs_empty.json")])
         empty = self.adapter(empty_http, source_obj).fetch(JobSourceQuery())
         assert empty.listings == ()
@@ -444,6 +451,18 @@ class USAJobsAdapterTests(TestCase):
         with pytest.raises(errors.SchemaDriftError, match="non-negative integer"):
             self.adapter(http, source_obj).fetch(JobSourceQuery())
 
+    def test_search_result_count_all_invalid(self):
+        source_obj = source()
+        http, _ = http_for(
+            [
+                json_response(
+                    {"SearchResult": {"SearchResultCount": 0, "SearchResultCountAll": -1, "SearchResultItems": []}}
+                )
+            ]
+        )
+        with pytest.raises(errors.SchemaDriftError, match="SearchResultCountAll"):
+            self.adapter(http, source_obj).fetch(JobSourceQuery())
+
     # ------------------------------------------------------------------
     # _listing validation (lines 208, 211, 221, 227)
     # ------------------------------------------------------------------
@@ -498,3 +517,124 @@ class USAJobsAdapterTests(TestCase):
         http, _ = http_for([json_response(payload([entry]))])
         result = self.adapter(http, source_obj).fetch(JobSourceQuery())
         assert result.listings[0].description_excerpt == "Fallback summary."
+
+
+    def test_scope_metadata_emitted_from_location_and_category(self):
+        """Issue #469 review: the adapter emits the reserved ``scope`` key
+        from the documented PositionLocation[].CountryCode and
+        JobCategory[].Code fields, not only adapter provenance."""
+        source_obj = source()
+        entry = make_entry()
+        entry["MatchedObjectDescriptor"]["PositionLocation"] = [
+            {"LocationName": "San Francisco, CA", "CountryCode": "US"},
+            {"LocationName": "Remote", "CountryCode": "US"},
+        ]
+        entry["MatchedObjectDescriptor"]["JobCategory"] = [
+            {"Name": "Engineering", "Code": "2210"},
+            {"Name": "Engineering", "Code": "2210"},
+        ]
+        http, _ = http_for([json_response(payload([entry], count=1))])
+        result = self.adapter(http, source_obj).fetch(JobSourceQuery())
+        listing = result.listings[0]
+        assert listing.source_metadata["scope"]["countries"] == ["US"]
+        assert listing.source_metadata["scope"]["role_families"] == ["2210"]
+
+    def test_scope_metadata_absent_without_fields(self):
+        """No scope key is emitted when the payload carries no geography or
+        category fields."""
+        source_obj = source()
+        http, _ = http_for([json_response(payload([make_entry()], count=1))])
+        result = self.adapter(http, source_obj).fetch(JobSourceQuery())
+        listing = result.listings[0]
+        assert "scope" not in listing.source_metadata
+
+
+class CompletenessFlagTests(TestCase):
+    """Issue #469 AC-7: the adapter declares why it stopped paging."""
+
+    def adapter(self, http, source_obj=None):
+        return USAJobsAdapter(
+            source_obj or source(),
+            http=http,
+            auth_key="fixture-key",
+            user_agent_email="fixture@example.test",
+        )
+
+    def test_natural_end_of_inventory_is_complete(self):
+        http, _ = http_for([json_response(payload([make_entry()], count=1))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=10))
+        assert result.complete_snapshot is True
+        assert result.truncated is False
+
+    def test_empty_result_is_complete_not_truncated(self):
+        http, _ = http_for([json_response(payload([], count=0))])
+        result = self.adapter(http).fetch(JobSourceQuery())
+        assert result.complete_snapshot is True
+        assert result.truncated is False
+
+    def test_max_pages_bound_is_truncated(self):
+        entries = [make_entry(object_id=f"p-{i}") for i in range(2)]
+        http, _ = http_for([json_response(payload(entries, count=100))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=1))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_max_listings_bound_is_truncated(self):
+        entries = [make_entry(object_id=f"cap-{i}") for i in range(5)]
+        http, _ = http_for([json_response(payload(entries, count=100))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=3, max_pages=10))
+        assert len(result.listings) == 3
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_count_reached_exactly_is_complete(self):
+        entries = [make_entry(object_id=f"exact-{i}") for i in range(2)]
+        http, _ = http_for([json_response(payload(entries, count=2))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is True
+        assert result.truncated is False
+
+    def test_page_one_not_complete_when_total_unreached(self):
+        """Issue #469 review CRITICAL: a page whose current count is below
+        the reported total (SearchResultCountAll) must not be certified
+        complete, or absence closure would mass-close every row outside
+        page one."""
+        entry = make_entry()
+        http, _ = http_for(
+            [json_response({
+                "SearchResult": {
+                    "SearchResultCount": 1,
+                    "SearchResultCountAll": 2,
+                    "SearchResultItems": [entry],
+                }
+            })]
+        )
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=1))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_total_absent_short_page_is_complete(self):
+        """When SearchResultCountAll is absent, a short (non-full) page is
+        the only end-of-inventory signal and certifies completeness."""
+        http, _ = http_for([json_response({
+            "SearchResult": {
+                "SearchResultCount": 1,
+                "SearchResultItems": [make_entry()],
+            }
+        })])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is True
+        assert result.truncated is False
+
+    def test_discarded_rows_beyond_max_listings_are_truncated(self):
+        """Issue #469 review CRITICAL: a one-page response whose rows exceed
+        max_listings must be truncated, never complete, even when items_seen
+        reaches SearchResultCountAll — discarding rows then absence-closing
+        them would mass-close real inventory."""
+        entries = [make_entry(object_id=f"big-{i}") for i in range(250)]
+        http, _ = http_for([json_response(payload(entries, count=250))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=100, max_pages=3))
+        assert len(result.listings) == 100
+        assert result.items_seen == 250
+        assert result.complete_snapshot is False
+        assert result.truncated is True

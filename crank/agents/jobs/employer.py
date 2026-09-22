@@ -53,13 +53,31 @@ def _organizations_for_alias(kind: str, value: str) -> list[Organization]:
     return [by_id[key] for key in sorted(by_id)]
 
 
+# The deterministic resolver scans the full organization table and normalizes
+# in Python, so Unicode/whitespace/case variants share identical semantics on
+# every supported database backend. A case-insensitive shortlist cannot be
+# authoritative: the database collation does not apply ``normalize_employer_name``
+# (NFKC + whitespace collapse + casefold), so it would miss normalization-
+# equivalent candidates and turn an ambiguity into a trusted mis-attribution.
+#
+# Plan deviation (issue #469 review): the approved plan proposed replacing this
+# scan with a bounded normalized-name lookup. A persisted normalized-name index
+# would require a migration, which AC-15 forbids on this ticket, and a
+# collation-based ``iexact`` shortlist is incorrect (above). The complete scan
+# is therefore retained as the correctness-preserving choice: the operator
+# controlled ``Organization`` table is small relative to ``JobListing``, and
+# resolution is O(listings x organizations). This bound is exercised at
+# representative cardinality in ``crank/tests/agents/test_employer_resolution.py``
+# (``test_exact_name_lookup_scales_to_representative_cardinality``); promotion
+# to a persisted normalized identity is tracked for a future ticket that can
+# add a migration.
 def _organizations_for_exact_name(value: str) -> list[Organization]:
     wanted = normalize_employer_name(value)
-    # Organization names are operator-controlled but may differ only by case;
-    # normalize in Python so Unicode and whitespace have identical semantics on
-    # every supported database backend.
-    organizations = Organization.objects.all().order_by("pk")
-    return [org for org in organizations if normalize_employer_name(org.name) == wanted]
+    return [
+        org
+        for org in Organization.objects.all().order_by("pk")
+        if normalize_employer_name(org.name) == wanted
+    ]
 
 
 def _resolve_candidates(
@@ -151,17 +169,45 @@ def resolve_employer(
         else:
             listing.organization = None
             listing.save(update_fields=["organization", "modified"])
-            UnresolvedEmployer.objects.update_or_create(
-                listing=listing,
-                resolved=False,
-                defaults={
-                    "employer_name": sanitize_employer_text(listing.employer_name),
-                    "employer_domain": normalize_employer_domain(listing.employer_domain),
-                    "reason": result.reason,
-                    "candidates": _bounded_candidates(result),
-                },
-            )
+            _persist_open_unresolved(listing, result)
     return result
+
+
+def _persist_open_unresolved(
+    listing: JobListing, result: EmployerResolution
+) -> UnresolvedEmployer:
+    """Maintain exactly one open ``UnresolvedEmployer`` row per listing.
+
+    The caller already holds ``select_for_update`` on the listing row, which
+    serializes concurrent resolutions of this listing — the partial unique
+    constraint on ``(listing) WHERE resolved=False`` is not emitted on MySQL
+    (W036), so the row lock is the real invariant (the
+    ``crank.services.scores._persist_locked`` precedent). The whole open set
+    is reconciled rather than just the newest row, so duplicates left by an
+    earlier race heal back to one open row (the
+    ``company_evidence.accept_observation_fields`` heal shape).
+    """
+    open_rows = list(
+        UnresolvedEmployer.objects.filter(listing=listing, resolved=False).order_by("pk")
+    )
+    defaults = {
+        "employer_name": sanitize_employer_text(listing.employer_name),
+        "employer_domain": normalize_employer_domain(listing.employer_domain),
+        "reason": result.reason,
+        "candidates": _bounded_candidates(result),
+    }
+    if open_rows:
+        keep, duplicates = open_rows[0], open_rows[1:]
+        for field, value in defaults.items():
+            setattr(keep, field, value)
+        keep.save(update_fields=[*defaults, "modified"])
+        if duplicates:
+            now = timezone.now()
+            UnresolvedEmployer.objects.filter(
+                pk__in=[row.pk for row in duplicates]
+            ).update(resolved=True, resolved_at=now)
+        return keep
+    return UnresolvedEmployer.objects.create(listing=listing, resolved=False, **defaults)
 
 
 def reprocess_employer_alias(alias: EmployerAlias) -> int:

@@ -1,6 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
+import {getWorkspaceSnapshot, subscribeWorkspace} from './workspace/store';
 
 /**
  * JobMatchPanel displays the user's job-match status with distinct empty-state
@@ -54,6 +55,21 @@ interface RankedMatchesPayload {
 }
 
 type PanelPhase = 'loading' | 'error' | 'ready';
+
+/**
+ * Parse a JSON response, translating the raw ``res.json()`` DOMException
+ * ("Failed to execute 'json' on 'Response'...") that a login redirect or HTML
+ * error page produces into truthful, user-facing copy. Only the JSON-parse
+ * failure is rewritten: status-code and network errors keep their readable
+ * message so the retry path stays informative.
+ */
+async function parseJson<T>(res: Response): Promise<T> {
+    try {
+        return await res.json();
+    } catch {
+        throw new Error('We couldn’t load your job matches. Please try again.');
+    }
+}
 
 const ACTION_LABELS: Record<string, string> = {
     suggest_company: 'Suggest a company',
@@ -323,6 +339,17 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     const [rankedMatches, setRankedMatches] = React.useState<RankedMatchesPayload | null>(null);
     const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
 
+    // Mirror the workspace assistant's open/closed state (issue #469
+    // re-critique): while the panel is open the floating launcher leaves the
+    // DOM, so the match-panel "chat" action relabels to a secondary
+    // "Focus assistant" affordance instead of a redundant open action.
+    const [assistantOpen, setAssistantOpen] = React.useState<boolean>(
+        () => getWorkspaceSnapshot().visibility === 'open',
+    );
+    React.useEffect(() => subscribeWorkspace(() => {
+        setAssistantOpen(getWorkspaceSnapshot().visibility === 'open');
+    }), []);
+
     const fetchStatus = React.useCallback(async () => {
         if (!isAuthenticated) return;
         setPhase('loading');
@@ -334,15 +361,15 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 fetch('/api/job-matches/ranked/?limit=10'),
             ]);
             if (!statusRes.ok) throw new Error(`Status ${statusRes.status}`);
-            const statusData: EmptyStatePayload = await statusRes.json();
+            const statusData: EmptyStatePayload = await parseJson(statusRes);
             setEmptyState(statusData);
 
             if (matchRes.ok) {
-                const matchData = await matchRes.json();
+                const matchData = await parseJson<{count?: number}>(matchRes);
                 setMatchCount(matchData.count || 0);
             }
             if (rankedRes.ok) {
-                const rankedData: RankedMatchesPayload = await rankedRes.json();
+                const rankedData: RankedMatchesPayload = await parseJson<RankedMatchesPayload>(rankedRes);
                 setRankedMatches(rankedData);
             } else {
                 setRankedMatches(null);
@@ -479,15 +506,16 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                             {jobs.map((match) => (
                                 <div key={match.listing_id} className="border-bottom border-secondary pb-2 mb-2"
                                      data-testid={`ranked-job-${match.listing_id}`}>
-                                    <div className="d-flex justify-content-between align-items-start">
-                                        <div className="flex-grow-1">
+                                    <div className="d-flex justify-content-between align-items-start gap-2">
+                                        <div className="flex-grow-1 min-w-0">
                                             <a href={match.canonical_url} target="_blank" rel="noopener noreferrer"
-                                               className="text-info text-decoration-none fw-bold">
+                                               className="text-info fw-bold job-match-name"
+                                               aria-label={`Open listing for ${match.title} (opens in a new tab)`}>
                                                 {match.title}
                                             </a>
-                                            <span className="text-muted ms-2">{match.employer_name}</span>
+                                            <span className="text-muted d-block text-break">{match.employer_name}</span>
                                         </div>
-                                        <span className="badge bg-primary" data-testid={`job-score-${match.listing_id}`}>
+                                        <span className="badge bg-primary flex-shrink-0" data-testid={`job-score-${match.listing_id}`}>
                                             {match.score.toFixed(1)}
                                         </span>
                                     </div>
@@ -516,20 +544,22 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                             {orgs.map((org) => (
                                 <div key={org.organization_id} className="border-bottom border-secondary pb-2 mb-2"
                                      data-testid={`ranked-org-${org.organization_id}`}>
-                                    <div className="d-flex justify-content-between align-items-start">
-                                        <div className="flex-grow-1">
+                                    <div className="d-flex justify-content-between align-items-start gap-2">
+                                        <div className="flex-grow-1 min-w-0">
                                             {org.url ? (
                                                 <a href={org.url} target="_blank" rel="noopener noreferrer"
-                                                   className="text-info text-decoration-none fw-bold">
+                                                   className="text-info fw-bold job-match-name"
+                                                   aria-label={`Open ${org.name} (opens in a new tab)`}>
                                                     {org.name}
                                                 </a>
                                             ) : (
                                                 <span className="fw-bold">{org.name}</span>
                                             )}
-                                            <span className="text-muted ms-2">{fundingLabel(org.funding_round)}</span>
-                                            <span className="text-muted ms-1">· {rtoLabel(org.rto_policy)}</span>
+                                            <div className="text-muted small text-break">
+                                                {fundingLabel(org.funding_round)} · {rtoLabel(org.rto_policy)}
+                                            </div>
                                         </div>
-                                        <span className="badge bg-primary" data-testid={`org-score-${org.organization_id}`}>
+                                        <span className="badge bg-primary flex-shrink-0" data-testid={`org-score-${org.organization_id}`}>
                                             {org.score.toFixed(1)}
                                         </span>
                                     </div>
@@ -576,18 +606,6 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
 
     // Empty state
     const state = emptyState!;
-    const stateIcons: Record<string, string> = {
-        no_source: 'database',
-        source_disabled: 'pause-circle',
-        crawl_running: 'spinner',
-        crawl_failed: 'alert-triangle',
-        crawl_stale: 'clock',
-        crawl_empty: 'inbox',
-        no_preferences: 'clipboard',
-        no_matches: 'search',
-        partial_coverage: 'layers',
-    };
-    const icon = stateIcons[state.state] || 'info';
 
     return (
         <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
@@ -602,12 +620,12 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             </div>
             <div className="card-body">
                 <ResultNotices emptyState={state} />
-                <div className="d-flex align-items-start mb-2" role="status" aria-live="polite"
+                {/* Single-item message: plain block, no list-bullet marker or
+                    leading icon indent (round-2 critique). */}
+                <div role="status" aria-live="polite"
                      data-testid={`empty-state-${state.state}`}>
-                    <Icon name={icon} size={20} className="me-3 mt-1 text-info" />
-                    <div className="flex-grow-1">
-                        <h3 className="h6 mb-1">{state.title}</h3>
-                        <p className="text-muted mb-0">{state.message}</p>
+                    <h3 className="h6 mb-1">{state.title}</h3>
+                    <p className="text-muted mb-0">{state.message}</p>
                         {state.staff_detail && (
                             <p className="text-muted small mt-2 mb-0" data-testid="staff-detail">
                                 <Icon name="shield" className="me-1" />
@@ -645,21 +663,36 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                 </div>
                             </div>
                         )}
-                    </div>
                 </div>
                 {state.actions.length > 0 && (
                     <div className="job-match-actions d-flex flex-wrap gap-2 mt-3" role="group"
                          aria-label="Recovery actions">
-                        {state.actions.map((action, idx) => (
-                            <button key={action} type="button"
-                                    className={`btn ${idx === 0 ? 'btn-primary' : 'btn-outline-info'}`}
-                                    onClick={() => handleAction(action)}
-                                    data-testid={`action-${action}`}
-                                    aria-label={ACTION_LABELS[action] || action}>
-                                <Icon name={ACTION_ICONS[action] || 'arrow-right'} className="me-1" />
-                                {ACTION_LABELS[action] || action}
-                            </button>
-                        ))}
+                        {state.actions.map((action, idx) => {
+                            // While the assistant panel is open (issue #469
+                            // re-critique) the "chat" action is no longer an
+                            // open affordance — the launcher is gone from the
+                            // DOM — so it degrades to a secondary
+                            // "Focus assistant" action with a subtle
+                            // outline/cyan-text treatment (still a >=44px
+                            // target via the .job-match-actions .btn rule).
+                            const focusAssistant = action === 'chat' && assistantOpen;
+                            const label = focusAssistant
+                                ? 'Focus assistant'
+                                : (ACTION_LABELS[action] || action);
+                            const className = focusAssistant
+                                ? 'btn btn-outline-info job-match-focus-assistant'
+                                : `btn ${idx === 0 ? 'btn-primary' : 'btn-outline-info'}`;
+                            return (
+                                <button key={action} type="button"
+                                        className={className}
+                                        onClick={() => handleAction(action)}
+                                        data-testid={`action-${action}`}
+                                        aria-label={label}>
+                                    <Icon name={ACTION_ICONS[action] || 'arrow-right'} className="me-1" />
+                                    {label}
+                                </button>
+                            );
+                        })}
                     </div>
                 )}
             </div>

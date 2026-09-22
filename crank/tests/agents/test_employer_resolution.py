@@ -473,3 +473,142 @@ class IngestIntegrationTests(TestCase):
         assert result.ingested == 1
         listing = JobListing.all_objects.get(source=source, external_id="job-x")
         assert listing.organization == org
+
+
+class OpenUnresolvedInvariantTests(TestCase):
+    """Issue #469 AC-5/AC-6: one open row per listing, healed duplicates."""
+
+    def setUp(self):
+        self.source = make_source()
+
+    def test_each_reason_leaves_organization_null_and_creates_none(self):
+        from crank.models.organization import Organization as OrgModel
+
+        cases = {
+            UnresolvedEmployer.Reason.NO_MATCH: {"employer_name": "Ghost Co"},
+            UnresolvedEmployer.Reason.AMBIGUOUS: {"employer_name": "Duo Co"},
+            UnresolvedEmployer.Reason.INACTIVE: {"employer_name": "Dormant Co"},
+            UnresolvedEmployer.Reason.NOT_PUBLIC: {"employer_name": "Private Co"},
+        }
+        OrgModel.objects.create(name="Duo Co", public=True)
+        OrgModel.objects.create(name="duo co", public=True)
+        OrgModel.objects.create(name="Dormant Co", public=True, status=0)
+        OrgModel.objects.create(name="Private Co", public=False)
+        before_orgs = OrgModel.objects.count()
+        for reason, kwargs in cases.items():
+            with self.subTest(reason=reason):
+                listing = make_listing(
+                    self.source,
+                    external_id=f"job-{reason}",
+                    employer_name=kwargs["employer_name"],
+                )
+                result = resolve_employer(listing, persist=True)
+                assert not result.resolved
+                assert result.reason == reason
+                listing.refresh_from_db()
+                assert listing.organization is None
+                record = UnresolvedEmployer.objects.get(listing=listing, resolved=False)
+                assert record.reason == reason
+        assert OrgModel.objects.count() == before_orgs
+
+    def test_sequential_resolutions_keep_exactly_one_open_row(self):
+        listing = make_listing(self.source, employer_name="Solo Co")
+        resolve_employer(listing, persist=True)
+        resolve_employer(listing, persist=True)
+        open_rows = UnresolvedEmployer.objects.filter(listing=listing, resolved=False)
+        assert open_rows.count() == 1
+
+    def test_preseeded_duplicate_open_rows_heal_to_one(self):
+        listing = make_listing(self.source, employer_name="Healed Co")
+        # SQLite honours the partial unique constraint that MySQL cannot
+        # enforce (W036); drop it briefly to stage the duplicate-open state
+        # a pre-fix production race could have left behind.
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "DROP INDEX IF EXISTS unique_open_unresolved_employer_listing"
+            )
+        try:
+            for index in range(2):
+                UnresolvedEmployer.objects.create(
+                    listing=listing,
+                    employer_name="Healed Co",
+                    reason=UnresolvedEmployer.Reason.NO_MATCH,
+                    resolved=False,
+                )
+            resolve_employer(listing, persist=True)
+            open_rows = UnresolvedEmployer.objects.filter(
+                listing=listing, resolved=False
+            )
+            assert open_rows.count() == 1
+            assert UnresolvedEmployer.objects.filter(
+                listing=listing, resolved=True
+            ).count() == 1
+        finally:
+            # Restore the partial unique index (SQLite DDL is transactional,
+            # so this is belt-and-braces for backends where it is not).
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "unique_open_unresolved_employer_listing "
+                    "ON crank_unresolvedemployer (listing_id) "
+                    "WHERE resolved = 0"
+                )
+
+    def test_exact_name_lookup_matches_full_scan(self):
+        from crank.agents.jobs.employer import _organizations_for_exact_name
+
+        org = make_org(name="Café  Müller")
+        for variant in ("Café  Müller", "café müller", "CAFÉ MÜLLER", " café müller "):
+            with self.subTest(variant=variant):
+                assert _organizations_for_exact_name(variant) == [org]
+
+    def test_exact_name_lookup_unicode_fallback(self):
+        from crank.agents.jobs.employer import _organizations_for_exact_name
+
+        org = make_org(name="ＡＣＭＥ")  # fullwidth letters need NFKC folding
+        assert _organizations_for_exact_name("acme") == [org]
+
+    def test_exact_name_lookup_preserves_whitespace_variant_ambiguity(self):
+        """Issue #469 review: two organizations that differ only by
+        whitespace must both be returned so the resolver reports an
+        ambiguity instead of mis-attributing to the case-only match."""
+        from crank.agents.jobs.employer import _organizations_for_exact_name
+        from crank.models.organization import Organization as OrgModel
+
+        OrgModel.objects.create(name="Acme", public=True)
+        OrgModel.objects.create(name=" Acme ", public=True)
+        candidates = _organizations_for_exact_name("Acme")
+        self.assertEqual(len(candidates), 2)
+        listing = make_listing(self.source, employer_name="Acme")
+        result = resolve_employer(listing, persist=False)
+        self.assertFalse(result.resolved)
+        self.assertEqual(result.reason, UnresolvedEmployer.Reason.AMBIGUOUS)
+
+    def test_exact_name_lookup_scales_to_representative_cardinality(self):
+        """Issue #469 review: the complete normalized scan (a recorded plan
+        deviation, see ``employer._organizations_for_exact_name``) must
+        resolve correctly at a representative organization-table size and
+        complete within a bounded wall-clock — establishing the operational
+        bound the plan's 200-org synthetic benchmark could not."""
+        import time
+
+        from crank.agents.jobs.employer import _organizations_for_exact_name
+        from crank.models.organization import Organization as OrgModel
+
+        # A representative operator-controlled catalog: thousands of
+        # organizations, plus one normalization-equivalent target buried at
+        # the end so a prefix-bounded shortlist would miss it.
+        for index in range(5000):
+            OrgModel.objects.create(name=f"Org {index:05d}", public=True)
+        OrgModel.objects.create(name="Target  Co", public=True)  # double space
+
+        started = time.perf_counter()
+        candidates = _organizations_for_exact_name("Target Co")
+        elapsed = time.perf_counter() - started
+
+        self.assertEqual([org.name for org in candidates], ["Target  Co"])
+        # The complete scan over ~5k rows is bounded and fast; this bound is
+        # deliberately generous to absorb CI variance.
+        self.assertLess(elapsed, 5.0)

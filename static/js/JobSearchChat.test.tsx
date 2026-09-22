@@ -279,12 +279,27 @@ describe('JobSearchChat', () => {
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-live', 'polite');
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-busy', 'false');
             expect(screen.getByTestId('empty-history')).toBeInTheDocument();
-            expect(screen.getByTestId('empty-history')).toHaveTextContent(/matches are shown in the panel above/i);
+            expect(screen.getByTestId('empty-history')).toHaveTextContent(/Job-match status and results appear in the Job Matches panel/i);
             // Prominent primary next action (visual review #472 round 1, item 11).
             const cta = screen.getByTestId('empty-history-cta');
             expect(cta).toHaveClass('btn', 'btn-primary');
             fireEvent.click(cta);
             expect(document.activeElement).toBe(screen.getByLabelText('Message'));
+        });
+
+        test('sheet placement renders the Back-to-results microcopy instead of the beside-panel copy', async () => {
+            await renderChat();
+            expect(screen.getByTestId('empty-history')).toHaveTextContent(/Job Matches panel/i);
+            expect(screen.getByTestId('empty-history')).not.toHaveTextContent(/Tap Back to results/i);
+        });
+
+        test('workspaceMode="sheet" renders directional Back-to-results microcopy (issue #472)', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+            render(<JobSearchChat workspaceMode="sheet"/>);
+            await screen.findByTestId('empty-history');
+            expect(screen.getByTestId('empty-history')).toHaveTextContent(/Tap Back to results/i);
+            expect(screen.getByTestId('empty-history')).not.toHaveTextContent(/Job Matches panel/i);
         });
 
         test('renders existing message history', async () => {
@@ -367,7 +382,9 @@ describe('JobSearchChat', () => {
             window.matchMedia = jest.fn().mockReturnValue({matches: false} as MediaQueryList);
             await renderChat([assistantMessage(1, 'latest')]);
             const history = screen.getByLabelText('Message history');
-            expect(scrollTo).toHaveBeenCalledWith({top: history.scrollHeight, behavior: 'smooth'});
+            // The initial scroll runs in an effect after the resume commit;
+            // await it so the assertion never races the effect (CI coverage).
+            await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({top: history.scrollHeight, behavior: 'smooth'}));
             delete (window as unknown as {matchMedia?: unknown}).matchMedia;
         });
 
@@ -375,7 +392,7 @@ describe('JobSearchChat', () => {
             window.matchMedia = jest.fn().mockReturnValue({matches: true} as MediaQueryList);
             await renderChat([assistantMessage(1, 'latest')]);
             const history = screen.getByLabelText('Message history');
-            expect(scrollTo).toHaveBeenCalledWith({top: history.scrollHeight, behavior: 'auto'});
+            await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({top: history.scrollHeight, behavior: 'auto'}));
             delete (window as unknown as {matchMedia?: unknown}).matchMedia;
         });
 

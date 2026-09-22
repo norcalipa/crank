@@ -654,3 +654,361 @@ def test_job_pipeline_manifest_has_disabled_safe_schedule():
     ]
     assert "db-connect-credentials" in secret_refs
     assert "crank-secrets" not in secret_refs
+
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+)
+class RetentionSweepTests(TestCase):
+    """Issue #469 AC-12/13: bounded retention sweep and cascade behavior."""
+
+    def setUp(self):
+        from crank.models import AgentRun
+
+        self.run = AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.RUNNING,
+        )
+
+    def source(self, name="sweep", **metadata):
+        return JobSourceCatalog.objects.create(
+            name=name,
+            adapter_key="fake.v1",
+            base_url="https://jobs.example.test",
+            enabled=True,
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            catalog_metadata=metadata or None,
+        )
+
+    def _listing(self, source, external_id, *, status=JobListing.Status.ACTIVE, seen_days=0):
+        from datetime import timedelta
+
+        now = timezone.now()
+        return JobListing.all_objects.create(
+            source=source,
+            external_id=external_id,
+            canonical_url=f"https://jobs.example.test/{external_id}",
+            employer_name="Sweep Co",
+            title="Engineer",
+            first_seen_at=now - timedelta(days=seen_days + 1),
+            last_seen_at=now - timedelta(days=seen_days),
+            status=status,
+        )
+
+    def test_retention_days_fallbacks(self):
+        from crank.services.job_pipeline import (
+            DEFAULT_DELETION_DAYS,
+            DEFAULT_EXPIRY_DAYS,
+            _retention_days,
+        )
+
+        plain = self.source("plain")
+        self.assertEqual(_retention_days(plain), (DEFAULT_EXPIRY_DAYS, DEFAULT_DELETION_DAYS))
+        tuned = self.source("tuned", expiry_days=10, deletion_days=40)
+        self.assertEqual(_retention_days(tuned), (10, 40))
+        bad_order = self.source("bad-order", expiry_days=50, deletion_days=20)
+        self.assertEqual(_retention_days(bad_order), (DEFAULT_EXPIRY_DAYS, DEFAULT_DELETION_DAYS))
+        bad_type = self.source("bad-type", expiry_days="soon", deletion_days=None)
+        self.assertEqual(_retention_days(bad_type), (DEFAULT_EXPIRY_DAYS, DEFAULT_DELETION_DAYS))
+
+    def test_sweep_expires_stale_and_deletes_terminal(self):
+        from crank.services.job_pipeline import _retention_sweep
+
+        source = self.source("sweep-src", expiry_days=10, deletion_days=40)
+        fresh = self._listing(source, "fresh", seen_days=1)
+        stale = self._listing(source, "stale", seen_days=30)
+        old_terminal = self._listing(
+            source, "old-terminal", status=JobListing.Status.CLOSED, seen_days=50
+        )
+        recent_terminal = self._listing(
+            source, "recent-terminal", status=JobListing.Status.EXPIRED, seen_days=20
+        )
+        expired, deleted = _retention_sweep(source)
+        self.assertEqual((expired, deleted), (1, 1))
+        fresh.refresh_from_db()
+        stale.refresh_from_db()
+        self.assertEqual(fresh.status, JobListing.Status.ACTIVE)
+        self.assertEqual(stale.status, JobListing.Status.EXPIRED)
+        self.assertFalse(JobListing.all_objects.filter(pk=old_terminal.pk).exists())
+        recent_terminal.refresh_from_db()
+        self.assertEqual(recent_terminal.status, JobListing.Status.EXPIRED)
+        # Resumable: a second run is a no-op for these rows.
+        self.assertEqual(_retention_sweep(source), (0, 0))
+
+    def test_sweep_is_bounded_and_never_deletes_active(self):
+        from crank.services.job_pipeline import _retention_sweep
+
+        source = self.source("bounded", expiry_days=10, deletion_days=40)
+        for index in range(5):
+            self._listing(source, f"stale-{index}", seen_days=30)
+            self._listing(
+                source, f"term-{index}", status=JobListing.Status.CLOSED, seen_days=50
+            )
+        expired, deleted = _retention_sweep(source, limit=2)
+        self.assertEqual((expired, deleted), (2, 2))
+        self.assertEqual(
+            JobListing.all_objects.filter(
+                source=source, status=JobListing.Status.ACTIVE
+            ).count(),
+            3,
+        )
+        expired, deleted = _retention_sweep(source, limit=10)
+        self.assertEqual((expired, deleted), (3, 3))
+
+    def test_deletion_cascades_to_match_and_unresolved(self):
+        from crank.models.job_match import JobMatch
+        from crank.models.employer import UnresolvedEmployer
+        from crank.services.job_pipeline import _retention_sweep
+
+        source = self.source("cascade", expiry_days=10, deletion_days=40)
+        listing = self._listing(
+            source, "cascade-1", status=JobListing.Status.CLOSED, seen_days=50
+        )
+        user = User.objects.create_user("cascade-user")
+        JobMatch.objects.create(
+            user=user,
+            listing=listing,
+            preference_version=3,
+            ranker_version="v1",
+            score=0.5,
+            first_matched_at=timezone.now(),
+            last_matched_at=timezone.now(),
+        )
+        UnresolvedEmployer.objects.create(
+            listing=listing,
+            employer_name="Cascade Co",
+            reason=UnresolvedEmployer.Reason.NO_MATCH,
+        )
+        expired, deleted = _retention_sweep(source)
+        self.assertEqual(deleted, 1)
+        self.assertEqual(JobMatch.objects.filter(listing_id=listing.pk).count(), 0)
+        self.assertEqual(
+            UnresolvedEmployer.objects.filter(listing_id=listing.pk).count(), 0
+        )
+
+    def test_pipeline_threads_closure_and_sweep_counts(self):
+        source = self.source("counts", expiry_days=10, deletion_days=40)
+        stale = self._listing(source, "stale", seen_days=30)
+        result = JobIngestResult(ingested=1, closed=2, absent_closed=2, complete_snapshot=True)
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(result),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings", return_value=(0, 0)
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            counts = run_job_pipeline(self.run)
+        self.assertEqual(counts["listings_ingested"], 1)
+        self.assertEqual(counts["listings_closed"], 2)
+        self.assertEqual(counts["listings_expired"], 1)
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, JobListing.Status.EXPIRED)
+
+    def test_sweep_never_deletes_rows_that_entered_as_active(self):
+        """Issue #469 review CRITICAL: a row that entered the sweep active
+        is expired, never deleted in the same run, even when its
+        last_seen_at is already past the deletion window."""
+        from crank.services.job_pipeline import _retention_sweep
+
+        source = self.source("active-old", expiry_days=10, deletion_days=40)
+        active_old = self._listing(source, "active-old", seen_days=50)
+        expired, deleted = _retention_sweep(source)
+        self.assertEqual((expired, deleted), (1, 0))
+        active_old.refresh_from_db()
+        self.assertEqual(active_old.status, JobListing.Status.EXPIRED)
+
+    def test_failed_fetch_runs_no_retention(self):
+        """Issue #469 review CRITICAL: a 429/5xx/timeout fetch (errors=1)
+        neither expires nor deletes rows."""
+        source = self.source("failed-retention", expiry_days=10, deletion_days=40)
+        stale = self._listing(source, "stale", seen_days=30)
+        old_terminal = self._listing(
+            source, "old-term", status=JobListing.Status.CLOSED, seen_days=50
+        )
+        result = JobIngestResult(errors=1)
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(result),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings", return_value=(0, 0)
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            with self.assertRaises(JobPipelineError):
+                run_job_pipeline(self.run)
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, JobListing.Status.ACTIVE)
+        self.assertTrue(JobListing.all_objects.filter(pk=old_terminal.pk).exists())
+
+    def test_incomplete_snapshot_runs_no_retention(self):
+        source = self.source("incomplete-retention", expiry_days=10, deletion_days=40)
+        stale = self._listing(source, "stale", seen_days=30)
+        result = JobIngestResult(ingested=1, complete_snapshot=False)
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(result),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings", return_value=(0, 0)
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            counts = run_job_pipeline(self.run)
+        self.assertEqual(counts["listings_expired"], 0)
+        self.assertEqual(counts["listings_deleted"], 0)
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, JobListing.Status.ACTIVE)
+
+    def test_filtered_query_runs_no_retention(self):
+        """Issue #469 review CRITICAL: a complete but filtered query must not
+        run retention, or a naturally complete keyword/location search would
+        expire/delete rows outside the filter."""
+        source = self.source("filtered-retention", expiry_days=10, deletion_days=40)
+        stale = self._listing(source, "stale", seen_days=30)
+        result = JobIngestResult(
+            ingested=1, complete_snapshot=True, closure_skipped_reason="filtered_query"
+        )
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(result),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings", return_value=(0, 0)
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            counts = run_job_pipeline(self.run)
+        self.assertEqual(counts["listings_expired"], 0)
+        self.assertEqual(counts["listings_deleted"], 0)
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, JobListing.Status.ACTIVE)
+
+    def test_catalog_kill_switch_runs_no_retention(self):
+        """Issue #469 review CRITICAL: the operator kill switch
+        (supports_complete_snapshot=false) must also stop retention."""
+        source = self.source("kill-retention", expiry_days=10, deletion_days=40)
+        stale = self._listing(source, "stale", seen_days=30)
+        result = JobIngestResult(
+            ingested=1, complete_snapshot=True, closure_skipped_reason="disabled_by_catalog"
+        )
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(result),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings", return_value=(0, 0)
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            counts = run_job_pipeline(self.run)
+        self.assertEqual(counts["listings_expired"], 0)
+        self.assertEqual(counts["listings_deleted"], 0)
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, JobListing.Status.ACTIVE)
+
+    def test_sweep_does_not_delete_row_closed_by_absence_in_same_run(self):
+        """Issue #469 review CRITICAL: a row that was active at the start of
+        the source run, then absence-closed by ingestion, is expired — never
+        deleted — in the same run even when its last_seen_at is past the
+        deletion window."""
+        from crank.services.job_pipeline import _retention_sweep
+
+        source = self.source("absence-delete", expiry_days=10, deletion_days=40)
+        active_old = self._listing(source, "absence-old", seen_days=50)
+        # Absence closure closed it earlier in the same source run.
+        active_old.status = JobListing.Status.CLOSED
+        active_old.save(update_fields=["status"])
+        protected_ids = {active_old.pk}
+        expired, deleted = _retention_sweep(source, protected_ids=protected_ids)
+        self.assertEqual((expired, deleted), (0, 0))
+        active_old.refresh_from_db()
+        self.assertEqual(active_old.status, JobListing.Status.CLOSED)
+
+    def test_absent_closure_records_publication_event(self):
+        """Issue #469 review MAJOR: a lifecycle-only write (complete empty
+        snapshot closing every row) still emits the publication event that
+        invalidates organization-scoped caches."""
+        source = self.source("closure-pub")
+        employer = Organization.objects.create(
+            name="Closure Co", url="https://closure.test"
+        )
+        listing = self._listing(source, "ext-closure")
+        listing.organization = employer
+        listing.save(update_fields=["organization"])
+        result = JobIngestResult(closed=1, absent_closed=1, complete_snapshot=True)
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(result),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings", return_value=(0, 0)
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            run_job_pipeline(self.run)
+        events = PublicationEvent.objects.all()
+        self.assertEqual(events.count(), 1)
+        self.assertEqual(events.get().payload["organization_ids"], [employer.id])
+
+    def test_seen_and_dismissed_survive_reobservation_and_no_resurrection(self):
+        """AC-13 / AC-10 (issue #469 review): recomputed matches preserve
+        seen/dismissed state, exercised through the real re-observation API.
+
+        AC-10's no-resurrection rule is authoritative: ``upsert_from_raw``
+        never reactivates a terminal listing on a later active observation, so
+        AC-13's literal "closed then re-observed active" transition cannot
+        occur through ingestion. AC-13 is therefore verified on the reachable
+        path — an active listing re-observed and rematched — and the terminal
+        row is asserted to stay terminal, resolving the AC-10/AC-13 conflict
+        in favour of no-resurrection."""
+        from crank.agents.jobs.base import RawJobListing
+        from crank.agents.jobs.match_persist import persist_matches
+        from crank.agents.jobs.matching import JobCriteria
+        from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
+        from crank.models.job import JobListing
+        from crank.models.job_match import JobMatch
+
+        source = self.source("seen-reobserve")
+        now = timezone.now()
+        raw = RawJobListing(
+            external_id="seen-1",
+            canonical_url="https://jobs.example.test/seen-1",
+            employer_name="Seen Co",
+            title="Engineer",
+            first_seen_at=now,
+            last_seen_at=now,
+        )
+        listing, _ = JobListing.ingest_with_outcome(source, raw)
+        organization = Organization.objects.create(name="Seen Co", public=True)
+        listing.organization = organization
+        listing.save(update_fields=["organization"])
+        user = User.objects.create_user("seen-reobserve-user")
+        criteria = JobCriteria(criteria_version=3)
+        self.assertEqual(
+            persist_matches(user, [listing], criteria, DEFAULT_CONFIG), 1
+        )
+        match = JobMatch.objects.get(user=user, listing=listing)
+        match.seen_at = timezone.now()
+        match.dismissed = True
+        match.save(update_fields=["seen_at", "dismissed"])
+
+        # Re-observe the same listing as active through the real upsert path:
+        # unchanged replay stays active and rematching keeps seen/dismissed.
+        reobserved, outcome = JobListing.ingest_with_outcome(source, raw)
+        self.assertEqual(reobserved.pk, listing.pk)
+        self.assertEqual(outcome, "unchanged")
+        self.assertEqual(reobserved.status, JobListing.Status.ACTIVE)
+        persist_matches(user, [reobserved], criteria, DEFAULT_CONFIG)
+        match.refresh_from_db()
+        self.assertIsNotNone(match.seen_at)
+        self.assertTrue(match.dismissed)
+
+        # AC-10 decision: a terminal listing is never resurrected by a later
+        # active observation through ingestion.
+        closed_raw = RawJobListing(
+            external_id="seen-1",
+            canonical_url="https://jobs.example.test/seen-1",
+            employer_name="Seen Co",
+            title="Engineer",
+            first_seen_at=now,
+            last_seen_at=timezone.now(),
+            status="closed",
+        )
+        closed, _ = JobListing.ingest_with_outcome(source, closed_raw)
+        self.assertEqual(closed.status, JobListing.Status.CLOSED)
+        reactivated_raw = RawJobListing(
+            external_id="seen-1",
+            canonical_url="https://jobs.example.test/seen-1",
+            employer_name="Seen Co",
+            title="Engineer",
+            first_seen_at=now,
+            last_seen_at=timezone.now(),
+            status="active",
+        )
+        reactivated, _ = JobListing.ingest_with_outcome(source, reactivated_raw)
+        self.assertEqual(reactivated.status, JobListing.Status.CLOSED)
