@@ -451,6 +451,18 @@ class USAJobsAdapterTests(TestCase):
         with pytest.raises(errors.SchemaDriftError, match="non-negative integer"):
             self.adapter(http, source_obj).fetch(JobSourceQuery())
 
+    def test_search_result_count_all_invalid(self):
+        source_obj = source()
+        http, _ = http_for(
+            [
+                json_response(
+                    {"SearchResult": {"SearchResultCount": 0, "SearchResultCountAll": -1, "SearchResultItems": []}}
+                )
+            ]
+        )
+        with pytest.raises(errors.SchemaDriftError, match="SearchResultCountAll"):
+            self.adapter(http, source_obj).fetch(JobSourceQuery())
+
     # ------------------------------------------------------------------
     # _listing validation (lines 208, 211, 221, 227)
     # ------------------------------------------------------------------
@@ -600,3 +612,16 @@ class CompletenessFlagTests(TestCase):
         result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=1))
         assert result.complete_snapshot is False
         assert result.truncated is True
+
+    def test_total_absent_short_page_is_complete(self):
+        """When SearchResultCountAll is absent, a short (non-full) page is
+        the only end-of-inventory signal and certifies completeness."""
+        http, _ = http_for([json_response({
+            "SearchResult": {
+                "SearchResultCount": 1,
+                "SearchResultItems": [make_entry()],
+            }
+        })])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is True
+        assert result.truncated is False
