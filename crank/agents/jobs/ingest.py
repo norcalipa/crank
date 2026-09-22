@@ -107,28 +107,41 @@ def ingest_jobs(source: Any, query: JobSourceQuery, *, adapter=None) -> JobInges
     summaries: list[str] = []
     seen_ids: set[int] = set()
     for raw in fetched.listings:
+        # The upsert (identity, status, counters, ``seen_ids``) is accounted
+        # atomically and independently of employer resolution (issue #469
+        # review): a resolver exception fires *after* the listing change is
+        # committed, so it must never suppress the committed write's counters
+        # or the ``seen_ids`` that drive absence closure and publication.
         try:
             listing, outcome = JobListing.ingest_with_outcome(source, raw)
-            # Employer resolution is deliberately separate from listing
-            # identity/upsert: a corrected reviewed alias can reprocess the
-            # same listing without creating another row. The resolution
-            # outcome is tallied so the caller can report the actual
-            # resolved/unresolved counts (issue #469 review).
+        except Exception as exc:
+            errors += 1
+            summaries.append(_safe_error(exc))
+            continue
+        seen_ids.add(listing.pk)
+        if outcome == OUTCOME_CREATED:
+            ingested += 1
+        elif outcome == OUTCOME_UPDATED:
+            updated += 1
+        if listing.status == JobListing.Status.CLOSED:
+            closed += 1
+        elif listing.status == JobListing.Status.EXPIRED:
+            expired += 1
+        # Employer resolution is deliberately separate from listing
+        # identity/upsert: a corrected reviewed alias can reprocess the
+        # same listing without creating another row. Its outcome is tallied
+        # so the caller can report the actual resolved/unresolved counts. A
+        # resolution failure is a real error but must not roll back the
+        # accounting above — it is recorded as an unresolved listing plus an
+        # error so closure stays default-deny while publication still fires.
+        try:
             from crank.agents.jobs.employer import resolve_employer
             if resolve_employer(listing).resolved:
                 resolved += 1
             else:
                 unresolved += 1
-            seen_ids.add(listing.pk)
-            if outcome == OUTCOME_CREATED:
-                ingested += 1
-            elif outcome == OUTCOME_UPDATED:
-                updated += 1
-            if listing.status == JobListing.Status.CLOSED:
-                closed += 1
-            elif listing.status == JobListing.Status.EXPIRED:
-                expired += 1
         except Exception as exc:
+            unresolved += 1
             errors += 1
             summaries.append(_safe_error(exc))
 

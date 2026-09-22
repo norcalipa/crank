@@ -213,6 +213,26 @@ class CrawlRunTests(TestCase):
         self.assertEqual(event.payload["resolved"], 1)
         self.assertEqual(event.payload["unresolved"], 0)
 
+    @patch("crank.services.crawl_runs.ingest_job_source")
+    def test_execute_publishes_committed_update_even_when_resolver_failed(self, ingest):
+        """Issue #469 review MAJOR: a committed listing change must still
+        publish even when employer resolution failed (errors=1) and the
+        per-listing organization relationship is unchanged. ``updated`` is the
+        signal that a durable write was accepted, so it must trigger the
+        publication outbox event regardless of resolution errors."""
+        from crank.models import PublicationEvent
+
+        ingest.return_value = JobSourceIngestion(
+            result=JobIngestResult(updated=1, errors=1, unresolved=1),
+            skipped=False,
+            reason="",
+        )
+        _execute(self.job_source, "job")
+        self.assertEqual(PublicationEvent.objects.count(), 1)
+        event = PublicationEvent.objects.get()
+        self.assertEqual(event.payload["resolved"], 0)
+        self.assertEqual(event.payload["unresolved"], 1)
+
     def test_policy_rejects_unknown_source_type(self):
         with self.assertRaises(CrawlRequestError):
             resolve_source("fixture-adapter", "invalid")

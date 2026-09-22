@@ -187,16 +187,19 @@ class USAJobsAdapter(JobSourceAdapter):
         # ``SearchResultCountAll`` (``SearchResultCount`` is only the current
         # page's row count and must never drive completeness).
         #
-        # Completeness is certified against *distinct* source identities
-        # (issue #469 review), never the raw row count: a duplicated or
-        # overlapping ``MatchedObjectId`` across pages can reach the declared
-        # total without every distinct identity having been observed, which
-        # would otherwise authorize absence closure of genuinely missing
-        # inventory.
+        # Completeness is certified against *distinct* identities in the
+        # domain persistence actually retains (issue #469 review): never the
+        # raw row count, and never only ``MatchedObjectId``. ``JobListing``
+        # coalesces rows by ``(source, canonical_url)`` in addition to
+        # ``external_id``, so completeness requires a bijective
+        # id↔canonical-url mapping among retained rows — a duplicate id, a
+        # repeated URL, or an id spanning two URLs all collapse to fewer
+        # persisted rows and must default-deny absence closure.
         complete = False
         truncated = False
         declared_total: int | None = None
         seen_ids: set[str] = set()
+        seen_urls: set[str] = set()
         while page < query.max_pages and len(listings) < query.max_listings:
             page += 1
             params: dict[str, Any] = {"Page": page, "ResultsPerPage": MAX_PAGE_SIZE}
@@ -222,13 +225,27 @@ class USAJobsAdapter(JobSourceAdapter):
                     break
                 listing = self._listing(entry)
                 seen_ids.add(listing.external_id)
+                seen_urls.add(listing.canonical_url)
                 listings.append(listing)
             # Completeness additionally requires that every fetched row was
             # retained (issue #469 review): discarding rows beyond
             # ``max_listings`` must mark the snapshot truncated, never
             # complete, or absence closure would close the discarded rows.
             retained_all = len(listings) == items_seen
-            distinct_seen = len(seen_ids)
+            distinct_ids = len(seen_ids)
+            distinct_urls = len(seen_urls)
+            # Completeness must be proved in the *persistence* identity
+            # domain (issue #469 review): ``JobListing`` coalesces rows by
+            # ``(source, canonical_url)`` as well as ``external_id``, so two
+            # distinct IDs sharing one ``PositionURI`` — or one ID spanning
+            # two URIs — collapse to fewer rows than the raw row count
+            # suggests. A snapshot whose IDs↔URLs mapping is not bijective
+            # (every retained external id AND canonical url mutually unique)
+            # can no longer certify that each persisted identity was
+            # observed, so it must remain default-deny.
+            identities_bijective = (
+                distinct_ids == len(listings) and distinct_urls == len(listings)
+            )
             if declared_total is not None:
                 if items_seen > declared_total:
                     # Over-delivery: the provider returned more rows than its
@@ -237,11 +254,20 @@ class USAJobsAdapter(JobSourceAdapter):
                     # row). A contradictory total is never complete.
                     truncated = True
                     break
-                if distinct_seen == declared_total:
-                    # Distinct coverage proven: every source identity has been
+                if identities_bijective and distinct_urls == declared_total:
+                    # Distinct coverage proven in the persistence domain: every
+                    # source identity (one canonical URL each) has been
                     # observed. Over-delivery (above) already ruled out any
                     # discard, so ``retained_all`` is guaranteed here.
                     complete = True
+                    break
+                if items_seen == declared_total:
+                    # The provider delivered the declared total's row count
+                    # but the identities are not bijective (a duplicate id or
+                    # URL), so it delivered fewer distinct listings than it
+                    # claimed — a contradiction that can never certify
+                    # completeness.
+                    truncated = True
                     break
                 if not entries:
                     # The source reported more inventory than it delivered; an
@@ -251,9 +277,12 @@ class USAJobsAdapter(JobSourceAdapter):
             elif not entries or len(entries) < MAX_PAGE_SIZE:
                 # No total reported: a short or empty page is the only
                 # end-of-inventory signal available, and only when nothing
-                # was discarded.
-                complete = retained_all
-                if not retained_all:
+                # was discarded — and only when the retained identities are
+                # mutually distinct (issue #469 review): a short page that
+                # repeats an identity is a contradictory pagination that can
+                # never certify completeness.
+                complete = retained_all and identities_bijective
+                if not complete:
                     truncated = True
                 break
         if not complete and (
