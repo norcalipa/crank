@@ -165,6 +165,54 @@ class CrawlRunTests(TestCase):
         _execute(self.job_source, "job")
         self.assertEqual(PublicationEvent.objects.count(), 1)
 
+    @patch("crank.services.crawl_runs.ingest_job_source")
+    def test_execute_publishes_relationship_only_change_with_unchanged_org_set(self, ingest):
+        """Issue #469 review MAJOR: a second listing resolving null -> an
+        organization already represented by another listing keeps the distinct
+        organization-id set unchanged, so the aggregate-set comparison alone
+        would miss the relationship change. Per-listing relationship comparison
+        must still emit the publication event."""
+        from crank.models import JobListing, PublicationEvent
+
+        organization = Organization.objects.create(
+            name="Shared Org", url="https://shared.example.test"
+        )
+        JobListing.objects.create(
+            source=self.job_source,
+            external_id="keep-a",
+            canonical_url="https://jobs.example.test/keep-a",
+            title="Already A",
+            employer_name="Shared Org",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+            organization=organization,
+        )
+        unassigned = JobListing.objects.create(
+            source=self.job_source,
+            external_id="new-a",
+            canonical_url="https://jobs.example.test/new-a",
+            title="New to A",
+            employer_name="Shared Org",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+        )
+
+        def fake_ingest(*args, **kwargs):
+            unassigned.organization = organization
+            unassigned.save(update_fields=["organization", "modified"])
+            return JobSourceIngestion(
+                result=JobIngestResult(resolved=1, unresolved=0),
+                skipped=False,
+                reason="",
+            )
+
+        ingest.side_effect = fake_ingest
+        _execute(self.job_source, "job")
+        event = PublicationEvent.objects.get()
+        self.assertEqual(PublicationEvent.objects.count(), 1)
+        self.assertEqual(event.payload["resolved"], 1)
+        self.assertEqual(event.payload["unresolved"], 0)
+
     def test_policy_rejects_unknown_source_type(self):
         with self.assertRaises(CrawlRequestError):
             resolve_source("fixture-adapter", "invalid")

@@ -186,9 +186,17 @@ class USAJobsAdapter(JobSourceAdapter):
         # ``Page``/``ResultsPerPage`` and reports the total as
         # ``SearchResultCountAll`` (``SearchResultCount`` is only the current
         # page's row count and must never drive completeness).
+        #
+        # Completeness is certified against *distinct* source identities
+        # (issue #469 review), never the raw row count: a duplicated or
+        # overlapping ``MatchedObjectId`` across pages can reach the declared
+        # total without every distinct identity having been observed, which
+        # would otherwise authorize absence closure of genuinely missing
+        # inventory.
         complete = False
         truncated = False
         declared_total: int | None = None
+        seen_ids: set[str] = set()
         while page < query.max_pages and len(listings) < query.max_listings:
             page += 1
             params: dict[str, Any] = {"Page": page, "ResultsPerPage": MAX_PAGE_SIZE}
@@ -212,23 +220,28 @@ class USAJobsAdapter(JobSourceAdapter):
             for entry in entries:
                 if len(listings) >= query.max_listings:
                     break
-                listings.append(self._listing(entry))
+                listing = self._listing(entry)
+                seen_ids.add(listing.external_id)
+                listings.append(listing)
             # Completeness additionally requires that every fetched row was
             # retained (issue #469 review): discarding rows beyond
             # ``max_listings`` must mark the snapshot truncated, never
             # complete, or absence closure would close the discarded rows.
             retained_all = len(listings) == items_seen
+            distinct_seen = len(seen_ids)
             if declared_total is not None:
                 if items_seen > declared_total:
                     # Over-delivery: the provider returned more rows than its
                     # own total reports (e.g. SearchResultCountAll=0 with
-                    # retained items). A contradictory total is never complete.
+                    # retained items, or an overlapping page that repeats a
+                    # row). A contradictory total is never complete.
                     truncated = True
                     break
-                if items_seen == declared_total:
-                    complete = retained_all
-                    if not retained_all:
-                        truncated = True
+                if distinct_seen == declared_total:
+                    # Distinct coverage proven: every source identity has been
+                    # observed. Over-delivery (above) already ruled out any
+                    # discard, so ``retained_all`` is guaranteed here.
+                    complete = True
                     break
                 if not entries:
                     # The source reported more inventory than it delivered; an

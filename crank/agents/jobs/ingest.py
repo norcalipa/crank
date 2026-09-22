@@ -28,6 +28,8 @@ class JobIngestResult:
     closed: int = 0
     expired: int = 0
     errors: int = 0
+    resolved: int = 0
+    unresolved: int = 0
     pages_fetched: int = 0
     items_seen: int = 0
     error_summary: str = ""
@@ -101,7 +103,7 @@ def ingest_jobs(source: Any, query: JobSourceQuery, *, adapter=None) -> JobInges
             closure_skipped_reason=SKIP_FETCH_ERROR,
         )
 
-    ingested = updated = closed = expired = errors = 0
+    ingested = updated = closed = expired = errors = resolved = unresolved = 0
     summaries: list[str] = []
     seen_ids: set[int] = set()
     for raw in fetched.listings:
@@ -109,9 +111,14 @@ def ingest_jobs(source: Any, query: JobSourceQuery, *, adapter=None) -> JobInges
             listing, outcome = JobListing.ingest_with_outcome(source, raw)
             # Employer resolution is deliberately separate from listing
             # identity/upsert: a corrected reviewed alias can reprocess the
-            # same listing without creating another row.
+            # same listing without creating another row. The resolution
+            # outcome is tallied so the caller can report the actual
+            # resolved/unresolved counts (issue #469 review).
             from crank.agents.jobs.employer import resolve_employer
-            resolve_employer(listing)
+            if resolve_employer(listing).resolved:
+                resolved += 1
+            else:
+                unresolved += 1
             seen_ids.add(listing.pk)
             if outcome == OUTCOME_CREATED:
                 ingested += 1
@@ -137,6 +144,8 @@ def ingest_jobs(source: Any, query: JobSourceQuery, *, adapter=None) -> JobInges
         closed=closed,
         expired=expired,
         errors=errors,
+        resolved=resolved,
+        unresolved=unresolved,
         pages_fetched=fetched.pages_fetched,
         items_seen=fetched.items_seen,
         error_summary=", ".join(summaries),

@@ -141,6 +141,28 @@ class JobIngestTests(TestCase):
         result = JobIngestResult(ingested=3, updated=2)
         assert result.total == 5
 
+    def test_ingest_tallies_resolved_and_unresolved_counts(self):
+        """Issue #469 review MAJOR: ``ingest_jobs`` resolves employers on
+        every replay, so it tallies resolved/unresolved counts for the caller
+        (the manual crawl previously hard-coded 0, 0)."""
+        source = make_source()
+
+        class Resolution:
+            def __init__(self, resolved):
+                self.resolved = resolved
+
+        with patch(
+            "crank.agents.jobs.employer.resolve_employer",
+            side_effect=lambda listing: Resolution(listing.external_id.startswith("yes")),
+        ):
+            result = ingest_jobs(
+                source,
+                JobSourceQuery(),
+                adapter=StubAdapter([raw(external_id="yes-1"), raw(external_id="no-1")]),
+            )
+        assert result.resolved == 1
+        assert result.unresolved == 1
+
     def test_status_change_detected_as_update(self):
         """_changed returns True when status differs and is not terminal→active (lines 60-65)."""
         source = make_source()

@@ -168,6 +168,14 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
         if (!open || focusRequest === 0) {
             return;
         }
+        // A pending request stays pending across a cold lazy load: only try
+        // to focus once the chat chunk has committed (``snapshot.loaded``),
+        // so a request that races the composer mount is retried then rather
+        // than settling for a header control that is about to be replaced
+        // (issue #469 review).
+        if (!snapshot.loaded) {
+            return;
+        }
         // Prefer the composer (the assistant's primary input); fall back to the
         // first focusable control when it is not present (e.g. sheet mode or
         // a chat that has not finished loading). querySelector honours document
@@ -181,7 +189,11 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
                 '[data-testid="assistant-back-to-results"], textarea, button, [href], [tabindex]:not([tabindex="-1"])',
             );
         target?.focus();
-    }, [open, focusRequest]);
+        // Consume the request exactly once: a later ordinary drawer/docked
+        // open leaves focus alone and must not re-focus the composer without
+        // a new explicit request.
+        setFocusRequest(0);
+    }, [open, focusRequest, snapshot.loaded]);
 
     return (
         <>

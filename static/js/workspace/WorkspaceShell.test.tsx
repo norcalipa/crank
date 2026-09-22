@@ -9,6 +9,7 @@ import {
     openAssistant,
     resetWorkspaceForTests,
 } from './store';
+import * as storeModule from './store';
 import * as modalIsolation from '../modalIsolation';
 
 jest.mock('../JobSearchChat', () => ({
@@ -144,6 +145,50 @@ describe('WorkspaceShell', () => {
         await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
         act(() => {
             window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-composer')));
+    });
+
+    test('a consumed focus request does not re-focus on an ordinary reopen', async () => {
+        // Issue #469 review MINOR: after one explicit focus request is
+        // honoured, a later ordinary drawer/docked open leaves focus alone
+        // (the established non-modal contract) instead of re-stealing the
+        // composer because the stale counter was never consumed.
+        renderShell();
+        mockMode = 'docked';
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
+        act(() => {
+            window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-composer')));
+        act(() => closeAssistant());
+        await waitFor(() => expect(screen.queryByTestId('assistant-panel')).not.toBeInTheDocument());
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
+        // Consumed request: a docked reopen must not steal focus to the composer.
+        expect(document.activeElement).not.toBe(screen.getByTestId('assistant-composer'));
+    });
+
+    test('a focus request during cold load focuses the composer once it is ready', async () => {
+        // Issue #469 review MINOR: on a cold lazy load the composer is not yet
+        // mounted, so the request must stay pending (not settle on a header
+        // fallback) and be retried when ``snapshot.loaded`` commits.
+        const markLoaded = jest.spyOn(storeModule, 'markWorkspaceLoaded');
+        markLoaded.mockImplementation(() => {});
+        renderShell();
+        mockMode = 'docked';
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
+        act(() => {
+            window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        // Still cold: the request is held pending, not focused to a header control.
+        expect(document.activeElement).not.toBe(screen.getByTestId('assistant-composer'));
+        // The lazy chunk commits and the store marks the workspace loaded.
+        markLoaded.mockRestore();
+        act(() => {
+            storeModule.markWorkspaceLoaded();
         });
         await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-composer')));
     });

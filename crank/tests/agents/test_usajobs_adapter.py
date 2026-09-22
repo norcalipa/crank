@@ -594,6 +594,44 @@ class CompletenessFlagTests(TestCase):
         assert result.complete_snapshot is True
         assert result.truncated is False
 
+    def test_duplicate_identity_does_not_certify_completeness(self):
+        """Issue #469 review MAJOR: overlapping pages that repeat one
+        ``MatchedObjectId`` can reach the raw ``items_seen == declared_total``
+        check while a distinct identity is never observed. Completeness must
+        be certified against distinct identities, so a duplicated row marks
+        the snapshot truncated and never complete."""
+        same = make_entry(object_id="dup-row")
+        first = payload([same], count=2)
+        second = payload([same], count=2)
+        http, _ = http_for([json_response(first), json_response(second)])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=2))
+        assert result.items_seen == 2
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_distinct_identities_reaching_total_are_complete(self):
+        """Issue #469 review MAJOR: genuine full inventories — distinct
+        identities across pages reaching the declared total — must still
+        certify completeness even with the distinct-identity guard."""
+        first = payload([make_entry(object_id="a")], count=2)
+        second = payload([make_entry(object_id="b")], count=2)
+        http, _ = http_for([json_response(first), json_response(second)])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is True
+        assert result.truncated is False
+
+    def test_overlap_reaching_total_but_repeating_identity_is_truncated(self):
+        """Issue #469 review MAJOR: an overlapping page that repeats one
+        identity can still push the distinct count up to the declared total —
+        but the repeat itself signals pagination instability (a skipped row),
+        so completeness must be rejected (default-deny), not certified."""
+        first = payload([make_entry(object_id="a")], count=2)
+        second = payload([make_entry(object_id="a"), make_entry(object_id="b")], count=2)
+        http, _ = http_for([json_response(first), json_response(second)])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
     def test_page_one_not_complete_when_total_unreached(self):
         """Issue #469 review CRITICAL: a page whose current count is below
         the reported total (SearchResultCountAll) must not be certified
