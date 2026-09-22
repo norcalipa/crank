@@ -670,3 +670,27 @@ class CompletenessFlagTests(TestCase):
         })])
         with pytest.raises(errors.SchemaDriftError, match="SearchResultCount"):
             self.adapter(http).fetch(JobSourceQuery())
+
+    def test_under_delivered_total_is_truncated(self):
+        """Issue #469 review MAJOR: when the provider reports a total that is
+        never reached and then returns an empty page, the inventory claim is
+        contradictory and must be truncated, never complete."""
+        first = payload([make_entry()], count=5)
+        empty = payload([], count=5)
+        http, _ = http_for([json_response(first), json_response(empty)])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_no_total_short_page_with_discarded_rows_is_truncated(self):
+        """Issue #469 review MAJOR: with no SearchResultCountAll, a short page
+        whose rows exceed max_listings discards rows and must be truncated,
+        never complete."""
+        entries = [make_entry(object_id=f"short-{i}") for i in range(3)]
+        http, _ = http_for([json_response({
+            "SearchResult": {"SearchResultCount": 3, "SearchResultItems": entries}
+        })])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=2, max_pages=3))
+        assert len(result.listings) == 2
+        assert result.complete_snapshot is False
+        assert result.truncated is True
