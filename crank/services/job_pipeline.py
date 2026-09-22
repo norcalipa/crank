@@ -23,9 +23,8 @@ from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
 from crank.models.agent_run import AgentRun
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.preference import UserPreference, default_preferences
-from crank.models.publication import PublicationEvent
-from crank.services import agent_runs, publication
-from crank.services.job_ingest import ingest_job_source
+from crank.services import agent_runs
+from crank.services.job_ingest import ingest_job_source, record_source_publication
 
 logger = logging.getLogger(__name__)
 
@@ -171,57 +170,6 @@ def _resolve_source_listings(source: Any, before_ids: set[int]) -> tuple[int, in
     return resolved, unresolved
 
 
-def _record_source_publication(source, result, resolved, unresolved, before_org_ids):
-    """Record bounded listing publication events for one ingested source.
-
-    One event per bounded chunk of the deduplicated affected organization
-    ids (never per listing): the sweep unions affected keys across pending
-    events, so a source mapped to more organizations than one payload chunk
-    holds still publishes every organization — no id is ever silently
-    dropped — and downstream recompute (#462) can consume the events without
-    per-row event explosion. The affected set is the union of the source's
-    pre-stage organization ids and its post-stage ones: a listing reassigned
-    from organization A to B (or unresolved away from A) makes A affected
-    even though it no longer maps to any of the source's listings, and its
-    caches would otherwise keep serving stale listing-derived data. Must run
-    inside the same transaction as the source's accepted writes so the
-    events commit exactly when the writes commit.
-    """
-    organization_ids = set(
-        JobListing.all_objects.filter(
-            source=source, organization__isnull=False
-        )
-        # order_by() clears the model's default ordering, which would
-        # otherwise add last_seen_at/id to the SELECT and defeat DISTINCT.
-        .order_by()
-        .values_list("organization_id", flat=True)
-        .distinct()
-    )
-    organization_ids.update(before_org_ids)
-    organization_ids = sorted(organization_ids)
-    bound = publication.MAX_PAYLOAD_ORGANIZATION_IDS
-    chunks = [
-        organization_ids[index : index + bound]
-        for index in range(0, len(organization_ids), bound)
-    ] or [[]]
-    for chunk_index, organization_ids_chunk in enumerate(chunks):
-        publication.record_event(
-            target_type=PublicationEvent.TargetType.LISTING,
-            target_id=source.pk,
-            event_kind=PublicationEvent.EventKind.INGESTED,
-            payload={
-                "source_key": source.adapter_key,
-                "ingested": int(result.ingested),
-                "updated": int(result.updated),
-                "resolved": resolved,
-                "unresolved": unresolved,
-                "organization_ids": organization_ids_chunk,
-                "chunk_index": chunk_index,
-                "chunk_count": len(chunks),
-            },
-        )
-
-
 def _retention_days(source: Any) -> tuple[int, int]:
     """Per-source retention windows with a safe fallback (issue #469)."""
     metadata = getattr(source, "catalog_metadata", None) or {}
@@ -241,26 +189,42 @@ def _proven_complete_snapshot(result: JobIngestResult) -> bool:
     """Whether a fetch constitutes a proven, complete inventory snapshot.
 
     Retention and absence-based closure are both gated on this (issue #469
-    review): a failed, incomplete, or truncated fetch must never expire or
-    delete rows, or it would read a partial page as "everything absent" and
-    destroy accepted inventory and match history.
+    review): a failed, incomplete, truncated, filtered, or operator-disabled
+    fetch must never expire or delete rows, or it would read a partial page as
+    "everything absent" and destroy accepted inventory and match history.
+
+    ``closure_skipped_reason`` is the single authoritative "may mutate the
+    whole source" signal produced by ``ingest_jobs``' ``_closure_decision``:
+    an empty reason means closure was allowed (complete, untruncated,
+    unfiltered, and not disabled by the catalog kill switch). Retention must
+    not reconstruct a weaker proof that drops those two conditions.
     """
     return bool(
         getattr(result, "complete_snapshot", False)
         and not getattr(result, "truncated", False)
         and not getattr(result, "errors", 0)
+        and not getattr(result, "closure_skipped_reason", "")
     )
 
 
-def _retention_sweep(source: Any, *, limit: int = RETENTION_SWEEP_LIMIT) -> tuple[int, int]:
+def _retention_sweep(
+    source: Any,
+    *,
+    limit: int = RETENTION_SWEEP_LIMIT,
+    protected_ids: set[int] | None = None,
+) -> tuple[int, int]:
     """Expire stale active listings and delete aged terminal ones (issue #469).
 
     Bounded per run and resumable. Expiry uses the source's retention window
     on ``last_seen_at``; deletion applies only to terminal (closed/expired)
     listings past the longer deletion window and cascades to derived
     artifacts (``JobMatch``, ``UnresolvedEmployer``). An ``active`` listing
-    is never deleted.
+    is never deleted, and ``protected_ids`` (the ids that were active at the
+    start of the source run, before any absence closure) are also excluded
+    from deletion: a row closed by absence closure earlier in the same run is
+    expired, never deleted, in that run.
     """
+    protected_ids = protected_ids or set()
     expiry_days, deletion_days = _retention_days(source)
     now = timezone.now()
     expired = JobListing.all_objects.filter(
@@ -278,7 +242,7 @@ def _retention_sweep(source: Any, *, limit: int = RETENTION_SWEEP_LIMIT) -> tupl
         source=source,
         status__in=[JobListing.Status.CLOSED, JobListing.Status.EXPIRED],
         last_seen_at__lt=now - timedelta(days=deletion_days),
-    ).exclude(pk__in=expired_ids).order_by("pk")[:limit]
+    ).exclude(pk__in=expired_ids).exclude(pk__in=protected_ids).order_by("pk")[:limit]
     deleted_count = 0
     for listing in terminal:
         # Row-by-row delete so JobMatch/UnresolvedEmployer cascades fire.
@@ -372,6 +336,15 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
         before_ids = set(
             JobListing.all_objects.filter(source=source).values_list("pk", flat=True)
         )
+        # Snapshot the source's pre-stage active ids too (issue #469 review):
+        # a row active at the start of the run that is absence-closed by
+        # ingestion and is older than the deletion window must be expired,
+        # never deleted, in this same run.
+        active_before_ids = set(
+            JobListing.all_objects.filter(
+                source=source, status=JobListing.Status.ACTIVE
+            ).values_list("pk", flat=True)
+        )
         # Snapshot the source's pre-stage organization ids too: a listing
         # reassigned or unresolved during this stage makes its *former*
         # organization affected, and only the union of the before/after ids
@@ -398,27 +371,31 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                     counts["sources_skipped"] += 1
                     continue
                 if _proven_complete_snapshot(result):
-                    expired_count, deleted_count = _retention_sweep(source)
+                    expired_count, deleted_count = _retention_sweep(
+                        source, protected_ids=active_before_ids
+                    )
                 else:
-                    # A failed, incomplete, or truncated fetch must never
-                    # expire or delete rows (issue #469 review).
+                    # A failed, incomplete, truncated, filtered, or disabled
+                    # fetch must never expire or delete rows (issue #469
+                    # review).
                     expired_count = deleted_count = 0
                 if (
                     int(result.ingested)
                     or int(result.updated)
                     or resolved
                     or unresolved
-                    or int(result.absent_closed)
+                    or int(result.closed)
+                    or int(result.expired)
                     or expired_count
                     or deleted_count
                 ):
-                    _record_source_publication(
+                    record_source_publication(
                         source, result, resolved, unresolved, before_org_ids
                     )
             counts["listings_ingested"] += int(result.ingested)
             counts["listings_updated"] += int(result.updated)
-            counts["listings_closed"] += int(result.absent_closed)
-            counts["listings_expired"] += expired_count
+            counts["listings_closed"] += int(result.closed)
+            counts["listings_expired"] += int(result.expired) + expired_count
             counts["listings_deleted"] += deleted_count
             counts["employers_resolved"] += resolved
             counts["employers_unresolved"] += unresolved
@@ -443,8 +420,8 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                         "source_key": source.adapter_key,
                         "status": "succeeded",
                         "items_succeeded": int(result.ingested) + int(result.updated),
-                        "listings_closed": int(result.absent_closed),
-                        "listings_expired": expired_count,
+                        "listings_closed": int(result.closed),
+                        "listings_expired": int(result.expired) + expired_count,
                         "listings_deleted": deleted_count,
                         "reason_code": result.closure_skipped_reason or "none",
                     },

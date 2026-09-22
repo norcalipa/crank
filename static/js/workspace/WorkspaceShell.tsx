@@ -158,8 +158,12 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
             {/* Minimized state (visual review #472 round 5): exactly one
                 entry point — the restore pill. The launcher leaves the DOM
                 so the two co-located controls never stack in the same
-                corner with the launcher's focus ring painted underneath. */}
-            {!minimized && <AssistantLauncher ref={launcherRef} visibility={snapshot.visibility}/>}
+                corner with the launcher's focus ring painted underneath.
+                The launcher also leaves the DOM while the panel is OPEN
+                (issue #469 re-critique): a pressed floating launcher beside
+                the already-open docked panel is a redundant second entry
+                point, so it renders only while closed. */}
+            {!open && !minimized && <AssistantLauncher ref={launcherRef} visibility={snapshot.visibility}/>}
             {minimized && (
                 <button
                     ref={restoreRef}

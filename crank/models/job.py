@@ -21,6 +21,7 @@ from crank.agents.jobs.base import (
     MAX_LOCATION,
     MAX_TITLE,
     RawJobListing,
+    durable_source_metadata,
     validate_catalog_metadata,
     validate_job_url,
 )
@@ -235,11 +236,24 @@ class JobListingQuerySet(models.QuerySet):
             # A freshness-only advance (last_seen_at) is not an "update": an
             # unchanged replay reports OUTCOME_UNCHANGED so ingestion counters
             # reflect content changes, not clock ticks (issue #469 AC-1).
+            # ``source_metadata`` equality is computed over its durable
+            # remainder only: volatile provenance (``observed_at``/
+            # ``crawl_job_id``) changes on every fetch and must not make an
+            # otherwise-identical listing count as "updated".
             changed = any(
                 getattr(listing, field) != value
                 for field, value in values.items()
-                if field != "last_seen_at"
+                if field not in ("last_seen_at", "source_metadata")
             )
+            if "source_metadata" in values:
+                stored_metadata = dict(getattr(listing, "source_metadata", None) or {})
+                if durable_source_metadata(values["source_metadata"]) != durable_source_metadata(stored_metadata):
+                    changed = True
+                else:
+                    # Durable remainder unchanged: keep the stored metadata so a
+                    # replay that differs only in volatile provenance neither
+                    # counts as an update nor rewrites that provenance.
+                    values["source_metadata"] = stored_metadata
             # first_seen_at is immutable provenance. A canonical-URL fallback
             # may fill a previously unavailable source ID.
             for field, value in values.items():

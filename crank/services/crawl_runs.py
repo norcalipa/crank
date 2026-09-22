@@ -17,12 +17,12 @@ from crank.agents.jobs.base import JobSourceQuery
 from crank.agents.jobs.ingest import ingest_jobs
 from crank.models.agent_run import AgentRun
 from crank.models.crawl_run import CrawlRun
-from crank.models.job import JobSourceCatalog
+from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.monitoring import OperationalChangeAudit
 from crank.models.source import ApprovalState, SourceCatalog
 from crank.services import agent_runs, monitoring
 from crank.services.company_crawler import crawl_company_profile
-from crank.services.job_ingest import SKIP_OVERLAP, ingest_job_source
+from crank.services.job_ingest import SKIP_OVERLAP, ingest_job_source, record_source_publication
 
 SOURCE_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 MAX_LISTINGS = 100
@@ -144,10 +144,32 @@ def _execute(source, source_type: str):
     # Job ingestion is routed through the shared single-owner boundary
     # (issue #462): same policy, same per-source lock, same idempotent
     # ingest call as the recurring pipeline.
-    ingestion = ingest_job_source(source, query=query)
-    if ingestion.skipped:
-        raise SourceLockHeld()
-    return ingestion.result
+    before_org_ids = set(
+        JobListing.all_objects.filter(
+            source=source, organization__isnull=False
+        )
+        .order_by()
+        .values_list("organization_id", flat=True)
+        .distinct()
+    )
+    with transaction.atomic():
+        ingestion = ingest_job_source(source, query=query)
+        if ingestion.skipped:
+            raise SourceLockHeld()
+        result = ingestion.result
+        # Manual crawls reach ``ingest_jobs``' absence-closure write directly,
+        # so they must emit the publication outbox event themselves
+        # (issue #469 review): a lifecycle-only write (closing/expiring rows
+        # on a complete empty snapshot) still invalidates organization-scoped
+        # caches.
+        if (
+            int(result.ingested)
+            or int(result.updated)
+            or int(result.closed)
+            or int(result.expired)
+        ):
+            record_source_publication(source, result, 0, 0, before_org_ids)
+    return result
 
 
 def _outcome(result: Any) -> str:

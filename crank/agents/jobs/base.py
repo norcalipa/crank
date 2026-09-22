@@ -58,6 +58,12 @@ COMPENSATION_BASIS_VALUES = frozenset({"base", "total"})
 SCOPE_KEYS = frozenset({"countries", "role_families"})
 MAX_SCOPE_ITEMS = 32
 MAX_SCOPE_ITEM_LENGTH = 64
+# Reserved ``source_metadata`` keys that are volatile observation provenance
+# (issue #469): they change on every fetch (a fresh ``observed_at`` timestamp
+# and a new ``crawl_job_id``) and must never make an otherwise-identical
+# listing count as "updated" (AC-1). Content equality is computed over the
+# durable remainder, never these keys.
+VOLATILE_METADATA_KEYS = frozenset({"observed_at", "crawl_job_id"})
 # Reserved ``JobSourceCatalog.catalog_metadata`` keys (operator policy).
 CATALOG_EXPIRY_DAYS_KEY = "expiry_days"
 CATALOG_DELETION_DAYS_KEY = "deletion_days"
@@ -192,6 +198,21 @@ class RawJobListing:
             "source_metadata",
             validate_source_metadata(_normalize_reserved_metadata(self.source_metadata)),
         )
+
+
+def durable_source_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return metadata with volatile observation provenance removed.
+
+    ``observed_at`` and ``crawl_job_id`` are per-fetch provenance (issue #469):
+    they change on every replay even when the listing's durable content is
+    identical, so equality checks (AC-1 idempotency) must compare the durable
+    remainder only.
+    """
+    try:
+        items = dict(metadata or {})
+    except (TypeError, ValueError):
+        return {}
+    return {key: value for key, value in items.items() if key not in VOLATILE_METADATA_KEYS}
 
 
 def _normalize_reserved_metadata(value: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -401,4 +422,6 @@ __all__ = [
     "validate_job_url",
     "validate_source_metadata",
     "validate_catalog_metadata",
+    "durable_source_metadata",
+    "VOLATILE_METADATA_KEYS",
 ]

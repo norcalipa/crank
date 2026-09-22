@@ -309,6 +309,10 @@ class FirecrawlAdapterTests(TestCase):
 
         replay = ingest_jobs(source_obj, JobSourceQuery(), adapter=first)
         assert replay.ingested == 0
+        # AC-1 (issue #469): an identical replay through the real adapter is
+        # neither created nor updated, even though Firecrawl re-emits a fresh
+        # observed_at (volatile provenance) on every fetch.
+        assert replay.updated == 0
         assert JobListing.all_objects.filter(source=source_obj, external_id="job-123").count() == 1
 
     @override_settings(

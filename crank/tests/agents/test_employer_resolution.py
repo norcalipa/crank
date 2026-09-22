@@ -585,3 +585,30 @@ class OpenUnresolvedInvariantTests(TestCase):
         result = resolve_employer(listing, persist=False)
         self.assertFalse(result.resolved)
         self.assertEqual(result.reason, UnresolvedEmployer.Reason.AMBIGUOUS)
+
+    def test_exact_name_lookup_scales_to_representative_cardinality(self):
+        """Issue #469 review: the complete normalized scan (a recorded plan
+        deviation, see ``employer._organizations_for_exact_name``) must
+        resolve correctly at a representative organization-table size and
+        complete within a bounded wall-clock — establishing the operational
+        bound the plan's 200-org synthetic benchmark could not."""
+        import time
+
+        from crank.agents.jobs.employer import _organizations_for_exact_name
+        from crank.models.organization import Organization as OrgModel
+
+        # A representative operator-controlled catalog: thousands of
+        # organizations, plus one normalization-equivalent target buried at
+        # the end so a prefix-bounded shortlist would miss it.
+        for index in range(5000):
+            OrgModel.objects.create(name=f"Org {index:05d}", public=True)
+        OrgModel.objects.create(name="Target  Co", public=True)  # double space
+
+        started = time.perf_counter()
+        candidates = _organizations_for_exact_name("Target Co")
+        elapsed = time.perf_counter() - started
+
+        self.assertEqual([org.name for org in candidates], ["Target  Co"])
+        # The complete scan over ~5k rows is bounded and fast; this bound is
+        # deliberately generous to absorb CI variance.
+        self.assertLess(elapsed, 5.0)

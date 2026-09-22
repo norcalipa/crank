@@ -113,6 +113,24 @@ class CrawlRunTests(TestCase):
             _execute(self.job_source, "job")
         ingest.assert_called_once()
 
+    @patch("crank.services.crawl_runs.ingest_job_source")
+    def test_execute_records_publication_for_lifecycle_write(self, ingest):
+        """Issue #469 review MAJOR: a manual crawl that absence-closes rows
+        reaches ``ingest_jobs``' close_absent write directly and must emit the
+        publication outbox event, not just the recurring pipeline."""
+        from crank.models import PublicationEvent
+
+        ingest.return_value = JobSourceIngestion(
+            result=JobIngestResult(closed=1, absent_closed=1),
+            skipped=False,
+            reason="",
+        )
+        _execute(self.job_source, "job")
+        self.assertEqual(PublicationEvent.objects.count(), 1)
+        event = PublicationEvent.objects.get()
+        self.assertEqual(event.target_type, PublicationEvent.TargetType.LISTING)
+        self.assertEqual(event.event_kind, PublicationEvent.EventKind.INGESTED)
+
     def test_policy_rejects_unknown_source_type(self):
         with self.assertRaises(CrawlRequestError):
             resolve_source("fixture-adapter", "invalid")

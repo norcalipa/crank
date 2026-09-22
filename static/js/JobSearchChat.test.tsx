@@ -279,7 +279,7 @@ describe('JobSearchChat', () => {
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-live', 'polite');
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-busy', 'false');
             expect(screen.getByTestId('empty-history')).toBeInTheDocument();
-            expect(screen.getByTestId('empty-history')).toHaveTextContent(/matches are shown in the Job Matches panel/i);
+            expect(screen.getByTestId('empty-history')).toHaveTextContent(/Job-match status and results appear in the Job Matches panel/i);
             // Prominent primary next action (visual review #472 round 1, item 11).
             const cta = screen.getByTestId('empty-history-cta');
             expect(cta).toHaveClass('btn', 'btn-primary');
@@ -382,7 +382,9 @@ describe('JobSearchChat', () => {
             window.matchMedia = jest.fn().mockReturnValue({matches: false} as MediaQueryList);
             await renderChat([assistantMessage(1, 'latest')]);
             const history = screen.getByLabelText('Message history');
-            expect(scrollTo).toHaveBeenCalledWith({top: history.scrollHeight, behavior: 'smooth'});
+            // The initial scroll runs in an effect after the resume commit;
+            // await it so the assertion never races the effect (CI coverage).
+            await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({top: history.scrollHeight, behavior: 'smooth'}));
             delete (window as unknown as {matchMedia?: unknown}).matchMedia;
         });
 
@@ -390,7 +392,7 @@ describe('JobSearchChat', () => {
             window.matchMedia = jest.fn().mockReturnValue({matches: true} as MediaQueryList);
             await renderChat([assistantMessage(1, 'latest')]);
             const history = screen.getByLabelText('Message history');
-            expect(scrollTo).toHaveBeenCalledWith({top: history.scrollHeight, behavior: 'auto'});
+            await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({top: history.scrollHeight, behavior: 'auto'}));
             delete (window as unknown as {matchMedia?: unknown}).matchMedia;
         });
 

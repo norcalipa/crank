@@ -203,16 +203,30 @@ class USAJobsAdapter(JobSourceAdapter):
                 if len(listings) >= query.max_listings:
                     break
                 listings.append(self._listing(entry))
+            # Completeness additionally requires that every fetched row was
+            # retained (issue #469 review): discarding rows beyond
+            # ``max_listings`` must mark the snapshot truncated, never
+            # complete, or absence closure would close the discarded rows.
+            retained_all = len(listings) == items_seen
             if total is not None:
                 if items_seen >= total:
-                    complete = True
+                    complete = retained_all
+                    break
+                if not entries:
+                    # The source reported more inventory than it delivered; an
+                    # inconsistent total is never read as complete.
                     break
             elif not entries or len(entries) < MAX_PAGE_SIZE:
                 # No total reported: a short or empty page is the only
-                # end-of-inventory signal available.
-                complete = True
+                # end-of-inventory signal available, and only when nothing
+                # was discarded.
+                complete = retained_all
                 break
-        if not complete and (page >= query.max_pages or len(listings) >= query.max_listings):
+        if not complete and (
+            page >= query.max_pages
+            or len(listings) >= query.max_listings
+            or items_seen != len(listings)
+        ):
             truncated = True
         return JobSourceResult(
             listings=tuple(listings),

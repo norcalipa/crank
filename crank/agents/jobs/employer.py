@@ -59,6 +59,18 @@ def _organizations_for_alias(kind: str, value: str) -> list[Organization]:
 # authoritative: the database collation does not apply ``normalize_employer_name``
 # (NFKC + whitespace collapse + casefold), so it would miss normalization-
 # equivalent candidates and turn an ambiguity into a trusted mis-attribution.
+#
+# Plan deviation (issue #469 review): the approved plan proposed replacing this
+# scan with a bounded normalized-name lookup. A persisted normalized-name index
+# would require a migration, which AC-15 forbids on this ticket, and a
+# collation-based ``iexact`` shortlist is incorrect (above). The complete scan
+# is therefore retained as the correctness-preserving choice: the operator
+# controlled ``Organization`` table is small relative to ``JobListing``, and
+# resolution is O(listings x organizations). This bound is exercised at
+# representative cardinality in ``crank/tests/agents/test_employer_resolution.py``
+# (``test_exact_name_lookup_scales_to_representative_cardinality``); promotion
+# to a persisted normalized identity is tracked for a future ticket that can
+# add a migration.
 def _organizations_for_exact_name(value: str) -> list[Organization]:
     wanted = normalize_employer_name(value)
     return [

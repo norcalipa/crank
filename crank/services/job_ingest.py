@@ -24,8 +24,9 @@ from crank.models.agent_run import (
     release_named_advisory_lock,
     source_lock_name,
 )
-from crank.models.job import JobSourceCatalog
-from crank.services import monitoring
+from crank.models.job import JobListing, JobSourceCatalog
+from crank.models.publication import PublicationEvent
+from crank.services import monitoring, publication
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,60 @@ def _policy_check(source: Any) -> None:
         raise JobSourcePolicyError("source is disabled")
     if not str(getattr(source, "adapter_key", "") or "").strip():
         raise JobSourcePolicyError("source adapter is not configured")
+
+
+def record_source_publication(source, result, resolved, unresolved, before_org_ids):
+    """Record bounded listing publication events for one ingested source.
+
+    One event per bounded chunk of the deduplicated affected organization
+    ids (never per listing): the sweep unions affected keys across pending
+    events, so a source mapped to more organizations than one payload chunk
+    holds still publishes every organization — no id is ever silently
+    dropped. The affected set is the union of the source's pre-stage
+    organization ids and its post-stage ones: a listing reassigned from
+    organization A to B (or unresolved away from A, or closed by absence
+    closure) makes A affected even though it no longer maps to any of the
+    source's listings. Must run inside the same transaction as the source's
+    accepted writes so the events commit exactly when the writes commit.
+
+    This lives in the shared single-owner boundary (issue #462) so every
+    consumer — the recurring ``run_job_pipeline`` and the manual
+    ``crawl_runs`` trigger — publishes lifecycle writes identically
+    (issue #469 review).
+    """
+    organization_ids = set(
+        JobListing.all_objects.filter(
+            source=source, organization__isnull=False
+        )
+        # order_by() clears the model's default ordering, which would
+        # otherwise add last_seen_at/id to the SELECT and defeat DISTINCT.
+        .order_by()
+        .values_list("organization_id", flat=True)
+        .distinct()
+    )
+    organization_ids.update(before_org_ids)
+    organization_ids = sorted(organization_ids)
+    bound = publication.MAX_PAYLOAD_ORGANIZATION_IDS
+    chunks = [
+        organization_ids[index : index + bound]
+        for index in range(0, len(organization_ids), bound)
+    ] or [[]]
+    for chunk_index, organization_ids_chunk in enumerate(chunks):
+        publication.record_event(
+            target_type=PublicationEvent.TargetType.LISTING,
+            target_id=source.pk,
+            event_kind=PublicationEvent.EventKind.INGESTED,
+            payload={
+                "source_key": source.adapter_key,
+                "ingested": int(result.ingested),
+                "updated": int(result.updated),
+                "resolved": resolved,
+                "unresolved": unresolved,
+                "organization_ids": organization_ids_chunk,
+                "chunk_index": chunk_index,
+                "chunk_count": len(chunks),
+            },
+        )
 
 
 def ingest_job_source(source: Any, *, query: JobSourceQuery, adapter: Any = None) -> JobSourceIngestion:
@@ -100,4 +155,5 @@ __all__ = [
     "JobSourcePolicyError",
     "SKIP_OVERLAP",
     "ingest_job_source",
+    "record_source_publication",
 ]

@@ -1,6 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
+import {getWorkspaceSnapshot, subscribeWorkspace} from './workspace/store';
 
 /**
  * JobMatchPanel displays the user's job-match status with distinct empty-state
@@ -338,6 +339,17 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     const [rankedMatches, setRankedMatches] = React.useState<RankedMatchesPayload | null>(null);
     const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
 
+    // Mirror the workspace assistant's open/closed state (issue #469
+    // re-critique): while the panel is open the floating launcher leaves the
+    // DOM, so the match-panel "chat" action relabels to a secondary
+    // "Focus assistant" affordance instead of a redundant open action.
+    const [assistantOpen, setAssistantOpen] = React.useState<boolean>(
+        () => getWorkspaceSnapshot().visibility === 'open',
+    );
+    React.useEffect(() => subscribeWorkspace(() => {
+        setAssistantOpen(getWorkspaceSnapshot().visibility === 'open');
+    }), []);
+
     const fetchStatus = React.useCallback(async () => {
         if (!isAuthenticated) return;
         setPhase('loading');
@@ -655,16 +667,32 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 {state.actions.length > 0 && (
                     <div className="job-match-actions d-flex flex-wrap gap-2 mt-3" role="group"
                          aria-label="Recovery actions">
-                        {state.actions.map((action, idx) => (
-                            <button key={action} type="button"
-                                    className={`btn ${idx === 0 ? 'btn-primary' : 'btn-outline-info'}`}
-                                    onClick={() => handleAction(action)}
-                                    data-testid={`action-${action}`}
-                                    aria-label={ACTION_LABELS[action] || action}>
-                                <Icon name={ACTION_ICONS[action] || 'arrow-right'} className="me-1" />
-                                {ACTION_LABELS[action] || action}
-                            </button>
-                        ))}
+                        {state.actions.map((action, idx) => {
+                            // While the assistant panel is open (issue #469
+                            // re-critique) the "chat" action is no longer an
+                            // open affordance — the launcher is gone from the
+                            // DOM — so it degrades to a secondary
+                            // "Focus assistant" action with a subtle
+                            // outline/cyan-text treatment (still a >=44px
+                            // target via the .job-match-actions .btn rule).
+                            const focusAssistant = action === 'chat' && assistantOpen;
+                            const label = focusAssistant
+                                ? 'Focus assistant'
+                                : (ACTION_LABELS[action] || action);
+                            const className = focusAssistant
+                                ? 'btn btn-outline-info job-match-focus-assistant'
+                                : `btn ${idx === 0 ? 'btn-primary' : 'btn-outline-info'}`;
+                            return (
+                                <button key={action} type="button"
+                                        className={className}
+                                        onClick={() => handleAction(action)}
+                                        data-testid={`action-${action}`}
+                                        aria-label={label}>
+                                    <Icon name={ACTION_ICONS[action] || 'arrow-right'} className="me-1" />
+                                    {label}
+                                </button>
+                            );
+                        })}
                     </div>
                 )}
             </div>

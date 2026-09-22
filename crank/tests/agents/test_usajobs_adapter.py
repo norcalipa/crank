@@ -625,3 +625,16 @@ class CompletenessFlagTests(TestCase):
         result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
         assert result.complete_snapshot is True
         assert result.truncated is False
+
+    def test_discarded_rows_beyond_max_listings_are_truncated(self):
+        """Issue #469 review CRITICAL: a one-page response whose rows exceed
+        max_listings must be truncated, never complete, even when items_seen
+        reaches SearchResultCountAll — discarding rows then absence-closing
+        them would mass-close real inventory."""
+        entries = [make_entry(object_id=f"big-{i}") for i in range(250)]
+        http, _ = http_for([json_response(payload(entries, count=250))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=100, max_pages=3))
+        assert len(result.listings) == 100
+        assert result.items_seen == 250
+        assert result.complete_snapshot is False
+        assert result.truncated is True

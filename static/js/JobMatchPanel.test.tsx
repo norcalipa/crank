@@ -5,6 +5,7 @@ import {render, screen, fireEvent, waitFor} from '@testing-library/react';
 import * as React from 'react';
 
 import JobMatchPanel from './JobMatchPanel';
+import {closeAssistant, openAssistant, resetWorkspaceForTests} from './workspace/store';
 
 function jsonResponse(payload: unknown, status = 200): Response {
     return new Response(JSON.stringify(payload), {
@@ -105,6 +106,8 @@ describe('JobMatchPanel', () => {
 
     afterEach(() => {
         jest.restoreAllMocks();
+        resetWorkspaceForTests();
+        closeAssistant();
     });
 
     describe('loading state', () => {
@@ -630,6 +633,25 @@ describe('JobMatchPanel combined states (#476)', () => {
         // The recommended first action is primary; the rest are secondary.
         expect(screen.getByTestId('action-chat')).toHaveClass('btn-primary');
         expect(screen.getByTestId('action-explore_companies')).toHaveClass('btn-outline-info');
+    });
+
+    test('chat action becomes a secondary Focus assistant affordance while the panel is open', async () => {
+        // Issue #469 re-critique: with the assistant panel open the
+        // floating launcher is gone from the DOM, so the match panel's
+        // "chat" action is no longer an open affordance — it relabels to a
+        // quieter outline/cyan-text "Focus assistant" action (>=44px via
+        // the .btn rule) instead of a redundant primary "open" button.
+        openAssistant();
+        await renderPanel('no_matches', {
+            statusOverrides: {actions: ['chat', 'help']},
+        });
+        const chat = screen.getByTestId('action-chat');
+        expect(chat).toHaveTextContent('Focus assistant');
+        expect(chat).toHaveAccessibleName('Focus assistant');
+        expect(chat).toHaveClass('btn-outline-info', 'job-match-focus-assistant');
+        expect(chat).not.toHaveClass('btn-primary');
+        const help = screen.getByTestId('action-help');
+        expect(help).toHaveTextContent('View help');
     });
 
     test('explore_companies action renders with label and navigates to rankings', async () => {

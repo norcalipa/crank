@@ -1126,6 +1126,23 @@ body.app-nav-drawer-open {
     min-width: 44px;
 }
 
+/* Issue #469 re-critique: while the assistant panel is open, the match
+   panel's "chat" action degrades to a secondary "Focus assistant"
+   affordance — a subtle outline with cyan text on the dark card, distinctly
+   quieter than the primary action (contrast remains >= 4.5:1 on the dark
+   surface; target size still >= 44px via the .btn rule above). */
+#job-match-panel .job-match-actions .job-match-focus-assistant {
+    --bs-btn-color: #67e8f9;
+    --bs-btn-border-color: rgba(103, 232, 249, .55);
+    --bs-btn-hover-color: #a5f3fc;
+    --bs-btn-hover-bg: rgba(103, 232, 249, .12);
+    --bs-btn-hover-border-color: rgba(103, 232, 249, .8);
+    --bs-btn-active-color: #a5f3fc;
+    --bs-btn-active-bg: rgba(103, 232, 249, .18);
+    --bs-btn-active-border-color: rgba(103, 232, 249, .9);
+    --bs-btn-focus-shadow-rgb: 103, 232, 249;
+}
+
 /* Issue #469 round-2 critique: match-name links were a single text line
    relying on cyan color alone. Give each name a >=44px hit target and an
    underline affordance so interactivity never depends on color. */
@@ -2108,6 +2125,27 @@ body.app-nav-drawer-open {
     .assistant-panel-control-label {
         display: inline;
         font-weight: 600;
+    }
+}
+
+/* Drawer header compaction (issue #469 re-critique): in the 768-840px band
+   the labelled "Minimize"/"Close" controls crowd out the "Job Search
+   Assistant" title, truncating it to "Job S…". Visually hide the control
+   labels in this band (the buttons keep their aria-labels) and drop the
+   title to text-sm so the full title fits. */
+@media (min-width: 768px) and (max-width: 839.98px) {
+    .assistant-panel--drawer .assistant-panel-control-label {
+        display: none;
+    }
+
+    .assistant-panel--drawer .assistant-panel-controls .assistant-panel-control {
+        width: 44px;
+        min-width: 44px;
+        padding-inline: 0;
+    }
+
+    .assistant-panel--drawer .assistant-panel-title {
+        font-size: .875rem;
     }
 }
 

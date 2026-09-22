@@ -1852,8 +1852,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                                 <p className="empty-history-note small mb-3">
                                     <i className="fa-solid fa-circle-info me-1"></i>
                                     {props.workspaceMode === 'sheet'
-                                        ? 'Tap Back to results to see your matches. The assistant searches across real organizations and job listings to find the best fit.'
-                                        : 'Your matches are shown in the Job Matches panel. The assistant searches across real organizations and job listings to find the best fit.'}
+                                        ? 'Tap Back to results to view job-match status and results.'
+                                        : 'Job-match status and results appear in the Job Matches panel.'}
                                 </p>
                                 <button type="button" className="btn btn-primary empty-history-cta"
                                         data-testid="empty-history-cta"
