@@ -483,6 +483,13 @@ def normalize_match_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "location": str(row.get("location_text", "")),
             "remote": bool(row.get("is_remote", False)),
             "score": float(row.get("score", 0.0)),
+            "fit_score": row.get("fit_score"),
+            "company_score": row.get("company_score"),
+            "coverage": row.get("coverage", 0.0),
+            "requirements": list(row.get("requirements", [])),
+            "unsupported": list(row.get("unsupported", [])),
+            "evidence_ids": list(row.get("evidence_ids", [])),
+            "revision": row.get("revision"),
             "reasons": list(row.get("reasons", [])),
         })
     return output
@@ -499,6 +506,13 @@ def normalize_org_match_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
             "funding_round": str(row.get("funding_round", "")),
             "rto_policy": str(row.get("rto_policy", "")),
             "score": float(row.get("score", 0.0)),
+            "fit_score": row.get("fit_score"),
+            "company_score": row.get("company_score"),
+            "coverage": row.get("coverage", 0.0),
+            "requirements": list(row.get("requirements", [])),
+            "unsupported": list(row.get("unsupported", [])),
+            "evidence_ids": list(row.get("evidence_ids", [])),
+            "revision": row.get("revision"),
             "reasons": list(row.get("reasons", [])),
         })
     return output
@@ -536,6 +550,13 @@ def get_matches_for_user(
             "location_text": r.location_text,
             "is_remote": r.is_remote,
             "score": r.score,
+            "fit_score": r.fit_score,
+            "company_score": r.company_score,
+            "coverage": r.coverage,
+            "requirements": r.requirements,
+            "unsupported": r.unsupported,
+            "evidence_ids": r.evidence_ids,
+            "revision": r.revision() if hasattr(r, "revision") else None,
             "reasons": r.reasons,
         }
         for r in job_results
@@ -548,6 +569,13 @@ def get_matches_for_user(
             "funding_round": r.funding_round,
             "rto_policy": r.rto_policy,
             "score": r.score,
+            "fit_score": r.fit_score,
+            "company_score": r.company_score,
+            "coverage": r.coverage,
+            "requirements": r.requirements,
+            "unsupported": r.unsupported,
+            "evidence_ids": r.evidence_ids,
+            "revision": r.revision() if hasattr(r, "revision") else None,
             "reasons": r.reasons,
         }
         for r in org_results

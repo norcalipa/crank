@@ -35,6 +35,14 @@ class JobMatch(TimeStampedModel):
     ranker_version = models.CharField(max_length=32)
     score = models.FloatField()
     factors = models.JSONField(default=list, blank=True)
+    # issue #467: additive, nullable result-revision columns. The unique key and
+    # ``preference_version`` (schema version) are unchanged; these names record
+    # the *values* a result was computed from without entering the key.
+    preference_revision = models.PositiveBigIntegerField(null=True, blank=True)
+    data_revision = models.PositiveBigIntegerField(null=True, blank=True)
+    generated_at = models.DateTimeField(null=True, blank=True)
+    requirements = models.JSONField(default=list, blank=True)
+    evidence_ids = models.JSONField(default=list, blank=True)
     first_matched_at = models.DateTimeField()
     last_matched_at = models.DateTimeField()
     seen_at = models.DateTimeField(null=True, blank=True)

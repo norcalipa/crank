@@ -110,10 +110,34 @@ class JobCriteria:
     prefer_accelerated: bool | None = None
     culture_tags: frozenset[str] = frozenset()
     priorities: dict[str, float] = field(default_factory=dict)
+    #: Per-criterion hard/soft importance weights (criterion path -> 0.0..1.0).
+    importance: dict[str, float] = field(default_factory=dict)
+    #: The user-declared applicable scope (countries and role families).
+    scope_countries: frozenset[str] = frozenset()
+    scope_role_families: frozenset[str] = frozenset()
     criteria_version: int = 1
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "priorities", dict(sorted(self.priorities.items())))
+        object.__setattr__(self, "importance", dict(sorted(self.importance.items())))
+
+
+def _importance_map(value: Any) -> dict[str, float]:
+    """Project the ``importance`` float_map, dropping malformed entries."""
+    result: dict[str, float] = {}
+    if isinstance(value, Mapping):
+        for key, weight in value.items():
+            number = _decimal(weight)
+            if number is not None and isinstance(key, str) and key:
+                result[key] = float(max(0.0, min(1.0, number)))
+    return result
+
+
+def _scope_values(scope: Any, name: str) -> frozenset[str]:
+    """Project one user-declared scope dimension (countries/role families)."""
+    if not isinstance(scope, Mapping):
+        return frozenset()
+    return _strings(scope.get(name))
 
 
 def project_criteria(prefs: dict, schema_version: int) -> JobCriteria:
@@ -131,6 +155,7 @@ def project_criteria(prefs: dict, schema_version: int) -> JobCriteria:
     vesting = prefs.get("vesting") or {}
     exclusions = prefs.get("exclusions") or {}
     priorities = prefs.get("priorities") or {}
+    scope = prefs.get("scope") or {}
     modes = {_normalized(v) for v in _values(work_location.get("modes")) if _normalized(v)}
     aliases = {"onsite": "in-office", "office": "in-office", "in_office": "in-office"}
     modes = frozenset(aliases.get(mode, mode) for mode in modes)
@@ -162,6 +187,9 @@ def project_criteria(prefs: dict, schema_version: int) -> JobCriteria:
         prefer_accelerated=_boolean(vesting.get("prefer_accelerated")),
         culture_tags=_strings(prefs.get("culture")),
         priorities=raw_priorities,
+        importance=_importance_map(prefs.get("importance")),
+        scope_countries=_scope_values(scope, "countries"),
+        scope_role_families=_scope_values(scope, "role_families"),
         criteria_version=int(schema_version),
     )
 
@@ -175,6 +203,9 @@ class ExclusionReason(str, Enum):
     NO_ORGANIZATION = "no_organization"
     NOT_PUBLIC_COMPANY = "not_public_company"
     RTO_EXCEEDS_MAXIMUM = "rto_exceeds_maximum"
+    MINIMUM_SALARY_NOT_MET = "minimum_salary_not_met"
+    REQUIREMENT_NOT_MET = "requirement_not_met"
+    REQUIREMENT_UNVERIFIED = "requirement_unverified"
 
 
 @dataclass(frozen=True)
@@ -183,6 +214,34 @@ class FactorContribution:
     score: float
     max_score: float
     detail: str
+
+
+#: Requirement status values.
+MATCH = "match"
+MISMATCH = "mismatch"
+UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class RequirementOutcome:
+    """One evaluated requirement: status, observed value, and source reference."""
+
+    path: str
+    status: str  # ``match`` | ``mismatch`` | ``unknown``
+    observed: Any  # observed value (or ``None``)
+    source_kind: str | None  # ``evidence`` | ``field`` | ``None``
+    source_id: Any  # evidence id (int) or direct-field name (str); ``None``
+    scope_ok: bool = True
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "status": self.status,
+            "observed": self.observed,
+            "source_kind": self.source_kind,
+            "source_id": self.source_id,
+            "scope_ok": self.scope_ok,
+        }
 
 
 @dataclass(frozen=True)
@@ -194,6 +253,7 @@ class MatchResult:
     factors: list[FactorContribution]
     ranker_version: str
     criteria_version: int
+    requirements: list[RequirementOutcome] = field(default_factory=list)
 
 
 def _contains(text: str, candidates: Iterable[str]) -> bool:
@@ -393,8 +453,438 @@ def _score_organization(listing: Any, criteria: JobCriteria, config: RankingConf
 # RTO policy to assumed in-office days mapping.
 _RTO_DAYS = {"R": 0, "H": 3, "O": 5}
 
+#: Human-readable labels used by the single reason renderer.
+_FUNDING_LABELS = {
+    "S": "Seed",
+    "A": "Series A",
+    "B": "Series B",
+    "C": "Series C",
+    "D": "Series D",
+    "E": "Series E",
+    "F": "Series F",
+    "X": "Series G+",
+    "O": "Other Private",
+    "P": "Public",
+}
+_RTO_LABELS = {"R": "Remote", "H": "Hybrid", "O": "In-office"}
 
-def _excluded(listing: Any, criteria: JobCriteria) -> list[ExclusionReason]:
+#: Canonical criterion paths evaluated, in deterministic order.
+REQUIREMENT_ORDER = (
+    "compensation.minimum_salary",
+    "compensation.equity_minimum_percent",
+    "compensation.require_public_company",
+    "work_location.modes",
+    "work_location.countries",
+    "work_location.max_in_office_days",
+    "geography.regions",
+    "geography.remote_friendly",
+    "industry",
+    "funding_stage",
+    "culture",
+    "vesting.max_cliff_months",
+    "vesting.max_vesting_months",
+    "vesting.prefer_accelerated",
+)
+
+#: Which criterion path may be backed by accepted ``CompanyFieldEvidence`` and,
+#: if so, under which field key.
+_EVIDENCE_FIELD_KEY = {
+    "compensation.require_public_company": "funding_round",
+    "work_location.modes": "rto_policy",
+    "work_location.max_in_office_days": "rto_policy",
+    "work_location.countries": "locations",
+    "funding_stage": "funding_round",
+    "vesting.prefer_accelerated": "accelerated_vesting",
+}
+
+#: Requirements that are hard whether or not ``importance`` names them.
+_ALWAYS_HARD = frozenset(
+    {"compensation.require_public_company", "work_location.max_in_office_days"}
+)
+
+
+def _is_hard(criteria: JobCriteria, path: str) -> bool:
+    if path in _ALWAYS_HARD:
+        return True
+    return criteria.importance.get(path, 0.0) >= 1.0
+
+
+def _evidence_in_scope(evidence_row: Any, listing: Any) -> bool:
+    """Return whether an evidence row's declared scope covers this listing."""
+    scope = getattr(evidence_row, "scope_json", None)
+    if not isinstance(scope, Mapping):
+        return True
+    countries = scope.get("countries")
+    if countries:
+        location = _normalized(getattr(listing, "location_text", ""))
+        if not any(_normalized(c) and _normalized(c) in location for c in _values(countries) if c):
+            return False
+    role_families = scope.get("role_families")
+    if role_families:
+        title = _normalized(getattr(listing, "title", ""))
+        if not any(_normalized(r) and _normalized(r) in title for r in _values(role_families) if r):
+            return False
+    return True
+
+
+def _rto_days(value: Any) -> int | None:
+    """Map a normalized RTO policy (code or label) to in-office days."""
+    normalized = _normalized(value).replace("_", " ")
+    mapping = {
+        "r": 0, "remote": 0,
+        "h": 3, "hybrid": 3,
+        "o": 5, "in-office": 5, "in office": 5, "onsite": 5,
+    }
+    return mapping.get(normalized)
+
+
+def _mode_from_rto(value: Any) -> str | None:
+    """Map a normalized RTO value to a work mode."""
+    return {0: "remote", 3: "hybrid", 5: "in-office"}.get(_rto_days(value))
+
+
+def _resolve_value(
+    listing: Any,
+    organization: Any,
+    evidence: Mapping[str, Any] | None,
+    field_key: str | None,
+    direct_names: tuple[str, ...],
+    *,
+    default_guard: Any = None,
+) -> tuple[Any, str, Any, bool] | None:
+    """Resolve a requirement datum: accepted evidence first, then a direct field.
+
+    Returns ``(observed, source_kind, source_id, scope_ok)`` or ``None`` when
+    the datum is absent or falls back to an unstated model default (so it can
+    never establish a verified result). ``default_guard`` marks a direct value
+    equal to a model default as unknown.
+    """
+    if evidence and field_key and field_key in evidence:
+        row = evidence[field_key]
+        return (
+            row.value_text,
+            "evidence",
+            row.pk,
+            _evidence_in_scope(row, listing),
+        )
+    value = _organization_value(listing, organization, *direct_names)
+    if value in (None, ""):
+        return None
+    if default_guard is not None and default_guard(value):
+        return None
+    return value, "field", direct_names[0], True
+
+
+def _equity_value(listing: Any, organization: Any) -> Any:
+    return _metadata(listing, organization).get("equity_percent")
+
+
+def _is_set(path: str, criteria: JobCriteria) -> bool:
+    if path in criteria.importance:
+        return True
+    return {
+        "compensation.minimum_salary": criteria.min_salary is not None,
+        "compensation.equity_minimum_percent": criteria.equity_minimum is not None,
+        "compensation.require_public_company": criteria.require_public_company is True,
+        "work_location.modes": bool(criteria.work_modes),
+        "work_location.countries": bool(criteria.countries),
+        "work_location.max_in_office_days": criteria.max_in_office_days is not None,
+        "geography.regions": bool(criteria.regions),
+        "geography.remote_friendly": criteria.remote_friendly is not None,
+        "industry": bool(criteria.industries),
+        "funding_stage": bool(criteria.funding_stages),
+        "culture": bool(criteria.culture_tags),
+        "vesting.max_cliff_months": criteria.max_cliff_months is not None,
+        "vesting.max_vesting_months": criteria.max_vesting_months is not None,
+        "vesting.prefer_accelerated": criteria.prefer_accelerated is not None,
+    }[path]
+
+
+def _eval_requirement(
+    path: str, listing: Any, organization: Any, criteria: JobCriteria, evidence: Mapping[str, Any] | None
+) -> RequirementOutcome | None:
+    """Evaluate one canonical requirement into a :class:`RequirementOutcome`."""
+    fk = _EVIDENCE_FIELD_KEY.get(path)
+
+    if path == "compensation.minimum_salary":
+        minimum = _decimal(getattr(listing, "compensation_min", None))
+        maximum = _decimal(getattr(listing, "compensation_max", None))
+        threshold = criteria.min_salary
+        if minimum is None and maximum is None:
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
+        if minimum is not None and minimum >= threshold:
+            return RequirementOutcome(path, MATCH, int(minimum), "field", "listing.compensation_min")
+        if maximum is not None and maximum < threshold:
+            return RequirementOutcome(path, MISMATCH, int(maximum), "field", "listing.compensation_max")
+        return RequirementOutcome(path, UNKNOWN, None, None, None)
+
+    if path == "compensation.equity_minimum_percent":
+        equity = _decimal(_equity_value(listing, organization))
+        if equity is None:
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
+        threshold = Decimal(str(criteria.equity_minimum))
+        status = MATCH if equity >= threshold else MISMATCH
+        return RequirementOutcome(path, status, float(equity), "field", "source_metadata.equity_percent")
+
+    if path == "compensation.require_public_company":
+        resolved = _resolve_value(
+            listing, organization, evidence, fk, ("funding_round",),
+            default_guard=lambda v: v == "P",
+        )
+        if resolved is None:
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
+        observed, sk, sid, scope_ok = resolved
+        if not scope_ok:
+            return RequirementOutcome(path, UNKNOWN, None, sk, sid, scope_ok=False)
+        status = MATCH if str(observed) == "P" else MISMATCH
+        return RequirementOutcome(path, status, str(observed), sk, sid)
+
+    if path == "work_location.modes":
+        if evidence and fk and fk in evidence:
+            row = evidence[fk]
+            if not _evidence_in_scope(row, listing):
+                return RequirementOutcome(path, UNKNOWN, None, "evidence", row.pk, scope_ok=False)
+            mode = _mode_from_rto(row.value_text)
+            if mode is None:
+                return RequirementOutcome(path, UNKNOWN, None, "evidence", row.pk)
+            status = MATCH if mode in criteria.work_modes else MISMATCH
+            return RequirementOutcome(path, status, mode, "evidence", row.pk)
+        mode = _location_mode(listing, organization)
+        if mode is None:
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
+        source = "listing.is_remote" if getattr(listing, "is_remote", None) in (True, False) else "organization.rto_policy"
+        status = MATCH if mode in criteria.work_modes else MISMATCH
+        return RequirementOutcome(path, status, mode, "field", source)
+
+    if path == "work_location.countries":
+        resolved = _resolve_value(listing, organization, evidence, fk, ("location_text",))
+        if resolved is None:
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
+        observed, sk, sid, scope_ok = resolved
+        if not scope_ok:
+            return RequirementOutcome(path, UNKNOWN, None, sk, sid, scope_ok=False)
+        location = _normalized(observed)
+        matched = [c for c in criteria.countries if _normalized(c) and _normalized(c) in location]
+        status = MATCH if matched else MISMATCH
+        return RequirementOutcome(path, status, matched[0] if matched else None, sk, sid)
+
+    if path == "work_location.max_in_office_days":
+        resolved = _resolve_value(
+            listing, organization, evidence, fk, ("rto_policy",),
+            default_guard=lambda v: v == "H",
+        )
+        if resolved is None:
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
+        observed, sk, sid, scope_ok = resolved
+        if not scope_ok:
+            return RequirementOutcome(path, UNKNOWN, None, sk, sid, scope_ok=False)
+        days = _rto_days(observed)
+        if days is None:
+            return RequirementOutcome(path, UNKNOWN, None, sk, sid)
+        status = MATCH if days <= criteria.max_in_office_days else MISMATCH
+        return RequirementOutcome(path, status, days, sk, sid)
+
+    if path == "geography.regions":
+        location = _normalized(getattr(listing, "location_text", ""))
+        if not location:
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
+        matched = [r for r in criteria.regions if _normalized(r) and _normalized(r) in location]
+        status = MATCH if matched else MISMATCH
+        return RequirementOutcome(path, status, matched[0] if matched else None, "field", "listing.location_text")
+
+    if path == "geography.remote_friendly":
+        remote = getattr(listing, "is_remote", None)
+        if not isinstance(remote, bool):
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
+        status = MATCH if remote == criteria.remote_friendly else MISMATCH
+        return RequirementOutcome(path, status, remote, "field", "listing.is_remote")
+
+    if path == "industry":
+        actual = _strings(_organization_value(listing, organization, "industry", "industries"))
+        if not actual:
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
+        matched = sorted(actual & criteria.industries)
+        status = MATCH if matched else MISMATCH
+        return RequirementOutcome(path, status, matched[0] if matched else None, "field", "organization.industry")
+
+    if path == "funding_stage":
+        resolved = _resolve_value(
+            listing, organization, evidence, fk, ("funding_round", "funding_stage"),
+            default_guard=lambda v: v == "P",
+        )
+        if resolved is None:
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
+        observed, sk, sid, scope_ok = resolved
+        if not scope_ok:
+            return RequirementOutcome(path, UNKNOWN, None, sk, sid, scope_ok=False)
+        stage = _canonical_stage(observed)
+        wanted = frozenset(_canonical_stage(s) for s in criteria.funding_stages)
+        status = MATCH if stage in wanted else MISMATCH
+        return RequirementOutcome(path, status, stage, sk, sid)
+
+    if path == "culture":
+        metadata = _metadata(listing, organization)
+        tags = _strings(_organization_value(listing, organization, "culture_tags", "culture"))
+        haystack = " ".join((_text(getattr(listing, "description_excerpt", "")), _text(metadata.get("culture"))))
+        matched = [tag for tag in criteria.culture_tags if tag in haystack or tag in tags]
+        if not haystack.strip() and not tags:
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
+        status = MATCH if matched else MISMATCH
+        return RequirementOutcome(path, status, matched[0] if matched else None, "field", "listing.description_excerpt")
+
+    if path in ("vesting.max_cliff_months", "vesting.max_vesting_months"):
+        field_name = "cliff_months" if path == "vesting.max_cliff_months" else "vesting_months"
+        maximum = criteria.max_cliff_months if path == "vesting.max_cliff_months" else criteria.max_vesting_months
+        actual = _decimal(_organization_value(listing, organization, field_name, f"max_{field_name}"))
+        if actual is None:
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
+        status = MATCH if actual <= maximum else MISMATCH
+        return RequirementOutcome(path, status, int(actual), "field", f"organization.{field_name}")
+
+    if path == "vesting.prefer_accelerated":
+        resolved = _resolve_value(listing, organization, evidence, fk, ("accelerated_vesting",))
+        if resolved is None:
+            return RequirementOutcome(path, UNKNOWN, None, None, None)
+        observed, sk, sid, scope_ok = resolved
+        if not scope_ok:
+            return RequirementOutcome(path, UNKNOWN, None, sk, sid, scope_ok=False)
+        accelerated = observed is True or str(observed).strip().lower() in {"true", "yes", "1"}
+        status = MATCH if accelerated == criteria.prefer_accelerated else MISMATCH
+        return RequirementOutcome(path, status, accelerated, sk, sid)
+
+    return None
+
+
+def evaluate_requirements(
+    listing: Any,
+    criteria: JobCriteria,
+    *,
+    organization: Any = None,
+    evidence: Mapping[str, Any] | None = None,
+) -> list[RequirementOutcome]:
+    """Evaluate every user-set canonical requirement for one listing.
+
+    Returns a :class:`RequirementOutcome` per set requirement in
+    :data:`REQUIREMENT_ORDER` order. Accepted evidence resolves first, then a
+    documented direct field; an unstated model default or absent datum yields
+    ``unknown`` and can never produce a verified ``match``.
+    """
+    organization = organization if organization is not None else getattr(listing, "organization", None)
+    outcomes: list[RequirementOutcome] = []
+    for path in REQUIREMENT_ORDER:
+        if not _is_set(path, criteria):
+            continue
+        outcome = _eval_requirement(path, listing, organization, criteria, evidence)
+        if outcome is not None:
+            outcomes.append(outcome)
+    return outcomes
+
+
+def hard_exclusion_reasons(
+    outcomes: Iterable[RequirementOutcome], criteria: JobCriteria
+) -> list[ExclusionReason]:
+    """Derive exclusion reasons from hard requirements that failed or are unknown."""
+    reasons: list[ExclusionReason] = []
+    for outcome in outcomes:
+        if not _is_hard(criteria, outcome.path):
+            continue
+        if outcome.status == MISMATCH:
+            if outcome.path == "compensation.require_public_company":
+                reasons.append(ExclusionReason.NOT_PUBLIC_COMPANY)
+            elif outcome.path == "work_location.max_in_office_days":
+                reasons.append(ExclusionReason.RTO_EXCEEDS_MAXIMUM)
+            elif outcome.path == "compensation.minimum_salary":
+                reasons.append(ExclusionReason.MINIMUM_SALARY_NOT_MET)
+            else:
+                reasons.append(ExclusionReason.REQUIREMENT_NOT_MET)
+        elif outcome.status == UNKNOWN:
+            reasons.append(ExclusionReason.REQUIREMENT_UNVERIFIED)
+    return reasons
+
+
+def _funding_label(code: Any) -> str:
+    if not code:
+        return "Unknown"
+    return _FUNDING_LABELS.get(str(code), str(code))
+
+
+def _rto_label(code: Any) -> str:
+    if not code:
+        return "Unknown"
+    return _RTO_LABELS.get(str(code), str(code))
+
+
+def _match_reason(outcome: RequirementOutcome) -> str | None:
+    """Map one ``match`` outcome to a concise, human-readable reason."""
+    path = outcome.path
+    observed = outcome.observed
+    if path == "compensation.minimum_salary":
+        try:
+            return f"Salary {int(observed):,}+"
+        except (TypeError, ValueError):
+            return "Salary meets minimum"
+    if path == "compensation.equity_minimum_percent":
+        return f"Equity {observed}%+"
+    if path == "compensation.require_public_company":
+        return "Public company"
+    if path == "work_location.modes":
+        return {"remote": "Remote", "hybrid": "Hybrid", "in-office": "In-office"}.get(_normalized(observed), None)
+    if path == "work_location.countries":
+        return f"Located in {observed}" if observed else None
+    if path == "work_location.max_in_office_days":
+        return None
+    if path == "geography.regions":
+        return f"In {observed}" if observed else None
+    if path == "geography.remote_friendly":
+        return "Remote-friendly"
+    if path == "industry":
+        return f"Industry: {observed}" if observed else None
+    if path == "funding_stage":
+        return _funding_label(observed)
+    if path == "culture":
+        return f"Culture: {observed}" if observed else None
+    if path in ("vesting.max_cliff_months", "vesting.max_vesting_months"):
+        return "Vesting aligns"
+    if path == "vesting.prefer_accelerated":
+        return "Accelerated vesting"
+    return None
+
+
+def coverage(outcomes: Iterable[RequirementOutcome]) -> float:
+    """Fraction of evaluated requirements with a known value (not ``unknown``)."""
+    outcomes = list(outcomes)
+    if not outcomes:
+        return 0.0
+    known = sum(1 for o in outcomes if getattr(o, "status", UNKNOWN) != UNKNOWN)
+    return round(known / len(outcomes), 4)
+
+
+def reasons_from_requirements(outcomes: Iterable[RequirementOutcome]) -> list[str]:
+    """Render requirement outcomes into ordered, deduplicated reasons (≤6).
+
+    The single reason renderer shared by the API, persisted-match, and chat
+    surfaces (issue #467 AC-1).
+    """
+    reasons: list[str] = []
+    seen: set[str] = set()
+    for outcome in outcomes:
+        label = None
+        try:
+            if getattr(outcome, "status", UNKNOWN) == MATCH:
+                label = _match_reason(outcome)
+        except (AttributeError, TypeError):
+            label = None
+        if label and label not in seen:
+            reasons.append(label)
+            seen.add(label)
+        if len(reasons) >= 6:
+            break
+    return reasons
+
+
+def _excluded(
+    listing: Any, criteria: JobCriteria, outcomes: list[RequirementOutcome]
+) -> list[ExclusionReason]:
     reasons: list[ExclusionReason] = []
     company = _normalized(getattr(listing, "employer_name", ""))
     title = _normalized(getattr(listing, "title", ""))
@@ -415,27 +905,29 @@ def _excluded(listing: Any, criteria: JobCriteria) -> list[ExclusionReason]:
         reasons.append(ExclusionReason.NO_ORGANIZATION)
     if reasons:
         return reasons
-    # Hard filters that require an organization.
-    if criteria.require_public_company is True:
-        funding_round = _organization_value(listing, organization, "funding_round")
-        if funding_round and funding_round != "P":
-            reasons.append(ExclusionReason.NOT_PUBLIC_COMPANY)
-    if criteria.max_in_office_days is not None:
-        rto_policy = _organization_value(listing, organization, "rto_policy")
-        assumed_days = _RTO_DAYS.get(rto_policy) if rto_policy else None
-        if assumed_days is not None and assumed_days > criteria.max_in_office_days:
-            reasons.append(ExclusionReason.RTO_EXCEEDS_MAXIMUM)
+    reasons.extend(hard_exclusion_reasons(outcomes, criteria))
     return reasons
 
 
-def rank_listing(listing: Any, criteria: JobCriteria, config: RankingConfig = DEFAULT_CONFIG) -> MatchResult:
+def rank_listing(
+    listing: Any,
+    criteria: JobCriteria,
+    config: RankingConfig = DEFAULT_CONFIG,
+    *,
+    evidence: Mapping[str, Any] | None = None,
+) -> MatchResult:
     """Apply hard exclusions, then calculate deterministic factor contributions."""
 
-    reasons = _excluded(listing, criteria)
+    organization = getattr(listing, "organization", None)
+    outcomes = evaluate_requirements(listing, criteria, organization=organization, evidence=evidence)
+    reasons = _excluded(listing, criteria, outcomes)
     listing_id = int(getattr(listing, "pk", getattr(listing, "id", 0)) or 0)
     if reasons:
-        return MatchResult(listing_id, 0.0, True, [reason.value for reason in reasons], [], config.version, criteria.criteria_version)
-    organization = listing.organization
+        return MatchResult(
+            listing_id, 0.0, True,
+            [reason.value for reason in reasons], [],
+            config.version, criteria.criteria_version, outcomes,
+        )
     factors = [
         _score_work_location(listing, criteria, config, organization),
         _score_geography(listing, criteria, config),
@@ -447,17 +939,40 @@ def rank_listing(listing: Any, criteria: JobCriteria, config: RankingConfig = DE
         _score_organization(listing, criteria, config, organization),
     ]
     score = max(0.0, min(float(config.max_score), sum(factor.score for factor in factors)))
-    return MatchResult(listing_id, round(score, 10), False, [], factors, config.version, criteria.criteria_version)
+    return MatchResult(
+        listing_id, round(score, 10), False, [], factors,
+        config.version, criteria.criteria_version, outcomes,
+    )
 
 
-def rank_listings(listings: Iterable[Any], criteria: JobCriteria, config: RankingConfig = DEFAULT_CONFIG) -> list[MatchResult]:
+def rank_listings(
+    listings: Iterable[Any],
+    criteria: JobCriteria,
+    config: RankingConfig = DEFAULT_CONFIG,
+    *,
+    evidence: Mapping[int, Mapping[str, Any]] | None = None,
+) -> list[MatchResult]:
     """Rank listings by descending score and ascending ID for ties."""
 
-    results = [rank_listing(listing, criteria, config) for listing in listings]
+    evidence = evidence or {}
+
+    def _evidence_for(listing: Any) -> Mapping[str, Any]:
+        organization = getattr(listing, "organization", None)
+        org_id = int(getattr(organization, "pk", 0) or 0)
+        return evidence.get(org_id) or {}
+
+    results = [
+        rank_listing(listing, criteria, config, evidence=_evidence_for(listing))
+        for listing in listings
+    ]
     return sorted(results, key=lambda result: (-result.score, result.listing_id))
 
 
 __all__ = [
     "ExclusionReason", "FactorContribution", "JobCriteria", "MatchResult",
+    "MATCH", "MISMATCH", "UNKNOWN", "REQUIREMENT_ORDER",
+    "RequirementOutcome", "evaluate_requirements", "hard_exclusion_reasons",
+    "reasons_from_requirements",
+    "coverage",
     "project_criteria", "rank_listing", "rank_listings",
 ]

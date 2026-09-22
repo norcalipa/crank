@@ -360,3 +360,158 @@ def test_ranking_config_validation():
         RankingConfig(version="x", weights={"work_location": 1}, max_score=-1)
     with pytest.raises(ValueError, match="missing_data_penalty must be finite"):
         RankingConfig(version="x", weights={"work_location": 1}, missing_data_penalty=float("nan"))
+
+
+# ---------------------------------------------------------------------------
+# Issue #467 — requirement-level deterministic eligibility
+# ---------------------------------------------------------------------------
+
+
+def _evidence(field_key, value_text, *, pk=1, scope_json=None):
+    return {field_key: SimpleNamespace(value_text=value_text, pk=pk, scope_json=scope_json or {})}
+
+
+def test_project_criteria_projects_importance_and_scope():
+    criteria = project_criteria(
+        preferences(
+            importance={"compensation.minimum_salary": 1.0, "funding_stage": 0.5},
+            scope={"countries": ["US"], "role_families": ["engineering"]},
+        ),
+        3,
+    )
+    assert criteria.importance == {"compensation.minimum_salary": 1.0, "funding_stage": 0.5}
+    assert criteria.scope_countries == frozenset({"us"})
+    assert criteria.scope_role_families == frozenset({"engineering"})
+
+
+def test_project_criteria_drops_malformed_importance_and_scope():
+    criteria = project_criteria(
+        preferences(
+            importance={"compensation.minimum_salary": "not-a-number", 42: 1.0},
+            scope="not-a-mapping",
+        ),
+        3,
+    )
+    assert criteria.importance == {}
+    assert criteria.scope_countries == frozenset()
+
+
+def test_evaluate_requirements_match_mismatch_unknown():
+    from crank.agents.jobs.matching import evaluate_requirements
+
+    criteria = project_criteria(
+        preferences(
+            compensation={"minimum_salary": 100000, "require_public_company": True},
+            work_location={"max_in_office_days": 2},
+        ),
+        3,
+    )
+    outcomes = evaluate_requirements(
+        listing(compensation_min=Decimal(130000), compensation_max=Decimal(150000),
+                organization=org(funding_round="A", rto_policy="O")),
+        criteria,
+    )
+    by_path = {o.path: o.status for o in outcomes}
+    assert by_path["compensation.minimum_salary"] == "match"
+    assert by_path["compensation.require_public_company"] == "mismatch"
+    assert by_path["work_location.max_in_office_days"] == "mismatch"
+
+
+def test_evaluate_requirements_unstated_default_is_unknown():
+    from crank.agents.jobs.matching import evaluate_requirements
+
+    criteria = project_criteria(
+        preferences(
+            compensation={"require_public_company": True},
+            work_location={"max_in_office_days": 0},
+        ),
+        3,
+    )
+    # funding_round="P" and rto_policy="H" are the model defaults -> unknown.
+    outcomes = evaluate_requirements(
+        listing(organization=org(funding_round="P", rto_policy="H")), criteria,
+    )
+    by_path = {o.path: o.status for o in outcomes}
+    assert by_path["compensation.require_public_company"] == "unknown"
+    assert by_path["work_location.max_in_office_days"] == "unknown"
+
+
+def test_evaluate_requirements_evidence_backs_a_match_with_source():
+    from crank.agents.jobs.matching import evaluate_requirements
+
+    criteria = project_criteria(
+        preferences(compensation={"require_public_company": True}), 3,
+    )
+    outcomes = evaluate_requirements(
+        listing(organization=org(funding_round="P")), criteria,
+        evidence=_evidence("funding_round", "P"),
+    )
+    outcome = next(o for o in outcomes if o.path == "compensation.require_public_company")
+    assert outcome.status == "match"
+    assert outcome.source_kind == "evidence"
+    assert outcome.source_id == 1
+
+
+def test_evaluate_requirements_scope_mismatch_is_unknown():
+    from crank.agents.jobs.matching import evaluate_requirements
+
+    criteria = project_criteria(
+        preferences(compensation={"require_public_company": True}), 3,
+    )
+    ev = {"funding_round": SimpleNamespace(value_text="P", pk=9, scope_json={"countries": ["US"]})}
+    outcomes = evaluate_requirements(
+        listing(location_text="France", organization=org(funding_round="P")),
+        criteria,
+        evidence=ev,
+    )
+    outcome = next(o for o in outcomes if o.path == "compensation.require_public_company")
+    assert outcome.status == "unknown"
+    assert outcome.scope_ok is False
+
+
+def test_hard_unknown_excludes_soft_unknown_does_not():
+    criteria_hard = project_criteria(
+        preferences(
+            compensation={"require_public_company": True},
+            importance={},
+        ),
+        3,
+    )
+    # require_public_company is always hard; unstated "P" default -> excluded.
+    result = rank_listing(listing(organization=org(funding_round="P")), criteria_hard)
+    assert result.excluded is True
+
+    criteria_soft = project_criteria(
+        preferences(
+            compensation={"equity_minimum_percent": 2},
+            importance={"compensation.equity_minimum_percent": 0.0},
+        ),
+        3,
+    )
+    # equity datum absent -> unknown, but soft (importance 0.0) -> ranked, not excluded.
+    result = rank_listing(
+        listing(source_metadata={}, organization=org()),
+        criteria_soft,
+    )
+    assert not result.excluded
+
+
+def test_no_hard_match_without_source_reference():
+    from crank.agents.jobs.matching import evaluate_requirements
+
+    criteria = project_criteria(
+        preferences(
+            compensation={"minimum_salary": 100000},
+            importance={"compensation.minimum_salary": 1.0},
+        ),
+        3,
+    )
+    outcomes = evaluate_requirements(
+        listing(compensation_min=Decimal(130000), compensation_max=Decimal(150000)),
+        criteria,
+    )
+    for outcome in outcomes:
+        if outcome.status == "match":
+            # Every verified match must carry a source reference (AC-6).
+            assert outcome.source_kind in ("evidence", "field")
+            assert outcome.source_id is not None

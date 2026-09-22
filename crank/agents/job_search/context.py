@@ -16,6 +16,19 @@ from dataclasses import dataclass
 _ELISION_MARK = "<elided...>"
 
 
+def _requirements_text(requirements: object) -> str:
+    """Render a compact ``path=status`` list for the model context."""
+    if not requirements:
+        return "[]"
+    parts = []
+    for req in requirements or []:
+        if isinstance(req, dict) and req.get("path"):
+            parts.append("%s=%s" % (req["path"], req.get("status", "unknown")))
+    if not parts:
+        return "[]"
+    return "[" + ", ".join(parts) + "]"
+
+
 @dataclass(frozen=True)
 class ModelContext:
     """The bounded, deterministic input assembled for a provider call."""
@@ -109,10 +122,11 @@ class ModelContext:
             if job_matches:
                 match_lines = [
                     "listing_id={listing_id} title={title!r} score={score} "
-                    "reasons={reasons}".format(
+                    "requirements={requirements} reasons={reasons}".format(
                         listing_id=row.get("listing_id"),
                         title=row.get("title", ""),
                         score=row.get("score", 0.0),
+                        requirements=_requirements_text(row.get("requirements")),
                         reasons=row.get("reasons", []),
                     )
                     for row in job_matches
@@ -124,10 +138,11 @@ class ModelContext:
             if org_matches:
                 org_lines = [
                     "organization_id={organization_id} name={name!r} score={score} "
-                    "reasons={reasons}".format(
+                    "requirements={requirements} reasons={reasons}".format(
                         organization_id=row.get("organization_id"),
                         name=row.get("name", ""),
                         score=row.get("score", 0.0),
+                        requirements=_requirements_text(row.get("requirements")),
                         reasons=row.get("reasons", []),
                     )
                     for row in org_matches

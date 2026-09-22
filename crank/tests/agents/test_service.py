@@ -14,6 +14,7 @@ from crank.agents.job_search.errors import (
     InvalidModelOutputError,
     InvalidOrganizationReferenceError,
     InvalidPreferencePatchError,
+    InvalidRequirementReferenceError,
     ProviderError,
     ProviderTimeoutError,
 )
@@ -965,3 +966,72 @@ class TestProposalCarriage:
             pass
         else:
             raise AssertionError("expected InvalidPreferencePatchError")  # pragma: no cover
+
+
+class TestMatchReferenceValidation:
+    """AC-11: a reply referencing an unexposed requirement/evidence id fails the turn."""
+
+    def _orchestrator(self, message, requirements=(), evidence_ids=()):
+        def match_service(*, user, limit):
+            return {
+                "job_matches": [
+                    {
+                        "listing_id": 42,
+                        "title": "Senior Engineer",
+                        "score": 0.9,
+                        "reasons": [],
+                        "requirements": list(requirements),
+                        "unsupported": [],
+                        "evidence_ids": list(evidence_ids),
+                        "revision": {"stale": False},
+                    }
+                ],
+                "organization_matches": [],
+            }
+
+        gw = FakeGateway({
+            "message": message,
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [42],
+            "preference_patch": None,
+        })
+        return JobSearchOrchestrator(
+            gateway=gw,
+            preference_service=FakePreferenceService(),
+            user=SimpleNamespace(pk=1),
+            match_service=match_service,
+            org_datasource=lambda filters, limit: [ORG_ACME],
+            score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [SimpleNamespace(
+                id=42, title="Senior Engineer", location_text="SF", is_remote=True,
+                canonical_url="https://jobs.example.test/42", compensation_min=None,
+                compensation_max=None, compensation_currency="", compensation_interval="",
+                description_excerpt="", last_seen_at=None, modified=None,
+                organization=SimpleNamespace(id=1, name="Acme Inc"),
+            )],
+        ), gw
+
+    def test_unexposed_requirement_path_is_rejected(self):
+        orch, _gw = self._orchestrator(
+            "Your compensation.equity_liquidity_required requirement is unmet.",
+            requirements=[{"path": "compensation.minimum_salary", "status": "match"}],
+        )
+        with pytest.raises(InvalidRequirementReferenceError):
+            orch.run(user_prompt="q", conversation=[], preference_markdown="")
+
+    def test_unexposed_evidence_id_is_rejected(self):
+        orch, _gw = self._orchestrator(
+            "This is backed by evidence #99.",
+            requirements=[{"path": "compensation.minimum_salary", "status": "match"}],
+            evidence_ids=[7],
+        )
+        with pytest.raises(InvalidRequirementReferenceError):
+            orch.run(user_prompt="q", conversation=[], preference_markdown="")
+
+    def test_exposed_requirement_path_is_allowed(self):
+        orch, gw = self._orchestrator(
+            "Your compensation.minimum_salary requirement is met.",
+            requirements=[{"path": "compensation.minimum_salary", "status": "match"}],
+        )
+        result = orch.run(user_prompt="q", conversation=[], preference_markdown="")
+        assert result.message == "Your compensation.minimum_salary requirement is met."

@@ -10,6 +10,7 @@ from django.utils import timezone
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
+from crank.models.preference import UserPreference
 
 
 @override_settings(
@@ -137,3 +138,35 @@ class JobMatchViewTests(TestCase):
             with self.subTest(suffix=suffix):
                 self.assertEqual(self.client.post(f"/api/job-matches/{other_match.pk}/{suffix}").status_code, 404)
                 self.assertEqual(self.client.post(f"/api/job-matches/{closed_match.pk}/{suffix}").status_code, 404)
+
+    def test_stale_result_is_flagged(self):
+        """A result computed from an older preference revision is flagged stale."""
+        from crank.models.preference import default_preferences
+        UserPreference.objects.create(user=self.owner, revision=5, preferences=default_preferences())
+        match = self.make_match(self.owner, self.active)
+        match.preference_revision = 3
+        match.requirements = [
+            {"path": "compensation.minimum_salary", "status": "match", "observed": 150000,
+             "source_kind": "field", "source_id": "listing.compensation_min", "scope_ok": True}
+        ]
+        match.evidence_ids = []
+        match.data_revision = None
+        match.generated_at = self.now
+        match.save()
+        self.client.force_login(self.owner)
+        payload = self.client.get(f"/api/job-matches/{match.pk}/").json()
+        self.assertTrue(payload["revision"]["stale"])
+        self.assertEqual(payload["revision"]["preference_revision"], 3)
+        self.assertEqual(payload["revision"]["ranking_version"], "1.0.0")
+        self.assertEqual(payload["fit_score"], match.score)
+        self.assertEqual(payload["requirements"][0]["path"], "compensation.minimum_salary")
+
+    def test_pre_migration_row_serializes_without_error(self):
+        """A row with NULL revisions falls back to the un-revised shape."""
+        match = self.make_match(self.owner, self.active)
+        self.assertIsNone(match.preference_revision)
+        self.client.force_login(self.owner)
+        payload = self.client.get(f"/api/job-matches/{match.pk}/").json()
+        self.assertFalse(payload["revision"]["stale"])
+        self.assertIsNone(payload["revision"]["preference_revision"])
+        self.assertIsNone(payload["revision"]["generated_at"])

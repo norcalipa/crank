@@ -824,3 +824,72 @@ describe('JobMatchPanel signed-out state (issue #465)', () => {
         expect(global.fetch).toHaveBeenCalled();
     });
 });
+
+describe('JobMatchPanel requirement figures and states (issue #467)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+        resetWorkspaceForTests();
+        closeAssistant();
+    });
+
+    const jobWithRequirements = {
+        ...sampleJobMatch,
+        fit_score: 85.5,
+        company_score: 4.2,
+        coverage: 0.75,
+        requirements: [
+            {path: 'compensation.minimum_salary', status: 'match'},
+            {path: 'industry', status: 'mismatch'},
+            {path: 'work_location.max_in_office_days', status: 'unknown'},
+        ],
+        unsupported: ['compensation.minimum_total_compensation'],
+        revision: {stale: false, generated_at: '2026-09-22T08:00:00Z'},
+    };
+
+    test('renders three separately labelled figures', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [jobWithRequirements]});
+        const card = screen.getByTestId('ranked-job-42');
+        expect(card).toHaveTextContent('Company score');
+        expect(card).toHaveTextContent('Fit');
+        expect(card).toHaveTextContent('Coverage');
+        expect(card).toHaveTextContent('4.2');
+        expect(card).toHaveTextContent('85.5');
+        expect(card).toHaveTextContent('75%');
+    });
+
+    test('renders requirement chips distinctly, unknown never styled satisfied', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [jobWithRequirements]});
+        const matchChip = screen.getByTestId('requirement-compensation.minimum_salary');
+        expect(matchChip).toHaveAttribute('data-status', 'match');
+        expect(matchChip).toHaveTextContent('✓');
+        const unknownChip = screen.getByTestId('requirement-work_location.max_in_office_days');
+        expect(unknownChip).toHaveAttribute('data-status', 'unknown');
+        expect(unknownChip).not.toHaveClass('bg-success');
+        expect(unknownChip).toHaveTextContent('?');
+    });
+
+    test('renders unsupported-criteria notice when non-empty', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [jobWithRequirements]});
+        expect(screen.getByTestId('unsupported-notice')).toHaveTextContent(/evaluated yet/i);
+    });
+
+    test('renders stale notice when revision.stale', async () => {
+        const staleJob = {...jobWithRequirements, revision: {...jobWithRequirements.revision, stale: true}};
+        await renderPanel('ok', {count: 1, rankedJobs: [staleJob]});
+        expect(screen.getByTestId('stale-notice')).toHaveTextContent(/older preferences/i);
+    });
+
+    test('renders no stale notice when revision absent', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [sampleJobMatch]});
+        expect(screen.queryByTestId('stale-notice')).not.toBeInTheDocument();
+    });
+
+    test('renders no requirement chips when requirements absent', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [sampleJobMatch]});
+        expect(screen.queryByTestId('requirement-compensation.minimum_salary')).not.toBeInTheDocument();
+    });
+});

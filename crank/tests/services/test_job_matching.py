@@ -15,6 +15,7 @@ from crank.agents.jobs.matching import (
     rank_listing,
 )
 from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
+from crank.models.company_profile import CompanyFieldEvidence
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference, default_preferences
@@ -24,14 +25,33 @@ from crank.services.job_matching import (
     _funding_label,
     _get_criteria,
     _org_excluded,
-    _reasons_for_org,
-    _reasons_from_factors,
     _rto_label,
     _score_organization_match,
     match_jobs,
     match_organizations,
     rank_listings_with_reasons,
 )
+
+
+def evidence_row(value_text, *, pk=1, scope_json=None):
+    """A minimal accepted evidence row for SimpleNamespace-based listing fixtures."""
+    return SimpleNamespace(value_text=value_text, pk=pk, scope_json=scope_json or {})
+
+
+def make_evidence(organization, field_key, value_text):
+    """Create an accepted ``CompanyFieldEvidence`` row for an organization."""
+    now = timezone.now()
+    return CompanyFieldEvidence.objects.create(
+        organization=organization,
+        field_key=field_key,
+        value_text=value_text,
+        source_url="https://example.test/evidence",
+        source_domain="example.test",
+        observed_at=now,
+        validation_version="1",
+        extractor_version="1",
+        state=CompanyFieldEvidence.State.ACCEPTED,
+    )
 
 
 def preferences(**overrides):
@@ -103,14 +123,26 @@ class HardFilterTests(TestCase):
         assert result.excluded is True
         assert ExclusionReason.NOT_PUBLIC_COMPANY.value in result.exclusion_reasons
 
-    def test_public_company_passes_when_require_public_company(self):
-        """Public companies pass the public-only filter."""
+    def test_public_company_default_is_unverified_and_excluded(self):
+        """An unstated ``funding_round`` default (``"P"``) cannot verify the public
+        requirement and is excluded as unverified instead of passing."""
         criteria = project_criteria(
             preferences(compensation={"require_public_company": True}),
             2,
         )
         public_org = org(funding_round="P")
         result = rank_listing(listing(organization=public_org), criteria)
+        assert result.excluded is True
+        assert ExclusionReason.REQUIREMENT_UNVERIFIED.value in result.exclusion_reasons
+
+    def test_public_company_matches_with_accepted_evidence(self):
+        criteria = project_criteria(
+            preferences(compensation={"require_public_company": True}),
+            2,
+        )
+        public_org = org(funding_round="P")
+        evidence = {"funding_round": evidence_row("P")}
+        result = rank_listing(listing(organization=public_org), criteria, evidence=evidence)
         assert not result.excluded
 
     def test_rto_exceeds_maximum_excluded(self):
@@ -134,23 +166,35 @@ class HardFilterTests(TestCase):
         result = rank_listing(listing(organization=remote_org), criteria)
         assert not result.excluded
 
-    def test_hybrid_passes_rto_ceiling_2(self):
-        """Hybrid orgs (assumed 3 days) pass when max is >= 3."""
+    def test_hybrid_default_is_unverified_and_excluded(self):
+        """An unstated ``rto_policy`` default (``"H"``) is unknown, so a hard
+        in-office ceiling excludes it as unverified rather than assuming 3 days."""
         criteria = project_criteria(
             preferences(work_location={"max_in_office_days": 3}),
             2,
         )
         hybrid_org = org(rto_policy="H")
         result = rank_listing(listing(organization=hybrid_org), criteria)
+        assert result.excluded is True
+        assert ExclusionReason.REQUIREMENT_UNVERIFIED.value in result.exclusion_reasons
+
+    def test_hybrid_matches_with_accepted_evidence(self):
+        criteria = project_criteria(
+            preferences(work_location={"max_in_office_days": 3}),
+            2,
+        )
+        hybrid_org = org(rto_policy="H")
+        evidence = {"rto_policy": evidence_row("H")}
+        result = rank_listing(listing(organization=hybrid_org), criteria, evidence=evidence)
         assert not result.excluded
 
     def test_hybrid_excluded_when_max_below_3(self):
-        """Hybrid orgs (assumed 3 days) excluded when max < 3."""
+        """Hybrid orgs (assumed 3 days) excluded when max < 3 (explicit non-default)."""
         criteria = project_criteria(
             preferences(work_location={"max_in_office_days": 2}),
             2,
         )
-        hybrid_org = org(rto_policy="H")
+        hybrid_org = org(rto_policy="O")
         result = rank_listing(listing(organization=hybrid_org), criteria)
         assert result.excluded is True
         assert ExclusionReason.RTO_EXCEEDS_MAXIMUM.value in result.exclusion_reasons
@@ -221,40 +265,44 @@ class ReasonStringTests(TestCase):
     """Test human-readable reason generation."""
 
     def test_public_company_reason(self):
-        criteria = project_criteria(preferences(), 2)
-        public_org = org(funding_round="P")
+        criteria = project_criteria(
+            preferences(compensation={"require_public_company": True}), 2,
+        )
         results = rank_listings_with_reasons(
-            [listing(organization=public_org)],
+            [listing(organization=org(pk=7, funding_round="P"))],
             criteria,
+            evidence={7: {"funding_round": evidence_row("P")}},
         )
         assert len(results) == 1
         assert "Public company" in results[0].reasons
 
     def test_remote_reason(self):
-        criteria = project_criteria(preferences(), 2)
-        remote_org = org(rto_policy="R")
-        results = rank_listings_with_reasons(
-            [listing(organization=remote_org)],
-            criteria,
+        criteria = project_criteria(
+            preferences(work_location={"modes": ["remote"]}), 2,
         )
+        results = rank_listings_with_reasons([listing(is_remote=True)], criteria)
         assert len(results) == 1
         assert "Remote" in results[0].reasons
 
-    def test_hybrid_reason_with_days(self):
-        criteria = project_criteria(preferences(), 2)
-        hybrid_org = org(rto_policy="H")
+    def test_hybrid_reason(self):
+        criteria = project_criteria(
+            preferences(work_location={"modes": ["hybrid"]}), 2,
+        )
         results = rank_listings_with_reasons(
-            [listing(organization=hybrid_org)],
+            [listing(is_remote=False, organization=org(pk=7, rto_policy="H"))],
             criteria,
+            evidence={7: {"rto_policy": evidence_row("H")}},
         )
         assert len(results) == 1
         assert any("Hybrid" in r for r in results[0].reasons)
 
-    def test_score_reason(self):
+    def test_score_is_a_separate_company_figure(self):
         criteria = project_criteria(preferences(), 2)
         results = rank_listings_with_reasons([listing()], criteria)
         assert len(results) == 1
-        assert any(r.startswith("Score ") for r in results[0].reasons)
+        # company_score is a separate figure, never folded into reasons.
+        assert results[0].company_score is not None
+        assert results[0].fit_score == results[0].score
 
     def test_reasons_bounded_to_six(self):
         criteria = project_criteria(preferences(), 2)
@@ -340,6 +388,9 @@ class MatchingServiceIntegrationTests(TestCase):
             ),
             schema_version=2,
         )
+        # The public requirement is only verified by accepted evidence (AC-5):
+        # an unstated ``funding_round`` default of "P" is otherwise unknown.
+        make_evidence(self.org_public, "funding_round", "P")
 
     def test_match_jobs_returns_only_matching_listings(self):
         """match_jobs should exclude pre-IPO and in-office when filters are set."""
@@ -353,7 +404,6 @@ class MatchingServiceIntegrationTests(TestCase):
         assert len(results) > 0
         pub_result = next(r for r in results if r.listing_id == self.listing_public.pk)
         assert "Public company" in pub_result.reasons
-        assert "Remote" in pub_result.reasons
 
     def test_match_organizations_excludes_pre_ipo(self):
         results = match_organizations(self.user, limit=10)
@@ -366,7 +416,6 @@ class MatchingServiceIntegrationTests(TestCase):
         assert len(results) > 0
         pub_result = next(r for r in results if r.organization_id == self.org_public.pk)
         assert "Public company" in pub_result.reasons
-        assert "Remote" in pub_result.reasons
 
     def test_match_jobs_returns_empty_when_no_preferences(self):
         user_no_prefs = User.objects.create_user("noprefs", password="secret")
@@ -409,6 +458,8 @@ class PreferencesOverrideTests(TestCase):
         self.org_private = Organization.objects.create(
             name="StartupCo", funding_round="A", rto_policy="R"
         )
+        # The public-only override is only verified by accepted evidence (AC-5).
+        make_evidence(self.org_public, "funding_round", "P")
         self.source = JobSourceCatalog.objects.create(
             name="Synthetic",
             adapter_key="synthetic.v1",
@@ -760,185 +811,67 @@ class HelperFunctionTests(TestCase):
         assert _rto_label("") == "Unknown"
         assert _rto_label(None) == "Unknown"
 
-    def test_reasons_from_factors_public_company(self):
-        criteria = project_criteria(preferences(), 2)
-        public_org = org(funding_round="P")
-        lst = listing(organization=public_org)
-        from crank.agents.jobs.matching import FactorContribution
-        factors = [FactorContribution("compensation", 0.5, 1.0, "min=100000")]
-        reasons = _reasons_from_factors(factors, lst, public_org, criteria)
-        assert "Public company" in reasons
+    def test_reasons_from_requirements_public_company(self):
+        from crank.agents.jobs.matching import RequirementOutcome, reasons_from_requirements
 
-    def test_reasons_from_factors_funding_label(self):
-        criteria = project_criteria(preferences(), 2)
-        a_org = org(funding_round="A")
-        lst = listing(organization=a_org)
-        factors = []
-        reasons = _reasons_from_factors(factors, lst, a_org, criteria)
-        assert "Series A" in reasons
+        outcomes = [RequirementOutcome("compensation.require_public_company", "match", "P", "field", "organization.funding_round")]
+        assert "Public company" in reasons_from_requirements(outcomes)
 
-    def test_reasons_from_factors_in_office_rto(self):
-        criteria = project_criteria(preferences(), 2)
-        in_office_org = org(rto_policy="O")
-        lst = listing(organization=in_office_org)
-        factors = []
-        reasons = _reasons_from_factors(factors, lst, in_office_org, criteria)
-        assert "In-office" in reasons
+    def test_reasons_from_requirements_remote(self):
+        from crank.agents.jobs.matching import RequirementOutcome, reasons_from_requirements
 
-    def test_reasons_from_factors_compensation(self):
-        criteria = project_criteria(preferences(), 2)
-        a_org = org()
-        lst = listing(organization=a_org, compensation_min=Decimal(150000))
-        from crank.agents.jobs.matching import FactorContribution
-        factors = [FactorContribution("compensation", 0.8, 1.0, "min=100000")]
-        reasons = _reasons_from_factors(factors, lst, a_org, criteria)
-        assert any("Salary" in r for r in reasons)
+        outcomes = [RequirementOutcome("work_location.modes", "match", "remote", "field", "organization.rto_policy")]
+        assert "Remote" in reasons_from_requirements(outcomes)
 
-    def test_reasons_from_factors_compensation_max_only(self):
-        criteria = project_criteria(preferences(), 2)
-        a_org = org()
-        lst = listing(organization=a_org, compensation_min=None, compensation_max=Decimal(120000))
-        from crank.agents.jobs.matching import FactorContribution
-        factors = [FactorContribution("compensation", 0.8, 1.0, "min=100000")]
-        reasons = _reasons_from_factors(factors, lst, a_org, criteria)
-        assert any("Salary up to" in r for r in reasons)
+    def test_reasons_from_requirements_in_office(self):
+        from crank.agents.jobs.matching import RequirementOutcome, reasons_from_requirements
 
-    def test_reasons_from_factors_vesting(self):
-        criteria = project_criteria(preferences(), 2)
-        a_org = org()
-        lst = listing(organization=a_org)
-        from crank.agents.jobs.matching import FactorContribution
-        factors = [FactorContribution("vesting", 0.9, 1.0, "good")]
-        reasons = _reasons_from_factors(factors, lst, a_org, criteria)
-        assert "Vesting aligns" in reasons
+        outcomes = [RequirementOutcome("work_location.modes", "match", "in-office", "field", "organization.rto_policy")]
+        assert "In-office" in reasons_from_requirements(outcomes)
 
-    def test_reasons_from_factors_culture(self):
-        criteria = project_criteria(preferences(), 2)
-        a_org = org()
-        lst = listing(organization=a_org)
-        from crank.agents.jobs.matching import FactorContribution
-        factors = [FactorContribution("culture", 0.5, 1.0, "matched=transparent")]
-        reasons = _reasons_from_factors(factors, lst, a_org, criteria)
-        assert any("Culture" in r for r in reasons)
+    def test_reasons_from_requirements_salary(self):
+        from crank.agents.jobs.matching import RequirementOutcome, reasons_from_requirements
 
-    def test_reasons_from_factors_industry(self):
-        criteria = project_criteria(preferences(), 2)
-        a_org = org()
-        lst = listing(organization=a_org)
-        from crank.agents.jobs.matching import FactorContribution
-        factors = [FactorContribution("industry", 0.5, 1.0, "matched=software")]
-        reasons = _reasons_from_factors(factors, lst, a_org, criteria)
-        assert any("Industry" in r for r in reasons)
+        outcomes = [RequirementOutcome("compensation.minimum_salary", "match", 150000, "field", "listing.compensation_min")]
+        assert any("Salary" in r for r in reasons_from_requirements(outcomes))
 
-    def test_reasons_from_factors_org_score(self):
-        criteria = project_criteria(preferences(), 2)
-        a_org = org()
-        lst = listing(organization=a_org)
-        from crank.agents.jobs.matching import FactorContribution
-        factors = [FactorContribution("organization_scores", 0.7, 1.0, "average=4.0/5.0")]
-        reasons = _reasons_from_factors(factors, lst, a_org, criteria)
-        assert any(r.startswith("Score ") for r in reasons)
+    def test_reasons_from_requirements_vesting(self):
+        from crank.agents.jobs.matching import RequirementOutcome, reasons_from_requirements
 
-    def test_reasons_from_factors_org_score_invalid(self):
-        criteria = project_criteria(preferences(), 2)
-        a_org = org()
-        lst = listing(organization=a_org)
-        from crank.agents.jobs.matching import FactorContribution
-        factors = [FactorContribution("organization_scores", 0.7, 1.0, "average=abc/5.0")]
-        reasons = _reasons_from_factors(factors, lst, a_org, criteria)
-        assert not any(r.startswith("Score ") for r in reasons)
+        outcomes = [RequirementOutcome("vesting.max_cliff_months", "match", 6, "field", "organization.cliff_months")]
+        assert "Vesting aligns" in reasons_from_requirements(outcomes)
 
-    def test_reasons_from_factors_culture_none(self):
-        criteria = project_criteria(preferences(), 2)
-        a_org = org()
-        lst = listing(organization=a_org)
-        from crank.agents.jobs.matching import FactorContribution
-        factors = [FactorContribution("culture", 0.5, 1.0, "matched=none")]
-        reasons = _reasons_from_factors(factors, lst, a_org, criteria)
-        assert not any("Culture" in r for r in reasons)
+    def test_reasons_from_requirements_culture(self):
+        from crank.agents.jobs.matching import RequirementOutcome, reasons_from_requirements
 
-    def test_reasons_from_factors_industry_none(self):
-        criteria = project_criteria(preferences(), 2)
-        a_org = org()
-        lst = listing(organization=a_org)
-        from crank.agents.jobs.matching import FactorContribution
-        factors = [FactorContribution("industry", 0.5, 1.0, "matched=none")]
-        reasons = _reasons_from_factors(factors, lst, a_org, criteria)
-        assert not any("Industry" in r for r in reasons)
+        outcomes = [RequirementOutcome("culture", "match", "transparent", "field", "listing.description_excerpt")]
+        assert any("Culture" in r for r in reasons_from_requirements(outcomes))
 
-    def test_reasons_from_factors_recent_listing(self):
-        criteria = project_criteria(preferences(), 2)
-        a_org = org()
-        lst = listing(organization=a_org)
-        factors = []
-        reasons = _reasons_from_factors(factors, lst, a_org, criteria)
-        assert "Recent listing" in reasons
+    def test_reasons_from_requirements_industry(self):
+        from crank.agents.jobs.matching import RequirementOutcome, reasons_from_requirements
 
-    def test_reasons_for_org_public_company(self):
-        criteria = project_criteria(preferences(), 2)
-        public_org = org(funding_round="P")
-        reasons = _reasons_for_org(public_org, criteria, 50.0)
-        assert "Public company" in reasons
+        outcomes = [RequirementOutcome("industry", "match", "software", "field", "organization.industry")]
+        assert any("Industry" in r for r in reasons_from_requirements(outcomes))
 
-    def test_reasons_for_org_funding_label(self):
-        criteria = project_criteria(preferences(), 2)
-        a_org = org(funding_round="A")
-        reasons = _reasons_for_org(a_org, criteria, 50.0)
-        assert "Series A" in reasons
+    def test_reasons_from_requirements_skips_unknown_and_mismatch(self):
+        from crank.agents.jobs.matching import RequirementOutcome, reasons_from_requirements
 
-    def test_reasons_for_org_remote(self):
-        criteria = project_criteria(preferences(), 2)
-        remote_org = org(rto_policy="R")
-        reasons = _reasons_for_org(remote_org, criteria, 50.0)
-        assert "Remote" in reasons
+        outcomes = [
+            RequirementOutcome("compensation.minimum_salary", "match", 150000, "field", "listing.compensation_min"),
+            RequirementOutcome("work_location.max_in_office_days", "unknown", None, None, None),
+            RequirementOutcome("industry", "mismatch", None, "field", "organization.industry"),
+        ]
+        reasons = reasons_from_requirements(outcomes)
+        assert reasons == ["Salary 150,000+"]
 
-    def test_reasons_for_org_hybrid(self):
-        criteria = project_criteria(preferences(), 2)
-        hybrid_org = org(rto_policy="H")
-        reasons = _reasons_for_org(hybrid_org, criteria, 50.0)
-        assert any("Hybrid" in r for r in reasons)
+    def test_reasons_from_requirements_bounded_and_deduplicated(self):
+        from crank.agents.jobs.matching import RequirementOutcome, reasons_from_requirements
 
-    def test_reasons_for_org_in_office(self):
-        criteria = project_criteria(preferences(), 2)
-        in_office_org = org(rto_policy="O")
-        reasons = _reasons_for_org(in_office_org, criteria, 50.0)
-        assert "In-office" in reasons
-
-    def test_reasons_for_org_score(self):
-        criteria = project_criteria(preferences(), 2)
-        a_org = org()
-        reasons = _reasons_for_org(a_org, criteria, 50.0)
-        assert any(r.startswith("Score ") for r in reasons)
-
-    def test_reasons_for_org_industry_match(self):
-        criteria = project_criteria(
-            preferences(industry=["software"]), 2,
-        )
-        a_org = org(industry="software")
-        reasons = _reasons_for_org(a_org, criteria, 50.0)
-        assert any("Industry" in r for r in reasons)
-
-    def test_reasons_for_org_accelerated_vesting(self):
-        criteria = project_criteria(
-            preferences(vesting={"prefer_accelerated": True}), 2,
-        )
-        a_org = org(accelerated_vesting=True)
-        reasons = _reasons_for_org(a_org, criteria, 50.0)
-        assert "Accelerated vesting" in reasons
-
-    def test_reasons_for_org_score_exception(self):
-        criteria = project_criteria(preferences(), 2)
-        bad_org = SimpleNamespace(
-            name="Bad",
-            funding_round="A",
-            rto_policy=None,
-            industry="",
-            accelerated_vesting=False,
-            avg_scores=lambda: (_ for _ in ()).throw(TypeError("bad")),
-        )
-        # Should not raise, should just skip score
-        reasons = _reasons_for_org(bad_org, criteria, 50.0)
-        assert not any(r.startswith("Score ") for r in reasons)
+        outcomes = [
+            RequirementOutcome("vesting.max_cliff_months", "match", 6, "field", "organization.cliff_months"),
+            RequirementOutcome("vesting.max_vesting_months", "match", 48, "field", "organization.vesting_months"),
+        ]
+        assert reasons_from_requirements(outcomes) == ["Vesting aligns"]
 
     def test_score_organization_match_funding(self):
         criteria = project_criteria(
@@ -1024,13 +957,14 @@ class HelperFunctionTests(TestCase):
         a_org = org()
         assert _org_excluded(a_org, criteria) is False
 
-    def test_org_not_excluded_rto_none(self):
+    def test_org_rto_none_is_unverified(self):
         criteria = project_criteria(
             preferences(work_location={"max_in_office_days": 2}), 2,
         )
-        # Org with no RTO policy set should not be excluded
+        # An org with no stated RTO policy cannot verify the hard ceiling, so it
+        # is excluded as unverified rather than assumed to pass.
         no_rto_org = org(rto_policy=None)
-        assert _org_excluded(no_rto_org, criteria) is False
+        assert _org_excluded(no_rto_org, criteria) is True
 
     def test_get_criteria_returns_none_for_no_user(self):
         from crank.models.preference import UserPreference
@@ -1066,72 +1000,55 @@ class ReasonsFromStoredFactorsTests(TestCase):
         from crank.views.job_matches import _reasons_from_stored_factors
         assert _reasons_from_stored_factors(["not a dict"]) == []
 
-    def test_org_score_factor(self):
-        from crank.views.job_matches import _reasons_from_stored_factors
-        factors = [{"factor": "organization_scores", "score": 0.8, "detail": "average=4.2/5.0"}]
-        reasons = _reasons_from_stored_factors(factors)
-        assert any("Score" in r for r in reasons)
+    def _req(self, path, observed, status="match"):
+        return {
+            "path": path,
+            "status": status,
+            "observed": observed,
+            "source_kind": "field",
+            "source_id": "x",
+            "scope_ok": True,
+        }
 
-    def test_org_score_factor_invalid_float(self):
+    def test_salary_requirement(self):
         from crank.views.job_matches import _reasons_from_stored_factors
-        factors = [{"factor": "organization_scores", "score": 0.8, "detail": "average=abc/5.0"}]
-        reasons = _reasons_from_stored_factors(factors)
-        assert not any("Score" in r for r in reasons)
+        reasons = _reasons_from_stored_factors([self._req("compensation.minimum_salary", 150000)])
+        assert reasons == ["Salary 150,000+"]
 
-    def test_compensation_factor(self):
+    def test_work_location_requirement(self):
         from crank.views.job_matches import _reasons_from_stored_factors
-        factors = [{"factor": "compensation", "score": 0.7, "detail": ""}]
-        reasons = _reasons_from_stored_factors(factors)
-        assert "Compensation match" in reasons
+        reasons = _reasons_from_stored_factors([self._req("work_location.modes", "remote")])
+        assert "Remote" in reasons
 
-    def test_work_location_factor(self):
+    def test_vesting_requirement(self):
         from crank.views.job_matches import _reasons_from_stored_factors
-        factors = [{"factor": "work_location", "score": 0.7, "detail": ""}]
-        reasons = _reasons_from_stored_factors(factors)
-        assert "Location match" in reasons
-
-    def test_vesting_factor(self):
-        from crank.views.job_matches import _reasons_from_stored_factors
-        factors = [{"factor": "vesting", "score": 0.7, "detail": ""}]
-        reasons = _reasons_from_stored_factors(factors)
+        reasons = _reasons_from_stored_factors([self._req("vesting.max_cliff_months", 6)])
         assert "Vesting aligns" in reasons
 
-    def test_culture_factor(self):
+    def test_culture_requirement(self):
         from crank.views.job_matches import _reasons_from_stored_factors
-        factors = [{"factor": "culture", "score": 0.5, "detail": "matched=transparent"}]
-        reasons = _reasons_from_stored_factors(factors)
+        reasons = _reasons_from_stored_factors([self._req("culture", "transparent")])
         assert any("Culture" in r for r in reasons)
 
-    def test_culture_factor_none(self):
+    def test_industry_requirement(self):
         from crank.views.job_matches import _reasons_from_stored_factors
-        factors = [{"factor": "culture", "score": 0.5, "detail": "matched=none"}]
-        reasons = _reasons_from_stored_factors(factors)
-        assert not any("Culture" in r for r in reasons)
-
-    def test_industry_factor(self):
-        from crank.views.job_matches import _reasons_from_stored_factors
-        factors = [{"factor": "industry", "score": 0.5, "detail": "matched=software"}]
-        reasons = _reasons_from_stored_factors(factors)
+        reasons = _reasons_from_stored_factors([self._req("industry", "software")])
         assert any("Industry" in r for r in reasons)
 
-    def test_industry_factor_none(self):
+    def test_public_company_requirement(self):
         from crank.views.job_matches import _reasons_from_stored_factors
-        factors = [{"factor": "industry", "score": 0.5, "detail": "matched=none"}]
-        reasons = _reasons_from_stored_factors(factors)
-        assert not any("Industry" in r for r in reasons)
+        reasons = _reasons_from_stored_factors([self._req("compensation.require_public_company", "P")])
+        assert "Public company" in reasons
+
+    def test_unknown_requirement_produces_no_reason(self):
+        from crank.views.job_matches import _reasons_from_stored_factors
+        reasons = _reasons_from_stored_factors([self._req("work_location.max_in_office_days", None, status="unknown")])
+        assert reasons == []
 
     def test_reasons_bounded_to_six(self):
         from crank.views.job_matches import _reasons_from_stored_factors
-        factors = [
-            {"factor": "compensation", "score": 0.7, "detail": ""},
-            {"factor": "work_location", "score": 0.7, "detail": ""},
-            {"factor": "vesting", "score": 0.7, "detail": ""},
-            {"factor": "culture", "score": 0.5, "detail": "matched=transparent"},
-            {"factor": "industry", "score": 0.5, "detail": "matched=software"},
-            {"factor": "organization_scores", "score": 0.8, "detail": "average=4.2/5.0"},
-            {"factor": "extra", "score": 0.5, "detail": ""},
-        ]
-        reasons = _reasons_from_stored_factors(factors)
+        requirements = [self._req("culture", f"t{i}") for i in range(10)]
+        reasons = _reasons_from_stored_factors(requirements)
         assert len(reasons) <= 6
 
 
@@ -1352,3 +1269,50 @@ class RelaxationPreviewTests(TestCase):
         assert criteria.excluded_companies == frozenset({"acme"})
         assert criteria.min_salary == Decimal(90000)
         assert doc["work_location"]["modes"] == ["remote"]
+
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+)
+class CrossSurfaceReasonTests(TestCase):
+    """AC-1: one fixture produces identical reasons across service and chat tool."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("crosssurface", password="secret")
+        self.org = Organization.objects.create(
+            name="PublicCo", funding_round="P", rto_policy="R",
+        )
+        make_evidence(self.org, "funding_round", "P")
+        self.source = JobSourceCatalog.objects.create(
+            name="Synthetic", adapter_key="synthetic.v1",
+            base_url="https://jobs.example.test", enabled=True,
+        )
+        now = timezone.now()
+        self.listing = JobListing.all_objects.create(
+            source=self.source, external_id="cross-1",
+            canonical_url="https://jobs.example.test/cross-1",
+            employer_name="PublicCo", title="Engineer",
+            first_seen_at=now - timedelta(days=1), last_seen_at=now,
+            status=JobListing.Status.ACTIVE, organization=self.org,
+            compensation_min=Decimal(150000), compensation_max=Decimal(180000),
+            compensation_currency="USD", is_remote=True,
+        )
+        UserPreference.objects.create(
+            user=self.user,
+            preferences=preferences(
+                compensation={"minimum_salary": 100000, "currency": "USD", "require_public_company": True},
+            ),
+            schema_version=3,
+        )
+
+    def test_service_and_tool_reasons_are_identical(self):
+        from crank.agents.job_search.tools import get_matches_for_user
+
+        job_results = match_jobs(self.user, limit=10)
+        service_reasons = {r.listing_id: r.reasons for r in job_results}
+
+        tool = get_matches_for_user(self.user, limit=10)
+        tool_reasons = {r["listing_id"]: r["reasons"] for r in tool["job_matches"]}
+
+        assert service_reasons == tool_reasons
+        assert service_reasons[self.listing.pk] == ["Salary 150,000+", "Public company"]

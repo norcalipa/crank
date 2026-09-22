@@ -10,15 +10,23 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
+from crank.agents.jobs.matching import (
+    RequirementOutcome,
+    _decimal,
+    coverage,
+    reasons_from_requirements,
+)
 from crank.empty_state import NO_MATCHES, derive_state
 from crank.models.job import JobListing
 from crank.models.job_match import JobMatch
+from crank.models.preference import UserPreference
 from crank.services.job_matching import (
     MAX_MATCH_RESULTS,
     match_jobs,
     match_organizations,
     relaxation_preview,
 )
+from crank.services.preferences import unsupported_criteria
 
 _DEFAULT_PAGE_SIZE = 20
 _MAX_PAGE_SIZE = 100
@@ -48,7 +56,67 @@ def _listing_payload(listing):
     }
 
 
-def _match_payload(match, *, detail=False):
+def _outcomes_from_stored(requirements):
+    """Reconstruct :class:`RequirementOutcome` values from stored JSON dicts."""
+    outcomes = []
+    for item in requirements or []:
+        if not isinstance(item, dict) or not item.get("path"):
+            continue
+        outcomes.append(RequirementOutcome(
+            path=item["path"],
+            status=item.get("status", "unknown"),
+            observed=item.get("observed"),
+            source_kind=item.get("source_kind"),
+            source_id=item.get("source_id"),
+            scope_ok=item.get("scope_ok", True),
+        ))
+    return outcomes
+
+
+def _company_score_of(organization):
+    """The organization's average score (0-5), or ``None`` when unknown."""
+    if organization is None:
+        return None
+    try:
+        scores = organization.avg_scores()
+    except (AttributeError, TypeError, ValueError):
+        return None
+    values = []
+    for row in scores or ():
+        if not isinstance(row, dict):
+            continue
+        value = _decimal(row.get("avg_score", row.get("score")))
+        if value is not None:
+            values.append(float(value))
+    if not values:
+        return None
+    return max(0.0, min(5.0, sum(values) / len(values)))
+
+
+def _preference_meta(user):
+    """Current document revision and unsupported criteria for *user*."""
+    if user is None or getattr(user, "pk", None) is None:
+        return None, []
+    pref = UserPreference.objects.filter(user=user).first()
+    if pref is None:
+        return None, []
+    return pref.revision, unsupported_criteria(pref.preferences)
+
+
+def _reasons_from_stored_factors(requirements):
+    """Render reasons from the stored requirement structure (single renderer)."""
+    outcomes = _outcomes_from_stored(requirements)
+    return reasons_from_requirements(outcomes)
+
+
+def _match_payload(match, *, detail=False, user=None):
+    current_revision, unsupported = _preference_meta(user)
+    outcomes = _outcomes_from_stored(match.requirements)
+    stale = (
+        match.preference_revision is not None
+        and current_revision is not None
+        and match.preference_revision < current_revision
+    )
     payload = {
         "id": match.pk,
         "listing": _listing_payload(match.listing),
@@ -56,7 +124,22 @@ def _match_payload(match, *, detail=False):
         "preference_version": match.preference_version,
         "ranker_version": match.ranker_version,
         "score": match.score,
-        "reasons": _reasons_from_stored_factors(match.factors),
+        "fit_score": match.score,
+        "company_score": _company_score_of(match.organization),
+        "coverage": coverage(outcomes),
+        "requirements": [o.as_dict() for o in outcomes],
+        "unsupported": list(unsupported),
+        "evidence_ids": list(match.evidence_ids or []),
+        "revision": {
+            "preference_revision": match.preference_revision,
+            "ranking_version": match.ranker_version,
+            "data_revision": match.data_revision,
+            "generated_at": (
+                match.generated_at.isoformat() if match.generated_at else None
+            ),
+            "stale": stale,
+        },
+        "reasons": reasons_from_requirements(outcomes),
         "first_matched_at": match.first_matched_at,
         "last_matched_at": match.last_matched_at,
         "seen_at": match.seen_at,
@@ -65,40 +148,6 @@ def _match_payload(match, *, detail=False):
     if detail:
         payload["factors"] = match.factors
     return payload
-
-
-def _reasons_from_stored_factors(factors):
-    """Translate stored factor dicts into concise human-readable reasons."""
-    reasons = []
-    if not factors or not isinstance(factors, list):
-        return reasons
-    for factor in factors:
-        if not isinstance(factor, dict):
-            continue
-        name = factor.get("factor", "")
-        score = factor.get("score", 0)
-        detail = factor.get("detail", "")
-        if name == "organization_scores" and score > 0 and "average=" in detail:
-            avg_str = detail.split("average=")[1].split("/")[0]
-            try:
-                reasons.append(f"Score {float(avg_str):.1f}")
-            except (ValueError, TypeError):
-                pass
-        elif name == "compensation" and score > 0:
-            reasons.append("Compensation match")
-        elif name == "work_location" and score > 0:
-            reasons.append("Location match")
-        elif name == "vesting" and score > 0:
-            reasons.append("Vesting aligns")
-        elif name == "culture" and "matched=" in detail:
-            matched = detail.split("matched=")[1]
-            if matched and matched != "none":
-                reasons.append(f"Culture: {matched}")
-        elif name == "industry" and "matched=" in detail:
-            matched = detail.split("matched=")[1]
-            if matched and matched != "none":
-                reasons.append(f"Industry: {matched}")
-    return reasons[:6]
 
 
 def _parse_page(request):
@@ -112,12 +161,12 @@ def _parse_page(request):
     return page_number, min(page_size, _MAX_PAGE_SIZE)
 
 
-def _pagination_response(page):
+def _pagination_response(page, user=None):
     return {
         "count": page.paginator.count,
         "next": page.next_page_number() if page.has_next() else None,
         "previous": page.previous_page_number() if page.has_previous() else None,
-        "results": [_match_payload(match) for match in page.object_list],
+        "results": [_match_payload(match, user=user) for match in page.object_list],
     }
 
 
@@ -141,7 +190,7 @@ def job_match_list(request):
     )
     paginator = Paginator(queryset, page_size)
     page = paginator.get_page(page_number)
-    return JsonResponse(_pagination_response(page))
+    return JsonResponse(_pagination_response(page, request.user))
 
 
 @login_required
@@ -154,7 +203,7 @@ def job_match_detail(request, match_id):
         user=request.user,
         listing__status=JobListing.Status.ACTIVE,
     )
-    return JsonResponse(_match_payload(match, detail=True))
+    return JsonResponse(_match_payload(match, detail=True, user=request.user))
 
 
 @login_required
@@ -170,7 +219,7 @@ def job_match_seen(request, match_id):
     if match.seen_at is None:
         match.seen_at = timezone.now()
         match.save(update_fields=["seen_at", "modified"])
-    return JsonResponse(_match_payload(match, detail=True))
+    return JsonResponse(_match_payload(match, detail=True, user=request.user))
 
 
 @login_required
@@ -186,7 +235,7 @@ def job_match_dismiss(request, match_id):
     if not match.dismissed:
         match.dismissed = True
         match.save(update_fields=["dismissed", "modified"])
-    return JsonResponse(_match_payload(match, detail=True))
+    return JsonResponse(_match_payload(match, detail=True, user=request.user))
 
 
 def _probe_cap() -> int:
@@ -261,6 +310,13 @@ def job_match_ranked(request):
                 "location_text": r.location_text,
                 "is_remote": r.is_remote,
                 "score": r.score,
+                "fit_score": r.fit_score,
+                "company_score": r.company_score,
+                "coverage": r.coverage,
+                "requirements": r.requirements,
+                "unsupported": r.unsupported,
+                "evidence_ids": r.evidence_ids,
+                "revision": r.revision(),
                 "reasons": r.reasons,
                 "factors": r.factors,
             }
@@ -274,6 +330,13 @@ def job_match_ranked(request):
                 "funding_round": r.funding_round,
                 "rto_policy": r.rto_policy,
                 "score": r.score,
+                "fit_score": r.fit_score,
+                "company_score": r.company_score,
+                "coverage": r.coverage,
+                "requirements": r.requirements,
+                "unsupported": r.unsupported,
+                "evidence_ids": r.evidence_ids,
+                "revision": r.revision(),
                 "reasons": r.reasons,
             }
             for r in org_results

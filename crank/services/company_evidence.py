@@ -296,6 +296,27 @@ def resolve_field_evidence(organization) -> dict[str, CompanyFieldEvidence]:
     return resolved
 
 
+def resolve_field_evidence_for_orgs(organization_ids):
+    """Return accepted evidence per field key per organization in one query.
+
+    The bulk counterpart of :func:`resolve_field_evidence`, used by match
+    ranking to avoid an N+1 (issue #467). Only rows in state ``accepted`` are
+    returned; when a race left two accepted rows for one field, the newest
+    ``observed_at`` wins deterministically.
+    """
+    if not organization_ids:
+        return {}
+    rows = CompanyFieldEvidence.objects.filter(
+        organization_id__in=organization_ids, state=State.ACCEPTED
+    ).order_by("-observed_at", "-id")
+    resolved: dict[int, dict[str, CompanyFieldEvidence]] = {}
+    for row in rows:
+        per_field = resolved.setdefault(row.organization_id, {})
+        if row.field_key not in per_field:
+            per_field[row.field_key] = row
+    return resolved
+
+
 def is_stale(
     last_verified_at: datetime | None,
     now: datetime | None = None,
@@ -361,4 +382,5 @@ __all__ = [
     "observation_field_values",
     "record_check",
     "resolve_field_evidence",
+    "resolve_field_evidence_for_orgs",
 ]

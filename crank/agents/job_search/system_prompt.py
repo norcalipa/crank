@@ -13,7 +13,7 @@ from collections.abc import Mapping
 
 #: Version of the system-prompt wording. Bump when the wording or tool schema
 #: changes in a way that should invalidate cached model responses.
-SYSTEM_PROMPT_VERSION = 3
+SYSTEM_PROMPT_VERSION = 4
 
 #: Bounded tools the model may rely on. Values are the validated server-side
 #: capabilities from :mod:`crank.agents.job_search.tools`.

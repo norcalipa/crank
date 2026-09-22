@@ -13,6 +13,7 @@ The service never talks to a provider directly; it always goes through a
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from crank.agents.job_search.errors import (
     EchoReplyError,
     InvalidJobListingReferenceError,
     InvalidOrganizationReferenceError,
+    InvalidRequirementReferenceError,
     InvalidPreferencePatchError,
     JobSearchError,
     ProviderError,
@@ -42,6 +44,12 @@ from crank.agents.job_search.types import (
     StructuredResults,
 )
 from crank.services import monitoring
+
+#: Requirement paths the assistant may reference only when the match tool
+#: actually exposed them (issue #467 AC-11).
+_REQUIREMENT_PATH_RE = re.compile(r"\b(?:compensation|work_location|geography|vesting)\.[a-z_]+\b")
+#: A bounded "evidence #<id>" reference form.
+_EVIDENCE_REF_RE = re.compile(r"\bevidence\s*[#:]?\s*(\d+)", re.IGNORECASE)
 
 logger = logging.getLogger("crank.agents.job_search")
 
@@ -345,6 +353,8 @@ class JobSearchOrchestrator:
         self._validate_listing_citations(
             completion.cited_job_listing_ids, frozenset(known_listing_ids)
         )
+        if match_enabled:
+            self._validate_match_references(completion.message, match_data)
 
         # Anti-echo guard: never serve a reply that merely restates the user's
         # message when server data was available and no tool-grounded work was
@@ -630,6 +640,42 @@ class JobSearchOrchestrator:
             raise InvalidJobListingReferenceError(
                 f"model cited job listing IDs not exposed by server tools: {', '.join(str(i) for i in unknown)}"
             )
+
+    @staticmethod
+    def _validate_match_references(message: str, match_data: dict[str, Any]) -> None:
+        """Reject a reply that references an unexposed requirement or evidence id.
+
+        The match tool returns a bounded requirement structure (requirement
+        paths and evidence ids). A reply naming a requirement path or evidence
+        id outside that set did not come from server-controlled output and
+        fails the turn with the existing typed reference-error path (AC-11).
+        """
+        if not match_data:
+            return
+        exposed_paths: set[str] = set()
+        exposed_evidence_ids: set[int] = set()
+        for key in ("job_matches", "organization_matches"):
+            for row in match_data.get(key, []) or []:
+                if not isinstance(row, dict):
+                    continue
+                for req in row.get("requirements", []) or []:
+                    if isinstance(req, dict) and req.get("path"):
+                        exposed_paths.add(req["path"])
+                for eid in row.get("evidence_ids", []) or []:
+                    if isinstance(eid, bool):
+                        continue
+                    if isinstance(eid, int):
+                        exposed_evidence_ids.add(eid)
+        for token in _REQUIREMENT_PATH_RE.findall(message or ""):
+            if token not in exposed_paths:
+                raise InvalidRequirementReferenceError(
+                    f"model referenced a requirement not exposed by the match tool: {token}"
+                )
+        for m in _EVIDENCE_REF_RE.finditer(message or ""):
+            if int(m.group(1)) not in exposed_evidence_ids:
+                raise InvalidRequirementReferenceError(
+                    f"model referenced an evidence id not exposed by the match tool: {m.group(1)}"
+                )
 
     @staticmethod
     def _guard_echo(

@@ -135,3 +135,13 @@ class InvalidJobListingReferenceError(InvalidModelOutputError):
     job-listing tools actually returned. Anything else is treated as a
     hallucinated reference and rejected without persistence.
     """
+
+
+class InvalidRequirementReferenceError(InvalidModelOutputError):
+    """The model referenced a requirement path or evidence id the match tool did not expose.
+
+    The assistant may explain only the bounded requirement structure returned
+    by ``get_matches_for_user``; referencing a requirement path or evidence id
+    the server did not expose is treated as a hallucinated reference and
+    rejected without persistence.
+    """

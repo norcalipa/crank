@@ -26,6 +26,22 @@ interface EmptyStatePayload {
     relaxation_preview?: {field: string; label: string; added_count: number} | null;
 }
 
+interface RequirementOutcome {
+    path: string;
+    status: 'match' | 'mismatch' | 'unknown';
+    observed?: string | number | null;
+    source_kind?: string | null;
+    source_id?: string | number | null;
+}
+
+interface RevisionBlock {
+    preference_revision?: number | null;
+    ranking_version?: string;
+    data_revision?: number | null;
+    generated_at?: string | null;
+    stale?: boolean;
+}
+
 interface RankedJobMatch {
     listing_id: number;
     title: string;
@@ -37,6 +53,12 @@ interface RankedJobMatch {
     is_remote: boolean;
     score: number;
     reasons: string[];
+    fit_score?: number | null;
+    company_score?: number | null;
+    coverage?: number;
+    requirements?: RequirementOutcome[];
+    unsupported?: string[];
+    revision?: RevisionBlock | null;
 }
 
 interface RankedOrgMatch {
@@ -47,6 +69,12 @@ interface RankedOrgMatch {
     rto_policy: string;
     score: number;
     reasons: string[];
+    fit_score?: number | null;
+    company_score?: number | null;
+    coverage?: number;
+    requirements?: RequirementOutcome[];
+    unsupported?: string[];
+    revision?: RevisionBlock | null;
 }
 
 interface RankedMatchesPayload {
@@ -248,6 +276,116 @@ const Icon: React.FC<IconProps> = ({name, size = 16, className = ''}) => (
         {ICON_PATHS[name] || ICON_PATHS.info}
     </svg>
 );
+
+const REQUIREMENT_LABELS: Record<string, string> = {
+    'compensation.minimum_salary': 'Minimum salary',
+    'compensation.equity_minimum_percent': 'Equity',
+    'compensation.require_public_company': 'Public company',
+    'work_location.modes': 'Work mode',
+    'work_location.countries': 'Country',
+    'work_location.max_in_office_days': 'In-office days',
+    'geography.regions': 'Region',
+    'geography.remote_friendly': 'Remote-friendly',
+    'industry': 'Industry',
+    'funding_stage': 'Funding stage',
+    'culture': 'Culture',
+    'vesting.max_cliff_months': 'Cliff',
+    'vesting.max_vesting_months': 'Vesting length',
+    'vesting.prefer_accelerated': 'Accelerated vesting',
+};
+
+function requirementLabel(path: string): string {
+    return REQUIREMENT_LABELS[path] || path.split('.').pop() || path;
+}
+
+/** Three separately labelled figures: company score, fit, and coverage (AC-10). */
+function ThreeFigures({fit, company, coverage}: {fit: number | null | undefined; company: number | null | undefined; coverage: number | null | undefined}) {
+    const covText = coverage == null ? '—' : `${Math.round(coverage * 100)}%`;
+    const fitText = fit == null ? '—' : fit.toFixed(1);
+    const companyText = company == null ? '—' : company.toFixed(1);
+    return (
+        <div className="job-match-figures d-flex gap-3 small text-muted mt-1" role="list" aria-label="Match figures">
+            <span role="listitem">
+                <span className="d-block text-uppercase text-muted" style={{fontSize: '0.7rem'}}>Company score</span>
+                <strong className="text-body">{companyText}</strong>
+            </span>
+            <span role="listitem">
+                <span className="d-block text-uppercase text-muted" style={{fontSize: '0.7rem'}}>Fit</span>
+                <strong className="text-body">{fitText}</strong>
+            </span>
+            <span role="listitem">
+                <span className="d-block text-uppercase text-muted" style={{fontSize: '0.7rem'}}>Coverage</span>
+                <strong className="text-body">{covText}</strong>
+            </span>
+        </div>
+    );
+}
+
+const REQUIREMENT_STATUS_META: Record<RequirementOutcome['status'], {marker: string; className: string}> = {
+    match: {marker: '✓', className: 'badge bg-success'},
+    mismatch: {marker: '✗', className: 'badge bg-danger'},
+    unknown: {marker: '?', className: 'badge bg-secondary'},
+};
+
+/** Per-requirement chips in three visually distinct, non-color-duplicated states. */
+function RequirementChips({requirements}: {requirements?: RequirementOutcome[]}) {
+    if (!requirements || requirements.length === 0) {
+        return null;
+    }
+    return (
+        <div className="mt-1" role="list" aria-label="Requirement outcomes">
+            {requirements.map((req, idx) => {
+                const meta = REQUIREMENT_STATUS_META[req.status] || REQUIREMENT_STATUS_META.unknown;
+                return (
+                    <span key={idx} role="listitem"
+                          className={`${meta.className} me-1 mb-1 small fw-normal`}
+                          data-testid={`requirement-${req.path}`}
+                          data-status={req.status}>
+                        {meta.marker} {requirementLabel(req.path)}
+                    </span>
+                );
+            })}
+        </div>
+    );
+}
+
+/** A stale-result warning with a refresh action (issue #467). */
+function StaleNotice({revision, onRefresh}: {revision?: RevisionBlock | null; onRefresh: () => void}) {
+    if (!revision || !revision.stale) {
+        return null;
+    }
+    return (
+        <div className="alert alert-warning py-2 small mt-2 mb-0" role="status" aria-live="polite" data-testid="stale-notice">
+            <div className="d-flex align-items-start gap-2">
+                <Icon name="clock" className="flex-shrink-0 mt-1" />
+                <span className="flex-grow-1">
+                    These results were computed from older preferences. Refresh to recompute.
+                </span>
+                <button type="button" className="btn btn-sm btn-outline-light" onClick={onRefresh}
+                        aria-label="Refresh stale match results">
+                    <Icon name="refresh-cw" />
+                </button>
+            </div>
+        </div>
+    );
+}
+
+/** Unsupported-criteria notice when the user set a criterion matching cannot evaluate. */
+function UnsupportedNotice({unsupported}: {unsupported?: string[]}) {
+    if (!unsupported || unsupported.length === 0) {
+        return null;
+    }
+    return (
+        <div className="alert alert-info py-2 small mt-2 mb-0" role="status" aria-live="polite" data-testid="unsupported-notice">
+            <div className="d-flex align-items-start gap-2">
+                <Icon name="info" className="flex-shrink-0 mt-1" />
+                <span className="flex-grow-1">
+                    Some of your requirements ({unsupported.map(requirementLabel).join(', ')}) aren’t evaluated yet and aren’t part of these matches.
+                </span>
+            </div>
+        </div>
+    );
+}
 
 const RTO_LABELS: Record<string, string> = {
     R: 'Remote',
@@ -500,6 +638,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 </div>
                 <div className="card-body">
                     <ResultNotices emptyState={emptyState!} />
+                    <UnsupportedNotice unsupported={jobs[0]?.unsupported || orgs[0]?.unsupported} />
                     {jobs.length > 0 && (
                         <div data-testid="ranked-job-matches" className="mb-3">
                             <h3 className="h6 mb-2">Ranked Job Listings</h3>
@@ -534,6 +673,9 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                             ))}
                                         </div>
                                     )}
+                                    <ThreeFigures fit={match.fit_score ?? match.score} company={match.company_score} coverage={match.coverage} />
+                                    <RequirementChips requirements={match.requirements} />
+                                    <StaleNotice revision={match.revision} onRefresh={fetchStatus} />
                                 </div>
                             ))}
                         </div>
@@ -572,6 +714,9 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                             ))}
                                         </div>
                                     )}
+                                    <ThreeFigures fit={org.fit_score ?? org.score} company={org.company_score} coverage={org.coverage} />
+                                    <RequirementChips requirements={org.requirements} />
+                                    <StaleNotice revision={org.revision} onRefresh={fetchStatus} />
                                 </div>
                             ))}
                         </div>
