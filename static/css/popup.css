@@ -901,12 +901,9 @@ body.app-nav-drawer-open {
         align-items: stretch;
     }
 
-    /* Recovery actions stack full-width on phones so the primary action is
-       prominent and every secondary action stays a >=44px target. */
-    #job-match-panel .job-match-actions {
-        flex-direction: column;
-        align-items: stretch;
-    }
+    /* Recovery actions render as a single-column grid on phones (see the
+       round-3 .job-match-actions grid rules below); every action is
+       full-width and stays a >=44px target. */
 
     /* Round-3 density: with the empty-state copy visible again, compact the
        panel's vertical rhythm so the full action stack fits inside a 375x812
@@ -921,7 +918,6 @@ body.app-nav-drawer-open {
 
     #job-match-panel .job-match-actions {
         gap: .5rem;
-        margin-top: .5rem !important;
     }
 
     #job-match-panel .job-match-actions .btn {
@@ -1282,6 +1278,117 @@ body.app-nav-drawer-open {
         animation: none;
         opacity: 0.7;
     }
+}
+
+/* -------------------------------------------------------------------------
+   Issue #467 round-3 visual fixes.
+   ------------------------------------------------------------------------- */
+
+/* Panel type hierarchy (r3 item 3): the panel title steps up to ~text-lg
+   semibold and section/state headings to ~text-base semibold, so the bright
+   underlined job links no longer read as the accidental primary heading.
+   Supporting copy stays ~text-sm muted. */
+#job-match-panel .job-match-panel-title {
+    font-size: 1.125rem;
+    font-weight: 600;
+}
+
+#job-match-panel .job-match-section-heading {
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+/* Score grid (r3 item 4): three labelled columns with legible xs uppercase
+   labels and sm semibold values carrying explicit scales (/5, /100, %). */
+#job-match-panel .job-match-figures {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.75rem;
+    max-width: 24rem;
+}
+
+#job-match-panel .job-match-figure-label {
+    display: block;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: rgba(248, 249, 250, 0.75);
+}
+
+#job-match-panel .job-match-figure-value {
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #f8f9fa;
+}
+
+/* Empty-state action grid (r3 item 5): a responsive 1-col/2-col grid so four
+   CTAs wrap into even rows; every action is full-width, >=44px, centered. */
+#job-match-panel .job-match-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+#job-match-panel .job-match-actions .btn {
+    width: 100%;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+@media (min-width: 576px) {
+    #job-match-panel .job-match-actions {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+/* Stale banner (r3 item 2): a grid keeps the clock icon adjacent to the
+   message on mobile and the refresh control under the copy; >=sm the control
+   moves to a third auto column aligned with the icon. */
+#job-match-panel .job-match-stale-banner {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 0.5rem;
+    row-gap: 0.5rem;
+    align-items: start;
+}
+
+#job-match-panel .job-match-stale-icon {
+    flex-shrink: 0;
+    margin-top: 0.125rem;
+}
+
+#job-match-panel .job-match-stale-message {
+    min-width: 0;
+}
+
+#job-match-panel .job-match-stale-refresh {
+    grid-column: 2;
+    justify-self: start;
+}
+
+@media (min-width: 576px) {
+    #job-match-panel .job-match-stale-banner {
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+    }
+
+    #job-match-panel .job-match-stale-icon {
+        margin-top: 0;
+    }
+
+    #job-match-panel .job-match-stale-refresh {
+        grid-column: 3;
+        justify-self: end;
+    }
+}
+
+/* Loading spinner emphasis (r3 item 6): sky/cyan instead of muted gray. */
+#job-match-panel .job-match-loading-spinner {
+    color: #7dd3fc;
 }
 
 @media (max-width: 390px) {

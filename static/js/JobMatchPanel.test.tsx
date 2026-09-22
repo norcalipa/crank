@@ -221,8 +221,8 @@ describe('JobMatchPanel', () => {
             // single labelled source of the rank score (AC-10).
             expect(screen.queryByTestId('job-score-42')).not.toBeInTheDocument();
             expect(screen.queryByTestId('org-score-7')).not.toBeInTheDocument();
-            expect(screen.getByTestId('job-42-fit-score')).toHaveTextContent('85.5');
-            expect(screen.getByTestId('org-7-fit-score')).toHaveTextContent('72.3');
+            expect(screen.getByTestId('job-42-fit-score')).toHaveTextContent('85.5 / 100');
+            expect(screen.getByTestId('org-7-fit-score')).toHaveTextContent('72.3 / 100');
         });
 
         test('shows remote badge for remote job listing (neutral, not semantic)', async () => {
@@ -259,10 +259,10 @@ describe('JobMatchPanel', () => {
             });
             render(<JobMatchPanel/>);
             const fitFigure = await screen.findByTestId('job-42-fit-score');
-            expect(fitFigure).toHaveTextContent('85.5');
+            expect(fitFigure).toHaveTextContent('85.5 / 100');
             jobScore = 92.0;
             fireEvent.click(screen.getByTestId('job-match-refresh'));
-            await waitFor(() => expect(screen.getByTestId('job-42-fit-score')).toHaveTextContent('92.0'));
+            await waitFor(() => expect(screen.getByTestId('job-42-fit-score')).toHaveTextContent('92.0 / 100'));
         });
     });
 
@@ -865,15 +865,16 @@ describe('JobMatchPanel requirement figures and states (issue #467)', () => {
         revision: {stale: false, generated_at: '2026-09-22T08:00:00Z'},
     };
 
-    test('renders three separately labelled figures', async () => {
+    test('renders three separately labelled figures with explicit scales', async () => {
         await renderPanel('ok', {count: 1, rankedJobs: [jobWithRequirements]});
         const card = screen.getByTestId('ranked-job-42');
         expect(card).toHaveTextContent('Company score');
         expect(card).toHaveTextContent('Fit');
         expect(card).toHaveTextContent('Coverage');
-        expect(card).toHaveTextContent('4.2');
-        expect(card).toHaveTextContent('85.5');
-        expect(card).toHaveTextContent('75%');
+        // Round-3: each value carries its scale so the number reads on its own.
+        expect(screen.getByTestId('job-42-company-score')).toHaveTextContent('4.2 / 5');
+        expect(screen.getByTestId('job-42-fit-score')).toHaveTextContent('85.5 / 100');
+        expect(screen.getByTestId('job-42-coverage')).toHaveTextContent('75%');
     });
 
     test('renders requirement chips distinctly, unknown never styled satisfied', async () => {
@@ -937,5 +938,79 @@ describe('JobMatchPanel requirement figures and states (issue #467)', () => {
     test('renders no requirement chips when requirements absent', async () => {
         await renderPanel('ok', {count: 1, rankedJobs: [sampleJobMatch]});
         expect(screen.queryByTestId('requirement-compensation.minimum_salary')).not.toBeInTheDocument();
+    });
+});
+
+describe('JobMatchPanel round-3 visual fixes (type hierarchy + grids)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+        resetWorkspaceForTests();
+        closeAssistant();
+    });
+
+    test('panel title uses the emphasised text-lg title class in every phase', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {
+                title: 'No matches',
+                message: 'Test',
+                actions: ['chat'],
+            },
+        });
+        const title = screen.getByText('Your Job Matches');
+        expect(title).toHaveClass('job-match-panel-title');
+        // It is no longer the Bootstrap h6 (1rem) treatment that made the
+        // underlined job links read as the primary heading.
+        expect(title).not.toHaveClass('h6');
+    });
+
+    test('section and state headings use the base semibold heading class', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [
+            {...sampleJobMatch, fit_score: 85.5, company_score: 4.2, coverage: 0.75},
+        ]});
+        expect(screen.getByText('Ranked Job Listings')).toHaveClass('job-match-section-heading');
+    });
+
+    test('empty-state title uses the base semibold heading class', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {title: 'No matches', message: 'Test', actions: ['chat']},
+        });
+        expect(screen.getByText('No matches')).toHaveClass('job-match-section-heading');
+    });
+
+    test('stale banner lays out the icon, message, and refresh as a grid', async () => {
+        const staleJob = {...sampleJobMatch, listing_id: 42, revision: {stale: true}};
+        await renderPanel('ok', {count: 1, rankedJobs: [staleJob]});
+        const banner = screen.getByTestId('stale-notice').querySelector('.job-match-stale-banner');
+        expect(banner).not.toBeNull();
+        expect(banner!.querySelector('.job-match-stale-icon')).not.toBeNull();
+        expect(banner!.querySelector('.job-match-stale-message')).not.toBeNull();
+        expect(banner!.querySelector('.job-match-stale-refresh')).not.toBeNull();
+    });
+
+    test('empty-state actions render as a single responsive grid of full-width targets', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {
+                title: 'No matches',
+                message: 'Test',
+                actions: ['chat', 'explore_companies', 'suggest_company', 'help'],
+            },
+        });
+        const group = screen.getByRole('group', {name: 'Recovery actions'});
+        expect(group).toHaveClass('job-match-actions');
+        // Every action is a button inside the grid group (no ragged flex rows).
+        const buttons = group.querySelectorAll('button');
+        expect(buttons.length).toBe(4);
+    });
+
+    test('loading spinner carries the emphasised sky/cyan class', () => {
+        (global.fetch as jest.Mock).mockReturnValue(new Promise(() => {}));
+        render(<JobMatchPanel/>);
+        const loading = screen.getByTestId('job-match-loading');
+        const spinner = loading.querySelector('svg.job-match-loading-spinner');
+        expect(spinner).not.toBeNull();
     });
 });

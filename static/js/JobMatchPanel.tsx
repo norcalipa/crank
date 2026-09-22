@@ -316,24 +316,26 @@ function requirementLabel(path: string): string {
     return REQUIREMENT_LABELS[path] || path.split('.').pop() || path;
 }
 
-/** Three separately labelled figures: company score, fit, and coverage (AC-10). */
+/** Three separately labelled figures: company score (/5), fit (/100), and
+ * coverage (%) (AC-10). Round-3: explicit scales so each number reads on its
+ * own, and a three-column grid with legible xs labels + sm semibold values. */
 function ThreeFigures({fit, company, coverage, scope}: {fit: number | null | undefined; company: number | null | undefined; coverage: number | null | undefined; scope: string}) {
     const covText = coverage == null ? '—' : `${Math.round(coverage * 100)}%`;
-    const fitText = fit == null ? '—' : fit.toFixed(1);
-    const companyText = company == null ? '—' : company.toFixed(1);
+    const fitText = fit == null ? '—' : `${fit.toFixed(1)} / 100`;
+    const companyText = company == null ? '—' : `${company.toFixed(1)} / 5`;
     return (
-        <div className="job-match-figures d-flex gap-3 small text-muted mt-1" role="list" aria-label="Match figures">
+        <div className="job-match-figures mt-1" role="list" aria-label="Match figures">
             <span role="listitem">
-                <span className="d-block text-uppercase text-muted" style={{fontSize: '0.7rem'}}>Company score</span>
-                <strong className="text-body" data-testid={`${scope}-company-score`}>{companyText}</strong>
+                <span className="job-match-figure-label">Company score</span>
+                <strong className="job-match-figure-value" data-testid={`${scope}-company-score`}>{companyText}</strong>
             </span>
             <span role="listitem">
-                <span className="d-block text-uppercase text-muted" style={{fontSize: '0.7rem'}}>Fit</span>
-                <strong className="text-body" data-testid={`${scope}-fit-score`}>{fitText}</strong>
+                <span className="job-match-figure-label">Fit</span>
+                <strong className="job-match-figure-value" data-testid={`${scope}-fit-score`}>{fitText}</strong>
             </span>
             <span role="listitem">
-                <span className="d-block text-uppercase text-muted" style={{fontSize: '0.7rem'}}>Coverage</span>
-                <strong className="text-body" data-testid={`${scope}-coverage`}>{covText}</strong>
+                <span className="job-match-figure-label">Coverage</span>
+                <strong className="job-match-figure-value" data-testid={`${scope}-coverage`}>{covText}</strong>
             </span>
         </div>
     );
@@ -383,12 +385,12 @@ function StaleNotice({revision, onRefresh}: {revision?: RevisionBlock | null; on
     }
     return (
         <div className="alert alert-warning py-2 small mb-3" role="status" aria-live="polite" data-testid="stale-notice">
-            <div className="d-flex align-items-center gap-2 flex-wrap">
-                <Icon name="clock" className="flex-shrink-0" />
-                <span className="flex-grow-1">
+            <div className="job-match-stale-banner">
+                <Icon name="clock" className="job-match-stale-icon" />
+                <span className="job-match-stale-message">
                     These results are stale — refresh to recompute with your latest preferences.
                 </span>
-                <button type="button" className="btn btn-sm btn-outline-light" onClick={onRefresh}
+                <button type="button" className="btn btn-sm btn-outline-light job-match-stale-refresh" onClick={onRefresh}
                         aria-label="Refresh matches" data-testid="stale-refresh">
                     <Icon name="refresh-cw" className="me-1" />Refresh matches
                 </button>
@@ -619,7 +621,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header">
-                    <h2 id="job-match-panel-title" className="h6 mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
                 </div>
                 <div className="card-body">
                     <p className="text-muted mb-2" data-testid="job-match-signed-out">
@@ -638,7 +640,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header">
-                    <h2 id="job-match-panel-title" className="h6 mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
                 </div>
                 <div className="card-body">
                     <div role="status" aria-live="polite" data-testid="job-match-loading">
@@ -663,7 +665,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header">
-                    <h2 id="job-match-panel-title" className="h6 mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
                 </div>
                 <div className="card-body">
                     <div className="alert alert-danger" role="alert" data-testid="job-match-error">
@@ -698,7 +700,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header d-flex justify-content-between align-items-center">
-                    <h2 id="job-match-panel-title" className="h6 mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
                     <button type="button" className="btn btn-sm btn-outline-light"
                             onClick={fetchStatus} aria-label="Refresh match status"
                             data-testid="job-match-refresh">
@@ -712,7 +714,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     <ResultTimestamp revision={resultRevision} />
                     {jobs.length > 0 && (
                         <div data-testid="ranked-job-matches" className="mb-3">
-                            <h3 className="h6 mb-2">Ranked Job Listings</h3>
+                            <h3 className="job-match-section-heading mb-2">Ranked Job Listings</h3>
                             {jobs.map((match) => (
                                 <div key={match.listing_id} className="job-match-card border-bottom border-secondary pb-2 mb-2"
                                      data-testid={`ranked-job-${match.listing_id}`}>
@@ -749,7 +751,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     )}
                     {orgs.length > 0 && (
                         <div data-testid="ranked-org-matches">
-                            <h3 className="h6 mb-2">Ranked Organizations</h3>
+                            <h3 className="job-match-section-heading mb-2">Ranked Organizations</h3>
                             {orgs.map((org) => (
                                 <div key={org.organization_id} className="job-match-card border-bottom border-secondary pb-2 mb-2"
                                      data-testid={`ranked-org-${org.organization_id}`}>
@@ -794,7 +796,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header d-flex justify-content-between align-items-center">
-                    <h2 id="job-match-panel-title" className="h6 mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
                     <button type="button" className="btn btn-sm btn-outline-light"
                             onClick={fetchStatus} aria-label="Refresh match status"
                             data-testid="job-match-refresh">
@@ -819,7 +821,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                  aria-labelledby="job-match-panel-title">
             <div className="card-header d-flex justify-content-between align-items-center">
-                <h2 id="job-match-panel-title" className="h6 mb-0">Your Job Matches</h2>
+                <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
                 <button type="button" className="btn btn-sm btn-outline-light"
                         onClick={fetchStatus} aria-label="Refresh match status"
                         data-testid="job-match-refresh">
@@ -832,8 +834,8 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     leading icon indent (round-2 critique). */}
                 <div role="status" aria-live="polite"
                      data-testid={`empty-state-${state.state}`}>
-                    <h3 className="h6 mb-1">{state.title}</h3>
-                    <p className="text-muted mb-0">{state.message}</p>
+                    <h3 className="job-match-section-heading mb-1">{state.title}</h3>
+                    <p className="text-muted small mb-0">{state.message}</p>
                         {state.staff_detail && (
                             <p className="text-muted small mt-2 mb-0" data-testid="staff-detail">
                                 <Icon name="shield" className="me-1" />
@@ -873,7 +875,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                         )}
                 </div>
                 {state.actions.length > 0 && (
-                    <div className="job-match-actions d-flex flex-wrap gap-2 mt-3" role="group"
+                    <div className="job-match-actions" role="group"
                          aria-label="Recovery actions">
                         {state.actions.map((action, idx) => {
                             // While the assistant panel is open (issue #469
