@@ -24,17 +24,28 @@ test.describe('shared assistant workspace (issue #472)', () => {
             await login(page);
             for (const path of ['/', '/chat/']) {
                 await page.goto(path);
-                await expect(page.locator('[data-testid="assistant-launcher"]')).toBeVisible();
-                await expectNoHorizontalOverflow(page);
                 const launcher = page.locator('[data-testid="assistant-launcher"]');
+                const panel = page.locator('[data-testid="assistant-panel"]');
                 // /chat/ is pinned open; other pages open via the launcher.
-                if (await page.locator('[data-testid="assistant-panel"]').count() === 0) {
+                // While the panel is open the launcher leaves the DOM
+                // (issue #469 re-critique): it renders only while closed, so
+                // a pressed floating launcher can never sit beside the
+                // already-open panel.
+                if (await panel.count() === 0) {
+                    await expect(launcher).toBeVisible();
+                    await expectNoHorizontalOverflow(page);
                     await launcher.click();
+                } else {
+                    await expect(launcher).toHaveCount(0);
                 }
-                await expect(page.locator('[data-testid="assistant-panel"]')).toBeVisible();
+                await expect(panel).toBeVisible();
                 await expectNoHorizontalOverflow(page);
                 await page.locator('[data-testid="assistant-close"]').click();
                 await expect(page.locator('[data-testid="assistant-panel"]')).toHaveCount(0);
+                // Closed again: the launcher returns as the single entry
+                // point and the closed state stays overflow-free.
+                await expect(launcher).toBeVisible();
+                await expectNoHorizontalOverflow(page);
             }
         });
     }
