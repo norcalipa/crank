@@ -135,6 +135,23 @@ describe('JobMatchPanel', () => {
             expect(error).toHaveTextContent('Network down');
         });
 
+        test('translates a non-JSON status body into friendly copy', async () => {
+            // A login redirect or HTML error page makes res.json() reject with
+            // a DOMException; parseJson must rewrite it as truthful copy.
+            (global.fetch as jest.Mock).mockImplementation((url: string) => {
+                if (url.includes('/status/')) {
+                    return Promise.resolve(new Response('<html><body>Redirecting…</body></html>', {
+                        status: 200,
+                        headers: {'Content-Type': 'text/html'},
+                    }));
+                }
+                return Promise.resolve(jsonResponse(matchPayload(0)));
+            });
+            render(<JobMatchPanel/>);
+            const error = await screen.findByTestId('job-match-error');
+            expect(error).toHaveTextContent(/couldn.t load your job matches/i);
+        });
+
         test('retry button re-fetches status', async () => {
             const mock = global.fetch as jest.Mock;
             mock.mockImplementationOnce((url: string) => {

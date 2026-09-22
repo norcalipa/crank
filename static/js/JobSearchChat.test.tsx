@@ -287,6 +287,21 @@ describe('JobSearchChat', () => {
             expect(document.activeElement).toBe(screen.getByLabelText('Message'));
         });
 
+        test('sheet placement renders the Back-to-results microcopy instead of the beside-panel copy', async () => {
+            await renderChat();
+            expect(screen.getByTestId('empty-history')).toHaveTextContent(/Job Matches panel/i);
+            expect(screen.getByTestId('empty-history')).not.toHaveTextContent(/Tap Back to results/i);
+        });
+
+        test('workspaceMode="sheet" renders directional Back-to-results microcopy (issue #472)', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+            render(<JobSearchChat workspaceMode="sheet"/>);
+            await screen.findByTestId('empty-history');
+            expect(screen.getByTestId('empty-history')).toHaveTextContent(/Tap Back to results/i);
+            expect(screen.getByTestId('empty-history')).not.toHaveTextContent(/Job Matches panel/i);
+        });
+
         test('renders existing message history', async () => {
             await renderChat([userMessage('hello'), assistantMessage(2, 'hi there')]);
             expect(screen.getByText('hello')).toBeInTheDocument();

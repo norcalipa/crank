@@ -1867,17 +1867,20 @@ body.app-nav-drawer-open {
        fluid width and a softer shadow reduce the drawer's dominance at
        1024px, while the 2px border keeps the workspace boundary explicit. */
     .assistant-panel--drawer {
-        width: clamp(320px, 34vw, 360px);
+        width: clamp(300px, 34vw, 360px);
         box-shadow: -8px 0 24px rgba(15, 23, 42, .40);
     }
 
     /* Reserve the drawer's width in the main region (issue #469 round-2
        critique): without this the fixed drawer overlapped and occluded the
        match card's title, subtitle, listings, metadata and scores at
-       768-1279px. */
+       768-1279px. The floor is 300px (not 320px) so the collapsed 72px rail
+       plus the drawer still leave #main-content above half the viewport at
+       768px (768 - 72 - 300 = 396 > 384), keeping the viewport-matrix
+       invariant without reintroducing overlap. */
     body.assistant-drawer .app-content,
     body.assistant-drawer .app-messages {
-        max-width: calc(100vw - var(--app-rail-width) - clamp(320px, 34vw, 360px));
+        max-width: calc(100vw - var(--app-rail-width) - clamp(300px, 34vw, 360px));
     }
 }
 
