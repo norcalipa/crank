@@ -9,11 +9,19 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from crank.agents.jobs.match_persist import persist_matches
+from crank.agents.jobs.match_persist import (
+    MatchSnapshot,
+    PublishOutcome,
+    _get_or_create_state,
+    _within_age,
+    open_snapshot,
+    persist_matches,
+    publish,
+)
 from crank.agents.jobs.matching import JobCriteria, MatchResult
 from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
 from crank.models.job import JobListing, JobSourceCatalog
-from crank.models.job_match import JobMatch
+from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference
 
@@ -176,12 +184,14 @@ class MatchPersistenceTests(TestCase):
 
     def test_data_revision_includes_listing_publication_events(self):
         """data_revision is the greatest PublicationEvent.id touching the row,
-        counting both the organization's events and the listing's own ingest
-        events (not just the organization)."""
+        counting both the organization's events and the listing's **source**
+        ingest events (issue #475 G3 fix: the only LISTING-event writer,
+        ``record_source_publication``, writes ``target_id=source.pk``, so
+        LISTING events must be looked up by source id, not listing id)."""
         from crank.services.publication import record_event
         from crank.models.publication import PublicationEvent
 
-        # Organization event and a later listing ingest event.
+        # Organization event and a later source-keyed listing ingest event.
         org_event = record_event(
             target_type=PublicationEvent.TargetType.ORGANIZATION,
             target_id=self.organization.pk,
@@ -189,12 +199,150 @@ class MatchPersistenceTests(TestCase):
         )
         listing_event = record_event(
             target_type=PublicationEvent.TargetType.LISTING,
+            target_id=self.source.pk,
+            event_kind=PublicationEvent.EventKind.INGESTED,
+        )
+        UserPreference.objects.create(user=self.user, revision=0)
+        persist_matches(self.user, [self.listing], self.criteria, DEFAULT_CONFIG)
+        match = JobMatch.objects.get()
+        # The source's ingest event must win over the organization's event.
+        self.assertGreater(listing_event.pk, org_event.pk)
+        self.assertEqual(match.data_revision, listing_event.pk)
+
+    def test_data_revision_ignores_events_keyed_by_listing_pk(self):
+        """A LISTING event keyed by ``listing.pk`` (not ``source.pk``) is a
+        different target id and must never contribute to data_revision — the
+        per-source writer contract (``docs/publication-outbox.md``) rejects
+        per-listing events."""
+        from crank.services.publication import record_event
+        from crank.models.publication import PublicationEvent
+
+        if self.listing.pk == self.source.pk:
+            # Force distinct pks: both tables can otherwise start at 1.
+            self.listing = make_listing(
+                self.source, self.organization, title="Engineer2"
+            )
+        self.assertNotEqual(self.listing.pk, self.source.pk)
+        record_event(
+            target_type=PublicationEvent.TargetType.LISTING,
             target_id=self.listing.pk,
             event_kind=PublicationEvent.EventKind.INGESTED,
         )
         UserPreference.objects.create(user=self.user, revision=0)
         persist_matches(self.user, [self.listing], self.criteria, DEFAULT_CONFIG)
         match = JobMatch.objects.get()
-        # The listing's ingest event must win over the organization's event.
-        self.assertGreater(listing_event.pk, org_event.pk)
-        self.assertEqual(match.data_revision, listing_event.pk)
+        self.assertIsNone(match.data_revision)
+
+    def test_data_revision_includes_score_events(self):
+        """A SCORE event on the listing's organization contributes to
+        data_revision because organization scores feed the fit score."""
+        from crank.services.publication import record_event
+        from crank.models.publication import PublicationEvent
+
+        score_event = record_event(
+            target_type=PublicationEvent.TargetType.SCORE,
+            target_id=self.organization.pk,
+            event_kind=PublicationEvent.EventKind.OBSERVED,
+        )
+        UserPreference.objects.create(user=self.user, revision=0)
+        persist_matches(self.user, [self.listing], self.criteria, DEFAULT_CONFIG)
+        match = JobMatch.objects.get()
+        self.assertEqual(match.data_revision, score_event.pk)
+
+    def test_persist_matches_returns_zero_when_publish_is_not_published(self):
+        """issue #475: the legacy wrapper reports 0 whenever the CAS publish
+        is discarded/fails, not just when nothing matched."""
+        UserPreference.objects.create(user=self.user, revision=0)
+        with patch(
+            "crank.agents.jobs.match_persist.publish",
+            return_value=PublishOutcome.DISCARDED_STALE,
+        ):
+            self.assertEqual(
+                persist_matches(self.user, [self.listing], self.criteria, DEFAULT_CONFIG),
+                0,
+            )
+
+
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+class MatchPersistInternalsTests(TestCase):
+    """issue #475: direct coverage of small snapshot/publish primitives."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("owner2", password="secret")
+        self.organization = Organization.objects.create(name="Acme2")
+        self.source = JobSourceCatalog.objects.create(
+            name="Synthetic3",
+            adapter_key="synthetic.v3",
+            base_url="https://jobs.example.test",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+        )
+        self.listing = make_listing(self.source, self.organization)
+
+    def test_within_age_none_generated_at_is_false(self):
+        self.assertFalse(_within_age(None, 24))
+
+    def test_within_age_zero_disables_backstop(self):
+        self.assertTrue(_within_age(timezone.now() - timedelta(days=365), 0))
+
+    def test_get_or_create_state_recovers_from_concurrent_create(self):
+        MatchResultState.objects.create(user=self.user)
+        with patch(
+            "crank.agents.jobs.match_persist.MatchResultState.objects.filter"
+        ) as filtered:
+            filtered.return_value.first.return_value = None
+            with patch(
+                "crank.agents.jobs.match_persist.MatchResultState.objects.create",
+                side_effect=RuntimeError("unique constraint"),
+            ):
+                state = _get_or_create_state(self.user)
+        self.assertEqual(state.user_id, self.user.pk)
+
+    def test_publish_discards_when_defensive_preference_check_trips(self):
+        """A snapshot whose preference_revision is behind the state's
+        stamped value is discarded even when its ticket is ahead (the
+        defensive check, distinct from the ticket comparison)."""
+        UserPreference.objects.create(user=self.user, revision=5)
+        snapshot = open_snapshot(self.user, max_listings=500)
+        from crank.agents.jobs.matching import rank_listings
+        from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
+
+        ranked = rank_listings(snapshot.listings, snapshot.criteria, DEFAULT_CONFIG)
+        self.assertEqual(publish(snapshot, ranked), PublishOutcome.PUBLISHED)
+
+        stale_snapshot = MatchSnapshot(
+            user_id=snapshot.user_id,
+            ticket=snapshot.ticket + 5,
+            preference_revision=0,
+            preference_version=snapshot.preference_version,
+            ranker_version=snapshot.ranker_version,
+            data_revision=snapshot.data_revision,
+            listings=snapshot.listings,
+            criteria=snapshot.criteria,
+            evidence=snapshot.evidence,
+            data_revisions=snapshot.data_revisions,
+        )
+        self.assertEqual(
+            publish(stale_snapshot, ranked), PublishOutcome.DISCARDED_STALE
+        )
+
+    def test_publish_skips_ranked_listing_not_in_the_snapshot(self):
+        """A ranked result referencing a real, unmatched listing id outside
+        the snapshot's inventory is skipped, not persisted."""
+        from crank.agents.jobs.matching import MatchResult
+
+        outside_listing = make_listing(self.source, self.organization, title="Outside")
+        UserPreference.objects.create(user=self.user, revision=0)
+        snapshot = open_snapshot(self.user, max_listings=0)
+        self.assertEqual(snapshot.listings, [])
+        fake_result = MatchResult(
+            listing_id=outside_listing.pk,
+            score=10.0,
+            excluded=False,
+            exclusion_reasons=[],
+            factors=[],
+            ranker_version=DEFAULT_CONFIG.version,
+            criteria_version=snapshot.preference_version,
+        )
+        self.assertEqual(publish(snapshot, [fake_result]), PublishOutcome.PUBLISHED)
+        self.assertFalse(JobMatch.objects.exists())

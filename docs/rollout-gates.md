@@ -339,7 +339,8 @@ reads its switch.
 | On-demand crawl | `crawl` | #328 | off | registered |
 | Publication consumer | `publication_consumer` | #470 | off | planned |
 | Assistant shell | `assistant_shell` | #472 | off | planned |
-| Recompute phases | per-phase key (named at implementation) | #475 | off | planned |
+| Match recompute | `match_recompute` + `MATCH_RECOMPUTE_ENABLED` | #475 | off | registered |
+| Match results read | `match_results_read` + `MATCH_RESULTS_READ_ENABLED` | #475 | off | registered |
 
 Independence rules: no two capabilities share a canary decision or a switch;
 flipping one switch never disables another capability's data path; a

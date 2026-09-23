@@ -92,6 +92,11 @@ class JobMatchResult:
     data_revision: int | None = None
     generated_at: Any | None = None
     stale: bool = False
+    # issue #475: additive committed-generation fields. ``result_generation``
+    # is ``None`` for live (uncommitted) results; ``pending`` is true when a
+    # newer generation is known to be in flight for this user.
+    result_generation: int | None = None
+    pending: bool = False
 
     def revision(self) -> dict[str, Any]:
         return {
@@ -100,6 +105,8 @@ class JobMatchResult:
             "data_revision": self.data_revision,
             "generated_at": _iso_or_none(self.generated_at),
             "stale": self.stale,
+            "result_generation": self.result_generation,
+            "pending": self.pending,
         }
 
 
@@ -583,11 +590,30 @@ def match_jobs(
     in-memory effective preference document drives this one search without
     a stored-preference read or write.
     """
+    capped = max(1, min(limit, MAX_MATCH_RESULTS))
+    if queryset is None and preferences_override is None:
+        # issue #475: the normal, non-injected call path (this-search-only
+        # overrides and orchestrator injections stay live). Committed-read
+        # results are returned when the gate is on and a generation has
+        # already been published for this user; otherwise fall through to
+        # the live computation below.
+        from crank.models.job_match import MatchResultState
+        from crank.services import match_results
+
+        if match_results.read_enabled():
+            has_generation = (
+                getattr(user, "pk", None) is not None
+                and MatchResultState.objects.filter(
+                    user=user, current_generation__isnull=False
+                ).exists()
+            )
+            if has_generation:
+                return match_results.current_job_results(user, capped)
+
     criteria, unsupported, preference_revision = _match_context(user, preferences_override)
     if criteria is None:
         return []
 
-    capped = max(1, min(limit, MAX_MATCH_RESULTS))
     if queryset is None:
         queryset = JobListing.objects.select_related("organization").filter(
             status=JobListing.Status.ACTIVE

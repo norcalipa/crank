@@ -17,6 +17,11 @@ data:
   GATHER_SCORES_DEADLINE_SECONDS: "300"
   GATHER_SCORES_SOURCE_TIMEOUT_SECONDS: "120"
   JOB_PIPELINE_ENABLED: "false"
+  # Versioned job-match recomputation (issue #475). Web pods also load this
+  # ConfigMap, so the preference-hook fast path and the read gate see these
+  # flags too. See docs/match-recompute.md for rollout order.
+  MATCH_RECOMPUTE_ENABLED: "false"
+  MATCH_RESULTS_READ_ENABLED: "false"
   CRAWL_CRON_ENABLED: "false"
   ORGANIZATION_FRESHNESS_HOURS: "168"
   JOB_FRESHNESS_HOURS: "24"

@@ -11,15 +11,15 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
 from crank.agents.jobs.matching import (
-    RequirementOutcome,
-    _decimal,
     coverage,
+    outcomes_from_dicts,
     reasons_from_requirements,
 )
 from crank.empty_state import NO_MATCHES, derive_state
 from crank.models.job import JobListing
-from crank.models.job_match import JobMatch
+from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.preference import UserPreference
+from crank.services import match_recompute, match_results
 from crank.services.job_matching import (
     MAX_MATCH_RESULTS,
     match_jobs,
@@ -56,41 +56,10 @@ def _listing_payload(listing):
     }
 
 
-def _outcomes_from_stored(requirements):
-    """Reconstruct :class:`RequirementOutcome` values from stored JSON dicts."""
-    outcomes = []
-    for item in requirements or []:
-        if not isinstance(item, dict) or not item.get("path"):
-            continue
-        outcomes.append(RequirementOutcome(
-            path=item["path"],
-            status=item.get("status", "unknown"),
-            observed=item.get("observed"),
-            source_kind=item.get("source_kind"),
-            source_id=item.get("source_id"),
-            scope_ok=item.get("scope_ok", True),
-        ))
-    return outcomes
-
-
-def _company_score_of(organization):
-    """The organization's average score (0-5), or ``None`` when unknown."""
-    if organization is None:
-        return None
-    try:
-        scores = organization.avg_scores()
-    except (AttributeError, TypeError, ValueError):
-        return None
-    values = []
-    for row in scores or ():
-        if not isinstance(row, dict):
-            continue
-        value = _decimal(row.get("avg_score", row.get("score")))
-        if value is not None:
-            values.append(float(value))
-    if not values:
-        return None
-    return max(0.0, min(5.0, sum(values) / len(values)))
+# issue #475: the single shared implementation lives in match_results.py so
+# the committed-generation reads and this view compute company_score
+# identically.
+_company_score_of = match_results._company_score_of
 
 
 def _preference_meta(user):
@@ -105,13 +74,13 @@ def _preference_meta(user):
 
 def _reasons_from_stored_factors(requirements):
     """Render reasons from the stored requirement structure (single renderer)."""
-    outcomes = _outcomes_from_stored(requirements)
+    outcomes = outcomes_from_dicts(requirements)
     return reasons_from_requirements(outcomes)
 
 
 def _match_payload(match, *, detail=False, user=None):
     current_revision, unsupported = _preference_meta(user)
-    outcomes = _outcomes_from_stored(match.requirements)
+    outcomes = outcomes_from_dicts(match.requirements)
     stale = (
         match.preference_revision is not None
         and current_revision is not None
@@ -138,6 +107,9 @@ def _match_payload(match, *, detail=False, user=None):
                 match.generated_at.isoformat() if match.generated_at else None
             ),
             "stale": stale,
+            # issue #475: additive committed-generation fields.
+            "result_generation": match.result_generation,
+            "pending": bool(stale and match_recompute.recompute_enabled()),
         },
         "reasons": reasons_from_requirements(outcomes),
         "first_matched_at": match.first_matched_at,
@@ -170,6 +142,29 @@ def _pagination_response(page, user=None):
     }
 
 
+def _current_or_live_queryset(user):
+    """The committed-generation queryset when the gate is on and a generation
+    exists for *user*; otherwise today's live, non-dismissed, active-listing
+    queryset (issue #475)."""
+    live = (
+        JobMatch.objects.filter(
+            user=user,
+            dismissed=False,
+            listing__status=JobListing.Status.ACTIVE,
+        )
+        .select_related("listing", "organization")
+        .order_by("-score", "id")
+    )
+    if not match_results.read_enabled():
+        return live
+    has_generation = MatchResultState.objects.filter(
+        user=user, current_generation__isnull=False
+    ).exists()
+    if not has_generation:
+        return live
+    return match_results.current_generation_queryset(user).order_by("-score", "id")
+
+
 @login_required
 @require_GET
 def job_match_list(request):
@@ -179,15 +174,7 @@ def job_match_list(request):
         return JsonResponse(
             {"error": "page and page_size must be positive integers."}, status=400
         )
-    queryset = (
-        JobMatch.objects.filter(
-            user=request.user,
-            dismissed=False,
-            listing__status=JobListing.Status.ACTIVE,
-        )
-        .select_related("listing", "organization")
-        .order_by("-score", "id")
-    )
+    queryset = _current_or_live_queryset(request.user)
     paginator = Paginator(queryset, page_size)
     page = paginator.get_page(page_number)
     return JsonResponse(_pagination_response(page, request.user))
@@ -261,13 +248,7 @@ def job_match_status(request):
     ``coverage``, ``active_constraints``, ``inventory``,
     ``relaxation_preview``) are emitted only when meaningful.
     """
-    match_count = (
-        JobMatch.objects.filter(
-            user=request.user,
-            dismissed=False,
-            listing__status=JobListing.Status.ACTIVE,
-        ).count()
-    )
+    match_count = _current_or_live_queryset(request.user).count()
     state = derive_state(user=request.user, match_count=match_count)
     is_staff = bool(request.user.is_staff)
     payload = state.to_dict(include_staff=is_staff)

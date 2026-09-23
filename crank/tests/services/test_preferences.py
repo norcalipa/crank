@@ -1816,6 +1816,20 @@ class TestRecomputeHook:
         result = prefs.apply_patch_to_user(user, {"set": {"notes": "x"}})
         assert result["changed"] is True
 
+    def test_default_hook_path_resolves_and_noops_with_flags_off(self, user, settings):
+        """issue #475: the default PREFERENCE_RECOMPUTE_HOOK points at the
+        durable recompute consumer's fast path, which itself no-ops unless
+        MATCH_RECOMPUTE_ENABLED and the switch are both on."""
+        settings.PREFERENCE_RECOMPUTE_HOOK = (
+            "crank.services.match_recompute.on_preference_committed"
+        )
+        settings.MATCH_RECOMPUTE_ENABLED = False
+        result = prefs.apply_patch_to_user(user, {"set": {"notes": "x"}})
+        assert result["changed"] is True
+        from crank.models.job_match import MatchResultState
+
+        assert not MatchResultState.objects.filter(user=user).exists()
+
 
 class TestNoContentsLogging:
     def test_changes_undo_never_logged(self, user, caplog):

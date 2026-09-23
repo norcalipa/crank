@@ -1035,6 +1035,29 @@ def coverage(outcomes: Iterable[RequirementOutcome]) -> float:
     return round(known / len(outcomes), 4)
 
 
+def outcomes_from_dicts(requirements: Any) -> list[RequirementOutcome]:
+    """Reconstruct :class:`RequirementOutcome` values from stored JSON dicts.
+
+    Shared by the persisted-match view and the committed-generation read
+    service (issue #475) so both reconstruct requirement outcomes from
+    ``JobMatch.requirements`` the same way. Entries without a ``path`` are
+    skipped rather than raising, since stored JSON is not schema-enforced.
+    """
+    outcomes = []
+    for item in requirements or []:
+        if not isinstance(item, dict) or not item.get("path"):
+            continue
+        outcomes.append(RequirementOutcome(
+            path=item["path"],
+            status=item.get("status", "unknown"),
+            observed=item.get("observed"),
+            source_kind=item.get("source_kind"),
+            source_id=item.get("source_id"),
+            scope_ok=item.get("scope_ok", True),
+        ))
+    return outcomes
+
+
 def reasons_from_requirements(outcomes: Iterable[RequirementOutcome]) -> list[str]:
     """Render requirement outcomes into ordered, deduplicated reasons (≤6).
 
@@ -1152,7 +1175,7 @@ __all__ = [
     "ExclusionReason", "FactorContribution", "JobCriteria", "MatchResult",
     "MATCH", "MISMATCH", "UNKNOWN", "REQUIREMENT_ORDER",
     "RequirementOutcome", "evaluate_requirements", "hard_exclusion_reasons",
-    "reasons_from_requirements",
+    "reasons_from_requirements", "outcomes_from_dicts",
     "coverage",
     "project_criteria", "rank_listing", "rank_listings",
 ]

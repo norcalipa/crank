@@ -105,6 +105,9 @@ _SAFE_KEYS = frozenset(
         "latency_bucket",
         "provider_error_class",
         "turns_without_result",
+        # Versioned job-match recompute (issue #475): CAS-publish counters.
+        "stale_discarded",
+        "duplicate_skipped",
     }
 )
 _SENSITIVE_KEY = re.compile(r"(?i)(response|body|content|secret|credential)")
