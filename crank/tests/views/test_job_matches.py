@@ -31,6 +31,9 @@ class JobMatchViewTests(TestCase):
         self.closed = self.make_listing("Closed", JobListing.Status.CLOSED)
         self.expired = self.make_listing("Expired", JobListing.Status.EXPIRED)
         self.now = timezone.now()
+        # issue #475 review: reads hide stored matches for a user with no
+        # UserPreference row, so every owner-read test needs one.
+        self.owner_pref = UserPreference.objects.create(user=self.owner, revision=0)
 
     def make_listing(self, title, status):
         now = timezone.now()
@@ -142,7 +145,9 @@ class JobMatchViewTests(TestCase):
     def test_stale_result_is_flagged(self):
         """A result computed from an older preference revision is flagged stale."""
         from crank.models.preference import default_preferences
-        UserPreference.objects.create(user=self.owner, revision=5, preferences=default_preferences())
+        self.owner_pref.revision = 5
+        self.owner_pref.preferences = default_preferences()
+        self.owner_pref.save(update_fields=["revision", "preferences", "modified"])
         match = self.make_match(self.owner, self.active)
         match.preference_revision = 3
         match.requirements = [
@@ -179,6 +184,24 @@ class JobMatchViewTests(TestCase):
         self.assertIn("pending", payload["revision"])
         self.assertIsNone(payload["revision"]["result_generation"])
         self.assertFalse(payload["revision"]["pending"])
+
+    def test_deleted_preference_hides_stored_matches_in_every_read(self):
+        """issue #475 review finding 4 / owner decision: deleting the
+        UserPreference must hide stored matches in list, detail, and the
+        status count, without physically deleting the JobMatch rows."""
+        match = self.make_match(self.owner, self.active)
+        self.client.force_login(self.owner)
+        self.assertEqual(self.client.get("/api/job-matches/").json()["count"], 1)
+        self.assertEqual(self.client.get(f"/api/job-matches/{match.pk}/").status_code, 200)
+
+        self.owner_pref.delete()
+
+        self.assertEqual(self.client.get("/api/job-matches/").json()["count"], 0)
+        self.assertEqual(self.client.get(f"/api/job-matches/{match.pk}/").status_code, 404)
+        # The status endpoint must not 500 or leak the match count.
+        self.assertEqual(self.client.get("/api/job-matches/status/").status_code, 200)
+        # No physical deletion of the stored match.
+        self.assertTrue(JobMatch.objects.filter(pk=match.pk).exists())
 
 
 @override_settings(
@@ -304,3 +327,22 @@ class CommittedGenerationReadGateTests(TestCase):
         self.client.force_login(self.owner)
         payload = self.client.get("/api/job-matches/").json()
         self.assertEqual(payload["count"], 1)
+
+    def test_deleted_preference_hides_committed_generation_from_every_read(self):
+        """issue #475 review finding 4 / owner decision: deleting the
+        preference hides stored matches even when a committed generation
+        exists, and the status endpoint reports the no-preferences state."""
+        from crank.services.match_recompute import recompute_user
+
+        recompute_user(self.owner, reason="preference")
+        match = JobMatch.objects.get()
+        self.client.force_login(self.owner)
+        self.assertEqual(self.client.get("/api/job-matches/").json()["count"], 1)
+
+        self.pref.delete()
+
+        self.assertEqual(self.client.get("/api/job-matches/").json()["count"], 0)
+        self.assertEqual(self.client.get(f"/api/job-matches/{match.pk}/").status_code, 404)
+        status_payload = self.client.get("/api/job-matches/status/").json()
+        self.assertEqual(status_payload["state"], "no_preferences")
+        self.assertTrue(JobMatch.objects.filter(pk=match.pk).exists())

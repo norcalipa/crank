@@ -384,6 +384,46 @@ class PendingUsersTests(TestCase):
         pending = match_recompute.pending_users(1)
         self.assertEqual(len(pending), 1)
 
+    def test_dirty_user_is_not_starved_by_many_older_clean_users(self):
+        """MAJOR review finding: the scan used to be capped and ordered
+        oldest-modified-first, so a dirty user could be starved indefinitely
+        by enough older clean users. The SQL-only selection has no cap."""
+        UserPreference.objects.create(user=self.user, revision=0)
+        recompute_user(self.user, reason="preference")
+        self.assertNotIn(self.user.pk, match_recompute.pending_users(10))
+
+        # Many older, clean (already-current) users.
+        clean_users = []
+        for i in range(250):
+            u = User.objects.create_user(f"clean{i}", password="secret")
+            pref = UserPreference.objects.create(user=u, revision=0)
+            recompute_user(u, reason="preference")
+            clean_users.append((u, pref))
+
+        # Make the very first (oldest-modified) clean user's preference dirty
+        # again by bumping its revision without recomputing.
+        oldest_user, oldest_pref = clean_users[0]
+        oldest_pref.revision = 1
+        oldest_pref.save(update_fields=["revision", "modified"])
+
+        pending = match_recompute.pending_users(1)
+        self.assertIn(oldest_user.pk, pending)
+
+    def test_deleted_preference_does_not_starve_generation_dirty_drain(self):
+        """MAJOR review finding: a user whose preference row was deleted but
+        who still has a stale/aged ``MatchResultState`` must not keep
+        occupying generation-dirty drain slots forever."""
+        UserPreference.objects.create(user=self.user, revision=0)
+        recompute_user(self.user, reason="preference")
+        state = MatchResultState.objects.get(user=self.user)
+        # Force generation-dirty via an aged-out generated_at.
+        old_time = timezone.now() - timedelta(hours=100)
+        MatchResultState.objects.filter(pk=state.pk).update(generated_at=old_time)
+        self.assertIn(self.user.pk, match_recompute.pending_users(10))
+
+        UserPreference.objects.filter(user=self.user).delete()
+        self.assertNotIn(self.user.pk, match_recompute.pending_users(10))
+
     def test_stale_data_watermark_makes_user_generation_dirty(self):
         from crank.models.publication import PublicationEvent
         from crank.services.publication import record_event

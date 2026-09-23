@@ -153,33 +153,32 @@ def pending_users(limit):
     schema-version mismatch — ordered by oldest ``UserPreference.modified``.
     (b) Generation-dirty: stale ranker version, data watermark behind, or the
     generation is older than ``MATCH_RECOMPUTE_MAX_AGE_HOURS`` — ordered by
-    oldest ``generated_at``. The preference row is the durable "request": a
-    committed save can never be lost even if the fast path crashes.
+    oldest ``generated_at``. Users whose ``UserPreference`` row is gone are
+    excluded from (b): ``recompute_user`` returns ``NO_PREFERENCES`` for them
+    without ever advancing their state, so including them would spend a
+    drain slot on the same user forever. The preference row is the durable
+    "request": a committed save can never be lost even if the fast path
+    crashes.
     """
     limit = max(0, int(limit))
     if limit == 0:
         return []
 
-    # "revision != state.revision" cannot be expressed as a single-relation
-    # SQL filter (it compares two different rows), so candidates are scanned
-    # oldest-modified-first and refined in Python. The scan window is capped
-    # (bounded work per drain) rather than unbounded.
-    scan_cap = max(limit * 20, 200)
-    refined = []
-    for pref in (
-        UserPreference.objects.select_related("user__match_result_state")
-        .order_by("modified")[:scan_cap]
-    ):
-        state = getattr(pref.user, "match_result_state", None)
-        if (
-            state is None
-            or state.current_generation is None
-            or state.preference_revision != pref.revision
-            or state.preference_version != pref.schema_version
-        ):
-            refined.append(pref.user_id)
-        if len(refined) >= limit:
-            break
+    # Selected entirely in SQL (not scanned-and-capped in Python) so a dirty
+    # user is never starved by however many clean users are older: an
+    # unmatched relation (no state row) is caught by ``no_state``, and a
+    # mismatched tag is caught by ``mismatch`` via a cross-row F() compare.
+    no_state = Q(user__match_result_state__isnull=True)
+    mismatch = (
+        Q(user__match_result_state__current_generation__isnull=True)
+        | ~Q(user__match_result_state__preference_revision=F("revision"))
+        | ~Q(user__match_result_state__preference_version=F("schema_version"))
+    )
+    refined = list(
+        UserPreference.objects.filter(no_state | mismatch)
+        .order_by("modified")
+        .values_list("user_id", flat=True)[:limit]
+    )
 
     remaining = limit - len(refined)
     if remaining <= 0:
@@ -192,9 +191,11 @@ def pending_users(limit):
     age_cutoff = (
         timezone.now() - timezone.timedelta(hours=max_age) if max_age else None
     )
-    generation_dirty_qs = MatchResultState.objects.filter(
-        current_generation__isnull=False
-    ).exclude(user_id__in=refined)
+    generation_dirty_qs = (
+        MatchResultState.objects.filter(current_generation__isnull=False)
+        .exclude(user_id__in=refined)
+        .exclude(user__preferences__isnull=True)
+    )
     if watermark:
         stale_data = Q(data_revision__isnull=True) | Q(data_revision__lt=watermark)
     else:

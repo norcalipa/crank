@@ -259,6 +259,12 @@ class AgenticEndToEndSecurityTests(TestCase):
         match = JobMatch.objects.get(user=self.alice)
         assert match.listing_id == listing.pk
 
+        # issue #475 review: reads hide stored matches for a user with no
+        # UserPreference row (owner decision: deleting preferences hides
+        # stored matches in every read; the same check applies whether a
+        # preference was never created or was deleted).
+        UserPreference.objects.get_or_create(user=self.alice, defaults={"revision": 0})
+
         response = self.client.get(reverse("job-match-list"))
         assert response.status_code == 200
         assert [item["id"] for item in response.json()["results"]] == [match.pk]

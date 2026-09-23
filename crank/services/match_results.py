@@ -22,6 +22,7 @@ from crank.agents.jobs.matching import (
     outcomes_from_dicts,
     reasons_from_requirements,
 )
+from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
 from crank.models.job import JobListing
 from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.preference import UserPreference
@@ -62,28 +63,38 @@ def _company_score_of(organization):
     return max(0.0, min(5.0, sum(values) / len(values)))
 
 
-def current_generation_queryset(user):
+def current_generation_queryset(user, *, generation=None):
     """The current, committed generation's rows for *user* — one statement.
 
-    A subquery on the state's ``current_generation`` makes this consistent
-    under READ COMMITTED or REPEATABLE READ without extra locks. Returns
-    ``none()`` when the user has no ``UserPreference`` (preserving today's
-    "no preferences -> no matches" behavior) or has no committed generation
-    yet. Excludes dismissed rows and inactive listings.
+    ``generation`` pins the row filter to an already-read
+    ``MatchResultState.current_generation`` value (issue #475 review): when
+    the caller already fetched the state row for its metadata, reusing that
+    same value here — instead of a fresh subquery — keeps the rows and the
+    metadata describing them from two different generations if a publish
+    commits in between. When ``generation`` is omitted, a subquery on the
+    state's ``current_generation`` makes this consistent under READ
+    COMMITTED or REPEATABLE READ without extra locks (used when there is no
+    already-read state to pin to). Returns ``none()`` when the user has no
+    ``UserPreference`` (preserving today's "no preferences -> no matches"
+    behavior) or has no committed generation yet. Excludes dismissed rows
+    and inactive listings.
     """
     if user is None or getattr(user, "pk", None) is None:
         return JobMatch.objects.none()
     if not UserPreference.objects.filter(user=user).exists():
         return JobMatch.objects.none()
-    current_generation = MatchResultState.objects.filter(user=user).values(
-        "current_generation"
-    )[:1]
+    if generation is not None:
+        result_generation = generation
+    else:
+        result_generation = Subquery(
+            MatchResultState.objects.filter(user=user).values("current_generation")[:1]
+        )
     return (
         JobMatch.objects.filter(
             user=user,
             dismissed=False,
             listing__status=JobListing.Status.ACTIVE,
-            result_generation=Subquery(current_generation),
+            result_generation=result_generation,
         )
         .select_related("listing", "organization")
     )
@@ -92,6 +103,53 @@ def current_generation_queryset(user):
 def current_match_count(user):
     """Count of the user's current, non-dismissed, active-listing matches."""
     return current_generation_queryset(user).count()
+
+
+def load_current(user):
+    """Read the state row and its exact-generation rows consistently.
+
+    Returns ``(state, queryset)``: ``state`` is ``None`` when the user has
+    no ``UserPreference`` or no committed generation yet, in which case
+    ``queryset`` is ``JobMatch.objects.none()``. Otherwise ``queryset`` is
+    pinned to this same ``state.current_generation`` (issue #475 review:
+    avoids reading the state row and the rows in separate, unpinned queries,
+    which could attach generation-N metadata to generation-(N+1) rows if a
+    publish commits in between).
+    """
+    if not UserPreference.objects.filter(user=user).exists():
+        return None, JobMatch.objects.none()
+    state = MatchResultState.objects.filter(
+        user=user, current_generation__isnull=False
+    ).first()
+    if state is None:
+        return None, JobMatch.objects.none()
+    return state, current_generation_queryset(user, generation=state.current_generation)
+
+
+def is_stale(state, pref, *, ranker_version=None):
+    """Whether *state* (a committed generation) is behind *pref*'s current
+    document or the current ranker (issue #475 review, plan §5.3): a
+    preference-revision, schema-version, or ranker-version mismatch all
+    count as stale, not only the revision."""
+    if state is None or pref is None:
+        return False
+    if ranker_version is None:
+        ranker_version = DEFAULT_CONFIG.version
+    if (
+        state.preference_revision is not None
+        and pref.revision is not None
+        and state.preference_revision < pref.revision
+    ):
+        return True
+    if (
+        state.preference_version is not None
+        and pref.schema_version is not None
+        and state.preference_version != pref.schema_version
+    ):
+        return True
+    if state.ranker_version and ranker_version and state.ranker_version != ranker_version:
+        return True
+    return False
 
 
 def revision_block(state, *, stale):
@@ -119,22 +177,16 @@ def current_job_results(user, limit):
     """
     from crank.services.job_matching import JobMatchResult
 
-    state = MatchResultState.objects.filter(user=user).first()
-    if state is None or state.current_generation is None:
-        return []
     pref = UserPreference.objects.filter(user=user).first()
     if pref is None:
         return []
+    state, queryset = load_current(user)
+    if state is None:
+        return []
     unsupported = unsupported_criteria(pref.preferences)
-    stale = (
-        state.preference_revision is not None
-        and pref.revision is not None
-        and state.preference_revision < pref.revision
-    )
+    stale = is_stale(state, pref)
     revision = revision_block(state, stale=stale)
-    rows = list(
-        current_generation_queryset(user).order_by("-score", "id")[: max(1, int(limit))]
-    )
+    rows = list(queryset.order_by("-score", "id")[: max(1, int(limit))])
     results = []
     for match in rows:
         outcomes = outcomes_from_dicts(match.requirements)
@@ -175,6 +227,8 @@ __all__ = [
     "current_generation_queryset",
     "current_job_results",
     "current_match_count",
+    "is_stale",
+    "load_current",
     "read_enabled",
     "revision_block",
 ]

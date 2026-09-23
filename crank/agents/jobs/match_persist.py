@@ -150,6 +150,14 @@ def _get_or_create_state(user):
         return MatchResultState.objects.get(user=user)
 
 
+def ensure_match_result_state(user):
+    """Public wrapper for :func:`_get_or_create_state` (issue #475 review):
+    lets callers outside this module (the seen/dismiss views) take the same
+    state-row lock that :func:`publish` uses, so dismiss/seen updates are
+    serialized with a concurrent publish."""
+    return _get_or_create_state(user)
+
+
 def open_snapshot(
     user,
     *,
@@ -396,6 +404,7 @@ def persist_matches(user, listings, criteria, config):
 __all__ = [
     "MatchSnapshot",
     "PublishOutcome",
+    "ensure_match_result_state",
     "match_inventory",
     "open_snapshot",
     "persist_matches",

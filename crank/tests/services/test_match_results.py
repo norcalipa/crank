@@ -120,6 +120,11 @@ class CurrentJobResultsTests(TestCase):
         MatchResultState.objects.create(user=self.user)
         self.assertEqual(match_results.current_job_results(self.user, 10), [])
 
+    def test_preference_exists_but_no_generation_yet_returns_empty(self):
+        UserPreference.objects.create(user=self.user, revision=0)
+        MatchResultState.objects.create(user=self.user)
+        self.assertEqual(match_results.current_job_results(self.user, 10), [])
+
     def test_no_preference_row_returns_empty(self):
         state = MatchResultState.objects.create(user=self.user, current_generation=1)
         self.assertEqual(match_results.current_job_results(self.user, 10), [])
@@ -161,6 +166,91 @@ class CurrentJobResultsTests(TestCase):
     def test_company_score_handles_missing_avg_scores(self):
         self.assertIsNone(match_results._company_score_of(None))
         self.assertIsNone(match_results._company_score_of(self.organization))
+
+
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+class LoadCurrentTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("owner", password="secret")
+
+    def test_no_preference_returns_none_state_and_empty_queryset(self):
+        state, queryset = match_results.load_current(self.user)
+        self.assertIsNone(state)
+        self.assertFalse(queryset.exists())
+
+    def test_preference_without_generation_returns_none_state(self):
+        UserPreference.objects.create(user=self.user, revision=0)
+        state, queryset = match_results.load_current(self.user)
+        self.assertIsNone(state)
+        self.assertFalse(queryset.exists())
+
+    def test_pins_queryset_to_the_read_states_generation(self):
+        UserPreference.objects.create(
+            user=self.user, revision=0, preferences={"work_location": {"modes": ["remote"]}}
+        )
+        organization = Organization.objects.create(name="Acme")
+        source = JobSourceCatalog.objects.create(
+            name="Synthetic",
+            adapter_key="synthetic.v1",
+            base_url="https://jobs.example.test",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+        )
+        now = timezone.now()
+        JobListing.all_objects.create(
+            source=source,
+            external_id="engineer",
+            canonical_url="https://jobs.example.test/engineer",
+            employer_name=organization.name,
+            title="Engineer",
+            first_seen_at=now - timedelta(days=1),
+            last_seen_at=now,
+            status=JobListing.Status.ACTIVE,
+            organization=organization,
+        )
+        outcome = recompute_user(self.user, reason="preference")
+        state, queryset = match_results.load_current(self.user)
+        self.assertEqual(state.current_generation, outcome.generation)
+        self.assertEqual(list(queryset.values_list("result_generation", flat=True)), [outcome.generation])
+
+
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+class IsStaleTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("owner", password="secret")
+
+    def test_none_state_or_pref_is_not_stale(self):
+        pref = UserPreference.objects.create(user=self.user, revision=0)
+        state = MatchResultState.objects.create(
+            user=self.user, current_generation=1, preference_revision=0,
+            preference_version=3, ranker_version="1.0.0",
+        )
+        self.assertFalse(match_results.is_stale(None, pref))
+        self.assertFalse(match_results.is_stale(state, None))
+
+    def test_schema_version_mismatch_is_stale(self):
+        pref = UserPreference.objects.create(user=self.user, revision=0, schema_version=4)
+        state = MatchResultState.objects.create(
+            user=self.user, current_generation=1, preference_revision=0,
+            preference_version=3, ranker_version="1.0.0",
+        )
+        self.assertTrue(match_results.is_stale(state, pref, ranker_version="1.0.0"))
+
+    def test_ranker_version_mismatch_is_stale(self):
+        pref = UserPreference.objects.create(user=self.user, revision=0, schema_version=3)
+        state = MatchResultState.objects.create(
+            user=self.user, current_generation=1, preference_revision=0,
+            preference_version=3, ranker_version="1.0.0-old",
+        )
+        self.assertTrue(match_results.is_stale(state, pref, ranker_version="2.0.0"))
+
+    def test_matching_tags_are_not_stale(self):
+        pref = UserPreference.objects.create(user=self.user, revision=0, schema_version=3)
+        state = MatchResultState.objects.create(
+            user=self.user, current_generation=1, preference_revision=0,
+            preference_version=3, ranker_version="1.0.0",
+        )
+        self.assertFalse(match_results.is_stale(state, pref, ranker_version="1.0.0"))
 
 
 @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
