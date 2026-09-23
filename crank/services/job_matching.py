@@ -19,20 +19,25 @@ Both functions:
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from django.utils import timezone
+
 from crank.agents.jobs.matching import (
-    _RTO_DAYS,
-    FactorContribution,
     JobCriteria,
     MatchResult,
+    RequirementOutcome,
     _canonical_stage,
     _decimal,
     _normalized,
     _organization_value,
+    coverage,
+    evaluate_requirements,
+    hard_exclusion_reasons,
     project_criteria,
+    reasons_from_requirements,
 )
 from crank.agents.jobs.ranking_config import DEFAULT_CONFIG, RankingConfig
 from crank.models.job import JobListing
@@ -75,6 +80,27 @@ class JobMatchResult:
     score: float
     reasons: list[str] = field(default_factory=list)
     factors: list[dict] = field(default_factory=list)
+    # issue #467: separate figures + revision block.
+    fit_score: float | None = None
+    company_score: float | None = None
+    coverage: float = 0.0
+    requirements: list[dict] = field(default_factory=list)
+    unsupported: list[str] = field(default_factory=list)
+    evidence_ids: list[int] = field(default_factory=list)
+    preference_revision: int | None = None
+    ranking_version: str = ""
+    data_revision: int | None = None
+    generated_at: Any | None = None
+    stale: bool = False
+
+    def revision(self) -> dict[str, Any]:
+        return {
+            "preference_revision": self.preference_revision,
+            "ranking_version": self.ranking_version,
+            "data_revision": self.data_revision,
+            "generated_at": _iso_or_none(self.generated_at),
+            "stale": self.stale,
+        }
 
 
 @dataclass(frozen=True)
@@ -88,6 +114,36 @@ class OrgMatchResult:
     rto_policy: str
     score: float
     reasons: list[str] = field(default_factory=list)
+    # issue #467: separate figures + revision block.
+    fit_score: float | None = None
+    company_score: float | None = None
+    coverage: float = 0.0
+    requirements: list[dict] = field(default_factory=list)
+    unsupported: list[str] = field(default_factory=list)
+    evidence_ids: list[int] = field(default_factory=list)
+    preference_revision: int | None = None
+    ranking_version: str = ""
+    data_revision: int | None = None
+    generated_at: Any | None = None
+    stale: bool = False
+
+    def revision(self) -> dict[str, Any]:
+        return {
+            "preference_revision": self.preference_revision,
+            "ranking_version": self.ranking_version,
+            "data_revision": self.data_revision,
+            "generated_at": _iso_or_none(self.generated_at),
+            "stale": self.stale,
+        }
+
+
+def _iso_or_none(value: Any) -> str | None:
+    """Return an ISO-8601 string for a datetime, or ``None``."""
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
 
 
 # ---------------------------------------------------------------------------
@@ -107,141 +163,57 @@ def _rto_label(code: Any) -> str:
     return _RTO_LABELS.get(str(code), str(code))
 
 
-def _reasons_from_factors(
-    factors: list[FactorContribution],
-    listing: Any,
-    organization: Any,
-    criteria: JobCriteria,
-) -> list[str]:
-    """Translate scoring factors into concise human-readable reasons."""
-    reasons: list[str] = []
-
-    # Public company reason
-    funding = _organization_value(listing, organization, "funding_round")
-    if funding == "P":
-        reasons.append("Public company")
-    elif funding and criteria.require_public_company is not True:
-        reasons.append(_funding_label(funding))
-
-    # RTO / work location reason
-    rto = _organization_value(listing, organization, "rto_policy")
-    if rto:
-        rto_text = _rto_label(rto)
-        if rto == "R":
-            reasons.append("Remote")
-        elif rto == "H":
-            days = _RTO_DAYS.get(rto, 3)
-            reasons.append(f"Hybrid (≤{days} days)")
-        else:
-            reasons.append(rto_text)
-
-    # Compensation reason
-    for factor in factors:
-        if factor.factor == "compensation" and factor.score > 0:
-            comp_min = getattr(listing, "compensation_min", None)
-            comp_max = getattr(listing, "compensation_max", None)
-            if comp_min is not None:
-                reasons.append(f"Salary {comp_min:,}+")
-            elif comp_max is not None:
-                reasons.append(f"Salary up to {comp_max:,}")
-            break
-
-    # Organization score reason
-    for factor in factors:
-        if factor.factor == "organization_scores" and factor.score > 0:
-            # Extract average from detail string
-            detail = factor.detail
-            if "average=" in detail:
-                avg_str = detail.split("average=")[1].split("/")[0]
-                try:
-                    avg_val = float(avg_str)
-                    reasons.append(f"Score {avg_val:.1f}")
-                except (ValueError, TypeError):
-                    pass
-            break
-
-    # Industry match reason
-    for factor in factors:
-        if factor.factor == "industry" and "matched=" in factor.detail:
-            matched = factor.detail.split("matched=")[1]
-            if matched and matched != "none":
-                reasons.append(f"Industry: {matched}")
-            break
-
-    # Vesting reason
-    for factor in factors:
-        if factor.factor == "vesting" and factor.score > 0:
-            reasons.append("Vesting aligns")
-            break
-
-    # Culture reason
-    for factor in factors:
-        if factor.factor == "culture" and "matched=" in factor.detail:
-            matched = factor.detail.split("matched=")[1]
-            if matched and matched != "none":
-                reasons.append(f"Culture: {matched}")
-            break
-
-    # Freshness reason
-    last_seen = getattr(listing, "last_seen_at", None)
-    if last_seen is not None:
-        reasons.append("Recent listing")
-
-    return reasons[:6]  # Bound to 6 reasons max
-
-
-def _reasons_for_org(
-    organization: Any,
-    criteria: JobCriteria,
-    score: float,
-) -> list[str]:
-    """Generate human-readable reasons for an organization match."""
-    reasons: list[str] = []
-    funding = getattr(organization, "funding_round", None)
-    if funding == "P":
-        reasons.append("Public company")
-    elif funding:
-        reasons.append(_funding_label(funding))
-
-    rto = getattr(organization, "rto_policy", None)
-    if rto:
-        rto_text = _rto_label(rto)
-        if rto == "R":
-            reasons.append("Remote")
-        elif rto == "H":
-            days = _RTO_DAYS.get(rto, 3)
-            reasons.append(f"Hybrid (≤{days} days)")
-        else:
-            reasons.append(rto_text)
-
-    # Score reason
+def _company_score(organization: Any) -> float | None:
+    """The organization's average score (0-5 scale), or ``None`` when unknown."""
+    if organization is None:
+        return None
     try:
         scores = organization.avg_scores()
-        values: list[float] = []
-        for row in scores or ():
-            if isinstance(row, dict):
-                val = _decimal(row.get("avg_score", row.get("score")))
-                if val is not None:
-                    values.append(float(val))
-        if values:
-            avg = sum(values) / len(values)
-            reasons.append(f"Score {avg:.1f}")
     except (AttributeError, TypeError, ValueError):
-        pass
+        return None
+    values: list[float] = []
+    for row in scores or ():
+        if not isinstance(row, dict):
+            continue
+        value = _decimal(row.get("avg_score", row.get("score")))
+        if value is not None:
+            values.append(float(value))
+    if not values:
+        return None
+    return max(0.0, min(5.0, sum(values) / len(values)))
 
-    # Industry match
-    org_industries = _normalized(getattr(organization, "industry", "")).split()
-    if org_industries and criteria.industries:
-        matched = [ind for ind in org_industries if ind in criteria.industries]
-        if matched:
-            reasons.append(f"Industry: {', '.join(matched[:3])}")
 
-    # Vesting
-    if getattr(organization, "accelerated_vesting", False) and \
-            criteria.prefer_accelerated:
-        reasons.append("Accelerated vesting")
+def _org_listing_view(organization: Any) -> Any:
+    """A minimal listing-shaped view of an organization for requirement eval."""
+    from types import SimpleNamespace
 
-    return reasons[:6]
+    return SimpleNamespace(
+        pk=getattr(organization, "pk", None),
+        id=getattr(organization, "pk", None),
+        organization=organization,
+        employer_name=getattr(organization, "name", ""),
+        title="",
+        location_text="",
+        is_remote=None,
+        compensation_min=None,
+        compensation_max=None,
+        compensation_currency="",
+        description_excerpt="",
+        source_metadata={},
+        status="active",
+    )
+
+
+def evaluate_org_requirements(
+    organization: Any, criteria: JobCriteria, evidence: Any | None = None
+) -> list[RequirementOutcome]:
+    """Evaluate user-set requirements against an organization (no listing data)."""
+    return evaluate_requirements(
+        _org_listing_view(organization),
+        criteria,
+        organization=organization,
+        evidence=evidence,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -327,24 +299,18 @@ def _strings_safe(value: Any) -> frozenset[str]:
 # ---------------------------------------------------------------------------
 
 
-def _org_excluded(organization: Any, criteria: JobCriteria) -> bool:
-    """Check if an organization is excluded by hard filters."""
+def _org_excluded(
+    organization: Any, criteria: JobCriteria, evidence: Any | None = None
+) -> bool:
+    """Check if an organization is excluded by hard filters (evidence-aware)."""
     name = _normalized(getattr(organization, "name", ""))
     if name and name in criteria.excluded_companies:
         return True
     industry = _strings_safe(getattr(organization, "industry", ""))
     if industry and industry & criteria.excluded_industries:
         return True
-    if criteria.require_public_company is True:
-        funding = getattr(organization, "funding_round", None)
-        if funding and funding != "P":
-            return True
-    if criteria.max_in_office_days is not None:
-        rto = getattr(organization, "rto_policy", None)
-        assumed_days = _RTO_DAYS.get(rto) if rto else None
-        if assumed_days is not None and assumed_days > criteria.max_in_office_days:
-            return True
-    return False
+    outcomes = evaluate_org_requirements(organization, criteria, evidence)
+    return bool(hard_exclusion_reasons(outcomes, criteria))
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +335,46 @@ def _get_criteria(user, preferences_override=None) -> JobCriteria | None:
     except UserPreference.DoesNotExist:
         return None
     return project_criteria(pref.preferences, pref.schema_version)
+
+
+def _match_context(user, preferences_override=None):
+    """Return ``(criteria, unsupported, preference_revision)`` for one pass."""
+    from crank.services.preferences import unsupported_criteria
+
+    if preferences_override is not None:
+        from crank.models.preference import SCHEMA_VERSION as _PREF_SCHEMA
+
+        criteria = project_criteria(preferences_override, _PREF_SCHEMA)
+        return criteria, unsupported_criteria(preferences_override), None
+    try:
+        pref = UserPreference.objects.get(user=user)
+    except UserPreference.DoesNotExist:
+        return None, [], None
+    return (
+        project_criteria(pref.preferences, pref.schema_version),
+        unsupported_criteria(pref.preferences),
+        pref.revision,
+    )
+
+
+def _org_ids_from(listings: Iterable[Any]) -> list[int]:
+    ids: list[int] = []
+    seen: set[int] = set()
+    for listing in listings:
+        organization = getattr(listing, "organization", None)
+        pk = getattr(organization, "pk", None)
+        if pk is not None:
+            key = int(pk)
+            if key not in seen:
+                seen.add(key)
+                ids.append(key)
+    return ids
+
+
+def _resolve_evidence(org_ids: list[int]) -> dict[int, dict[str, Any]]:
+    from crank.services.company_evidence import resolve_field_evidence_for_orgs
+
+    return resolve_field_evidence_for_orgs(org_ids)
 
 
 # ---------------------------------------------------------------------------
@@ -577,7 +583,7 @@ def match_jobs(
     in-memory effective preference document drives this one search without
     a stored-preference read or write.
     """
-    criteria = _get_criteria(user, preferences_override)
+    criteria, unsupported, preference_revision = _match_context(user, preferences_override)
     if criteria is None:
         return []
 
@@ -588,7 +594,21 @@ def match_jobs(
         )
     listings = list(queryset[:capped * 4])  # over-fetch before filtering
 
-    ranked = rank_listings_with_reasons(listings, criteria, config)
+    org_ids = _org_ids_from(listings)
+    evidence = _resolve_evidence(org_ids)
+    from crank.services.publication import listing_data_revisions
+
+    data_revisions = listing_data_revisions(listings)
+
+    ranked = rank_listings_with_reasons(
+        listings,
+        criteria,
+        config,
+        unsupported=unsupported,
+        preference_revision=preference_revision,
+        evidence=evidence,
+        data_revisions=data_revisions,
+    )
     return ranked[:capped]
 
 
@@ -613,7 +633,7 @@ def match_organizations(
     in-memory effective preference document drives this one search without
     a stored-preference read or write.
     """
-    criteria = _get_criteria(user, preferences_override)
+    criteria, unsupported, preference_revision = _match_context(user, preferences_override)
     if criteria is None:
         return []
 
@@ -622,24 +642,50 @@ def match_organizations(
         queryset = Organization.objects.filter(status=1, public=True)
     orgs = list(queryset[:capped * 4])
 
+    org_ids = {int(org.pk) for org in orgs if getattr(org, "pk", None)}
+    evidence = _resolve_evidence(list(org_ids))
+    from crank.services.publication import organization_data_revisions
+
+    data_revisions = organization_data_revisions(list(org_ids))
+    generated_at = timezone.now()
+
     survivors = [
-        org for org in orgs if not _org_excluded(org, criteria)
+        org for org in orgs if not _org_excluded(org, criteria, evidence.get(int(org.pk)))
     ]
 
     scored: list[tuple[float, int, OrgMatchResult]] = []
     for org in survivors:
+        org_id = int(org.pk)
+        outcomes = evaluate_org_requirements(org, criteria, evidence.get(org_id))
+        org_evidence = evidence.get(org_id) or {}
         score = _score_organization_match(org, criteria, config)
-        reasons = _reasons_for_org(org, criteria, score)
+        reasons = reasons_from_requirements(outcomes)
+        company_score = _company_score(org)
+        coverage_value = coverage(outcomes)
+        evidence_ids = sorted(
+            {ev.pk for ev in org_evidence.values() if getattr(ev, "pk", None) is not None}
+        )
         result = OrgMatchResult(
-            organization_id=int(org.pk),
+            organization_id=org_id,
             name=str(org.name),
             url=str(getattr(org, "url", "")),
             funding_round=str(getattr(org, "funding_round", "")),
             rto_policy=str(getattr(org, "rto_policy", "")),
             score=score,
             reasons=reasons,
+            fit_score=score,
+            company_score=company_score,
+            coverage=coverage_value,
+            requirements=[o.as_dict() for o in outcomes],
+            unsupported=list(unsupported),
+            evidence_ids=evidence_ids,
+            preference_revision=preference_revision,
+            ranking_version=config.version,
+            data_revision=data_revisions.get(org_id),
+            generated_at=generated_at,
+            stale=False,
         )
-        scored.append((score, int(org.pk), result))
+        scored.append((score, org_id, result))
 
     scored.sort(key=lambda item: (-item[0], item[1]))
     return [item[2] for item in scored[:capped]]
@@ -649,14 +695,27 @@ def rank_listings_with_reasons(
     listings: Iterable[Any],
     criteria: JobCriteria,
     config: RankingConfig = DEFAULT_CONFIG,
+    *,
+    unsupported: Iterable[str] | None = None,
+    preference_revision: int | None = None,
+    evidence: Mapping[int, Mapping[str, Any]] | None = None,
+    data_revisions: Mapping[int, int] | None = None,
 ) -> list[JobMatchResult]:
     """Rank listings and produce JobMatchResult objects with reasons.
 
-    This is the shared ranking+reason engine used by both the API and chat tool.
+    This is the shared ranking+reason engine used by both the API and chat
+    tool. Reasons are rendered from the single :func:`reasons_from_requirements`
+    pass, and each result carries the three separate figures plus the revision
+    block (issue #467).
     """
     from crank.agents.jobs.matching import rank_listings
 
-    ranked: list[MatchResult] = rank_listings(listings, criteria, config)
+    unsupported = list(unsupported or [])
+    data_revisions = data_revisions or {}
+    evidence = evidence or {}
+    generated_at = timezone.now()
+
+    ranked: list[MatchResult] = rank_listings(listings, criteria, config, evidence=evidence)
     listing_by_id = {
         int(getattr(lst, "pk", getattr(lst, "id", 0)) or 0): lst
         for lst in listings
@@ -670,15 +729,19 @@ def rank_listings_with_reasons(
         if listing is None:
             continue
         organization = getattr(listing, "organization", None)
-        reasons = _reasons_from_factors(
-            match.factors, listing, organization, criteria
-        )
         org_id = (
             int(organization.pk)
             if organization and getattr(organization, "pk", None)
             else None
         )
         org_name = str(getattr(organization, "name", "")) if organization else ""
+        org_evidence = evidence.get(org_id) or {} if org_id is not None else {}
+        reasons = reasons_from_requirements(match.requirements)
+        company_score = _company_score(organization)
+        coverage_value = coverage(match.requirements)
+        evidence_ids = sorted(
+            {ev.pk for ev in org_evidence.values() if getattr(ev, "pk", None) is not None}
+        )
         results.append(JobMatchResult(
             listing_id=match.listing_id,
             title=str(getattr(listing, "title", "")),
@@ -699,6 +762,17 @@ def rank_listings_with_reasons(
                 }
                 for f in match.factors
             ],
+            fit_score=match.score,
+            company_score=company_score,
+            coverage=coverage_value,
+            requirements=[o.as_dict() for o in match.requirements],
+            unsupported=unsupported,
+            evidence_ids=evidence_ids,
+            preference_revision=preference_revision,
+            ranking_version=config.version,
+            data_revision=data_revisions.get(match.listing_id),
+            generated_at=generated_at,
+            stale=False,
         ))
     return results
 
@@ -708,6 +782,7 @@ __all__ = [
     "MAX_MATCH_RESULTS",
     "JobMatchResult",
     "OrgMatchResult",
+    "evaluate_org_requirements",
     "match_jobs",
     "match_organizations",
     "rank_listings_with_reasons",

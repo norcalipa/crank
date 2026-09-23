@@ -90,7 +90,10 @@ test.describe.serial('priorities → companies → evidence → jobs journey', (
         await expect(listing).toHaveAttribute('href', /usajobs\.gov/);
         // Positive remote-work reason from the seeded preference document.
         await expect(ranked.getByTestId(/job-reasons-\d+/).first()).toBeVisible();
-        // Ranked result carries a numeric score badge.
-        await expect(ranked.getByTestId(/job-score-\d+/).first()).toContainText(/\d/);
+        // Three separately labelled figures (AC-10): company score (/5),
+        // fit (/100), and coverage (%).
+        await expect(ranked.getByTestId(/job-\d+-company-score/).first()).toContainText('/ 5');
+        await expect(ranked.getByTestId(/job-\d+-fit-score/).first()).toContainText('/ 100');
+        await expect(ranked.getByTestId(/job-\d+-coverage/).first()).toContainText('%');
     });
 });

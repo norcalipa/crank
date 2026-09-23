@@ -26,6 +26,22 @@ interface EmptyStatePayload {
     relaxation_preview?: {field: string; label: string; added_count: number} | null;
 }
 
+interface RequirementOutcome {
+    path: string;
+    status: 'match' | 'mismatch' | 'unknown';
+    observed?: string | number | null;
+    source_kind?: string | null;
+    source_id?: string | number | null;
+}
+
+interface RevisionBlock {
+    preference_revision?: number | null;
+    ranking_version?: string;
+    data_revision?: number | null;
+    generated_at?: string | null;
+    stale?: boolean;
+}
+
 interface RankedJobMatch {
     listing_id: number;
     title: string;
@@ -37,6 +53,12 @@ interface RankedJobMatch {
     is_remote: boolean;
     score: number;
     reasons: string[];
+    fit_score?: number | null;
+    company_score?: number | null;
+    coverage?: number;
+    requirements?: RequirementOutcome[];
+    unsupported?: string[];
+    revision?: RevisionBlock | null;
 }
 
 interface RankedOrgMatch {
@@ -47,6 +69,12 @@ interface RankedOrgMatch {
     rto_policy: string;
     score: number;
     reasons: string[];
+    fit_score?: number | null;
+    company_score?: number | null;
+    coverage?: number;
+    requirements?: RequirementOutcome[];
+    unsupported?: string[];
+    revision?: RevisionBlock | null;
 }
 
 interface RankedMatchesPayload {
@@ -249,6 +277,172 @@ const Icon: React.FC<IconProps> = ({name, size = 16, className = ''}) => (
     </svg>
 );
 
+const REQUIREMENT_LABELS: Record<string, string> = {
+    'compensation.minimum_salary': 'Minimum salary',
+    'compensation.equity_minimum_percent': 'Equity',
+    'compensation.require_public_company': 'Public company',
+    'work_location.modes': 'Work mode',
+    'work_location.countries': 'Country',
+    'work_location.max_in_office_days': 'In-office days',
+    'geography.regions': 'Region',
+    'geography.remote_friendly': 'Remote-friendly',
+    'industry': 'Industry',
+    'funding_stage': 'Funding stage',
+    'culture': 'Culture',
+    'vesting.max_cliff_months': 'Cliff',
+    'vesting.max_vesting_months': 'Vesting length',
+    'vesting.prefer_accelerated': 'Accelerated vesting',
+    // Criteria the engine registers UNSUPPORTED (crank.services.preferences
+    // CRITERION_SUPPORT). These must never leak internal field names into the
+    // UI, so each gets a human label even though it is only ever surfaced in
+    // the unsupported notice.
+    'compensation.minimum_total_compensation': 'Minimum total compensation',
+    'compensation.equity_liquidity_required': 'Equity liquidity requirement',
+    'compensation.acceptable_liquidity_events': 'Acceptable liquidity events',
+    'compensation.basis': 'Salary basis',
+    'compensation.period': 'Pay period',
+    'work_location.require_onsite': 'On-site requirement',
+    'work_location.office_days_exact': 'Exact in-office days',
+    'roles.families': 'Role families',
+    'roles.titles': 'Job titles',
+    'roles.seniority': 'Seniority',
+    'notes': 'Notes',
+    'importance': 'Requirement importance',
+    'scope.countries': 'Country scope',
+    'scope.role_families': 'Role family scope',
+};
+
+function requirementLabel(path: string): string {
+    return REQUIREMENT_LABELS[path] || path.split('.').pop() || path;
+}
+
+/** Three separately labelled figures: company score (/5), fit (/100), and
+ * coverage (%) (AC-10). Round-3: explicit scales so each number reads on its
+ * own, and a three-column grid with legible xs labels + sm semibold values. */
+function ThreeFigures({fit, company, coverage, scope}: {fit: number | null | undefined; company: number | null | undefined; coverage: number | null | undefined; scope: string}) {
+    const covText = coverage == null ? '—' : `${Math.round(coverage * 100)}%`;
+    const fitText = fit == null ? '—' : `${fit.toFixed(1)} / 100`;
+    const companyText = company == null ? '—' : `${company.toFixed(1)} / 5`;
+    return (
+        <div className="job-match-figures mt-1" role="list" aria-label="Match figures">
+            <span role="listitem" className="job-match-figure">
+                <span className="job-match-figure-label">Company score</span>
+                <strong className="job-match-figure-value" data-testid={`${scope}-company-score`}>{companyText}</strong>
+            </span>
+            <span role="listitem" className="job-match-figure">
+                <span className="job-match-figure-label">Fit</span>
+                <strong className="job-match-figure-value" data-testid={`${scope}-fit-score`}>{fitText}</strong>
+            </span>
+            <span role="listitem" className="job-match-figure">
+                <span className="job-match-figure-label">Coverage</span>
+                <strong className="job-match-figure-value" data-testid={`${scope}-coverage`}>{covText}</strong>
+            </span>
+        </div>
+    );
+}
+
+// Three semantically distinct chip states (issue #467 round-2): match is
+// green/emerald, mismatch is rose, and unknown is amber. Unknown must never
+// share the neutral gray metadata treatment — it is a distinct outcome, not
+// missing data. Colors live in popup.css (scoped, contrast-checked) so the
+// component keeps a single source of truth for the palette.
+const REQUIREMENT_STATUS_META: Record<RequirementOutcome['status'], {marker: string; word: string; className: string}> = {
+    match: {marker: '✓', word: 'match', className: 'job-match-chip job-match-chip--match'},
+    mismatch: {marker: '✗', word: 'mismatch', className: 'job-match-chip job-match-chip--mismatch'},
+    unknown: {marker: '?', word: 'unknown', className: 'job-match-chip job-match-chip--unknown'},
+};
+
+/** Per-requirement chips in three visually distinct, non-color-duplicated states. */
+function RequirementChips({requirements}: {requirements?: RequirementOutcome[]}) {
+    if (!requirements || requirements.length === 0) {
+        return null;
+    }
+    return (
+        <div className="mt-1" role="list" aria-label="Requirement outcomes">
+            {requirements.map((req, idx) => {
+                const meta = REQUIREMENT_STATUS_META[req.status] || REQUIREMENT_STATUS_META.unknown;
+                return (
+                    <span key={idx} role="listitem"
+                          className={`${meta.className} me-1 mb-1 small fw-normal`}
+                          data-testid={`requirement-${req.path}`}
+                          data-status={req.status}
+                          aria-label={`${requirementLabel(req.path)}: ${meta.word}`}>
+                        <span aria-hidden="true">{meta.marker}</span> {requirementLabel(req.path)}
+                    </span>
+                );
+            })}
+        </div>
+    );
+}
+
+/** A stale-result warning with a visible refresh action (issue #467 round-2).
+ * Rendered ONCE above the result list — never repeated per card — so the
+ * state reads as a single consolidated banner, not an icon-only action
+ * duplicated on every listing. The "Refresh matches" control is a labelled
+ * >=44px target. */
+function StaleNotice({revision, onRefresh}: {revision?: RevisionBlock | null; onRefresh: () => void}) {
+    if (!revision || !revision.stale) {
+        return null;
+    }
+    return (
+        <div className="alert alert-warning py-2 small mb-3" role="status" aria-live="polite" data-testid="stale-notice">
+            <div className="job-match-stale-banner">
+                <Icon name="clock" className="job-match-stale-icon" />
+                <span className="job-match-stale-message">
+                    These results are stale — refresh to recompute with your latest preferences.
+                </span>
+                <button type="button" className="btn btn-sm btn-outline-light job-match-stale-refresh" onClick={onRefresh}
+                        aria-label="Refresh matches" data-testid="stale-refresh">
+                    <Icon name="refresh-cw" className="me-1" />Refresh matches
+                </button>
+            </div>
+        </div>
+    );
+}
+
+/** Unsupported-criteria notice when the user set a criterion matching cannot
+ * evaluate. Field paths are mapped to human labels (requirementLabel) so an
+ * internal name like ``minimum_total_compensation`` never reaches the DOM. */
+function UnsupportedNotice({unsupported}: {unsupported?: string[]}) {
+    if (!unsupported || unsupported.length === 0) {
+        return null;
+    }
+    const labels = unsupported.map(requirementLabel);
+    const list = labels.length === 1
+        ? labels[0]
+        : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
+    return (
+        <div className="alert alert-info py-2 small mb-3" role="status" aria-live="polite" data-testid="unsupported-notice">
+            <div className="d-flex align-items-start gap-2">
+                <Icon name="info" className="flex-shrink-0 mt-1" />
+                <span className="flex-grow-1 text-start">
+                    {list} could not be evaluated and {labels.length === 1 ? 'is' : 'are'} not included in these matches.
+                </span>
+            </div>
+        </div>
+    );
+}
+
+/** Results-generated timestamp (issue #467 round-2): a visible, readable
+ * <time> line shown in both healthy and stale views so the user can see when
+ * the matches were computed. */
+function ResultTimestamp({revision}: {revision?: RevisionBlock | null}) {
+    const iso = revision?.generated_at;
+    if (!iso) {
+        return null;
+    }
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) {
+        return null;
+    }
+    return (
+        <p className="text-muted small mb-3" data-testid="results-timestamp">
+            Results generated at{' '}
+            <time dateTime={iso}>{d.toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'})}</time>
+        </p>
+    );
+}
+
 const RTO_LABELS: Record<string, string> = {
     R: 'Remote',
     H: 'Hybrid',
@@ -338,6 +532,10 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     const [matchCount, setMatchCount] = React.useState<number>(0);
     const [rankedMatches, setRankedMatches] = React.useState<RankedMatchesPayload | null>(null);
     const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
+    // Revision block of the persisted result list (/api/job-matches/), which is
+    // the only surface that can flag a stale result (the ranked endpoint is
+    // recomputed live and is never stale).
+    const [storedRevision, setStoredRevision] = React.useState<RevisionBlock | null>(null);
 
     // Mirror the workspace assistant's open/closed state (issue #469
     // re-critique): while the panel is open the floating launcher leaves the
@@ -360,13 +558,19 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 fetch('/api/job-matches/?page=1&page_size=1'),
                 fetch('/api/job-matches/ranked/?limit=10'),
             ]);
-            if (!statusRes.ok) throw new Error(`Status ${statusRes.status}`);
+            if (!statusRes.ok) {
+                // Never expose raw implementation details (issue #467 round-2):
+                // an HTTP status code reads as an internal error to a user, so
+                // it is rewritten to actionable copy with a labelled retry.
+                throw new Error('We couldn’t load your job matches. Please try again.');
+            }
             const statusData: EmptyStatePayload = await parseJson(statusRes);
             setEmptyState(statusData);
 
             if (matchRes.ok) {
-                const matchData = await parseJson<{count?: number}>(matchRes);
+                const matchData = await parseJson<{count?: number; results?: RankedJobMatch[]}>(matchRes);
                 setMatchCount(matchData.count || 0);
+                setStoredRevision(matchData.results?.[0]?.revision ?? null);
             }
             if (rankedRes.ok) {
                 const rankedData: RankedMatchesPayload = await parseJson<RankedMatchesPayload>(rankedRes);
@@ -423,7 +627,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header">
-                    <h2 id="job-match-panel-title" className="h6 mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
                 </div>
                 <div className="card-body">
                     <p className="text-muted mb-2" data-testid="job-match-signed-out">
@@ -442,14 +646,21 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header">
-                    <h2 id="job-match-panel-title" className="h6 mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
                 </div>
                 <div className="card-body">
-                    <p className="text-muted mb-0" role="status" aria-live="polite"
-                       data-testid="job-match-loading">
-                        <Icon name="spinner" className="me-1" />
-                        Loading your match status…
-                    </p>
+                    <div role="status" aria-live="polite" data-testid="job-match-loading">
+                        <div className="d-flex align-items-center gap-2 mb-3">
+                            <Icon name="spinner" size={20} className="job-match-loading-spinner" />
+                            <span className="job-match-loading-label">Loading your match status…</span>
+                        </div>
+                        <div className="job-match-skeleton" aria-hidden="true">
+                            <div className="job-match-skeleton-row" />
+                            <div className="job-match-skeleton-row" />
+                            <div className="job-match-skeleton-row" />
+                        </div>
+                        <span className="visually-hidden">Loading your match status…</span>
+                    </div>
                 </div>
             </section>
         );
@@ -460,15 +671,15 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header">
-                    <h2 id="job-match-panel-title" className="h6 mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
                 </div>
                 <div className="card-body">
                     <div className="alert alert-danger" role="alert" data-testid="job-match-error">
-                        {errorMsg || 'Could not load job match status.'}
+                        {errorMsg || 'We couldn’t load your job matches. Please try again.'}
                         <div className="mt-2">
                             <button type="button" className="btn btn-sm btn-primary"
-                                    onClick={fetchStatus} aria-label="Retry loading match status">
-                                <Icon name="refresh-cw" className="me-1" />Retry
+                                    onClick={fetchStatus} aria-label="Retry loading matches">
+                                <Icon name="refresh-cw" className="me-1" />Try again
                             </button>
                         </div>
                     </div>
@@ -487,11 +698,15 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     if (hasRankedMatches) {
         const jobs = rankedMatches!.job_matches || [];
         const orgs = rankedMatches!.organization_matches || [];
+        // One consolidated stale flag and one generated-at timestamp for the
+        // whole result set (a single computation stamps every row).
+        const staleResults = [...jobs, ...orgs].some((m) => m.revision?.stale);
+        const resultRevision = jobs[0]?.revision || orgs[0]?.revision || null;
         return (
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header d-flex justify-content-between align-items-center">
-                    <h2 id="job-match-panel-title" className="h6 mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
                     <button type="button" className="btn btn-sm btn-outline-light"
                             onClick={fetchStatus} aria-label="Refresh match status"
                             data-testid="job-match-refresh">
@@ -500,11 +715,14 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 </div>
                 <div className="card-body">
                     <ResultNotices emptyState={emptyState!} />
+                    <UnsupportedNotice unsupported={jobs[0]?.unsupported || orgs[0]?.unsupported} />
+                    <StaleNotice revision={{stale: staleResults}} onRefresh={fetchStatus} />
+                    <ResultTimestamp revision={resultRevision} />
                     {jobs.length > 0 && (
                         <div data-testid="ranked-job-matches" className="mb-3">
-                            <h3 className="h6 mb-2">Ranked Job Listings</h3>
+                            <h3 className="job-match-section-heading mb-2">Ranked Job Listings</h3>
                             {jobs.map((match) => (
-                                <div key={match.listing_id} className="border-bottom border-secondary pb-2 mb-2"
+                                <div key={match.listing_id} className="job-match-card border-bottom border-secondary pb-2 mb-2"
                                      data-testid={`ranked-job-${match.listing_id}`}>
                                     <div className="d-flex justify-content-between align-items-start gap-2">
                                         <div className="flex-grow-1 min-w-0">
@@ -515,14 +733,11 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                             </a>
                                             <span className="text-muted d-block text-break">{match.employer_name}</span>
                                         </div>
-                                        <span className="badge bg-primary flex-shrink-0" data-testid={`job-score-${match.listing_id}`}>
-                                            {match.score.toFixed(1)}
-                                        </span>
                                     </div>
                                     {match.location_text && (
                                         <small className="text-muted d-block">
                                             <Icon name="map-pin" className="me-1" />{match.location_text}
-                                            {match.is_remote && <span className="badge bg-success ms-1">Remote</span>}
+                                            {match.is_remote && <span className="badge bg-secondary ms-1">Remote</span>}
                                         </small>
                                     )}
                                     {match.reasons.length > 0 && (
@@ -534,15 +749,17 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                             ))}
                                         </div>
                                     )}
+                                    <ThreeFigures scope={`job-${match.listing_id}`} fit={match.fit_score ?? match.score} company={match.company_score} coverage={match.coverage} />
+                                    <RequirementChips requirements={match.requirements} />
                                 </div>
                             ))}
                         </div>
                     )}
                     {orgs.length > 0 && (
                         <div data-testid="ranked-org-matches">
-                            <h3 className="h6 mb-2">Ranked Organizations</h3>
+                            <h3 className="job-match-section-heading mb-2">Ranked Organizations</h3>
                             {orgs.map((org) => (
-                                <div key={org.organization_id} className="border-bottom border-secondary pb-2 mb-2"
+                                <div key={org.organization_id} className="job-match-card border-bottom border-secondary pb-2 mb-2"
                                      data-testid={`ranked-org-${org.organization_id}`}>
                                     <div className="d-flex justify-content-between align-items-start gap-2">
                                         <div className="flex-grow-1 min-w-0">
@@ -559,9 +776,6 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                                 {fundingLabel(org.funding_round)} · {rtoLabel(org.rto_policy)}
                                             </div>
                                         </div>
-                                        <span className="badge bg-primary flex-shrink-0" data-testid={`org-score-${org.organization_id}`}>
-                                            {org.score.toFixed(1)}
-                                        </span>
                                     </div>
                                     {org.reasons.length > 0 && (
                                         <div className="mt-1" data-testid={`org-reasons-${org.organization_id}`}>
@@ -572,6 +786,8 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                             ))}
                                         </div>
                                     )}
+                                    <ThreeFigures scope={`org-${org.organization_id}`} fit={org.fit_score ?? org.score} company={org.company_score} coverage={org.coverage} />
+                                    <RequirementChips requirements={org.requirements} />
                                 </div>
                             ))}
                         </div>
@@ -586,7 +802,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header d-flex justify-content-between align-items-center">
-                    <h2 id="job-match-panel-title" className="h6 mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
                     <button type="button" className="btn btn-sm btn-outline-light"
                             onClick={fetchStatus} aria-label="Refresh match status"
                             data-testid="job-match-refresh">
@@ -595,6 +811,8 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 </div>
                 <div className="card-body">
                     <ResultNotices emptyState={emptyState!} />
+                    <StaleNotice revision={storedRevision} onRefresh={fetchStatus} />
+                    <ResultTimestamp revision={storedRevision} />
                     <p className="mb-0" role="status" aria-live="polite">
                         <Icon name="check-circle" className="text-success me-1" />
                         You have <strong>{matchCount}</strong> job match{matchCount === 1 ? '' : 'es'} ready to review.
@@ -611,7 +829,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                  aria-labelledby="job-match-panel-title">
             <div className="card-header d-flex justify-content-between align-items-center">
-                <h2 id="job-match-panel-title" className="h6 mb-0">Your Job Matches</h2>
+                <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
                 <button type="button" className="btn btn-sm btn-outline-light"
                         onClick={fetchStatus} aria-label="Refresh match status"
                         data-testid="job-match-refresh">
@@ -624,8 +842,8 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     leading icon indent (round-2 critique). */}
                 <div role="status" aria-live="polite"
                      data-testid={`empty-state-${state.state}`}>
-                    <h3 className="h6 mb-1">{state.title}</h3>
-                    <p className="text-muted mb-0">{state.message}</p>
+                    <h3 className="job-match-section-heading mb-1">{state.title}</h3>
+                    <p className="text-muted small mb-0">{state.message}</p>
                         {state.staff_detail && (
                             <p className="text-muted small mt-2 mb-0" data-testid="staff-detail">
                                 <Icon name="shield" className="me-1" />
@@ -665,7 +883,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                         )}
                 </div>
                 {state.actions.length > 0 && (
-                    <div className="job-match-actions d-flex flex-wrap gap-2 mt-3" role="group"
+                    <div className="job-match-actions" role="group"
                          aria-label="Recovery actions">
                         {state.actions.map((action, idx) => {
                             // While the assistant panel is open (issue #469

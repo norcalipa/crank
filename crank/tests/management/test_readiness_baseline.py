@@ -229,9 +229,10 @@ class ReadinessBaselineCommandTests(TestCase):
         # The exact deployed revision: the crank app's applied leaf migration.
         # The two leaves (0031 from #470, 0033 from #495/#496) were merged
         # by 0034, 0035 (#459) stacks on top of that merged head, 0036
-        # (#460) stacks on top of 0035, and 0037 (#466) stacks on top of 0036.
+        # (#460) stacks on top of 0035, 0037 (#466) stacks on top of 0036,
+        # and 0038 (#467) stacks on top of 0037.
         self.assertIn(
-            "crank.0037_userpreference_revision",
+            "crank.0038_jobmatch_result_revision",
             leaves["applied"],
         )
         self.assertEqual(leaves["applied_count"], len(leaves["applied"]))

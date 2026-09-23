@@ -15,6 +15,7 @@ from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
+from crank.models.preference import UserPreference
 
 
 def make_listing(source, organization, *, title="Engineer", status=JobListing.Status.ACTIVE):
@@ -135,3 +136,65 @@ class MatchPersistenceTests(TestCase):
         persist_matches(self.user, [self.listing], self.criteria, DEFAULT_CONFIG)
         match.refresh_from_db()
         self.assertTrue(match.dismissed)
+
+
+    def test_preference_edit_updates_existing_row_preserving_seen_and_dismissed(self):
+        """AC-12: changing the preference document (revision bump) and re-running
+        updates the same row — preserving seen_at/dismissed — instead of
+        inserting a second row. ``preference_version`` (schema) stays 7."""
+        pref = UserPreference.objects.create(user=self.user, revision=0)
+        persist_matches(self.user, [self.listing], self.criteria, DEFAULT_CONFIG)
+        match = JobMatch.objects.get()
+        self.assertEqual(match.preference_revision, 0)
+        seen_at = timezone.now()
+        match.seen_at = seen_at
+        match.save(update_fields=["seen_at", "modified"])
+
+        # Simulate a preference edit: the document revision advances, the schema
+        # version (and so the unique key's preference_version) does not.
+        pref.revision = 1
+        pref.save(update_fields=["revision", "modified"])
+
+        self.assertEqual(
+            persist_matches(self.user, [self.listing], self.criteria, DEFAULT_CONFIG), 1
+        )
+        self.assertEqual(JobMatch.objects.count(), 1)
+        match.refresh_from_db()
+        self.assertEqual(match.preference_revision, 1)
+        self.assertEqual(match.seen_at, seen_at)
+        self.assertFalse(match.dismissed)
+
+    def test_new_columns_are_written_on_created_branch(self):
+        UserPreference.objects.create(user=self.user, revision=3)
+        persist_matches(self.user, [self.listing], self.criteria, DEFAULT_CONFIG)
+        match = JobMatch.objects.get()
+        self.assertEqual(match.preference_revision, 3)
+        self.assertIsNotNone(match.generated_at)
+        self.assertEqual(match.requirements, [])
+        self.assertEqual(match.evidence_ids, [])
+        self.assertIsNone(match.data_revision)
+
+    def test_data_revision_includes_listing_publication_events(self):
+        """data_revision is the greatest PublicationEvent.id touching the row,
+        counting both the organization's events and the listing's own ingest
+        events (not just the organization)."""
+        from crank.services.publication import record_event
+        from crank.models.publication import PublicationEvent
+
+        # Organization event and a later listing ingest event.
+        org_event = record_event(
+            target_type=PublicationEvent.TargetType.ORGANIZATION,
+            target_id=self.organization.pk,
+            event_kind=PublicationEvent.EventKind.CHANGED,
+        )
+        listing_event = record_event(
+            target_type=PublicationEvent.TargetType.LISTING,
+            target_id=self.listing.pk,
+            event_kind=PublicationEvent.EventKind.INGESTED,
+        )
+        UserPreference.objects.create(user=self.user, revision=0)
+        persist_matches(self.user, [self.listing], self.criteria, DEFAULT_CONFIG)
+        match = JobMatch.objects.get()
+        # The listing's ingest event must win over the organization's event.
+        self.assertGreater(listing_event.pk, org_event.pk)
+        self.assertEqual(match.data_revision, listing_event.pk)

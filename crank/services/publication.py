@@ -211,10 +211,57 @@ def consumer_enabled():
     return monitoring.capability_enabled("publication_consumer", default=True)
 
 
+def _max_revision_ids(target_type, target_ids):
+    """Map each target id to its latest ``PublicationEvent.id`` (or omit it)."""
+    ids = {int(i) for i in target_ids if i is not None}
+    if not ids:
+        return {}
+    rows = (
+        PublicationEvent.objects.filter(target_type=target_type, target_id__in=ids)
+        .values("target_id")
+        .annotate(max_id=models.Max("id"))
+    )
+    return {int(row["target_id"]): int(row["max_id"]) for row in rows}
+
+
+def listing_data_revisions(listings):
+    """Return ``{listing_id: data_revision}`` for a list of listing objects.
+
+    A listing's data revision is the greatest ``PublicationEvent.id`` among
+    the events describing its organization or the listing itself — not just
+    the organization (issue #467 AC-8). Single shared helper used by both the
+    matching service and the persistence layer; the earlier per-organization
+    query ignored listing publication (ingest) events and was duplicated.
+    """
+    listings = list(listings)
+    org_ids = {
+        int(getattr(getattr(l, "organization", None), "pk", 0) or 0)
+        for l in listings
+    }
+    listing_ids = {int(getattr(l, "pk", 0) or 0) for l in listings}
+    org_rev = _max_revision_ids(PublicationEvent.TargetType.ORGANIZATION, org_ids)
+    listing_rev = _max_revision_ids(PublicationEvent.TargetType.LISTING, listing_ids)
+    result: dict[int, int | None] = {}
+    for listing in listings:
+        lid = int(getattr(listing, "pk", 0) or 0)
+        org = getattr(listing, "organization", None)
+        oid = int(getattr(org, "pk", 0) or 0) if org is not None else 0
+        candidates = [v for v in (org_rev.get(oid), listing_rev.get(lid)) if v]
+        result[lid] = max(candidates) if candidates else None
+    return result
+
+
+def organization_data_revisions(organization_ids):
+    """Map each organization id to its latest organization ``PublicationEvent.id``."""
+    return _max_revision_ids(PublicationEvent.TargetType.ORGANIZATION, organization_ids)
+
+
 __all__ = [
     "MAX_PAYLOAD_ORGANIZATION_IDS",
     "affected_keys",
     "consumer_enabled",
+    "listing_data_revisions",
+    "organization_data_revisions",
     "record_event",
     "sweep_pending",
 ]

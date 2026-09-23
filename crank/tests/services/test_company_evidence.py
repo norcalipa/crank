@@ -23,6 +23,7 @@ from crank.services.company_evidence import (
     is_stale,
     record_check,
     resolve_field_evidence,
+    resolve_field_evidence_for_orgs,
 )
 
 FieldKey = CompanyFieldEvidence.FieldKey
@@ -554,3 +555,29 @@ class FieldKeyChoiceTests(TestCase):
                 "company_domain",
             },
         )
+
+
+class ResolveFieldEvidenceForOrgsTests(TestCase):
+    """The bulk read helper returns the same rows as per-org resolution."""
+
+    def setUp(self):
+        self.org_a = Organization.objects.create(name="OrgA")
+        self.org_b = Organization.objects.create(name="OrgB")
+        self.ev_a = make_observation(
+            self.org_a, rto_evidence="Remote", funding_evidence="Seed",
+        )
+        self.ev_b = make_observation(self.org_b, rto_evidence="Hybrid")
+
+    def test_bulk_returns_same_as_per_org(self):
+        from crank.services.company_evidence import accept_observation_fields
+
+        accept_observation_fields(self.ev_a)
+        accept_observation_fields(self.ev_b)
+
+        bulk = resolve_field_evidence_for_orgs([self.org_a.pk, self.org_b.pk])
+        for org in (self.org_a, self.org_b):
+            per_org = resolve_field_evidence(org)
+            assert set(bulk.get(org.pk, {}).keys()) == set(per_org.keys())
+
+    def test_bulk_empty_for_no_ids(self):
+        assert resolve_field_evidence_for_orgs([]) == {}

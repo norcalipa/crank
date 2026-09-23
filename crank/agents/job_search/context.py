@@ -16,6 +16,32 @@ from dataclasses import dataclass
 _ELISION_MARK = "<elided...>"
 
 
+def _requirements_text(requirements: object) -> str:
+    """Render a compact ``path=status[source]`` list for the model context.
+
+    Exposes the outcome's evidence id (``evidence=<id>``) and direct-field
+    source (``source=<id>``) so the model can make a *validated* citation from
+    the bounded context rather than inventing one (issue #467 AC-11).
+    """
+    if not requirements:
+        return "[]"
+    parts = []
+    for req in requirements or []:
+        if not isinstance(req, dict) or not req.get("path"):
+            continue
+        text = "%s=%s" % (req["path"], req.get("status", "unknown"))
+        source_kind = req.get("source_kind")
+        source_id = req.get("source_id")
+        if source_kind == "evidence" and isinstance(source_id, int) and not isinstance(source_id, bool):
+            text += "[evidence=%s]" % source_id
+        elif source_kind == "field" and source_id:
+            text += "[source=%s]" % source_id
+        parts.append(text)
+    if not parts:
+        return "[]"
+    return "[" + ", ".join(parts) + "]"
+
+
 @dataclass(frozen=True)
 class ModelContext:
     """The bounded, deterministic input assembled for a provider call."""
@@ -109,10 +135,11 @@ class ModelContext:
             if job_matches:
                 match_lines = [
                     "listing_id={listing_id} title={title!r} score={score} "
-                    "reasons={reasons}".format(
+                    "requirements={requirements} reasons={reasons}".format(
                         listing_id=row.get("listing_id"),
                         title=row.get("title", ""),
                         score=row.get("score", 0.0),
+                        requirements=_requirements_text(row.get("requirements")),
                         reasons=row.get("reasons", []),
                     )
                     for row in job_matches
@@ -124,10 +151,11 @@ class ModelContext:
             if org_matches:
                 org_lines = [
                     "organization_id={organization_id} name={name!r} score={score} "
-                    "reasons={reasons}".format(
+                    "requirements={requirements} reasons={reasons}".format(
                         organization_id=row.get("organization_id"),
                         name=row.get("name", ""),
                         score=row.get("score", 0.0),
+                        requirements=_requirements_text(row.get("requirements")),
                         reasons=row.get("reasons", []),
                     )
                     for row in org_matches

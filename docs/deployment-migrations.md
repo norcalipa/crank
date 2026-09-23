@@ -203,9 +203,12 @@ Verified at commit `d62183acd4a7f93c662c1368f9aec6aeb1f839b8` (2026-09-14):
      merge order" placeholder: #466 is the preference-lifecycle ticket and
      `UserPreference.revision` is a preference-lifecycle field that #467
      merely reads; one owning ticket per file).
-   - **0038+** — remaining schema tickets take numbers in controller merge
-     order at implementation time: **#467** (UX-17, result revisions),
-     **#475** (UX-29, versioned recompute fields).
+   - **0038 → #467** (UX-17, result revisions) —
+     `0038_jobmatch_result_revision`, parent `0037_userpreference_revision`;
+     assigned 2026-09-22.
+   - **0039+** — remaining schema tickets take numbers in controller merge
+     order at implementation time: **#475** (UX-29, versioned recompute
+     fields).
 3. Cross-branch numbering collisions are resolved with a **numbered merge
    migration** following the `0029` precedent. Never renumber or rewrite an
    applied migration.
@@ -229,8 +232,8 @@ bounded reviewed backfill, and contract only after all old pods are gone.
 | Accepted field-level evidence | #460 (UX-18, "Model accepted field-level evidence, scope and freshness timestamps") | 0036 (`0036_company_field_evidence`, parent `0035`) | Additive evidence model/rows; accepted evidence is resolved per field, never by blanket latest-row; pending/rejected/conflicting observations stay inspectable. The provenance API payload gains `fields`/`unverified_fields` without a cache-key change — the key constructor also drives outbox invalidation, so versioning it would desynchronize the sweep; instead `crank.views.api.organization_provenance` treats a cached entry with no `fields` key as a miss and rebuilds it, so pre-deploy entries never serve an evidence-less modal for the rest of the TTL. Both `ACCEPTED`-producing surfaces — the crawler's `AUTO_APPLIED` path and the admin accept action — write evidence in the same transaction as the review state. |
 | Preference revision | #466 (UX-15, "Implement preference propose, apply, revision checks and undo services") | 0037 (`0037_userpreference_revision`, parent `0036`) | Additive defaulted `revision` column (existing rows start at 0); no backfill, no index; old pods never select or write the column and their `expected_modified` path keeps working; the service accepts both `expected_modified` and `expected_revision` during the mixed-pod window, and chat callers flip to `expected_revision` after the column is everywhere. |
 | Publication outbox | #470 (UX-28, publication after commit) | 0031 | Create `PublicationEvent` additively; the consumer is gated by its own switch (see the capability registry in `docs/rollout-gates.md`); pending work survives restart; an incompatible consumer rollback is addressed before enablement. |
-| Result revisions | #467 (UX-17, "Unify deterministic eligibility, match reasons and result revisions") | 0037+ | Additive revision rows/fields; readers fall back to the un-revised result; bounded backfill of revisions for existing matches. |
-| Versioned recomputation | #475 (UX-29, "Recompute versioned matches") | 0037+ | Additive revision-tag fields on match work/results (preference revision, accepted-data revision, ranking version); obsolete-run rejection via compare-and-swap; preserve seen/dismissed across upserts. |
+| Result revisions | #467 (UX-17, "Unify deterministic eligibility, match reasons and result revisions") | 0038 (`0038_jobmatch_result_revision`, parent `0037`) | Additive nullable revision columns (`preference_revision`, `data_revision`, `generated_at`, `requirements`, `evidence_ids`) on `JobMatch`; the unique key `(user, listing, preference_version, ranker_version)` is unchanged; readers fall back to the un-revised result; bounded backfill of revisions for existing matches. |
+| Versioned recomputation | #475 (UX-29, "Recompute versioned matches") | 0038+ | Additive revision-tag fields on match work/results (preference revision, accepted-data revision, ranking version); obsolete-run rejection via compare-and-swap; preserve seen/dismissed across upserts. |
 
 Tickets that do **not** own schema in this epic (verified scopes): #457
 (UX-04) is assistant/inventory availability exposure, #462 (UX-24) is the

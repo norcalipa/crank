@@ -87,7 +87,18 @@ const PANEL_RANKED_JOBS = [
         location_text: 'San Francisco, CA',
         is_remote: true,
         score: 85.5,
-        reasons: ['Remote', 'Compensation match', 'Score 4.2'],
+        reasons: ['Remote', 'Compensation match'],
+        fit_score: 85.5,
+        company_score: 4.2,
+        coverage: 0.67,
+        requirements: [
+            {path: 'compensation.minimum_salary', status: 'match', observed: 150000},
+            {path: 'work_location.modes', status: 'match', observed: 'remote'},
+            {path: 'industry', status: 'unknown', observed: null},
+            {path: 'work_location.max_in_office_days', status: 'mismatch', observed: '3 in-office days'},
+        ],
+        unsupported: ['compensation.minimum_total_compensation'],
+        revision: {stale: false, generated_at: '2026-09-22T08:00:00Z', preference_revision: 4, ranking_version: '1.0.0', data_revision: null},
     },
     {
         listing_id: 43,
@@ -100,6 +111,15 @@ const PANEL_RANKED_JOBS = [
         is_remote: true,
         score: 78.1,
         reasons: ['Remote', 'Industry: Software'],
+        fit_score: 78.1,
+        company_score: 3.8,
+        coverage: 1.0,
+        requirements: [
+            {path: 'work_location.modes', status: 'match', observed: 'remote'},
+            {path: 'industry', status: 'match', observed: 'Software'},
+        ],
+        unsupported: [],
+        revision: {stale: false, generated_at: '2026-09-22T08:00:00Z'},
     },
     {
         listing_id: 44,
@@ -123,17 +143,44 @@ const PANEL_RANKED_ORGS = [
         funding_round: 'B',
         rto_policy: 'R',
         score: 82.0,
-        reasons: ['Series B', 'Remote', 'Score 4.2'],
+        reasons: ['Series B', 'Remote'],
+        fit_score: 82.0,
+        company_score: 4.1,
+        coverage: 1.0,
+        requirements: [
+            {path: 'funding_stage', status: 'match', observed: 'B'},
+            {path: 'work_location.modes', status: 'match', observed: 'remote'},
+        ],
+        unsupported: [],
+        revision: {stale: false, generated_at: '2026-09-22T08:00:00Z'},
     },
 ];
 
 function stubPanelApis(stateKey: string): void {
-    const status = PANEL_STATUS_PAYLOADS[stateKey] || PANEL_STATUS_PAYLOADS.no_matches;
+    if (stateKey === 'loading') {
+        // Never resolves: the panel stays in its loading skeleton for screenshots.
+        window.fetch = (() => new Promise(() => {})) as typeof fetch;
+        return;
+    }
+    if (stateKey === 'error') {
+        window.fetch = ((_input: RequestInfo | URL): Promise<Response> => Promise.resolve(
+            new Response('{"error": "service unavailable"}', {
+                status: 500,
+                headers: {'Content-Type': 'application/json'},
+            }),
+        )) as typeof fetch;
+        return;
+    }
+    const status = stateKey === 'stale'
+        ? PANEL_STATUS_PAYLOADS.healthy
+        : (PANEL_STATUS_PAYLOADS[stateKey] || PANEL_STATUS_PAYLOADS.no_matches);
     const withResults = (
         stateKey === 'refreshing_with_results'
         || stateKey === 'partial_coverage'
         || stateKey === 'healthy'
+        || stateKey === 'stale'
     );
+    const isStale = stateKey === 'stale';
     window.fetch = ((input: RequestInfo | URL): Promise<Response> => {
         const url = typeof input === 'string' ? input : input.toString();
         const json = (payload: unknown) => Promise.resolve(new Response(
@@ -142,8 +189,13 @@ function stubPanelApis(stateKey: string): void {
         ));
         if (url.includes('/api/job-matches/status/')) return json(status);
         if (url.includes('/api/job-matches/ranked/')) {
+            const jobs = withResults ? PANEL_RANKED_JOBS.map((j) => (
+                isStale
+                    ? {...j, revision: {...(j.revision || {}), stale: true}}
+                    : j
+            )) : [];
             return json({
-                job_matches: withResults ? PANEL_RANKED_JOBS : [],
+                job_matches: jobs,
                 organization_matches: withResults ? PANEL_RANKED_ORGS : [],
             });
         }

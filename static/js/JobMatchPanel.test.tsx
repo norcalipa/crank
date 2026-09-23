@@ -36,8 +36,8 @@ function statusPayload(state: string, overrides: Partial<{
     };
 }
 
-function matchPayload(count: number) {
-    return {count, next: null, previous: null, results: []};
+function matchPayload(count: number, results: any[] = []) {
+    return {count, next: null, previous: null, results};
 }
 
 function rankedPayload(jobs: any[] = [], orgs: any[] = []) {
@@ -71,7 +71,7 @@ const sampleOrgMatch = {
 // Hoisted to module scope so every describe block in this file can reuse it.
 async function renderPanel(
     statusState: string = 'ok',
-    opts: { count?: number; staffDetail?: string; statusOverrides?: Record<string, unknown>; rankedJobs?: any[]; rankedOrgs?: any[]; rankedStatus?: number } = {},
+    opts: { count?: number; staffDetail?: string; statusOverrides?: Record<string, unknown>; rankedJobs?: any[]; rankedOrgs?: any[]; rankedStatus?: number; storedResults?: any[] } = {},
 ) {
     const count = opts.count ?? 0;
     const rankedJobs = opts.rankedJobs ?? [];
@@ -91,7 +91,7 @@ async function renderPanel(
             return Promise.resolve(jsonResponse(rankedPayload(rankedJobs, rankedOrgs), rankedStatus));
         }
         if (url.includes('/api/job-matches/')) {
-            return Promise.resolve(jsonResponse(matchPayload(count)));
+            return Promise.resolve(jsonResponse(matchPayload(count, opts.storedResults ?? [])));
         }
         return Promise.resolve(jsonResponse({}));
     });
@@ -116,6 +116,17 @@ describe('JobMatchPanel', () => {
             render(<JobMatchPanel/>);
             expect(screen.getByTestId('job-match-loading')).toBeInTheDocument();
         });
+
+        test('loading state is an emphasised role=status region with skeleton rows', () => {
+            (global.fetch as jest.Mock).mockReturnValue(new Promise(() => {}));
+            render(<JobMatchPanel/>);
+            const loading = screen.getByTestId('job-match-loading');
+            expect(loading).toHaveAttribute('role', 'status');
+            expect(loading).toHaveAttribute('aria-live', 'polite');
+            // Visible spinner label plus skeleton placeholder rows.
+            expect(loading).toHaveTextContent(/loading your match status/i);
+            expect(loading.querySelectorAll('.job-match-skeleton-row').length).toBeGreaterThan(0);
+        });
     });
 
     describe('error state', () => {
@@ -128,7 +139,10 @@ describe('JobMatchPanel', () => {
             render(<JobMatchPanel/>);
             const error = await screen.findByTestId('job-match-error');
             expect(error).toBeInTheDocument();
-            expect(error).toHaveTextContent(/status 500/i);
+            // Raw implementation details (a bare HTTP status code) never reach
+            // the user; the copy is actionable with a labelled retry.
+            expect(error).toHaveTextContent(/couldn.t load your job matches/i);
+            expect(error.textContent).not.toMatch(/status 500/i);
         });
 
         test('shows an error when fetch throws', async () => {
@@ -168,7 +182,7 @@ describe('JobMatchPanel', () => {
                 if (url.includes('/ranked/')) return Promise.resolve(jsonResponse(rankedPayload()));
                 return Promise.resolve(jsonResponse(matchPayload(3)));
             });
-            fireEvent.click(screen.getByLabelText('Retry loading match status'));
+            fireEvent.click(screen.getByLabelText('Retry loading matches'));
             await waitFor(() => expect(screen.queryByTestId('job-match-error')).not.toBeInTheDocument());
         });
     });
@@ -201,22 +215,23 @@ describe('JobMatchPanel', () => {
             expect(reasons).toHaveTextContent('Remote');
         });
 
-        test('shows score badge for ranked job match', async () => {
-            await renderPanel('ok', { count: 1, rankedJobs: [sampleJobMatch] });
-            const scoreBadge = screen.getByTestId('job-score-42');
-            expect(scoreBadge).toHaveTextContent('85.5');
+        test('shows one labelled fit figure, never a duplicate blended score badge', async () => {
+            await renderPanel('ok', { count: 1, rankedJobs: [sampleJobMatch], rankedOrgs: [sampleOrgMatch] });
+            // The blended top-right score pill is gone; the fit figure is the
+            // single labelled source of the rank score (AC-10).
+            expect(screen.queryByTestId('job-score-42')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('org-score-7')).not.toBeInTheDocument();
+            expect(screen.getByTestId('job-42-fit-score')).toHaveTextContent('85.5 / 100');
+            expect(screen.getByTestId('org-7-fit-score')).toHaveTextContent('72.3 / 100');
         });
 
-        test('shows score badge for ranked org match', async () => {
-            await renderPanel('ok', { count: 1, rankedOrgs: [sampleOrgMatch] });
-            const scoreBadge = screen.getByTestId('org-score-7');
-            expect(scoreBadge).toHaveTextContent('72.3');
-        });
-
-        test('shows remote badge for remote job listing', async () => {
+        test('shows remote badge for remote job listing (neutral, not semantic)', async () => {
             await renderPanel('ok', { count: 1, rankedJobs: [sampleJobMatch] });
             const jobEl = screen.getByTestId('ranked-job-42');
             expect(jobEl).toHaveTextContent('Remote');
+            // "Remote" is an ordinary attribute, not a satisfied requirement,
+            // so it must never carry a green/semantic treatment.
+            expect(jobEl.querySelector('.bg-success')).toBeNull();
         });
 
         test('falls back to match count when ranked matches are empty', async () => {
@@ -243,11 +258,11 @@ describe('JobMatchPanel', () => {
                 return Promise.resolve(jsonResponse(matchPayload(1)));
             });
             render(<JobMatchPanel/>);
-            const scoreBadge = await screen.findByTestId('job-score-42');
-            expect(scoreBadge).toHaveTextContent('85.5');
+            const fitFigure = await screen.findByTestId('job-42-fit-score');
+            expect(fitFigure).toHaveTextContent('85.5 / 100');
             jobScore = 92.0;
             fireEvent.click(screen.getByTestId('job-match-refresh'));
-            await waitFor(() => expect(screen.getByTestId('job-score-42')).toHaveTextContent('92.0'));
+            await waitFor(() => expect(screen.getByTestId('job-42-fit-score')).toHaveTextContent('92.0 / 100'));
         });
     });
 
@@ -263,6 +278,34 @@ describe('JobMatchPanel', () => {
             await renderPanel('ok', { count: 1 });
             const panel = screen.getByTestId('job-match-panel');
             await waitFor(() => expect(panel).toHaveTextContent('1 job match ready to review'));
+        });
+
+        test('shows stale notice + timestamp from the persisted result revision', async () => {
+            // The ranked endpoint is recomputed live (never stale); the persisted
+            // list is the only surface that can flag a stale result. Feed a
+            // stored result whose revision is behind the current document.
+            await renderPanel('ok', {
+                count: 1,
+                storedResults: [{
+                    id: 1,
+                    revision: {
+                        preference_revision: 1,
+                        stale: true,
+                        generated_at: '2026-09-22T08:00:00Z',
+                    },
+                }],
+            });
+            expect(await screen.findByTestId('stale-notice')).toBeInTheDocument();
+            expect(screen.getByTestId('stale-refresh')).toHaveTextContent('Refresh matches');
+            expect(screen.getByTestId('results-timestamp')).toBeInTheDocument();
+        });
+
+        test('omits stale notice when persisted revision is not stale', async () => {
+            await renderPanel('ok', {
+                count: 1,
+                storedResults: [{id: 1, revision: {preference_revision: 1, stale: false}}],
+            });
+            expect(screen.queryByTestId('stale-notice')).not.toBeInTheDocument();
         });
     });
 
@@ -822,5 +865,213 @@ describe('JobMatchPanel signed-out state (issue #465)', () => {
         await renderPanel('ok', {count: 3});
         expect(screen.queryByTestId('job-match-signed-out')).not.toBeInTheDocument();
         expect(global.fetch).toHaveBeenCalled();
+    });
+});
+
+describe('JobMatchPanel requirement figures and states (issue #467)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+        resetWorkspaceForTests();
+        closeAssistant();
+    });
+
+    const jobWithRequirements = {
+        ...sampleJobMatch,
+        fit_score: 85.5,
+        company_score: 4.2,
+        coverage: 0.75,
+        requirements: [
+            {path: 'compensation.minimum_salary', status: 'match'},
+            {path: 'industry', status: 'mismatch'},
+            {path: 'work_location.max_in_office_days', status: 'unknown'},
+        ],
+        unsupported: ['compensation.minimum_total_compensation'],
+        revision: {stale: false, generated_at: '2026-09-22T08:00:00Z'},
+    };
+
+    test('renders three separately labelled figures with explicit scales', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [jobWithRequirements]});
+        const card = screen.getByTestId('ranked-job-42');
+        expect(card).toHaveTextContent('Company score');
+        expect(card).toHaveTextContent('Fit');
+        expect(card).toHaveTextContent('Coverage');
+        // Round-3: each value carries its scale so the number reads on its own.
+        expect(screen.getByTestId('job-42-company-score')).toHaveTextContent('4.2 / 5');
+        expect(screen.getByTestId('job-42-fit-score')).toHaveTextContent('85.5 / 100');
+        expect(screen.getByTestId('job-42-coverage')).toHaveTextContent('75%');
+    });
+
+    test('renders requirement chips distinctly, unknown never styled satisfied', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [jobWithRequirements]});
+        const matchChip = screen.getByTestId('requirement-compensation.minimum_salary');
+        expect(matchChip).toHaveAttribute('data-status', 'match');
+        expect(matchChip).toHaveClass('job-match-chip--match');
+        expect(matchChip).toHaveTextContent('✓');
+        const mismatchChip = screen.getByTestId('requirement-industry');
+        expect(mismatchChip).toHaveAttribute('data-status', 'mismatch');
+        expect(mismatchChip).toHaveClass('job-match-chip--mismatch');
+        expect(mismatchChip).toHaveTextContent('✗');
+        const unknownChip = screen.getByTestId('requirement-work_location.max_in_office_days');
+        expect(unknownChip).toHaveAttribute('data-status', 'unknown');
+        expect(unknownChip).toHaveClass('job-match-chip--unknown');
+        // Unknown is amber — a distinct outcome, never the neutral gray
+        // metadata treatment or the green satisfied treatment.
+        expect(unknownChip).not.toHaveClass('bg-secondary', 'job-match-chip--match');
+        expect(unknownChip).toHaveTextContent('?');
+    });
+
+    test('requirement chips expose status in their accessible name', async () => {
+        // The status must not be conveyed by the punctuation glyph alone (which
+        // screen readers announce inconsistently): the accessible name carries
+        // the outcome word, e.g. "Industry: mismatch".
+        await renderPanel('ok', {count: 1, rankedJobs: [jobWithRequirements]});
+        expect(screen.getByTestId('requirement-industry')).toHaveAttribute('aria-label', 'Industry: mismatch');
+        expect(screen.getByTestId('requirement-compensation.minimum_salary')).toHaveAttribute('aria-label', 'Minimum salary: match');
+        expect(screen.getByTestId('requirement-work_location.max_in_office_days')).toHaveAttribute('aria-label', 'In-office days: unknown');
+    });
+
+    test('renders unsupported-criteria notice with human labels, never raw field names', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [jobWithRequirements]});
+        const notice = screen.getByTestId('unsupported-notice');
+        expect(notice).toHaveTextContent(/could not be evaluated/i);
+        expect(notice).toHaveTextContent('Minimum total compensation');
+        // Internal field names never leak into the UI.
+        expect(notice.textContent).not.toContain('minimum_total_compensation');
+    });
+
+    test('renders a single consolidated stale banner with a labelled refresh action', async () => {
+        const staleJob = {...jobWithRequirements, revision: {...jobWithRequirements.revision, stale: true}};
+        const secondStale = {...staleJob, listing_id: 43, title: 'Another'};
+        await renderPanel('ok', {count: 1, rankedJobs: [staleJob, secondStale]});
+        const stale = screen.getByTestId('stale-notice');
+        expect(stale).toHaveTextContent(/stale/i);
+        expect(stale).toHaveTextContent(/refresh to recompute/i);
+        expect(screen.getByTestId('stale-refresh')).toHaveTextContent('Refresh matches');
+        // One banner above the list, not one per card.
+        expect(screen.getAllByTestId('stale-notice')).toHaveLength(1);
+    });
+
+    test('renders the results-generated timestamp in healthy views', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [jobWithRequirements]});
+        const ts = screen.getByTestId('results-timestamp');
+        expect(ts).toHaveTextContent(/results generated at/i);
+        expect(ts.querySelector('time')).toHaveAttribute('dateTime', '2026-09-22T08:00:00Z');
+    });
+
+    test('omits the timestamp when generated_at is unparseable', async () => {
+        const bad = {...jobWithRequirements, revision: {stale: false, generated_at: 'not-a-date'}};
+        await renderPanel('ok', {count: 1, rankedJobs: [bad]});
+        expect(screen.queryByTestId('results-timestamp')).not.toBeInTheDocument();
+    });
+
+    test('renders no stale notice when revision absent', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [sampleJobMatch]});
+        expect(screen.queryByTestId('stale-notice')).not.toBeInTheDocument();
+    });
+
+    test('renders no requirement chips when requirements absent', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [sampleJobMatch]});
+        expect(screen.queryByTestId('requirement-compensation.minimum_salary')).not.toBeInTheDocument();
+    });
+});
+
+describe('JobMatchPanel round-3 visual fixes (type hierarchy + grids)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+    });
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+        resetWorkspaceForTests();
+        closeAssistant();
+    });
+
+    test('panel title uses the emphasised text-lg title class in every phase', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {
+                title: 'No matches',
+                message: 'Test',
+                actions: ['chat'],
+            },
+        });
+        const title = screen.getByText('Your Job Matches');
+        expect(title).toHaveClass('job-match-panel-title');
+        // It is no longer the Bootstrap h6 (1rem) treatment that made the
+        // underlined job links read as the primary heading.
+        expect(title).not.toHaveClass('h6');
+    });
+
+    test('section and state headings use the base semibold heading class', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [
+            {...sampleJobMatch, fit_score: 85.5, company_score: 4.2, coverage: 0.75},
+        ]});
+        expect(screen.getByText('Ranked Job Listings')).toHaveClass('job-match-section-heading');
+    });
+
+    test('empty-state title uses the base semibold heading class', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {title: 'No matches', message: 'Test', actions: ['chat']},
+        });
+        expect(screen.getByText('No matches')).toHaveClass('job-match-section-heading');
+    });
+
+    test('stale banner lays out the icon, message, and refresh as a grid', async () => {
+        const staleJob = {...sampleJobMatch, listing_id: 42, revision: {stale: true}};
+        await renderPanel('ok', {count: 1, rankedJobs: [staleJob]});
+        const banner = screen.getByTestId('stale-notice').querySelector('.job-match-stale-banner');
+        expect(banner).not.toBeNull();
+        expect(banner!.querySelector('.job-match-stale-icon')).not.toBeNull();
+        expect(banner!.querySelector('.job-match-stale-message')).not.toBeNull();
+        expect(banner!.querySelector('.job-match-stale-refresh')).not.toBeNull();
+    });
+
+    test('empty-state actions render as a single responsive grid of full-width targets', async () => {
+        await renderPanel('no_matches', {
+            statusOverrides: {
+                title: 'No matches',
+                message: 'Test',
+                actions: ['chat', 'explore_companies', 'suggest_company', 'help'],
+            },
+        });
+        const group = screen.getByRole('group', {name: 'Recovery actions'});
+        expect(group).toHaveClass('job-match-actions');
+        // Every action is a button inside the grid group (no ragged flex rows).
+        const buttons = group.querySelectorAll('button');
+        expect(buttons.length).toBe(4);
+    });
+
+    test('loading spinner carries the emphasised sky/cyan class', () => {
+        (global.fetch as jest.Mock).mockReturnValue(new Promise(() => {}));
+        render(<JobMatchPanel/>);
+        const loading = screen.getByTestId('job-match-loading');
+        const spinner = loading.querySelector('svg.job-match-loading-spinner');
+        expect(spinner).not.toBeNull();
+    });
+
+    test('each score figure is a labelled mini-grid cell with tabular value for stable baselines', async () => {
+        await renderPanel('ok', {count: 1, rankedJobs: [
+            {...sampleJobMatch, fit_score: 85.5, company_score: 4.2, coverage: 0.75},
+        ]});
+        const figures = screen.getByRole('list', {name: 'Match figures'});
+        expect(figures).toHaveClass('job-match-figures');
+        // Three figure cells, each a mini-grid so a wrapping first label can
+        // never shift its value onto a different baseline than the others.
+        const cells = figures.querySelectorAll(':scope > .job-match-figure');
+        expect(cells.length).toBe(3);
+        cells.forEach((cell) => {
+            expect(cell.querySelector('.job-match-figure-label')).not.toBeNull();
+            const value = cell.querySelector('.job-match-figure-value');
+            expect(value).not.toBeNull();
+            expect(value).toHaveClass('job-match-figure-value');
+        });
+        // Company score keeps the wider first column label from wrapping past
+        // the fixed label row: the value still reads as a single scalar.
+        expect(screen.getByTestId('job-42-company-score')).toHaveClass('job-match-figure-value');
+        expect(screen.getByTestId('job-42-fit-score')).toHaveClass('job-match-figure-value');
+        expect(screen.getByTestId('job-42-coverage')).toHaveClass('job-match-figure-value');
     });
 });
