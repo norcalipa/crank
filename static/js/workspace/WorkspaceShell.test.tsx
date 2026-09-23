@@ -9,11 +9,21 @@ import {
     openAssistant,
     resetWorkspaceForTests,
 } from './store';
+import * as storeModule from './store';
 import * as modalIsolation from '../modalIsolation';
 
 jest.mock('../JobSearchChat', () => ({
     __esModule: true,
-    default: () => <section data-testid="job-search-chat">chat</section>,
+    default: () => (
+        <section data-testid="job-search-chat">
+            <textarea
+                data-testid="assistant-composer"
+                aria-label="Message"
+                disabled={mockComposerDisabled || undefined}
+            />
+            chat
+        </section>
+    ),
 }));
 
 let mockMode: 'docked' | 'drawer' | 'sheet' = 'sheet';
@@ -21,10 +31,13 @@ jest.mock('./useWorkspaceLayout', () => ({
     useWorkspaceLayout: () => mockMode,
 }));
 
+let mockComposerDisabled = false;
+
 beforeEach(() => {
     resetWorkspaceForTests();
     document.body.className = '';
     mockMode = 'sheet';
+    mockComposerDisabled = false;
     // The shell observer needs the background roots to exist.
     document.body.innerHTML = '<div class="app-shell"></div><main class="app-content"></main>';
 });
@@ -126,6 +139,89 @@ describe('WorkspaceShell', () => {
         await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-back-to-results')));
         act(() => closeAssistant());
         await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-launcher')));
+    });
+
+    test('a focus request moves focus into the already-open assistant panel', async () => {
+        // Issue #469 review MINOR: the "Focus assistant" affordance must move
+        // keyboard focus to the assistant even when it is already open (e.g.
+        // a docked panel has no open-transition focus effect).
+        renderShell();
+        mockMode = 'docked';
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-panel')).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
+        act(() => {
+            window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-composer')));
+    });
+
+    test('a consumed focus request does not re-focus on an ordinary reopen', async () => {
+        // Issue #469 review MINOR: after one explicit focus request is
+        // honoured, a later ordinary drawer/docked open leaves focus alone
+        // (the established non-modal contract) instead of re-stealing the
+        // composer because the stale counter was never consumed.
+        renderShell();
+        mockMode = 'docked';
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
+        act(() => {
+            window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-composer')));
+        act(() => closeAssistant());
+        await waitFor(() => expect(screen.queryByTestId('assistant-panel')).not.toBeInTheDocument());
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
+        // Consumed request: a docked reopen must not steal focus to the composer.
+        expect(document.activeElement).not.toBe(screen.getByTestId('assistant-composer'));
+    });
+
+    test('a focus request with the composer disabled falls back to an enabled control', async () => {
+        // Issue #469 review MINOR: a pending/gated turn disables the composer;
+        // the focus request must fall back to an enabled control instead of
+        // being silently consumed with focus landing nowhere.
+        mockComposerDisabled = true;
+        renderShell();
+        mockMode = 'docked';
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
+        expect(screen.getByTestId('assistant-composer')).toBeDisabled();
+        act(() => {
+            window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        // Focus lands on the first enabled control, never the disabled composer.
+        await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-minimize')));
+        expect(document.activeElement).not.toBe(screen.getByTestId('assistant-composer'));
+        // The request was consumed so a later ordinary reopen does not re-focus.
+        act(() => closeAssistant());
+        await waitFor(() => expect(screen.queryByTestId('assistant-panel')).not.toBeInTheDocument());
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
+        expect(document.activeElement).not.toBe(screen.getByTestId('assistant-minimize'));
+    });
+
+    test('a focus request during cold load focuses the composer once it is ready', async () => {
+        // Issue #469 review MINOR: on a cold lazy load the composer is not yet
+        // mounted, so the request must stay pending (not settle on a header
+        // fallback) and be retried when ``snapshot.loaded`` commits.
+        const markLoaded = jest.spyOn(storeModule, 'markWorkspaceLoaded');
+        markLoaded.mockImplementation(() => {});
+        renderShell();
+        mockMode = 'docked';
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
+        act(() => {
+            window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        // Still cold: the request is held pending, not focused to a header control.
+        expect(document.activeElement).not.toBe(screen.getByTestId('assistant-composer'));
+        // The lazy chunk commits and the store marks the workspace loaded.
+        markLoaded.mockRestore();
+        act(() => {
+            storeModule.markWorkspaceLoaded();
+        });
+        await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-composer')));
     });
 
     test('another blocking dialog acquiring a lock closes the sheet, and keeps its isolation', async () => {

@@ -60,6 +60,21 @@ def _optional_text(value: Any, field: str) -> str:
     return _text(value, field)
 
 
+def _storage_identity(value: str) -> str:
+    """Fold an identity into the MySQL persistence collation domain.
+
+    ``JobListing.external_id`` / ``canonical_url`` are compared case-
+    insensitively by the unique constraints in ``crank/models/job.py`` (the
+    supported MySQL target uses ``utf8mb4_general_ci`` and neither field
+    selects a binary ``db_collation``). Python ``set`` and ``==`` are
+    case-sensitive, so completeness must account identities the same way
+    persistence will collapse them — otherwise ``Case-ID``/``case-id`` pass
+    the bijection here yet still upsert to one row, recreating the
+    one-seen-id/false-closure failure (issue #469 review).
+    """
+    return value.casefold()
+
+
 def _number(value: Any, field: str) -> Decimal | None:
     if value is None or value == "":
         return None
@@ -186,8 +201,21 @@ class USAJobsAdapter(JobSourceAdapter):
         # ``Page``/``ResultsPerPage`` and reports the total as
         # ``SearchResultCountAll`` (``SearchResultCount`` is only the current
         # page's row count and must never drive completeness).
+        #
+        # Completeness is certified against *distinct* identities in the
+        # domain persistence actually retains (issue #469 review): never the
+        # raw row count, and never only ``MatchedObjectId``. ``JobListing``
+        # coalesces rows by ``(source, canonical_url)`` in addition to
+        # ``external_id``, so completeness requires a bijective
+        # id↔canonical-url mapping among retained rows — a duplicate id, a
+        # repeated URL, or an id spanning two URLs all collapse to fewer
+        # persisted rows and must default-deny absence closure.
         complete = False
         truncated = False
+        declared_total: int | None = None
+        saw_total: bool | None = None
+        seen_ids: set[str] = set()
+        seen_urls: set[str] = set()
         while page < query.max_pages and len(listings) < query.max_listings:
             page += 1
             params: dict[str, Any] = {"Page": page, "ResultsPerPage": MAX_PAGE_SIZE}
@@ -198,29 +226,93 @@ class USAJobsAdapter(JobSourceAdapter):
             _, _, body = self._http.get(self.search_url, params=params)
             payload = self._payload(body)
             entries, total = self._entries(payload)
+            page_has_total = total is not None
+            if saw_total is None:
+                saw_total = page_has_total
+            elif saw_total != page_has_total:
+                # Mixed total/no-total pagination (issue #469 review): a page
+                # that drops SearchResultCountAll after an earlier page carried
+                # one — or introduces it after total-less pages — has stopped
+                # providing the stable repeated inventory claim completeness
+                # relies on. Presence drift in either direction is a
+                # contradictory pagination and defaults to truncated, never
+                # complete.
+                truncated = True
+                break
+            if total is not None:
+                if declared_total is None:
+                    declared_total = total
+                elif declared_total != total:
+                    # The provider's total drifted between pages: its
+                    # inventory claim is contradictory and can never certify
+                    # completeness (issue #469 review).
+                    truncated = True
+                    break
             items_seen += len(entries)
             for entry in entries:
                 if len(listings) >= query.max_listings:
                     break
-                listings.append(self._listing(entry))
+                listing = self._listing(entry)
+                seen_ids.add(_storage_identity(listing.external_id))
+                seen_urls.add(_storage_identity(listing.canonical_url))
+                listings.append(listing)
             # Completeness additionally requires that every fetched row was
             # retained (issue #469 review): discarding rows beyond
             # ``max_listings`` must mark the snapshot truncated, never
             # complete, or absence closure would close the discarded rows.
             retained_all = len(listings) == items_seen
-            if total is not None:
-                if items_seen >= total:
-                    complete = retained_all
+            distinct_ids = len(seen_ids)
+            distinct_urls = len(seen_urls)
+            # Completeness must be proved in the *persistence* identity
+            # domain (issue #469 review): ``JobListing`` coalesces rows by
+            # ``(source, canonical_url)`` as well as ``external_id``, so two
+            # distinct IDs sharing one ``PositionURI`` — or one ID spanning
+            # two URIs — collapse to fewer rows than the raw row count
+            # suggests. A snapshot whose IDs↔URLs mapping is not bijective
+            # (every retained external id AND canonical url mutually unique)
+            # can no longer certify that each persisted identity was
+            # observed, so it must remain default-deny.
+            identities_bijective = (
+                distinct_ids == len(listings) and distinct_urls == len(listings)
+            )
+            if declared_total is not None:
+                if items_seen > declared_total:
+                    # Over-delivery: the provider returned more rows than its
+                    # own total reports (e.g. SearchResultCountAll=0 with
+                    # retained items, or an overlapping page that repeats a
+                    # row). A contradictory total is never complete.
+                    truncated = True
+                    break
+                if identities_bijective and distinct_urls == declared_total:
+                    # Distinct coverage proven in the persistence domain: every
+                    # source identity (one canonical URL each) has been
+                    # observed. Over-delivery (above) already ruled out any
+                    # discard, so ``retained_all`` is guaranteed here.
+                    complete = True
+                    break
+                if items_seen == declared_total:
+                    # The provider delivered the declared total's row count
+                    # but the identities are not bijective (a duplicate id or
+                    # URL), so it delivered fewer distinct listings than it
+                    # claimed — a contradiction that can never certify
+                    # completeness.
+                    truncated = True
                     break
                 if not entries:
                     # The source reported more inventory than it delivered; an
                     # inconsistent total is never read as complete.
+                    truncated = True
                     break
             elif not entries or len(entries) < MAX_PAGE_SIZE:
                 # No total reported: a short or empty page is the only
                 # end-of-inventory signal available, and only when nothing
-                # was discarded.
-                complete = retained_all
+                # was discarded — and only when the retained identities are
+                # mutually distinct (issue #469 review): a short page that
+                # repeats an identity is a contradictory pagination that can
+                # never certify completeness.
+                complete = retained_all and identities_bijective
+                if not complete:
+                    truncated = True
                 break
         if not complete and (
             page >= query.max_pages
@@ -266,6 +358,13 @@ class USAJobsAdapter(JobSourceAdapter):
         total = result.get("SearchResultCountAll")
         if total is not None and (isinstance(total, bool) or not isinstance(total, int) or total < 0):
             raise source_errors.SchemaDriftError("SearchResultCountAll must be a non-negative integer")
+        if page_count is not None and page_count != len(raw_entries):
+            # The current-page count must match the rows actually returned;
+            # a self-contradiction is schema drift, never a completeness
+            # signal (issue #469 review).
+            raise source_errors.SchemaDriftError(
+                "SearchResultCount does not match the returned entry count"
+            )
         return list(raw_entries), total
 
     def _listing(self, item: Mapping[str, Any]) -> RawJobListing:

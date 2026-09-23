@@ -131,6 +131,108 @@ class CrawlRunTests(TestCase):
         self.assertEqual(event.target_type, PublicationEvent.TargetType.LISTING)
         self.assertEqual(event.event_kind, PublicationEvent.EventKind.INGESTED)
 
+    @patch("crank.services.crawl_runs.ingest_job_source")
+    def test_execute_records_publication_for_relationship_change(self, ingest):
+        """Issue #469 review MAJOR: a manual crawl whose replay resolves an
+        employer (changing a listing's organization) with every lifecycle
+        counter zero must still emit the publication event that invalidates
+        organization-scoped caches."""
+        from crank.models import JobListing, PublicationEvent
+
+        listing = JobListing.objects.create(
+            source=self.job_source,
+            external_id="rel-1",
+            canonical_url="https://jobs.example.test/rel-1",
+            title="Relationship",
+            employer_name="Rel Co",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+        )
+        organization = Organization.objects.create(
+            name="Rel Org", url="https://rel.example.test"
+        )
+
+        def fake_ingest(*args, **kwargs):
+            listing.organization = organization
+            listing.save(update_fields=["organization", "modified"])
+            return JobSourceIngestion(
+                result=JobIngestResult(),
+                skipped=False,
+                reason="",
+            )
+
+        ingest.side_effect = fake_ingest
+        _execute(self.job_source, "job")
+        self.assertEqual(PublicationEvent.objects.count(), 1)
+
+    @patch("crank.services.crawl_runs.ingest_job_source")
+    def test_execute_publishes_relationship_only_change_with_unchanged_org_set(self, ingest):
+        """Issue #469 review MAJOR: a second listing resolving null -> an
+        organization already represented by another listing keeps the distinct
+        organization-id set unchanged, so the aggregate-set comparison alone
+        would miss the relationship change. Per-listing relationship comparison
+        must still emit the publication event."""
+        from crank.models import JobListing, PublicationEvent
+
+        organization = Organization.objects.create(
+            name="Shared Org", url="https://shared.example.test"
+        )
+        JobListing.objects.create(
+            source=self.job_source,
+            external_id="keep-a",
+            canonical_url="https://jobs.example.test/keep-a",
+            title="Already A",
+            employer_name="Shared Org",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+            organization=organization,
+        )
+        unassigned = JobListing.objects.create(
+            source=self.job_source,
+            external_id="new-a",
+            canonical_url="https://jobs.example.test/new-a",
+            title="New to A",
+            employer_name="Shared Org",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+        )
+
+        def fake_ingest(*args, **kwargs):
+            unassigned.organization = organization
+            unassigned.save(update_fields=["organization", "modified"])
+            return JobSourceIngestion(
+                result=JobIngestResult(resolved=1, unresolved=0),
+                skipped=False,
+                reason="",
+            )
+
+        ingest.side_effect = fake_ingest
+        _execute(self.job_source, "job")
+        event = PublicationEvent.objects.get()
+        self.assertEqual(PublicationEvent.objects.count(), 1)
+        self.assertEqual(event.payload["resolved"], 1)
+        self.assertEqual(event.payload["unresolved"], 0)
+
+    @patch("crank.services.crawl_runs.ingest_job_source")
+    def test_execute_publishes_committed_update_even_when_resolver_failed(self, ingest):
+        """Issue #469 review MAJOR: a committed listing change must still
+        publish even when employer resolution failed (errors=1) and the
+        per-listing organization relationship is unchanged. ``updated`` is the
+        signal that a durable write was accepted, so it must trigger the
+        publication outbox event regardless of resolution errors."""
+        from crank.models import PublicationEvent
+
+        ingest.return_value = JobSourceIngestion(
+            result=JobIngestResult(updated=1, errors=1, unresolved=1),
+            skipped=False,
+            reason="",
+        )
+        _execute(self.job_source, "job")
+        self.assertEqual(PublicationEvent.objects.count(), 1)
+        event = PublicationEvent.objects.get()
+        self.assertEqual(event.payload["resolved"], 0)
+        self.assertEqual(event.payload["unresolved"], 1)
+
     def test_policy_rejects_unknown_source_type(self):
         with self.assertRaises(CrawlRequestError):
             resolve_source("fixture-adapter", "invalid")

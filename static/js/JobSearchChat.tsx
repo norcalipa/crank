@@ -2482,6 +2482,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                                 className="form-control chat-focus"
                                 placeholder="Type your message…"
                                 aria-label="Message"
+                                data-testid="assistant-composer"
                                 aria-describedby={!effectiveAuthenticated ? 'job-search-signed-out-reason' : undefined}
                                 value={input}
                                 onChange={(e) => {

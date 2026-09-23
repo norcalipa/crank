@@ -26,3 +26,7 @@ export interface WorkspaceSnapshot {
 
 export const WORKSPACE_OPEN_EVENT = 'crank:assistant-open';       // detail?: Partial<WorkspaceContext>
 export const WORKSPACE_CONTEXT_EVENT = 'crank:workspace-context'; // detail: Partial<WorkspaceContext>
+// Focus request (issue #469 review): a background surface asks that keyboard
+// focus move to the already-open assistant panel (the "Focus assistant"
+// affordance). Carries no detail.
+export const WORKSPACE_FOCUS_EVENT = 'crank:assistant-focus';

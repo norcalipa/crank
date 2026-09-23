@@ -605,6 +605,11 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 window.dispatchEvent(new CustomEvent('crank:assistant-open', {
                     detail: {surface: 'jobs'},
                 }));
+                // Explicit focus request (issue #469 review): when the panel
+                // is already open this action degrades to "Focus assistant"
+                // and must move keyboard focus to the assistant, not merely
+                // re-notify its unchanged open state.
+                window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
                 break;
             }
             case 'complete_profile': {

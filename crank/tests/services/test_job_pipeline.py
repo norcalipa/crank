@@ -898,19 +898,53 @@ class RetentionSweepTests(TestCase):
         """Issue #469 review CRITICAL: a row that was active at the start of
         the source run, then absence-closed by ingestion, is expired — never
         deleted — in the same run even when its last_seen_at is past the
-        deletion window."""
-        from crank.services.job_pipeline import _retention_sweep
+        deletion window. The pre-ingest deletion snapshot excludes it because
+        it was active (not terminal) when the snapshot was taken."""
+        from crank.services.job_pipeline import (
+            _pre_ingest_deletion_candidates,
+            _retention_sweep,
+        )
 
         source = self.source("absence-delete", expiry_days=10, deletion_days=40)
         active_old = self._listing(source, "absence-old", seen_days=50)
-        # Absence closure closed it earlier in the same source run.
+        # Snapshot the pre-ingest deletion candidates: the row is still active
+        # here, so it is absent from the snapshot.
+        deletion_candidates = _pre_ingest_deletion_candidates(source)
+        # Absence closure closes it earlier in the same source run.
         active_old.status = JobListing.Status.CLOSED
         active_old.save(update_fields=["status"])
-        protected_ids = {active_old.pk}
-        expired, deleted = _retention_sweep(source, protected_ids=protected_ids)
+        expired, deleted = _retention_sweep(
+            source, deletion_candidates=deletion_candidates
+        )
         self.assertEqual((expired, deleted), (0, 0))
         active_old.refresh_from_db()
         self.assertEqual(active_old.status, JobListing.Status.CLOSED)
+
+    def test_pre_ingest_deletion_candidates_are_bounded(self):
+        """Issue #469 review MAJOR: the same-run deletion guard must not
+        materialize the source's entire active inventory. The pre-ingest
+        snapshot is bounded and contains only terminal deletion candidates,
+        never active rows."""
+        from crank.services.job_pipeline import (
+            RETENTION_SWEEP_LIMIT,
+            _pre_ingest_deletion_candidates,
+        )
+
+        source = self.source("bounded-guard", expiry_days=10, deletion_days=40)
+        # A large active population: none of these are deletion candidates.
+        for index in range(50):
+            self._listing(source, f"active-{index}", seen_days=50)
+        terminal_ids = [
+            self._listing(
+                source, f"old-term-{index}", status=JobListing.Status.CLOSED,
+                seen_days=50,
+            ).pk
+            for index in range(10)
+        ]
+        candidates = _pre_ingest_deletion_candidates(source)
+        # Only terminal rows appear, and the snapshot respects the sweep limit.
+        self.assertEqual(candidates, set(terminal_ids))
+        self.assertLessEqual(len(candidates), RETENTION_SWEEP_LIMIT)
 
     def test_absent_closure_records_publication_event(self):
         """Issue #469 review MAJOR: a lifecycle-only write (complete empty

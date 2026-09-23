@@ -14,7 +14,7 @@ import AssistantLauncher from './AssistantLauncher';
 import AssistantPanel from './AssistantPanel';
 import {closeAssistant, getWorkspaceSnapshot, openAssistant, subscribeWorkspace} from './store';
 import {useWorkspaceLayout} from './useWorkspaceLayout';
-import {WorkspaceMode, WorkspaceSnapshot} from './types';
+import {WORKSPACE_FOCUS_EVENT, WorkspaceMode, WorkspaceSnapshot} from './types';
 
 const MODE_CLASS: Record<WorkspaceMode, string> = {
     docked: 'assistant-docked',
@@ -152,6 +152,56 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
         }
         wasSheetActiveRef.current = sheetActive;
     }, [sheetActive]);
+
+    // Explicit focus request (issue #469 review): the "Focus assistant"
+    // affordance must move keyboard focus to the assistant panel even when it
+    // is already open, where drawer/docked have no open-transition focus. A
+    // monotonic counter (rather than a boolean guard) means a request that
+    // races the open transition is still honoured once the panel commits.
+    const [focusRequest, setFocusRequest] = React.useState(0);
+    React.useEffect(() => {
+        const handleFocusRequest = (): void => setFocusRequest((n) => n + 1);
+        window.addEventListener(WORKSPACE_FOCUS_EVENT, handleFocusRequest);
+        return () => window.removeEventListener(WORKSPACE_FOCUS_EVENT, handleFocusRequest);
+    }, []);
+    React.useEffect(() => {
+        if (!open || focusRequest === 0) {
+            return;
+        }
+        // A pending request stays pending across a cold lazy load: only try
+        // to focus once the chat chunk has committed (``snapshot.loaded``),
+        // so a request that races the composer mount is retried then rather
+        // than settling for a header control that is about to be replaced
+        // (issue #469 review).
+        if (!snapshot.loaded) {
+            return;
+        }
+        // Prefer the composer (the assistant's primary input); fall back to the
+        // first focusable control when it is not present (e.g. sheet mode or
+        // a chat that has not finished loading). A disabled composer (pending
+        // or gated turn) cannot take focus, so it is excluded and the request
+        // falls back to an enabled control rather than being silently consumed
+        // with focus landing nowhere (issue #469 review). querySelector honours
+        // document order, so a single combined selector would catch the header
+        // buttons ahead of the composer.
+        const composer =
+            panelRef.current?.querySelector<HTMLElement>(
+                '[data-testid="assistant-composer"]:not(:disabled)',
+            );
+        const target =
+            composer ??
+            panelRef.current?.querySelector<HTMLElement>(
+                '[data-testid="assistant-back-to-results"]:not(:disabled), textarea:not(:disabled), button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+            );
+        if (target) {
+            target.focus();
+            // Consume the request exactly once, and only after focus actually
+            // landed on an enabled target: a later ordinary drawer/docked open
+            // leaves focus alone, and a request that finds no enabled control
+            // stays pending to be retried once one commits.
+            setFocusRequest(0);
+        }
+    }, [open, focusRequest, snapshot.loaded]);
 
     return (
         <>

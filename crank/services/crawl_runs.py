@@ -144,14 +144,19 @@ def _execute(source, source_type: str):
     # Job ingestion is routed through the shared single-owner boundary
     # (issue #462): same policy, same per-source lock, same idempotent
     # ingest call as the recurring pipeline.
-    before_org_ids = set(
-        JobListing.all_objects.filter(
-            source=source, organization__isnull=False
-        )
+    # Snapshot each listing's organization *relationship* (not just the
+    # aggregate id set): a listing that gains/loses/swaps its organization
+    # while every other listing still maps to an already-represented org
+    # leaves the distinct id set unchanged, so the aggregate-set comparison
+    # alone would miss a real relationship change (issue #469 review).
+    before_relationships = dict(
+        JobListing.all_objects.filter(source=source)
         .order_by()
-        .values_list("organization_id", flat=True)
-        .distinct()
+        .values_list("pk", "organization_id")
     )
+    before_org_ids = {
+        org_id for org_id in before_relationships.values() if org_id is not None
+    }
     with transaction.atomic():
         ingestion = ingest_job_source(source, query=query)
         if ingestion.skipped:
@@ -161,14 +166,27 @@ def _execute(source, source_type: str):
         # so they must emit the publication outbox event themselves
         # (issue #469 review): a lifecycle-only write (closing/expiring rows
         # on a complete empty snapshot) still invalidates organization-scoped
-        # caches.
+        # caches. ``ingest_jobs`` also resolves employers on every replay, so
+        # an otherwise unchanged listing can gain, lose, or change its
+        # organization after an alias/catalog edit while all lifecycle
+        # counters stay zero — publishing on any per-listing relationship
+        # change keeps those caches honest too.
+        after_relationships = dict(
+            JobListing.all_objects.filter(source=source)
+            .order_by()
+            .values_list("pk", "organization_id")
+        )
+        relationship_changed = before_relationships != after_relationships
         if (
             int(result.ingested)
             or int(result.updated)
             or int(result.closed)
             or int(result.expired)
+            or relationship_changed
         ):
-            record_source_publication(source, result, 0, 0, before_org_ids)
+            record_source_publication(
+                source, result, result.resolved, result.unresolved, before_org_ids
+            )
     return result
 
 

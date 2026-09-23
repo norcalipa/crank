@@ -9,13 +9,15 @@ from pathlib import Path
 
 import pytest
 from django.test import TestCase, override_settings
+from django.utils import timezone
+from unittest.mock import patch
 import requests
 
 from crank.agents.jobs.base import JobSourceQuery
-from crank.agents.jobs.usajobs import USAJobsAdapter
+from crank.agents.jobs.usajobs import MAX_PAGE_SIZE, USAJobsAdapter
 from crank.agents.sources import errors
 from crank.agents.sources.transport import SafeHTTPClient
-from crank.models.job import JobSourceCatalog
+from crank.models.job import JobListing, JobSourceCatalog
 
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "jobs"
@@ -588,11 +590,57 @@ class CompletenessFlagTests(TestCase):
         assert result.truncated is True
 
     def test_count_reached_exactly_is_complete(self):
-        entries = [make_entry(object_id=f"exact-{i}") for i in range(2)]
+        entries = [
+            make_entry(object_id=f"exact-{i}", uri=f"https://www.usajobs.gov/job/exact-{i}")
+            for i in range(2)
+        ]
         http, _ = http_for([json_response(payload(entries, count=2))])
         result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
         assert result.complete_snapshot is True
         assert result.truncated is False
+
+    def test_duplicate_identity_does_not_certify_completeness(self):
+        """Issue #469 review MAJOR: overlapping pages that repeat one
+        ``MatchedObjectId`` can reach the raw ``items_seen == declared_total``
+        check while a distinct identity is never observed. Completeness must
+        be certified against distinct identities, so a duplicated row marks
+        the snapshot truncated and never complete."""
+        same = make_entry(object_id="dup-row")
+        first = payload([same], count=2)
+        second = payload([same], count=2)
+        http, _ = http_for([json_response(first), json_response(second)])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=2))
+        assert result.items_seen == 2
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_distinct_identities_reaching_total_are_complete(self):
+        """Issue #469 review MAJOR: genuine full inventories — distinct
+        identities (id AND canonical URL) across pages reaching the declared
+        total — must still certify completeness even with the bijective
+        persistence-domain guard."""
+        first = payload(
+            [make_entry(object_id="a", uri="https://www.usajobs.gov/job/a")], count=2
+        )
+        second = payload(
+            [make_entry(object_id="b", uri="https://www.usajobs.gov/job/b")], count=2
+        )
+        http, _ = http_for([json_response(first), json_response(second)])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is True
+        assert result.truncated is False
+
+    def test_overlap_reaching_total_but_repeating_identity_is_truncated(self):
+        """Issue #469 review MAJOR: an overlapping page that repeats one
+        identity can still push the distinct count up to the declared total —
+        but the repeat itself signals pagination instability (a skipped row),
+        so completeness must be rejected (default-deny), not certified."""
+        first = payload([make_entry(object_id="a")], count=2)
+        second = payload([make_entry(object_id="a"), make_entry(object_id="b")], count=2)
+        http, _ = http_for([json_response(first), json_response(second)])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
 
     def test_page_one_not_complete_when_total_unreached(self):
         """Issue #469 review CRITICAL: a page whose current count is below
@@ -638,3 +686,306 @@ class CompletenessFlagTests(TestCase):
         assert result.items_seen == 250
         assert result.complete_snapshot is False
         assert result.truncated is True
+
+    def test_contradictory_zero_total_is_truncated(self):
+        """Issue #469 review MAJOR: a response that delivered rows while
+        SearchResultCountAll reports zero is over-delivery — a contradictory
+        total must never certify completeness."""
+        http, _ = http_for([json_response(payload([make_entry()], count=0))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_drifting_total_across_pages_is_truncated(self):
+        """Issue #469 review MAJOR: a total that changes between pages is a
+        contradictory inventory claim and must never certify completeness."""
+        first = payload([make_entry()], count=5)
+        second = payload([make_entry(object_id="drift-2")], count=3)
+        http, _ = http_for([json_response(first), json_response(second)])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_total_disappearing_after_established_page_is_truncated(self):
+        """Issue #469 review MAJOR: a page that drops SearchResultCountAll
+        after an earlier page established the total is a contradictory mixed
+        total/no-total pagination and must default-deny completeness, never
+        certify absence closure."""
+        first = payload(
+            [make_entry(object_id="a", uri="https://www.usajobs.gov/job/a")], count=2
+        )
+        second = {
+            "SearchResult": {
+                "SearchResultCount": 1,
+                "SearchResultItems": [
+                    make_entry(object_id="b", uri="https://www.usajobs.gov/job/b")
+                ],
+            }
+        }
+        http, _ = http_for([json_response(first), json_response(second)])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_total_appearing_after_no_total_page_is_truncated(self):
+        """Issue #469 review: presence drift is contradictory in either
+        direction — a total that appears after a total-less full page must
+        also default-deny completeness."""
+        full_page = [
+            make_entry(
+                object_id=f"p-{i}", uri=f"https://www.usajobs.gov/job/p-{i}"
+            )
+            for i in range(MAX_PAGE_SIZE)
+        ]
+        first = {
+            "SearchResult": {
+                "SearchResultCount": MAX_PAGE_SIZE,
+                "SearchResultItems": full_page,
+            }
+        }
+        second = payload(
+            [make_entry(object_id="z", uri="https://www.usajobs.gov/job/z")], count=2
+        )
+        http, _ = http_for([json_response(first), json_response(second)])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=1000, max_pages=3))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_case_only_id_variants_do_not_certify_completeness(self):
+        """Issue #469 review MAJOR: Python sets are case-sensitive while the
+        supported MySQL target compares identities case-insensitively
+        (utf8mb4_general_ci). ``Case-ID``/``case-id`` must therefore refuse
+        completeness, not count as two distinct identities that coexist with
+        one persisted row."""
+        first = make_entry(object_id="Case-ID", uri="https://www.usajobs.gov/job/1")
+        second = make_entry(object_id="case-id", uri="https://www.usajobs.gov/job/2")
+        http, _ = http_for([json_response(payload([first, second], count=2))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_case_only_url_variants_do_not_certify_completeness(self):
+        """Issue #469 review MAJOR: case-only canonical-URL variants also
+        collapse to one persisted row under the DB collation, so they must
+        refuse completeness the same way duplicated ids do."""
+        first = make_entry(object_id="a", uri="https://www.usajobs.gov/job/Case")
+        second = make_entry(object_id="b", uri="https://www.usajobs.gov/job/case")
+        http, _ = http_for([json_response(payload([first, second], count=2))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_search_result_count_mismatch_is_schema_drift(self):
+        """Issue #469 review MAJOR: SearchResultCount must equal the number
+        of returned entries; a self-contradictory page is schema drift."""
+        http, _ = http_for([json_response({
+            "SearchResult": {
+                "SearchResultCount": 5,
+                "SearchResultCountAll": 5,
+                "SearchResultItems": [make_entry()],
+            }
+        })])
+        with pytest.raises(errors.SchemaDriftError, match="SearchResultCount"):
+            self.adapter(http).fetch(JobSourceQuery())
+
+    def test_under_delivered_total_is_truncated(self):
+        """Issue #469 review MAJOR: when the provider reports a total that is
+        never reached and then returns an empty page, the inventory claim is
+        contradictory and must be truncated, never complete."""
+        first = payload([make_entry()], count=5)
+        empty = payload([], count=5)
+        http, _ = http_for([json_response(first), json_response(empty)])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_no_total_short_page_with_discarded_rows_is_truncated(self):
+        """Issue #469 review MAJOR: with no SearchResultCountAll, a short page
+        whose rows exceed max_listings discards rows and must be truncated,
+        never complete."""
+        entries = [make_entry(object_id=f"short-{i}") for i in range(3)]
+        http, _ = http_for([json_response({
+            "SearchResult": {"SearchResultCount": 3, "SearchResultItems": entries}
+        })])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=2, max_pages=3))
+        assert len(result.listings) == 2
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_no_total_short_page_with_duplicate_identity_is_truncated(self):
+        """Issue #469 review MAJOR: when SearchResultCountAll is absent, a
+        short page that repeats the same identity (either id or URL) is a
+        contradictory pagination and must default-deny completeness, not
+        certify closure on duplicated rows."""
+        duplicate = make_entry(object_id="dup-row")
+        http, _ = http_for([json_response({
+            "SearchResult": {"SearchResultCount": 2, "SearchResultItems": [duplicate, duplicate]}
+        })])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.items_seen == 2
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_distinct_ids_sharing_one_url_do_not_certify_completeness(self):
+        """Issue #469 review MAJOR: two distinct MatchedObjectId values that
+        share one PositionURI persist as a single row (JobListing coalesces by
+        canonical_url), so completeness counted only by id would close a
+        genuinely present listing. Bijectivity means the repeated URL must
+        refuse completeness (default-deny)."""
+        shared = "https://www.usajobs.gov/job/shared"
+        first = make_entry(object_id="api-a", uri=shared)
+        second = make_entry(object_id="api-b", uri=shared)
+        http, _ = http_for([json_response(payload([first, second], count=2))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.items_seen == 2
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+    def test_one_id_spanning_two_urls_does_not_certify_completeness(self):
+        """Issue #469 review MAJOR: one MatchedObjectId mapping to two
+        PositionURIs also collapses to one persisted row, so a non-bijective
+        id↔url mapping must refuse completeness in either direction."""
+        first = make_entry(object_id="api-a", uri="https://www.usajobs.gov/job/1")
+        second = make_entry(object_id="api-a", uri="https://www.usajobs.gov/job/2")
+        http, _ = http_for([json_response(payload([first, second], count=2))])
+        result = self.adapter(http).fetch(JobSourceQuery(max_listings=10, max_pages=3))
+        assert result.items_seen == 2
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+
+
+class AdapterToClosureRegressionTests(TestCase):
+    """Issue #469 review MAJOR: absence closure must never be authorized by a
+    snapshot whose identities collapse under persistence. These drive the real
+    adapter through ``ingest_jobs``' closure path, not just adapter flags."""
+
+    def adapter(self, http, source_obj=None):
+        return USAJobsAdapter(
+            source_obj or source(),
+            http=http,
+            auth_key="fixture-key",
+            user_agent_email="fixture@example.test",
+        )
+
+    def _ingest(self, source_obj, http):
+        from crank.agents.jobs.ingest import ingest_jobs
+
+        class Resolution:
+            resolved = False
+
+        with patch(
+            "crank.agents.jobs.employer.resolve_employer",
+            side_effect=lambda listing: Resolution(),
+        ):
+            return ingest_jobs(
+                source_obj,
+                JobSourceQuery(max_listings=10, max_pages=3),
+                adapter=self.adapter(http, source_obj),
+            )
+
+    def test_distinct_ids_sharing_one_url_never_close_absent(self):
+        """Issue #469 review MAJOR: two distinct ids sharing one PositionURI
+        collapse to one persisted row, so the snapshot is truncated and a
+        genuinely present (unobserved) listing must stay active."""
+        source_obj = source()
+        JobListing.all_objects.create(
+            source=source_obj,
+            external_id="genuine-2",
+            canonical_url="https://www.usajobs.gov/job/genuine-2",
+            title="Genuine unobserved listing",
+            employer_name="Fixture Labs",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+        )
+        shared = "https://www.usajobs.gov/job/shared"
+        entry_a = make_entry(object_id="api-a", uri=shared)
+        entry_b = make_entry(object_id="api-b", uri=shared)
+        http, _ = http_for([json_response(payload([entry_a, entry_b], count=2))])
+        result = self._ingest(source_obj, http)
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+        assert result.absent_closed == 0
+        genuine = JobListing.all_objects.get(source=source_obj, external_id="genuine-2")
+        assert genuine.status == JobListing.Status.ACTIVE
+
+    def test_no_total_duplicate_identity_never_closes_absent(self):
+        """Issue #469 review MAJOR: with SearchResultCountAll absent, a short
+        page that repeats one identity must not authorize absence closure."""
+        source_obj = source()
+        JobListing.all_objects.create(
+            source=source_obj,
+            external_id="genuine-2",
+            canonical_url="https://www.usajobs.gov/job/genuine-2",
+            title="Genuine unobserved listing",
+            employer_name="Fixture Labs",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+        )
+        duplicate = make_entry(object_id="dup-row")
+        http, _ = http_for([json_response({
+            "SearchResult": {"SearchResultCount": 2, "SearchResultItems": [duplicate, duplicate]}
+        })])
+        result = self._ingest(source_obj, http)
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+        assert result.absent_closed == 0
+        genuine = JobListing.all_objects.get(source=source_obj, external_id="genuine-2")
+        assert genuine.status == JobListing.Status.ACTIVE
+
+    def test_mixed_total_pagination_never_closes_absent(self):
+        """Issue #469 review MAJOR: a page that drops SearchResultCountAll
+        after an earlier page established the total must not authorize absence
+        closure through the real ingest path — the genuinely present (but
+        unobserved) listing stays active."""
+        source_obj = source()
+        JobListing.all_objects.create(
+            source=source_obj,
+            external_id="genuine-3",
+            canonical_url="https://www.usajobs.gov/job/genuine-3",
+            title="Genuine unobserved listing",
+            employer_name="Fixture Labs",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+        )
+        first = payload(
+            [make_entry(object_id="a", uri="https://www.usajobs.gov/job/a")], count=2
+        )
+        second = {
+            "SearchResult": {
+                "SearchResultCount": 1,
+                "SearchResultItems": [
+                    make_entry(object_id="b", uri="https://www.usajobs.gov/job/b")
+                ],
+            }
+        }
+        http, _ = http_for([json_response(first), json_response(second)])
+        result = self._ingest(source_obj, http)
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+        assert result.absent_closed == 0
+        genuine = JobListing.all_objects.get(source=source_obj, external_id="genuine-3")
+        assert genuine.status == JobListing.Status.ACTIVE
+
+    def test_case_collapsed_identities_never_close_absent(self):
+        """Issue #469 review MAJOR: identities that differ only by case are
+        distinct to Python sets but coalesce to one persisted row under the DB
+        collation, so they must never authorize absence closure end-to-end."""
+        source_obj = source()
+        JobListing.all_objects.create(
+            source=source_obj,
+            external_id="genuine-4",
+            canonical_url="https://www.usajobs.gov/job/genuine-4",
+            title="Genuine unobserved listing",
+            employer_name="Fixture Labs",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+        )
+        first = make_entry(object_id="Case-ID", uri="https://www.usajobs.gov/job/1")
+        second = make_entry(object_id="case-id", uri="https://www.usajobs.gov/job/2")
+        http, _ = http_for([json_response(payload([first, second], count=2))])
+        result = self._ingest(source_obj, http)
+        assert result.complete_snapshot is False
+        assert result.truncated is True
+        assert result.absent_closed == 0
+        genuine = JobListing.all_objects.get(source=source_obj, external_id="genuine-4")
+        assert genuine.status == JobListing.Status.ACTIVE

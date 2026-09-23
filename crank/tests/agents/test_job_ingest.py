@@ -118,6 +118,36 @@ class JobIngestTests(TestCase):
         assert "secret" not in result.error_summary
         assert result.pages_fetched == 0
 
+    def test_resolver_failure_does_not_suppress_committed_upsert(self):
+        """Issue #469 review MAJOR: a resolver exception after a committed
+        listing upsert must not suppress the update counters or ``seen_ids``.
+        The accepted title change still reports ``updated`` (so the manual
+        crawl still publishes), the failure is tallied as unresolved/error,
+        and closure stays default-deny."""
+        source = make_source()
+        original = raw()
+        ingest_jobs(source, JobSourceQuery(), adapter=CompleteStubAdapter([original], complete=True))
+        changed = raw(
+            title="Committed New Title",
+            last_seen_at=original.last_seen_at + timedelta(hours=1),
+        )
+        with patch(
+            "crank.agents.jobs.employer.resolve_employer",
+            side_effect=RuntimeError("resolver exploded"),
+        ):
+            result = ingest_jobs(
+                source,
+                JobSourceQuery(),
+                adapter=CompleteStubAdapter([changed], complete=True),
+            )
+        assert result.updated == 1
+        assert result.errors == 1
+        assert result.unresolved == 1
+        assert result.absent_closed == 0
+        assert result.closure_skipped_reason == "listing_errors"
+        listing = JobListing.all_objects.get(source=source, external_id="fixture-1")
+        assert listing.title == "Committed New Title"
+
     def test_listing_errors_do_not_abort_other_listings(self):
         source = make_source()
         invalid = raw(external_id="fixture-invalid")
@@ -140,6 +170,28 @@ class JobIngestTests(TestCase):
 
         result = JobIngestResult(ingested=3, updated=2)
         assert result.total == 5
+
+    def test_ingest_tallies_resolved_and_unresolved_counts(self):
+        """Issue #469 review MAJOR: ``ingest_jobs`` resolves employers on
+        every replay, so it tallies resolved/unresolved counts for the caller
+        (the manual crawl previously hard-coded 0, 0)."""
+        source = make_source()
+
+        class Resolution:
+            def __init__(self, resolved):
+                self.resolved = resolved
+
+        with patch(
+            "crank.agents.jobs.employer.resolve_employer",
+            side_effect=lambda listing: Resolution(listing.external_id.startswith("yes")),
+        ):
+            result = ingest_jobs(
+                source,
+                JobSourceQuery(),
+                adapter=StubAdapter([raw(external_id="yes-1"), raw(external_id="no-1")]),
+            )
+        assert result.resolved == 1
+        assert result.unresolved == 1
 
     def test_status_change_detected_as_update(self):
         """_changed returns True when status differs and is not terminal→active (lines 60-65)."""
