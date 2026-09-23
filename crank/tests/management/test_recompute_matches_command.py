@@ -55,7 +55,16 @@ class RecomputeMatchesCommandTests(TestCase):
         code, stdout, _ = self.call("--dry-run")
         self.assertEqual(code, 0)
         self.assertFalse(AgentRun.objects.exists())
-        self.assertIn("pending_users=1", stdout.getvalue())
+        # Per-tier counts (issue #475 review round 2, MINOR finding 5): a
+        # single combined total can't verify the rollout gate
+        # (preference_dirty == 0) or distinguish generation-dirty reasons.
+        output = stdout.getvalue()
+        self.assertIn("preference_dirty=1", output)
+        self.assertIn("generation_dirty_data_stale=0", output)
+        self.assertIn("generation_dirty_version_mismatch=0", output)
+        self.assertIn("generation_dirty_interrupted=0", output)
+        self.assertIn("generation_dirty_age_stale=0", output)
+        self.assertIn("total_capped_by_one_drain=1", output)
 
     @override_settings(AGENT_RUN_ENABLED=True, MATCH_RECOMPUTE_ENABLED=True)
     def test_dry_run_disabled_still_reports_and_claims_nothing(self):

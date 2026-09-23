@@ -18,6 +18,20 @@ per thread):
    the same ``MatchResultState`` row :func:`crank.agents.jobs.match_persist.publish`
    locks (issue #475 review finding 3), so the two are serialized regardless
    of which wins the race.
+3. **The older-run-finishes-last CAS (issue #475 review round 2, MINOR
+   finding 4).** A run that opens its snapshot first but is held back while
+   a second, independent run snapshots and fully publishes must be
+   discarded when it finally publishes. This is forced with real thread
+   coordination around the snapshot/publish boundary — not a barrier
+   before both full calls, which can degenerate into one side simply
+   observing ``CURRENT`` instead of exercising the discard path.
+4. **Deletion vs. publish.** A user deleted concurrently with an in-flight
+   publish for that user must never raise; the publish must cleanly report
+   ``USER_GONE``.
+5. **Concurrent snapshot vs. an in-flight publish.** A snapshot attempted
+   while a publish holds the ``MatchResultState`` row lock must block until
+   the publish's transaction commits, proving the two are serialized
+   rather than racing to read a half-updated row.
 
 The default suite runs SQLite, where a second writer connection would
 deadlock at the file level rather than exercise ``select_for_update``
@@ -43,6 +57,7 @@ variant. The full pytest run stays green either way because the module
 skips on non-MySQL backends.
 """
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from unittest import skipUnless
@@ -53,8 +68,14 @@ from django.db import connection, connections, transaction
 from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 
-from crank.agents.jobs.match_persist import ensure_match_result_state
-from crank.agents.jobs.ranking_config import RankingConfig
+from crank.agents.jobs.match_persist import (
+    PublishOutcome,
+    ensure_match_result_state,
+    open_snapshot,
+    publish,
+)
+from crank.agents.jobs.matching import rank_listings
+from crank.agents.jobs.ranking_config import DEFAULT_CONFIG, RankingConfig
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.organization import Organization
@@ -214,3 +235,143 @@ class MySqlRecomputeRaceTests(TransactionTestCase):
             all(row.dismissed for row in rows),
             f"a version row lost its dismissal: {[(r.ranker_version, r.dismissed) for r in rows]}",
         )
+
+    def test_older_snapshot_publishing_last_is_discarded_stale(self):
+        """Force the plan's core CAS scenario (issue #475 review round 2,
+        MINOR finding 4): run A opens its snapshot (ticket 1) and is held
+        back; run B independently snapshots *and* fully publishes (ticket
+        2) while A waits; A then tries to publish its stale ticket 1 and
+        must be discarded, never overwriting B's newer generation."""
+        snapshot_a = open_snapshot(self.user, config=DEFAULT_CONFIG, max_listings=500)
+        self.assertEqual(snapshot_a.ticket, 1)
+
+        outcome_b = recompute_user(self.user, reason="race-b", force=True)
+        self.assertEqual(outcome_b.status, RecomputeStatus.PUBLISHED)
+        self.assertEqual(outcome_b.generation, 2)
+
+        ranked_a = rank_listings(
+            snapshot_a.listings,
+            snapshot_a.criteria,
+            DEFAULT_CONFIG,
+            evidence=snapshot_a.evidence,
+        )
+        outcome_a = publish(snapshot_a, ranked_a)
+
+        self.assertEqual(outcome_a, PublishOutcome.DISCARDED_STALE)
+        state = MatchResultState.objects.get(user=self.user)
+        self.assertEqual(state.current_generation, 2)
+        self.assertEqual(JobMatch.objects.filter(user=self.user).count(), 1)
+
+    def test_user_deleted_racing_publish_returns_user_gone_without_error(self):
+        """A user deleted concurrently with an in-flight publish for that
+        user must never raise (issue #475 review round 2, MINOR finding 4):
+        the publish must cleanly report ``USER_GONE`` -- never crash the
+        recompute drain over one deleted user."""
+        snapshot = open_snapshot(self.user, config=DEFAULT_CONFIG, max_listings=500)
+        ranked = rank_listings(
+            snapshot.listings, snapshot.criteria, DEFAULT_CONFIG, evidence=snapshot.evidence
+        )
+        user_id = self.user.pk
+        barrier = threading.Barrier(2, timeout=30)
+
+        def _delete():
+            try:
+                barrier.wait(timeout=30)
+                User.objects.filter(pk=user_id).delete()
+                return ("ok", None)
+            except Exception as exc:  # noqa: BLE001 - surfaced via the result
+                return ("error", exc)
+            finally:
+                connections.close_all()
+
+        def _publish():
+            try:
+                barrier.wait(timeout=30)
+                outcome = publish(snapshot, ranked)
+                return ("ok", outcome)
+            except Exception as exc:  # noqa: BLE001 - surfaced via the result
+                return ("error", exc)
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(_delete), executor.submit(_publish)]
+            results = [future.result(timeout=60) for future in futures]
+
+        self.assertEqual(
+            [status for status, _ in results],
+            ["ok", "ok"],
+            f"deletion/publish race surfaced an error: {results}",
+        )
+        publish_outcome = results[1][1]
+        # Whichever side's transaction commits first, the publish must
+        # either fully succeed (it won the race) or cleanly report
+        # USER_GONE (the delete won) -- never raise and never leave a
+        # half-written MatchResultState/JobMatch pair.
+        self.assertIn(
+            publish_outcome, (PublishOutcome.PUBLISHED, PublishOutcome.USER_GONE)
+        )
+        self.assertFalse(User.objects.filter(pk=user_id).exists())
+
+    def test_concurrent_snapshot_serializes_behind_an_in_flight_publish(self):
+        """A snapshot attempted while a publish holds the
+        ``MatchResultState`` row lock must block until the publish's
+        transaction commits (issue #475 review round 2, MINOR finding 4):
+        MySQL's ``SLEEP()`` inside the locked transaction gives the
+        concurrent snapshot a real window to attempt -- and be forced to
+        wait for -- the lock before the publish releases it."""
+        snapshot = open_snapshot(self.user, config=DEFAULT_CONFIG, max_listings=500)
+        ranked = rank_listings(
+            snapshot.listings, snapshot.criteria, DEFAULT_CONFIG, evidence=snapshot.evidence
+        )
+        lock_held = threading.Event()
+
+        def _slow_publish():
+            try:
+                with transaction.atomic():
+                    MatchResultState.objects.select_for_update().filter(
+                        user_id=self.user.pk
+                    ).first()
+                    lock_held.set()
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT SLEEP(0.5)")
+                    outcome = publish(snapshot, ranked)
+                return ("ok", outcome)
+            except Exception as exc:  # noqa: BLE001 - surfaced via the result
+                return ("error", exc)
+            finally:
+                connections.close_all()
+
+        def _concurrent_snapshot():
+            try:
+                lock_held.wait(timeout=30)
+                started = time.monotonic()
+                result = open_snapshot(
+                    self.user, config=DEFAULT_CONFIG, max_listings=500, force=True
+                )
+                elapsed = time.monotonic() - started
+                return ("ok", (result, elapsed))
+            except Exception as exc:  # noqa: BLE001 - surfaced via the result
+                return ("error", exc)
+            finally:
+                connections.close_all()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(_slow_publish),
+                executor.submit(_concurrent_snapshot),
+            ]
+            results = [future.result(timeout=60) for future in futures]
+
+        self.assertEqual(
+            [status for status, _ in results],
+            ["ok", "ok"],
+            f"snapshot/publish race surfaced an error: {results}",
+        )
+        publish_outcome = results[0][1]
+        self.assertEqual(publish_outcome, PublishOutcome.PUBLISHED)
+        _snapshot_result, elapsed = results[1][1]
+        # The snapshot could only proceed once the publish's transaction
+        # released the row lock at commit, so it must have waited for
+        # roughly the sleep duration rather than reading a half-updated row.
+        self.assertGreaterEqual(elapsed, 0.3)

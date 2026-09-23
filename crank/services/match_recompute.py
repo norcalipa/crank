@@ -88,13 +88,20 @@ def _max_age_hours():
     return int(getattr(settings, "MATCH_RECOMPUTE_MAX_AGE_HOURS", 24))
 
 
-def recompute_user(user_or_id, *, reason, config=DEFAULT_CONFIG, force=False):
+def recompute_user(user_or_id, *, reason, config=DEFAULT_CONFIG, force=False, max_listings=None):
     """Run one snapshot -> compute -> publish cycle for one user.
 
     ``reason`` is a free-form string for logs only ("preference", "pipeline",
-    "drain"). Returns a :class:`RecomputeOutcome`. Never raises: any failure
-    surfaces as ``RecomputeStatus.FAILED`` so callers (the hook, the pipeline,
-    the drain) can log and move on without depending on this succeeding.
+    "drain"). ``max_listings`` overrides the default inventory bound
+    (``JOB_PIPELINE_MAX_LISTINGS_PER_USER``) when given — the pipeline
+    passes its own resolved, possibly per-run-overridden limit through here
+    (issue #475 review round 2, MINOR finding 6): without this, a bounded
+    operator or test run could ingest one listing window
+    (``_ingest_source``'s ``_source_query``) but rank against the unbounded
+    global setting instead. Returns a :class:`RecomputeOutcome`. Never
+    raises: any failure surfaces as ``RecomputeStatus.FAILED`` so callers
+    (the hook, the pipeline, the drain) can log and move on without
+    depending on this succeeding.
     """
     if isinstance(user_or_id, int):
         User = get_user_model()
@@ -109,7 +116,7 @@ def recompute_user(user_or_id, *, reason, config=DEFAULT_CONFIG, force=False):
         snapshot_or_outcome = open_snapshot(
             user,
             config=config,
-            max_listings=_max_listings(),
+            max_listings=_max_listings() if max_listings is None else max(1, int(max_listings)),
             max_age_hours=_max_age_hours(),
             force=force,
         )
@@ -146,6 +153,66 @@ def recompute_user(user_or_id, *, reason, config=DEFAULT_CONFIG, force=False):
         return RecomputeOutcome(status=RecomputeStatus.FAILED)
 
 
+def _preference_dirty_qs():
+    """Users needing recompute because their preference document changed:
+    no state row, no current generation, or a revision/schema-version
+    mismatch. Selected entirely in SQL (not scanned-and-capped in Python)
+    so a dirty user is never starved by however many clean users are
+    older: an unmatched relation (no state row) is caught by ``no_state``,
+    and a mismatched tag is caught by ``mismatch`` via a cross-row F()
+    compare."""
+    no_state = Q(user__match_result_state__isnull=True)
+    mismatch = (
+        Q(user__match_result_state__current_generation__isnull=True)
+        | ~Q(user__match_result_state__preference_revision=F("revision"))
+        | ~Q(user__match_result_state__preference_version=F("schema_version"))
+    )
+    return UserPreference.objects.filter(no_state | mismatch)
+
+
+def _generation_dirty_tiers(exclude_user_ids=()):
+    """The four generation-dirty tiers (issue #475 review round 2, MINOR
+    finding 5): stale data watermark, ranker-version mismatch, an
+    interrupted run (a ticket issued but never published), and the age
+    backstop. Returns ``(base_qs, {tier_name: Q})``; a user can match more
+    than one tier at once, so the tiers are reported separately rather than
+    summed. ``base_qs`` already excludes ``exclude_user_ids`` (typically the
+    preference-dirty set) and users whose ``UserPreference`` row is gone —
+    ``recompute_user`` returns ``NO_PREFERENCES`` for them without ever
+    advancing their state, so including them would spend a drain slot on
+    the same user forever.
+    """
+    watermark = publication.data_watermark() or 0
+    max_age = _max_age_hours()
+    from django.utils import timezone
+
+    age_cutoff = (
+        timezone.now() - timezone.timedelta(hours=max_age) if max_age else None
+    )
+    base_qs = (
+        MatchResultState.objects.filter(current_generation__isnull=False)
+        .exclude(user_id__in=list(exclude_user_ids))
+        .exclude(user__preferences__isnull=True)
+    )
+    if watermark:
+        stale_data = Q(data_revision__isnull=True) | Q(data_revision__lt=watermark)
+    else:
+        stale_data = Q(pk__in=[])
+    version_mismatch = ~Q(ranker_version=DEFAULT_CONFIG.version)
+    # A ticket issued but never published (a snapshot whose publish crashed
+    # or failed) marks the user dirty for retry even when every tag still
+    # matches — the durable signal a purely transient publish failure needs.
+    interrupted_run = Q(issued_generation__gt=F("current_generation"))
+    age_stale = Q(generated_at__lt=age_cutoff) if age_cutoff is not None else Q(pk__in=[])
+    tiers = {
+        "data_stale": stale_data,
+        "version_mismatch": version_mismatch,
+        "interrupted": interrupted_run,
+        "age_stale": age_stale,
+    }
+    return base_qs, tiers
+
+
 def pending_users(limit):
     """Users needing recompute, preference-dirty first, then generation-dirty.
 
@@ -164,18 +231,8 @@ def pending_users(limit):
     if limit == 0:
         return []
 
-    # Selected entirely in SQL (not scanned-and-capped in Python) so a dirty
-    # user is never starved by however many clean users are older: an
-    # unmatched relation (no state row) is caught by ``no_state``, and a
-    # mismatched tag is caught by ``mismatch`` via a cross-row F() compare.
-    no_state = Q(user__match_result_state__isnull=True)
-    mismatch = (
-        Q(user__match_result_state__current_generation__isnull=True)
-        | ~Q(user__match_result_state__preference_revision=F("revision"))
-        | ~Q(user__match_result_state__preference_version=F("schema_version"))
-    )
     refined = list(
-        UserPreference.objects.filter(no_state | mismatch)
+        _preference_dirty_qs()
         .order_by("modified")
         .values_list("user_id", flat=True)[:limit]
     )
@@ -184,36 +241,60 @@ def pending_users(limit):
     if remaining <= 0:
         return refined[:limit]
 
-    watermark = publication.data_watermark() or 0
-    max_age = _max_age_hours()
-    from django.utils import timezone
-
-    age_cutoff = (
-        timezone.now() - timezone.timedelta(hours=max_age) if max_age else None
+    generation_dirty_qs, tiers = _generation_dirty_tiers(exclude_user_ids=refined)
+    # tiers["age_stale"] is already Q(pk__in=[]) (always-false) when the age
+    # backstop is disabled, so ORing it in unconditionally is a no-op there.
+    conditions = (
+        tiers["data_stale"]
+        | tiers["version_mismatch"]
+        | tiers["interrupted"]
+        | tiers["age_stale"]
     )
-    generation_dirty_qs = (
-        MatchResultState.objects.filter(current_generation__isnull=False)
-        .exclude(user_id__in=refined)
-        .exclude(user__preferences__isnull=True)
-    )
-    if watermark:
-        stale_data = Q(data_revision__isnull=True) | Q(data_revision__lt=watermark)
-    else:
-        stale_data = Q(pk__in=[])
-    version_mismatch = ~Q(ranker_version=DEFAULT_CONFIG.version)
-    # A ticket issued but never published (a snapshot whose publish crashed
-    # or failed) marks the user dirty for retry even when every tag still
-    # matches — the durable signal a purely transient publish failure needs.
-    interrupted_run = Q(issued_generation__gt=F("current_generation"))
-    conditions = stale_data | version_mismatch | interrupted_run
-    if age_cutoff is not None:
-        conditions |= Q(generated_at__lt=age_cutoff)
     generation_dirty = list(
         generation_dirty_qs.filter(conditions)
         .order_by("generated_at")
         .values_list("user_id", flat=True)[:remaining]
     )
     return refined + generation_dirty
+
+
+def pending_counts(limit):
+    """Per-tier pending counts for ``--dry-run`` (issue #475 review round 2,
+    MINOR finding 5): the rollout gate needs to verify preference-dirty is
+    at zero before enabling committed reads (plan §5.6), which a single,
+    already-capped total can't show, and can't tell data/ranker/interrupted/
+    age generation-dirtiness apart. Every count here is unbounded by
+    ``limit`` (a full count of that tier, not what one drain would claim);
+    ``limit`` and ``total_capped`` are reported alongside for comparison —
+    ``total_capped`` is exactly what one ``drain(limit)`` call would
+    process, i.e. the previous single number this replaces. Tiers are not
+    mutually exclusive (a user can be both data-stale and version-mismatch
+    at once), so they don't sum to ``total_capped``.
+    """
+    limit = max(0, int(limit))
+    preference_dirty_ids = list(
+        _preference_dirty_qs().values_list("user_id", flat=True)
+    )
+    generation_dirty_qs, tiers = _generation_dirty_tiers(
+        exclude_user_ids=preference_dirty_ids
+    )
+    return {
+        "limit": limit,
+        "preference_dirty": len(preference_dirty_ids),
+        "generation_dirty_data_stale": generation_dirty_qs.filter(
+            tiers["data_stale"]
+        ).count(),
+        "generation_dirty_version_mismatch": generation_dirty_qs.filter(
+            tiers["version_mismatch"]
+        ).count(),
+        "generation_dirty_interrupted": generation_dirty_qs.filter(
+            tiers["interrupted"]
+        ).count(),
+        "generation_dirty_age_stale": generation_dirty_qs.filter(
+            tiers["age_stale"]
+        ).count(),
+        "total_capped": len(pending_users(limit)),
+    }
 
 
 def drain(limit, deadline=None):
@@ -289,6 +370,7 @@ __all__ = [
     "RecomputeStatus",
     "drain",
     "on_preference_committed",
+    "pending_counts",
     "pending_users",
     "recompute_enabled",
     "recompute_user",

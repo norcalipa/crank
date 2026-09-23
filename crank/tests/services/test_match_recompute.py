@@ -440,6 +440,97 @@ class PendingUsersTests(TestCase):
         self.assertIn(self.user.pk, match_recompute.pending_users(10))
 
 
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+class PendingCountsTests(TestCase):
+    """Issue #475 review round 2, MINOR finding 5: ``--dry-run`` must report
+    each dirtiness tier separately so the rollout gate (preference_dirty at
+    zero) and the generation-dirty reason can both be checked, instead of
+    one combined, limit-capped total."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("owner", password="secret")
+        self.organization = Organization.objects.create(name="Acme")
+        self.source = JobSourceCatalog.objects.create(
+            name="Synthetic",
+            adapter_key="synthetic.v1",
+            base_url="https://jobs.example.test",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+        )
+        self.listing = make_listing(self.source, self.organization)
+
+    def test_zero_users_reports_all_zero(self):
+        counts = match_recompute.pending_counts(10)
+        self.assertEqual(counts["limit"], 10)
+        self.assertEqual(counts["preference_dirty"], 0)
+        self.assertEqual(counts["generation_dirty_data_stale"], 0)
+        self.assertEqual(counts["generation_dirty_version_mismatch"], 0)
+        self.assertEqual(counts["generation_dirty_interrupted"], 0)
+        self.assertEqual(counts["generation_dirty_age_stale"], 0)
+        self.assertEqual(counts["total_capped"], 0)
+
+    def test_preference_dirty_is_not_capped_by_limit(self):
+        """Unlike ``total_capped``, the per-tier counts must reflect the
+        real total, not what a single bounded drain would claim."""
+        for i in range(5):
+            u = User.objects.create_user(f"dirty{i}", password="secret")
+            UserPreference.objects.create(user=u, revision=0)
+        counts = match_recompute.pending_counts(2)
+        self.assertEqual(counts["preference_dirty"], 5)
+        self.assertEqual(counts["total_capped"], 2)
+
+    def test_ranker_version_mismatch_counted_separately_from_data_stale(self):
+        UserPreference.objects.create(user=self.user, revision=0)
+        old_config = RankingConfig(version="0.0.1-old")
+        recompute_user(self.user, reason="preference", config=old_config)
+
+        counts = match_recompute.pending_counts(10)
+        self.assertEqual(counts["preference_dirty"], 0)
+        self.assertEqual(counts["generation_dirty_version_mismatch"], 1)
+        self.assertEqual(counts["generation_dirty_data_stale"], 0)
+        self.assertEqual(counts["generation_dirty_age_stale"], 0)
+
+    def test_data_stale_counted_separately_from_version_mismatch(self):
+        from crank.models.publication import PublicationEvent
+        from crank.services.publication import record_event
+
+        UserPreference.objects.create(user=self.user, revision=0)
+        recompute_user(self.user, reason="preference")
+        record_event(
+            target_type=PublicationEvent.TargetType.ORGANIZATION,
+            target_id=self.organization.pk,
+            event_kind=PublicationEvent.EventKind.CHANGED,
+        )
+
+        counts = match_recompute.pending_counts(10)
+        self.assertEqual(counts["generation_dirty_data_stale"], 1)
+        self.assertEqual(counts["generation_dirty_version_mismatch"], 0)
+
+    def test_age_stale_counted_separately(self):
+        UserPreference.objects.create(user=self.user, revision=0)
+        recompute_user(self.user, reason="preference")
+        state = MatchResultState.objects.get(user=self.user)
+        old_time = timezone.now() - timedelta(hours=100)
+        MatchResultState.objects.filter(pk=state.pk).update(generated_at=old_time)
+
+        counts = match_recompute.pending_counts(10)
+        self.assertEqual(counts["generation_dirty_age_stale"], 1)
+        self.assertEqual(counts["generation_dirty_data_stale"], 0)
+        self.assertEqual(counts["generation_dirty_version_mismatch"], 0)
+
+    def test_deleted_preference_excluded_from_generation_dirty_counts(self):
+        UserPreference.objects.create(user=self.user, revision=0)
+        recompute_user(self.user, reason="preference")
+        state = MatchResultState.objects.get(user=self.user)
+        old_time = timezone.now() - timedelta(hours=100)
+        MatchResultState.objects.filter(pk=state.pk).update(generated_at=old_time)
+        UserPreference.objects.filter(user=self.user).delete()
+
+        counts = match_recompute.pending_counts(10)
+        self.assertEqual(counts["generation_dirty_age_stale"], 0)
+        self.assertEqual(counts["preference_dirty"], 0)
+
+
 class RecomputeEnabledGateTests(TestCase):
     def test_disabled_by_default(self):
         self.assertFalse(match_recompute.recompute_enabled())

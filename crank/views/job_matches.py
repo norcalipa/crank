@@ -159,14 +159,22 @@ def _preference_exists(user):
 
 
 def _reads_context(user):
-    """``(queryset, shared_revision_or_None)`` for list/status reads.
+    """``(rows, shared_revision_or_None)`` for list/status reads.
+
+    ``rows`` is a live ``QuerySet`` in the fallback case, or a materialized
+    ``list`` when read from a committed generation (issue #475 review round
+    2: :func:`match_results.load_current` must materialize the rows itself
+    to keep them consistent with the generation they're read against — see
+    its docstring — so this must not re-wrap the result in a fresh,
+    unpinned queryset via a further ``.order_by()``, which would reopen
+    that race).
 
     Deleting a preference must hide stored matches in every read (owner
     decision, issue #475 review finding 4), with no physical deletion of the
     ``JobMatch``/``MatchResultState`` rows — so a missing ``UserPreference``
     always yields ``none()``, live fallback included. When a committed
-    generation exists and the gate is on, ``state`` and ``queryset`` come
-    from one :func:`match_results.load_current` read, so the returned
+    generation exists and the gate is on, ``state`` and ``rows`` come from
+    one :func:`match_results.load_current` read, so the returned
     ``revision`` block matches the rows exactly (finding 6) and is identical
     to the block the ranked/assistant surfaces build from the same state
     (finding 5, AC4).
@@ -184,13 +192,23 @@ def _reads_context(user):
     )
     if not match_results.read_enabled():
         return live, None
-    state, queryset = match_results.load_current(user)
+    state, rows = match_results.load_current(user)
     if state is None:
         return live, None
     pref = UserPreference.objects.filter(user=user).first()
     stale = match_results.is_stale(state, pref)
     revision = match_results.revision_block(state, stale=stale)
-    return queryset.order_by("-score", "id"), revision
+    return rows, revision
+
+
+def _result_count(rows):
+    """``len()`` for a materialized list, ``.count()`` for a live
+    ``QuerySet`` (issue #475 review round 2): :func:`_reads_context` returns
+    either, depending on whether the committed-generation path materialized
+    its rows."""
+    if isinstance(rows, list):
+        return len(rows)
+    return rows.count()
 
 
 @login_required
@@ -247,15 +265,21 @@ def job_match_seen(request, match_id):
         user=request.user,
         listing__status=JobListing.Status.ACTIVE,
     )
-    if match.seen_at is None:
-        state = ensure_match_result_state(request.user)
-        now = timezone.now()
-        with transaction.atomic():
-            MatchResultState.objects.select_for_update().filter(pk=state.pk).first()
-            JobMatch.objects.filter(
-                user=request.user, listing_id=match.listing_id, seen_at__isnull=True
-            ).update(seen_at=now, modified=now)
-        match.refresh_from_db()
+    # Always take the lock and run the idempotent all-version update, even
+    # when the requested row already looks seen (issue #475 review round 2,
+    # MINOR finding 3): gating on `match.seen_at is None` skipped the repair
+    # for version rows that already disagree — e.g. a version-bump publish
+    # `bulk_create`d a new-key row before this request's earlier attempt
+    # locked, leaving that row unseen while the requested one is seen.
+    # Posting the already-seen row would then never repair it.
+    state = ensure_match_result_state(request.user)
+    now = timezone.now()
+    with transaction.atomic():
+        MatchResultState.objects.select_for_update().filter(pk=state.pk).first()
+        JobMatch.objects.filter(
+            user=request.user, listing_id=match.listing_id, seen_at__isnull=True
+        ).update(seen_at=now, modified=now)
+    match.refresh_from_db()
     return JsonResponse(_match_payload(match, detail=True, user=request.user))
 
 
@@ -273,15 +297,18 @@ def job_match_dismiss(request, match_id):
         user=request.user,
         listing__status=JobListing.Status.ACTIVE,
     )
-    if not match.dismissed:
-        state = ensure_match_result_state(request.user)
-        now = timezone.now()
-        with transaction.atomic():
-            MatchResultState.objects.select_for_update().filter(pk=state.pk).first()
-            JobMatch.objects.filter(
-                user=request.user, listing_id=match.listing_id, dismissed=False
-            ).update(dismissed=True, modified=now)
-        match.refresh_from_db()
+    # Always take the lock and run the idempotent all-version update, even
+    # when the requested row already looks dismissed (issue #475 review
+    # round 2, MINOR finding 3) — see the matching comment in
+    # ``job_match_seen`` above.
+    state = ensure_match_result_state(request.user)
+    now = timezone.now()
+    with transaction.atomic():
+        MatchResultState.objects.select_for_update().filter(pk=state.pk).first()
+        JobMatch.objects.filter(
+            user=request.user, listing_id=match.listing_id, dismissed=False
+        ).update(dismissed=True, modified=now)
+    match.refresh_from_db()
     return JsonResponse(_match_payload(match, detail=True, user=request.user))
 
 
@@ -309,7 +336,7 @@ def job_match_status(request):
     ``relaxation_preview``) are emitted only when meaningful.
     """
     queryset, _revision = _reads_context(request.user)
-    match_count = queryset.count()
+    match_count = _result_count(queryset)
     state = derive_state(user=request.user, match_count=match_count)
     is_staff = bool(request.user.is_staff)
     payload = state.to_dict(include_staff=is_staff)

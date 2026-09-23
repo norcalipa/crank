@@ -132,6 +132,56 @@ class JobMatchViewTests(TestCase):
         self.assertTrue(response.json()["dismissed"])
         self.assertEqual(self.client.get("/api/job-matches/").json()["count"], 0)
 
+    def test_seen_repairs_a_disagreeing_version_row_even_when_requested_row_is_already_seen(self):
+        """Posting an already-seen version row must still repair a sibling
+        version row for the same listing that disagrees (issue #475 review
+        round 2, MINOR finding 3): gating the all-version update on the
+        requested row's own state skipped exactly this repair."""
+        seen_row = self.make_match(self.owner, self.active)
+        seen_row.seen_at = self.now
+        seen_row.save(update_fields=["seen_at", "modified"])
+        unseen_row = JobMatch.objects.create(
+            user=self.owner,
+            listing=self.active,
+            organization=self.active.organization,
+            preference_version=2,
+            ranker_version="1.0.0",
+            score=50,
+            factors=[],
+            first_matched_at=self.now,
+            last_matched_at=self.now,
+        )
+        self.assertIsNone(unseen_row.seen_at)
+        self.client.force_login(self.owner)
+
+        response = self.client.post(f"/api/job-matches/{seen_row.pk}/seen/")
+
+        self.assertEqual(response.status_code, 200)
+        unseen_row.refresh_from_db()
+        self.assertIsNotNone(unseen_row.seen_at)
+
+    def test_dismiss_repairs_a_disagreeing_version_row_even_when_requested_row_is_already_dismissed(self):
+        dismissed_row = self.make_match(self.owner, self.active, dismissed=True)
+        undismissed_row = JobMatch.objects.create(
+            user=self.owner,
+            listing=self.active,
+            organization=self.active.organization,
+            preference_version=2,
+            ranker_version="1.0.0",
+            score=50,
+            factors=[],
+            first_matched_at=self.now,
+            last_matched_at=self.now,
+            dismissed=False,
+        )
+        self.client.force_login(self.owner)
+
+        response = self.client.post(f"/api/job-matches/{dismissed_row.pk}/dismiss/")
+
+        self.assertEqual(response.status_code, 200)
+        undismissed_row.refresh_from_db()
+        self.assertTrue(undismissed_row.dismissed)
+
     def test_actions_are_owner_scoped_and_inactive_matches_are_not_mutable(self):
         other_match = self.make_match(self.other, self.active)
         closed_match = self.make_match(self.owner, self.closed)

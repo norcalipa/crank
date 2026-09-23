@@ -315,10 +315,21 @@ def _run_user(
     user's snapshot is now taken under that user's own state-row lock. Not
     gated by the ``match_recompute``/``match_results_read`` switches: this
     fixes the existing, already-enabled ``job_pipeline`` capability.
+
+    Passes this run's resolved ``JOB_PIPELINE_MAX_LISTINGS_PER_USER``
+    through to ``recompute_user`` (issue #475 review round 2, MINOR finding
+    6): ``_ingest_source`` already honors a per-run ``options`` override for
+    this same setting via :func:`_setting`, so recompute must use the same
+    resolved value — otherwise a bounded operator or test run ingests one
+    listing window but ranks against the unbounded global default.
     """
     config = options.get("ranking_config") or DEFAULT_CONFIG
+    max_listings = _setting(options, "JOB_PIPELINE_MAX_LISTINGS_PER_USER", 500)
     return match_recompute.recompute_user(
-        user_preference.user, reason="pipeline", config=config
+        user_preference.user,
+        reason="pipeline",
+        config=config,
+        max_listings=max_listings,
     )
 
 

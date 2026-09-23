@@ -45,10 +45,23 @@ class Command(AgentRunCommand):
     def handle(self, *args, **options):
         if options.get("dry_run"):
             limit = self._limit(options)
-            pending = match_recompute.pending_users(limit)
+            # Per-tier, unbounded-by-limit counts (issue #475 review round
+            # 2, MINOR finding 5): a single capped total can't show the
+            # rollout gate (preference_dirty == 0) or tell data/ranker/
+            # interrupted/age generation-dirtiness apart. Tiers overlap, so
+            # they intentionally don't sum to total_capped.
+            counts = match_recompute.pending_counts(limit)
             self.stdout.write(
-                f"match_recompute --dry-run: pending_users={len(pending)} "
-                f"(limit={limit}); no run claimed, nothing written"
+                "match_recompute --dry-run: "
+                f"preference_dirty={counts['preference_dirty']} "
+                f"generation_dirty_data_stale={counts['generation_dirty_data_stale']} "
+                f"generation_dirty_version_mismatch={counts['generation_dirty_version_mismatch']} "
+                f"generation_dirty_interrupted={counts['generation_dirty_interrupted']} "
+                f"generation_dirty_age_stale={counts['generation_dirty_age_stale']} "
+                f"(limit={counts['limit']}, "
+                f"total_capped_by_one_drain={counts['total_capped']}, "
+                "tiers overlap and do not sum to total_capped); "
+                "no run claimed, nothing written"
             )
             return 0
         return super().handle(*args, **options)

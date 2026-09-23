@@ -13,6 +13,8 @@ unchanged.
 """
 from __future__ import annotations
 
+import logging
+
 from django.conf import settings
 from django.db.models import Subquery
 
@@ -27,6 +29,14 @@ from crank.models.job import JobListing
 from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.preference import UserPreference
 from crank.services.preferences import unsupported_criteria
+
+logger = logging.getLogger("match_results")
+
+# Bounded retries for load_current's materialize-then-revalidate loop
+# (issue #475 review round 2). A publish concurrent with the retry window
+# is rare in practice; this bound just prevents pathological live-lock
+# under sustained contention.
+_LOAD_CURRENT_MAX_ATTEMPTS = 3
 
 
 def read_enabled():
@@ -105,49 +115,96 @@ def current_match_count(user):
     return current_generation_queryset(user).count()
 
 
-def load_current(user):
-    """Read the state row and its exact-generation rows consistently.
+def load_current(user, *, order_by=("-score", "id"), limit=None):
+    """Read the state row and its exact-generation rows as one consistent
+    snapshot, materialized immediately.
 
-    Returns ``(state, queryset)``: ``state`` is ``None`` when the user has
-    no ``UserPreference`` or no committed generation yet, in which case
-    ``queryset`` is ``JobMatch.objects.none()``. Otherwise ``queryset`` is
-    pinned to this same ``state.current_generation`` (issue #475 review:
-    avoids reading the state row and the rows in separate, unpinned queries,
-    which could attach generation-N metadata to generation-(N+1) rows if a
-    publish commits in between).
+    Returns ``(state, rows)``: ``state`` is ``None`` when the user has no
+    ``UserPreference`` or no committed generation yet, in which case
+    ``rows`` is ``[]``. Otherwise ``rows`` is a materialized ``list`` of
+    ``JobMatch`` pinned to ``state.current_generation``.
+
+    Pinning the row filter to an already-read generation value is not
+    enough on its own (issue #475 review round 2): ``publish()`` moves
+    *continuing* matches onto the new generation in place (``bulk_update``
+    sets their ``result_generation`` to the new ticket), so a publish that
+    commits between reading ``state`` and evaluating a **lazy** queryset
+    pinned to the old generation would make an established generation look
+    empty or partial by the time the caller (e.g. pagination) evaluates it.
+    To close that window, this materializes the rows immediately and then
+    re-reads ``current_generation``; if it has moved on, the whole read is
+    retried (bounded) against the new generation, so the returned ``state``
+    and ``rows`` are always a genuinely consistent pair, list count and page
+    included, with no separate row-count query needed downstream.
     """
     if not UserPreference.objects.filter(user=user).exists():
-        return None, JobMatch.objects.none()
-    state = MatchResultState.objects.filter(
-        user=user, current_generation__isnull=False
-    ).first()
-    if state is None:
-        return None, JobMatch.objects.none()
-    return state, current_generation_queryset(user, generation=state.current_generation)
+        return None, []
+    state = None
+    rows = []
+    for attempt in range(_LOAD_CURRENT_MAX_ATTEMPTS):
+        state = MatchResultState.objects.filter(
+            user=user, current_generation__isnull=False
+        ).first()
+        if state is None:
+            return None, []
+        generation = state.current_generation
+        qs = current_generation_queryset(user, generation=generation)
+        if order_by:
+            qs = qs.order_by(*order_by)
+        if limit is not None:
+            qs = qs[: max(1, int(limit))]
+        rows = list(qs)
+        still_current = (
+            MatchResultState.objects.filter(user=user)
+            .values_list("current_generation", flat=True)
+            .first()
+        )
+        if still_current == generation:
+            return state, rows
+        if attempt + 1 < _LOAD_CURRENT_MAX_ATTEMPTS:
+            logger.info(
+                "load_current: generation advanced from %s during read "
+                "(user_id=%s, attempt=%s); retrying",
+                generation,
+                getattr(user, "pk", user),
+                attempt,
+            )
+    # Retries exhausted under sustained concurrent publishing: return the
+    # last read snapshot. state and rows are still a matched pair (both
+    # came from the same iteration), just possibly already superseded.
+    return state, rows
+
+
+def _tag_mismatch(current_value, stamped_value):
+    """Whether a generation's stamped tag disagrees with the current value
+    (issue #475 review round 2, MINOR finding 2): a *greater* stamped value
+    (shouldn't happen, but would previously read as "current") and a
+    *missing* stamped tag (a pre-#475 generation, or one that raced a
+    concurrent publish before the tag was set) both count as a mismatch,
+    same as ``pending_users``/``open_snapshot``'s dirtiness check — not just
+    a strictly older, non-null one. ``current_value is None`` means there is
+    nothing to compare against, so it is never a mismatch on its own.
+    """
+    if current_value is None:
+        return False
+    return stamped_value != current_value
 
 
 def is_stale(state, pref, *, ranker_version=None):
     """Whether *state* (a committed generation) is behind *pref*'s current
     document or the current ranker (issue #475 review, plan §5.3): a
     preference-revision, schema-version, or ranker-version mismatch all
-    count as stale, not only the revision."""
+    count as stale — any inequality against the current tag, not only an
+    older non-null revision (round-2 review finding 2)."""
     if state is None or pref is None:
         return False
     if ranker_version is None:
         ranker_version = DEFAULT_CONFIG.version
-    if (
-        state.preference_revision is not None
-        and pref.revision is not None
-        and state.preference_revision < pref.revision
-    ):
+    if _tag_mismatch(pref.revision, state.preference_revision):
         return True
-    if (
-        state.preference_version is not None
-        and pref.schema_version is not None
-        and state.preference_version != pref.schema_version
-    ):
+    if _tag_mismatch(pref.schema_version, state.preference_version):
         return True
-    if state.ranker_version and ranker_version and state.ranker_version != ranker_version:
+    if _tag_mismatch(ranker_version, state.ranker_version):
         return True
     return False
 
@@ -180,13 +237,12 @@ def current_job_results(user, limit):
     pref = UserPreference.objects.filter(user=user).first()
     if pref is None:
         return []
-    state, queryset = load_current(user)
+    state, rows = load_current(user, limit=limit)
     if state is None:
         return []
     unsupported = unsupported_criteria(pref.preferences)
     stale = is_stale(state, pref)
     revision = revision_block(state, stale=stale)
-    rows = list(queryset.order_by("-score", "id")[: max(1, int(limit))])
     results = []
     for match in rows:
         outcomes = outcomes_from_dicts(match.requirements)
