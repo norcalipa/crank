@@ -201,16 +201,6 @@ def _reads_context(user):
     return rows, revision
 
 
-def _result_count(rows):
-    """``len()`` for a materialized list, ``.count()`` for a live
-    ``QuerySet`` (issue #475 review round 2): :func:`_reads_context` returns
-    either, depending on whether the committed-generation path materialized
-    its rows."""
-    if isinstance(rows, list):
-        return len(rows)
-    return rows.count()
-
-
 @login_required
 @require_GET
 def job_match_list(request):
@@ -320,6 +310,24 @@ def _probe_cap() -> int:
         return 3
 
 
+def _status_count(user):
+    """Match count for the polled status endpoint: a single ``COUNT``.
+
+    Uses the committed generation when reads are enabled and one exists
+    (one statement, pinned by a subquery on the state row), else the live
+    filter. A missing preference always counts zero (owner decision).
+    """
+    if not _preference_exists(user):
+        return 0
+    if match_results.read_enabled() and MatchResultState.objects.filter(
+        user=user, current_generation__isnull=False
+    ).exists():
+        return match_results.current_match_count(user)
+    return JobMatch.objects.filter(
+        user=user, dismissed=False, listing__status=JobListing.Status.ACTIVE
+    ).count()
+
+
 @login_required
 @require_GET
 def job_match_status(request):
@@ -335,8 +343,7 @@ def job_match_status(request):
     ``coverage``, ``active_constraints``, ``inventory``,
     ``relaxation_preview``) are emitted only when meaningful.
     """
-    queryset, _revision = _reads_context(request.user)
-    match_count = _result_count(queryset)
+    match_count = _status_count(request.user)
     state = derive_state(user=request.user, match_count=match_count)
     is_staff = bool(request.user.is_staff)
     payload = state.to_dict(include_staff=is_staff)

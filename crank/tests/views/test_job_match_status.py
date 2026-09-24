@@ -4,7 +4,9 @@
 from datetime import timedelta
 
 from django.contrib.auth.models import User
+from django.db import connection
 from django.test import Client, TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from crank.models.job import JobListing, JobSourceCatalog
@@ -154,6 +156,49 @@ class JobMatchStatusViewTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["state"], "ok")
         self.assertEqual(payload["actions"], [])
+
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True)
+    def test_committed_generation_count_is_a_single_count_statement(self):
+        """Round 3: the polled status endpoint counts the committed
+        generation with one ``COUNT`` instead of materializing rows."""
+        from crank.models.job_match import MatchResultState
+
+        source = self.make_source(enabled=True)
+        listing = self.make_listing(source, "Engineer")
+        self.make_preference(
+            self.user, preferences={"work_location": {"modes": ["remote"]}}
+        )
+        MatchResultState.objects.create(
+            user=self.user, current_generation=1, issued_generation=1
+        )
+        now = timezone.now()
+        JobMatch.objects.create(
+            user=self.user,
+            listing=listing,
+            organization=self.organization,
+            preference_version=1,
+            ranker_version="1.0.0",
+            score=80,
+            factors=[],
+            first_matched_at=now,
+            last_matched_at=now,
+            result_generation=1,
+        )
+        self.client.force_login(self.user)
+        with CaptureQueriesContext(connection) as queries:
+            response = self.client.get("/api/job-matches/status/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["state"], "ok")
+        counts = [q["sql"] for q in queries if q["sql"].startswith("SELECT COUNT")]
+        self.assertTrue(counts)
+        self.assertFalse(
+            [q for q in queries if "crank_jobmatch" in q["sql"] and "requirements" in q["sql"]]
+        )
+
+    def test_no_preferences_counts_zero_without_match_queries(self):
+        self.client.force_login(self.user)
+        response = self.client.get("/api/job-matches/status/")
+        self.assertEqual(response.status_code, 200)
 
     def test_staff_detail_included_for_staff(self):
         self.make_source(enabled=False)
