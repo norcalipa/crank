@@ -971,6 +971,7 @@ class ScopePinningTests(TestCase):
             last_matched_at=now,
         )
 
+        UserPreference.objects.get_or_create(user=self.alice)
         self._login(self.bob)
         assert (
             self.client.post(reverse("job-match-seen", args=[match.pk])).status_code == 404

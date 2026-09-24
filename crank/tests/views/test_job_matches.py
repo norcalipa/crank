@@ -132,6 +132,19 @@ class JobMatchViewTests(TestCase):
         self.assertTrue(response.json()["dismissed"])
         self.assertEqual(self.client.get("/api/job-matches/").json()["count"], 0)
 
+    def test_seen_and_dismiss_404_without_preference_and_do_not_mutate(self):
+        match = self.make_match(self.owner, self.active)
+        self.client.force_login(self.owner)
+        UserPreference.objects.filter(user=self.owner).delete()
+        for action in ("seen", "dismiss"):
+            with self.subTest(action=action):
+                response = self.client.post(f"/api/job-matches/{match.pk}/{action}/")
+                self.assertEqual(response.status_code, 404)
+                self.assertNotIn(b"score", response.content)
+                match.refresh_from_db()
+                self.assertIsNone(match.seen_at)
+                self.assertFalse(match.dismissed)
+
     def test_seen_repairs_a_disagreeing_version_row_even_when_requested_row_is_already_seen(self):
         """Posting an already-seen version row must still repair a sibling
         version row for the same listing that disagrees (issue #475 review

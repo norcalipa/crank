@@ -6,6 +6,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.db.models import F
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -289,12 +290,17 @@ class LifecycleTests(TestCase):
         state_before = MatchResultState.objects.get(user=self.user)
         snapshot = open_snapshot(self.user, max_listings=500, force=True)
         ranked = rank_listings(snapshot.listings, snapshot.criteria, DEFAULT_CONFIG)
-        with patch(
+        with self.assertLogs("crank.agents.jobs.match_persist", level="ERROR") as logs, patch(
             "crank.agents.jobs.match_persist.JobMatch.objects.bulk_update",
             side_effect=RuntimeError("db exploded"),
         ):
             outcome = publish(snapshot, ranked)
         self.assertEqual(outcome, PublishOutcome.FAILED)
+        self.assertEqual(len(logs.records), 1)
+        record = logs.records[0]
+        self.assertIsNotNone(record.exc_info)
+        self.assertIn(f"user_id={self.user.pk}", record.getMessage())
+        self.assertIn(f"generation={snapshot.ticket}", record.getMessage())
         state_after = MatchResultState.objects.get(user=self.user)
         self.assertEqual(state_after.current_generation, state_before.current_generation)
         self.assertIn(self.user.pk, match_recompute.pending_users(10))
@@ -529,6 +535,63 @@ class PendingCountsTests(TestCase):
         counts = match_recompute.pending_counts(10)
         self.assertEqual(counts["generation_dirty_age_stale"], 0)
         self.assertEqual(counts["preference_dirty"], 0)
+
+    def test_tier_counts_match_materialized_reference_with_overlap(self):
+        """The SQL-only exclusion must give the same per-tier counts as the
+        old id-list approach, including users in several tiers at once and
+        preference-dirty users that also carry stale generation state."""
+        old = timezone.now() - timedelta(hours=100)
+        users = [User.objects.create_user(f"u{i}", password="x") for i in range(4)]
+        for u in users:
+            UserPreference.objects.create(user=u, revision=0)
+            recompute_user(u, reason="preference")
+        # users[0]: version-mismatch + age-stale (overlap across tiers)
+        MatchResultState.objects.filter(user=users[0]).update(
+            ranker_version="0.0.1-old", generated_at=old
+        )
+        # users[1]: age-stale + interrupted
+        MatchResultState.objects.filter(user=users[1]).update(
+            generated_at=old, issued_generation=F("current_generation") + 1
+        )
+        # users[2]: age-stale but also preference-dirty -> excluded from tiers
+        MatchResultState.objects.filter(user=users[2]).update(generated_at=old)
+        UserPreference.objects.filter(user=users[2]).update(revision=5)
+        # users[3]: clean
+
+        counts = match_recompute.pending_counts(10)
+
+        dirty_ids = list(
+            match_recompute._preference_dirty_qs().values_list("user_id", flat=True)
+        )
+        base, tiers = match_recompute._generation_dirty_tiers(
+            exclude_user_ids=dirty_ids
+        )
+        self.assertEqual(counts["preference_dirty"], len(dirty_ids))
+        for key, tier in (
+            ("generation_dirty_data_stale", "data_stale"),
+            ("generation_dirty_version_mismatch", "version_mismatch"),
+            ("generation_dirty_interrupted", "interrupted"),
+            ("generation_dirty_age_stale", "age_stale"),
+        ):
+            self.assertEqual(counts[key], base.filter(tiers[tier]).count(), key)
+        self.assertEqual(counts["preference_dirty"], 1)
+        self.assertEqual(counts["generation_dirty_version_mismatch"], 1)
+        self.assertEqual(counts["generation_dirty_interrupted"], 1)
+        self.assertEqual(counts["generation_dirty_age_stale"], 2)
+
+    def test_each_tier_count_is_a_single_statement(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        UserPreference.objects.create(user=self.user, revision=0)
+        recompute_user(self.user, reason="preference")
+        with CaptureQueriesContext(connection) as queries:
+            match_recompute.pending_counts(10)
+        # 1 preference_dirty count + one per live tier; no id-list IN clause.
+        counts = [q for q in queries if q["sql"].startswith("SELECT COUNT")]
+        # data_stale is an always-false Q (no statement) with no watermark.
+        self.assertIn(len(counts), (4, 5))
+        self.assertFalse([q for q in counts if "NOT IN (" in q["sql"]])
 
 
 class RecomputeEnabledGateTests(TestCase):

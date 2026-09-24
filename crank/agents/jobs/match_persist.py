@@ -24,6 +24,7 @@ all call :mod:`crank.services.match_recompute`).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -39,6 +40,8 @@ from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.preference import UserPreference
 from crank.services.company_evidence import resolve_field_evidence_for_orgs
 from crank.services.publication import data_watermark, listing_data_revisions
+
+logger = logging.getLogger(__name__)
 
 _UPDATE_FIELDS = [
     "organization",
@@ -347,6 +350,12 @@ def publish(snapshot, ranked):
         with transaction.atomic():
             return _publish_inner(snapshot, ranked)
     except Exception:  # noqa: BLE001 - the publish boundary never raises
+        logger.exception(
+            "match publish failed; user stays dirty for retry "
+            "(user_id=%s, generation=%s)",
+            getattr(snapshot, "user_id", None),
+            getattr(snapshot, "ticket", None),
+        )
         return PublishOutcome.FAILED
 
 

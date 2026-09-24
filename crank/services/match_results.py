@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 
 from django.conf import settings
+from django.db import transaction
 from django.db.models import Subquery
 
 from crank.agents.jobs.matching import (
@@ -29,8 +30,11 @@ from crank.models.job import JobListing
 from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.preference import UserPreference
 from crank.services.preferences import unsupported_criteria
+from crank.services.publication import data_watermark
 
 logger = logging.getLogger("match_results")
+
+_UNSET = object()
 
 # Bounded retries for load_current's materialize-then-revalidate loop
 # (issue #475 review round 2). A publish concurrent with the retry window
@@ -139,8 +143,15 @@ def load_current(user, *, order_by=("-score", "id"), limit=None):
     """
     if not UserPreference.objects.filter(user=user).exists():
         return None, []
-    state = None
-    rows = []
+
+    def _materialize(generation):
+        qs = current_generation_queryset(user, generation=generation)
+        if order_by:
+            qs = qs.order_by(*order_by)
+        if limit is not None:
+            qs = qs[: max(1, int(limit))]
+        return list(qs)
+
     for attempt in range(_LOAD_CURRENT_MAX_ATTEMPTS):
         state = MatchResultState.objects.filter(
             user=user, current_generation__isnull=False
@@ -148,12 +159,7 @@ def load_current(user, *, order_by=("-score", "id"), limit=None):
         if state is None:
             return None, []
         generation = state.current_generation
-        qs = current_generation_queryset(user, generation=generation)
-        if order_by:
-            qs = qs.order_by(*order_by)
-        if limit is not None:
-            qs = qs[: max(1, int(limit))]
-        rows = list(qs)
+        rows = _materialize(generation)
         still_current = (
             MatchResultState.objects.filter(user=user)
             .values_list("current_generation", flat=True)
@@ -169,10 +175,19 @@ def load_current(user, *, order_by=("-score", "id"), limit=None):
                 getattr(user, "pk", user),
                 attempt,
             )
-    # Retries exhausted under sustained concurrent publishing: return the
-    # last read snapshot. state and rows are still a matched pair (both
-    # came from the same iteration), just possibly already superseded.
-    return state, rows
+    # Retries exhausted under sustained concurrent publishing. The last
+    # attempt is proven inconsistent, so never return it: take the same
+    # state-row lock ``publish()`` takes, which blocks any publish until the
+    # read finishes, and read state + rows as one consistent pair.
+    with transaction.atomic():
+        state = (
+            MatchResultState.objects.select_for_update()
+            .filter(user=user, current_generation__isnull=False)
+            .first()
+        )
+        if state is None:
+            return None, []
+        return state, _materialize(state.current_generation)
 
 
 def _tag_mismatch(current_value, stamped_value):
@@ -190,14 +205,28 @@ def _tag_mismatch(current_value, stamped_value):
     return stamped_value != current_value
 
 
-def is_stale(state, pref, *, ranker_version=None):
+def is_stale(state, pref, *, ranker_version=None, watermark=_UNSET):
     """Whether *state* (a committed generation) is behind *pref*'s current
     document or the current ranker (issue #475 review, plan §5.3): a
     preference-revision, schema-version, or ranker-version mismatch all
     count as stale — any inequality against the current tag, not only an
-    older non-null revision (round-2 review finding 2)."""
+    older non-null revision (round-2 review finding 2). It also mirrors the
+    recompute predicates (``match_recompute``): an advanced data watermark
+    (``data_revision`` null or behind ``data_watermark()``) and an in-flight
+    recompute (``issued_generation > current_generation``). Pass
+    ``watermark`` to reuse one value per request; omitted, it is read once
+    here."""
     if state is None or pref is None:
         return False
+    if watermark is _UNSET:
+        watermark = data_watermark()
+    if watermark and (state.data_revision is None or state.data_revision < watermark):
+        return True
+    if (
+        state.current_generation is not None
+        and (state.issued_generation or 0) > state.current_generation
+    ):
+        return True
     if ranker_version is None:
         ranker_version = DEFAULT_CONFIG.version
     if _tag_mismatch(pref.revision, state.preference_revision):
