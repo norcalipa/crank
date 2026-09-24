@@ -25,6 +25,8 @@ ALLOWED_CAPABILITY_KEYS = frozenset(
         "crawl_schedule",
         "crawl",
         "publication_consumer",
+        "match_recompute",
+        "match_results_read",
     }
 )
 

@@ -228,38 +228,73 @@ def listing_data_revisions(listings):
     """Return ``{listing_id: data_revision}`` for a list of listing objects.
 
     A listing's data revision is the greatest ``PublicationEvent.id`` among
-    the events describing its organization or the listing itself — not just
-    the organization (issue #467 AC-8). Single shared helper used by both the
-    matching service and the persistence layer; the earlier per-organization
-    query ignored listing publication (ingest) events and was duplicated.
+    the ORGANIZATION and SCORE events of the listing's organization, and the
+    LISTING events of the listing's **source** (issue #475 G3 fix). The only
+    LISTING-event writer, ``record_source_publication``
+    (``crank/services/job_ingest.py``), writes ``target_id=source.pk`` — one
+    event covers every listing ingested from that source in the same
+    transaction — so LISTING events must be looked up by source id, never by
+    listing id (the earlier keyspace mismatch, issue #467 AC-8). SCORE
+    events are also included because organization scores feed the fit score
+    (``_score_organization``, ``crank/agents/jobs/matching.py``) but were
+    previously ignored. Single shared helper used by both the matching
+    service and the persistence layer.
     """
     listings = list(listings)
     org_ids = {
         int(getattr(getattr(l, "organization", None), "pk", 0) or 0)
         for l in listings
     }
-    listing_ids = {int(getattr(l, "pk", 0) or 0) for l in listings}
+    source_ids = {int(getattr(l, "source_id", 0) or 0) for l in listings}
     org_rev = _max_revision_ids(PublicationEvent.TargetType.ORGANIZATION, org_ids)
-    listing_rev = _max_revision_ids(PublicationEvent.TargetType.LISTING, listing_ids)
+    score_rev = _max_revision_ids(PublicationEvent.TargetType.SCORE, org_ids)
+    listing_rev = _max_revision_ids(PublicationEvent.TargetType.LISTING, source_ids)
     result: dict[int, int | None] = {}
     for listing in listings:
         lid = int(getattr(listing, "pk", 0) or 0)
         org = getattr(listing, "organization", None)
         oid = int(getattr(org, "pk", 0) or 0) if org is not None else 0
-        candidates = [v for v in (org_rev.get(oid), listing_rev.get(lid)) if v]
+        sid = int(getattr(listing, "source_id", 0) or 0)
+        candidates = [
+            v
+            for v in (org_rev.get(oid), score_rev.get(oid), listing_rev.get(sid))
+            if v
+        ]
         result[lid] = max(candidates) if candidates else None
     return result
 
 
 def organization_data_revisions(organization_ids):
-    """Map each organization id to its latest organization ``PublicationEvent.id``."""
-    return _max_revision_ids(PublicationEvent.TargetType.ORGANIZATION, organization_ids)
+    """Map each organization id to its latest ORGANIZATION or SCORE ``PublicationEvent.id``."""
+    org_ids = {int(i) for i in organization_ids if i is not None}
+    org_rev = _max_revision_ids(PublicationEvent.TargetType.ORGANIZATION, org_ids)
+    score_rev = _max_revision_ids(PublicationEvent.TargetType.SCORE, org_ids)
+    result: dict[int, int] = {}
+    for oid in org_ids:
+        candidates = [v for v in (org_rev.get(oid), score_rev.get(oid)) if v]
+        if candidates:
+            result[oid] = max(candidates)
+    return result
+
+
+def data_watermark():
+    """Return the highest ``PublicationEvent.id`` recorded so far, or ``None``.
+
+    Used by the recompute drain (issue #475) as a coarse dirtiness signal:
+    any user whose generation was computed before this watermark may be
+    missing a committed data change. See ``docs/match-recompute.md`` for the
+    residual gap this leaves (an event allocated before, but committed
+    after, a snapshot that already observed a higher id) and how the age
+    backstop bounds it.
+    """
+    return PublicationEvent.objects.aggregate(watermark=models.Max("id"))["watermark"]
 
 
 __all__ = [
     "MAX_PAYLOAD_ORGANIZATION_IDS",
     "affected_keys",
     "consumer_enabled",
+    "data_watermark",
     "listing_data_revisions",
     "organization_data_revisions",
     "record_event",

@@ -17,13 +17,11 @@ from django.utils import timezone
 from crank.agents.jobs.base import JobSourceQuery
 from crank.agents.jobs.employer import resolve_employer
 from crank.agents.jobs.ingest import JobIngestResult
-from crank.agents.jobs.match_persist import persist_matches
-from crank.agents.jobs.matching import project_criteria, rank_listings
 from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
 from crank.models.agent_run import AgentRun
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.preference import UserPreference, default_preferences
-from crank.services import agent_runs
+from crank.services import agent_runs, match_recompute
 from crank.services.job_ingest import ingest_job_source, record_source_publication
 
 logger = logging.getLogger(__name__)
@@ -44,6 +42,8 @@ COUNT_KEYS = (
     "users_succeeded",
     "users_failed",
     "matches_persisted",
+    "stale_discarded",
+    "duplicate_skipped",
     "deadline_reached",
 )
 
@@ -302,32 +302,35 @@ def _ingest_source(
     return result, resolved, unresolved, False
 
 
-def _active_listings(limit: int):
-    return list(
-        JobListing.objects.filter(
-            source__approval_state=JobSourceCatalog.ApprovalState.APPROVED,
-            source__enabled=True,
-        )
-        .select_related("organization")
-        .order_by("-last_seen_at", "pk")[:limit]
-    )
-
-
 def _run_user(
     user_preference: UserPreference,
-    listings: list[Any],
     options: Mapping[str, Any],
-) -> int:
-    criteria = project_criteria(
-        user_preference.preferences,
-        user_preference.schema_version,
-    )
+) -> match_recompute.RecomputeOutcome:
+    """Recompute and CAS-publish one user's committed generation (issue #475).
+
+    Delegates to :func:`crank.services.match_recompute.recompute_user`, which
+    owns its own bounded inventory snapshot
+    (:func:`crank.agents.jobs.match_persist.match_inventory`) — the shared
+    pre-read that used to live here (``_active_listings``) is gone; each
+    user's snapshot is now taken under that user's own state-row lock. Not
+    gated by the ``match_recompute``/``match_results_read`` switches: this
+    fixes the existing, already-enabled ``job_pipeline`` capability.
+
+    Passes this run's resolved ``JOB_PIPELINE_MAX_LISTINGS_PER_USER``
+    through to ``recompute_user`` (issue #475 review round 2, MINOR finding
+    6): ``_ingest_source`` already honors a per-run ``options`` override for
+    this same setting via :func:`_setting`, so recompute must use the same
+    resolved value — otherwise a bounded operator or test run ingests one
+    listing window but ranks against the unbounded global default.
+    """
     config = options.get("ranking_config") or DEFAULT_CONFIG
-    # rank_listings is deliberately called here so ranking is an explicit
-    # pipeline phase; persist_matches repeats the deterministic calculation as
-    # its write-time safety check.
-    rank_listings(listings, criteria, config)
-    return persist_matches(user_preference.user, listings, criteria, config)
+    max_listings = _setting(options, "JOB_PIPELINE_MAX_LISTINGS_PER_USER", 500)
+    return match_recompute.recompute_user(
+        user_preference.user,
+        reason="pipeline",
+        config=config,
+        max_listings=max_listings,
+    )
 
 
 def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
@@ -342,10 +345,6 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
     )
     max_sources = max(0, int(_setting(options, "JOB_PIPELINE_MAX_SOURCES", 10)))
     max_users = max(0, int(_setting(options, "JOB_PIPELINE_MAX_USERS", 100)))
-    max_listings = max(
-        1,
-        int(_setting(options, "JOB_PIPELINE_MAX_LISTINGS_PER_USER", 500)),
-    )
 
     sources = list(
         JobSourceCatalog.objects.filter(
@@ -472,15 +471,33 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
     successful_users = 0
     if deadline.reached():
         counts["deadline_reached"] = True
-    listings = [] if counts["deadline_reached"] else _active_listings(max_listings)
     for preference in preferences:
         if deadline.reached():
             counts["deadline_reached"] = True
             break
         try:
-            counts["matches_persisted"] += int(_run_user(preference, listings, options))
-            counts["users_succeeded"] += 1
-            successful_users += 1
+            outcome = _run_user(preference, options)
+            status = outcome.status
+            if status == match_recompute.RecomputeStatus.PUBLISHED:
+                counts["matches_persisted"] += outcome.persisted
+                counts["users_succeeded"] += 1
+                successful_users += 1
+            elif status == match_recompute.RecomputeStatus.CURRENT:
+                counts["duplicate_skipped"] += 1
+                counts["users_succeeded"] += 1
+                successful_users += 1
+            elif status == match_recompute.RecomputeStatus.DISCARDED_STALE:
+                counts["stale_discarded"] += 1
+                counts["users_succeeded"] += 1
+                successful_users += 1
+            elif status in (
+                match_recompute.RecomputeStatus.NO_PREFERENCES,
+                match_recompute.RecomputeStatus.USER_GONE,
+            ):
+                counts["users_succeeded"] += 1
+                successful_users += 1
+            else:
+                counts["users_failed"] += 1
         except Exception as exc:  # noqa: BLE001 - isolate user failures
             counts["users_failed"] += 1
             logger.warning(

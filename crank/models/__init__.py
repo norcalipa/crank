@@ -5,7 +5,7 @@ from crank.models.crawl_run import CrawlRun
 from crank.models.conversation import Conversation, Message
 from crank.models.job_search import JobSearchConversation, JobSearchMessage, JobSearchTurn
 from crank.models.job import JobListing, JobSourceCatalog
-from crank.models.job_match import JobMatch
+from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.organization import Organization
 from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
 from crank.models.company_request import (
@@ -47,6 +47,7 @@ __all__ = [
     "JobSourceCatalog",
     "JobListing",
     "JobMatch",
+    "MatchResultState",
     "Organization",
     "CompanyFieldEvidence",
     "CompanyProfileObservation",

@@ -478,3 +478,50 @@ class TransactionBoundaryTests(TestCase):
         self.assertIsNotNone(
             PublicationEvent.objects.get().processed_at
         )
+
+
+@locmem("publication-watermark-tests")
+class DataWatermarkTests(TestCase):
+    """issue #475: the coarse data-dirtiness watermark for match recompute."""
+
+    def test_watermark_is_none_with_no_events(self):
+        self.assertIsNone(publication.data_watermark())
+
+    def test_watermark_is_the_highest_event_id(self):
+        org = Organization.objects.create(name="Watermark Org")
+        publication.record_event(
+            target_type=PublicationEvent.TargetType.ORGANIZATION,
+            target_id=org.id,
+            event_kind="observed",
+        )
+        last = publication.record_event(
+            target_type=PublicationEvent.TargetType.ORGANIZATION,
+            target_id=org.id,
+            event_kind="changed",
+        )
+        self.assertEqual(publication.data_watermark(), last.pk)
+
+
+@locmem("publication-organization-data-revisions-tests")
+class OrganizationDataRevisionsTests(TestCase):
+    """issue #475 G3: organization_data_revisions() also covers SCORE events."""
+
+    def test_includes_score_events(self):
+        org = Organization.objects.create(name="Score Revision Org")
+        org_event = publication.record_event(
+            target_type=PublicationEvent.TargetType.ORGANIZATION,
+            target_id=org.id,
+            event_kind="changed",
+        )
+        score_event = publication.record_event(
+            target_type=PublicationEvent.TargetType.SCORE,
+            target_id=org.id,
+            event_kind="observed",
+        )
+        self.assertGreater(score_event.pk, org_event.pk)
+        revisions = publication.organization_data_revisions([org.id])
+        self.assertEqual(revisions[org.id], score_event.pk)
+
+    def test_organization_with_no_events_is_omitted(self):
+        org = Organization.objects.create(name="Untouched Org")
+        self.assertEqual(publication.organization_data_revisions([org.id]), {})

@@ -206,9 +206,9 @@ Verified at commit `d62183acd4a7f93c662c1368f9aec6aeb1f839b8` (2026-09-14):
    - **0038 → #467** (UX-17, result revisions) —
      `0038_jobmatch_result_revision`, parent `0037_userpreference_revision`;
      assigned 2026-09-22.
-   - **0039+** — remaining schema tickets take numbers in controller merge
-     order at implementation time: **#475** (UX-29, versioned recompute
-     fields).
+   - **0039 → #475** (UX-29, versioned recompute fields) —
+     `0039_match_result_generation`, parent `0038_jobmatch_result_revision`;
+     assigned 2026-09-22.
 3. Cross-branch numbering collisions are resolved with a **numbered merge
    migration** following the `0029` precedent. Never renumber or rewrite an
    applied migration.
@@ -233,7 +233,7 @@ bounded reviewed backfill, and contract only after all old pods are gone.
 | Preference revision | #466 (UX-15, "Implement preference propose, apply, revision checks and undo services") | 0037 (`0037_userpreference_revision`, parent `0036`) | Additive defaulted `revision` column (existing rows start at 0); no backfill, no index; old pods never select or write the column and their `expected_modified` path keeps working; the service accepts both `expected_modified` and `expected_revision` during the mixed-pod window, and chat callers flip to `expected_revision` after the column is everywhere. |
 | Publication outbox | #470 (UX-28, publication after commit) | 0031 | Create `PublicationEvent` additively; the consumer is gated by its own switch (see the capability registry in `docs/rollout-gates.md`); pending work survives restart; an incompatible consumer rollback is addressed before enablement. |
 | Result revisions | #467 (UX-17, "Unify deterministic eligibility, match reasons and result revisions") | 0038 (`0038_jobmatch_result_revision`, parent `0037`) | Additive nullable revision columns (`preference_revision`, `data_revision`, `generated_at`, `requirements`, `evidence_ids`) on `JobMatch`; the unique key `(user, listing, preference_version, ranker_version)` is unchanged; readers fall back to the un-revised result; bounded backfill of revisions for existing matches. |
-| Versioned recomputation | #475 (UX-29, "Recompute versioned matches") | 0038+ | Additive revision-tag fields on match work/results (preference revision, accepted-data revision, ranking version); obsolete-run rejection via compare-and-swap; preserve seen/dismissed across upserts. |
+| Versioned recomputation | #475 (UX-29, "Recompute versioned matches") | 0039 (`0039_match_result_generation`, parent `0038`) | Additive `MatchResultState` model (per-user generation ticket/tags) plus `JobMatch.result_generation`; no backfill — existing rows keep `result_generation=NULL` and are served by the live fallback until the drain publishes a generation; obsolete-run rejection via compare-and-swap; preserve seen/dismissed across upserts. See `docs/match-recompute.md`. |
 
 Tickets that do **not** own schema in this epic (verified scopes): #457
 (UX-04) is assistant/inventory availability exposure, #462 (UX-24) is the

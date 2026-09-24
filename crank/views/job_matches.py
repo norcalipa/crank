@@ -5,21 +5,23 @@
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.paginator import Paginator
-from django.http import JsonResponse
+from django.db import transaction
+from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST
 
+from crank.agents.jobs.match_persist import ensure_match_result_state
 from crank.agents.jobs.matching import (
-    RequirementOutcome,
-    _decimal,
     coverage,
+    outcomes_from_dicts,
     reasons_from_requirements,
 )
 from crank.empty_state import NO_MATCHES, derive_state
 from crank.models.job import JobListing
-from crank.models.job_match import JobMatch
+from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.preference import UserPreference
+from crank.services import match_recompute, match_results
 from crank.services.job_matching import (
     MAX_MATCH_RESULTS,
     match_jobs,
@@ -56,41 +58,10 @@ def _listing_payload(listing):
     }
 
 
-def _outcomes_from_stored(requirements):
-    """Reconstruct :class:`RequirementOutcome` values from stored JSON dicts."""
-    outcomes = []
-    for item in requirements or []:
-        if not isinstance(item, dict) or not item.get("path"):
-            continue
-        outcomes.append(RequirementOutcome(
-            path=item["path"],
-            status=item.get("status", "unknown"),
-            observed=item.get("observed"),
-            source_kind=item.get("source_kind"),
-            source_id=item.get("source_id"),
-            scope_ok=item.get("scope_ok", True),
-        ))
-    return outcomes
-
-
-def _company_score_of(organization):
-    """The organization's average score (0-5), or ``None`` when unknown."""
-    if organization is None:
-        return None
-    try:
-        scores = organization.avg_scores()
-    except (AttributeError, TypeError, ValueError):
-        return None
-    values = []
-    for row in scores or ():
-        if not isinstance(row, dict):
-            continue
-        value = _decimal(row.get("avg_score", row.get("score")))
-        if value is not None:
-            values.append(float(value))
-    if not values:
-        return None
-    return max(0.0, min(5.0, sum(values) / len(values)))
+# issue #475: the single shared implementation lives in match_results.py so
+# the committed-generation reads and this view compute company_score
+# identically.
+_company_score_of = match_results._company_score_of
 
 
 def _preference_meta(user):
@@ -105,18 +76,36 @@ def _preference_meta(user):
 
 def _reasons_from_stored_factors(requirements):
     """Render reasons from the stored requirement structure (single renderer)."""
-    outcomes = _outcomes_from_stored(requirements)
+    outcomes = outcomes_from_dicts(requirements)
     return reasons_from_requirements(outcomes)
 
 
-def _match_payload(match, *, detail=False, user=None):
+def _match_payload(match, *, detail=False, user=None, revision=None):
+    """``revision`` overrides the per-row calculation with the shared,
+    generation-level block (issue #475 review, AC4): pass it whenever the
+    match came from ``match_results.load_current`` so list/detail responses
+    carry the identical ``revision`` block the ranked and assistant surfaces
+    use, instead of recomputing from this one row's stamped fields."""
     current_revision, unsupported = _preference_meta(user)
-    outcomes = _outcomes_from_stored(match.requirements)
-    stale = (
-        match.preference_revision is not None
-        and current_revision is not None
-        and match.preference_revision < current_revision
-    )
+    outcomes = outcomes_from_dicts(match.requirements)
+    if revision is None:
+        stale = (
+            match.preference_revision is not None
+            and current_revision is not None
+            and match.preference_revision < current_revision
+        )
+        revision = {
+            "preference_revision": match.preference_revision,
+            "ranking_version": match.ranker_version,
+            "data_revision": match.data_revision,
+            "generated_at": (
+                match.generated_at.isoformat() if match.generated_at else None
+            ),
+            "stale": stale,
+            # issue #475: additive committed-generation fields.
+            "result_generation": match.result_generation,
+            "pending": bool(stale and match_recompute.recompute_enabled()),
+        }
     payload = {
         "id": match.pk,
         "listing": _listing_payload(match.listing),
@@ -130,15 +119,7 @@ def _match_payload(match, *, detail=False, user=None):
         "requirements": [o.as_dict() for o in outcomes],
         "unsupported": list(unsupported),
         "evidence_ids": list(match.evidence_ids or []),
-        "revision": {
-            "preference_revision": match.preference_revision,
-            "ranking_version": match.ranker_version,
-            "data_revision": match.data_revision,
-            "generated_at": (
-                match.generated_at.isoformat() if match.generated_at else None
-            ),
-            "stale": stale,
-        },
+        "revision": revision,
         "reasons": reasons_from_requirements(outcomes),
         "first_matched_at": match.first_matched_at,
         "last_matched_at": match.last_matched_at,
@@ -161,13 +142,73 @@ def _parse_page(request):
     return page_number, min(page_size, _MAX_PAGE_SIZE)
 
 
-def _pagination_response(page, user=None):
+def _pagination_response(page, user=None, revision=None):
     return {
         "count": page.paginator.count,
         "next": page.next_page_number() if page.has_next() else None,
         "previous": page.previous_page_number() if page.has_previous() else None,
-        "results": [_match_payload(match, user=user) for match in page.object_list],
+        "results": [
+            _match_payload(match, user=user, revision=revision)
+            for match in page.object_list
+        ],
     }
+
+
+def _preference_exists(user):
+    return UserPreference.objects.filter(user=user).exists()
+
+
+def _reads_context(user):
+    """``(rows, shared_revision_or_None)`` for list/status reads.
+
+    ``rows`` is a live ``QuerySet`` in the fallback case, or a materialized
+    ``list`` when read from a committed generation (issue #475 review round
+    2: :func:`match_results.load_current` must materialize the rows itself
+    to keep them consistent with the generation they're read against — see
+    its docstring — so this must not re-wrap the result in a fresh,
+    unpinned queryset via a further ``.order_by()``, which would reopen
+    that race).
+
+    Deleting a preference must hide stored matches in every read (owner
+    decision, issue #475 review finding 4), with no physical deletion of the
+    ``JobMatch``/``MatchResultState`` rows — so a missing ``UserPreference``
+    always yields ``none()``, live fallback included. When a committed
+    generation exists and the gate is on, ``state`` and ``rows`` come from
+    one :func:`match_results.load_current` read, so the returned
+    ``revision`` block matches the rows exactly (finding 6) and is identical
+    to the block the ranked/assistant surfaces build from the same state
+    (finding 5, AC4).
+    """
+    if not _preference_exists(user):
+        return JobMatch.objects.none(), None
+    live = (
+        JobMatch.objects.filter(
+            user=user,
+            dismissed=False,
+            listing__status=JobListing.Status.ACTIVE,
+        )
+        .select_related("listing", "organization")
+        .order_by("-score", "id")
+    )
+    if not match_results.read_enabled():
+        return live, None
+    state, rows = match_results.load_current(user)
+    if state is None:
+        return live, None
+    pref = UserPreference.objects.filter(user=user).first()
+    stale = match_results.is_stale(state, pref)
+    revision = match_results.revision_block(state, stale=stale)
+    return rows, revision
+
+
+def _result_count(rows):
+    """``len()`` for a materialized list, ``.count()`` for a live
+    ``QuerySet`` (issue #475 review round 2): :func:`_reads_context` returns
+    either, depending on whether the committed-generation path materialized
+    its rows."""
+    if isinstance(rows, list):
+        return len(rows)
+    return rows.count()
 
 
 @login_required
@@ -179,24 +220,23 @@ def job_match_list(request):
         return JsonResponse(
             {"error": "page and page_size must be positive integers."}, status=400
         )
-    queryset = (
-        JobMatch.objects.filter(
-            user=request.user,
-            dismissed=False,
-            listing__status=JobListing.Status.ACTIVE,
-        )
-        .select_related("listing", "organization")
-        .order_by("-score", "id")
-    )
+    queryset, revision = _reads_context(request.user)
     paginator = Paginator(queryset, page_size)
     page = paginator.get_page(page_number)
-    return JsonResponse(_pagination_response(page, request.user))
+    return JsonResponse(_pagination_response(page, request.user, revision=revision))
 
 
 @login_required
 @require_GET
 def job_match_detail(request, match_id):
-    """Return one active match owned by the authenticated user."""
+    """Return one active match owned by the authenticated user.
+
+    404s when the user's preferences were deleted (issue #475 review
+    finding 4): stored matches must not stay visible after that, even
+    though the row itself is never physically deleted.
+    """
+    if not _preference_exists(request.user):
+        raise Http404
     match = get_object_or_404(
         JobMatch.objects.select_related("listing", "organization"),
         pk=match_id,
@@ -209,32 +249,66 @@ def job_match_detail(request, match_id):
 @login_required
 @require_POST
 def job_match_seen(request, match_id):
-    """Mark an owned match as seen and return its updated representation."""
+    """Mark an owned match as seen and return its updated representation.
+
+    Updates every version-row for ``(user, listing)`` under the
+    ``MatchResultState`` lock (issue #475 review finding 3, plan §4.2
+    lifecycle/§5.3): without that lock, a concurrent version-bump publish
+    can ``bulk_create`` a new version-key row for the same listing that
+    never carries this request's ``seen_at``, silently losing it. Locking
+    the same state row :func:`crank.agents.jobs.match_persist.publish` uses
+    serializes the two.
+    """
     match = get_object_or_404(
         JobMatch.objects.select_related("listing", "organization"),
         pk=match_id,
         user=request.user,
         listing__status=JobListing.Status.ACTIVE,
     )
-    if match.seen_at is None:
-        match.seen_at = timezone.now()
-        match.save(update_fields=["seen_at", "modified"])
+    # Always take the lock and run the idempotent all-version update, even
+    # when the requested row already looks seen (issue #475 review round 2,
+    # MINOR finding 3): gating on `match.seen_at is None` skipped the repair
+    # for version rows that already disagree — e.g. a version-bump publish
+    # `bulk_create`d a new-key row before this request's earlier attempt
+    # locked, leaving that row unseen while the requested one is seen.
+    # Posting the already-seen row would then never repair it.
+    state = ensure_match_result_state(request.user)
+    now = timezone.now()
+    with transaction.atomic():
+        MatchResultState.objects.select_for_update().filter(pk=state.pk).first()
+        JobMatch.objects.filter(
+            user=request.user, listing_id=match.listing_id, seen_at__isnull=True
+        ).update(seen_at=now, modified=now)
+    match.refresh_from_db()
     return JsonResponse(_match_payload(match, detail=True, user=request.user))
 
 
 @login_required
 @require_POST
 def job_match_dismiss(request, match_id):
-    """Dismiss an owned match and return its updated representation."""
+    """Dismiss an owned match and return its updated representation.
+
+    Updates every version-row for ``(user, listing)`` under the
+    ``MatchResultState`` lock, for the same reason as :func:`job_match_seen`.
+    """
     match = get_object_or_404(
         JobMatch.objects.select_related("listing", "organization"),
         pk=match_id,
         user=request.user,
         listing__status=JobListing.Status.ACTIVE,
     )
-    if not match.dismissed:
-        match.dismissed = True
-        match.save(update_fields=["dismissed", "modified"])
+    # Always take the lock and run the idempotent all-version update, even
+    # when the requested row already looks dismissed (issue #475 review
+    # round 2, MINOR finding 3) — see the matching comment in
+    # ``job_match_seen`` above.
+    state = ensure_match_result_state(request.user)
+    now = timezone.now()
+    with transaction.atomic():
+        MatchResultState.objects.select_for_update().filter(pk=state.pk).first()
+        JobMatch.objects.filter(
+            user=request.user, listing_id=match.listing_id, dismissed=False
+        ).update(dismissed=True, modified=now)
+    match.refresh_from_db()
     return JsonResponse(_match_payload(match, detail=True, user=request.user))
 
 
@@ -261,13 +335,8 @@ def job_match_status(request):
     ``coverage``, ``active_constraints``, ``inventory``,
     ``relaxation_preview``) are emitted only when meaningful.
     """
-    match_count = (
-        JobMatch.objects.filter(
-            user=request.user,
-            dismissed=False,
-            listing__status=JobListing.Status.ACTIVE,
-        ).count()
-    )
+    queryset, _revision = _reads_context(request.user)
+    match_count = _result_count(queryset)
     state = derive_state(user=request.user, match_count=match_count)
     is_staff = bool(request.user.is_staff)
     payload = state.to_dict(include_staff=is_staff)

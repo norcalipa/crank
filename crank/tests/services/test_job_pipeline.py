@@ -25,12 +25,11 @@ from crank.models import (
     PublicationEvent,
     UserPreference,
 )
-from crank.services import agent_runs
+from crank.services import agent_runs, match_recompute
 from crank.services.job_ingest import SKIP_OVERLAP, JobSourceIngestion
 from crank.services import publication
 from crank.services.job_pipeline import (
     JobPipelineError,
-    _active_listings,
     _adapter_for,
     _has_active_preferences,
     _is_meaningful,
@@ -40,6 +39,12 @@ from crank.services.job_pipeline import (
     _source_query,
     run_job_pipeline,
 )
+
+
+def _outcome(status, *, generation=1, persisted=0):
+    return match_recompute.RecomputeOutcome(
+        status=status, generation=generation, persisted=persisted
+    )
 
 
 def ingestion(result=None, *, skipped=False, reason=""):
@@ -134,8 +139,9 @@ class JobPipelineServiceTests(TestCase):
             return_value=ingestion(result),
         ), patch(
             "crank.services.job_pipeline._resolve_source_listings", return_value=(2, 0)
-        ), patch("crank.services.job_pipeline._active_listings", return_value=[object()]), patch(
-            "crank.services.job_pipeline._run_user", return_value=3
+        ), patch(
+            "crank.services.job_pipeline._run_user",
+            return_value=_outcome(match_recompute.RecomputeStatus.PUBLISHED, persisted=3),
         ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
             counts = run_job_pipeline(self.run)
         self.assertEqual(counts["sources_succeeded"], 1)
@@ -485,8 +491,11 @@ class JobPipelineServiceTests(TestCase):
         self.preference("bob")
         with patch(
             "crank.services.job_pipeline._run_user",
-            side_effect=[RuntimeError("one user failed"), 2],
-        ), patch("crank.services.job_pipeline._active_listings", return_value=[]), patch(
+            side_effect=[
+                RuntimeError("one user failed"),
+                _outcome(match_recompute.RecomputeStatus.PUBLISHED, persisted=2),
+            ],
+        ), patch(
             "crank.services.job_pipeline.agent_runs.record_agent_event"
         ):
             counts = run_job_pipeline(self.run)
@@ -500,7 +509,7 @@ class JobPipelineServiceTests(TestCase):
         with patch(
             "crank.services.job_pipeline._run_user",
             side_effect=RuntimeError("matching failed"),
-        ), patch("crank.services.job_pipeline._active_listings", return_value=[]), patch(
+        ), patch(
             "crank.services.job_pipeline.agent_runs.record_agent_event"
         ):
             with self.assertRaises(JobPipelineError) as raised:
@@ -528,7 +537,7 @@ class JobPipelineServiceTests(TestCase):
         ingest.assert_not_called()
         matcher.assert_not_called()
 
-    def test_resolution_and_user_helpers_isolate_and_persist(self):
+    def test_resolution_helpers_isolate_and_persist(self):
         listing = SimpleNamespace(
             pk=1,
             status="active",
@@ -551,23 +560,69 @@ class JobPipelineServiceTests(TestCase):
         ):
             rows.return_value.order_by.return_value = [listing]
             self.assertEqual(_resolve_source_listings(source, set()), (0, 1))
-        preference = SimpleNamespace(
-            preferences={"notes": "x"}, schema_version=1, user=object()
-        )
-        with patch("crank.services.job_pipeline.project_criteria", return_value=object()), patch(
-            "crank.services.job_pipeline.rank_listings"
-        ) as rank, patch("crank.services.job_pipeline.persist_matches", return_value=2) as persist:
-            self.assertEqual(_run_user(preference, [], {}), 2)
-        rank.assert_called_once()
-        persist.assert_called_once()
 
-    def test_active_listing_query_is_bounded(self):
-        self.assertEqual(_active_listings(1), [])
+    def test_run_user_delegates_to_recompute_user(self):
+        """issue #475: _run_user is a thin delegate to
+        match_recompute.recompute_user, reason='pipeline', with the pipeline's
+        ranking_config option passed through (default max_listings=500 when
+        no per-run override is given)."""
+        preference = SimpleNamespace(user=object())
+        config = object()
+        with patch(
+            "crank.services.job_pipeline.match_recompute.recompute_user",
+            return_value=_outcome(match_recompute.RecomputeStatus.PUBLISHED, persisted=2),
+        ) as recompute:
+            outcome = _run_user(preference, {"ranking_config": config})
+        recompute.assert_called_once_with(
+            preference.user, reason="pipeline", config=config, max_listings=500
+        )
+        self.assertEqual(outcome.persisted, 2)
+
+    def test_run_user_passes_the_per_run_max_listings_override(self):
+        """issue #475 review round 2, MINOR finding 6: a bounded operator or
+        test run's JOB_PIPELINE_MAX_LISTINGS_PER_USER override must reach
+        recompute_user, not just _source_query/_ingest_source -- otherwise
+        ingestion honors the bound but ranking ignores it."""
+        from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
+
+        preference = SimpleNamespace(user=object())
+        with patch(
+            "crank.services.job_pipeline.match_recompute.recompute_user",
+            return_value=_outcome(match_recompute.RecomputeStatus.PUBLISHED, persisted=0),
+        ) as recompute:
+            _run_user(preference, {"JOB_PIPELINE_MAX_LISTINGS_PER_USER": 7})
+        recompute.assert_called_once_with(
+            preference.user, reason="pipeline", config=DEFAULT_CONFIG, max_listings=7
+        )
+
+    def test_run_job_pipeline_tallies_every_recompute_outcome_status(self):
+        """issue #475: CURRENT -> duplicate_skipped, DISCARDED_STALE ->
+        stale_discarded, NO_PREFERENCES/USER_GONE -> succeeded with no
+        counter bump, FAILED -> users_failed."""
+        for name in ("current", "stale", "nopref", "gone", "failed"):
+            self.preference(name)
+        outcomes = [
+            _outcome(match_recompute.RecomputeStatus.CURRENT),
+            _outcome(match_recompute.RecomputeStatus.DISCARDED_STALE),
+            _outcome(match_recompute.RecomputeStatus.NO_PREFERENCES),
+            _outcome(match_recompute.RecomputeStatus.USER_GONE),
+            _outcome(match_recompute.RecomputeStatus.FAILED),
+        ]
+        with patch(
+            "crank.services.job_pipeline._run_user", side_effect=outcomes
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            counts = run_job_pipeline(self.run)
+        self.assertEqual(counts["duplicate_skipped"], 1)
+        self.assertEqual(counts["stale_discarded"], 1)
+        self.assertEqual(counts["users_failed"], 1)
+        self.assertEqual(counts["users_succeeded"], 4)
+        self.assertEqual(counts["matches_persisted"], 0)
 
     def test_replay_emits_same_counts_without_duplicate_pipeline_calls(self):
         self.preference("alice")
-        with patch("crank.services.job_pipeline._active_listings", return_value=[]), patch(
-            "crank.services.job_pipeline._run_user", return_value=0
+        with patch(
+            "crank.services.job_pipeline._run_user",
+            return_value=_outcome(match_recompute.RecomputeStatus.PUBLISHED, persisted=0),
         ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
             first = run_job_pipeline(self.run)
             second = run_job_pipeline(self.run)

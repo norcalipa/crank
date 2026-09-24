@@ -31,6 +31,9 @@ class JobMatchViewTests(TestCase):
         self.closed = self.make_listing("Closed", JobListing.Status.CLOSED)
         self.expired = self.make_listing("Expired", JobListing.Status.EXPIRED)
         self.now = timezone.now()
+        # issue #475 review: reads hide stored matches for a user with no
+        # UserPreference row, so every owner-read test needs one.
+        self.owner_pref = UserPreference.objects.create(user=self.owner, revision=0)
 
     def make_listing(self, title, status):
         now = timezone.now()
@@ -129,6 +132,56 @@ class JobMatchViewTests(TestCase):
         self.assertTrue(response.json()["dismissed"])
         self.assertEqual(self.client.get("/api/job-matches/").json()["count"], 0)
 
+    def test_seen_repairs_a_disagreeing_version_row_even_when_requested_row_is_already_seen(self):
+        """Posting an already-seen version row must still repair a sibling
+        version row for the same listing that disagrees (issue #475 review
+        round 2, MINOR finding 3): gating the all-version update on the
+        requested row's own state skipped exactly this repair."""
+        seen_row = self.make_match(self.owner, self.active)
+        seen_row.seen_at = self.now
+        seen_row.save(update_fields=["seen_at", "modified"])
+        unseen_row = JobMatch.objects.create(
+            user=self.owner,
+            listing=self.active,
+            organization=self.active.organization,
+            preference_version=2,
+            ranker_version="1.0.0",
+            score=50,
+            factors=[],
+            first_matched_at=self.now,
+            last_matched_at=self.now,
+        )
+        self.assertIsNone(unseen_row.seen_at)
+        self.client.force_login(self.owner)
+
+        response = self.client.post(f"/api/job-matches/{seen_row.pk}/seen/")
+
+        self.assertEqual(response.status_code, 200)
+        unseen_row.refresh_from_db()
+        self.assertIsNotNone(unseen_row.seen_at)
+
+    def test_dismiss_repairs_a_disagreeing_version_row_even_when_requested_row_is_already_dismissed(self):
+        dismissed_row = self.make_match(self.owner, self.active, dismissed=True)
+        undismissed_row = JobMatch.objects.create(
+            user=self.owner,
+            listing=self.active,
+            organization=self.active.organization,
+            preference_version=2,
+            ranker_version="1.0.0",
+            score=50,
+            factors=[],
+            first_matched_at=self.now,
+            last_matched_at=self.now,
+            dismissed=False,
+        )
+        self.client.force_login(self.owner)
+
+        response = self.client.post(f"/api/job-matches/{dismissed_row.pk}/dismiss/")
+
+        self.assertEqual(response.status_code, 200)
+        undismissed_row.refresh_from_db()
+        self.assertTrue(undismissed_row.dismissed)
+
     def test_actions_are_owner_scoped_and_inactive_matches_are_not_mutable(self):
         other_match = self.make_match(self.other, self.active)
         closed_match = self.make_match(self.owner, self.closed)
@@ -142,7 +195,9 @@ class JobMatchViewTests(TestCase):
     def test_stale_result_is_flagged(self):
         """A result computed from an older preference revision is flagged stale."""
         from crank.models.preference import default_preferences
-        UserPreference.objects.create(user=self.owner, revision=5, preferences=default_preferences())
+        self.owner_pref.revision = 5
+        self.owner_pref.preferences = default_preferences()
+        self.owner_pref.save(update_fields=["revision", "preferences", "modified"])
         match = self.make_match(self.owner, self.active)
         match.preference_revision = 3
         match.requirements = [
@@ -170,3 +225,174 @@ class JobMatchViewTests(TestCase):
         self.assertFalse(payload["revision"]["stale"])
         self.assertIsNone(payload["revision"]["preference_revision"])
         self.assertIsNone(payload["revision"]["generated_at"])
+
+    def test_revision_block_gains_additive_generation_fields(self):
+        match = self.make_match(self.owner, self.active)
+        self.client.force_login(self.owner)
+        payload = self.client.get(f"/api/job-matches/{match.pk}/").json()
+        self.assertIn("result_generation", payload["revision"])
+        self.assertIn("pending", payload["revision"])
+        self.assertIsNone(payload["revision"]["result_generation"])
+        self.assertFalse(payload["revision"]["pending"])
+
+    def test_deleted_preference_hides_stored_matches_in_every_read(self):
+        """issue #475 review finding 4 / owner decision: deleting the
+        UserPreference must hide stored matches in list, detail, and the
+        status count, without physically deleting the JobMatch rows."""
+        match = self.make_match(self.owner, self.active)
+        self.client.force_login(self.owner)
+        self.assertEqual(self.client.get("/api/job-matches/").json()["count"], 1)
+        self.assertEqual(self.client.get(f"/api/job-matches/{match.pk}/").status_code, 200)
+
+        self.owner_pref.delete()
+
+        self.assertEqual(self.client.get("/api/job-matches/").json()["count"], 0)
+        self.assertEqual(self.client.get(f"/api/job-matches/{match.pk}/").status_code, 404)
+        # The status endpoint must not 500 or leak the match count.
+        self.assertEqual(self.client.get("/api/job-matches/status/").status_code, 200)
+        # No physical deletion of the stored match.
+        self.assertTrue(JobMatch.objects.filter(pk=match.pk).exists())
+
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+    MATCH_RESULTS_READ_ENABLED=True,
+)
+class CommittedGenerationReadGateTests(TestCase):
+    """issue #475 AC4: list/status and the ranked endpoint read the same
+    committed generation once one has been published, with an identical
+    revision block; with no generation yet, both fall back to today's live
+    behavior unchanged."""
+
+    def setUp(self):
+        self.client = Client()
+        self.owner = User.objects.create_user("owner", password="secret")
+        self.organization = Organization.objects.create(name="Acme")
+        self.source = JobSourceCatalog.objects.create(
+            name="Synthetic",
+            adapter_key="synthetic.v1",
+            base_url="https://jobs.example.test",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+        )
+        now = timezone.now()
+        self.listing = JobListing.all_objects.create(
+            source=self.source,
+            external_id="engineer",
+            canonical_url="https://jobs.example.test/engineer",
+            employer_name=self.organization.name,
+            title="Engineer",
+            first_seen_at=now - timedelta(days=1),
+            last_seen_at=now,
+            status=JobListing.Status.ACTIVE,
+            organization=self.organization,
+        )
+        self.pref = UserPreference.objects.create(
+            user=self.owner,
+            revision=0,
+            preferences={"work_location": {"modes": ["remote"]}},
+        )
+
+    def test_fallback_to_live_with_no_generation_yet(self):
+        JobMatch.objects.create(
+            user=self.owner,
+            listing=self.listing,
+            organization=self.organization,
+            preference_version=1,
+            ranker_version="1.0.0",
+            score=50,
+            first_matched_at=timezone.now(),
+            last_matched_at=timezone.now(),
+        )
+        self.client.force_login(self.owner)
+        payload = self.client.get("/api/job-matches/").json()
+        self.assertEqual(payload["count"], 1)
+
+    def test_list_and_status_use_the_committed_generation(self):
+        from crank.services.match_recompute import recompute_user
+
+        outcome = recompute_user(self.owner, reason="preference")
+        self.client.force_login(self.owner)
+
+        list_payload = self.client.get("/api/job-matches/").json()
+        self.assertEqual(list_payload["count"], 1)
+        self.assertEqual(
+            list_payload["results"][0]["revision"]["result_generation"],
+            outcome.generation,
+        )
+
+        status_payload = self.client.get("/api/job-matches/status/").json()
+        self.assertEqual(status_payload["state"], "ok")
+
+        ranked_payload = self.client.get("/api/job-matches/ranked/").json()
+        self.assertEqual(len(ranked_payload["job_matches"]), 1)
+        self.assertEqual(
+            ranked_payload["job_matches"][0]["revision"]["result_generation"],
+            outcome.generation,
+        )
+        self.assertEqual(
+            ranked_payload["job_matches"][0]["revision"],
+            list_payload["results"][0]["revision"],
+        )
+
+    def test_assistant_and_ranked_endpoint_share_the_same_generation(self):
+        from crank.agents.job_search.tools import get_matches_for_user
+        from crank.services.match_recompute import recompute_user
+
+        outcome = recompute_user(self.owner, reason="preference")
+        self.client.force_login(self.owner)
+
+        ranked_payload = self.client.get("/api/job-matches/ranked/").json()
+        assistant_payload = get_matches_for_user(self.owner)
+
+        self.assertEqual(
+            [m["listing_id"] for m in ranked_payload["job_matches"]],
+            [m["listing_id"] for m in assistant_payload["job_matches"]],
+        )
+        self.assertEqual(
+            ranked_payload["job_matches"][0]["revision"],
+            assistant_payload["job_matches"][0]["revision"],
+        )
+        self.assertEqual(
+            assistant_payload["job_matches"][0]["revision"]["result_generation"],
+            outcome.generation,
+        )
+
+    def test_dismissed_row_is_hidden_from_committed_reads(self):
+        from crank.services.match_recompute import recompute_user
+
+        recompute_user(self.owner, reason="preference")
+        match = JobMatch.objects.get()
+        match.dismissed = True
+        match.save(update_fields=["dismissed", "modified"])
+        self.client.force_login(self.owner)
+        payload = self.client.get("/api/job-matches/").json()
+        self.assertEqual(payload["count"], 0)
+
+    @override_settings(MATCH_RESULTS_READ_ENABLED=False)
+    def test_gate_off_falls_back_to_live_even_with_a_generation(self):
+        from crank.services.match_recompute import recompute_user
+
+        recompute_user(self.owner, reason="preference")
+        self.client.force_login(self.owner)
+        payload = self.client.get("/api/job-matches/").json()
+        self.assertEqual(payload["count"], 1)
+
+    def test_deleted_preference_hides_committed_generation_from_every_read(self):
+        """issue #475 review finding 4 / owner decision: deleting the
+        preference hides stored matches even when a committed generation
+        exists, and the status endpoint reports the no-preferences state."""
+        from crank.services.match_recompute import recompute_user
+
+        recompute_user(self.owner, reason="preference")
+        match = JobMatch.objects.get()
+        self.client.force_login(self.owner)
+        self.assertEqual(self.client.get("/api/job-matches/").json()["count"], 1)
+
+        self.pref.delete()
+
+        self.assertEqual(self.client.get("/api/job-matches/").json()["count"], 0)
+        self.assertEqual(self.client.get(f"/api/job-matches/{match.pk}/").status_code, 404)
+        status_payload = self.client.get("/api/job-matches/status/").json()
+        self.assertEqual(status_payload["state"], "no_preferences")
+        self.assertTrue(JobMatch.objects.filter(pk=match.pk).exists())

@@ -425,10 +425,16 @@ AGENT_RUN_STALE_AFTER_SECONDS = _env_int("AGENT_RUN_STALE_AFTER_SECONDS", 3600)
 
 # Preference recompute hook (issue #466). Dotted path to a callable invoked
 # via transaction.on_commit after every committed preference change with
-# change_id = f"{user_id}:{post_apply_revision}"; empty (the default) is a
-# no-op. The durable recompute consumer belongs to #475; this is only the
-# identity emission point, so it is deliberately NOT a CapabilitySwitch key.
-PREFERENCE_RECOMPUTE_HOOK = os.environ.get("PREFERENCE_RECOMPUTE_HOOK", "").strip()
+# change_id = f"{user_id}:{post_apply_revision}"; the default resolves to
+# the issue #475 durable consumer's fast path
+# (crank.services.match_recompute.on_preference_committed), which itself
+# no-ops unless MATCH_RECOMPUTE_ENABLED and the match_recompute switch are
+# both on. The env var can still override it, and "" still disables it
+# entirely.
+PREFERENCE_RECOMPUTE_HOOK = os.environ.get(
+    "PREFERENCE_RECOMPUTE_HOOK",
+    "crank.services.match_recompute.on_preference_committed",
+).strip()
 
 # Transactional publication outbox consumer (issue #470). The consumer is off
 # by default: rollout is migrate -> record events -> enable the flag -> wire
@@ -437,6 +443,24 @@ PREFERENCE_RECOMPUTE_HOOK = os.environ.get("PREFERENCE_RECOMPUTE_HOOK", "").stri
 PUBLICATION_CONSUMER_ENABLED = _env_bool("PUBLICATION_CONSUMER_ENABLED", False)
 # Upper bound on pending events swept per publication_sweep invocation.
 PUBLICATION_SWEEP_BATCH_SIZE = _env_int("PUBLICATION_SWEEP_BATCH_SIZE", 500)
+
+# Versioned job-match recomputation (issue #475). Both flags default off;
+# rollout order and rollback are documented in docs/match-recompute.md.
+# MATCH_RECOMPUTE_ENABLED gates the inline preference-hook fast path and the
+# recompute_matches drain command (each also gated by the match_recompute
+# CapabilitySwitch). MATCH_RESULTS_READ_ENABLED gates reading the committed
+# generation on the ranked/list/status/assistant surfaces (match_results_read
+# switch); with it off, or with no committed generation yet, reads fall back
+# to today's live computation unchanged.
+MATCH_RECOMPUTE_ENABLED = _env_bool("MATCH_RECOMPUTE_ENABLED", False)
+MATCH_RESULTS_READ_ENABLED = _env_bool("MATCH_RESULTS_READ_ENABLED", False)
+# Bounded drain: users per recompute_matches invocation and its wall-clock
+# deadline in seconds.
+MATCH_RECOMPUTE_MAX_USERS = _env_int("MATCH_RECOMPUTE_MAX_USERS", 50)
+MATCH_RECOMPUTE_DEADLINE_SECONDS = _env_int("MATCH_RECOMPUTE_DEADLINE_SECONDS", 240)
+# A committed generation older than this many hours is generation-dirty (the
+# G8 watermark-gap backstop); 0 disables the age backstop.
+MATCH_RECOMPUTE_MAX_AGE_HOURS = _env_int("MATCH_RECOMPUTE_MAX_AGE_HOURS", 24)
 
 # Yelp Fusion source adapter (roadmap: docs/readme.md 8.2, phase 2). The name
 # ``YELP_API_KEY`` is read as a secret from the environment only; it is never

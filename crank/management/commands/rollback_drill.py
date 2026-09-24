@@ -74,6 +74,8 @@ GATE_FORCED_SETTINGS = {
     "CRAWL_CRON_ENABLED": True,
     "INTERACTIVE_AGENT_ENABLED": True,
     "PUBLICATION_CONSUMER_ENABLED": True,
+    "MATCH_RECOMPUTE_ENABLED": True,
+    "MATCH_RESULTS_READ_ENABLED": True,
 }
 
 
@@ -100,10 +102,11 @@ def gate_verifiers():
     from crank.management.commands import (
         agent_noop,
         gather_scores,
+        recompute_matches,
         run_job_pipeline,
         schedule_crawls,
     )
-    from crank.services import crawl_runs, publication
+    from crank.services import crawl_runs, match_results, publication
 
     return {
         "interactive_agent": llm_gates.is_interactive_agent_enabled,
@@ -113,6 +116,8 @@ def gate_verifiers():
         "crawl_schedule": schedule_crawls.Command().get_enabled,
         "crawl": crawl_runs.crawl_enabled,
         "publication_consumer": publication.consumer_enabled,
+        "match_recompute": recompute_matches.Command().get_enabled,
+        "match_results_read": match_results.read_enabled,
     }
 
 

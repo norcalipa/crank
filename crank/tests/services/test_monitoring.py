@@ -33,6 +33,22 @@ class MonitoringContractTests(TestCase):
         with self.assertRaises(ValueError):
             monitoring.event_attributes("raw_prompt", {})
 
+    def test_match_recompute_safe_keys_pass_through(self):
+        """issue #475: stale_discarded/duplicate_skipped are safe counters on
+        the matching_batch event."""
+        payload = monitoring.event_attributes(
+            "matching_batch",
+            {
+                "stage": "match_recompute",
+                "status": "completed",
+                "users_total": 3,
+                "stale_discarded": 1,
+                "duplicate_skipped": 2,
+            },
+        )
+        self.assertEqual(payload["stale_discarded"], 1)
+        self.assertEqual(payload["duplicate_skipped"], 2)
+
     def test_inventory_health_payload_excludes_violations(self):
         # Operator-only detail must never leak into the bounded telemetry event;
         # guards a future regression if "violations" were allowlisted.

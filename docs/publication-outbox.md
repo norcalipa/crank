@@ -29,6 +29,17 @@ Rejected alternatives (see the issue plan for full reasoning):
 - *Per-listing events* — unbounded row growth from ingestion; per-source
   events carry the same invalidation information.
 
+**LISTING events are keyed by source, not by listing.** The only LISTING-event
+writer, `record_source_publication` (`crank/services/job_ingest.py`), writes
+`target_id=source.pk` — one event covers every listing ingested from that
+source in the same transaction. Consumers that need a per-listing data
+revision (`crank.services.publication.listing_data_revisions`, used by the
+issue #475 match-recompute snapshot and the live matching service) must look
+up LISTING events by the listing's `source_id`, never by the listing's own
+`pk`; the two spaces coincidentally overlap in small test fixtures, which is
+why `crank/tests/agents/test_match_persist.py` covers the mismatch
+explicitly.
+
 ## Data model
 
 `PublicationEvent` (`crank_publicationevent`, migration

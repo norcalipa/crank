@@ -268,6 +268,24 @@ OK = "ok"
 # ---------------------------------------------------------------------------
 
 
+def _match_count(user) -> int:
+    """Active, non-dismissed match count for *user* (issue #475: the
+    committed generation when the read gate is on and one has been
+    published; otherwise today's live count, unchanged)."""
+    from crank.models.job_match import MatchResultState
+    from crank.services import match_results
+
+    if match_results.read_enabled() and MatchResultState.objects.filter(
+        user=user, current_generation__isnull=False
+    ).exists():
+        return match_results.current_match_count(user)
+    return JobMatch.objects.filter(
+        user=user,
+        dismissed=False,
+        listing__status=JobListing.Status.ACTIVE,
+    ).count()
+
+
 def derive_state(
     *,
     user,
@@ -460,11 +478,7 @@ def derive_state(
 
     # Check matches
     if match_count is None:
-        match_count = JobMatch.objects.filter(
-            user=user,
-            dismissed=False,
-            listing__status=JobListing.Status.ACTIVE,
-        ).count()
+        match_count = _match_count(user)
 
     if match_count > 0:
         if coverage is not None:
