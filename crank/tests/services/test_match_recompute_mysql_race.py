@@ -262,56 +262,100 @@ class MySqlRecomputeRaceTests(TransactionTestCase):
         self.assertEqual(state.current_generation, 2)
         self.assertEqual(JobMatch.objects.filter(user=self.user).count(), 1)
 
-    def test_user_deleted_racing_publish_returns_user_gone_without_error(self):
-        """A user deleted concurrently with an in-flight publish for that
-        user must never raise (issue #475 review round 2, MINOR finding 4):
-        the publish must cleanly report ``USER_GONE`` -- never crash the
-        recompute drain over one deleted user."""
+    def _snapshot_and_ranked(self):
         snapshot = open_snapshot(self.user, config=DEFAULT_CONFIG, max_listings=500)
         ranked = rank_listings(
             snapshot.listings, snapshot.criteria, DEFAULT_CONFIG, evidence=snapshot.evidence
         )
+        return snapshot, ranked
+
+    def _run_pair(self, first, second):
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(first), executor.submit(second)]
+            results = [future.result(timeout=60) for future in futures]
+        self.assertEqual(
+            [status for status, _ in results],
+            ["ok", "ok"],
+            f"deletion/publish race surfaced an error: {results}",
+        )
+        return results
+
+    def test_delete_wins_after_snapshot_publish_reports_user_gone(self):
+        """Explicit phases (issue #475 review round 3, MINOR finding 4): the
+        snapshot is taken, the delete commits, and only then does the
+        publish run -- it must cleanly report ``USER_GONE``."""
+        snapshot, ranked = self._snapshot_and_ranked()
         user_id = self.user.pk
-        barrier = threading.Barrier(2, timeout=30)
+        deleted = threading.Event()
 
         def _delete():
             try:
-                barrier.wait(timeout=30)
                 User.objects.filter(pk=user_id).delete()
+                deleted.set()
                 return ("ok", None)
             except Exception as exc:  # noqa: BLE001 - surfaced via the result
+                deleted.set()
                 return ("error", exc)
             finally:
                 connections.close_all()
 
         def _publish():
             try:
-                barrier.wait(timeout=30)
-                outcome = publish(snapshot, ranked)
+                self.assertTrue(deleted.wait(timeout=30))
+                return ("ok", publish(snapshot, ranked))
+            except Exception as exc:  # noqa: BLE001 - surfaced via the result
+                return ("error", exc)
+            finally:
+                connections.close_all()
+
+        results = self._run_pair(_delete, _publish)
+        self.assertEqual(results[1][1], PublishOutcome.USER_GONE)
+        self.assertFalse(User.objects.filter(pk=user_id).exists())
+        self.assertFalse(JobMatch.objects.filter(user_id=user_id).exists())
+
+    def test_publish_wins_delete_blocks_on_state_lock_until_commit(self):
+        """Explicit phases: the publish holds the ``MatchResultState`` row
+        lock (SLEEP inside the transaction) before the delete starts; the
+        delete must wait for the publish to commit, so the publish reports
+        ``PUBLISHED`` and the delete finishes strictly after it."""
+        snapshot, ranked = self._snapshot_and_ranked()
+        user_id = self.user.pk
+        publish_locked = threading.Event()
+        marks = {}
+
+        def _publish():
+            try:
+                with transaction.atomic():
+                    MatchResultState.objects.select_for_update().filter(
+                        user_id=user_id
+                    ).first()
+                    publish_locked.set()
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT SLEEP(0.5)")
+                    outcome = publish(snapshot, ranked)
+                marks["publish_committed"] = time.monotonic()
                 return ("ok", outcome)
             except Exception as exc:  # noqa: BLE001 - surfaced via the result
                 return ("error", exc)
             finally:
                 connections.close_all()
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [executor.submit(_delete), executor.submit(_publish)]
-            results = [future.result(timeout=60) for future in futures]
+        def _delete():
+            try:
+                self.assertTrue(publish_locked.wait(timeout=30))
+                User.objects.filter(pk=user_id).delete()
+                marks["delete_finished"] = time.monotonic()
+                return ("ok", None)
+            except Exception as exc:  # noqa: BLE001 - surfaced via the result
+                return ("error", exc)
+            finally:
+                connections.close_all()
 
-        self.assertEqual(
-            [status for status, _ in results],
-            ["ok", "ok"],
-            f"deletion/publish race surfaced an error: {results}",
-        )
-        publish_outcome = results[1][1]
-        # Whichever side's transaction commits first, the publish must
-        # either fully succeed (it won the race) or cleanly report
-        # USER_GONE (the delete won) -- never raise and never leave a
-        # half-written MatchResultState/JobMatch pair.
-        self.assertIn(
-            publish_outcome, (PublishOutcome.PUBLISHED, PublishOutcome.USER_GONE)
-        )
+        results = self._run_pair(_publish, _delete)
+        self.assertEqual(results[0][1], PublishOutcome.PUBLISHED)
+        self.assertGreaterEqual(marks["delete_finished"], marks["publish_committed"])
         self.assertFalse(User.objects.filter(pk=user_id).exists())
+        self.assertFalse(MatchResultState.objects.filter(user_id=user_id).exists())
 
     def test_concurrent_snapshot_serializes_behind_an_in_flight_publish(self):
         """A snapshot attempted while a publish holds the

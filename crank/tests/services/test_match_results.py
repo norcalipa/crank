@@ -277,7 +277,7 @@ class LoadCurrentTests(TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].result_generation, state.current_generation)
 
-    def test_returns_best_effort_snapshot_when_retries_are_exhausted(self):
+    def test_fails_closed_to_locked_consistent_read_when_retries_are_exhausted(self):
         """Under sustained concurrent publishing that never lets the read
         stabilize, ``load_current`` must give up after its bounded retry
         count and return the last snapshot it read, rather than looping
@@ -308,11 +308,16 @@ class LoadCurrentTests(TestCase):
         recompute_user(self.user, reason="preference")
 
         real_queryset = match_results.current_generation_queryset
+        calls = []
 
         def _always_interleaving_queryset(user, *, generation=None):
             # Every attempt races a fresh publish in between reading the
             # generation and materializing rows, so the read can never
             # stabilize within the bounded retry count.
+            calls.append(generation)
+            if len(calls) > match_results._LOAD_CURRENT_MAX_ATTEMPTS:
+                # The final, locked read must not be raced.
+                return real_queryset(user, generation=generation)
             pref = UserPreference.objects.get(user=user)
             pref.revision += 1
             pref.save(update_fields=["revision", "modified"])
@@ -326,11 +331,100 @@ class LoadCurrentTests(TestCase):
         ):
             state, rows = match_results.load_current(self.user)
 
-        # A best-effort (state, rows) pair is still returned -- never an
-        # infinite loop or an exception -- even though it may already be
-        # superseded by the time the caller sees it.
-        self.assertIsNotNone(state)
-        self.assertIsInstance(rows, list)
+        # The returned pair is the full, consistent current generation --
+        # never one of the attempts proven inconsistent.
+        self.assertEqual(len(calls), match_results._LOAD_CURRENT_MAX_ATTEMPTS + 1)
+        current = MatchResultState.objects.get(user=self.user)
+        self.assertEqual(state.pk, current.pk)
+        self.assertEqual(state.current_generation, current.current_generation)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].listing.external_id, "engineer")
+        self.assertEqual(rows[0].result_generation, state.current_generation)
+
+    def test_locked_final_read_returns_none_when_generation_disappears(self):
+        UserPreference.objects.create(user=self.user, revision=0)
+        state = MatchResultState.objects.create(user=self.user, current_generation=1)
+
+        def _clear_generation(user, *, generation=None):
+            MatchResultState.objects.filter(pk=state.pk).update(current_generation=None)
+            return JobMatch.objects.none()
+
+        with unittest.mock.patch.object(
+            match_results, "_LOAD_CURRENT_MAX_ATTEMPTS", 1
+        ), unittest.mock.patch.object(
+            match_results, "current_generation_queryset", side_effect=_clear_generation
+        ):
+            self.assertEqual(match_results.load_current(self.user), (None, []))
+
+
+class StalenessPredicateTests(TestCase):
+    """``is_stale``/``revision_block`` mirror the recompute predicates
+    (issue #475 review round 3)."""
+
+    def setUp(self):
+        self.user = User.objects.create_user("owner", password="secret")
+        self.pref = UserPreference.objects.create(user=self.user, revision=0)
+        self.state = MatchResultState.objects.create(
+            user=self.user,
+            current_generation=1,
+            issued_generation=1,
+            preference_revision=self.pref.revision,
+            preference_version=self.pref.schema_version,
+            ranker_version=match_results.DEFAULT_CONFIG.version,
+            data_revision=5,
+        )
+
+    def test_current_when_watermark_not_advanced(self):
+        self.assertFalse(match_results.is_stale(self.state, self.pref, watermark=5))
+        self.assertFalse(match_results.is_stale(self.state, self.pref, watermark=None))
+
+    def test_advanced_data_watermark_is_stale(self):
+        self.assertTrue(match_results.is_stale(self.state, self.pref, watermark=6))
+
+    def test_null_data_revision_is_stale_when_watermark_exists(self):
+        self.state.data_revision = None
+        self.assertTrue(match_results.is_stale(self.state, self.pref, watermark=1))
+
+    def test_default_watermark_is_read_from_publication_events(self):
+
+        self.assertFalse(match_results.is_stale(self.state, self.pref))
+        with unittest.mock.patch.object(
+            match_results, "data_watermark", return_value=99
+        ) as reader:
+            self.assertTrue(match_results.is_stale(self.state, self.pref))
+        reader.assert_called_once_with()
+
+    def test_in_flight_recompute_is_stale(self):
+        self.state.issued_generation = 2
+        self.assertTrue(match_results.is_stale(self.state, self.pref, watermark=5))
+
+    @override_settings(MATCH_RECOMPUTE_ENABLED=True)
+    def test_pending_follows_stale_from_data_watermark(self):
+        stale = match_results.is_stale(self.state, self.pref, watermark=6)
+        self.assertTrue(match_results.revision_block(self.state, stale=stale)["pending"])
+
+    @override_settings(MATCH_RECOMPUTE_ENABLED=False)
+    def test_pending_false_when_recompute_disabled(self):
+        block = match_results.revision_block(self.state, stale=True)
+        self.assertTrue(block["stale"])
+        self.assertFalse(block["pending"])
+
+    def test_delete_then_recreate_preference_is_dirty_not_current(self):
+        """Regression (round 3, disproved finding): the revision floor keeps
+        revisions monotonic across delete -> recreate, so a recreated
+        preference never equals the retained state's revision."""
+        from crank.services.preferences import _create_or_fetch, delete_user_preference
+
+        self.state.preference_revision = 3
+        self.state.save(update_fields=["preference_revision"])
+        self.pref.revision = 3
+        self.pref.save(update_fields=["revision"])
+        delete_user_preference(self.user)
+        recreated = _create_or_fetch(self.user)
+        if isinstance(recreated, tuple):
+            recreated = recreated[0]
+        self.assertGreater(recreated.revision, self.state.preference_revision)
+        self.assertTrue(match_results.is_stale(self.state, recreated, watermark=5))
 
 
 class TagMismatchTests(TestCase):
