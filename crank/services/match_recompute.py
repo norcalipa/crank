@@ -24,7 +24,7 @@ from enum import Enum
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.db.models import F, Q
+from django.db.models import Exists, F, OuterRef, Q
 
 from crank.agents.jobs.match_persist import (
     PublishOutcome,
@@ -170,7 +170,7 @@ def _preference_dirty_qs():
     return UserPreference.objects.filter(no_state | mismatch)
 
 
-def _generation_dirty_tiers(exclude_user_ids=()):
+def _generation_dirty_tiers(exclude_user_ids=(), exclude_preference_dirty=False):
     """The four generation-dirty tiers (issue #475 review round 2, MINOR
     finding 5): stale data watermark, ranker-version mismatch, an
     interrupted run (a ticket issued but never published), and the age
@@ -194,6 +194,12 @@ def _generation_dirty_tiers(exclude_user_ids=()):
         .exclude(user_id__in=list(exclude_user_ids))
         .exclude(user__preferences__isnull=True)
     )
+    if exclude_preference_dirty:
+        # Correlated Exists (no materialized id list): one statement per
+        # tier count, O(1) memory.
+        base_qs = base_qs.exclude(
+            Exists(_preference_dirty_qs().filter(user_id=OuterRef("user_id")))
+        )
     if watermark:
         stale_data = Q(data_revision__isnull=True) | Q(data_revision__lt=watermark)
     else:
@@ -272,15 +278,12 @@ def pending_counts(limit):
     at once), so they don't sum to ``total_capped``.
     """
     limit = max(0, int(limit))
-    preference_dirty_ids = list(
-        _preference_dirty_qs().values_list("user_id", flat=True)
-    )
     generation_dirty_qs, tiers = _generation_dirty_tiers(
-        exclude_user_ids=preference_dirty_ids
+        exclude_preference_dirty=True
     )
     return {
         "limit": limit,
-        "preference_dirty": len(preference_dirty_ids),
+        "preference_dirty": _preference_dirty_qs().count(),
         "generation_dirty_data_stale": generation_dirty_qs.filter(
             tiers["data_stale"]
         ).count(),

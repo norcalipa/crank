@@ -172,25 +172,39 @@ class JobMatchStatusViewTests(TestCase):
             user=self.user, current_generation=1, issued_generation=1
         )
         now = timezone.now()
-        JobMatch.objects.create(
-            user=self.user,
-            listing=listing,
-            organization=self.organization,
-            preference_version=1,
-            ranker_version="1.0.0",
-            score=80,
-            factors=[],
-            first_matched_at=now,
-            last_matched_at=now,
-            result_generation=1,
-        )
+
+        def _row(listing_, generation, **extra):
+            return JobMatch.objects.create(
+                user=self.user,
+                listing=listing_,
+                organization=self.organization,
+                preference_version=1,
+                ranker_version="1.0.0",
+                score=80,
+                factors=[],
+                first_matched_at=now,
+                last_matched_at=now,
+                result_generation=generation,
+                **extra,
+            )
+
+        _row(listing, 1)
+        # Decoys that must not change what the single COUNT is run over:
+        # an old-generation row, a dismissed row, an inactive-listing row.
+        _row(self.make_listing(source, "Old"), 0)
+        _row(self.make_listing(source, "Dismissed"), 1, dismissed=True)
+        _row(self.make_listing(source, "Closed", JobListing.Status.CLOSED), 1)
         self.client.force_login(self.user)
         with CaptureQueriesContext(connection) as queries:
             response = self.client.get("/api/job-matches/status/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["state"], "ok")
-        counts = [q["sql"] for q in queries if q["sql"].startswith("SELECT COUNT")]
-        self.assertTrue(counts)
+        counts = [
+            q["sql"]
+            for q in queries
+            if q["sql"].startswith("SELECT COUNT") and "crank_jobmatch" in q["sql"]
+        ]
+        self.assertEqual(len(counts), 1, counts)
         self.assertFalse(
             [q for q in queries if "crank_jobmatch" in q["sql"] and "requirements" in q["sql"]]
         )

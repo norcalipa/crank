@@ -419,3 +419,79 @@ class MySqlRecomputeRaceTests(TransactionTestCase):
         # released the row lock at commit, so it must have waited for
         # roughly the sleep duration rather than reading a half-updated row.
         self.assertGreaterEqual(elapsed, 0.3)
+
+    def _run_locked_load_current_blocks_publish(self, *, outer_atomic):
+        """The reader holds the state lock mid-materialization (the fail-closed
+        locked read), signalled with explicit events; a concurrent publish
+        must not finish until the reader commits."""
+        from unittest import mock
+
+        from crank.services import match_results
+
+        recompute_user(self.user, reason="preference")
+        snapshot, ranked = self._snapshot_and_ranked_force()
+        real_queryset = match_results.current_generation_queryset
+        in_materialization = threading.Event()
+        release_reader = threading.Event()
+        marks = {}
+
+        def _held_queryset(user, *, generation=None):
+            in_materialization.set()
+            self.assertTrue(release_reader.wait(timeout=30))
+            return real_queryset(user, generation=generation)
+
+        def _reader():
+            try:
+                # Zero optimistic attempts: go straight to the locked read.
+                with mock.patch.object(
+                    match_results, "_LOAD_CURRENT_MAX_ATTEMPTS", 0
+                ), mock.patch.object(
+                    match_results, "current_generation_queryset", _held_queryset
+                ):
+                    if outer_atomic:
+                        with transaction.atomic():
+                            result = match_results.load_current(self.user)
+                            marks["reader_done"] = time.monotonic()
+                    else:
+                        result = match_results.load_current(self.user)
+                        marks["reader_done"] = time.monotonic()
+                return ("ok", result)
+            except Exception as exc:  # noqa: BLE001 - surfaced via the result
+                return ("error", exc)
+            finally:
+                connections.close_all()
+
+        def _publisher():
+            try:
+                self.assertTrue(in_materialization.wait(timeout=30))
+                threading.Timer(0.7, release_reader.set).start()
+                outcome = publish(snapshot, ranked)
+                marks["publish_done"] = time.monotonic()
+                return ("ok", outcome)
+            except Exception as exc:  # noqa: BLE001 - surfaced via the result
+                return ("error", exc)
+            finally:
+                connections.close_all()
+
+        results = self._run_pair(_reader, _publisher)
+        state, rows = results[0][1]
+        self.assertEqual(results[1][1], PublishOutcome.PUBLISHED)
+        # The reader saw the pre-publish generation as one consistent pair...
+        self.assertTrue(all(r.result_generation == state.current_generation for r in rows))
+        # ...and the publish could only commit after the reader released.
+        self.assertGreaterEqual(marks["publish_done"], marks["reader_done"])
+
+    def _snapshot_and_ranked_force(self):
+        snapshot = open_snapshot(
+            self.user, config=DEFAULT_CONFIG, max_listings=500, force=True
+        )
+        ranked = rank_listings(
+            snapshot.listings, snapshot.criteria, DEFAULT_CONFIG, evidence=snapshot.evidence
+        )
+        return snapshot, ranked
+
+    def test_locked_load_current_blocks_publish_until_reader_commits(self):
+        self._run_locked_load_current_blocks_publish(outer_atomic=False)
+
+    def test_locked_load_current_inside_outer_atomic_blocks_publish_until_commit(self):
+        self._run_locked_load_current_blocks_publish(outer_atomic=True)

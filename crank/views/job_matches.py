@@ -249,6 +249,8 @@ def job_match_seen(request, match_id):
     the same state row :func:`crank.agents.jobs.match_persist.publish` uses
     serializes the two.
     """
+    if not _preference_exists(request.user):
+        raise Http404
     match = get_object_or_404(
         JobMatch.objects.select_related("listing", "organization"),
         pk=match_id,
@@ -281,6 +283,8 @@ def job_match_dismiss(request, match_id):
     Updates every version-row for ``(user, listing)`` under the
     ``MatchResultState`` lock, for the same reason as :func:`job_match_seen`.
     """
+    if not _preference_exists(request.user):
+        raise Http404
     match = get_object_or_404(
         JobMatch.objects.select_related("listing", "organization"),
         pk=match_id,
