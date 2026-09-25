@@ -1629,10 +1629,39 @@ describe('OrganizationList', () => {
             expect(chip.getAttribute('aria-label')).toContain('averyveryverylongsearchvalue');
         });
 
-        test('falls back to raw codes when a label is missing', () => {
+        test('shows placeholders, not raw codes, while labels load, and a spinner beside the loading copy', () => {
+            global.fetch = jest.fn().mockImplementation(() => new Promise(() => {}));
+            render(<OrganizationList organizations={organizations} />);
+            const loading = screen.getByTestId('choices-status-loading');
+            expect(loading.querySelector('.spinner-border')).toHaveAttribute('aria-hidden', 'true');
+            expect(screen.queryByText(organizations[0].funding_round)).not.toBeInTheDocument();
+            expect(screen.queryByText(organizations[0].rto_policy)).not.toBeInTheDocument();
+            expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+        });
+
+        test('falls back to raw codes once loading has finished and a label is missing', async () => {
             global.fetch = jest.fn().mockImplementation(() => Promise.resolve({ok: true, json: () => Promise.resolve({})}));
             render(<OrganizationList organizations={organizations} />);
+            await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
             expect(screen.getAllByText(organizations[0].funding_round).length).toBeGreaterThan(0);
+        });
+
+        test('zero results read "Showing 0 organizations" and use a bounded empty panel', () => {
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.change(screen.getByLabelText('Search organizations'), {target: {value: 'zzz-no-match'}});
+            expect(screen.getByText('Showing 0 organizations')).toBeInTheDocument();
+            expect(screen.queryByText(/0-0 of 0/)).not.toBeInTheDocument();
+            expect(screen.getByRole('alert')).toHaveClass('organization-empty-state');
+        });
+
+        test('rows and cards carry the full name in title and the table and cards share one results container', () => {
+            const {container} = render(<OrganizationList organizations={organizations} />);
+            const name = organizations[0].name;
+            expect(container.querySelector('.organization-name')).toHaveAttribute('title', name);
+            expect(container.querySelector('.organization-card-name')).toHaveAttribute('title', name);
+            const results = container.querySelector('.organization-results')!;
+            expect(results.querySelector('.organization-table-wrap')).not.toBeNull();
+            expect(results.querySelector('.organization-cards')).not.toBeNull();
         });
     });
 });

@@ -454,9 +454,41 @@ body.app-nav-drawer-open {
 }
 
 .how-ranking-works-summary {
+    display: flex;
+    align-items: center;
+    gap: .625rem;
+    min-height: 44px;
     cursor: pointer;
     padding: .5rem .75rem;
     font-weight: 600;
+    list-style: none;
+}
+
+.how-ranking-works-summary::-webkit-details-marker {
+    display: none;
+}
+
+/* Visible disclosure chevron at every width; points right when closed and
+   down when open (non-color cue for the state). */
+.how-ranking-works-summary::before {
+    content: '';
+    flex: 0 0 auto;
+    width: .5rem;
+    height: .5rem;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(-45deg);
+    transition: transform .15s ease;
+}
+
+.how-ranking-works[open] > .how-ranking-works-summary::before {
+    transform: rotate(45deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .how-ranking-works-summary::before {
+        transition: none;
+    }
 }
 
 .how-ranking-works-content {
@@ -479,7 +511,16 @@ body.app-nav-drawer-open {
 }
 
 .choices-status {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
     font-size: .875rem;
+}
+
+/* Empty state: a bounded panel on wide screens, full width on phones. */
+.organization-empty-state {
+    max-width: 48rem;
+    padding: 1.25rem;
 }
 
 .choices-status-error {
@@ -635,41 +676,98 @@ body.app-nav-drawer-open {
 }
 
 .organization-table {
-    min-width: 40rem;
+    table-layout: fixed;
+    width: 100%;
+    min-width: 48rem;
     margin-bottom: 0;
 }
 
-@media (min-width: 768px) {
-    .organization-table {
-        table-layout: fixed;
-        width: 100%;
-        min-width: 48rem;
-    }
+.organization-table .col-rank { width: 5rem; }
+.organization-table .col-score { width: 9rem; }
+.organization-table .col-funding { width: 9rem; }
+.organization-table .col-rto { width: 8rem; }
+.organization-table .col-profile { width: 9rem; }
+.organization-table .col-name { width: auto; }
 
-    .organization-table .col-rank { width: 5rem; }
-    .organization-table .col-score { width: 9rem; }
-    .organization-table .col-funding { width: 9rem; }
-    .organization-table .col-rto { width: 8rem; }
-    .organization-table .col-profile { width: 9rem; }
-    .organization-table .col-name { width: auto; }
-
-    .organization-table th,
-    .organization-table td {
-        overflow-wrap: anywhere;
-    }
+.organization-table th,
+.organization-table td {
+    overflow-wrap: anywhere;
 }
 
-.organization-table-wrap::before {
-    content: 'Swipe horizontally to view all organization details';
-    display: none;
-    padding: .5rem .75rem;
-    font-size: .875rem;
-    color: var(--bs-secondary-color);
-    background: var(--bs-tertiary-bg);
+/* Extreme names stay bounded in the table row (full name in the title
+   attribute and the row's accessible label). */
+.organization-table .organization-name {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
+    overflow-wrap: anywhere;
 }
 
 .organization-cards {
     display: none;
+}
+
+/* The table-to-card switch follows the width available to the results (not
+   the viewport), so it also holds when a side panel narrows the page (#479).
+   48rem is the table's minimum width. */
+.organization-results {
+    container: organization-results / inline-size;
+}
+
+@container organization-results (max-width: 48rem) {
+    .organization-table-wrap {
+        display: none;
+    }
+
+    .organization-cards {
+        display: grid;
+        gap: .75rem;
+    }
+
+    .organization-card .card-body {
+        display: grid;
+        /* Two columns on phones, all three facts on one row when wider. */
+        grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr));
+        gap: .375rem 1rem;
+        padding: .75rem 1rem;
+    }
+
+    /* Company names keep the same link affordance as the desktop table and
+       clamp to two lines; the full name stays in the title attribute and the
+       card's accessible label. */
+    .organization-card .organization-card-name {
+        grid-column: 1 / -1;
+        margin: 0;
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        line-clamp: 2;
+        overflow: hidden;
+        overflow-wrap: anywhere;
+        color: var(--bs-link-color);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+    }
+
+    .organization-card .organization-card-score {
+        grid-column: 1 / -1;
+        font-size: 1.25rem;
+        font-weight: 700;
+    }
+
+    .organization-card .organization-card-label {
+        display: block;
+        color: var(--bs-secondary-color);
+        font-size: .75rem;
+        font-weight: 400;
+    }
+
+    .organization-card .card-body > div {
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
 }
 
 .organization-card {
@@ -885,32 +983,6 @@ body.app-nav-drawer-open {
         padding-top: .25rem;
     }
 
-    .how-ranking-works-summary {
-        min-height: 3.25rem;
-        display: flex;
-        align-items: center;
-    }
-
-    .organization-table-wrap::before {
-        display: block;
-    }
-
-    .organization-table-wrap {
-        display: none;
-    }
-
-    .organization-cards {
-        display: grid;
-        gap: .75rem;
-    }
-
-    /* Company names keep the same link affordance as the desktop table: */
-    .organization-card .organization-card-name {
-        color: var(--bs-link-color);
-        text-decoration: underline;
-        text-underline-offset: 2px;
-    }
-
     /* Comfortable touch targets for controls users tap on phones. */
     #job-search-chat .btn-group .btn {
         min-height: 44px;
@@ -918,28 +990,6 @@ body.app-nav-drawer-open {
 
     button[data-testid='suggest-company-btn'] {
         min-height: 44px;
-    }
-
-    .organization-card .card-body {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: .5rem 1rem;
-    }
-
-    .organization-card .organization-card-name {
-        grid-column: 1 / -1;
-        overflow-wrap: anywhere;
-    }
-
-    .organization-card .organization-card-score {
-        font-size: 1.25rem;
-        font-weight: 700;
-    }
-
-    .organization-card .organization-card-label {
-        display: block;
-        color: var(--bs-secondary-color);
-        font-size: .8rem;
     }
 
     .popup-details {
@@ -1516,14 +1566,6 @@ body.app-nav-drawer-open {
         padding-right: .75rem;
     }
 
-    .organization-card .card-body {
-        grid-template-columns: 1fr;
-    }
-
-    .organization-card .organization-card-name,
-    .organization-card .organization-card-score {
-        grid-column: auto;
-    }
 }
 
 /* Job-search result cards (issue #396) */

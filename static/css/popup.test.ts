@@ -324,3 +324,31 @@ describe('blocking-dialog close targets and row focus perimeter (issue #464 r2)'
         expect(grouped).not.toBeNull();
     });
 });
+
+describe('rankings responsive layout, name clamping and disclosure (issue #478 visual round 2)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const containerBlock = popupCss.match(/@container organization-results \(max-width: 48rem\) \{[\s\S]*?\n\}\n/)![0];
+
+    it('switches table to cards on the results container width, not the viewport', () => {
+        expect(popupCss).toMatch(/\.organization-results\s*\{[^}]*container:\s*organization-results\s*\/\s*inline-size/);
+        expect(containerBlock).toMatch(/\.organization-table-wrap\s*\{\s*display:\s*none/);
+        expect(containerBlock).toMatch(/\.organization-cards\s*\{[^}]*display:\s*grid/);
+        expect(popupCss).not.toMatch(/@media[^{]*\{[^@]*\.organization-cards\s*\{[^}]*display:\s*grid/);
+    });
+
+    it('clamps card and table names and lays card metadata out in a compact auto-fill grid', () => {
+        expect(containerBlock).toMatch(/\.organization-card-name\s*\{[^}]*-webkit-line-clamp:\s*2[^}]*overflow-wrap:\s*anywhere/);
+        expect(containerBlock).toMatch(/\.organization-card \.card-body\s*\{[^}]*repeat\(auto-fill,\s*minmax\(6\.5rem/);
+        expect(popupCss).toMatch(/\.organization-table \.organization-name\s*\{[^}]*-webkit-line-clamp:\s*3/);
+    });
+
+    it('draws a rotating disclosure chevron at every width and honours reduced motion', () => {
+        expect(popupCss).toMatch(/\.how-ranking-works-summary::before\s*\{[^}]*rotate\(-45deg\)/);
+        expect(popupCss).toMatch(/\.how-ranking-works\[open\] > \.how-ranking-works-summary::before\s*\{[^}]*rotate\(45deg\)/);
+        expect(popupCss).toMatch(/prefers-reduced-motion: reduce\)\s*\{\s*\.how-ranking-works-summary::before\s*\{\s*transition:\s*none/);
+    });
+
+    it('bounds the empty-state panel', () => {
+        expect(popupCss).toMatch(/\.organization-empty-state\s*\{[^}]*max-width:\s*48rem[^}]*padding:\s*1\.25rem/);
+    });
+});

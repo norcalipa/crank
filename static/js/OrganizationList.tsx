@@ -433,6 +433,11 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         const scoreLabel = currentPreset ? `Company score (${currentPreset.name})` : 'Company score';
         const isEmpty = filteredOrganizations.length === 0;
 
+        // Raw codes only appear as the explained error fallback; while the
+        // labels load a placeholder keeps the cell from flashing "H"/"R".
+        const choiceLabel = (choices: Record<string, string>, code: string) =>
+            choices[code] ?? (choicesStatus === 'loading' ? '—' : code);
+
         const renderPager = (position: 'top' | 'bottom') => (
 <nav aria-label={`Organization pagination${position === 'bottom' ? ' (bottom)' : ''}`}>
                 <ul className="pagination">
@@ -502,8 +507,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     <label className="form-check-label" htmlFor="acceleratedVesting">Show only companies with first vesting in &lt; 1 year</label>
                 </div>
                 <div className="rankings-toolbar-count" role="status" aria-live="polite">
-                    <div className="organization-results-count">{`Showing ${firstResult}-${lastResult} of ${filteredOrganizations.length} organizations`}</div>
-                    {choicesStatus === 'loading' && <div className="choices-status text-muted" data-testid="choices-status-loading">Loading funding round and RTO labels…</div>}
+                    <div className="organization-results-count">{isEmpty ? 'Showing 0 organizations' : `Showing ${firstResult}-${lastResult} of ${filteredOrganizations.length} organizations`}</div>
+                    {choicesStatus === 'loading' && <div className="choices-status text-muted" data-testid="choices-status-loading"><span className="spinner-border spinner-border-sm" aria-hidden="true"></span><span>Loading funding round and RTO labels…</span></div>}
                     {choicesStatus === 'error' && <div className="choices-status choices-status-error alert alert-danger py-1 px-2 mt-1 mb-0" data-testid="choices-status-error">
                         <span>Couldn't load funding round and RTO labels, so raw codes are shown instead.</span>{' '}
                         <button type="button" className="btn btn-outline-danger btn-sm" data-testid="choices-retry" onClick={this.loadChoices}>Retry</button>
@@ -520,12 +525,13 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             </div>
             {pageCount > 1 && renderPager('top')}
 
-            {filteredOrganizations.length === 0 ? (<div className="alert alert-secondary" role="alert">
+            {filteredOrganizations.length === 0 ? (<div className="alert alert-secondary organization-empty-state" role="alert">
                 <h2 className="h5">No organizations found</h2>
                 <p>There are no organizations that match your search or filters.</p>
                 {(searchTerm || acceleratedVesting) && <button type="button" className="btn btn-primary" onClick={this.handleClearFilters}>Clear search and filters</button>}
                 {(this.props.canSuggestCompany || this.props.isAuthenticated) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0 suggest-company-empty" data-testid="suggest-company-empty-btn" onClick={() => this.handleOpenSuggestModal('rankings_empty')}>Suggest a company</button> for evaluation.</p>}
             </div>) : (<>
+                <div className="organization-results">
                 <div className="organization-table-wrap" role="region" aria-label="Organization rankings" tabIndex={0}>
                     <table className="table organization-table">
                         <caption className="visually-hidden">Organizations ranked by the selected scoring algorithm</caption>
@@ -555,10 +561,10 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             className="organization-row"
                         >
                             <td className="col-rank">{org.ranking}</td>
-                            <td className="col-name"><span className="organization-name">{org.name}</span></td>
+                            <td className="col-name"><span className="organization-name" title={org.name}>{org.name}</span></td>
                             <td className="col-score">{org.avg_score.toFixed(2)}</td>
-                            <td className="col-funding">{fundingRoundChoices[org.funding_round] ?? org.funding_round}</td>
-                            <td className="col-rto">{rtoPolicyChoices[org.rto_policy] ?? org.rto_policy}</td>
+                            <td className="col-funding">{choiceLabel(fundingRoundChoices, org.funding_round)}</td>
+                            <td className="col-rto">{choiceLabel(rtoPolicyChoices, org.rto_policy)}</td>
                             <td className="col-profile">{org.profile_completeness.toFixed(0)}%</td>
                         </tr>))}
                         </tbody>
@@ -581,18 +587,18 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             aria-label={`View details for ${org.name}`}
                         >
                             <div className="card-body">
-                                <h2 className="h5 organization-card-name">{org.name}</h2>
+                                <h2 className="h5 organization-card-name" title={org.name}>{org.name}</h2>
                                 <div className="organization-card-score">
                                     <span className="organization-card-label">{scoreLabel}</span>
                                     #{org.ranking} · {org.avg_score.toFixed(2)}
                                 </div>
                                 <div>
                                     <span className="organization-card-label">RTO policy</span>
-                                    {rtoPolicyChoices[org.rto_policy] ?? org.rto_policy}
+                                    {choiceLabel(rtoPolicyChoices, org.rto_policy)}
                                 </div>
                                 <div>
                                     <span className="organization-card-label">Funding round</span>
-                                    {fundingRoundChoices[org.funding_round] ?? org.funding_round}
+                                    {choiceLabel(fundingRoundChoices, org.funding_round)}
                                 </div>
                                 <div>
                                     <span className="organization-card-label">Profile completeness</span>
@@ -601,6 +607,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             </div>
                         </article>
                     ))}
+                </div>
                 </div>
                 {pageCount > 1 && renderPager('bottom')}
             </>)}

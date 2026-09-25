@@ -78,7 +78,8 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await expect(page.locator('[data-testid="assistant-panel"]')).toBeVisible();
         await expect(page.locator('[data-testid="assistant-panel"]')).not.toHaveAttribute('aria-modal');
         // Non-modal: a background control still takes focus and activates.
-        const firstRow = page.locator('.organization-row, .organization-card').first();
+        // The rankings switch table→cards on the results container width (#478), so target whichever layout is visible.
+        const firstRow = page.locator('.organization-row:visible, .organization-card:visible').first();
         await firstRow.focus();
         await expect(firstRow).toBeFocused();
         await page.keyboard.press('Escape');
