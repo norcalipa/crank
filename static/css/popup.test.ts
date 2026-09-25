@@ -3,13 +3,14 @@
 import fs from 'fs';
 import path from 'path';
 
-describe('desktop scoring panel styles', () => {
-    it('keeps closed details content visible at the desktop breakpoint', () => {
-        const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+describe('rankings toolbar and disclosure styles (issue #478)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
 
-        expect(popupCss).toMatch(
-            /@media \(min-width: 768px\)[\s\S]*?\.scoring-panel > \.scoring-panel-content \{\s*display: block;\s*\}/,
-        );
+    it('defines the toolbar, chip and disclosure rules and drops the side-column scoring panel', () => {
+        expect(popupCss).toMatch(/\.rankings-toolbar\s*\{[^}]*flex-wrap:\s*wrap/);
+        expect(popupCss).toMatch(/\.filter-chip-text\s*\{[^}]*overflow-wrap:\s*anywhere/);
+        expect(popupCss).toMatch(/\.how-ranking-works\s*\{/);
+        expect(popupCss).not.toMatch(/\.scoring-(panel|summary)/);
     });
 });
 

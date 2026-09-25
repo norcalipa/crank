@@ -15,6 +15,7 @@ from crank.management.commands.seed_e2e import (
     DEFAULT_E2E_PASSWORD,
     E2E_USERNAME,
     FIXTURE_SOURCE_NAME,
+    PRESET_ALGORITHM_NAME,
     RATING_SOURCE_ORG_NAME,
     TARGET_ORGS,
 )
@@ -66,6 +67,17 @@ class SeedE2ECommandTests(TestCase):
         self.assertTrue(listing.is_remote)
         self.assertIsNotNone(listing.organization)
 
+    def test_seeds_one_extra_active_ranking_preset(self):
+        call_command("seed_e2e", stdout=StringIO())
+        call_command("seed_e2e", stdout=StringIO())
+        preset = ScoreAlgorithm.objects.get(name=PRESET_ALGORITHM_NAME)
+        self.assertEqual(preset.status, 1)
+        self.assertNotEqual(preset.id, DEFAULT_ALGORITHM_ID)
+        self.assertEqual(ScoreAlgorithm.objects.filter(name=PRESET_ALGORITHM_NAME).count(), 1)
+        self.assertTrue(
+            ScoreAlgorithmWeight.objects.filter(algorithm=preset, type__name="Culture", status=1).exists()
+        )
+
     def test_is_idempotent(self):
         call_command("seed_e2e", stdout=StringIO())
         before = {
@@ -96,6 +108,7 @@ class SeedE2ECommandTests(TestCase):
                 type=culture, source__name=RATING_SOURCE_ORG_NAME
             ).order_by("pk"),
             ScoreAlgorithm.objects.filter(id=DEFAULT_ALGORITHM_ID),
+            ScoreAlgorithm.objects.filter(name=PRESET_ALGORITHM_NAME),
             ScoreAlgorithmWeight.objects.filter(
                 algorithm_id=DEFAULT_ALGORITHM_ID, type=culture
             ),

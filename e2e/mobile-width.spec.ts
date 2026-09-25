@@ -180,7 +180,7 @@ for (const width of mobileViewports) {
             // The hamburger gets its own reserved band: it must not overlay the
             // page heading (audit on #456 measured the fixed toggle overlapping
             // the "Company rankings" heading at every phone width).
-            await expectTopbarReservesBand(page, '#organization-list h1', 'rankings heading');
+            await expectTopbarReservesBand(page, 'main h1', 'rankings heading');
 
             await expectHitTestable(page, '#organization-search', 'organization search input');
             await expectHitTestable(page, '#acceleratedVesting', 'accelerated vesting checkbox');
@@ -243,6 +243,9 @@ test.describe('zoom resilience (mobile 375px)', () => {
         await page.addStyleTag({content: 'html { font-size: 200% !important; }'});
 
         await expectNoHorizontalOverflow(page);
+        // The page heading and goal line now sit above the toolbar (issue
+        // #478), so at 200% zoom the user scrolls the search into view.
+        await page.locator('#organization-search').scrollIntoViewIfNeeded();
         await expectHitTestable(page, '#organization-search', 'organization search input at 200% text zoom');
         // At 200% text zoom the card list stacks taller and the first card
         // sits below the fold in normal flow; a user scrolls to it, so
