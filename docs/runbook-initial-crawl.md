@@ -16,7 +16,7 @@ scheduler (#367), and admin trigger (#368) are already merged and deployed.
 - Kubernetes access to the `crank` namespace
 - `FIRECRAWL_API_KEY` stored in the `crank-secrets` Kubernetes Secret
 - `AGENT_RUN_ENABLED` and `CRAWL_CRON_ENABLED` currently `false` (defaults)
-- CronJobs `crank-crawl-organizations` and `crank-crawl-jobs` exist but are
+- CronJobs `crank-crawl-organizations` and `crank-job-pipeline` exist but are
   suspended
 
 ## Default budget guardrails
@@ -98,7 +98,7 @@ If the first source succeeds, trigger the remaining sources or run the
 scheduler for a batch:
 
 ```sh
-python manage.py schedule_crawls --phase jobs --max-sources 3 --deadline-seconds 120
+python manage.py run_job_pipeline
 ```
 
 ## Step 6: verify listing counts
@@ -121,7 +121,7 @@ python manage.py crawl_status --include-closed
 Once you have confirmed listings exist and the smoke test passed:
 
 ```sh
-kubectl -n crank patch cronjob crank-crawl-jobs -p '{"spec":{"suspend":false}}'
+kubectl -n crank patch cronjob crank-job-pipeline -p '{"spec":{"suspend":false}}'
 ```
 
 Leave `crank-crawl-organizations` suspended until organization-profile sources
@@ -162,7 +162,7 @@ If something goes wrong:
 2. **Suspend CronJobs**:
 
    ```sh
-   kubectl -n crank patch cronjob crank-crawl-jobs -p '{"spec":{"suspend":true}}'
+   kubectl -n crank patch cronjob crank-job-pipeline -p '{"spec":{"suspend":true}}'
    kubectl -n crank patch cronjob crank-crawl-organizations -p '{"spec":{"suspend":true}}'
    ```
 
@@ -178,7 +178,9 @@ If something goes wrong:
    source = JobSourceCatalog.objects.get(name='USAJOBS Search')
    JobListing.all_objects.filter(source=source).delete()
    source.last_crawl_at = None
-   source.save(update_fields=['last_crawl_at'])
+   source.last_attempt_at = None
+   source.consecutive_failures = 0
+   source.save(update_fields=['last_crawl_at', 'last_attempt_at', 'consecutive_failures'])
    "
    ```
 
@@ -188,7 +190,9 @@ If something goes wrong:
    python manage.py shell -c "
    from crank.models.job import JobListing, JobSourceCatalog
    JobListing.all_objects.all().delete()
-   JobSourceCatalog.objects.all().update(last_crawl_at=None)
+   JobSourceCatalog.objects.all().update(
+       last_crawl_at=None, last_attempt_at=None, consecutive_failures=0
+   )
    "
    ```
 

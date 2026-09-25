@@ -18,7 +18,7 @@ from django.utils import timezone
 
 from crank.models.job import JobSourceCatalog
 from crank.models.source import ApprovalState, SourceCatalog
-from crank.services import monitoring
+from crank.services import monitoring, source_freshness
 from crank.services.company_crawler import crawl_company_profile
 
 
@@ -54,11 +54,6 @@ def _result_errors(result: Any) -> int:
         return 1
 
 
-def _mark_crawled(source: Any, crawled_at: datetime) -> None:
-    source.last_crawl_at = crawled_at
-    source.save(update_fields=["last_crawl_at", "modified"])
-
-
 def _dispatch_organization(source: SourceCatalog, now: datetime) -> Any:
     return crawl_company_profile(source, now=now)
 
@@ -73,10 +68,12 @@ def plan_crawls(
 ) -> dict[str, int | bool]:
     """Dispatch stale approved organization sources within explicit budgets.
 
-    Source names and payloads never enter telemetry. A source's timestamp is
-    advanced only after a dispatch completes without provider errors, keeping
-    failed sources stale for the next bounded retry while preserving freshness
-    guarantees.
+    Source names and payloads never enter telemetry. Due sources are taken
+    least recently attempted first (pk breaks ties), so a failing source
+    cannot starve the others. ``last_crawl_at`` advances only on a fully
+    successful dispatch; every attempt records ``last_attempt_at`` and the
+    failure streak that drives retry backoff. Due sources the budget or
+    deadline did not reach are left untouched (``deferred_budget``).
 
     ``phase=PHASE_JOBS`` is a documented no-op since #462 (the job pipeline is
     the single job-ingestion owner): it returns bounded counts only — each
@@ -93,6 +90,15 @@ def plan_crawls(
         "errors": 0,
         "organizations_total": 0,
         "jobs_total": 0,
+        "eligible": 0,
+        "skipped_policy": 0,
+        "skipped_fresh": 0,
+        "deferred_backoff": 0,
+        "deferred_budget": 0,
+        "succeeded": 0,
+        "partial": 0,
+        "failed": 0,
+        "oldest_due_age_hours": 0,
     }
     if phase == PHASE_JOBS:
         counts["jobs_total"] = JobSourceCatalog.objects.count()
@@ -119,36 +125,52 @@ def plan_crawls(
 
     organization_sources = list(SourceCatalog.objects.all().order_by("pk"))
     counts["organizations_total"] = len(organization_sources)
-    sources: list[tuple[SourceCatalog, int]] = [
-        (
-            source,
-            int(_setting("ORGANIZATION_FRESHNESS_HOURS", 168)),
-        )
-        for source in organization_sources
-    ]
+    selection = source_freshness.select_due(
+        organization_sources,
+        source_freshness.organization_policy(),
+        now=reference,
+        approved_value=ApprovalState.APPROVED,
+        limit=limit,
+    )
+    counts.update(
+        {
+            key: selection.counts[key]
+            for key in (
+                "eligible",
+                "skipped_policy",
+                "skipped_fresh",
+                "deferred_backoff",
+            )
+        }
+    )
+    counts["stale"] = selection.counts["due"]
+    counts["oldest_due_age_hours"] = selection.oldest_due_age_hours or 0
 
-    for source, freshness_hours in sources:
-        if source.approval_state != ApprovalState.APPROVED or not source.enabled:
-            counts["skipped"] += 1
-            continue
-        if not is_stale(source.last_crawl_at, freshness_hours, now=reference):
-            counts["skipped"] += 1
-            continue
-        counts["stale"] += 1
-        if counts["scheduled"] >= limit or time.monotonic() >= deadline:
-            counts["skipped"] += 1
-            continue
+    outcome_keys = {
+        source_freshness.Outcome.SUCCESS: "succeeded",
+        source_freshness.Outcome.PARTIAL: "partial",
+        source_freshness.Outcome.FAILED: "failed",
+    }
+    for source in selection.selected:
+        if time.monotonic() >= deadline:
+            break
+        dispatcher = dispatchers.get(PHASE_ORGANIZATIONS, _dispatch_organization)
         try:
-            dispatcher = dispatchers.get(PHASE_ORGANIZATIONS, _dispatch_organization)
             result = dispatcher(source, reference)
-            counts["scheduled"] += 1
             result_errors = _result_errors(result)
-            counts["errors"] += result_errors
-            if result_errors == 0:
-                _mark_crawled(source, reference)
+            outcome = source_freshness.organization_outcome(result)
         except Exception:
-            counts["scheduled"] += 1
-            counts["errors"] += 1
+            result_errors = 1
+            outcome = source_freshness.Outcome.FAILED
+        counts["scheduled"] += 1
+        counts["errors"] += result_errors
+        counts[outcome_keys[outcome]] += 1
+        source_freshness.record_outcome(
+            SourceCatalog, source.pk, outcome, now=reference
+        )
+
+    counts["deferred_budget"] = counts["stale"] - counts["scheduled"]
+    counts["skipped"] = counts["organizations_total"] - counts["scheduled"]
 
     monitoring.record_event("crawl_planning", counts)
     return counts

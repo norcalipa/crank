@@ -13,6 +13,45 @@ The planner records aggregate `scheduled`, `stale`, `skipped`, and `errors`
 counters in the `crawl_planning` telemetry event; it never includes organization
 names, URLs, provider payloads, or credentials.
 
+## Frequency, TTL, stale threshold and evidence age (issue #468)
+
+Four different things are easy to conflate. They are configured separately
+and mean different things:
+
+| Phase | Dispatch frequency (CronJob) | Refresh TTL (planner) | Stale threshold (health, user copy) | Published evidence age |
+|---|---|---|---|---|
+| Organization profiles | `0 */6 * * *` in `k8s/crank-crawl-cron.yaml` | `ORGANIZATION_FRESHNESS_HOURS` (168) | `ORGANIZATION_FRESHNESS_HOURS` | field `last_verified_at` on `CompanyFieldEvidence` |
+| Job sources | `0 */6 * * *` in `deploy/cronjob-job-pipeline.yaml` | `JOB_REFRESH_TTL_HOURS` (6) | `JOB_FRESHNESS_HOURS` (24) | source `last_crawl_at` (last successful fetch) |
+
+- **Dispatch frequency** only decides how often a planner starts. A source
+  that is still inside its TTL is skipped (`skipped_fresh`).
+- **Refresh TTL** is `now - last_crawl_at < TTL - CRAWL_SCHEDULE_TOLERANCE_MINUTES`
+  (default tolerance 15 minutes, absorbing CronJob start jitter).
+- **Stale threshold** drives `inventory_health` and the user-facing
+  "inventory last refreshed" copy. It is deliberately larger than the job
+  refresh TTL.
+- **Evidence age** never moves on a failed check.
+
+Selection is fair and bounded. Due sources are ordered by
+`last_attempt_at` (never-attempted first), then `last_crawl_at`, then `pk`,
+and the first `CRAWL_MAX_SOURCES` / `JOB_PIPELINE_MAX_SOURCES` are dispatched.
+Every attempt sets `last_attempt_at`, so a permanently failing source moves to
+the back and cannot starve the others. `last_crawl_at` advances **only** on a
+fully successful attempt; partial and failed attempts increment
+`consecutive_failures` and defer the next attempt by
+`min(SOURCE_RETRY_BACKOFF_MINUTES * 2^(failures-1), SOURCE_RETRY_BACKOFF_MAX_HOURS)`.
+Sources not reached because of the source budget or deadline are untouched and
+keep their priority (`deferred_budget`).
+
+Counters (`crawl_planning` and the pipeline's `matching_batch` event):
+`eligible`, `stale` (due), `scheduled`, `skipped_policy` (pending, blocked or
+disabled), `skipped_fresh`, `deferred_backoff`, `deferred_budget`, `succeeded`,
+`partial`, `failed`, `oldest_due_age_hours` (capped at 8760; a never-crawled
+source counts as the cap). Job-pipeline equivalents: `sources_eligible`,
+`sources_deferred`, `oldest_source_age_hours`. `manage.py crawl_status` shows
+TTL, last success, last attempt, failures and next eligible time for both
+phases. Both CronJobs stay `suspend: true`.
+
 ## Single ingestion owner (issue #462)
 
 **Job-source ingestion has one owner: the job pipeline**

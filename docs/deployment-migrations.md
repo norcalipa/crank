@@ -294,3 +294,13 @@ from `0029_merge_20260815_1645` to the then-latest landed head (likely
 `0030_jobsearch_turn_state` or `0032_score_tuple_anchor`) and adds a
 numbered merge migration if a head split remains, keeping
 `makemigrations --check --dry-run` clean on the merged result.
+
+## Allocation: 0040 (issue #468)
+
+- **0040 → #468** (`0040_source_refresh_state`, parent
+  `0039_match_result_generation`): additive `last_attempt_at` and
+  `consecutive_failures` on `SourceCatalog` and `JobSourceCatalog`, plus a
+  bounded backfill of NULL `last_crawl_at` from the latest SUCCESS `CrawlRun`
+  (never PARTIAL). The backfill is idempotent and its reverse is a no-op. No
+  constraints or partial indexes. Old pods ignore the new columns, so rollback
+  is a code-only redeploy. **0041 → #477** builds on top of it.

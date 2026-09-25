@@ -20,7 +20,7 @@ from crank.models.crawl_run import CrawlRun
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.monitoring import OperationalChangeAudit
 from crank.models.source import ApprovalState, SourceCatalog
-from crank.services import agent_runs, monitoring
+from crank.services import agent_runs, monitoring, source_freshness
 from crank.services.company_crawler import crawl_company_profile
 from crank.services.job_ingest import SKIP_OVERLAP, ingest_job_source, record_source_publication
 
@@ -258,6 +258,12 @@ def trigger_crawl(*, source_key: str, source_type: str, requested_by=None) -> Cr
         run.error_summary = summary
         run.finished_at = timezone.now()
         run.save(update_fields=["outcome", "counts", "error_summary", "finished_at", "modified"])
+        source_freshness.record_outcome(
+            type(source),
+            source.pk,
+            source_freshness.outcome_from_crawl_run(outcome),
+            now=run.finished_at,
+        )
         agent_run.finalize(
             AgentRun.Status.SUCCEEDED if outcome in {CrawlRun.Outcome.SUCCESS, CrawlRun.Outcome.PARTIAL} else AgentRun.Status.FAILED,
             counts=counts,
@@ -293,6 +299,13 @@ def trigger_crawl(*, source_key: str, source_type: str, requested_by=None) -> Cr
         run.error_summary = summary
         run.finished_at = timezone.now()
         run.save(update_fields=["outcome", "error_summary", "finished_at", "modified"])
+        if not isinstance(exc, SourceLockHeld):
+            source_freshness.record_outcome(
+                type(source),
+                source.pk,
+                source_freshness.Outcome.FAILED,
+                now=run.finished_at,
+            )
         agent_run.finalize(AgentRun.Status.FAILED, error_summary=summary)
         monitoring.record_event(event, {"run_id": run.pk, "source_key": canonical_key})
         OperationalChangeAudit.record(

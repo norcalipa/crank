@@ -22,6 +22,7 @@ from crank.models.agent_run import AgentRun
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.preference import UserPreference, default_preferences
 from crank.services import agent_runs, match_recompute
+from crank.services import source_freshness
 from crank.services.job_ingest import ingest_job_source, record_source_publication
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,9 @@ COUNT_KEYS = (
     "sources_succeeded",
     "sources_failed",
     "sources_skipped",
+    "sources_eligible",
+    "sources_deferred",
+    "oldest_source_age_hours",
     "listings_ingested",
     "listings_updated",
     "listings_closed",
@@ -346,13 +350,19 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
     max_sources = max(0, int(_setting(options, "JOB_PIPELINE_MAX_SOURCES", 10)))
     max_users = max(0, int(_setting(options, "JOB_PIPELINE_MAX_USERS", 100)))
 
-    sources = list(
-        JobSourceCatalog.objects.filter(
-            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
-            enabled=True,
-        ).order_by("pk")[:max_sources]
+    reference = options.get("now") or timezone.now()
+    selection = source_freshness.select_due(
+        JobSourceCatalog.objects.all().order_by("pk"),
+        source_freshness.job_policy(),
+        now=reference,
+        approved_value=JobSourceCatalog.ApprovalState.APPROVED,
+        limit=max_sources,
     )
+    sources = selection.selected
     counts["sources_total"] = len(sources)
+    counts["sources_eligible"] = selection.counts["eligible"]
+    counts["sources_deferred"] = selection.counts["due"] - len(sources)
+    counts["oldest_source_age_hours"] = selection.oldest_due_age_hours or 0
     successful_sources = 0
     for source in sources:
         if deadline.reached():
@@ -415,6 +425,12 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                     record_source_publication(
                         source, result, resolved, unresolved, before_org_ids
                     )
+                source_freshness.record_outcome(
+                    JobSourceCatalog,
+                    source.pk,
+                    source_freshness.job_outcome(result),
+                    now=reference,
+                )
             counts["listings_ingested"] += int(result.ingested)
             counts["listings_updated"] += int(result.updated)
             counts["listings_closed"] += int(result.closed)
@@ -451,6 +467,14 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                 )
         except Exception as exc:  # noqa: BLE001 - isolate source failures
             counts["sources_failed"] += 1
+            # The stage transaction rolled back; record the failed attempt
+            # outside it so backoff and fairness still see it.
+            source_freshness.record_outcome(
+                JobSourceCatalog,
+                source.pk,
+                source_freshness.Outcome.FAILED,
+                now=reference,
+            )
             agent_runs.monitoring.record_event(
                 "source_stage",
                 {
