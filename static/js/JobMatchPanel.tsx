@@ -42,8 +42,9 @@ interface RevisionBlock {
     data_revision?: number | null;
     generated_at?: string | null;
     stale?: boolean;
-    // Monotonic result-list generation (issue #479): a lower value than the
-    // one on screen is a late response and never replaces it.
+    // Monotonic result-list generation (issue #475): a lower value than the
+    // one on screen is a late response and never replaces it (issue #479).
+    // Null for pre-generation users, which are never guarded.
     result_generation?: number | null;
 }
 

@@ -2619,3 +2619,228 @@ body.app-nav-drawer-open {
     font-style: italic;
     opacity: 0.85;
 }
+
+/* issue #479 visual review round 1 — shared rules for every mode/state. */
+:root {
+    --assistant-panel-width: clamp(22.5rem, 32vw, 26rem);
+}
+
+/* Details dialog: viewport-safe, header fixed, body scrolls. */
+.popup-details {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 1.5rem);
+    max-height: calc(100dvh - 1.5rem);
+}
+
+.popup-details .card-header {
+    flex: 0 0 auto;
+}
+
+.popup-details .card-body {
+    overflow-y: auto;
+    min-height: 0;
+}
+
+.popup-details-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(12rem, 1fr);
+    gap: 1.5rem;
+    align-items: start;
+}
+
+.popup-details-grid > * {
+    min-width: 0;
+}
+
+.popup-details .popup-company-actions .btn {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+}
+
+@media (max-width: 767.98px) {
+    .popup-details-grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0;
+    }
+
+    .popup-details .popup-company-actions .btn {
+        width: 100%;
+        justify-content: center;
+    }
+}
+
+/* Icons and touch targets: one rule per element class. */
+.assistant-panel .btn,
+.assistant-panel .assistant-panel-control {
+    min-height: 44px;
+}
+
+.assistant-panel-controls .assistant-panel-control {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: .375rem;
+    width: auto;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    padding-inline: .5rem;
+}
+
+#job-search-chat .chat-send {
+    min-width: 44px;
+    min-height: 44px;
+}
+
+.assistant-panel svg,
+.assistant-panel .fa-solid,
+.assistant-restore .fa-solid {
+    flex: none;
+}
+
+.assistant-panel svg {
+    width: 18px;
+    height: 18px;
+}
+
+.assistant-panel .fa-solid,
+.assistant-restore .fa-solid {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    font-size: 16px;
+    line-height: 18px;
+    text-align: center;
+}
+
+.assistant-panel-title .fa-solid {
+    margin-right: .375rem;
+}
+
+.assistant-panel #job-search-chat .empty-history-note .fa-circle-info {
+    width: 40px;
+    height: 40px;
+    font-size: 40px;
+    line-height: 40px;
+}
+
+.popup-details .card-body button,
+.popup-details .card-body .btn {
+    min-height: 44px;
+}
+
+/* Header: title never truncated by the context strip; controls always shown. */
+.assistant-panel-title {
+    white-space: normal;
+    overflow: visible;
+}
+
+/* Messages: wider bubbles, calmer line-height. */
+#job-search-chat .chat-bubble {
+    max-width: 92% !important;
+    line-height: 1.45;
+}
+
+#job-search-chat .chat-bubble-user {
+    max-width: 85% !important;
+}
+
+/* Jump-to-latest: labelled 44px control in its own static row. */
+#job-search-chat [data-testid='jump-to-latest'] {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+}
+
+/* Loading: readable label and higher-contrast skeleton. */
+.assistant-loading-label {
+    color: #d7dde5;
+    font-size: .9375rem;
+}
+
+.assistant-loading-line {
+    background: linear-gradient(90deg,
+        rgba(255, 255, 255, .18) 25%,
+        rgba(255, 255, 255, .32) 50%,
+        rgba(255, 255, 255, .18) 75%);
+    background-size: 200% 100%;
+}
+
+.assistant-loading-line--header,
+.assistant-loading-line--message,
+.assistant-loading-line--message.short,
+.assistant-loading-line--composer {
+    opacity: 1;
+}
+
+.assistant-loading-line--message {
+    height: 1rem;
+}
+
+/* Focus: one dark-theme ring for every assistant control, no :focus block. */
+.assistant-panel .assistant-back-to-results:focus,
+.assistant-panel button:focus {
+    box-shadow: none;
+}
+
+.assistant-panel .assistant-back-to-results:focus-visible,
+.assistant-panel button:focus-visible,
+.assistant-panel a:focus-visible {
+    outline: 2px solid #7c9cff;
+    outline-offset: 2px;
+    box-shadow: none;
+}
+
+/* Error card: centered, no empty transcript frame beneath it. */
+#job-search-chat .card-body > .alert-danger[role='alert'] {
+    margin-block: auto;
+}
+
+/* Sheet: tighter chrome, transcript flexes, pill never covers content. */
+@media (max-width: 767.98px) {
+    .assistant-panel--sheet .assistant-panel-body {
+        padding: .5rem .75rem;
+    }
+
+    .assistant-panel--sheet #job-search-chat .chat-bubble,
+    .assistant-panel--sheet #job-search-chat .chat-bubble-user {
+        max-width: 100% !important;
+    }
+
+    .assistant-panel--sheet #job-search-chat .btn-group {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .assistant-panel--sheet #job-search-chat .btn-group .btn-outline-danger {
+        grid-column: 1 / -1;
+        margin-top: .5rem;
+        border-radius: .375rem;
+    }
+
+    .assistant-panel--sheet #job-search-chat .btn-group > .btn {
+        border-radius: .375rem;
+    }
+
+    .assistant-panel--sheet #job-search-chat .card-header {
+        padding: .5rem .75rem;
+    }
+}
+
+/* Minimized pill reserves its own space so it never covers page content. */
+body:has(.assistant-restore) .app-content {
+    padding-bottom: calc(44px + 2rem + env(safe-area-inset-bottom, 0px));
+}
+
+/* Outline-light controls keep the dark surface in every interaction state. */
+.assistant-panel .btn-outline-light:hover,
+.assistant-panel .btn-outline-light:focus,
+.assistant-panel .btn-outline-light:focus-visible,
+.assistant-panel .btn-outline-light:active {
+    background-color: rgba(255, 255, 255, .09);
+    color: #f8f9fa;
+    border-color: #d7deea;
+}

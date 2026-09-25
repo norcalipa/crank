@@ -791,8 +791,19 @@ describe('additional JobSearchChat coverage', () => {
             (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({detail: 'boom'}, 500));
             render(<JobSearchChat/>);
-            expect(await screen.findByText(/could not load your conversation/i)).toBeInTheDocument();
+            expect(await screen.findByText(/restore your previous conversation/i)).toBeInTheDocument();
             expect(screen.getByRole('button', {name: 'Start a conversation'})).toBeInTheDocument();
+            expect(screen.queryByLabelText('Message')).not.toBeInTheDocument();
+        });
+
+        test('shows a labelled loading status while the conversation resumes', async () => {
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockReturnValueOnce(new Promise(() => {}));
+            render(<JobSearchChat/>);
+            const status = await screen.findByTestId('chat-loading');
+            expect(status).toHaveAttribute('role', 'status');
+            expect(status).toHaveTextContent('Loading conversation…');
         });
 
         test('a resume 404 renders the usable empty state WITHOUT creating a conversation (issue #472)', async () => {
@@ -805,7 +816,7 @@ describe('additional JobSearchChat coverage', () => {
             await screen.findByLabelText('Message');
             await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
             expect(screen.getByTestId('empty-history')).toBeInTheDocument();
-            expect(screen.queryByText(/could not load/i)).not.toBeInTheDocument();
+            expect(screen.queryByText(/restore your previous conversation/i)).not.toBeInTheDocument();
             const posts = mock.mock.calls
                 .map(([url, init]) => ({url: String(url), init: init as RequestInit}))
                 .filter((c) => c.init?.method === 'POST');
@@ -821,7 +832,10 @@ describe('additional JobSearchChat coverage', () => {
             mock.mockResolvedValueOnce(jsonResponse({}, 500));
             render(<JobSearchChat createOnMount={true}/>);
             expect(await screen.findByText(/could not start a conversation/i)).toBeInTheDocument();
-            expect(screen.queryByLabelText('Message')).toBeDisabled();
+            // Terminal error: the empty transcript and disabled composer are hidden.
+            expect(screen.queryByLabelText('Message')).not.toBeInTheDocument();
+            expect(screen.queryByRole('log')).not.toBeInTheDocument();
+            expect(screen.getByRole('button', {name: 'Start a conversation'})).toBeInTheDocument();
         });
 
         test('starting a new conversation from the error state works', async () => {
@@ -830,11 +844,11 @@ describe('additional JobSearchChat coverage', () => {
                 .mockResolvedValueOnce(jsonResponse({detail: 'down'}, 503))
                 .mockResolvedValueOnce(jsonResponse(emptyConversation(11), 201));
             render(<JobSearchChat/>);
-            await screen.findByText(/could not load your conversation/i, {}, {timeout: 5000});
+            await screen.findByText(/restore your previous conversation/i, {}, {timeout: 5000});
             const startBtn = screen.getByRole('button', {name: 'Start a conversation'});
             fireEvent.click(startBtn);
             await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled(), {timeout: 3000});
-            expect(screen.queryByText(/could not load/i)).not.toBeInTheDocument();
+            expect(screen.queryByText(/restore your previous conversation/i)).not.toBeInTheDocument();
             const posts = mock.mock.calls
                 .map(([, init]) => (init as RequestInit).body)
                 .filter((body): body is string => typeof body === 'string')
@@ -1123,7 +1137,7 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
             .mockResolvedValueOnce(jsonResponse({detail: 'down'}, 503))
             .mockResolvedValueOnce(jsonResponse({}, 500));
         render(<JobSearchChat/>);
-        await screen.findByText(/could not load your conversation/i);
+        await screen.findByText(/restore your previous conversation/i);
         fireEvent.click(screen.getByRole('button', {name: 'Start a conversation'}));
         await screen.findByText(/could not start a conversation/i);
     });

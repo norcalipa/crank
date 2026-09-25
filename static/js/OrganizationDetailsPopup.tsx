@@ -421,8 +421,8 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                             )
                         )}
                     </div>
-                    <div className="row">
-                        <div className="col-md-7">
+                    <div className="popup-details-grid" data-testid="popup-details-grid">
+                        <div className="popup-details-profile">
                             <div className="row mb-3">
                                 <div className="col-5 text-end fw-bold">URL:</div>
                                 <div className="col-7">
@@ -462,7 +462,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                 <div className="col-7">{organization.profile_completeness.toFixed(0)}%</div>
                             </div>
                         </div>
-                        <div className="col-md-5">
+                        <div className="popup-details-scores">
                             {loading ? (
                                 <p>Loading scores...</p>
                             ) : (

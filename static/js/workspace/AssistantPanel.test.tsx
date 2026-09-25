@@ -18,6 +18,15 @@ beforeEach(() => {
 });
 
 describe('AssistantPanel', () => {
+    // Must stay first: the lazy chat chunk is cached once any test resolves it.
+    test('the fallback is a labelled status with visible loading copy', () => {
+        render(<AssistantPanel mode="docked" context={null}/>);
+        const loading = screen.getByTestId('assistant-loading');
+        expect(loading).toHaveAttribute('role', 'status');
+        expect(loading).toHaveTextContent('Loading conversation…');
+        expect(screen.getByText('Loading conversation…')).toBeVisible();
+    });
+
     test('renders the suspense fallback, then the chat replaces it', async () => {
         render(<AssistantPanel mode="docked" context={null}/>);
         // The lazy import resolves asynchronously even with the mock; the
@@ -25,6 +34,21 @@ describe('AssistantPanel', () => {
         await waitFor(() => expect(screen.getByTestId('job-search-chat')).toBeInTheDocument());
         expect(screen.queryByTestId('assistant-loading')).not.toBeInTheDocument();
     });
+
+    test.each(['docked', 'drawer', 'sheet'] as const)(
+        'the header (title, Minimize, Close) renders while loading and after the chat resolves in %s mode',
+        async (mode) => {
+            render(<AssistantPanel mode={mode} context={null}/>);
+            const assertHeader = () => {
+                expect(screen.getByRole('heading', {name: /Job Search Assistant/})).toBeInTheDocument();
+                expect(screen.getByRole('button', {name: 'Minimize assistant'})).toBeInTheDocument();
+                expect(screen.getByRole('button', {name: 'Close assistant'})).toBeInTheDocument();
+            };
+            assertHeader();
+            await waitFor(() => expect(screen.getByTestId('job-search-chat')).toBeInTheDocument());
+            assertHeader();
+        },
+    );
 
     test('the #job-search-chat wrapper contains the chat section', async () => {
         const {container} = render(<AssistantPanel mode="docked" context={null}/>);

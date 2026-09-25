@@ -1416,7 +1416,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             })
             .catch(() => {
                 if (stale()) return;
-                setInitError('Could not load your conversation. Please refresh.');
+                setInitError('We couldn’t restore your previous conversation.');
                 setLoading(false);
             });
         return () => {
@@ -2377,10 +2377,17 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     </div>
                 )}
 
+                {!initError && (
                 <div className="d-flex flex-column flex-grow-1" style={{minHeight: 0}}>
                     <div className="bg-dark border rounded p-3 mb-3 flex-grow-1" style={{minHeight: 0, overflowY: 'auto'}}
                          ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
-                        {effectiveAuthenticated && messages.length === 0 && !loading && !initError && (
+                        {effectiveAuthenticated && loading && (
+                            <div className="text-muted chat-loading-status" role="status" aria-live="polite"
+                                 data-testid="chat-loading">
+                                <i className="fa-solid fa-spinner fa-spin me-2" aria-hidden="true"></i>Loading conversation…
+                            </div>
+                        )}
+                        {effectiveAuthenticated && messages.length === 0 && !loading && (
                             <div data-testid="empty-history">
                                 <p className="empty-history-lead mb-2">
                                     Ask about compensation, work location, funding, or culture to get started.
@@ -2509,7 +2516,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         </div>
                     )}
                 </div>
+                )}
 
+                {!initError && (
                 <div className="flex-shrink-0" style={{paddingBottom: 'calc(0.25rem + env(safe-area-inset-bottom))'}}>
                     {assistantStatus && (
                         <AssistantStatusNotice
@@ -2590,6 +2599,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         </div>
                     </form>
                 </div>
+                )}
 
                 {/* Screen-reader-only live region for pending/error transitions. */}
                 <div ref={statusRef} className="visually-hidden" role="status" aria-live="assertive">

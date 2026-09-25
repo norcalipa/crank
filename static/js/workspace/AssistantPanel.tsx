@@ -123,7 +123,7 @@ const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps
                             <span className="assistant-loading-line assistant-loading-line--message" aria-hidden="true"></span>
                             <span className="assistant-loading-line assistant-loading-line--message short" aria-hidden="true"></span>
                             <span className="assistant-loading-line assistant-loading-line--composer" aria-hidden="true"></span>
-                            <span className="visually-hidden">Loading the assistant…</span>
+                            <span className="assistant-loading-label">Loading conversation…</span>
                         </div>
                     )}
                 >

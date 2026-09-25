@@ -1305,6 +1305,17 @@ describe('OrganizationDetailsPopup', () => {
             );
         }
 
+        test('the dialog body is the scroll container and the details use the balanced grid', () => {
+            renderAuthenticated(jest.fn());
+            const dialog = screen.getByRole('dialog');
+            expect(dialog).toHaveClass('popup-details');
+            expect(dialog.querySelector('.card-header')).toBeInTheDocument();
+            expect(dialog.querySelector('.card-body')).toBeInTheDocument();
+            const grid = screen.getByTestId('popup-details-grid');
+            expect(grid.querySelector('.popup-details-profile')).toBeInTheDocument();
+            expect(grid.querySelector('.popup-details-scores')).toBeInTheDocument();
+        });
+
         test('closes the dialog and opens the assistant with company context on the next frame', () => {
             const workspace = document.createElement('div');
             workspace.id = 'assistant-workspace';
