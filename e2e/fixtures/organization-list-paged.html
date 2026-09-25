@@ -5,7 +5,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Organization List — E2E fixture</title>
+    <title>Organization List (paged) — E2E fixture</title>
     <link rel="stylesheet" href="/static/css/bootstrap.min.css">
     <link rel="stylesheet" href="/static/css/popup.css">
 </head>
@@ -64,12 +64,22 @@
     </main>
     <script id="organization-data" type="application/json">
     [
-        {"id": 1, "name": "Acme Robotics", "ranking": 1, "avg_score": 4.82, "funding_round": "C", "rto_policy": "H", "profile_completeness": 96, "accelerated_vesting": true, "url": "https://acme.example", "type": "C"},
-        {"id": 2, "name": "Beacon Health", "ranking": 2, "avg_score": 4.71, "funding_round": "B", "rto_policy": "R", "profile_completeness": 91, "accelerated_vesting": false, "url": "https://beacon.example", "type": "C"},
-        {"id": 3, "name": "Civic Data Trust", "ranking": 3, "avg_score": 4.60, "funding_round": "A", "rto_policy": "O", "profile_completeness": 84, "accelerated_vesting": false, "url": "https://civic.example", "type": "N"},
-        {"id": 4, "name": "Dune Analytics Group", "ranking": 4, "avg_score": 4.55, "funding_round": "D", "rto_policy": "H", "profile_completeness": 88, "accelerated_vesting": true, "url": "https://dune.example", "type": "C"},
-        {"id": 5, "name": "Evergreen Bio", "ranking": 5, "avg_score": 4.43, "funding_round": "B", "rto_policy": "R", "profile_completeness": 79, "accelerated_vesting": false, "url": "https://evergreen.example", "type": "C"},
-        {"id": 6, "name": "Zephyr Quintessence NanotechnologicalBiopharmaceuticalResearchLaboratoriesInternationalHoldingsConsortium Limited", "ranking": 6, "avg_score": 4.31, "funding_round": "A", "rto_policy": "R", "profile_completeness": 72, "accelerated_vesting": false, "url": "https://zephyr.example", "type": "C"}
+        {"id": 1, "name": "Fixture Company 01", "ranking": 1, "avg_score": 4.9, "funding_round": "B", "rto_policy": "H", "profile_completeness": 89, "accelerated_vesting": false, "url": "https://c1.example", "type": "C"},
+        {"id": 2, "name": "Fixture Company 02", "ranking": 2, "avg_score": 4.8, "funding_round": "B", "rto_policy": "H", "profile_completeness": 88, "accelerated_vesting": true, "url": "https://c2.example", "type": "C"},
+        {"id": 3, "name": "Fixture Company 03", "ranking": 3, "avg_score": 4.7, "funding_round": "B", "rto_policy": "H", "profile_completeness": 87, "accelerated_vesting": false, "url": "https://c3.example", "type": "C"},
+        {"id": 4, "name": "Fixture Company 04", "ranking": 4, "avg_score": 4.6, "funding_round": "B", "rto_policy": "H", "profile_completeness": 86, "accelerated_vesting": true, "url": "https://c4.example", "type": "C"},
+        {"id": 5, "name": "Fixture Company 05", "ranking": 5, "avg_score": 4.5, "funding_round": "B", "rto_policy": "H", "profile_completeness": 85, "accelerated_vesting": false, "url": "https://c5.example", "type": "C"},
+        {"id": 6, "name": "Fixture Company 06", "ranking": 6, "avg_score": 4.4, "funding_round": "B", "rto_policy": "H", "profile_completeness": 84, "accelerated_vesting": true, "url": "https://c6.example", "type": "C"},
+        {"id": 7, "name": "Fixture Company 07", "ranking": 7, "avg_score": 4.3, "funding_round": "B", "rto_policy": "H", "profile_completeness": 83, "accelerated_vesting": false, "url": "https://c7.example", "type": "C"},
+        {"id": 8, "name": "Fixture Company 08", "ranking": 8, "avg_score": 4.2, "funding_round": "B", "rto_policy": "H", "profile_completeness": 82, "accelerated_vesting": true, "url": "https://c8.example", "type": "C"},
+        {"id": 9, "name": "Fixture Company 09", "ranking": 9, "avg_score": 4.1, "funding_round": "B", "rto_policy": "H", "profile_completeness": 81, "accelerated_vesting": false, "url": "https://c9.example", "type": "C"},
+        {"id": 10, "name": "Fixture Company 10", "ranking": 10, "avg_score": 4.0, "funding_round": "B", "rto_policy": "H", "profile_completeness": 80, "accelerated_vesting": true, "url": "https://c10.example", "type": "C"},
+        {"id": 11, "name": "Fixture Company 11", "ranking": 11, "avg_score": 3.9, "funding_round": "B", "rto_policy": "H", "profile_completeness": 79, "accelerated_vesting": false, "url": "https://c11.example", "type": "C"},
+        {"id": 12, "name": "Fixture Company 12", "ranking": 12, "avg_score": 3.8, "funding_round": "B", "rto_policy": "H", "profile_completeness": 78, "accelerated_vesting": true, "url": "https://c12.example", "type": "C"},
+        {"id": 13, "name": "Fixture Company 13", "ranking": 13, "avg_score": 3.7, "funding_round": "B", "rto_policy": "H", "profile_completeness": 77, "accelerated_vesting": false, "url": "https://c13.example", "type": "C"},
+        {"id": 14, "name": "Fixture Company 14", "ranking": 14, "avg_score": 3.6, "funding_round": "B", "rto_policy": "H", "profile_completeness": 76, "accelerated_vesting": true, "url": "https://c14.example", "type": "C"},
+        {"id": 15, "name": "Fixture Company 15", "ranking": 15, "avg_score": 3.5, "funding_round": "B", "rto_policy": "H", "profile_completeness": 75, "accelerated_vesting": false, "url": "https://c15.example", "type": "C"},
+        {"id": 16, "name": "Fixture Company 16", "ranking": 16, "avg_score": 3.4, "funding_round": "B", "rto_policy": "H", "profile_completeness": 74, "accelerated_vesting": true, "url": "https://c16.example", "type": "C"}
     ]
     </script>
     <!-- Single shared "Suggest a company" host (issue #471): outside .app-shell/main.app-content per the modal isolation contract -->

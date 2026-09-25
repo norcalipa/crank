@@ -26,6 +26,11 @@ interface Organization {
     avg_scores?: ScoreDetail[];
 }
 
+interface RankingPreset {
+    id: number;
+    name: string;
+}
+
 interface OrganizationListProps {
     organizations: Organization[];
     itemsPerPage?: number;
@@ -35,6 +40,12 @@ interface OrganizationListProps {
     // details dialog's sign-in CTA (issue #465 AC-7); see
     // crank/views/index.py.
     signInUrlTemplate?: string;
+    // Ranking presets (issue #478): rendered server-side as non-user-specific
+    // JSON. When absent (fixture pages, older cached shells) the preset
+    // select is omitted.
+    rankingPresets?: RankingPreset[];
+    currentAlgorithmId?: number | null;
+    algorithmUrlTemplate?: string;
 }
 
 interface OrganizationListState {
@@ -48,6 +59,7 @@ interface OrganizationListState {
     searchTerm: string;
     selectedOrganization: Organization | null;
     showPopup: boolean;
+    choicesStatus: 'loading' | 'ready' | 'error';
 }
 
 class OrganizationList extends React.Component<OrganizationListProps, OrganizationListState> {
@@ -64,7 +76,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             acceleratedVesting: urlState.acceleratedVesting,
             searchTerm: urlState.searchTerm,
             selectedOrganization: null,
-            showPopup: false
+            showPopup: false,
+            choicesStatus: 'loading'
         };
     }
 
@@ -74,24 +87,35 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     // arrives, that a newer intent has superseded it.
     private modalGeneration = 0;
 
-    componentDidMount() {
-        fetch('/api/funding-round-choices/')
-            .then(response => response.json())
+    // Funding-round and RTO labels come from two choice endpoints. The status
+    // drives the loading/error cue next to the result count; on failure the
+    // raw codes are shown as fallback labels and Retry refetches both.
+    loadChoices = () => {
+        this.setState({choicesStatus: 'loading'});
+        const load = (url: string, key: 'fundingRoundChoices' | 'rtoPolicyChoices', label: string) => fetch(url)
+            .then(response => {
+                if (response.ok === false) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                return response.json();
+            })
             .then(data => {
-                this.setState({fundingRoundChoices: data});
+                this.setState({[key]: data} as Pick<OrganizationListState, typeof key>);
             })
             .catch((error) => {
-                console.error('Error fetching funding round choices:', error);
+                console.error(`Error fetching ${label}:`, error);
+                throw error;
             });
+        Promise.all([
+            load('/api/funding-round-choices/', 'fundingRoundChoices', 'funding round choices'),
+            load('/api/rto-policy-choices/', 'rtoPolicyChoices', 'RTO policy choices')
+        ])
+            .then(() => this.setState({choicesStatus: 'ready'}))
+            .catch(() => this.setState({choicesStatus: 'error'}));
+    };
 
-        fetch('/api/rto-policy-choices/')
-            .then(response => response.json())
-            .then(data => {
-                this.setState({rtoPolicyChoices: data});
-            })
-            .catch((error) => {
-                console.error('Error fetching RTO policy choices:', error)
-            });
+    componentDidMount() {
+        this.loadChoices();
 
         window.addEventListener('popstate', this.handlePopState);
         this.normalizeCurrentPage();
@@ -229,6 +253,42 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         this.updateUrl(1, '', false);
     };
 
+    handleRemoveSearch = () => {
+        const filteredOrganizations = this.filterOrganizations(this.state.organizations, '', this.state.acceleratedVesting);
+        this.setState({searchTerm: '', filteredOrganizations, currentPage: 1});
+        this.updateUrl(1, '', this.state.acceleratedVesting);
+    };
+
+    handleRemoveAcceleratedVesting = () => {
+        const filteredOrganizations = this.filterOrganizations(this.state.organizations, this.state.searchTerm, false);
+        this.setState({acceleratedVesting: false, filteredOrganizations, currentPage: 1});
+        this.updateUrl(1, this.state.searchTerm, false);
+    };
+
+    // Switching preset navigates to the preset's page keeping only the
+    // compatible filters; page and company are dropped so results start at
+    // page 1 (issue #478).
+    getPresetUrl = (presetId: number) => {
+        const template = this.props.algorithmUrlTemplate || '/algo/__ALGORITHM_ID__/';
+        const params = new URLSearchParams();
+        if (this.state.searchTerm) {
+            params.set('search', this.state.searchTerm);
+        }
+        if (this.state.acceleratedVesting) {
+            params.set('accelerated_vesting', '1');
+        }
+        const query = params.toString();
+        return `${template.replace('__ALGORITHM_ID__', String(presetId))}${query ? `?${query}` : ''}`;
+    };
+
+    handlePresetChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+        const presetId = Number(event.target.value);
+        if (!Number.isInteger(presetId) || presetId === this.props.currentAlgorithmId) {
+            return;
+        }
+        window.location.assign(this.getPresetUrl(presetId));
+    };
+
     handleOrganizationClick = (organization: Organization) => {
         // Claim this open intent synchronously (issue #464): every later
         // open/close action bumps the generation, and the details fetch below
@@ -310,7 +370,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         // modal or destroy the user's form input.
         ++this.modalGeneration;
         this.setState({showPopup: false, selectedOrganization: null});
-        openSuggestCompany({source, searchTerm: this.state.searchTerm, page: this.state.currentPage});
+        openSuggestCompany({
+            source,
+            searchTerm: this.state.searchTerm,
+            companyName: source === 'rankings_empty' && this.state.searchTerm ? this.state.searchTerm : undefined,
+            page: this.state.currentPage
+        });
     };
 
     handleClosePopup = () => {
@@ -319,6 +384,25 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         // reopen the dialog.
         ++this.modalGeneration;
         this.setState({ showPopup: false });
+    };
+
+    renderChips = () => {
+        const {searchTerm, acceleratedVesting} = this.state;
+        if (!searchTerm && !acceleratedVesting) {
+            return null;
+        }
+        return (<ul className="filter-chips" aria-label="Active filters">
+            {searchTerm && <li><button type="button" className="filter-chip" data-testid="filter-chip-search"
+                                       aria-label={`Remove filter: search "${searchTerm}"`} title={`Search: ${searchTerm}`}
+                                       onClick={this.handleRemoveSearch}>
+                <span className="filter-chip-text">Search: {searchTerm}</span> <span aria-hidden="true">×</span>
+            </button></li>}
+            {acceleratedVesting && <li><button type="button" className="filter-chip" data-testid="filter-chip-accelerated-vesting"
+                                               aria-label="Remove filter: first vesting in under 1 year"
+                                               onClick={this.handleRemoveAcceleratedVesting}>
+                <span className="filter-chip-text">First vesting &lt; 1 year</span> <span aria-hidden="true">×</span>
+            </button></li>}
+        </ul>);
     };
 
     render() {
@@ -331,7 +415,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             acceleratedVesting,
             searchTerm,
             selectedOrganization,
-            showPopup
+            showPopup,
+            choicesStatus
         } = this.state;
 
         const pageCount = this.getPageCount(filteredOrganizations.length);
@@ -343,48 +428,18 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         const firstResult = filteredOrganizations.length === 0 ? 0 : indexOfFirstItem + 1;
         const lastResult = Math.min(indexOfLastItem, filteredOrganizations.length);
 
-        return (<div>
-            <h1 className="h4 mb-3">Company rankings</h1>
-            <div className="mb-3">
-                <label className="form-label" htmlFor="organization-search">Search organizations</label>
-                <div className="organization-controls">
-                    <div className="organization-search">
-                        <input
-                            id="organization-search"
-                            type="text"
-                            className="form-control"
-                            placeholder="Search organizations"
-                            aria-label="Search organizations"
-                            value={searchTerm}
-                            onChange={this.handleSearchChange}
-                        />
-                        {searchTerm && <button type="button" className="btn btn-outline-secondary" onClick={this.handleClearFilters} aria-label="Clear search">Clear search</button>}
-                    </div>
-                    <div className="organization-filter">
-                        <input
-                            type="checkbox"
-                            className="form-check-input"
-                            id="acceleratedVesting"
-                            data-testid="accelerated-vesting-checkbox"
-                            checked={acceleratedVesting}
-                            onChange={this.handleFilterChange}
-                        />
-                        <label className="form-check-label" htmlFor="acceleratedVesting">Show only companies with first vesting in &lt; 1 year</label>
-                    </div>
-                </div>
-                {this.props.isAuthenticated && (
-                    <button type="button" className="btn btn-outline-primary btn-sm mt-2"
-                            data-testid="suggest-company-btn"
-                            onClick={() => this.handleOpenSuggestModal('rankings')}>
-                        Suggest a company
-                    </button>
-                )}
-            </div>
-            <div className="mb-2" role="status" aria-live="polite">
-                <div className="organization-results-count">{`Showing ${firstResult}-${lastResult} of ${filteredOrganizations.length} organizations`}</div>
-                <div className="organization-page-count">{`Page ${displayedPage} of ${pageCount}`}</div>
-            </div>
-            <nav aria-label="Organization pagination">
+        const presets = this.props.rankingPresets || [];
+        const currentPreset = presets.find(preset => preset.id === this.props.currentAlgorithmId);
+        const scoreLabel = currentPreset ? `Company score (${currentPreset.name})` : 'Company score';
+        const isEmpty = filteredOrganizations.length === 0;
+
+        // Raw codes only appear as the explained error fallback; while the
+        // labels load a placeholder keeps the cell from flashing "H"/"R".
+        const choiceLabel = (choices: Record<string, string>, code: string) =>
+            choices[code] ?? (choicesStatus === 'loading' ? '—' : code);
+
+        const renderPager = (position: 'top' | 'bottom') => (
+<nav aria-label={`Organization pagination${position === 'bottom' ? ' (bottom)' : ''}`}>
                 <ul className="pagination">
                     <li className={`page-item ${displayedPage === 1 ? 'disabled' : ''}`}>
                         <a className="page-link" href={this.getPageUrl(displayedPage - 1)} aria-label="Previous page"
@@ -395,7 +450,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     {pageNumbers.map(number => (
                         <li className={`page-item ${displayedPage === number ? 'active' : ''}`} key={number}>
                             <a className="page-link"
-                               data-testid={`page-link-${number}`}
+                               data-testid={`page-link-${number}${position === 'bottom' ? '-bottom' : ''}`}
                                href={this.getPageUrl(number)}
                                aria-label={`Page ${number}`}
                                aria-current={displayedPage === number ? 'page' : undefined}
@@ -412,24 +467,82 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     </li>
                 </ul>
             </nav>
+        );
 
-            {filteredOrganizations.length === 0 ? (<div className="alert alert-secondary" role="alert">
+        return (<div>
+            <div className="rankings-toolbar" data-testid="rankings-toolbar">
+                <div className="rankings-toolbar-search">
+                    <label className="form-label" htmlFor="organization-search">Search organizations</label>
+                    <div className="organization-search">
+                        <input
+                            id="organization-search"
+                            type="text"
+                            className="form-control"
+                            placeholder="Search organizations"
+                            value={searchTerm}
+                            onChange={this.handleSearchChange}
+                        />
+                        {searchTerm && <button type="button" className="btn btn-outline-secondary" onClick={this.handleClearFilters} aria-label="Clear search">Clear search</button>}
+                    </div>
+                </div>
+                {this.renderChips()}
+                {presets.length > 0 && (
+                    <div className="rankings-toolbar-preset">
+                        <label className="form-label" htmlFor="ranking-preset">Ranking preset</label>
+                        <select id="ranking-preset" className="form-select" data-testid="ranking-preset-select"
+                                value={this.props.currentAlgorithmId ?? ''} onChange={this.handlePresetChange}>
+                            {presets.map(preset => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+                        </select>
+                    </div>
+                )}
+                <div className="organization-filter">
+                    <input
+                        type="checkbox"
+                        className="form-check-input"
+                        id="acceleratedVesting"
+                        data-testid="accelerated-vesting-checkbox"
+                        checked={acceleratedVesting}
+                        onChange={this.handleFilterChange}
+                    />
+                    <label className="form-check-label" htmlFor="acceleratedVesting">Show only companies with first vesting in &lt; 1 year</label>
+                </div>
+                <div className="rankings-toolbar-count" role="status" aria-live="polite">
+                    <div className="organization-results-count">{isEmpty ? 'Showing 0 organizations' : `Showing ${firstResult}-${lastResult} of ${filteredOrganizations.length} organizations`}</div>
+                    {choicesStatus === 'loading' && <div className="choices-status text-muted" data-testid="choices-status-loading"><span className="spinner-border spinner-border-sm" aria-hidden="true"></span><span>Loading funding round and RTO labels…</span></div>}
+                    {choicesStatus === 'error' && <div className="choices-status choices-status-error alert alert-danger py-1 px-2 mt-1 mb-0" data-testid="choices-status-error">
+                        <span>Couldn't load funding round and RTO labels, so raw codes are shown instead.</span>{' '}
+                        <button type="button" className="btn btn-outline-danger btn-sm" data-testid="choices-retry" onClick={this.loadChoices}>Retry</button>
+                    </div>}
+                    {pageCount > 1 && <div className="organization-page-count">{`Page ${displayedPage} of ${pageCount}`}</div>}
+                </div>
+                {this.props.isAuthenticated && !isEmpty && (
+                    <button type="button" className="btn btn-outline-primary btn-sm"
+                            data-testid="suggest-company-btn"
+                            onClick={() => this.handleOpenSuggestModal('rankings')}>
+                        Suggest a company
+                    </button>
+                )}
+            </div>
+            {pageCount > 1 && renderPager('top')}
+
+            {filteredOrganizations.length === 0 ? (<div className="alert alert-secondary organization-empty-state" role="alert">
                 <h2 className="h5">No organizations found</h2>
                 <p>There are no organizations that match your search or filters.</p>
-                {(searchTerm || acceleratedVesting) && <button type="button" className="btn btn-secondary" onClick={this.handleClearFilters}>Clear search and filters</button>}
-                {(this.props.canSuggestCompany || this.props.isAuthenticated) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0" onClick={() => this.handleOpenSuggestModal('rankings_empty')}>Suggest a company</button> for evaluation.</p>}
+                {(searchTerm || acceleratedVesting) && <button type="button" className="btn btn-primary" onClick={this.handleClearFilters}>Clear search and filters</button>}
+                {(this.props.canSuggestCompany || this.props.isAuthenticated) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0 suggest-company-empty" data-testid="suggest-company-empty-btn" onClick={() => this.handleOpenSuggestModal('rankings_empty')}>Suggest a company</button> for evaluation.</p>}
             </div>) : (<>
+                <div className="organization-results">
                 <div className="organization-table-wrap" role="region" aria-label="Organization rankings" tabIndex={0}>
                     <table className="table organization-table">
                         <caption className="visually-hidden">Organizations ranked by the selected scoring algorithm</caption>
                         <thead>
                         <tr>
-                            <th>Rank</th>
-                            <th>Name</th>
-                            <th>Overall Score</th>
-                            <th>Funding Round</th>
-                            <th>RTO Policy</th>
-                            <th>Profile Completeness</th>
+                            <th className="col-rank">Rank</th>
+                            <th className="col-name">Name</th>
+                            <th className="col-score">{scoreLabel}</th>
+                            <th className="col-funding">Funding Round</th>
+                            <th className="col-rto">RTO Policy</th>
+                            <th className="col-profile">Profile Completeness</th>
                         </tr>
                         </thead>
                         <tbody>
@@ -447,12 +560,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             aria-label={`View details for ${org.name}`}
                             className="organization-row"
                         >
-                            <td>{org.ranking}</td>
-                            <td><span className="organization-name">{org.name}</span></td>
-                            <td>{org.avg_score.toFixed(2)}</td>
-                            <td>{fundingRoundChoices[org.funding_round]}</td>
-                            <td>{rtoPolicyChoices[org.rto_policy]}</td>
-                            <td>{org.profile_completeness.toFixed(0)}%</td>
+                            <td className="col-rank">{org.ranking}</td>
+                            <td className="col-name"><span className="organization-name" title={org.name}>{org.name}</span></td>
+                            <td className="col-score">{org.avg_score.toFixed(2)}</td>
+                            <td className="col-funding">{choiceLabel(fundingRoundChoices, org.funding_round)}</td>
+                            <td className="col-rto">{choiceLabel(rtoPolicyChoices, org.rto_policy)}</td>
+                            <td className="col-profile">{org.profile_completeness.toFixed(0)}%</td>
                         </tr>))}
                         </tbody>
                     </table>
@@ -474,18 +587,18 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             aria-label={`View details for ${org.name}`}
                         >
                             <div className="card-body">
-                                <h2 className="h5 organization-card-name">{org.name}</h2>
+                                <h2 className="h5 organization-card-name" title={org.name}>{org.name}</h2>
                                 <div className="organization-card-score">
-                                    <span className="organization-card-label">Rank / score</span>
+                                    <span className="organization-card-label">{scoreLabel}</span>
                                     #{org.ranking} · {org.avg_score.toFixed(2)}
                                 </div>
                                 <div>
                                     <span className="organization-card-label">RTO policy</span>
-                                    {rtoPolicyChoices[org.rto_policy]}
+                                    {choiceLabel(rtoPolicyChoices, org.rto_policy)}
                                 </div>
                                 <div>
                                     <span className="organization-card-label">Funding round</span>
-                                    {fundingRoundChoices[org.funding_round]}
+                                    {choiceLabel(fundingRoundChoices, org.funding_round)}
                                 </div>
                                 <div>
                                     <span className="organization-card-label">Profile completeness</span>
@@ -495,6 +608,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         </article>
                     ))}
                 </div>
+                </div>
+                {pageCount > 1 && renderPager('bottom')}
             </>)}
 
             <OrganizationDetailsPopup
@@ -523,10 +638,21 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         const configElement = document.getElementById('organization-list-config');
         const root = createRoot(container);
+        let rankingPresets: RankingPreset[] | undefined;
+        try {
+            const presetsElement = document.getElementById('ranking-presets');
+            rankingPresets = presetsElement?.textContent ? JSON.parse(presetsElement.textContent) : undefined;
+        } catch (error) {
+            console.error('Error parsing ranking presets:', error);
+        }
+        const currentAlgorithmId = Number(configElement?.getAttribute('data-current-algorithm-id'));
         const render = () => root.render(<OrganizationList organizations={organizationsData}
             canSuggestCompany={configElement?.getAttribute('data-can-suggest-company') === 'true'}
             isAuthenticated={container.dataset.authenticated === 'true'}
-            signInUrlTemplate={configElement?.getAttribute('data-sign-in-url-template') || ''}/>);
+            signInUrlTemplate={configElement?.getAttribute('data-sign-in-url-template') || ''}
+            rankingPresets={rankingPresets}
+            currentAlgorithmId={Number.isInteger(currentAlgorithmId) && currentAlgorithmId > 0 ? currentAlgorithmId : null}
+            algorithmUrlTemplate={configElement?.getAttribute('data-algorithm-url-template') || undefined}/>);
         render();
         // The full-page-cached shell renders auth-neutral and app-nav.js
         // hydrates the auth flags per request (issue #470); re-render once

@@ -416,12 +416,40 @@ class IndexViewTests(TestCase):
                             "No organizations are available or the Score Algorithm you specified doesn't exist.")
         self.assertNotContains(response, 'organization-list-config')
 
-    def test_template_submitform_preserves_query_params(self):
+    def test_rankings_shell_has_collapsed_explanation_and_no_inline_preset_form(self):
         self.setup_scores()
         response = self.client.get(self.index_url)
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'window.location.search')
-        self.assertContains(response, 'algorithmUrl + window.location.search')
+        html = response.content.decode()
+        self.assertIn('data-testid="how-ranking-works"', html)
+        self.assertNotRegex(html, r'<details[^>]*how-ranking-works[^>]*\sopen')
+        self.assertIn('data-testid="ranking-definitions"', html)
+        self.assertNotIn('onchange="submitForm()"', html)
+        self.assertNotIn('id="algorithm_id"', html)
+        self.assertNotIn('scoring-panel', html)
+        self.assertContains(response, 'data-algorithm-url-template="/algo/__ALGORITHM_ID__/"')
+        self.assertContains(response, f'data-current-algorithm-id="{DEFAULT_ALGORITHM_ID}"')
+
+    def test_ranking_presets_context_is_ordered_active_and_user_free(self):
+        ScoreAlgorithm.objects.create(id=DEFAULT_ALGORITHM_ID + 1, name='Second Preset',
+                                      description_content='test.md', status=1)
+        ScoreAlgorithm.objects.create(id=DEFAULT_ALGORITHM_ID + 2, name='Retired Preset',
+                                      description_content='test.md', status=0)
+        cache.clear()
+        response = self.client.get(self.index_url)
+        self.assertEqual(response.context['ranking_presets'], [
+            {'id': DEFAULT_ALGORITHM_ID, 'name': 'Test Algorithm'},
+            {'id': DEFAULT_ALGORITHM_ID + 1, 'name': 'Second Preset'},
+        ])
+        self.assertEqual(response.context['current_algorithm_id'], DEFAULT_ALGORITHM_ID)
+        self.assertContains(response, 'id="ranking-presets"')
+        self.assertNotContains(response, 'Retired Preset')
+
+    def test_current_algorithm_id_is_none_without_an_algorithm(self):
+        ScoreAlgorithm.objects.all().delete()
+        cache.clear()
+        response = self.client.get(self.index_url)
+        self.assertIsNone(response.context['current_algorithm_id'])
 
     # --- superseded-score exclusion (issue #461) ---
 

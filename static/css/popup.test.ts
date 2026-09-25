@@ -3,13 +3,22 @@
 import fs from 'fs';
 import path from 'path';
 
-describe('desktop scoring panel styles', () => {
-    it('keeps closed details content visible at the desktop breakpoint', () => {
-        const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+describe('rankings toolbar and disclosure styles (issue #478)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
 
-        expect(popupCss).toMatch(
-            /@media \(min-width: 768px\)[\s\S]*?\.scoring-panel > \.scoring-panel-content \{\s*display: block;\s*\}/,
-        );
+    it('fixes desktop column geometry and floors touch targets at 44px', () => {
+        expect(popupCss).toMatch(/\.organization-table\s*\{[^}]*table-layout:\s*fixed/);
+        for (const col of ['rank', 'score', 'funding', 'rto', 'profile']) {
+            expect(popupCss).toMatch(new RegExp(`\\.col-${col}\\s*\\{\\s*width:`));
+        }
+        expect(popupCss).toMatch(/\.rankings-toolbar \.filter-chip,[^{]*\.pagination \.page-link[^{]*\{\s*min-height:\s*44px/);
+    });
+
+    it('defines the toolbar, chip and disclosure rules and drops the side-column scoring panel', () => {
+        expect(popupCss).toMatch(/\.rankings-toolbar\s*\{[^}]*flex-wrap:\s*wrap/);
+        expect(popupCss).toMatch(/\.filter-chip-text\s*\{[^}]*text-overflow:\s*ellipsis/);
+        expect(popupCss).toMatch(/\.how-ranking-works\s*\{/);
+        expect(popupCss).not.toMatch(/\.scoring-(panel|summary)/);
     });
 });
 
@@ -313,5 +322,33 @@ describe('blocking-dialog close targets and row focus perimeter (issue #464 r2)'
             /\.organization-card:focus-visible[\s\S]*?\{[^}]*outline:\s*3px solid var\(--bs-warning\)/,
         );
         expect(grouped).not.toBeNull();
+    });
+});
+
+describe('rankings responsive layout, name clamping and disclosure (issue #478 visual round 2)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const containerBlock = popupCss.match(/@container organization-results \(max-width: 48rem\) \{[\s\S]*?\n\}\n/)![0];
+
+    it('switches table to cards on the results container width, not the viewport', () => {
+        expect(popupCss).toMatch(/\.organization-results\s*\{[^}]*container:\s*organization-results\s*\/\s*inline-size/);
+        expect(containerBlock).toMatch(/\.organization-table-wrap\s*\{\s*display:\s*none/);
+        expect(containerBlock).toMatch(/\.organization-cards\s*\{[^}]*display:\s*grid/);
+        expect(popupCss).not.toMatch(/@media[^{]*\{[^@]*\.organization-cards\s*\{[^}]*display:\s*grid/);
+    });
+
+    it('clamps card and table names and lays card metadata out in a compact auto-fill grid', () => {
+        expect(containerBlock).toMatch(/\.organization-card-name\s*\{[^}]*-webkit-line-clamp:\s*2[^}]*overflow-wrap:\s*anywhere/);
+        expect(containerBlock).toMatch(/\.organization-card \.card-body\s*\{[^}]*repeat\(auto-fill,\s*minmax\(6\.5rem/);
+        expect(popupCss).toMatch(/\.organization-table \.organization-name\s*\{[^}]*-webkit-line-clamp:\s*3/);
+    });
+
+    it('draws a rotating disclosure chevron at every width and honours reduced motion', () => {
+        expect(popupCss).toMatch(/\.how-ranking-works-summary::before\s*\{[^}]*rotate\(-45deg\)/);
+        expect(popupCss).toMatch(/\.how-ranking-works\[open\] > \.how-ranking-works-summary::before\s*\{[^}]*rotate\(45deg\)/);
+        expect(popupCss).toMatch(/prefers-reduced-motion: reduce\)\s*\{\s*\.how-ranking-works-summary::before\s*\{\s*transition:\s*none/);
+    });
+
+    it('bounds the empty-state panel', () => {
+        expect(popupCss).toMatch(/\.organization-empty-state\s*\{[^}]*max-width:\s*48rem[^}]*padding:\s*1\.25rem/);
     });
 });

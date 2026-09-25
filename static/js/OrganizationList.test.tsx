@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 
 import * as React from 'react';
 
@@ -147,7 +147,7 @@ describe('OrganizationList', () => {
             // Card view (mobile)
             const cards = document.querySelectorAll('.organization-card');
             expect(cards.length).toBe(2);
-            expect(screen.getAllByText('Rank / score').length).toBe(2);
+            expect(screen.getAllByText('Company score').length).toBe(3);
             expect(screen.getAllByText('RTO policy').length).toBe(2);
             expect(screen.getAllByText('Funding round').length).toBe(2);
             expect(screen.getAllByText('Profile completeness').length).toBe(2);
@@ -168,8 +168,8 @@ describe('OrganizationList', () => {
 
         await waitFor(() => {
             // Each card has labels for rank/score, RTO policy, funding round, profile completeness
-            const labels = screen.getAllByText('Rank / score');
-            expect(labels.length).toBe(2);
+            const labels = screen.getAllByText('Company score');
+            expect(labels.length).toBe(3);
             const rtoLabels = screen.getAllByText('RTO policy');
             expect(rtoLabels.length).toBe(2);
             const fundingLabels = screen.getAllByText('Funding round');
@@ -180,7 +180,7 @@ describe('OrganizationList', () => {
     });
 
     test('pagination nav has accessible label', async () => {
-        render(<OrganizationList organizations={organizations} />);
+        render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
 
         await waitFor(() => {
             const nav = screen.getByRole('navigation', { name: 'Organization pagination' });
@@ -767,6 +767,55 @@ describe('OrganizationList', () => {
         createRootSpy.mockRestore();
     });
 
+    test('DOMContentLoaded passes ranking presets and config to the list (issue #478)', () => {
+        const originalGetElementById = document.getElementById;
+        const config = {getAttribute: (name: string) => ({
+            'data-current-algorithm-id': '2',
+            'data-algorithm-url-template': '/algo/__ALGORITHM_ID__/',
+        } as Record<string, string>)[name] ?? null};
+        document.getElementById = jest.fn().mockImplementation((id) => ({
+            'organization-data': {textContent: JSON.stringify(organizations)},
+            'organization-list': document.createElement('div'),
+            'ranking-presets': {textContent: JSON.stringify([{id: 2, name: 'Culture'}])},
+            'organization-list-config': config,
+        } as Record<string, unknown>)[id] ?? null);
+        const mockRender = jest.fn();
+        const createRootSpy = jest.spyOn(require('react-dom/client'), 'createRoot').mockImplementation(() => ({render: mockRender}));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+
+        const props = mockRender.mock.calls[0][0].props;
+        expect(props.rankingPresets).toEqual([{id: 2, name: 'Culture'}]);
+        expect(props.currentAlgorithmId).toBe(2);
+        expect(props.algorithmUrlTemplate).toBe('/algo/__ALGORITHM_ID__/');
+
+        document.getElementById = originalGetElementById;
+        createRootSpy.mockRestore();
+    });
+
+    test('DOMContentLoaded tolerates malformed ranking presets (issue #478)', () => {
+        const originalGetElementById = document.getElementById;
+        document.getElementById = jest.fn().mockImplementation((id) => ({
+            'organization-data': {textContent: JSON.stringify(organizations)},
+            'organization-list': document.createElement('div'),
+            'ranking-presets': {textContent: 'not json'},
+        } as Record<string, unknown>)[id] ?? null);
+        const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        const mockRender = jest.fn();
+        const createRootSpy = jest.spyOn(require('react-dom/client'), 'createRoot').mockImplementation(() => ({render: mockRender}));
+
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+
+        expect(consoleSpy).toHaveBeenCalledWith('Error parsing ranking presets:', expect.any(Error));
+        const props = mockRender.mock.calls[0][0].props;
+        expect(props.rankingPresets).toBeUndefined();
+        expect(props.currentAlgorithmId).toBeNull();
+
+        document.getElementById = originalGetElementById;
+        consoleSpy.mockRestore();
+        createRootSpy.mockRestore();
+    });
+
     test('DOMContentLoaded handler does nothing if elements not found', () => {
         // Ensure no elements exist
         const existingDataElement = document.getElementById('organization-data');
@@ -797,13 +846,13 @@ describe('OrganizationList', () => {
         render(<OrganizationList organizations={Array(20).fill(organizations[0])} itemsPerPage={10} />);
 
         await waitFor(() => {
-            expect(screen.getByRole('link', {name: 'Previous page'})).toBeInTheDocument();
-            expect(screen.getByRole('link', {name: 'Next page'})).toBeInTheDocument();
-            expect(screen.getByRole('link', {name: 'Page 1'})).toHaveAttribute('aria-current', 'page');
+            expect(screen.getAllByRole('link', {name: 'Previous page'})[0]).toBeInTheDocument();
+            expect(screen.getAllByRole('link', {name: 'Next page'})[0]).toBeInTheDocument();
+            expect(screen.getAllByRole('link', {name: 'Page 1'})[0]).toHaveAttribute('aria-current', 'page');
         });
 
         // Previous is disabled on page 1
-        const prevLink = screen.getByRole('link', {name: 'Previous page'});
+        const prevLink = screen.getAllByRole('link', {name: 'Previous page'})[0];
         expect(prevLink).toHaveAttribute('aria-disabled', 'true');
         expect(prevLink).toHaveAttribute('tabindex', '-1');
     });
@@ -818,7 +867,7 @@ describe('OrganizationList', () => {
         fireEvent.click(screen.getByTestId('page-link-2'));
 
         await waitFor(() => {
-            const nextLink = screen.getByRole('link', {name: 'Next page'});
+            const nextLink = screen.getAllByRole('link', {name: 'Next page'})[0];
             expect(nextLink).toHaveAttribute('aria-disabled', 'true');
             expect(nextLink).toHaveAttribute('tabindex', '-1');
         });
@@ -876,7 +925,7 @@ describe('OrganizationList', () => {
                 expect(screen.getByRole('dialog')).toBeInTheDocument();
             });
             expect(screen.getByRole('textbox', {name: 'Search organizations'})).toHaveValue('Organization 2');
-            expect(screen.getByText('Page 1 of 1')).toBeInTheDocument();
+            expect(screen.queryByText('Page 1 of 1')).not.toBeInTheDocument();
         });
     });
 
@@ -951,15 +1000,15 @@ describe('OrganizationList', () => {
         render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
 
         await waitFor(() => {
-            expect(screen.getByRole('link', {name: 'Next page'})).toBeInTheDocument();
+            expect(screen.getAllByRole('link', {name: 'Next page'})[0]).toBeInTheDocument();
         });
 
-        fireEvent.click(screen.getByRole('link', {name: 'Next page'}));
+        fireEvent.click(screen.getAllByRole('link', {name: 'Next page'})[0]);
         await waitFor(() => {
             expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
         });
 
-        fireEvent.click(screen.getByRole('link', {name: 'Previous page'}));
+        fireEvent.click(screen.getAllByRole('link', {name: 'Previous page'})[0]);
         await waitFor(() => {
             expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
         });
@@ -1055,12 +1104,9 @@ describe('OrganizationList', () => {
 
     test('empty-state link calls the controller with source rankings_empty', async () => {
         render(<><OrganizationList organizations={[]} isAuthenticated={true} /><SuggestCompanyHost /></>);
-        fireEvent.click(await screen.findByTestId('suggest-company-btn'));
-        expect(openSuggestCompanySpy).toHaveBeenCalledWith({source: 'rankings', searchTerm: '', page: 1});
-        openSuggestCompanySpy.mockClear();
-
+        expect(screen.queryByTestId('suggest-company-btn')).not.toBeInTheDocument();
         fireEvent.click(screen.getByText('Suggest a company', {selector: 'button.btn-link'}));
-        expect(openSuggestCompanySpy).toHaveBeenCalledWith({source: 'rankings_empty', searchTerm: '', page: 1});
+        expect(openSuggestCompanySpy).toHaveBeenCalledWith({source: 'rankings_empty', searchTerm: '', companyName: undefined, page: 1});
     });
 
     test('opens suggest company modal from empty results', async () => {
@@ -1366,6 +1412,256 @@ describe('OrganizationList', () => {
                 expect(root).not.toHaveAttribute('inert');
                 expect(root).not.toHaveAttribute('aria-hidden');
             }
+        });
+    });
+    describe('rankings toolbar and empty states (issue #478)', () => {
+        const presets = [{id: 1, name: 'Balanced'}, {id: 2, name: 'Culture'}];
+        const longName = 'L'.repeat(100);
+        const originalLocation = window.location;
+
+        afterEach(() => {
+            Object.defineProperty(window, 'location', {value: originalLocation, writable: true, configurable: true});
+            window.history.replaceState({}, '', '/');
+        });
+
+        function mockLocation(search: string) {
+            const assign = jest.fn();
+            Object.defineProperty(window, 'location', {
+                value: {...originalLocation, pathname: '/algo/1/', search, hash: '', assign},
+                writable: true,
+                configurable: true,
+            });
+            return assign;
+        }
+
+        test('toolbar holds search, chips, preset select and count in DOM order', () => {
+            window.history.replaceState({}, '', '/?search=Organization');
+            render(<OrganizationList organizations={organizations} rankingPresets={presets} currentAlgorithmId={1} />);
+            const toolbar = screen.getByTestId('rankings-toolbar');
+            const search = within(toolbar).getByRole('textbox', {name: 'Search organizations'});
+            const chip = within(toolbar).getByTestId('filter-chip-search');
+            const select = within(toolbar).getByTestId('ranking-preset-select');
+            const count = within(toolbar).getByText(/Showing 1-2 of 2 organizations/);
+            const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+            expect(follows(search, chip)).toBe(true);
+            expect(follows(chip, select)).toBe(true);
+            expect(follows(select, count)).toBe(true);
+            expect(select).toHaveValue('1');
+        });
+
+        test('chips render with accessible names and removing them updates list and URL', () => {
+            window.history.replaceState({}, '', '/?search=Organization&accelerated_vesting=1');
+            render(<OrganizationList organizations={organizations} />);
+            expect(screen.getByText(/Showing 1-1 of 1 organizations/)).toBeInTheDocument();
+            fireEvent.click(screen.getByRole('button', {name: 'Remove filter: first vesting in under 1 year'}));
+            expect(screen.queryByTestId('filter-chip-accelerated-vesting')).not.toBeInTheDocument();
+            expect(screen.getByText(/Showing 1-2 of 2 organizations/)).toBeInTheDocument();
+            expect(window.history.pushState).toHaveBeenLastCalledWith({}, '', expect.not.stringContaining('accelerated_vesting'));
+            fireEvent.click(screen.getByRole('button', {name: 'Remove filter: search "Organization"'}));
+            expect(screen.queryByTestId('rankings-toolbar')!.querySelector('.filter-chips')).toBeNull();
+            expect(screen.getByRole('textbox', {name: 'Search organizations'})).toHaveValue('');
+            expect(window.history.pushState).toHaveBeenLastCalledWith({}, '', expect.not.stringContaining('search'));
+        });
+
+        test('changing the preset navigates keeping search and vesting but dropping page and company', () => {
+            const assign = mockLocation('?search=Organization&accelerated_vesting=1&page=3&company=1');
+            render(<OrganizationList organizations={organizations} rankingPresets={presets}
+                                     currentAlgorithmId={1} algorithmUrlTemplate="/algo/__ALGORITHM_ID__/" />);
+            fireEvent.change(screen.getByTestId('ranking-preset-select'), {target: {value: '2'}});
+            expect(assign).toHaveBeenCalledWith('/algo/2/?search=Organization&accelerated_vesting=1');
+        });
+
+        test('changing the preset without filters or a template uses the default URL', () => {
+            const assign = mockLocation('');
+            render(<OrganizationList organizations={organizations} rankingPresets={presets} currentAlgorithmId={1} />);
+            fireEvent.change(screen.getByTestId('ranking-preset-select'), {target: {value: '2'}});
+            expect(assign).toHaveBeenCalledWith('/algo/2/');
+        });
+
+        test('selecting the current or an invalid preset does not navigate', () => {
+            const assign = mockLocation('');
+            render(<OrganizationList organizations={organizations} rankingPresets={presets} currentAlgorithmId={1} />);
+            const select = screen.getByTestId('ranking-preset-select');
+            fireEvent.change(select, {target: {value: '2'}});
+            assign.mockClear();
+            fireEvent.change(select, {target: {value: '1'}});
+            expect(assign).not.toHaveBeenCalled();
+        });
+
+        test('invalid preset value does not navigate', () => {
+            const assign = mockLocation('');
+            render(<OrganizationList organizations={organizations} rankingPresets={[{id: 1, name: 'Balanced'}, {id: 2, name: 'Culture'}, {id: NaN, name: 'Bad'}]} currentAlgorithmId={1} />);
+            fireEvent.change(screen.getByTestId('ranking-preset-select'), {target: {value: 'NaN'}});
+            expect(assign).not.toHaveBeenCalled();
+        });
+
+        test('preset select is omitted when presets are missing', () => {
+            render(<OrganizationList organizations={organizations} />);
+            expect(screen.queryByTestId('ranking-preset-select')).not.toBeInTheDocument();
+        });
+
+        test('score column and card label name the current preset', () => {
+            render(<OrganizationList organizations={organizations} rankingPresets={presets} currentAlgorithmId={2} />);
+            expect(screen.getByRole('columnheader', {name: 'Company score (Culture)'})).toBeInTheDocument();
+            expect(screen.getAllByText('Company score (Culture)').length).toBe(3);
+        });
+
+        test('zero results shows exactly one suggest action with the search term prefilled', () => {
+            window.history.replaceState({}, '', '/?search=zzz-no-match');
+            render(<><OrganizationList organizations={organizations} isAuthenticated={true} /><SuggestCompanyHost /></>);
+            expect(screen.queryByTestId('suggest-company-btn')).not.toBeInTheDocument();
+            expect(screen.getAllByRole('button', {name: 'Suggest a company'})).toHaveLength(1);
+            expect(screen.getByTestId('filter-chip-search')).toBeInTheDocument();
+            expect(screen.getByText('Clear search and filters')).toBeInTheDocument();
+            fireEvent.click(screen.getByTestId('suggest-company-empty-btn'));
+            expect(openSuggestCompanySpy).toHaveBeenCalledWith({
+                source: 'rankings_empty', searchTerm: 'zzz-no-match', companyName: 'zzz-no-match', page: 1,
+            });
+        });
+
+        test('empty state without filters hides Clear and shows the shared toolbar in the empty list', () => {
+            render(<OrganizationList organizations={[]} />);
+            expect(screen.queryByText('Clear search and filters')).not.toBeInTheDocument();
+            expect(screen.queryByRole('button', {name: 'Suggest a company'})).not.toBeInTheDocument();
+            expect(screen.queryByRole('navigation', {name: 'Organization pagination'})).not.toBeInTheDocument();
+            expect(screen.queryByText(/Page \d+ of/)).not.toBeInTheDocument();
+        });
+
+        test('a single page renders no pager; multiple pages render the pager with aria-current', () => {
+            const {unmount} = render(<OrganizationList organizations={organizations} />);
+            expect(screen.queryByRole('navigation', {name: 'Organization pagination'})).not.toBeInTheDocument();
+            expect(screen.queryByText(/Page \d+ of/)).not.toBeInTheDocument();
+            unmount();
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+            expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+            expect(screen.getByTestId('page-link-1')).toHaveAttribute('aria-current', 'page');
+        });
+
+        test('long company names and long search chips render without overflow classes', () => {
+            const long = {...organizations[0], id: 9, name: longName};
+            window.history.replaceState({}, '', `/?search=${'x'.repeat(100)}`);
+            const {unmount} = render(<OrganizationList organizations={[long]} />);
+            expect(screen.getByTestId('filter-chip-search').querySelector('.filter-chip-text')).toBeInTheDocument();
+            unmount();
+            window.history.replaceState({}, '', '/');
+            render(<OrganizationList organizations={[long]} />);
+            expect(screen.getAllByText(longName)[0]).toHaveClass('organization-name');
+        });
+
+        test('assistant and workspace window events leave list state and URL unchanged', () => {
+            window.history.replaceState({}, '', '/?search=Organization&page=1');
+            render(<OrganizationList organizations={organizations} />);
+            (window.history.pushState as jest.Mock).mockClear();
+            const fetchCalls = (global.fetch as jest.Mock).mock.calls.length;
+            act(() => {
+                window.dispatchEvent(new CustomEvent('crank:assistant-open'));
+                window.dispatchEvent(new CustomEvent('crank:workspace-context', {detail: {page: 'rankings'}}));
+            });
+            expect(screen.getByRole('textbox', {name: 'Search organizations'})).toHaveValue('Organization');
+            expect(window.location.search).toBe('?search=Organization&page=1');
+            expect(window.history.pushState).not.toHaveBeenCalled();
+            expect((global.fetch as jest.Mock).mock.calls.length).toBe(fetchCalls);
+            expect((global.fetch as jest.Mock).mock.calls.some(([url]) => String(url).includes('/api/agent/preferences'))).toBe(false);
+        });
+    });
+
+    describe('choices status, bottom pager and empty-state hierarchy (issue #478 visual round 1)', () => {
+        const okChoices = (url: string) => Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve(url === '/api/funding-round-choices/' ? {S: 'Seed', A: 'Series A'} : {R: 'Remote', H: 'Hybrid'}),
+        });
+
+        test('shows a loading status while choices are pending, then clears it', async () => {
+            let release: (value: unknown) => void = () => {};
+            global.fetch = jest.fn().mockImplementation((url: string) => (
+                url === '/api/funding-round-choices/' ? new Promise(resolve => { release = resolve; }) : okChoices(url)
+            ));
+            render(<OrganizationList organizations={organizations} />);
+            expect(screen.getByTestId('choices-status-loading')).toHaveTextContent('Loading funding round and RTO labels');
+            expect(screen.queryByTestId('choices-status-error')).not.toBeInTheDocument();
+            await act(async () => { release({ok: true, json: () => Promise.resolve({S: 'Seed'})}); });
+            await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
+            expect(screen.queryByTestId('choices-status-error')).not.toBeInTheDocument();
+        });
+
+        test('shows an inline error with fallback codes and Retry refetches both endpoints', async () => {
+            const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+            let fail = true;
+            global.fetch = jest.fn().mockImplementation((url: string) => (
+                fail ? Promise.resolve({ok: false, status: 500, json: () => Promise.resolve({})}) : okChoices(url)
+            ));
+            render(<OrganizationList organizations={organizations} />);
+            const error = await screen.findByTestId('choices-status-error');
+            expect(error).toHaveTextContent('raw codes are shown');
+            fail = false;
+            fireEvent.click(within(error).getByRole('button', {name: 'Retry'}));
+            await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
+            expect(screen.queryByTestId('choices-status-error')).not.toBeInTheDocument();
+            consoleSpy.mockRestore();
+        });
+
+        test('renders a second pager after the list when there is more than one page', async () => {
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+            await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
+            expect(screen.getAllByRole('navigation', {name: /Organization pagination/})).toHaveLength(2);
+            fireEvent.click(screen.getByTestId('page-link-2-bottom'));
+            expect(screen.getByTestId('page-link-2')).toHaveAttribute('aria-current', 'page');
+        });
+
+        test('omits the bottom pager for a single page', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
+            expect(screen.queryByTestId('page-link-1-bottom')).not.toBeInTheDocument();
+        });
+
+        test('empty state makes clearing filters primary and suggesting a company a link', async () => {
+            render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+            fireEvent.change(screen.getByLabelText('Search organizations'), {target: {value: 'zzz-no-match'}});
+            expect(screen.getByRole('button', {name: 'Clear search and filters'})).toHaveClass('btn-primary');
+            expect(screen.getByTestId('suggest-company-empty-btn')).toHaveClass('btn-link');
+        });
+
+        test('search chip keeps the full value in title and aria-label', () => {
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.change(screen.getByLabelText('Search organizations'), {target: {value: 'averyveryverylongsearchvalue'}});
+            const chip = screen.getByTestId('filter-chip-search');
+            expect(chip).toHaveAttribute('title', 'Search: averyveryverylongsearchvalue');
+            expect(chip.getAttribute('aria-label')).toContain('averyveryverylongsearchvalue');
+        });
+
+        test('shows placeholders, not raw codes, while labels load, and a spinner beside the loading copy', () => {
+            global.fetch = jest.fn().mockImplementation(() => new Promise(() => {}));
+            render(<OrganizationList organizations={organizations} />);
+            const loading = screen.getByTestId('choices-status-loading');
+            expect(loading.querySelector('.spinner-border')).toHaveAttribute('aria-hidden', 'true');
+            expect(screen.queryByText(organizations[0].funding_round)).not.toBeInTheDocument();
+            expect(screen.queryByText(organizations[0].rto_policy)).not.toBeInTheDocument();
+            expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+        });
+
+        test('falls back to raw codes once loading has finished and a label is missing', async () => {
+            global.fetch = jest.fn().mockImplementation(() => Promise.resolve({ok: true, json: () => Promise.resolve({})}));
+            render(<OrganizationList organizations={organizations} />);
+            await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
+            expect(screen.getAllByText(organizations[0].funding_round).length).toBeGreaterThan(0);
+        });
+
+        test('zero results read "Showing 0 organizations" and use a bounded empty panel', () => {
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.change(screen.getByLabelText('Search organizations'), {target: {value: 'zzz-no-match'}});
+            expect(screen.getByText('Showing 0 organizations')).toBeInTheDocument();
+            expect(screen.queryByText(/0-0 of 0/)).not.toBeInTheDocument();
+            expect(screen.getByRole('alert')).toHaveClass('organization-empty-state');
+        });
+
+        test('rows and cards carry the full name in title and the table and cards share one results container', () => {
+            const {container} = render(<OrganizationList organizations={organizations} />);
+            const name = organizations[0].name;
+            expect(container.querySelector('.organization-name')).toHaveAttribute('title', name);
+            expect(container.querySelector('.organization-card-name')).toHaveAttribute('title', name);
+            const results = container.querySelector('.organization-results')!;
+            expect(results.querySelector('.organization-table-wrap')).not.toBeNull();
+            expect(results.querySelector('.organization-cards')).not.toBeNull();
         });
     });
 });

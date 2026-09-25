@@ -217,9 +217,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (orgContainer && orgData && orgData.textContent) {
         try {
             const organizations = JSON.parse(orgData.textContent);
+            const presetsData = document.getElementById('ranking-presets');
+            const orgConfig = document.getElementById('organization-list-config');
             createRoot(orgContainer).render(
                 <OrganizationList
                     organizations={organizations}
+                    rankingPresets={presetsData?.textContent ? JSON.parse(presetsData.textContent) : undefined}
+                    currentAlgorithmId={Number(orgConfig?.getAttribute('data-current-algorithm-id')) || null}
+                    algorithmUrlTemplate={orgConfig?.getAttribute('data-algorithm-url-template') || undefined}
                     canSuggestCompany={false}
                     isAuthenticated={true}
                 />,

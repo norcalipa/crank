@@ -198,12 +198,15 @@ for (const vp of viewports) {
             await page.goto(ORG_FIXTURE);
             const wrap = page.locator('.organization-table-wrap');
             const cards = page.locator('.organization-cards');
-            if (vp.width < 768) {
-                // Mobile/tablet-narrow: cards are shown, table is hidden.
+            // The table-to-card switch follows the results container width
+            // (issue #478): cards when it is at most 48rem (768px) wide.
+            const resultsWidth = await page.locator('.organization-results').evaluate((el) => el.getBoundingClientRect().width);
+            if (resultsWidth <= 768) {
+                // Narrow results: cards are shown, table is hidden.
                 await expect(cards).toBeVisible();
                 await expect(wrap).toBeHidden();
             } else {
-                // Desktop: table is shown and the wrapper owns horizontal
+                // Wide results: table is shown and the wrapper owns horizontal
                 // scrolling with no inner vertical scrollbar (overflow-y hidden).
                 await expect(wrap).toBeVisible();
                 const overflowY = await wrap.evaluate((el) => getComputedStyle(el).overflowY);
