@@ -358,16 +358,20 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
         approved_value=JobSourceCatalog.ApprovalState.APPROVED,
         limit=max_sources,
     )
-    sources = selection.selected
-    counts["sources_total"] = len(sources)
     counts["sources_eligible"] = selection.counts["eligible"]
-    counts["sources_deferred"] = selection.counts["due"] - len(sources)
+    # The budget counts real attempts: a lock-skipped source records no
+    # attempt, so it must not consume a slot and starve later due sources.
+    attempts = 0
+    visited = 0
     counts["oldest_source_age_hours"] = selection.oldest_due_age_hours or 0
     successful_sources = 0
-    for source in sources:
+    for source in selection.ordered:
+        if attempts >= max_sources:
+            break
         if deadline.reached():
             counts["deadline_reached"] = True
             break
+        visited += 1
         before_ids = set(
             JobListing.all_objects.filter(source=source).values_list("pk", flat=True)
         )
@@ -403,6 +407,7 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                 if skipped:
                     counts["sources_skipped"] += 1
                     continue
+                attempts += 1
                 if _proven_complete_snapshot(result):
                     expired_count, deleted_count = _retention_sweep(
                         source, deletion_candidates=deletion_candidates
@@ -466,6 +471,7 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                     },
                 )
         except Exception as exc:  # noqa: BLE001 - isolate source failures
+            attempts += 1
             counts["sources_failed"] += 1
             # The stage transaction rolled back; record the failed attempt
             # outside it so backoff and fairness still see it.
@@ -489,6 +495,10 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                 source.pk,
                 agent_runs.sanitize_error(exc),
             )
+
+    counts["sources_total"] = visited
+    # Everything due but not visited: over budget or past the deadline.
+    counts["sources_deferred"] = max(0, selection.counts["due"] - visited)
 
     preferences = _eligible_preferences()[:max_users]
     counts["users_total"] = len(preferences)

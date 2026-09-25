@@ -300,7 +300,14 @@ numbered merge migration if a head split remains, keeping
 - **0040 → #468** (`0040_source_refresh_state`, parent
   `0039_match_result_generation`): additive `last_attempt_at` and
   `consecutive_failures` on `SourceCatalog` and `JobSourceCatalog`, plus a
-  bounded backfill of NULL `last_crawl_at` from the latest SUCCESS `CrawlRun`
-  (never PARTIAL). The backfill is idempotent and its reverse is a no-op. No
+  chunked (500-row keyset batches), resumable backfill of NULL `last_crawl_at`
+  from the latest SUCCESS `CrawlRun` (never PARTIAL). The migration is
+  `atomic = False` and keeps 0040 as the single owning number. The backfill is idempotent and its reverse is a no-op. No
   constraints or partial indexes. Old pods ignore the new columns, so rollback
-  is a code-only redeploy. **0041 → #477** builds on top of it.
+  is a code-only redeploy. Expected MySQL behavior: `AddField` with a
+  constant default and nullable indexed columns run as online `ALGORITHM=INPLACE`
+  (or INSTANT) DDL on InnoDB, taking only a brief metadata lock at start and
+  end; both catalogs are small operational tables. DDL auto-commits, so if the
+  migration is interrupted re-run `migrate`: applied schema steps are skipped by
+  the recorded state and the backfill continues where NULLs remain. Run it in a
+  low-traffic window. **0041 → #477** builds on top of it.

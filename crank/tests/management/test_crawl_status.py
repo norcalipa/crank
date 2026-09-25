@@ -181,3 +181,23 @@ class CrawlStatusRefreshSectionTests(TestCase):
         failing = next(l for l in text.splitlines() if l.startswith("Failing Job"))
         self.assertNotIn(" due", failing)
         self.assertIn(" 2 ", failing)
+
+
+class NextEligiblePolicyTests(TestCase):
+    def test_policy_states_show_marker_not_due(self):
+        A = JobSourceCatalog.ApprovalState
+        make_source("PendingSrc", approval_state=A.PENDING)
+        make_source("BlockedSrc", approval_state=A.BLOCKED)
+        make_source("DisabledSrc", enabled=False)
+        make_source("ReadySrc")
+        out = StringIO()
+        call_command("crawl_status", stdout=out)
+        lines = {}
+        for line in out.getvalue().splitlines():  # first table = refresh section
+            for name in ("PendingSrc", "BlockedSrc", "DisabledSrc", "ReadySrc"):
+                if line.startswith(name):
+                    lines.setdefault(name, line)
+        self.assertTrue(lines["PendingSrc"].rstrip().endswith("policy:pending"))
+        self.assertTrue(lines["BlockedSrc"].rstrip().endswith("policy:blocked"))
+        self.assertTrue(lines["DisabledSrc"].rstrip().endswith("policy:disabled"))
+        self.assertTrue(lines["ReadySrc"].rstrip().endswith("due"))

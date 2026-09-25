@@ -319,7 +319,28 @@ class JobPipelineFreshnessTests(TestCase):
         self.assertEqual(counts["sources_eligible"], 5)
         payload = event.call_args.args[1]
         self.assertLessEqual({"sources_eligible", "sources_deferred", "oldest_source_age_hours"}, set(payload))
-        self.assertLessEqual(set(COUNT_KEYS) - {"deadline_reached", "sources_skipped"}, set(event_attributes("matching_batch", payload)))
+        self.assertLessEqual(set(COUNT_KEYS) - {"deadline_reached"}, set(event_attributes("matching_batch", payload)))
+
+    def test_repeated_lock_skip_does_not_consume_the_budget(self):
+        first, second = job_sources(2)
+        for i in range(2):
+            counts, _ = self.go(
+                [None, JobIngestResult()], JOB_PIPELINE_MAX_SOURCES=1,
+                now=NOW + timedelta(minutes=i * 10),
+            )
+            self.assertEqual((counts["sources_skipped"], counts["sources_succeeded"]), (1, 1))
+            self.assertEqual(counts["sources_total"], 2)
+            break
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.last_attempt_at, None)
+        self.assertIsNotNone(second.last_crawl_at)
+
+    def test_deferred_includes_unvisited_selection_after_deadline(self):
+        job_sources(3)
+        counts, _ = self.go([], JOB_PIPELINE_DEADLINE_SECONDS=0, now=NOW)
+        self.assertTrue(counts["deadline_reached"])
+        self.assertEqual((counts["sources_total"], counts["sources_deferred"]), (0, 3))
 
     def test_failing_first_source_does_not_starve(self):
         first, second = job_sources(2)
@@ -437,6 +458,33 @@ class MigrationAndManifestTests(TestCase):
         self.assertEqual(job.last_crawl_at, NOW - timedelta(hours=5))
         self.assertEqual(org.last_crawl_at, NOW - timedelta(hours=5))
         self.assertEqual(keep.last_crawl_at, NOW)
+
+    def test_backfill_spans_multiple_chunks(self):
+        migration = importlib.import_module("crank.migrations.0040_source_refresh_state")
+        targets = job_sources(3)
+        agent_run = AgentRun.objects.create(run_type=AgentRun.RunType.CRAWL, status=AgentRun.Status.SUCCEEDED)
+        for target in targets[::2]:
+            CrawlRun.objects.create(
+                source_type="job", source_key=f"k{target.pk}", agent_run=agent_run,
+                started_at=NOW, finished_at=NOW, outcome="success", job_source=target,
+            )
+        with patch.object(migration, "BACKFILL_CHUNK", 1):
+            migration.backfill_last_crawl_at(django_apps, None)
+        stamps = [t.__class__.objects.get(pk=t.pk).last_crawl_at for t in targets]
+        self.assertEqual(stamps, [NOW, None, NOW])
+
+    def test_emitted_count_keys_match_allowlist_and_manifest(self):
+        from crank.services.monitoring import _SAFE_KEYS
+
+        self.assertLessEqual(set(COUNT_KEYS), set(_SAFE_KEYS))
+        manifest = (Path(__file__).parents[3] / "docs" / "monitoring.yaml").read_text()
+        for key in (
+            "sources_eligible", "sources_deferred", "sources_skipped",
+            "oldest_source_age_hours", "deferred_backoff", "skipped_fresh",
+            "skipped_policy", "oldest_due_age_hours",
+        ):
+            self.assertIn(key, _SAFE_KEYS)
+            self.assertIn(key, manifest)
 
     def test_crawl_cron_manifests_stay_suspended(self):
         root = Path(__file__).parents[3]

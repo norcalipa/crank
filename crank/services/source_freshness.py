@@ -49,6 +49,7 @@ class RefreshPolicy:
 @dataclass
 class Selection:
     selected: list = field(default_factory=list)
+    ordered: list = field(default_factory=list)  # every due source, fairest first
     counts: dict[str, int] = field(default_factory=dict)
     oldest_due_age_hours: int | None = None
 
@@ -161,7 +162,12 @@ def select_due(
             due.append(source)
     due.sort(key=_priority)
     oldest = max((_age_hours(s, now) for s in due), default=None)
-    return Selection(selected=due[: max(0, limit)], counts=counts, oldest_due_age_hours=oldest)
+    return Selection(
+        selected=due[: max(0, limit)],
+        ordered=due,
+        counts=counts,
+        oldest_due_age_hours=oldest,
+    )
 
 
 def organization_outcome(result: Any) -> Outcome:

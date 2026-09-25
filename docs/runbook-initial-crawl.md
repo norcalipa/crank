@@ -26,17 +26,19 @@ scheduler (#367), and admin trigger (#368) are already merged and deployed.
 | `FIRECRAWL_MAX_PAGES` | 10 | Max pages per Firecrawl crawl |
 | `FIRECRAWL_MAX_LISTINGS` | 100 | Max listings per crawl |
 | `FIRECRAWL_CREDIT_BUDGET` | 10 | Firecrawl credits per crawl |
-| `CRAWL_MAX_SOURCES` | 10 | Sources per schedule dispatch |
-| `CRAWL_MAX_JOB_LISTINGS` | 100 | Listings per job-source dispatch |
-| `CRAWL_MAX_PAGES` | 10 | Pages per job-source dispatch |
-| `CRAWL_DEADLINE_SECONDS` | 300 | Wall-clock budget per dispatch |
-| `JOB_FRESHNESS_HOURS` | 24 | Stale threshold for job sources |
+| `JOB_PIPELINE_MAX_SOURCES` | 10 | Source ingest attempts per `run_job_pipeline` run (lock-skipped sources do not count) |
+| `JOB_PIPELINE_MAX_LISTINGS_PER_USER` | 500 | Listings fetched per source and ranked per user |
+| `JOB_PIPELINE_DEADLINE_SECONDS` | 300 | Wall-clock budget per run |
+| `JOB_REFRESH_TTL_HOURS` | 6 | A successful fetch keeps a source out of the next plan for this long |
 
-For the first production crawl, keep the defaults. One full schedule dispatch
-costs at most `CRAWL_MAX_SOURCES × FIRECRAWL_CREDIT_BUDGET` Firecrawl credits
-(10 × 10 = 100 credits) and fetches at most `CRAWL_MAX_SOURCES ×
-CRAWL_MAX_JOB_LISTINGS` listings (10 × 100 = 1,000 listings). Adjust
-`FIRECRAWL_CREDIT_BUDGET` down to 5 for a cheaper smoke test.
+For the first production crawl, keep the defaults. One `run_job_pipeline` run
+makes at most `JOB_PIPELINE_MAX_SOURCES` ingest attempts and fetches at most
+`JOB_PIPELINE_MAX_SOURCES × JOB_PIPELINE_MAX_LISTINGS_PER_USER` listings
+(10 × 500 = 5,000 listings), and Firecrawl spend is bounded by
+`JOB_PIPELINE_MAX_SOURCES × FIRECRAWL_CREDIT_BUDGET` (10 × 10 = 100 credits).
+Lower `JOB_PIPELINE_MAX_LISTINGS_PER_USER` and `FIRECRAWL_CREDIT_BUDGET` for a
+cheaper smoke test. The `CRAWL_MAX_*` settings bound only `schedule_crawls`
+(organization dispatch), not this procedure.
 
 ## Step 1: seed job sources
 
@@ -213,6 +215,8 @@ All commands are safe to re-run:
 
 - `seed_job_sources` upserts rows by name and creates new rows as pending/disabled. Re-seeding preserves operator-set approval_state and enabled fields on existing rows.
 - `trigger_crawl` rejects a second concurrent crawl for the same source.
-- `schedule_crawls` skips sources that are not approved+enabled, fresh (within `JOB_FRESHNESS_HOURS`)
-  or disabled.
+- `run_job_pipeline` skips sources that are not approved+enabled, or that
+  succeeded within `JOB_REFRESH_TTL_HOURS`, or are in retry backoff after
+  failures. Only successful fetches advance the freshness clock, so re-running
+  is safe and never re-fetches a fresh source.
 - `crawl_status` and `crawl_healthcheck` are read-only.

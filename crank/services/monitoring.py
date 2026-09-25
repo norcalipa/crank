@@ -62,6 +62,7 @@ _SAFE_KEYS = frozenset(
         "sources_total",
         "sources_succeeded",
         "sources_failed",
+        "sources_skipped",
         "users_total",
         "users_succeeded",
         "users_failed",
