@@ -6,9 +6,17 @@ import path from 'path';
 describe('rankings toolbar and disclosure styles (issue #478)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
 
+    it('fixes desktop column geometry and floors touch targets at 44px', () => {
+        expect(popupCss).toMatch(/\.organization-table\s*\{[^}]*table-layout:\s*fixed/);
+        for (const col of ['rank', 'score', 'funding', 'rto', 'profile']) {
+            expect(popupCss).toMatch(new RegExp(`\\.col-${col}\\s*\\{\\s*width:`));
+        }
+        expect(popupCss).toMatch(/\.rankings-toolbar \.filter-chip,[^{]*\.pagination \.page-link[^{]*\{\s*min-height:\s*44px/);
+    });
+
     it('defines the toolbar, chip and disclosure rules and drops the side-column scoring panel', () => {
         expect(popupCss).toMatch(/\.rankings-toolbar\s*\{[^}]*flex-wrap:\s*wrap/);
-        expect(popupCss).toMatch(/\.filter-chip-text\s*\{[^}]*overflow-wrap:\s*anywhere/);
+        expect(popupCss).toMatch(/\.filter-chip-text\s*\{[^}]*text-overflow:\s*ellipsis/);
         expect(popupCss).toMatch(/\.how-ranking-works\s*\{/);
         expect(popupCss).not.toMatch(/\.scoring-(panel|summary)/);
     });

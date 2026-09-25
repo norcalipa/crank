@@ -59,6 +59,7 @@ interface OrganizationListState {
     searchTerm: string;
     selectedOrganization: Organization | null;
     showPopup: boolean;
+    choicesStatus: 'loading' | 'ready' | 'error';
 }
 
 class OrganizationList extends React.Component<OrganizationListProps, OrganizationListState> {
@@ -75,7 +76,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             acceleratedVesting: urlState.acceleratedVesting,
             searchTerm: urlState.searchTerm,
             selectedOrganization: null,
-            showPopup: false
+            showPopup: false,
+            choicesStatus: 'loading'
         };
     }
 
@@ -85,24 +87,35 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     // arrives, that a newer intent has superseded it.
     private modalGeneration = 0;
 
-    componentDidMount() {
-        fetch('/api/funding-round-choices/')
-            .then(response => response.json())
+    // Funding-round and RTO labels come from two choice endpoints. The status
+    // drives the loading/error cue next to the result count; on failure the
+    // raw codes are shown as fallback labels and Retry refetches both.
+    loadChoices = () => {
+        this.setState({choicesStatus: 'loading'});
+        const load = (url: string, key: 'fundingRoundChoices' | 'rtoPolicyChoices', label: string) => fetch(url)
+            .then(response => {
+                if (response.ok === false) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                return response.json();
+            })
             .then(data => {
-                this.setState({fundingRoundChoices: data});
+                this.setState({[key]: data} as Pick<OrganizationListState, typeof key>);
             })
             .catch((error) => {
-                console.error('Error fetching funding round choices:', error);
+                console.error(`Error fetching ${label}:`, error);
+                throw error;
             });
+        Promise.all([
+            load('/api/funding-round-choices/', 'fundingRoundChoices', 'funding round choices'),
+            load('/api/rto-policy-choices/', 'rtoPolicyChoices', 'RTO policy choices')
+        ])
+            .then(() => this.setState({choicesStatus: 'ready'}))
+            .catch(() => this.setState({choicesStatus: 'error'}));
+    };
 
-        fetch('/api/rto-policy-choices/')
-            .then(response => response.json())
-            .then(data => {
-                this.setState({rtoPolicyChoices: data});
-            })
-            .catch((error) => {
-                console.error('Error fetching RTO policy choices:', error)
-            });
+    componentDidMount() {
+        this.loadChoices();
 
         window.addEventListener('popstate', this.handlePopState);
         this.normalizeCurrentPage();
@@ -380,7 +393,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         }
         return (<ul className="filter-chips" aria-label="Active filters">
             {searchTerm && <li><button type="button" className="filter-chip" data-testid="filter-chip-search"
-                                       aria-label={`Remove filter: search "${searchTerm}"`}
+                                       aria-label={`Remove filter: search "${searchTerm}"`} title={`Search: ${searchTerm}`}
                                        onClick={this.handleRemoveSearch}>
                 <span className="filter-chip-text">Search: {searchTerm}</span> <span aria-hidden="true">×</span>
             </button></li>}
@@ -402,7 +415,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             acceleratedVesting,
             searchTerm,
             selectedOrganization,
-            showPopup
+            showPopup,
+            choicesStatus
         } = this.state;
 
         const pageCount = this.getPageCount(filteredOrganizations.length);
@@ -418,6 +432,37 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         const currentPreset = presets.find(preset => preset.id === this.props.currentAlgorithmId);
         const scoreLabel = currentPreset ? `Company score (${currentPreset.name})` : 'Company score';
         const isEmpty = filteredOrganizations.length === 0;
+
+        const renderPager = (position: 'top' | 'bottom') => (
+<nav aria-label={`Organization pagination${position === 'bottom' ? ' (bottom)' : ''}`}>
+                <ul className="pagination">
+                    <li className={`page-item ${displayedPage === 1 ? 'disabled' : ''}`}>
+                        <a className="page-link" href={this.getPageUrl(displayedPage - 1)} aria-label="Previous page"
+                           aria-disabled={displayedPage === 1} rel={displayedPage > 1 ? 'prev' : undefined}
+                           tabIndex={displayedPage === 1 ? -1 : undefined}
+                           onClick={(event) => { event.preventDefault(); this.handlePageChange(displayedPage - 1); }}>Previous</a>
+                    </li>
+                    {pageNumbers.map(number => (
+                        <li className={`page-item ${displayedPage === number ? 'active' : ''}`} key={number}>
+                            <a className="page-link"
+                               data-testid={`page-link-${number}${position === 'bottom' ? '-bottom' : ''}`}
+                               href={this.getPageUrl(number)}
+                               aria-label={`Page ${number}`}
+                               aria-current={displayedPage === number ? 'page' : undefined}
+                               onClick={(event) => {
+                                   event.preventDefault();
+                                   this.handlePageChange(number);
+                               }}>{number}</a>
+                        </li>))}
+                    <li className={`page-item ${displayedPage === pageCount ? 'disabled' : ''}`}>
+                        <a className="page-link" href={this.getPageUrl(displayedPage + 1)} aria-label="Next page"
+                           aria-disabled={displayedPage === pageCount} rel={displayedPage < pageCount ? 'next' : undefined}
+                           tabIndex={displayedPage === pageCount ? -1 : undefined}
+                           onClick={(event) => { event.preventDefault(); this.handlePageChange(displayedPage + 1); }}>Next</a>
+                    </li>
+                </ul>
+            </nav>
+        );
 
         return (<div>
             <div className="rankings-toolbar" data-testid="rankings-toolbar">
@@ -458,6 +503,11 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 </div>
                 <div className="rankings-toolbar-count" role="status" aria-live="polite">
                     <div className="organization-results-count">{`Showing ${firstResult}-${lastResult} of ${filteredOrganizations.length} organizations`}</div>
+                    {choicesStatus === 'loading' && <div className="choices-status text-muted" data-testid="choices-status-loading">Loading funding round and RTO labels…</div>}
+                    {choicesStatus === 'error' && <div className="choices-status choices-status-error alert alert-danger py-1 px-2 mt-1 mb-0" data-testid="choices-status-error">
+                        <span>Couldn't load funding round and RTO labels, so raw codes are shown instead.</span>{' '}
+                        <button type="button" className="btn btn-outline-danger btn-sm" data-testid="choices-retry" onClick={this.loadChoices}>Retry</button>
+                    </div>}
                     {pageCount > 1 && <div className="organization-page-count">{`Page ${displayedPage} of ${pageCount}`}</div>}
                 </div>
                 {this.props.isAuthenticated && !isEmpty && (
@@ -468,54 +518,25 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     </button>
                 )}
             </div>
-            {pageCount > 1 && (
-            <nav aria-label="Organization pagination">
-                <ul className="pagination">
-                    <li className={`page-item ${displayedPage === 1 ? 'disabled' : ''}`}>
-                        <a className="page-link" href={this.getPageUrl(displayedPage - 1)} aria-label="Previous page"
-                           aria-disabled={displayedPage === 1} rel={displayedPage > 1 ? 'prev' : undefined}
-                           tabIndex={displayedPage === 1 ? -1 : undefined}
-                           onClick={(event) => { event.preventDefault(); this.handlePageChange(displayedPage - 1); }}>Previous</a>
-                    </li>
-                    {pageNumbers.map(number => (
-                        <li className={`page-item ${displayedPage === number ? 'active' : ''}`} key={number}>
-                            <a className="page-link"
-                               data-testid={`page-link-${number}`}
-                               href={this.getPageUrl(number)}
-                               aria-label={`Page ${number}`}
-                               aria-current={displayedPage === number ? 'page' : undefined}
-                               onClick={(event) => {
-                                   event.preventDefault();
-                                   this.handlePageChange(number);
-                               }}>{number}</a>
-                        </li>))}
-                    <li className={`page-item ${displayedPage === pageCount ? 'disabled' : ''}`}>
-                        <a className="page-link" href={this.getPageUrl(displayedPage + 1)} aria-label="Next page"
-                           aria-disabled={displayedPage === pageCount} rel={displayedPage < pageCount ? 'next' : undefined}
-                           tabIndex={displayedPage === pageCount ? -1 : undefined}
-                           onClick={(event) => { event.preventDefault(); this.handlePageChange(displayedPage + 1); }}>Next</a>
-                    </li>
-                </ul>
-            </nav>
-            )}
+            {pageCount > 1 && renderPager('top')}
 
             {filteredOrganizations.length === 0 ? (<div className="alert alert-secondary" role="alert">
                 <h2 className="h5">No organizations found</h2>
                 <p>There are no organizations that match your search or filters.</p>
-                {(searchTerm || acceleratedVesting) && <button type="button" className="btn btn-secondary" onClick={this.handleClearFilters}>Clear search and filters</button>}
-                {(this.props.canSuggestCompany || this.props.isAuthenticated) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0" data-testid="suggest-company-empty-btn" onClick={() => this.handleOpenSuggestModal('rankings_empty')}>Suggest a company</button> for evaluation.</p>}
+                {(searchTerm || acceleratedVesting) && <button type="button" className="btn btn-primary" onClick={this.handleClearFilters}>Clear search and filters</button>}
+                {(this.props.canSuggestCompany || this.props.isAuthenticated) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0 suggest-company-empty" data-testid="suggest-company-empty-btn" onClick={() => this.handleOpenSuggestModal('rankings_empty')}>Suggest a company</button> for evaluation.</p>}
             </div>) : (<>
                 <div className="organization-table-wrap" role="region" aria-label="Organization rankings" tabIndex={0}>
                     <table className="table organization-table">
                         <caption className="visually-hidden">Organizations ranked by the selected scoring algorithm</caption>
                         <thead>
                         <tr>
-                            <th>Rank</th>
-                            <th>Name</th>
-                            <th>{scoreLabel}</th>
-                            <th>Funding Round</th>
-                            <th>RTO Policy</th>
-                            <th>Profile Completeness</th>
+                            <th className="col-rank">Rank</th>
+                            <th className="col-name">Name</th>
+                            <th className="col-score">{scoreLabel}</th>
+                            <th className="col-funding">Funding Round</th>
+                            <th className="col-rto">RTO Policy</th>
+                            <th className="col-profile">Profile Completeness</th>
                         </tr>
                         </thead>
                         <tbody>
@@ -533,12 +554,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             aria-label={`View details for ${org.name}`}
                             className="organization-row"
                         >
-                            <td>{org.ranking}</td>
-                            <td><span className="organization-name">{org.name}</span></td>
-                            <td>{org.avg_score.toFixed(2)}</td>
-                            <td>{fundingRoundChoices[org.funding_round]}</td>
-                            <td>{rtoPolicyChoices[org.rto_policy]}</td>
-                            <td>{org.profile_completeness.toFixed(0)}%</td>
+                            <td className="col-rank">{org.ranking}</td>
+                            <td className="col-name"><span className="organization-name">{org.name}</span></td>
+                            <td className="col-score">{org.avg_score.toFixed(2)}</td>
+                            <td className="col-funding">{fundingRoundChoices[org.funding_round] ?? org.funding_round}</td>
+                            <td className="col-rto">{rtoPolicyChoices[org.rto_policy] ?? org.rto_policy}</td>
+                            <td className="col-profile">{org.profile_completeness.toFixed(0)}%</td>
                         </tr>))}
                         </tbody>
                     </table>
@@ -567,11 +588,11 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                                 </div>
                                 <div>
                                     <span className="organization-card-label">RTO policy</span>
-                                    {rtoPolicyChoices[org.rto_policy]}
+                                    {rtoPolicyChoices[org.rto_policy] ?? org.rto_policy}
                                 </div>
                                 <div>
                                     <span className="organization-card-label">Funding round</span>
-                                    {fundingRoundChoices[org.funding_round]}
+                                    {fundingRoundChoices[org.funding_round] ?? org.funding_round}
                                 </div>
                                 <div>
                                     <span className="organization-card-label">Profile completeness</span>
@@ -581,6 +602,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         </article>
                     ))}
                 </div>
+                {pageCount > 1 && renderPager('bottom')}
             </>)}
 
             <OrganizationDetailsPopup

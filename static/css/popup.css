@@ -464,12 +464,72 @@ body.app-nav-drawer-open {
     overflow-wrap: anywhere;
 }
 
+.how-ranking-works-content > * {
+    max-width: 70ch;
+}
+
 .ranking-definitions dt {
-    margin-top: .5rem;
+    margin-top: .75rem;
+    font-weight: 700;
 }
 
 .ranking-definitions dd {
     margin-bottom: 0;
+    color: var(--bs-secondary-color);
+}
+
+.choices-status {
+    font-size: .875rem;
+}
+
+.choices-status-error {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .5rem;
+}
+
+.filter-chips > li {
+    min-width: 0;
+    max-width: 100%;
+}
+
+.filter-chip-text {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Touch-target floor (44px) for every rankings control at every width. */
+.rankings-toolbar .form-control,
+.rankings-toolbar .form-select,
+.rankings-toolbar .btn,
+.rankings-toolbar .filter-chip,
+.choices-status .btn,
+.pagination .page-link,
+.alert .btn {
+    min-height: 44px;
+}
+
+.rankings-toolbar .filter-chip,
+.pagination .page-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.pagination .page-link {
+    min-width: 44px;
+}
+
+.organization-filter {
+    min-height: 44px;
+}
+
+.pagination {
+    flex-wrap: wrap;
 }
 
 .rankings-toolbar {
@@ -516,11 +576,6 @@ body.app-nav-drawer-open {
     border-radius: 999px;
     background: var(--bs-secondary-bg);
     color: inherit;
-}
-
-.filter-chip-text {
-    overflow-wrap: anywhere;
-    text-align: left;
 }
 
 .organization-search {
@@ -582,6 +637,26 @@ body.app-nav-drawer-open {
 .organization-table {
     min-width: 40rem;
     margin-bottom: 0;
+}
+
+@media (min-width: 768px) {
+    .organization-table {
+        table-layout: fixed;
+        width: 100%;
+        min-width: 48rem;
+    }
+
+    .organization-table .col-rank { width: 5rem; }
+    .organization-table .col-score { width: 9rem; }
+    .organization-table .col-funding { width: 9rem; }
+    .organization-table .col-rto { width: 8rem; }
+    .organization-table .col-profile { width: 9rem; }
+    .organization-table .col-name { width: auto; }
+
+    .organization-table th,
+    .organization-table td {
+        overflow-wrap: anywhere;
+    }
 }
 
 .organization-table-wrap::before {

@@ -846,13 +846,13 @@ describe('OrganizationList', () => {
         render(<OrganizationList organizations={Array(20).fill(organizations[0])} itemsPerPage={10} />);
 
         await waitFor(() => {
-            expect(screen.getByRole('link', {name: 'Previous page'})).toBeInTheDocument();
-            expect(screen.getByRole('link', {name: 'Next page'})).toBeInTheDocument();
-            expect(screen.getByRole('link', {name: 'Page 1'})).toHaveAttribute('aria-current', 'page');
+            expect(screen.getAllByRole('link', {name: 'Previous page'})[0]).toBeInTheDocument();
+            expect(screen.getAllByRole('link', {name: 'Next page'})[0]).toBeInTheDocument();
+            expect(screen.getAllByRole('link', {name: 'Page 1'})[0]).toHaveAttribute('aria-current', 'page');
         });
 
         // Previous is disabled on page 1
-        const prevLink = screen.getByRole('link', {name: 'Previous page'});
+        const prevLink = screen.getAllByRole('link', {name: 'Previous page'})[0];
         expect(prevLink).toHaveAttribute('aria-disabled', 'true');
         expect(prevLink).toHaveAttribute('tabindex', '-1');
     });
@@ -867,7 +867,7 @@ describe('OrganizationList', () => {
         fireEvent.click(screen.getByTestId('page-link-2'));
 
         await waitFor(() => {
-            const nextLink = screen.getByRole('link', {name: 'Next page'});
+            const nextLink = screen.getAllByRole('link', {name: 'Next page'})[0];
             expect(nextLink).toHaveAttribute('aria-disabled', 'true');
             expect(nextLink).toHaveAttribute('tabindex', '-1');
         });
@@ -1000,15 +1000,15 @@ describe('OrganizationList', () => {
         render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
 
         await waitFor(() => {
-            expect(screen.getByRole('link', {name: 'Next page'})).toBeInTheDocument();
+            expect(screen.getAllByRole('link', {name: 'Next page'})[0]).toBeInTheDocument();
         });
 
-        fireEvent.click(screen.getByRole('link', {name: 'Next page'}));
+        fireEvent.click(screen.getAllByRole('link', {name: 'Next page'})[0]);
         await waitFor(() => {
             expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
         });
 
-        fireEvent.click(screen.getByRole('link', {name: 'Previous page'}));
+        fireEvent.click(screen.getAllByRole('link', {name: 'Previous page'})[0]);
         await waitFor(() => {
             expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
         });
@@ -1562,6 +1562,77 @@ describe('OrganizationList', () => {
             expect(window.history.pushState).not.toHaveBeenCalled();
             expect((global.fetch as jest.Mock).mock.calls.length).toBe(fetchCalls);
             expect((global.fetch as jest.Mock).mock.calls.some(([url]) => String(url).includes('/api/agent/preferences'))).toBe(false);
+        });
+    });
+
+    describe('choices status, bottom pager and empty-state hierarchy (issue #478 visual round 1)', () => {
+        const okChoices = (url: string) => Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve(url === '/api/funding-round-choices/' ? {S: 'Seed', A: 'Series A'} : {R: 'Remote', H: 'Hybrid'}),
+        });
+
+        test('shows a loading status while choices are pending, then clears it', async () => {
+            let release: (value: unknown) => void = () => {};
+            global.fetch = jest.fn().mockImplementation((url: string) => (
+                url === '/api/funding-round-choices/' ? new Promise(resolve => { release = resolve; }) : okChoices(url)
+            ));
+            render(<OrganizationList organizations={organizations} />);
+            expect(screen.getByTestId('choices-status-loading')).toHaveTextContent('Loading funding round and RTO labels');
+            expect(screen.queryByTestId('choices-status-error')).not.toBeInTheDocument();
+            await act(async () => { release({ok: true, json: () => Promise.resolve({S: 'Seed'})}); });
+            await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
+            expect(screen.queryByTestId('choices-status-error')).not.toBeInTheDocument();
+        });
+
+        test('shows an inline error with fallback codes and Retry refetches both endpoints', async () => {
+            const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+            let fail = true;
+            global.fetch = jest.fn().mockImplementation((url: string) => (
+                fail ? Promise.resolve({ok: false, status: 500, json: () => Promise.resolve({})}) : okChoices(url)
+            ));
+            render(<OrganizationList organizations={organizations} />);
+            const error = await screen.findByTestId('choices-status-error');
+            expect(error).toHaveTextContent('raw codes are shown');
+            fail = false;
+            fireEvent.click(within(error).getByRole('button', {name: 'Retry'}));
+            await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
+            expect(screen.queryByTestId('choices-status-error')).not.toBeInTheDocument();
+            consoleSpy.mockRestore();
+        });
+
+        test('renders a second pager after the list when there is more than one page', async () => {
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+            await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
+            expect(screen.getAllByRole('navigation', {name: /Organization pagination/})).toHaveLength(2);
+            fireEvent.click(screen.getByTestId('page-link-2-bottom'));
+            expect(screen.getByTestId('page-link-2')).toHaveAttribute('aria-current', 'page');
+        });
+
+        test('omits the bottom pager for a single page', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
+            expect(screen.queryByTestId('page-link-1-bottom')).not.toBeInTheDocument();
+        });
+
+        test('empty state makes clearing filters primary and suggesting a company a link', async () => {
+            render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+            fireEvent.change(screen.getByLabelText('Search organizations'), {target: {value: 'zzz-no-match'}});
+            expect(screen.getByRole('button', {name: 'Clear search and filters'})).toHaveClass('btn-primary');
+            expect(screen.getByTestId('suggest-company-empty-btn')).toHaveClass('btn-link');
+        });
+
+        test('search chip keeps the full value in title and aria-label', () => {
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.change(screen.getByLabelText('Search organizations'), {target: {value: 'averyveryverylongsearchvalue'}});
+            const chip = screen.getByTestId('filter-chip-search');
+            expect(chip).toHaveAttribute('title', 'Search: averyveryverylongsearchvalue');
+            expect(chip.getAttribute('aria-label')).toContain('averyveryverylongsearchvalue');
+        });
+
+        test('falls back to raw codes when a label is missing', () => {
+            global.fetch = jest.fn().mockImplementation(() => Promise.resolve({ok: true, json: () => Promise.resolve({})}));
+            render(<OrganizationList organizations={organizations} />);
+            expect(screen.getAllByText(organizations[0].funding_round).length).toBeGreaterThan(0);
         });
     });
 });

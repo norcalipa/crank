@@ -45,11 +45,12 @@ test('single page renders no pager', async ({page}) => {
 test('pager works with the keyboard', async ({page}) => {
     await page.goto(PAGED_FIXTURE);
     await expect(page.getByText('Page 1 of 2')).toBeVisible();
-    await page.getByRole('link', {name: 'Next page'}).focus();
+    await expect(page.getByRole('navigation', {name: /Organization pagination/})).toHaveCount(2);
+    await page.getByRole('link', {name: 'Next page'}).first().focus();
     await page.keyboard.press('Enter');
     await expect(page.getByText('Page 2 of 2')).toBeVisible();
-    await expect(page.getByRole('link', {name: 'Page 2'})).toHaveAttribute('aria-current', 'page');
-    await page.getByRole('link', {name: 'Previous page'}).focus();
+    await expect(page.getByRole('link', {name: 'Page 2'}).first()).toHaveAttribute('aria-current', 'page');
+    await page.getByRole('link', {name: 'Previous page'}).first().focus();
     await page.keyboard.press('Enter');
     await expect(page.getByText('Page 1 of 2')).toBeVisible();
 });
