@@ -48,9 +48,11 @@ describe('authIntent', () => {
         window.localStorage.setItem('crank:jobsearch:inflight:42:abc', '{}');
         window.localStorage.setItem('crank:last-account', 'someone');
         window.localStorage.setItem('unrelated-key', 'keep-me');
+        window.sessionStorage.setItem('crank:workspace:v1', '{"v":1}');
 
         purgePrivateClientState();
 
+        expect(window.sessionStorage.getItem('crank:workspace:v1')).toBeNull();
         expect(readIntent()).toBeNull();
         expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBeNull();
         expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBeNull();
@@ -102,6 +104,15 @@ describe('authIntent', () => {
             const restore = breakStorage('sessionStorage', 'removeItem');
             try {
                 expect(() => clearIntent()).not.toThrow();
+            } finally {
+                restore();
+            }
+        });
+
+        test('purgePrivateClientState swallows a sessionStorage failure (workspace record)', () => {
+            const restore = breakStorage('sessionStorage', 'removeItem');
+            try {
+                expect(() => purgePrivateClientState()).not.toThrow();
             } finally {
                 restore();
             }

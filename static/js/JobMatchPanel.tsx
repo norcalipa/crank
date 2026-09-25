@@ -1,7 +1,9 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
-import {getWorkspaceSnapshot, subscribeWorkspace} from './workspace/store';
+import {installPositionTracking, restoreResultPosition} from './workspace/position';
+import {createLatestGuard} from './workspace/requests';
+import {getWorkspaceSnapshot, setWorkspaceContext, subscribeWorkspace} from './workspace/store';
 
 /**
  * JobMatchPanel displays the user's job-match status with distinct empty-state
@@ -40,6 +42,10 @@ interface RevisionBlock {
     data_revision?: number | null;
     generated_at?: string | null;
     stale?: boolean;
+    // Monotonic result-list generation (issue #475): a lower value than the
+    // one on screen is a late response and never replaces it (issue #479).
+    // Null for pre-generation users, which are never guarded.
+    result_generation?: number | null;
 }
 
 interface RankedJobMatch {
@@ -548,15 +554,22 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         setAssistantOpen(getWorkspaceSnapshot().visibility === 'open');
     }), []);
 
+    // Latest-request guard (issue #479): overlapping refreshes must never let
+    // an older response overwrite a newer one, and a response whose
+    // result_generation is lower than the one on screen is discarded.
+    const guardRef = React.useRef(createLatestGuard());
+    const shownGenerationRef = React.useRef<number | null>(null);
+
     const fetchStatus = React.useCallback(async () => {
         if (!isAuthenticated) return;
+        const request = guardRef.current.begin();
         setPhase('loading');
         setErrorMsg(null);
         try {
             const [statusRes, matchRes, rankedRes] = await Promise.all([
-                fetch('/api/job-matches/status/'),
-                fetch('/api/job-matches/?page=1&page_size=1'),
-                fetch('/api/job-matches/ranked/?limit=10'),
+                fetch('/api/job-matches/status/', {signal: request.signal}),
+                fetch('/api/job-matches/?page=1&page_size=1', {signal: request.signal}),
+                fetch('/api/job-matches/ranked/?limit=10', {signal: request.signal}),
             ]);
             if (!statusRes.ok) {
                 // Never expose raw implementation details (issue #467 round-2):
@@ -565,21 +578,38 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 throw new Error('We couldn’t load your job matches. Please try again.');
             }
             const statusData: EmptyStatePayload = await parseJson(statusRes);
-            setEmptyState(statusData);
-
+            let matchData: {count?: number; results?: RankedJobMatch[]} | null = null;
             if (matchRes.ok) {
-                const matchData = await parseJson<{count?: number; results?: RankedJobMatch[]}>(matchRes);
+                matchData = await parseJson<{count?: number; results?: RankedJobMatch[]}>(matchRes);
+            }
+            const rankedData: RankedMatchesPayload | null = rankedRes.ok
+                ? await parseJson<RankedMatchesPayload>(rankedRes)
+                : null;
+            if (!request.isLatest()) {
+                return;
+            }
+            const revision = matchData?.results?.[0]?.revision ?? null;
+            const generation = revision?.result_generation ?? null;
+            const shown = shownGenerationRef.current;
+            if (generation !== null && shown !== null && generation < shown) {
+                // Older result set than the one displayed: keep what is shown.
+                setPhase('ready');
+                return;
+            }
+            setEmptyState(statusData);
+            if (matchData) {
                 setMatchCount(matchData.count || 0);
-                setStoredRevision(matchData.results?.[0]?.revision ?? null);
+                setStoredRevision(revision);
+                if (generation !== null) {
+                    shownGenerationRef.current = generation;
+                }
             }
-            if (rankedRes.ok) {
-                const rankedData: RankedMatchesPayload = await parseJson<RankedMatchesPayload>(rankedRes);
-                setRankedMatches(rankedData);
-            } else {
-                setRankedMatches(null);
-            }
+            setRankedMatches(rankedData);
             setPhase('ready');
         } catch (e) {
+            if (!request.isLatest()) {
+                return;
+            }
             setErrorMsg(e instanceof Error ? e.message : 'Could not load job match status.');
             setPhase('error');
         }
@@ -587,6 +617,37 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
 
     React.useEffect(() => {
         fetchStatus();
+    }, [fetchStatus]);
+
+    React.useEffect(() => () => guardRef.current.cancel(), []);
+
+    // Issue #479: report the jobs surface, track/restore the Back-navigation
+    // scroll position, and drop everything on a private-state purge (sign-out
+    // or account switch) so no match data outlives the account.
+    React.useEffect(() => {
+        setWorkspaceContext({surface: 'jobs'});
+        return installPositionTracking(() => null);
+    }, []);
+    const restoredPositionRef = React.useRef(false);
+    React.useEffect(() => {
+        if (phase === 'ready' && !restoredPositionRef.current) {
+            restoredPositionRef.current = true;
+            restoreResultPosition(() => null);
+        }
+    }, [phase]);
+    React.useEffect(() => {
+        const handlePurged = () => {
+            guardRef.current.cancel();
+            shownGenerationRef.current = null;
+            setEmptyState(null);
+            setMatchCount(0);
+            setRankedMatches(null);
+            setStoredRevision(null);
+            setPhase('loading');
+            void fetchStatus();
+        };
+        document.addEventListener('crank:private-state-purged', handlePurged);
+        return () => document.removeEventListener('crank:private-state-purged', handlePurged);
     }, [fetchStatus]);
 
     const handleAction = React.useCallback((action: string) => {

@@ -63,6 +63,8 @@ from crank.settings.base import DEFAULT_ALGORITHM_ID
 DEFAULT_E2E_PASSWORD = "e2e-throwaway-password"
 
 E2E_USERNAME = "e2e_user"
+#: Second throwaway account for account-isolation journeys (issue #479).
+E2E_USERNAME_B = "e2e_user_b"
 
 #: Fixture names are unique keys, which makes re-runs idempotent and keeps
 #: the dataset obviously synthetic ("E2E " prefix everywhere).
@@ -394,29 +396,30 @@ class Command(BaseCommand):
 
         # -- Password test account with a non-default preference document ----
         user_model = get_user_model()
-        user, _ = user_model.objects.get_or_create(
-            username=E2E_USERNAME,
-            defaults={"email": "e2e_user@example.test", "first_name": "E2E"},
-        )
-        _sync_fields(
-            user,
-            {"email": "e2e_user@example.test", "first_name": "E2E", "is_staff": False},
-        )
-        # Only rotate the password when it does not already verify: hashing is
-        # salted, so an unconditional set_password would change the stored
-        # hash on every re-run and break identical-state reruns.
-        if not user.check_password(password):
-            user.set_password(password)
-            user.save(update_fields=["password"])
-        preferences = default_preferences()
-        # One non-default dimension: a remote-work preference that the seeded
-        # active listing satisfies, so match_jobs returns a live ranked result
-        # with a positive work_location factor.
-        preferences["work_location"]["modes"] = ["remote"]
-        preference, _ = UserPreference.objects.get_or_create(
-            user=user,
-            defaults={"preferences": preferences},
-        )
-        _sync_fields(preference, {"preferences": preferences})
-        created["users"] = 1
+        for username in (E2E_USERNAME, E2E_USERNAME_B):
+            user, _ = user_model.objects.get_or_create(
+                username=username,
+                defaults={"email": f"{username}@example.test", "first_name": "E2E"},
+            )
+            _sync_fields(
+                user,
+                {"email": f"{username}@example.test", "first_name": "E2E", "is_staff": False},
+            )
+            # Only rotate the password when it does not already verify: hashing is
+            # salted, so an unconditional set_password would change the stored
+            # hash on every re-run and break identical-state reruns.
+            if not user.check_password(password):
+                user.set_password(password)
+                user.save(update_fields=["password"])
+            preferences = default_preferences()
+            # One non-default dimension: a remote-work preference that the seeded
+            # active listing satisfies, so match_jobs returns a live ranked result
+            # with a positive work_location factor.
+            preferences["work_location"]["modes"] = ["remote"]
+            preference, _ = UserPreference.objects.get_or_create(
+                user=user,
+                defaults={"preferences": preferences},
+            )
+            _sync_fields(preference, {"preferences": preferences})
+        created["users"] = 2
         return created

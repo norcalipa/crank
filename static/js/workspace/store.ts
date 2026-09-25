@@ -10,6 +10,7 @@
 
 import {
     AssistantVisibility,
+    WorkspaceAccount,
     WorkspaceContext,
     WorkspaceMode,
     WorkspaceSnapshot,
@@ -26,7 +27,7 @@ const VALID_SURFACES: readonly WorkspaceContext['surface'][] = [
 ];
 
 const STORE_KEY = '__crankWorkspace__';
-const STORE_VERSION = 1;
+const STORE_VERSION = 2;
 
 interface WorkspaceStoreShape {
     version: number;
@@ -41,7 +42,15 @@ declare global {
 }
 
 function initialSnapshot(): WorkspaceSnapshot {
-    return {visibility: 'closed', mode: 'sheet', context: null, loaded: false};
+    return {
+        visibility: 'closed',
+        mode: 'sheet',
+        context: null,
+        loaded: false,
+        contextRevision: 0,
+        account: {status: 'unknown', key: ''},
+        conversationId: null,
+    };
 }
 
 function store(): WorkspaceStoreShape {
@@ -67,6 +76,14 @@ function update(partial: Partial<WorkspaceSnapshot>): void {
     notify();
 }
 
+function sameContext(a: WorkspaceContext | null, b: WorkspaceContext | null): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function revisionFor(snapshot: WorkspaceSnapshot, next: WorkspaceContext | null): number {
+    return sameContext(snapshot.context, next) ? snapshot.contextRevision : snapshot.contextRevision + 1;
+}
+
 function normalizeString(value: unknown): string | undefined {
     if (typeof value !== 'string') {
         return undefined;
@@ -76,6 +93,13 @@ function normalizeString(value: unknown): string | undefined {
 
 function normalizeInteger(value: unknown): number | undefined {
     return typeof value === 'number' && Number.isInteger(value) ? value : undefined;
+}
+
+const MAX_COMPARISON_IDS = 4;
+
+function normalizePositiveInteger(value: unknown): number | undefined {
+    const n = normalizeInteger(value);
+    return n !== undefined && n > 0 ? n : undefined;
 }
 
 // Normalizes an untyped CustomEvent.detail (or a typed caller's partial
@@ -108,6 +132,21 @@ export function normalizeWorkspaceContext(detail: unknown): Partial<WorkspaceCon
     if (page !== undefined) {
         context.page = page;
     }
+    const jobId = normalizePositiveInteger(raw.jobId);
+    if (jobId !== undefined) {
+        context.jobId = jobId;
+    }
+    if (Array.isArray(raw.comparisonIds)) {
+        const ids = Array.from(new Set(
+            raw.comparisonIds
+                .map(normalizePositiveInteger)
+                .filter((id): id is number => id !== undefined),
+        ));
+        if (ids.length > 0 && ids.length <= MAX_COMPARISON_IDS
+            && ids.length === raw.comparisonIds.length) {
+            context.comparisonIds = ids;
+        }
+    }
     return context;
 }
 
@@ -116,12 +155,14 @@ export function openAssistant(context?: Partial<WorkspaceContext>): void {
     const merged = context
         ? {...(s.snapshot.context ?? {}), ...normalizeWorkspaceContext(context)}
         : s.snapshot.context;
+    const next = (merged && Object.keys(merged).length > 0
+        ? merged
+        : null) as WorkspaceContext | null;
     s.snapshot = {
         ...s.snapshot,
         visibility: 'open',
-        context: (merged && Object.keys(merged).length > 0
-            ? merged
-            : null) as WorkspaceContext | null,
+        context: next,
+        contextRevision: revisionFor(s.snapshot, next),
     };
     notify();
 }
@@ -149,9 +190,67 @@ export function setWorkspaceContext(context: Partial<WorkspaceContext>): void {
     const s = store();
     const normalized = normalizeWorkspaceContext(context);
     const merged = {...(s.snapshot.context ?? {}), ...normalized};
+    const next = (Object.keys(merged).length > 0 ? merged : null) as WorkspaceContext | null;
     s.snapshot = {
         ...s.snapshot,
-        context: (Object.keys(merged).length > 0 ? merged : null) as WorkspaceContext | null,
+        context: next,
+        contextRevision: revisionFor(s.snapshot, next),
+    };
+    notify();
+}
+
+// Removes the entity keys but keeps the surface; bumps the revision only
+// when something was actually removed (issue #479 AC-3).
+export function clearWorkspaceContext(): void {
+    const s = store();
+    const current = s.snapshot.context;
+    if (!current) {
+        return;
+    }
+    const cleared = {...current};
+    delete cleared.organizationId;
+    delete cleared.organizationName;
+    delete cleared.jobId;
+    delete cleared.comparisonIds;
+    s.snapshot = {
+        ...s.snapshot,
+        context: cleared,
+        contextRevision: revisionFor(s.snapshot, cleared),
+    };
+    notify();
+}
+
+export function setWorkspaceAccount(account: WorkspaceAccount): void {
+    const s = store();
+    const current = s.snapshot.account;
+    if (current.status === account.status && current.key === account.key) {
+        return;
+    }
+    update({account: {status: account.status, key: account.key}});
+}
+
+export function setWorkspaceConversation(conversationId: number | null): void {
+    const s = store();
+    if (s.snapshot.conversationId === conversationId) {
+        return;
+    }
+    update({conversationId});
+}
+
+// Replaces visibility + context wholesale (persistence restore, account
+// reset). Not a merge: a `null` context clears everything.
+export function replaceWorkspaceState(
+    visibility: AssistantVisibility,
+    context: WorkspaceContext | null,
+    conversationId: number | null = null,
+): void {
+    const s = store();
+    s.snapshot = {
+        ...s.snapshot,
+        visibility,
+        context,
+        conversationId,
+        contextRevision: revisionFor(s.snapshot, context),
     };
     notify();
 }
@@ -211,4 +310,25 @@ export function installWorkspaceBridge(): () => void {
 // state can be observed. Not exported for production callers.
 export function resetWorkspaceForTests(): void {
     delete window.__crankWorkspace__;
+}
+
+// Human label for the entity part of a context (strip text and the chat's
+// "Answered about …" note). Empty when the context names no entity.
+export function describeWorkspaceContext(context: WorkspaceContext | null): string {
+    if (!context) {
+        return '';
+    }
+    if (context.organizationName) {
+        return `About ${context.organizationName}`;
+    }
+    if (context.organizationId !== undefined) {
+        return `About company #${context.organizationId}`;
+    }
+    if (context.jobId !== undefined) {
+        return `About job #${context.jobId}`;
+    }
+    if (context.comparisonIds && context.comparisonIds.length > 0) {
+        return `Comparing ${context.comparisonIds.length} companies`;
+    }
+    return '';
 }

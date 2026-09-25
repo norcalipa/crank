@@ -22,6 +22,9 @@ const MODE_CLASS: Record<WorkspaceMode, string> = {
     sheet: 'assistant-sheet',
 };
 const MODE_CLASSES = Object.values(MODE_CLASS);
+// Open-state hook on the app shell (issue #479): host content reflows against
+// its own container width whenever the panel occupies the viewport edge.
+const OPEN_CLASS = 'assistant-open';
 
 function useWorkspaceSnapshot(): WorkspaceSnapshot {
     const [snapshot, setSnapshot] = React.useState<WorkspaceSnapshot>(getWorkspaceSnapshot);
@@ -57,14 +60,14 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
 
     // Body mode class: exactly one of the three while open, none closed.
     React.useEffect(() => {
-        for (const cls of MODE_CLASSES) {
+        for (const cls of [...MODE_CLASSES, OPEN_CLASS]) {
             document.body.classList.remove(cls);
         }
         if (open) {
-            document.body.classList.add(MODE_CLASS[mode]);
+            document.body.classList.add(MODE_CLASS[mode], OPEN_CLASS);
         }
         return () => {
-            for (const cls of MODE_CLASSES) {
+            for (const cls of [...MODE_CLASSES, OPEN_CLASS]) {
                 document.body.classList.remove(cls);
             }
         };
@@ -213,19 +216,23 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
                 (issue #469 re-critique): a pressed floating launcher beside
                 the already-open docked panel is a redundant second entry
                 point, so it renders only while closed. */}
-            {!open && !minimized && <AssistantLauncher ref={launcherRef} visibility={snapshot.visibility}/>}
-            {minimized && (
-                <button
-                    ref={restoreRef}
-                    type="button"
-                    className="assistant-restore"
-                    data-testid="assistant-restore"
-                    aria-label="Reopen assistant"
-                    onClick={() => openAssistant()}
-                >
-                    <i className="fa-solid fa-comments" aria-hidden="true"></i>
-                    <span className="assistant-restore-label">Reopen assistant</span>
-                </button>
+            {!open && (
+                <div className="assistant-dock" data-testid="assistant-dock">
+                    {!minimized && <AssistantLauncher ref={launcherRef} visibility={snapshot.visibility}/>}
+                    {minimized && (
+                        <button
+                            ref={restoreRef}
+                            type="button"
+                            className="assistant-restore"
+                            data-testid="assistant-restore"
+                            aria-label="Reopen assistant"
+                            onClick={() => openAssistant()}
+                        >
+                            <i className="fa-solid fa-comments" aria-hidden="true"></i>
+                            <span className="assistant-restore-label">Reopen assistant</span>
+                        </button>
+                    )}
+                </div>
             )}
             {open && (
                 mode === 'sheet' ? (

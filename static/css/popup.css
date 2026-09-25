@@ -2587,3 +2587,469 @@ body.app-nav-drawer-open {
         transition: none;
     }
 }
+
+/* issue #479 workspace context strip */
+.assistant-context-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+}
+
+.assistant-context-strip .assistant-panel-context {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.assistant-clear-context {
+    padding: 0.125rem 0.5rem;
+    font-size: 0.8125rem;
+    min-height: 2rem;
+}
+
+.assistant-clear-context:focus-visible,
+.assistant-panel-title:focus-visible {
+    outline: 2px solid #ffffff;
+    outline-offset: 2px;
+}
+
+.chat-stale-context-note {
+    font-style: italic;
+    opacity: 0.85;
+}
+
+/* issue #479 visual review round 1 — shared rules for every mode/state. */
+:root {
+    --assistant-panel-width: clamp(22.5rem, 32vw, 26rem);
+}
+
+/* Details dialog: viewport-safe, header fixed, body scrolls. */
+.popup-details {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 1.5rem);
+    max-height: calc(100dvh - 1.5rem);
+}
+
+.popup-details .card-header {
+    flex: 0 0 auto;
+}
+
+.popup-details .card-body {
+    overflow-y: auto;
+    min-height: 0;
+}
+
+.popup-details-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(12rem, 1fr);
+    gap: 1.5rem;
+    align-items: start;
+}
+
+.popup-details-grid > * {
+    min-width: 0;
+}
+
+.popup-details .popup-company-actions .btn {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+}
+
+@media (max-width: 767.98px) {
+    .popup-details-grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 0;
+    }
+
+    .popup-details .popup-company-actions .btn {
+        width: 100%;
+        justify-content: center;
+    }
+}
+
+/* Icons and touch targets: one rule per element class. */
+.assistant-panel .btn,
+.assistant-panel .assistant-panel-control {
+    min-height: 44px;
+}
+
+.assistant-panel-controls .assistant-panel-control {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: .375rem;
+    width: auto;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    padding-inline: .5rem;
+}
+
+#job-search-chat .chat-send {
+    min-width: 44px;
+    min-height: 44px;
+}
+
+.assistant-panel svg,
+.assistant-panel .fa-solid,
+.assistant-restore .fa-solid {
+    flex: none;
+}
+
+.assistant-panel svg {
+    width: 18px;
+    height: 18px;
+}
+
+.assistant-panel .fa-solid,
+.assistant-restore .fa-solid {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    font-size: 16px;
+    line-height: 18px;
+    text-align: center;
+}
+
+.assistant-panel-title .fa-solid {
+    margin-right: .375rem;
+}
+
+.assistant-panel #job-search-chat .empty-history-note .fa-circle-info {
+    width: 40px;
+    height: 40px;
+    font-size: 40px;
+    line-height: 40px;
+}
+
+.popup-details .card-body button,
+.popup-details .card-body .btn {
+    min-height: 44px;
+}
+
+/* Header: title never truncated by the context strip; controls always shown. */
+.assistant-panel-title {
+    white-space: normal;
+    overflow: visible;
+}
+
+/* Messages: wider bubbles, calmer line-height. */
+#job-search-chat .chat-bubble {
+    max-width: 92% !important;
+    line-height: 1.45;
+}
+
+#job-search-chat .chat-bubble-user {
+    max-width: 85% !important;
+}
+
+/* Jump-to-latest: labelled 44px control in its own static row. */
+#job-search-chat [data-testid='jump-to-latest'] {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+}
+
+/* Loading: readable label and higher-contrast skeleton. */
+.assistant-loading-label {
+    color: #d7dde5;
+    font-size: .9375rem;
+}
+
+.assistant-loading-line {
+    background: linear-gradient(90deg,
+        rgba(255, 255, 255, .18) 25%,
+        rgba(255, 255, 255, .32) 50%,
+        rgba(255, 255, 255, .18) 75%);
+    background-size: 200% 100%;
+}
+
+.assistant-loading-line--header,
+.assistant-loading-line--message,
+.assistant-loading-line--message.short,
+.assistant-loading-line--composer {
+    opacity: 1;
+}
+
+.assistant-loading-line--message {
+    height: 1rem;
+}
+
+/* Focus: one dark-theme ring for every assistant control, no :focus block. */
+.assistant-panel .assistant-back-to-results:focus,
+.assistant-panel button:focus {
+    box-shadow: none;
+}
+
+.assistant-panel .assistant-back-to-results:focus-visible,
+.assistant-panel button:focus-visible,
+.assistant-panel a:focus-visible {
+    outline: 2px solid #7c9cff;
+    outline-offset: 2px;
+    box-shadow: none;
+}
+
+/* Error card: centered, no empty transcript frame beneath it. */
+#job-search-chat .card-body > .alert-danger[role='alert'] {
+    margin-block: auto;
+}
+
+/* Sheet: tighter chrome, transcript flexes, pill never covers content. */
+@media (max-width: 767.98px) {
+    .assistant-panel--sheet .assistant-panel-body {
+        padding: .5rem .75rem;
+    }
+
+    .assistant-panel--sheet #job-search-chat .chat-bubble,
+    .assistant-panel--sheet #job-search-chat .chat-bubble-user {
+        max-width: 100% !important;
+    }
+
+    .assistant-panel--sheet #job-search-chat .btn-group {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .assistant-panel--sheet #job-search-chat .btn-group .btn-outline-danger {
+        grid-column: 1 / -1;
+        margin-top: .5rem;
+        border-radius: .375rem;
+    }
+
+    .assistant-panel--sheet #job-search-chat .btn-group > .btn {
+        border-radius: .375rem;
+    }
+
+    .assistant-panel--sheet #job-search-chat .card-header {
+        padding: .5rem .75rem;
+    }
+}
+
+/* Minimized pill reserves its own space so it never covers page content. */
+body:has(.assistant-restore) .app-content {
+    padding-bottom: calc(44px + 2rem + env(safe-area-inset-bottom, 0px));
+}
+
+/* Outline-light controls keep the dark surface in every interaction state. */
+.assistant-panel .btn-outline-light:hover,
+.assistant-panel .btn-outline-light:focus,
+.assistant-panel .btn-outline-light:focus-visible,
+.assistant-panel .btn-outline-light:active {
+    background-color: rgba(255, 255, 255, .09);
+    color: #f8f9fa;
+    border-color: #d7deea;
+}
+
+/* issue #479 visual review round 2 — shared rules per element class. */
+
+/* Host reflow: while the assistant is open the app shell's content is a
+   size container, so page content adapts to the width it actually has
+   (container-based, so it stays compatible with the rankings card switch
+   keyed off the results wrapper). */
+body.assistant-open .app-content {
+    container-name: app-content;
+    container-type: inline-size;
+}
+
+@container app-content (max-width: 46rem) {
+    body.assistant-open .organization-table-wrap {
+        display: none;
+    }
+
+    body.assistant-open .organization-cards {
+        display: grid;
+        gap: .75rem;
+    }
+}
+
+/* Any host table wrapper that still scrolls shows a scroll affordance. */
+body.assistant-open .app-content .table-responsive,
+.organization-table-wrap {
+    background:
+        linear-gradient(90deg, var(--bs-body-bg) 30%, transparent) left center / 2rem 100% no-repeat local,
+        linear-gradient(270deg, var(--bs-body-bg) 30%, transparent) right center / 2rem 100% no-repeat local,
+        linear-gradient(90deg, rgba(255, 255, 255, .22), transparent) left center / .75rem 100% no-repeat scroll,
+        linear-gradient(270deg, rgba(255, 255, 255, .22), transparent) right center / .75rem 100% no-repeat scroll;
+}
+
+/* Mobile dock: the launcher / restore control live in a full-width row that
+   is a normal-flow sibling after the page, sticky to the viewport bottom
+   with a safe-area inset, so at rest it reserves its own space and never
+   sits on top of content. */
+.assistant-dock {
+    display: contents;
+}
+
+@media (max-width: 767.98px) {
+    #assistant-workspace {
+        display: contents;
+    }
+
+    /* overflow-x: hidden on body makes it the (non-scrolling) sticky
+       scrollport; clip keeps the horizontal guard without that. */
+    body:has(.assistant-dock) {
+        overflow-x: clip;
+    }
+
+    .assistant-dock {
+        display: flex;
+        justify-content: flex-end;
+        position: sticky;
+        bottom: 0;
+        z-index: var(--z-assistant);
+        padding: .5rem .75rem calc(.5rem + env(safe-area-inset-bottom, 0px));
+        background: var(--bs-body-bg);
+        border-top: 1px solid var(--bs-border-color);
+    }
+
+    .assistant-dock .assistant-launcher,
+    .assistant-dock .assistant-restore {
+        position: static;
+        width: 100%;
+        justify-content: center;
+    }
+
+    body:has(.assistant-restore) .app-content {
+        padding-bottom: 2.5rem;
+    }
+}
+
+/* Details dialog: one score card (Rank, Profile Completeness, scores) in
+   the right column; discoverable internal scrolling. */
+.popup-details-scores {
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--bs-border-radius);
+    padding: .75rem 1rem;
+    background: rgba(255, 255, 255, .04);
+}
+
+.popup-details-score-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: .5rem 0;
+    border-bottom: 1px solid var(--bs-border-color);
+}
+
+.popup-details-scores .table {
+    margin-bottom: 0;
+    --bs-table-bg: transparent;
+}
+
+.popup-details-scores > p {
+    margin: .5rem 0 0;
+}
+
+.popup-details .card-body {
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: #8f9bb0 transparent;
+    background:
+        linear-gradient(#212529 30%, transparent) center top / 100% 1.5rem no-repeat local,
+        linear-gradient(transparent, #212529 70%) center bottom / 100% 1.5rem no-repeat local,
+        linear-gradient(rgba(255, 255, 255, .16), transparent) center top / 100% .75rem no-repeat scroll,
+        linear-gradient(transparent, rgba(255, 255, 255, .16)) center bottom / 100% .75rem no-repeat scroll;
+}
+
+.popup-details .card-body::-webkit-scrollbar {
+    width: 10px;
+}
+
+.popup-details .card-body::-webkit-scrollbar-thumb {
+    background: #8f9bb0;
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+
+/* Drawer / sheet header: icon-only 44x44 controls and a single-line title
+   whenever the panel itself is narrow. */
+.assistant-panel {
+    container-name: assistant-panel;
+    container-type: inline-size;
+}
+
+@container assistant-panel (max-width: 30rem) {
+    .assistant-panel-control-label {
+        display: none;
+    }
+
+    .assistant-panel-controls .assistant-panel-control {
+        width: 44px;
+        min-width: 44px;
+        height: 44px;
+        padding-inline: 0;
+    }
+
+    .assistant-panel-title {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-size: 1rem;
+    }
+}
+
+/* Empty state: the transcript region is the only boundary; the wrapping
+   card chrome is dropped and the guidance is centered inside it. */
+.assistant-panel #job-search-chat > section.card {
+    border: 0;
+    background: transparent;
+}
+
+.assistant-panel #job-search-chat > section.card > .card-header {
+    border-bottom: 0;
+    background: transparent;
+}
+
+#job-search-chat [role='log']:has([data-testid='empty-history']) {
+    display: flex;
+    flex-direction: column;
+}
+
+#job-search-chat [data-testid='empty-history'] {
+    flex: 1 1 auto;
+    display: grid;
+    align-content: center;
+    justify-items: center;
+    text-align: center;
+    border: 0;
+    background: transparent;
+    padding: 1rem 0;
+}
+
+#job-search-chat [data-testid='empty-history'] .fa-circle-info {
+    margin-inline: auto;
+}
+
+.popup-details-scores .table td {
+    padding: .5rem 0;
+    border-bottom: 0;
+    color: inherit;
+    background: transparent;
+}
+
+.popup-details-scores .table tr:last-child td {
+    padding-bottom: 0;
+}
+
+.popup-details-scores .popup-details-score-row:last-of-type {
+    border-bottom: 1px solid var(--bs-border-color);
+}
+
+.popup-details-scores .table td:last-child {
+    text-align: right !important;
+}
+
+#job-search-chat [data-testid='empty-history'] .fa-circle-info {
+    margin-inline: auto !important;
+}
+
+.popup-details-scores .table td:first-child {
+    font-weight: 700;
+}

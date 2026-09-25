@@ -2,7 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
 import {waitFor} from '@testing-library/react';
-import {resetWorkspaceForTests} from './store';
+import {getWorkspaceSnapshot, resetWorkspaceForTests} from './store';
 
 describe('surfaceFromPath', () => {
     test.each([
@@ -60,5 +60,48 @@ describe('workspace mount', () => {
         expect(document.body.querySelector('[data-testid="assistant-launcher"]')).toBeNull();
         expect(errorSpy).not.toHaveBeenCalled();
         errorSpy.mockRestore();
+    });
+
+    function mountPinned(dataset: Record<string, string>): HTMLElement {
+        const host = document.createElement('div');
+        host.id = 'assistant-workspace';
+        host.dataset.assistantPinned = 'true';
+        Object.assign(host.dataset, dataset);
+        document.body.appendChild(host);
+        jest.isolateModules(() => {
+            require('./mount');
+        });
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        return host;
+    }
+
+    test('seeds the company context and account from the pinned host before opening', () => {
+        window.history.replaceState({}, '', '/chat/?company=12');
+        mountPinned({authenticated: 'true', accountKey: 'alice', selectedCompanyId: '12'});
+        const snapshot = getWorkspaceSnapshot();
+        expect(snapshot.context).toMatchObject({surface: 'chat', organizationId: 12});
+        expect(snapshot.account).toEqual({status: 'authenticated', key: 'alice'});
+        expect(snapshot.visibility).toBe('open');
+        window.history.replaceState({}, '', '/');
+    });
+
+    test('ignores an invalid selected company id and seeds an anonymous account', () => {
+        mountPinned({authenticated: 'false', selectedCompanyId: 'abc'});
+        const snapshot = getWorkspaceSnapshot();
+        expect(snapshot.context?.organizationId).toBeUndefined();
+        expect(snapshot.account).toEqual({status: 'anonymous', key: ''});
+    });
+
+    test('a non-pinned host leaves the account unknown until hydration', () => {
+        const host = document.createElement('div');
+        host.id = 'assistant-workspace';
+        document.body.appendChild(host);
+        jest.isolateModules(() => {
+            require('./mount');
+        });
+        document.dispatchEvent(new Event('DOMContentLoaded'));
+        expect(getWorkspaceSnapshot().account.status).toBe('unknown');
+        document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: true, username: 'alice'}}));
+        expect(getWorkspaceSnapshot().account).toEqual({status: 'authenticated', key: 'alice'});
     });
 });

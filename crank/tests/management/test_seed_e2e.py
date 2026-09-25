@@ -14,6 +14,7 @@ from crank.management.commands.seed_e2e import (
     ACTIVE_LISTING_URL,
     DEFAULT_E2E_PASSWORD,
     E2E_USERNAME,
+    E2E_USERNAME_B,
     FIXTURE_SOURCE_NAME,
     RATING_SOURCE_ORG_NAME,
     TARGET_ORGS,
@@ -377,12 +378,22 @@ class SeedE2ECommandTests(TestCase):
         self.assertTrue(user.check_password("rotated-throwaway"))
         self.assertFalse(user.check_password(DEFAULT_E2E_PASSWORD))
 
+    def test_second_account_is_seeded_with_own_preferences(self):
+        call_command("seed_e2e", stdout=StringIO())
+        user_model = get_user_model()
+        first = user_model.objects.get(username=E2E_USERNAME)
+        second = user_model.objects.get(username=E2E_USERNAME_B)
+        self.assertNotEqual(first.pk, second.pk)
+        self.assertTrue(second.check_password(DEFAULT_E2E_PASSWORD))
+        self.assertEqual(second.email, f"{E2E_USERNAME_B}@example.test")
+        self.assertTrue(UserPreference.objects.filter(user=second).exists())
+
     def test_summary_is_bounded_and_labelled(self):
         out = StringIO()
         call_command("seed_e2e", stdout=out)
         text = out.getvalue()
         self.assertIn("seed_e2e ready", text)
-        self.assertIn("users=1", text)
+        self.assertIn("users=2", text)
         # Bounded summary: a single short line, never secrets or tracebacks.
         self.assertNotIn(DEFAULT_E2E_PASSWORD, text)
         summary_lines = [line for line in text.splitlines() if "seed_e2e ready" in line]

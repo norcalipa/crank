@@ -4,6 +4,13 @@ import '@testing-library/jest-dom';
 import {render, screen, fireEvent, waitFor, act} from '@testing-library/react';
 import * as React from 'react';
 
+import {
+    clearWorkspaceContext,
+    getWorkspaceSnapshot,
+    resetWorkspaceForTests,
+    setWorkspaceAccount,
+    setWorkspaceContext,
+} from './workspace/store';
 import JobSearchChat, {AssistantState, AssistantStatus, ChatMessage} from './JobSearchChat';
 
 function jsonResponse(payload: unknown, status = 200): Response {
@@ -138,6 +145,7 @@ describe('JobSearchChat', () => {
     });
 
     afterEach(() => {
+        resetWorkspaceForTests();
         jest.restoreAllMocks();
         // Restore ResizeObserver so a mock leaking from a failing test cannot
         // affect later tests (MINOR-3).
@@ -296,6 +304,7 @@ describe('JobSearchChat', () => {
         test('workspaceMode="sheet" renders directional Back-to-results microcopy (issue #472)', async () => {
             (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+            setWorkspaceAccount({status: 'authenticated', key: 'tester'});
             render(<JobSearchChat workspaceMode="sheet"/>);
             await screen.findByTestId('empty-history');
             expect(screen.getByTestId('empty-history')).toHaveTextContent(/Tap Back to results/i);
@@ -782,8 +791,19 @@ describe('additional JobSearchChat coverage', () => {
             (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({detail: 'boom'}, 500));
             render(<JobSearchChat/>);
-            expect(await screen.findByText(/could not load your conversation/i)).toBeInTheDocument();
+            expect(await screen.findByText(/restore your previous conversation/i)).toBeInTheDocument();
             expect(screen.getByRole('button', {name: 'Start a conversation'})).toBeInTheDocument();
+            expect(screen.queryByLabelText('Message')).not.toBeInTheDocument();
+        });
+
+        test('shows a labelled loading status while the conversation resumes', async () => {
+            const mock = global.fetch as jest.Mock;
+            mock.mockResolvedValueOnce(statusResponse('ready'));
+            mock.mockReturnValueOnce(new Promise(() => {}));
+            render(<JobSearchChat/>);
+            const status = await screen.findByTestId('chat-loading');
+            expect(status).toHaveAttribute('role', 'status');
+            expect(status).toHaveTextContent('Loading conversation…');
         });
 
         test('a resume 404 renders the usable empty state WITHOUT creating a conversation (issue #472)', async () => {
@@ -796,7 +816,7 @@ describe('additional JobSearchChat coverage', () => {
             await screen.findByLabelText('Message');
             await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
             expect(screen.getByTestId('empty-history')).toBeInTheDocument();
-            expect(screen.queryByText(/could not load/i)).not.toBeInTheDocument();
+            expect(screen.queryByText(/restore your previous conversation/i)).not.toBeInTheDocument();
             const posts = mock.mock.calls
                 .map(([url, init]) => ({url: String(url), init: init as RequestInit}))
                 .filter((c) => c.init?.method === 'POST');
@@ -812,7 +832,10 @@ describe('additional JobSearchChat coverage', () => {
             mock.mockResolvedValueOnce(jsonResponse({}, 500));
             render(<JobSearchChat createOnMount={true}/>);
             expect(await screen.findByText(/could not start a conversation/i)).toBeInTheDocument();
-            expect(screen.queryByLabelText('Message')).toBeDisabled();
+            // Terminal error: the empty transcript and disabled composer are hidden.
+            expect(screen.queryByLabelText('Message')).not.toBeInTheDocument();
+            expect(screen.queryByRole('log')).not.toBeInTheDocument();
+            expect(screen.getByRole('button', {name: 'Start a conversation'})).toBeInTheDocument();
         });
 
         test('starting a new conversation from the error state works', async () => {
@@ -821,11 +844,11 @@ describe('additional JobSearchChat coverage', () => {
                 .mockResolvedValueOnce(jsonResponse({detail: 'down'}, 503))
                 .mockResolvedValueOnce(jsonResponse(emptyConversation(11), 201));
             render(<JobSearchChat/>);
-            await screen.findByText(/could not load your conversation/i, {}, {timeout: 5000});
+            await screen.findByText(/restore your previous conversation/i, {}, {timeout: 5000});
             const startBtn = screen.getByRole('button', {name: 'Start a conversation'});
             fireEvent.click(startBtn);
             await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled(), {timeout: 3000});
-            expect(screen.queryByText(/could not load/i)).not.toBeInTheDocument();
+            expect(screen.queryByText(/restore your previous conversation/i)).not.toBeInTheDocument();
             const posts = mock.mock.calls
                 .map(([, init]) => (init as RequestInit).body)
                 .filter((body): body is string => typeof body === 'string')
@@ -1114,7 +1137,7 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
             .mockResolvedValueOnce(jsonResponse({detail: 'down'}, 503))
             .mockResolvedValueOnce(jsonResponse({}, 500));
         render(<JobSearchChat/>);
-        await screen.findByText(/could not load your conversation/i);
+        await screen.findByText(/restore your previous conversation/i);
         fireEvent.click(screen.getByRole('button', {name: 'Start a conversation'}));
         await screen.findByText(/could not start a conversation/i);
     });
@@ -3556,5 +3579,131 @@ describe('preference diff formatting helpers (issue #466)', () => {
         expect(preferenceValueLabel([])).toBe('None');
         expect(preferenceValueLabel(['remote', 'hybrid'])).toBe('remote, hybrid');
         expect(preferenceValueLabel({channel: 'email'})).toBe('{"channel":"email"}');
+    });
+});
+
+describe('workspace navigation state (issue #479)', () => {
+    beforeEach(() => {
+        global.fetch = jest.fn();
+        resetWorkspaceForTests();
+        window.localStorage.clear();
+    });
+
+    afterEach(() => {
+        resetWorkspaceForTests();
+        window.localStorage.clear();
+    });
+
+    function conversationCalls(): unknown[][] {
+        return (global.fetch as jest.Mock).mock.calls
+            .filter(([url]) => String(url) === '/api/agent/conversations/');
+    }
+
+    test('an unknown account defers resume and pending-draft adoption until hydration, reconciling first', async () => {
+        window.localStorage.setItem('crank:last-account', 'previous-user');
+        window.localStorage.setItem('crank:jobsearch:draft:pending', 'previous user secret');
+        (global.fetch as jest.Mock).mockImplementation((url: string) => Promise.resolve(
+            String(url).includes('/api/agent/assistant-status/')
+                ? statusResponse('ready')
+                : jsonResponse(emptyConversation(42, [])),
+        ));
+        render(<JobSearchChat workspaceMode="drawer"/>);
+        await Promise.resolve();
+        expect(conversationCalls()).toHaveLength(0);
+        expect(screen.getByLabelText('Message')).toHaveValue('');
+
+        act(() => setWorkspaceAccount({status: 'authenticated', key: 'new-user'}));
+
+        await waitFor(() => expect(conversationCalls()).toHaveLength(1));
+        await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+        // The previous account's pending draft was purged by the reconcile
+        // that ran before the resume, so it is never adopted.
+        expect(screen.getByLabelText('Message')).toHaveValue('');
+        expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBeNull();
+        expect(window.localStorage.getItem('crank:last-account')).toBe('new-user');
+        expect(getWorkspaceSnapshot().conversationId).toBe(42);
+    });
+
+    test('a same-account pending draft is adopted after hydration', async () => {
+        window.localStorage.setItem('crank:last-account', 'alice');
+        window.localStorage.setItem('crank:jobsearch:draft:pending', 'carry me over');
+        (global.fetch as jest.Mock).mockImplementation((url: string) => Promise.resolve(
+            String(url).includes('/api/agent/assistant-status/')
+                ? statusResponse('ready')
+                : jsonResponse(emptyConversation(42, [])),
+        ));
+        render(<JobSearchChat workspaceMode="drawer"/>);
+        act(() => setWorkspaceAccount({status: 'authenticated', key: 'alice'}));
+        await waitFor(() => expect(screen.getByLabelText('Message')).toHaveValue('carry me over'));
+    });
+
+    test('an already-known account at mount (lazy mount after hydration) resumes without waiting', async () => {
+        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+        (global.fetch as jest.Mock).mockImplementation((url: string) => Promise.resolve(
+            String(url).includes('/api/agent/assistant-status/')
+                ? statusResponse('ready')
+                : jsonResponse(emptyConversation(7, [])),
+        ));
+        render(<JobSearchChat workspaceMode="docked"/>);
+        await waitFor(() => expect(getWorkspaceSnapshot().conversationId).toBe(7));
+        expect(window.localStorage.getItem('crank:last-account')).toBe('alice');
+    });
+
+    test('an anonymous account never issues the resume request', async () => {
+        setWorkspaceAccount({status: 'anonymous', key: ''});
+        (global.fetch as jest.Mock).mockImplementation(() => Promise.resolve(statusResponse('ready')));
+        render(<JobSearchChat workspaceMode="docked"/>);
+        await waitFor(() => expect(screen.getByLabelText('Message')).toBeInTheDocument());
+        expect(conversationCalls()).toHaveLength(0);
+        expect(getWorkspaceSnapshot().conversationId).toBeNull();
+    });
+
+    test('the conversation id follows reset in the store', async () => {
+        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+        (global.fetch as jest.Mock).mockImplementation((url: string) => Promise.resolve(
+            String(url).includes('/api/agent/assistant-status/')
+                ? statusResponse('ready')
+                : jsonResponse(emptyConversation(11, [])),
+        ));
+        render(<JobSearchChat workspaceMode="docked"/>);
+        await waitFor(() => expect(getWorkspaceSnapshot().conversationId).toBe(11));
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await waitFor(() => expect(getWorkspaceSnapshot().conversationId).toBe(11));
+    });
+
+    test('a reply that lands after the context changed is appended with an "Answered about" note and leaves the store alone', async () => {
+        global.fetch = statusAwareFetch();
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'company', organizationId: 3, organizationName: 'Acme'}));
+        const mock = global.fetch as jest.Mock;
+        const settlePost = holdNextFetch(mock);
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'tell me about them'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await postedKeyAfterSend(mock);
+
+        act(() => clearWorkspaceContext());
+        const revision = getWorkspaceSnapshot().contextRevision;
+        const contextAfterClear = getWorkspaceSnapshot().context;
+
+        settlePost(jsonResponse({message: assistantMessage(99, 'Acme is a great fit'), preferences_changed: false}));
+
+        await screen.findByText('Acme is a great fit');
+        expect(screen.getByTestId('stale-context-note')).toHaveTextContent('Answered about Acme');
+        expect(getWorkspaceSnapshot().contextRevision).toBe(revision);
+        expect(getWorkspaceSnapshot().context).toEqual(contextAfterClear);
+    });
+
+    test('a reply under an unchanged context has no note', async () => {
+        global.fetch = statusAwareFetch();
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'company', organizationId: 3, organizationName: 'Acme'}));
+        const mock = global.fetch as jest.Mock;
+        const settlePost = holdNextFetch(mock);
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await postedKeyAfterSend(mock);
+        settlePost(jsonResponse({message: assistantMessage(98, 'Hi there'), preferences_changed: false}));
+        await screen.findByText('Hi there');
+        expect(screen.queryByTestId('stale-context-note')).not.toBeInTheDocument();
     });
 });

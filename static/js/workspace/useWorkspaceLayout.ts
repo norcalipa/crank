@@ -15,7 +15,7 @@ import {setWorkspaceMode} from './store';
 const DOCKED_QUERY = '(min-width: 1280px)';
 const DRAWER_QUERY = '(min-width: 768px)';
 
-function currentMode(): WorkspaceMode {
+export function currentMode(): WorkspaceMode {
     if (typeof window.matchMedia !== 'function') {
         return 'sheet';
     }

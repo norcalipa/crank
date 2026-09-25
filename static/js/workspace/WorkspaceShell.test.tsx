@@ -272,4 +272,32 @@ describe('WorkspaceShell', () => {
         await waitFor(() => expect(screen.getByTestId('assistant-panel')).toBeInTheDocument());
         expect(screen.queryByTestId('assistant-restore')).not.toBeInTheDocument();
     });
+
+    test('assistant-open is on the body exactly while the panel is open, in every mode', async () => {
+        for (const mode of ['sheet', 'drawer', 'docked'] as const) {
+            mockMode = mode;
+            const {unmount} = renderShell();
+            expect(document.body.classList.contains('assistant-open')).toBe(false);
+            act(() => openAssistant());
+            await waitFor(() => expect(document.body.classList.contains('assistant-open')).toBe(true));
+            expect(document.body.classList.contains(`assistant-${mode}`)).toBe(true);
+            act(() => closeAssistant());
+            await waitFor(() => expect(document.body.classList.contains('assistant-open')).toBe(false));
+            unmount();
+            expect(document.body.className).toBe('');
+        }
+    });
+
+    test('the launcher and the restore pill both render inside the dock row, never while open', async () => {
+        renderShell();
+        const dock = screen.getByTestId('assistant-dock');
+        expect(dock).toContainElement(screen.getByTestId('assistant-launcher'));
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-panel')).toBeInTheDocument());
+        expect(screen.queryByTestId('assistant-dock')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByTestId('assistant-minimize'));
+        await waitFor(() => expect(screen.getByTestId('assistant-restore')).toBeInTheDocument());
+        expect(screen.getByTestId('assistant-dock')).toContainElement(screen.getByTestId('assistant-restore'));
+        expect(screen.queryByTestId('assistant-launcher')).not.toBeInTheDocument();
+    });
 });
