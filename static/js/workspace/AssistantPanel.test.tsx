@@ -50,6 +50,23 @@ describe('AssistantPanel', () => {
         },
     );
 
+    test.each(['docked', 'drawer', 'sheet'] as const)(
+        'header controls keep accessible names with decorative visible labels in %s mode',
+        (mode) => {
+            render(<AssistantPanel mode={mode} context={null}/>);
+            for (const [testId, name, label] of [
+                ['assistant-minimize', 'Minimize assistant', 'Minimize'],
+                ['assistant-close', 'Close assistant', 'Close'],
+            ]) {
+                const button = screen.getByTestId(testId);
+                expect(button).toHaveAttribute('aria-label', name);
+                const labelEl = button.querySelector('.assistant-panel-control-label');
+                expect(labelEl).toHaveTextContent(label);
+                expect(labelEl).toHaveAttribute('aria-hidden', 'true');
+            }
+        },
+    );
+
     test('the #job-search-chat wrapper contains the chat section', async () => {
         const {container} = render(<AssistantPanel mode="docked" context={null}/>);
         await waitFor(() => expect(screen.getByTestId('job-search-chat')).toBeInTheDocument());

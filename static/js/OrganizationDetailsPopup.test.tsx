@@ -1316,6 +1316,18 @@ describe('OrganizationDetailsPopup', () => {
             expect(grid.querySelector('.popup-details-scores')).toBeInTheDocument();
         });
 
+        test('Rank and Profile Completeness share one score card with the scores', () => {
+            renderAuthenticated(jest.fn());
+            const card = screen.getByTestId('popup-details-score-card');
+            expect(card).toHaveClass('popup-details-scores');
+            const rows = card.querySelectorAll('.popup-details-score-row');
+            expect(rows).toHaveLength(2);
+            expect(rows[0]).toHaveTextContent(`Rank:${mockOrganization.ranking}`);
+            expect(rows[1]).toHaveTextContent(`Profile Completeness:${mockOrganization.profile_completeness.toFixed(0)}%`);
+            expect(screen.getByTestId('popup-details-grid').querySelector('.popup-details-profile'))
+                .not.toHaveTextContent('Rank:');
+        });
+
         test('closes the dialog and opens the assistant with company context on the next frame', () => {
             const workspace = document.createElement('div');
             workspace.id = 'assistant-workspace';

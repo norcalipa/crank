@@ -453,16 +453,16 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                     <div className="col-7">{organization.accelerated_vesting ? 'Yes' : 'No'}</div>
                                 </div>
                             )}
-                            <div className="row mb-3">
-                                <div className="col-5 text-end fw-bold">Rank:</div>
-                                <div className="col-7">{organization.ranking}</div>
-                            </div>
-                            <div className="row mb-3">
-                                <div className="col-5 text-end fw-bold">Profile Completeness:</div>
-                                <div className="col-7">{organization.profile_completeness.toFixed(0)}%</div>
-                            </div>
                         </div>
-                        <div className="popup-details-scores">
+                        <div className="popup-details-scores" data-testid="popup-details-score-card">
+                            <div className="popup-details-score-row">
+                                <span className="fw-bold">Rank:</span>
+                                <span>{organization.ranking}</span>
+                            </div>
+                            <div className="popup-details-score-row">
+                                <span className="fw-bold">Profile Completeness:</span>
+                                <span>{organization.profile_completeness.toFixed(0)}%</span>
+                            </div>
                             {loading ? (
                                 <p>Loading scores...</p>
                             ) : (

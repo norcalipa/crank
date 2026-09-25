@@ -2844,3 +2844,212 @@ body:has(.assistant-restore) .app-content {
     color: #f8f9fa;
     border-color: #d7deea;
 }
+
+/* issue #479 visual review round 2 — shared rules per element class. */
+
+/* Host reflow: while the assistant is open the app shell's content is a
+   size container, so page content adapts to the width it actually has
+   (container-based, so it stays compatible with the rankings card switch
+   keyed off the results wrapper). */
+body.assistant-open .app-content {
+    container-name: app-content;
+    container-type: inline-size;
+}
+
+@container app-content (max-width: 46rem) {
+    body.assistant-open .organization-table-wrap {
+        display: none;
+    }
+
+    body.assistant-open .organization-cards {
+        display: grid;
+        gap: .75rem;
+    }
+}
+
+/* Any host table wrapper that still scrolls shows a scroll affordance. */
+body.assistant-open .app-content .table-responsive,
+.organization-table-wrap {
+    background:
+        linear-gradient(90deg, var(--bs-body-bg) 30%, transparent) left center / 2rem 100% no-repeat local,
+        linear-gradient(270deg, var(--bs-body-bg) 30%, transparent) right center / 2rem 100% no-repeat local,
+        linear-gradient(90deg, rgba(255, 255, 255, .22), transparent) left center / .75rem 100% no-repeat scroll,
+        linear-gradient(270deg, rgba(255, 255, 255, .22), transparent) right center / .75rem 100% no-repeat scroll;
+}
+
+/* Mobile dock: the launcher / restore control live in a full-width row that
+   is a normal-flow sibling after the page, sticky to the viewport bottom
+   with a safe-area inset, so at rest it reserves its own space and never
+   sits on top of content. */
+.assistant-dock {
+    display: contents;
+}
+
+@media (max-width: 767.98px) {
+    #assistant-workspace {
+        display: contents;
+    }
+
+    /* overflow-x: hidden on body makes it the (non-scrolling) sticky
+       scrollport; clip keeps the horizontal guard without that. */
+    body:has(.assistant-dock) {
+        overflow-x: clip;
+    }
+
+    .assistant-dock {
+        display: flex;
+        justify-content: flex-end;
+        position: sticky;
+        bottom: 0;
+        z-index: var(--z-assistant);
+        padding: .5rem .75rem calc(.5rem + env(safe-area-inset-bottom, 0px));
+        background: var(--bs-body-bg);
+        border-top: 1px solid var(--bs-border-color);
+    }
+
+    .assistant-dock .assistant-launcher,
+    .assistant-dock .assistant-restore {
+        position: static;
+        width: 100%;
+        justify-content: center;
+    }
+
+    body:has(.assistant-restore) .app-content {
+        padding-bottom: 2.5rem;
+    }
+}
+
+/* Details dialog: one score card (Rank, Profile Completeness, scores) in
+   the right column; discoverable internal scrolling. */
+.popup-details-scores {
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--bs-border-radius);
+    padding: .75rem 1rem;
+    background: rgba(255, 255, 255, .04);
+}
+
+.popup-details-score-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: .5rem 0;
+    border-bottom: 1px solid var(--bs-border-color);
+}
+
+.popup-details-scores .table {
+    margin-bottom: 0;
+    --bs-table-bg: transparent;
+}
+
+.popup-details-scores > p {
+    margin: .5rem 0 0;
+}
+
+.popup-details .card-body {
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: #8f9bb0 transparent;
+    background:
+        linear-gradient(#212529 30%, transparent) center top / 100% 1.5rem no-repeat local,
+        linear-gradient(transparent, #212529 70%) center bottom / 100% 1.5rem no-repeat local,
+        linear-gradient(rgba(255, 255, 255, .16), transparent) center top / 100% .75rem no-repeat scroll,
+        linear-gradient(transparent, rgba(255, 255, 255, .16)) center bottom / 100% .75rem no-repeat scroll;
+}
+
+.popup-details .card-body::-webkit-scrollbar {
+    width: 10px;
+}
+
+.popup-details .card-body::-webkit-scrollbar-thumb {
+    background: #8f9bb0;
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+}
+
+/* Drawer / sheet header: icon-only 44x44 controls and a single-line title
+   whenever the panel itself is narrow. */
+.assistant-panel {
+    container-name: assistant-panel;
+    container-type: inline-size;
+}
+
+@container assistant-panel (max-width: 30rem) {
+    .assistant-panel-control-label {
+        display: none;
+    }
+
+    .assistant-panel-controls .assistant-panel-control {
+        width: 44px;
+        min-width: 44px;
+        height: 44px;
+        padding-inline: 0;
+    }
+
+    .assistant-panel-title {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-size: 1rem;
+    }
+}
+
+/* Empty state: the transcript region is the only boundary; the wrapping
+   card chrome is dropped and the guidance is centered inside it. */
+.assistant-panel #job-search-chat > section.card {
+    border: 0;
+    background: transparent;
+}
+
+.assistant-panel #job-search-chat > section.card > .card-header {
+    border-bottom: 0;
+    background: transparent;
+}
+
+#job-search-chat [role='log']:has([data-testid='empty-history']) {
+    display: flex;
+    flex-direction: column;
+}
+
+#job-search-chat [data-testid='empty-history'] {
+    flex: 1 1 auto;
+    display: grid;
+    align-content: center;
+    justify-items: center;
+    text-align: center;
+    border: 0;
+    background: transparent;
+    padding: 1rem 0;
+}
+
+#job-search-chat [data-testid='empty-history'] .fa-circle-info {
+    margin-inline: auto;
+}
+
+.popup-details-scores .table td {
+    padding: .5rem 0;
+    border-bottom: 0;
+    color: inherit;
+    background: transparent;
+}
+
+.popup-details-scores .table tr:last-child td {
+    padding-bottom: 0;
+}
+
+.popup-details-scores .popup-details-score-row:last-of-type {
+    border-bottom: 1px solid var(--bs-border-color);
+}
+
+.popup-details-scores .table td:last-child {
+    text-align: right !important;
+}
+
+#job-search-chat [data-testid='empty-history'] .fa-circle-info {
+    margin-inline: auto !important;
+}
+
+.popup-details-scores .table td:first-child {
+    font-weight: 700;
+}
