@@ -88,9 +88,12 @@ class CrawlStatusCommandTests(TestCase):
         out = StringIO()
         call_command("crawl_status", stdout=out)
         self.assertIn("Crawled Source", out.getvalue())
-        # The timestamp should appear (not "never")
-        output = out.getvalue()
-        self.assertNotIn("never", output.split("Crawled Source")[1].split("\n")[0])
+        # The last-success column shows a timestamp (not "never") in both the
+        # refresh section and the listings table.
+        rows = [l for l in out.getvalue().splitlines() if l.startswith("Crawled Source")]
+        self.assertEqual(len(rows), 2)
+        self.assertNotIn("never", rows[1])
+        self.assertEqual(rows[0].count("never"), 1)  # last attempt only
 
     def test_shows_last_outcome_from_crawl_run(self):
         source = make_source("Crawled With Outcome")
@@ -125,10 +128,12 @@ class CrawlStatusCommandTests(TestCase):
         out = StringIO()
         call_command("crawl_status", stdout=out)
         output_lines = out.getvalue().splitlines()
-        # Find the data rows (after the header and separator)
+        # Data rows of the listings table (after its header); the refresh
+        # section above it lists the same sources.
+        listing_header = next(i for i, l in enumerate(output_lines) if "Listings" in l)
         data_lines = [
             line
-            for line in output_lines
+            for line in output_lines[listing_header:]
             if "Alpha Source" in line or "Zebra Source" in line
         ]
         self.assertEqual(len(data_lines), 2)
@@ -143,3 +148,56 @@ class CrawlStatusCommandTests(TestCase):
         # Find the line and check enabled column
         line = next(l for l in out.getvalue().splitlines() if "Disabled Source" in l)
         self.assertIn("no", line.lower())
+
+
+class CrawlStatusRefreshSectionTests(TestCase):
+    """Issue #468: TTL, attempts, failures and next-eligible time per phase."""
+
+    def test_sections_show_scheduling_state(self):
+        from crank.models.organization import Organization
+        from crank.models.source import ApprovalState, SourceCatalog
+
+        organization = Organization.objects.create(name="O", url="https://o.example.test")
+        SourceCatalog.objects.create(
+            name="Org Source", adapter_key="a", base_url="https://www.google.com",
+            approval_state=ApprovalState.APPROVED, enabled=True,
+            organization=organization,
+        )
+        job = make_source("Failing Job")
+        now = timezone.now()
+        JobSourceCatalog.objects.filter(pk=job.pk).update(
+            last_attempt_at=now, consecutive_failures=2,
+        )
+        make_source("Fresh Job")
+        JobSourceCatalog.objects.filter(name="Fresh Job").update(last_crawl_at=now)
+        out = StringIO()
+        call_command("crawl_status", stdout=out)
+        text = out.getvalue()
+        self.assertIn("Organization sources (refresh TTL 7 days", text)
+        self.assertIn("Job sources (refresh TTL 6:00:00)", text)
+        org_line = next(l for l in text.splitlines() if l.startswith("Org Source"))
+        self.assertIn("never", org_line)
+        self.assertIn("due", org_line)
+        failing = next(l for l in text.splitlines() if l.startswith("Failing Job"))
+        self.assertNotIn(" due", failing)
+        self.assertIn(" 2 ", failing)
+
+
+class NextEligiblePolicyTests(TestCase):
+    def test_policy_states_show_marker_not_due(self):
+        A = JobSourceCatalog.ApprovalState
+        make_source("PendingSrc", approval_state=A.PENDING)
+        make_source("BlockedSrc", approval_state=A.BLOCKED)
+        make_source("DisabledSrc", enabled=False)
+        make_source("ReadySrc")
+        out = StringIO()
+        call_command("crawl_status", stdout=out)
+        lines = {}
+        for line in out.getvalue().splitlines():  # first table = refresh section
+            for name in ("PendingSrc", "BlockedSrc", "DisabledSrc", "ReadySrc"):
+                if line.startswith(name):
+                    lines.setdefault(name, line)
+        self.assertTrue(lines["PendingSrc"].rstrip().endswith("policy:pending"))
+        self.assertTrue(lines["BlockedSrc"].rstrip().endswith("policy:blocked"))
+        self.assertTrue(lines["DisabledSrc"].rstrip().endswith("policy:disabled"))
+        self.assertTrue(lines["ReadySrc"].rstrip().endswith("due"))

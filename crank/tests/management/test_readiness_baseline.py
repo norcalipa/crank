@@ -230,10 +230,10 @@ class ReadinessBaselineCommandTests(TestCase):
         # The two leaves (0031 from #470, 0033 from #495/#496) were merged
         # by 0034, 0035 (#459) stacks on top of that merged head, 0036
         # (#460) stacks on top of 0035, 0037 (#466) stacks on top of 0036,
-        # 0038 (#467) stacks on top of 0037, and 0039 (#475) stacks on top
-        # of 0038.
+        # 0038 (#467) stacks on top of 0037, 0039 (#475) stacks on top
+        # of 0038, and 0040 (#468) stacks on top of 0039.
         self.assertIn(
-            "crank.0039_match_result_generation",
+            "crank.0040_source_refresh_state",
             leaves["applied"],
         )
         self.assertEqual(leaves["applied_count"], len(leaves["applied"]))

@@ -71,6 +71,13 @@ widgets:
       SELECT sum(deadline_reached), sum(items_failed), sum(users_failed),
       sum(matches_persisted) FROM CrankOperation WHERE event_name = 'matching_batch'
       SINCE 24 hours ago
+  - name: Source freshness scheduling pressure
+    nrql: >-
+      SELECT latest(sources_eligible), sum(sources_deferred), sum(sources_skipped),
+      max(oldest_source_age_hours), sum(deferred_backoff), sum(skipped_fresh),
+      sum(skipped_policy), max(oldest_due_age_hours)
+      FROM CrankOperation WHERE event_name IN ('matching_batch', 'scheduled_run')
+      SINCE 24 hours ago
 alerts:
   - name: repeated-failure
     nrql: "SELECT count(*) FROM CrankOperation WHERE status = 'failed' SINCE 15 minutes ago"

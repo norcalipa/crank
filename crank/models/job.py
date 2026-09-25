@@ -50,7 +50,22 @@ class JobSourceCatalog(TimeStampedModel):
         db_index=True,
     )
     enabled = models.BooleanField(default=False, db_index=True)
-    last_crawl_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_crawl_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Last SUCCESSFUL fetch. Never advanced by partial or failed attempts.",
+    )
+    last_attempt_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Last scheduled or manual attempt of any outcome; orders dispatch and retry backoff.",
+    )
+    consecutive_failures = models.PositiveIntegerField(
+        default=0,
+        help_text="Attempts since the last success that did not fully succeed.",
+    )
     catalog_metadata = models.JSONField(
         default=dict,
         blank=True,

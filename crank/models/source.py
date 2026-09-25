@@ -77,7 +77,22 @@ class SourceCatalog(TimeStampedModel):
         verbose_name=_("approval state"),
     )
     enabled = models.BooleanField(default=False, verbose_name=_("enabled"))
-    last_crawl_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_crawl_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Last SUCCESSFUL fetch. Never advanced by partial or failed attempts.",
+    )
+    last_attempt_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Last scheduled or manual attempt of any outcome; orders dispatch and retry backoff.",
+    )
+    consecutive_failures = models.PositiveIntegerField(
+        default=0,
+        help_text="Attempts since the last success that did not fully succeed.",
+    )
     approved_at = models.DateTimeField(null=True, blank=True)
     cadence = models.CharField(
         max_length=16,

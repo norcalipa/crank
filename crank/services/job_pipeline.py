@@ -22,6 +22,7 @@ from crank.models.agent_run import AgentRun
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.preference import UserPreference, default_preferences
 from crank.services import agent_runs, match_recompute
+from crank.services import source_freshness
 from crank.services.job_ingest import ingest_job_source, record_source_publication
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,9 @@ COUNT_KEYS = (
     "sources_succeeded",
     "sources_failed",
     "sources_skipped",
+    "sources_eligible",
+    "sources_deferred",
+    "oldest_source_age_hours",
     "listings_ingested",
     "listings_updated",
     "listings_closed",
@@ -346,18 +350,28 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
     max_sources = max(0, int(_setting(options, "JOB_PIPELINE_MAX_SOURCES", 10)))
     max_users = max(0, int(_setting(options, "JOB_PIPELINE_MAX_USERS", 100)))
 
-    sources = list(
-        JobSourceCatalog.objects.filter(
-            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
-            enabled=True,
-        ).order_by("pk")[:max_sources]
+    reference = options.get("now") or timezone.now()
+    selection = source_freshness.select_due(
+        JobSourceCatalog.objects.all().order_by("pk"),
+        source_freshness.job_policy(),
+        now=reference,
+        approved_value=JobSourceCatalog.ApprovalState.APPROVED,
+        limit=max_sources,
     )
-    counts["sources_total"] = len(sources)
+    counts["sources_eligible"] = selection.counts["eligible"]
+    # The budget counts real attempts: a lock-skipped source records no
+    # attempt, so it must not consume a slot and starve later due sources.
+    attempts = 0
+    visited = 0
+    counts["oldest_source_age_hours"] = selection.oldest_due_age_hours or 0
     successful_sources = 0
-    for source in sources:
+    for source in selection.ordered:
+        if attempts >= max_sources:
+            break
         if deadline.reached():
             counts["deadline_reached"] = True
             break
+        visited += 1
         before_ids = set(
             JobListing.all_objects.filter(source=source).values_list("pk", flat=True)
         )
@@ -393,6 +407,7 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                 if skipped:
                     counts["sources_skipped"] += 1
                     continue
+                attempts += 1
                 if _proven_complete_snapshot(result):
                     expired_count, deleted_count = _retention_sweep(
                         source, deletion_candidates=deletion_candidates
@@ -415,6 +430,12 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                     record_source_publication(
                         source, result, resolved, unresolved, before_org_ids
                     )
+                source_freshness.record_outcome(
+                    JobSourceCatalog,
+                    source.pk,
+                    source_freshness.job_outcome(result),
+                    now=reference,
+                )
             counts["listings_ingested"] += int(result.ingested)
             counts["listings_updated"] += int(result.updated)
             counts["listings_closed"] += int(result.closed)
@@ -450,7 +471,16 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                     },
                 )
         except Exception as exc:  # noqa: BLE001 - isolate source failures
+            attempts += 1
             counts["sources_failed"] += 1
+            # The stage transaction rolled back; record the failed attempt
+            # outside it so backoff and fairness still see it.
+            source_freshness.record_outcome(
+                JobSourceCatalog,
+                source.pk,
+                source_freshness.Outcome.FAILED,
+                now=reference,
+            )
             agent_runs.monitoring.record_event(
                 "source_stage",
                 {
@@ -465,6 +495,10 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                 source.pk,
                 agent_runs.sanitize_error(exc),
             )
+
+    counts["sources_total"] = visited
+    # Everything due but not visited: over budget or past the deadline.
+    counts["sources_deferred"] = max(0, selection.counts["due"] - visited)
 
     preferences = _eligible_preferences()[:max_users]
     counts["users_total"] = len(preferences)

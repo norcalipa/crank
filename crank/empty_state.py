@@ -77,16 +77,16 @@ def _coverage(*, now, freshness_window) -> dict | None:
 
 def _inventory_facts(*, now, active_listings_count) -> dict:
     """Bounded, user-safe inventory facts for zero-match explanations."""
-    from crank.models.crawl_run import CrawlRun
-
+    # Success-only: the newest successful fetch across approved, enabled
+    # sources. A PARTIAL run or a failed attempt never contributes.
     last_success = (
-        CrawlRun.objects.filter(
-            source_type=CrawlRun.SourceType.JOB,
-            outcome__in=[CrawlRun.Outcome.SUCCESS, CrawlRun.Outcome.PARTIAL],
-            finished_at__isnull=False,
+        JobSourceCatalog.objects.filter(
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+            last_crawl_at__isnull=False,
         )
-        .order_by("-finished_at", "-id")
-        .values_list("finished_at", flat=True)
+        .order_by("-last_crawl_at")
+        .values_list("last_crawl_at", flat=True)
         .first()
     )
     age_hours = None
