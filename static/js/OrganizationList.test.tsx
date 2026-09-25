@@ -8,6 +8,7 @@ import * as React from 'react';
 import OrganizationList from './OrganizationList';
 import SuggestCompanyHost from './suggestCompany/SuggestCompanyHost';
 import * as suggestCompanyController from './suggestCompany/controller';
+import {clearWorkspaceContext, getWorkspaceSnapshot, resetWorkspaceForTests, setWorkspaceContext} from './workspace/store';
 
 interface Organization {
     id: number;
@@ -89,6 +90,10 @@ describe('OrganizationList', () => {
 
     afterEach(() => {
         jest.restoreAllMocks();
+        // The list writes `company` into the URL (issue #479); keep tests
+        // independent of each other.
+        window.history.replaceState({}, '', '/');
+        resetWorkspaceForTests();
     });
 
     const organizations: Organization[] = [
@@ -931,6 +936,81 @@ describe('OrganizationList', () => {
             await openFirstCompany({signInUrlTemplate: '/accounts/login/'});
 
             expect(screen.queryByTestId('company-sign-in-cta')).not.toBeInTheDocument();
+        });
+    });
+
+    describe('workspace context, URL and position (issue #479)', () => {
+        test('reports the rankings context for search and page changes', async () => {
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+            await waitFor(() => expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'rankings', page: 1}));
+            fireEvent.change(screen.getByPlaceholderText('Search organizations'), {target: {value: 'Organization'}});
+            await waitFor(() => expect(getWorkspaceSnapshot().context).toMatchObject({searchTerm: 'Organization'}));
+            fireEvent.click(screen.getByTestId('page-link-2'));
+            await waitFor(() => expect(getWorkspaceSnapshot().context).toMatchObject({page: 2}));
+        });
+
+        test('opening a company writes company= via replaceState (no new history entry) and closing removes it', async () => {
+            const pushSpy = jest.spyOn(window.history, 'pushState');
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+            expect(new URLSearchParams(window.location.search).get('company')).toBe('1');
+            expect(getWorkspaceSnapshot().context).toMatchObject({
+                surface: 'company', organizationId: 1, organizationName: 'Organization 1',
+            });
+            expect(pushSpy).not.toHaveBeenCalled();
+
+            fireEvent.click(screen.getByRole('button', {name: 'Close'}));
+            await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+            expect(new URLSearchParams(window.location.search).has('company')).toBe(false);
+            expect(getWorkspaceSnapshot().context?.organizationId).toBeUndefined();
+            expect(getWorkspaceSnapshot().context?.surface).toBe('rankings');
+        });
+
+        test('the URL only ever carries the allowlisted params', async () => {
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+            fireEvent.change(screen.getByPlaceholderText('Search organizations'), {target: {value: 'Organization 1'}});
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+            const keys = Array.from(new URLSearchParams(window.location.search).keys());
+            const allowed = ['search', 'accelerated_vesting', 'page', 'company'];
+            expect(keys.length).toBeGreaterThan(0);
+            keys.forEach((key) => expect(allowed).toContain(key));
+            expect(window.history.state?.crankPosition ?? {scrollY: 0}).not.toHaveProperty('search');
+        });
+
+        test('restores the saved scroll position on mount', () => {
+            window.history.replaceState({crankPosition: {scrollY: 480, anchor: null}}, '', '/');
+            const scrollTo = jest.fn();
+            window.scrollTo = scrollTo as unknown as typeof window.scrollTo;
+            render(<OrganizationList organizations={organizations} />);
+            expect(scrollTo).toHaveBeenCalledWith(0, 480);
+        });
+
+        test('clearing the workspace context closes the company dialog and leaves the list', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+
+            act(() => clearWorkspaceContext());
+
+            await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+            expect(new URLSearchParams(window.location.search).has('company')).toBe(false);
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+        });
+
+        test('a company context set elsewhere (Ask CTA) survives searching', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            act(() => setWorkspaceContext({surface: 'company', organizationId: 2, organizationName: 'Organization 2'}));
+            fireEvent.change(screen.getByPlaceholderText('Search organizations'), {target: {value: 'Org'}});
+            await waitFor(() => expect(getWorkspaceSnapshot().context).toMatchObject({searchTerm: 'Org'}));
+            expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'company', organizationId: 2});
+        });
+
+        test('unmounting stops tracking and workspace subscription', () => {
+            const {unmount} = render(<OrganizationList organizations={organizations} />);
+            unmount();
+            expect(() => act(() => clearWorkspaceContext())).not.toThrow();
         });
     });
 

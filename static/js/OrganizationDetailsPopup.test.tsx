@@ -7,6 +7,7 @@ import * as React from 'react';
 
 import OrganizationDetailsPopup from './OrganizationDetailsPopup';
 import * as suggestCompanyController from './suggestCompany/controller';
+import {getWorkspaceSnapshot, resetWorkspaceForTests} from './workspace/store';
 
 // Add an interface that matches the component's expected props
 interface ScoreDetail {
@@ -1277,6 +1278,86 @@ describe('OrganizationDetailsPopup', () => {
             // inside the previously inert background — receives focus again.
             expect(document.activeElement).toBe(opener);
             opener.remove();
+        });
+    });
+
+    describe('Ask the assistant CTA (issue #479)', () => {
+        let rafCallbacks: FrameRequestCallback[];
+
+        beforeEach(() => {
+            resetWorkspaceForTests();
+            rafCallbacks = [];
+            jest.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+                rafCallbacks.push(cb);
+                return rafCallbacks.length;
+            });
+        });
+
+        afterEach(() => {
+            document.getElementById('assistant-workspace')?.remove();
+            jest.restoreAllMocks();
+        });
+
+        function renderAuthenticated(onClose: () => void) {
+            return render(
+                <OrganizationDetailsPopup organization={mockOrganization} visible={true}
+                                          onClose={onClose} isAuthenticated={true} />
+            );
+        }
+
+        test('closes the dialog and opens the assistant with company context on the next frame', () => {
+            const workspace = document.createElement('div');
+            workspace.id = 'assistant-workspace';
+            document.body.appendChild(workspace);
+            const onClose = jest.fn();
+            renderAuthenticated(onClose);
+
+            fireEvent.click(screen.getByTestId('company-chat-cta'));
+
+            expect(onClose).toHaveBeenCalledTimes(1);
+            // Not opened synchronously: the dialog's background lock must
+            // release first (#472 one-blocking-surface rule).
+            expect(getWorkspaceSnapshot().visibility).toBe('closed');
+            rafCallbacks.forEach((cb) => cb(0));
+            expect(getWorkspaceSnapshot().visibility).toBe('open');
+            expect(getWorkspaceSnapshot().context).toEqual({
+                surface: 'company',
+                organizationId: mockOrganization.id,
+                organizationName: mockOrganization.name,
+            });
+        });
+
+        test('falls back to the plain /chat/ link when the workspace host is absent', () => {
+            const onClose = jest.fn();
+            renderAuthenticated(onClose);
+
+            const notPrevented = fireEvent.click(screen.getByTestId('company-chat-cta'));
+
+            expect(notPrevented).toBe(true);
+            expect(onClose).not.toHaveBeenCalled();
+            expect(rafCallbacks).toHaveLength(0);
+        });
+
+        test('modified clicks keep the link behavior', () => {
+            const workspace = document.createElement('div');
+            workspace.id = 'assistant-workspace';
+            document.body.appendChild(workspace);
+            const onClose = jest.fn();
+            renderAuthenticated(onClose);
+
+            fireEvent.click(screen.getByTestId('company-chat-cta'), {ctrlKey: true});
+
+            expect(onClose).not.toHaveBeenCalled();
+        });
+
+        test('the signed-out CTA is unchanged', () => {
+            render(
+                <OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}}
+                                          isAuthenticated={false}
+                                          signInUrlTemplate="/accounts/login/?next=%2F%3Fcompany%3D__COMPANY_ID__" />
+            );
+            expect(screen.getByTestId('company-sign-in-cta')).toHaveAttribute('href', expect.stringContaining('next='));
+            expect(screen.queryByTestId('company-chat-cta')).not.toBeInTheDocument();
         });
     });
 });

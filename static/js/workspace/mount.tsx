@@ -11,7 +11,13 @@
 import * as React from 'react';
 import {createRoot} from 'react-dom/client';
 import WorkspaceShell from './WorkspaceShell';
-import {installWorkspaceBridge, openAssistant, setWorkspaceContext} from './store';
+import {installWorkspacePersistence} from './persistence';
+import {
+    installWorkspaceBridge,
+    openAssistant,
+    setWorkspaceAccount,
+    setWorkspaceContext,
+} from './store';
 import {WorkspaceContext} from './types';
 
 // Server-rendered auth context for the pinned /chat/ host (issue #465 AC-9/10,
@@ -59,6 +65,20 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     installWorkspaceBridge();
     setWorkspaceContext({surface: surfaceFromPath(window.location.pathname)});
+    // The pinned /chat/ host carries the account synchronously (never-cache
+    // page); everywhere else it stays 'unknown' until crank:auth-hydrated.
+    if (host.dataset.assistantPinned === 'true') {
+        setWorkspaceAccount(host.dataset.authenticated === 'true'
+            ? {status: 'authenticated', key: host.dataset.accountKey ?? ''}
+            : {status: 'anonymous', key: ''});
+    }
+    installWorkspacePersistence();
+    // /chat/?company=<id>: the server-validated id seeds the same context the
+    // in-place Ask CTA sets, before the panel opens (issue #479 AC-2).
+    const selected = Number(host.dataset.selectedCompanyId);
+    if (host.dataset.selectedCompanyId && Number.isInteger(selected) && selected > 0) {
+        setWorkspaceContext({organizationId: selected});
+    }
     const root = createRoot(host);
     root.render(<WorkspaceShell authProps={authPropsFrom(host)}/>);
     // /chat/ is the pinned case of the shared workspace: the panel opens

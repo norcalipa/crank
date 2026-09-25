@@ -2587,3 +2587,35 @@ body.app-nav-drawer-open {
         transition: none;
     }
 }
+
+/* issue #479 workspace context strip */
+.assistant-context-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+}
+
+.assistant-context-strip .assistant-panel-context {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.assistant-clear-context {
+    padding: 0.125rem 0.5rem;
+    font-size: 0.8125rem;
+    min-height: 2rem;
+}
+
+.assistant-clear-context:focus-visible,
+.assistant-panel-title:focus-visible {
+    outline: 2px solid #ffffff;
+    outline-offset: 2px;
+}
+
+.chat-stale-context-note {
+    font-style: italic;
+    opacity: 0.85;
+}

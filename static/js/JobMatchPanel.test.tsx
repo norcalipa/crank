@@ -5,7 +5,8 @@ import {render, screen, fireEvent, waitFor} from '@testing-library/react';
 import * as React from 'react';
 
 import JobMatchPanel from './JobMatchPanel';
-import {closeAssistant, openAssistant, resetWorkspaceForTests} from './workspace/store';
+import {act} from '@testing-library/react';
+import {closeAssistant, getWorkspaceSnapshot, openAssistant, resetWorkspaceForTests} from './workspace/store';
 
 function jsonResponse(payload: unknown, status = 200): Response {
     return new Response(JSON.stringify(payload), {
@@ -1091,5 +1092,166 @@ describe('JobMatchPanel round-3 visual fixes (type hierarchy + grids)', () => {
         expect(screen.getByTestId('job-42-company-score')).toHaveClass('job-match-figure-value');
         expect(screen.getByTestId('job-42-fit-score')).toHaveClass('job-match-figure-value');
         expect(screen.getByTestId('job-42-coverage')).toHaveClass('job-match-figure-value');
+    });
+});
+
+describe('JobMatchPanel navigation state (issue #479)', () => {
+    interface Batch {
+        release: () => void;
+        title: string;
+        generation: number | null;
+    }
+
+    // Each refresh issues three fetches (status, matches, ranked). Every
+    // batch of three is held until `release()` so overlapping refreshes can
+    // resolve in any order.
+    function installBatchedFetch(specs: Array<{title: string; generation: number | null; hold: boolean}>): Batch[] {
+        const batches: Batch[] = [];
+        const gates: Array<Promise<void>> = [];
+        let calls = 0;
+        global.fetch = jest.fn().mockImplementation((url: string) => {
+            const index = Math.floor(calls / 3);
+            calls += 1;
+            const spec = specs[index];
+            if (!gates[index]) {
+                gates[index] = new Promise<void>((resolve) => {
+                    batches[index] = {release: resolve, title: spec.title, generation: spec.generation};
+                    if (!spec.hold) resolve();
+                });
+            }
+            const gate = gates[index];
+            return gate.then(() => {
+                if (url.includes('/status/')) return jsonResponse(statusPayload('ok'));
+                if (url.includes('/ranked/')) {
+                    return jsonResponse(rankedPayload([{...sampleJobMatch, title: spec.title}]));
+                }
+                return jsonResponse(matchPayload(1, [{
+                    ...sampleJobMatch,
+                    revision: spec.generation === null ? undefined : {result_generation: spec.generation},
+                }]));
+            });
+        });
+        return batches;
+    }
+
+    async function refresh(): Promise<void> {
+        fireEvent.click(screen.getByTestId('job-match-refresh'));
+    }
+
+    afterEach(() => {
+        jest.restoreAllMocks();
+        resetWorkspaceForTests();
+        window.history.replaceState(null, '', '/');
+    });
+
+    test('reports the jobs surface on mount', async () => {
+        installBatchedFetch([{title: 'First', generation: 1, hold: false}]);
+        render(<JobMatchPanel/>);
+        await screen.findByTestId('ranked-job-42');
+        expect(getWorkspaceSnapshot().context?.surface).toBe('jobs');
+    });
+
+    test('an older overlapping request that resolves last never replaces newer data', async () => {
+        const batches = installBatchedFetch([
+            {title: 'Stale', generation: 1, hold: true},
+            {title: 'Fresh', generation: 1, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await waitFor(() => expect(batches[0]).toBeDefined());
+        // A purge issues a second request while the first is still in flight.
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await screen.findByText('Fresh');
+        await act(async () => {
+            batches[0].release();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+        });
+        expect(screen.getByText('Fresh')).toBeInTheDocument();
+        expect(screen.queryByText('Stale')).not.toBeInTheDocument();
+    });
+
+    test('a superseded request that fails late does not surface an error', async () => {
+        let calls = 0;
+        let rejectOld: (error: Error) => void = () => undefined;
+        global.fetch = jest.fn().mockImplementation((url: string) => {
+            calls += 1;
+            if (calls <= 3) {
+                return new Promise((_resolve, reject) => { rejectOld = reject; });
+            }
+            if (url.includes('/status/')) return Promise.resolve(jsonResponse(statusPayload('ok')));
+            if (url.includes('/ranked/')) return Promise.resolve(jsonResponse(rankedPayload([{...sampleJobMatch, title: 'Recovered'}])));
+            return Promise.resolve(jsonResponse(matchPayload(1, [sampleJobMatch])));
+        });
+        render(<JobMatchPanel/>);
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await screen.findByText('Recovered');
+        await act(async () => {
+            rejectOld(new Error('late boom'));
+            await new Promise((resolve) => setTimeout(resolve, 20));
+        });
+        expect(screen.queryByText('late boom')).not.toBeInTheDocument();
+        expect(screen.getByText('Recovered')).toBeInTheDocument();
+    });
+
+    test('a lower result_generation never replaces a higher one', async () => {
+        installBatchedFetch([
+            {title: 'Generation five', generation: 5, hold: false},
+            {title: 'Generation four', generation: 4, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Generation five');
+        await refresh();
+        await waitFor(() => expect((global.fetch as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(6));
+        await waitFor(() => expect(screen.getByTestId('job-match-refresh')).toBeInTheDocument());
+        expect(screen.getByText('Generation five')).toBeInTheDocument();
+        expect(screen.queryByText('Generation four')).not.toBeInTheDocument();
+    });
+
+    test('a response without a generation always applies', async () => {
+        installBatchedFetch([
+            {title: 'Old', generation: 5, hold: false},
+            {title: 'Ungenerated', generation: null, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Old');
+        await refresh();
+        await screen.findByText('Ungenerated');
+    });
+
+    test('crank:private-state-purged drops the data and reloads', async () => {
+        installBatchedFetch([
+            {title: 'Alice data', generation: 1, hold: false},
+            {title: 'Bob data', generation: 1, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Alice data');
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        expect(screen.queryByText('Alice data')).not.toBeInTheDocument();
+        await screen.findByText('Bob data');
+    });
+
+    test('shows the error state with a retry when a refresh fails, and only for the latest request', async () => {
+        installBatchedFetch([{title: 'Initial', generation: 1, hold: false}]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Initial');
+        (global.fetch as jest.Mock).mockRejectedValue(new Error('boom'));
+        await refresh();
+        await screen.findByText('boom');
+    });
+
+    test('restores the saved scroll position once results are ready', async () => {
+        window.history.replaceState({crankPosition: {scrollY: 300, anchor: null}}, '', '/');
+        const scrollTo = jest.fn();
+        window.scrollTo = scrollTo as unknown as typeof window.scrollTo;
+        installBatchedFetch([{title: 'Initial', generation: 1, hold: false}]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Initial');
+        expect(scrollTo).toHaveBeenCalledWith(0, 300);
+    });
+
+    test('unmounting cancels the in-flight request', async () => {
+        installBatchedFetch([{title: 'Held', generation: 1, hold: true}]);
+        const {unmount} = render(<JobMatchPanel/>);
+        unmount();
+        expect(() => act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); })).not.toThrow();
     });
 });

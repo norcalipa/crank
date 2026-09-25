@@ -74,6 +74,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
         window.localStorage.setItem('crank:last-account', 'alice');
         window.localStorage.setItem('unrelated-key', 'keep-me');
         window.sessionStorage.setItem('crank:auth-intent', '{"route":"/chat/"}');
+        window.sessionStorage.setItem('crank:workspace:v1', '{"v":1}');
 
         // Mirrors the cached auth-neutral shell's form in
         // templates/_navigation.html: every logout form carries
@@ -108,6 +109,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
         expect(window.localStorage.getItem('crank:jobsearch:inflight:1:a')).toBeNull();
         expect(window.localStorage.getItem('crank:last-account')).toBeNull();
         expect(window.sessionStorage.getItem('crank:auth-intent')).toBeNull();
+        expect(window.sessionStorage.getItem('crank:workspace:v1')).toBeNull();
         expect(window.localStorage.getItem('unrelated-key')).toBe('keep-me');
     });
 

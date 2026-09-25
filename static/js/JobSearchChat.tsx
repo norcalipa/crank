@@ -4,6 +4,12 @@ import * as React from 'react';
 import {createRoot} from 'react-dom/client';
 
 import {purgePrivateClientState} from './authIntent';
+import {
+    describeWorkspaceContext,
+    getWorkspaceSnapshot,
+    setWorkspaceConversation,
+    subscribeWorkspace,
+} from './workspace/store';
 
 export interface JobResult {
     id: number;
@@ -923,14 +929,31 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const accountGuardRef = React.useRef(false);
     if (!accountGuardRef.current) {
         accountGuardRef.current = true;
-        reconcileAccountKey(accountKey);
+        reconcileAccountKey(accountKey || (props.workspaceMode !== undefined
+            && getWorkspaceSnapshot().account.status === 'authenticated'
+            ? getWorkspaceSnapshot().account.key
+            : ''));
     }
+    // Account gate (issue #479): a lazily mounted workspace chat has no
+    // server-rendered accountKey, so until the shared store knows the account
+    // (crank:auth-hydrated) it must not adopt a pending draft or read stored
+    // drafts. The store is read at mount, so a mount after hydration is not
+    // left waiting for an event it can no longer receive.
+    const workspaceAccount = React.useSyncExternalStore(
+        subscribeWorkspace,
+        () => getWorkspaceSnapshot().account,
+    );
+    const accountPending = props.workspaceMode !== undefined
+        && !accountKey
+        && workspaceAccount.status === 'unknown';
 
     const [effectiveAuthenticated, setEffectiveAuthenticated] = React.useState(isAuthenticated);
 
     const [conversationId, setConversationId] = React.useState<number | null>(null);
     const [messages, setMessages] = React.useState<ChatMessage[]>([]);
     const [input, setInput] = React.useState('');
+    // "Answered about …" notes keyed by assistant message id (issue #479).
+    const [staleNotes, setStaleNotes] = React.useState<Record<number, string>>({});
     const [pending, setPending] = React.useState(false);
     const [loading, setLoading] = React.useState(true);
     const [initError, setInitError] = React.useState<string | null>(null);
@@ -1312,6 +1335,20 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // history region must stay empty until an authenticated load succeeds
     // (AC-10).
     React.useEffect(() => {
+        if (accountPending) {
+            return undefined;
+        }
+        if (!accountKey && props.workspaceMode !== undefined) {
+            // Reconcile the now-known account before any stored draft is read.
+            const authenticated = workspaceAccount.status === 'authenticated';
+            if (authenticated) {
+                reconcileAccountKey(workspaceAccount.key);
+            }
+            if (authenticated !== effectiveAuthenticated) {
+                setEffectiveAuthenticated(authenticated);
+                return undefined;
+            }
+        }
         if (!effectiveAuthenticated) {
             setLoading(false);
             setInput((current) => current || readPendingDraft());
@@ -1388,7 +1425,13 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 resumeAbortRef.current = null;
             }
         };
-    }, [effectiveAuthenticated, purgeGeneration]);
+    }, [effectiveAuthenticated, purgeGeneration, accountPending, workspaceAccount.status]);
+
+    // Mirror the active conversation id into the shared workspace store
+    // (issue #479) — one effect covers resume, create, reset and delete.
+    React.useEffect(() => {
+        setWorkspaceConversation(conversationId);
+    }, [conversationId]);
 
     // Account-switch / sign-out purge (issue #465 AC-9). Any in-flight
     // submission is aborted (stopping only the client's wait — the server
@@ -1405,6 +1448,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         surfacedDraftRef.current = null;
         lastSent.current = null;
         setMessages([]);
+        setStaleNotes({});
         setConversationId(null);
         conversationIdRef.current = null;
         setInput('');
@@ -1606,6 +1650,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         if (turnConversationId == null || (pendingRef.current && !opts?.retriedAfterClose)) return;
         pendingRef.current = true;
         keepDraftRef.current = false;
+        // Context this turn was sent under (issue #479): compared with the
+        // live context when the reply lands.
+        const sentContextLabel = describeWorkspaceContext(getWorkspaceSnapshot().context);
         setPending(true);
         setError(null);
         setErrorType(null);
@@ -1811,6 +1858,14 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             if (conversationIdRef.current !== turnConversationId) {
                 clearInflightTurn(turnConversationId, key);
                 return;
+            }
+            // The reply is server history and is always appended; if the
+            // context moved on meanwhile it is labelled with the context it
+            // answered, without touching the context strip or the store.
+            if (sentContextLabel
+                && sentContextLabel !== describeWorkspaceContext(getWorkspaceSnapshot().context)) {
+                const answered = sentContextLabel.replace(/^(About|Comparing) /, '');
+                setStaleNotes((prev) => ({...prev, [data.message.id]: `Answered about ${answered}`}));
             }
             // Keep the turn in its ORIGINAL position and insert the reply
             // immediately after it: a retried turn must never reorder the
@@ -2350,6 +2405,12 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                                 <div className={`chat-bubble ${m.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}
                                      style={{maxWidth: '80%', wordBreak: 'break-word'}}>
                                     <div style={{whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>{m.content}</div>
+                                    {m.role === 'assistant' && staleNotes[m.id] && (
+                                        <div className="chat-stale-context-note small mt-1"
+                                             data-testid="stale-context-note">
+                                            {staleNotes[m.id]}
+                                        </div>
+                                    )}
                                     {m.role === 'assistant' && m.results && (
                                         <ResultCards results={m.results} />
                                     )}

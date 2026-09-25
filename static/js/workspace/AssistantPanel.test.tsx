@@ -4,7 +4,9 @@ import '@testing-library/jest-dom';
 import * as React from 'react';
 import {render, screen, waitFor} from '@testing-library/react';
 import AssistantPanel from './AssistantPanel';
-import {getWorkspaceSnapshot, resetWorkspaceForTests} from './store';
+import {WorkspaceContext} from './types';
+import {fireEvent} from '@testing-library/react';
+import {getWorkspaceSnapshot, resetWorkspaceForTests, setWorkspaceContext} from './store';
 
 jest.mock('../JobSearchChat', () => ({
     __esModule: true,
@@ -57,5 +59,35 @@ describe('AssistantPanel', () => {
         unmount();
         render(<AssistantPanel mode="docked" context={{surface: 'jobs'}}/>);
         expect(screen.queryByTestId('assistant-context-line')).not.toBeInTheDocument();
+    });
+
+    test('company, job and comparison contexts render the strip with a named Clear button', () => {
+        const contexts: Array<[WorkspaceContext, string]> = [
+            [{surface: 'company', organizationName: 'Acme'}, 'About Acme'],
+            [{surface: 'jobs', jobId: 8}, 'About job #8'],
+            [{surface: 'comparison', comparisonIds: [1, 2]}, 'Comparing 2 companies'],
+        ];
+        for (const [context, label] of contexts) {
+            const {unmount} = render(<AssistantPanel mode="docked" context={context}/>);
+            expect(screen.getByTestId('assistant-context-strip')).toBeInTheDocument();
+            expect(screen.getByRole('button', {name: `Clear context: ${label}`})).toBeInTheDocument();
+            unmount();
+        }
+    });
+
+    test('no strip for rankings-only or search-only context', () => {
+        render(<AssistantPanel mode="docked" context={{surface: 'rankings', searchTerm: 'django'}}/>);
+        expect(screen.queryByTestId('assistant-context-strip')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('assistant-clear-context')).not.toBeInTheDocument();
+    });
+
+    test('Clear context clears the entity, keeps the surface, bumps the revision and focuses the heading', () => {
+        setWorkspaceContext({surface: 'company', organizationId: 3, organizationName: 'Acme'});
+        const revision = getWorkspaceSnapshot().contextRevision;
+        render(<AssistantPanel mode="docked" context={getWorkspaceSnapshot().context}/>);
+        fireEvent.click(screen.getByTestId('assistant-clear-context'));
+        expect(getWorkspaceSnapshot().context).toEqual({surface: 'company'});
+        expect(getWorkspaceSnapshot().contextRevision).toBe(revision + 1);
+        expect(document.activeElement).toBe(document.getElementById('assistant-panel-title'));
     });
 });

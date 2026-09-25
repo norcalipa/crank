@@ -55,7 +55,12 @@ test.describe('shared assistant workspace (issue #472)', () => {
         for (const width of [1280, 1440]) {
             await page.setViewportSize({width, height: 900});
             await page.goto('/');
-            await page.locator('[data-testid="assistant-launcher"]').click();
+            // Docked mode restores the open panel per tab (issue #479), so
+            // the second width may already have it open.
+            const launcher = page.locator('[data-testid="assistant-launcher"]');
+            if (await launcher.count() > 0) {
+                await launcher.click();
+            }
             await expect(page.locator('[data-testid="assistant-panel"]')).toBeVisible();
             const panel = await rectOf(page, '[data-testid="assistant-panel"]');
             expect(panel.width).toBeGreaterThanOrEqual(359);

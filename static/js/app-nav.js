@@ -117,6 +117,7 @@
     function purgePrivateClientState() {
         try {
             window.sessionStorage.removeItem("crank:auth-intent");
+            window.sessionStorage.removeItem("crank:workspace:v1");
         } catch (e) {
             // Storage unavailable; nothing durable to clear.
         }

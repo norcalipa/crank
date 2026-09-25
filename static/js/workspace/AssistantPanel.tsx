@@ -10,7 +10,9 @@
 
 import * as React from 'react';
 import {
+    clearWorkspaceContext,
     closeAssistant,
+    describeWorkspaceContext,
     markWorkspaceLoaded,
     minimizeAssistant,
 } from './store';
@@ -22,8 +24,9 @@ function contextLine(context: WorkspaceContext | null): string {
     if (!context) {
         return '';
     }
-    if (context.organizationName) {
-        return `About ${context.organizationName}`;
+    const entity = describeWorkspaceContext(context);
+    if (entity) {
+        return entity;
     }
     if (context.searchTerm) {
         return `Searching “${context.searchTerm}”`;
@@ -57,6 +60,13 @@ interface AssistantPanelProps {
 
 const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps}) => {
     const line = contextLine(context);
+    const entityLabel = describeWorkspaceContext(context);
+    // Clearing removes the strip, so focus moves to the panel heading rather
+    // than being lost with the button (issue #479 a11y).
+    const handleClear = () => {
+        clearWorkspaceContext();
+        document.getElementById('assistant-panel-title')?.focus();
+    };
     return (
         <div className="assistant-panel-inner">
             {/* Sheet mode: Back to results is the FIRST focusable control in
@@ -70,13 +80,23 @@ const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps
             )}
             <div className="assistant-panel-header">
                 <div className="assistant-panel-heading">
-                    <h2 className="assistant-panel-title" id="assistant-panel-title">
+                    <h2 className="assistant-panel-title" id="assistant-panel-title" tabIndex={-1}>
                         <i className="fa-solid fa-comments" aria-hidden="true"></i> Job Search Assistant
                     </h2>
                     {line && (
-                        <p className="assistant-panel-context" data-testid="assistant-context-line">
-                            {line}
-                        </p>
+                        <div className={entityLabel ? 'assistant-context-strip' : undefined}
+                             data-testid={entityLabel ? 'assistant-context-strip' : undefined}>
+                            <p className="assistant-panel-context" data-testid="assistant-context-line">
+                                {line}
+                            </p>
+                            {entityLabel && (
+                                <button type="button" className="btn btn-sm btn-outline-light assistant-clear-context"
+                                        onClick={handleClear} aria-label={`Clear context: ${entityLabel}`}
+                                        data-testid="assistant-clear-context">
+                                    Clear context
+                                </button>
+                            )}
+                        </div>
                     )}
                 </div>
                 <div className="assistant-panel-controls">

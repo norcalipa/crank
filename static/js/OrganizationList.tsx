@@ -4,6 +4,13 @@ import * as React from 'react';
 import {createRoot} from "react-dom/client";
 import OrganizationDetailsPopup from './OrganizationDetailsPopup';
 import {closeSuggestCompany, openSuggestCompany} from './suggestCompany/controller';
+import {installPositionTracking, restoreResultPosition} from './workspace/position';
+import {
+    clearWorkspaceContext,
+    getWorkspaceSnapshot,
+    setWorkspaceContext,
+    subscribeWorkspace,
+} from './workspace/store';
 
 interface ScoreDetail {
     type__name: string;
@@ -96,11 +103,94 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         window.addEventListener('popstate', this.handlePopState);
         this.normalizeCurrentPage();
         this.openCompanyFromUrl();
+        // Issue #479: keep the shared workspace context in step with this
+        // list, restore the Back-navigation scroll position, and close the
+        // company dialog when the assistant's "Clear context" removes it.
+        this.reportContext();
+        this.stopPositionTracking = installPositionTracking(() => null);
+        restoreResultPosition(() => null);
+        this.unsubscribeWorkspace = subscribeWorkspace(this.handleWorkspaceChange);
+    }
+
+    componentDidUpdate(_prevProps: unknown, prevState: OrganizationListState) {
+        const dialogChanged = prevState.showPopup !== this.state.showPopup
+            || prevState.selectedOrganization?.id !== this.state.selectedOrganization?.id;
+        if (dialogChanged) {
+            this.syncCompanyParam();
+        }
+        if (dialogChanged
+            || prevState.searchTerm !== this.state.searchTerm
+            || prevState.currentPage !== this.state.currentPage) {
+            this.reportContext();
+        }
     }
 
     componentWillUnmount() {
         window.removeEventListener('popstate', this.handlePopState);
+        this.stopPositionTracking?.();
+        this.unsubscribeWorkspace?.();
     }
+
+    private stopPositionTracking?: () => void;
+    private unsubscribeWorkspace?: () => void;
+    // Company id this list last reported to the workspace, so a close only
+    // removes context the list itself set (never the Ask CTA's).
+    private reportedOrganizationId: number | null = null;
+
+    // `company` is the only extra URL param the list writes, via replaceState
+    // so opening or closing a dialog never adds a history entry (issue #479).
+    syncCompanyParam = () => {
+        const params = new URLSearchParams(window.location.search);
+        const {showPopup, selectedOrganization} = this.state;
+        const current = params.get('company');
+        const wanted = showPopup && selectedOrganization ? String(selectedOrganization.id) : null;
+        if (current === wanted) {
+            return;
+        }
+        if (wanted === null) {
+            params.delete('company');
+        } else {
+            params.set('company', wanted);
+        }
+        const query = params.toString();
+        window.history.replaceState(
+            window.history.state,
+            '',
+            `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`,
+        );
+    };
+
+    reportContext = () => {
+        const {showPopup, selectedOrganization, searchTerm, currentPage} = this.state;
+        if (showPopup && selectedOrganization) {
+            this.reportedOrganizationId = selectedOrganization.id;
+            setWorkspaceContext({
+                surface: 'company',
+                organizationId: selectedOrganization.id,
+                organizationName: selectedOrganization.name,
+            });
+            return;
+        }
+        const context = getWorkspaceSnapshot().context;
+        if (this.reportedOrganizationId !== null
+            && context?.organizationId === this.reportedOrganizationId) {
+            clearWorkspaceContext();
+        }
+        this.reportedOrganizationId = null;
+        const keepsCompany = getWorkspaceSnapshot().context?.organizationId !== undefined;
+        setWorkspaceContext(keepsCompany
+            ? {searchTerm, page: currentPage}
+            : {surface: 'rankings', searchTerm, page: currentPage});
+    };
+
+    handleWorkspaceChange = () => {
+        const {showPopup, selectedOrganization} = this.state;
+        if (showPopup && selectedOrganization
+            && this.reportedOrganizationId === selectedOrganization.id
+            && getWorkspaceSnapshot().context?.organizationId !== selectedOrganization.id) {
+            this.handleClosePopup();
+        }
+    };
 
     // A user sent to sign-in from a company's details dialog returns with
     // that company id in the URL (issue #465 AC-7): open the same dialog on

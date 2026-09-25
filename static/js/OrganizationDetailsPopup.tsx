@@ -4,6 +4,7 @@ import * as React from 'react';
 import {createPortal} from 'react-dom';
 import {lockBackground, unlockBackground} from './modalIsolation';
 import {openSuggestCompany} from './suggestCompany/controller';
+import {openAssistant} from './workspace/store';
 
 interface ScoreDetail {
     type__name: string;
@@ -349,6 +350,24 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         onClose();
     };
 
+    // Issue #479: open the assistant in place with this company as context.
+    // openAssistant runs on the next frame so the dialog's unlockBackground()
+    // has already released the blocking-surface lock (the #472 yield rule
+    // would otherwise close the sheet immediately). Modified clicks and pages
+    // without the workspace host keep the plain /chat/?company= navigation.
+    const handleAskClick = (e: React.MouseEvent, organizationId: number, organizationName: string) => {
+        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey
+            || !document.getElementById('assistant-workspace')) {
+            return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+        window.requestAnimationFrame(() => {
+            openAssistant({surface: 'company', organizationId, organizationName});
+        });
+    };
+
     const handleOverlayClick = (e: React.MouseEvent) => {
         // Only close if clicking directly on the overlay, not its children
         if (e.target === e.currentTarget) {
@@ -387,6 +406,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                     <div className="mb-3 popup-company-actions" data-testid="company-handoff-actions">
                         {isAuthenticated ? (
                             <a href={companyChatUrl(organization.id)}
+                               onClick={(event) => handleAskClick(event, organization.id, organization.name)}
                                className="btn btn-sm btn-primary"
                                data-testid="company-chat-cta">
                                 Ask the assistant about {organization.name}

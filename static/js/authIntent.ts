@@ -17,6 +17,7 @@ export interface AuthIntent {
 }
 
 const INTENT_KEY = 'crank:auth-intent';
+const WORKSPACE_KEY = 'crank:workspace:v1';
 const JOBSEARCH_PREFIX = 'crank:jobsearch:';
 
 export function writeIntent(intent: AuthIntent): void {
@@ -52,12 +53,17 @@ export function clearIntent(): void {
 /**
  * Remove every private client-side artefact: all `crank:jobsearch:` keys
  * (per-conversation drafts, the pending pre-conversation draft, and the
- * turn-recovery markers) plus the sign-in intent. Called on sign-out and on
+ * turn-recovery markers) plus the sign-in intent and the per-tab workspace record (issue #479). Called on sign-out and on
  * account switch (issue #465 AC-9) — never on a timer or plain page load,
  * since that would destroy legitimate same-account recovery state.
  */
 export function purgePrivateClientState(): void {
     clearIntent();
+    try {
+        window.sessionStorage.removeItem(WORKSPACE_KEY);
+    } catch {
+        // Storage unavailable; nothing durable to purge.
+    }
     try {
         const doomed: string[] = [];
         for (let i = 0; i < window.localStorage.length; i++) {
