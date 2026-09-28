@@ -68,6 +68,9 @@ E2E_USERNAME = "e2e_user"
 #: the dataset obviously synthetic ("E2E " prefix everywhere).
 RATING_SOURCE_ORG_NAME = "E2E Rating Source"
 FIXTURE_SOURCE_NAME = "E2E Seed Source"
+#: Second ranking preset so the rankings preset select has something to
+#: switch to (issue #478); weights only the existing Culture type.
+PRESET_ALGORITHM_NAME = "E2E Culture Preset"
 
 #: Bounded org/score set: (name, avg score). The last entry intentionally
 #: carries a maximal-length name for long-content layout assertions.
@@ -170,6 +173,15 @@ class Command(BaseCommand):
             defaults={"weight": 1.0},
         )
         _sync_fields(weight, {"weight": 1.0})
+        preset, _ = ScoreAlgorithm.objects.get_or_create(
+            name=PRESET_ALGORITHM_NAME,
+            defaults={"description_content": "culture-focused.md"},
+        )
+        _sync_fields(preset, {"description_content": "culture-focused.md", "status": 1})
+        preset_weight, _ = ScoreAlgorithmWeight.objects.get_or_create(
+            algorithm=preset, type=score_type, defaults={"weight": 1.0}
+        )
+        _sync_fields(preset_weight, {"weight": 1.0, "status": 1})
 
         # -- Rating source + bounded target organizations --------------------
         rating_source, _ = Organization.objects.get_or_create(
