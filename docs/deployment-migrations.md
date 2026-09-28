@@ -298,16 +298,25 @@ numbered merge migration if a head split remains, keeping
 ## Allocation: 0040 (issue #468)
 
 - **0040 → #468** (`0040_source_refresh_state`, parent
-  `0039_match_result_generation`): additive `last_attempt_at` and
-  `consecutive_failures` on `SourceCatalog` and `JobSourceCatalog`, plus a
-  chunked (500-row keyset batches), resumable backfill of NULL `last_crawl_at`
-  from the latest SUCCESS `CrawlRun` (never PARTIAL). The migration is
-  `atomic = False` and keeps 0040 as the single owning number. The backfill is idempotent and its reverse is a no-op. No
-  constraints or partial indexes. Old pods ignore the new columns, so rollback
-  is a code-only redeploy. Expected MySQL behavior: `AddField` with a
-  constant default and nullable indexed columns run as online `ALGORITHM=INPLACE`
-  (or INSTANT) DDL on InnoDB, taking only a brief metadata lock at start and
-  end; both catalogs are small operational tables. DDL auto-commits, so if the
-  migration is interrupted re-run `migrate`: applied schema steps are skipped by
-  the recorded state and the backfill continues where NULLs remain. Run it in a
-  low-traffic window. **0041 → #477** builds on top of it.
+  `0039_match_result_generation`): schema-only — additive `last_attempt_at`
+  and `consecutive_failures` on `SourceCatalog` and `JobSourceCatalog`, plus
+  a help-text-only `AlterField` on `last_crawl_at`. No constraints or partial
+  indexes, and no data migration: Django only records a migration as applied
+  after every one of its operations succeeds, and on MySQL each successful
+  `AddField` auto-commits regardless of `atomic`, so a `RunPython` backfill
+  bundled into 0040 could leave the new columns in place with 0040 unapplied
+  after an interruption, and a rerun of `migrate` would then fail on a
+  duplicate column. Expected MySQL behavior: `AddField` with a constant
+  default and nullable indexed columns run as online `ALGORITHM=INPLACE` (or
+  INSTANT) DDL on InnoDB, taking only a brief metadata lock at start and end;
+  both catalogs are small operational tables. Old pods ignore the new
+  columns, so rollback is a code-only redeploy. **0041 → #477** builds on top
+  of it.
+  - **Post-deploy step:** after 0040 is applied, run
+    `python manage.py backfill_source_refresh_state` to fill NULL
+    `last_crawl_at` from each source's latest SUCCESS `CrawlRun` (never
+    PARTIAL). The command is chunked (500-row keyset batches by default,
+    `--batch-size` to override), idempotent, and safe to re-run from any
+    point — it only touches rows still NULL, so an interrupted run simply
+    continues on the next invocation. Use `--dry-run` to preview the row
+    counts first. Run it in a low-traffic window.

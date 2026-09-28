@@ -25,7 +25,7 @@ from crank.models import (
     PublicationEvent,
     UserPreference,
 )
-from crank.services import agent_runs, match_recompute
+from crank.services import agent_runs, match_recompute, source_freshness
 from crank.services.job_ingest import SKIP_OVERLAP, JobSourceIngestion
 from crank.services import publication
 from crank.services.job_pipeline import (
@@ -278,6 +278,42 @@ class JobPipelineServiceTests(TestCase):
                 run_job_pipeline(self.run)
 
         self.assertEqual(PublicationEvent.objects.count(), 0)
+
+    @override_settings(JOB_PIPELINE_DEADLINE_SECONDS=300, JOB_PIPELINE_MAX_SOURCES=2)
+    def test_exception_after_ingest_counts_attempt_once(self):
+        # Regression: an exception raised after _ingest_source has already
+        # returned (e.g. from record_outcome) must not increment ``attempts``
+        # a second time in the except block, or a single real attempt burns
+        # both max_sources slots and starves the next due source (review
+        # finding: job_pipeline.py ~474 double-counts attempts).
+        self.source("first")
+        self.source("second")
+        real_record_outcome = source_freshness.record_outcome
+        calls = {"count": 0}
+
+        def flaky_record_outcome(model, pk, outcome, *, now):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise RuntimeError("boom after ingest")
+            return real_record_outcome(model, pk, outcome, now=now)
+
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(JobIngestResult(ingested=1)),
+        ) as ingest_mock, patch(
+            "crank.services.job_pipeline._resolve_source_listings",
+            return_value=(1, 0),
+        ), patch(
+            "crank.services.job_pipeline.source_freshness.record_outcome",
+            side_effect=flaky_record_outcome,
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            counts = run_job_pipeline(self.run)
+
+        # Both sources were visited: the failure on the first source only
+        # consumed one of the two max_sources slots.
+        self.assertEqual(ingest_mock.call_count, 2)
+        self.assertEqual(counts["sources_failed"], 1)
+        self.assertEqual(counts["sources_succeeded"], 1)
 
     @override_settings(JOB_PIPELINE_DEADLINE_SECONDS=300)
     def test_source_publication_records_all_organizations_in_bounded_chunks(self):

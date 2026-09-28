@@ -5,51 +5,19 @@
 from django.db import migrations, models
 
 
-BACKFILL_CHUNK = 500
-
-
-def backfill_last_crawl_at(apps, schema_editor):
-    """Fill NULL ``last_crawl_at`` from the latest SUCCESS manual crawl only.
-
-    Chunked by primary key (keyset pagination, one aggregate query and at most
-    one update per row) so it never loads every pk or issues a query per
-    source. Resumable and idempotent: it only touches rows whose
-    ``last_crawl_at`` is still NULL, so a re-run after an interruption simply
-    continues.
-    """
-    CrawlRun = apps.get_model("crank", "CrawlRun")
-    for model_name, field in (("JobSourceCatalog", "job_source"), ("SourceCatalog", "source")):
-        Model = apps.get_model("crank", model_name)
-        last_pk = 0
-        while True:
-            chunk = list(
-                Model.objects.filter(last_crawl_at__isnull=True, pk__gt=last_pk)
-                .order_by("pk")
-                .values_list("pk", flat=True)[:BACKFILL_CHUNK]
-            )
-            if not chunk:
-                break
-            last_pk = chunk[-1]
-            latest = (
-                CrawlRun.objects.filter(
-                    **{f"{field}__in": chunk},
-                    outcome="success",
-                    finished_at__isnull=False,
-                )
-                .values(field)
-                .annotate(latest=models.Max("finished_at"))
-            )
-            for row in latest:
-                Model.objects.filter(pk=row[field], last_crawl_at__isnull=True).update(
-                    last_crawl_at=row["latest"]
-                )
-
-
 class Migration(migrations.Migration):
-    # MySQL DDL is non-transactional and auto-commits; keeping the migration
-    # non-atomic makes the schema steps and the chunked backfill independently
-    # resumable instead of pretending a single rollback boundary exists.
-    atomic = False
+    # Schema-only: additive AddField/AlterField operations, nothing else.
+    # The NULL last_crawl_at backfill lives in the
+    # backfill_source_refresh_state management command (run post-deploy,
+    # documented in docs/deployment-migrations.md and
+    # docs/runbook-initial-crawl.md), not here. Django only records a
+    # migration as applied after every one of its operations succeeds, and on
+    # MySQL each successful AddField auto-commits regardless of `atomic`; a
+    # RunPython backfill bundled into this migration could leave the columns
+    # in place with 0040 unapplied after an interruption, and a rerun of
+    # `migrate` would then fail on a duplicate column. Keeping 0040
+    # schema-only and the backfill in an idempotent, separately-invoked
+    # command avoids that trap entirely.
 
     dependencies = [
         ("crank", "0039_match_result_generation"),
@@ -86,5 +54,4 @@ class Migration(migrations.Migration):
             name="last_crawl_at",
             field=models.DateTimeField(blank=True, db_index=True, help_text="Last SUCCESSFUL fetch. Never advanced by partial or failed attempts.", null=True),
         ),
-        migrations.RunPython(backfill_last_crawl_at, migrations.RunPython.noop),
     ]

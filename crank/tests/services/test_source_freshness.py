@@ -2,14 +2,14 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 """Fair, bounded scheduling and success-only timestamps (issue #468)."""
 
-import importlib
 from datetime import timedelta
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import yaml
-from django.apps import apps as django_apps
+from django.core.management import call_command
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -322,19 +322,29 @@ class JobPipelineFreshnessTests(TestCase):
         self.assertLessEqual(set(COUNT_KEYS) - {"deadline_reached"}, set(event_attributes("matching_batch", payload)))
 
     def test_repeated_lock_skip_does_not_consume_the_budget(self):
-        first, second = job_sources(2)
-        for i in range(2):
+        # Regression: the lock-skipped source must move aside on every run,
+        # not just the first, so it never starves the other due sources
+        # (review finding: the old unconditional ``break`` only exercised one
+        # pass). ``locked`` is always contended and never actually attempted;
+        # ``second`` and ``third`` each become due, get ingested, and then
+        # fall out of the due set (fresh), so each pass has to reach a new
+        # candidate past the lock skip.
+        locked, second, third = job_sources(3)
+        for i, candidate in enumerate((second, third)):
             counts, _ = self.go(
                 [None, JobIngestResult()], JOB_PIPELINE_MAX_SOURCES=1,
                 now=NOW + timedelta(minutes=i * 10),
             )
             self.assertEqual((counts["sources_skipped"], counts["sources_succeeded"]), (1, 1))
             self.assertEqual(counts["sources_total"], 2)
-            break
-        first.refresh_from_db()
+            candidate.refresh_from_db()
+            self.assertIsNotNone(candidate.last_crawl_at)
+        locked.refresh_from_db()
         second.refresh_from_db()
-        self.assertEqual(first.last_attempt_at, None)
+        third.refresh_from_db()
+        self.assertEqual(locked.last_attempt_at, None)
         self.assertIsNotNone(second.last_crawl_at)
+        self.assertIsNotNone(third.last_crawl_at)
 
     def test_deferred_includes_unvisited_selection_after_deadline(self):
         job_sources(3)
@@ -437,7 +447,10 @@ class InventoryAgeTests(TestCase):
 
 class MigrationAndManifestTests(TestCase):
     def test_backfill_uses_latest_success_only_and_is_idempotent(self):
-        migration = importlib.import_module("crank.migrations.0040_source_refresh_state")
+        from crank.management.commands.backfill_source_refresh_state import (
+            backfill_last_crawl_at,
+        )
+
         (job,) = job_sources(1)
         (org,) = org_sources(1)
         keep = job_sources(1, start=10)[0]
@@ -451,8 +464,11 @@ class MigrationAndManifestTests(TestCase):
                     started_at=NOW - timedelta(hours=hours), finished_at=NOW - timedelta(hours=hours),
                     outcome=outcome, **{field: target},
                 )
-        migration.backfill_last_crawl_at(django_apps, None)
-        migration.backfill_last_crawl_at(django_apps, None)
+        # Simulates an interrupted-then-rerun command: calling it twice must
+        # be safe and land on the same result (review finding: 0040's
+        # backfill must be idempotent and resumable outside the migration).
+        backfill_last_crawl_at()
+        backfill_last_crawl_at()
         for row in (job, org, keep):
             row.refresh_from_db()
         self.assertEqual(job.last_crawl_at, NOW - timedelta(hours=5))
@@ -460,7 +476,10 @@ class MigrationAndManifestTests(TestCase):
         self.assertEqual(keep.last_crawl_at, NOW)
 
     def test_backfill_spans_multiple_chunks(self):
-        migration = importlib.import_module("crank.migrations.0040_source_refresh_state")
+        from crank.management.commands.backfill_source_refresh_state import (
+            backfill_last_crawl_at,
+        )
+
         targets = job_sources(3)
         agent_run = AgentRun.objects.create(run_type=AgentRun.RunType.CRAWL, status=AgentRun.Status.SUCCEEDED)
         for target in targets[::2]:
@@ -468,10 +487,42 @@ class MigrationAndManifestTests(TestCase):
                 source_type="job", source_key=f"k{target.pk}", agent_run=agent_run,
                 started_at=NOW, finished_at=NOW, outcome="success", job_source=target,
             )
-        with patch.object(migration, "BACKFILL_CHUNK", 1):
-            migration.backfill_last_crawl_at(django_apps, None)
+        backfill_last_crawl_at(batch_size=1)
         stamps = [t.__class__.objects.get(pk=t.pk).last_crawl_at for t in targets]
         self.assertEqual(stamps, [NOW, None, NOW])
+
+    def test_backfill_dry_run_reports_without_writing(self):
+        from crank.management.commands.backfill_source_refresh_state import (
+            backfill_last_crawl_at,
+        )
+
+        (job,) = job_sources(1)
+        agent_run = AgentRun.objects.create(run_type=AgentRun.RunType.CRAWL, status=AgentRun.Status.SUCCEEDED)
+        CrawlRun.objects.create(
+            source_type="job", source_key="k", agent_run=agent_run,
+            started_at=NOW, finished_at=NOW, outcome="success", job_source=job,
+        )
+        updated = backfill_last_crawl_at(dry_run=True)
+        job.refresh_from_db()
+        self.assertIsNone(job.last_crawl_at)
+        self.assertEqual(updated["crank.JobSourceCatalog"], 1)
+
+    def test_backfill_management_command_is_idempotent_across_runs(self):
+        # Simulates the deployment runbook: run the command, then run it
+        # again as if a rerun after an interruption (review finding: the
+        # backfill must be a resumable post-deploy step, not part of 0040).
+        (job,) = job_sources(1)
+        agent_run = AgentRun.objects.create(run_type=AgentRun.RunType.CRAWL, status=AgentRun.Status.SUCCEEDED)
+        CrawlRun.objects.create(
+            source_type="job", source_key="k", agent_run=agent_run,
+            started_at=NOW, finished_at=NOW, outcome="success", job_source=job,
+        )
+        out = StringIO()
+        call_command("backfill_source_refresh_state", "--batch-size=1", stdout=out)
+        call_command("backfill_source_refresh_state", "--batch-size=1", stdout=out)
+        job.refresh_from_db()
+        self.assertEqual(job.last_crawl_at, NOW)
+        self.assertIn("done", out.getvalue())
 
     def test_emitted_count_keys_match_allowlist_and_manifest(self):
         from crank.services.monitoring import _SAFE_KEYS

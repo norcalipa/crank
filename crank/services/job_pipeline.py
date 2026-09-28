@@ -394,6 +394,7 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
             .values_list("organization_id", flat=True)
             .distinct()
         )
+        attempt_counted = False
         try:
             # One transaction per source stage: the accepted writes and their
             # publication events commit together, so an outbox insert failure
@@ -408,6 +409,7 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                     counts["sources_skipped"] += 1
                     continue
                 attempts += 1
+                attempt_counted = True
                 if _proven_complete_snapshot(result):
                     expired_count, deleted_count = _retention_sweep(
                         source, deletion_candidates=deletion_candidates
@@ -471,7 +473,8 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                     },
                 )
         except Exception as exc:  # noqa: BLE001 - isolate source failures
-            attempts += 1
+            if not attempt_counted:
+                attempts += 1
             counts["sources_failed"] += 1
             # The stage transaction rolled back; record the failed attempt
             # outside it so backoff and fairness still see it.

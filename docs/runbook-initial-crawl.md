@@ -37,8 +37,11 @@ makes at most `JOB_PIPELINE_MAX_SOURCES` ingest attempts and fetches at most
 (10 × 500 = 5,000 listings), and Firecrawl spend is bounded by
 `JOB_PIPELINE_MAX_SOURCES × FIRECRAWL_CREDIT_BUDGET` (10 × 10 = 100 credits).
 Lower `JOB_PIPELINE_MAX_LISTINGS_PER_USER` and `FIRECRAWL_CREDIT_BUDGET` for a
-cheaper smoke test. The `CRAWL_MAX_*` settings bound only `schedule_crawls`
-(organization dispatch), not this procedure.
+cheaper smoke test. This procedure does not go through the `CRAWL_MAX_*`
+settings: `schedule_crawls` (organization dispatch) reads `CRAWL_MAX_SOURCES`
+and `CRAWL_DEADLINE_SECONDS`; the manual job-crawl path (`trigger_crawl`)
+reads `CRAWL_MAX_PAGES` and `CRAWL_MAX_LISTINGS`; the organization crawler
+uses the `FIRECRAWL_*` limits above.
 
 ## Step 1: seed job sources
 

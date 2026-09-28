@@ -52,6 +52,13 @@ source counts as the cap). Job-pipeline equivalents: `sources_eligible`,
 TTL, last success, last attempt, failures and next eligible time for both
 phases. Both CronJobs stay `suspend: true`.
 
+**Post-deploy step (issue #468):** after migration `0040_source_refresh_state`
+is applied, run `python manage.py backfill_source_refresh_state` (see
+`docs/deployment-migrations.md`) to fill NULL `last_crawl_at` from each
+source's latest SUCCESS `CrawlRun`. It is chunked, idempotent, and safe to
+re-run; until it completes, sources with a NULL `last_crawl_at` sort as
+"never crawled" (maximum age) in the due ordering above.
+
 ## Single ingestion owner (issue #462)
 
 **Job-source ingestion has one owner: the job pipeline**
