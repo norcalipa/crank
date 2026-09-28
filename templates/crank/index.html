@@ -7,65 +7,48 @@
 {% block content %}
     {% if algorithm %}
         <div class="container homepage-container">
-            <div class="row g-4 align-items-start">
-                <div class="col-12 col-md-4">
-                    <details class="card scoring-panel" open>
-                        <summary class="card-header scoring-summary">
-                            <span class="h3 mb-0">Scoring Algorithm</span>
-                            <span class="scoring-summary-hint">Show explanation</span>
-                        </summary>
-                        <div class="card-body scoring-panel-content">
-                            <h3 class="card-title scoring-desktop-title"><label for="algorithm_id">Scoring Algorithm:</label></h3>
-                            <form method="get">
-                                <label class="visually-hidden" for="algorithm_id">Scoring Algorithm</label>
-                                <select class="form-select form-select-lg mb-3 border-primary" id="algorithm_id"
-                                        onchange="submitForm()">
-                                    {% for algo in all_algorithms %}
-                                        <option value="{{ algo.id }}"
-                                                {% if algo.id == algorithm.id %}selected{% endif %}>
-                                            {{ algo.name }}
-                                        </option>
-                                    {% endfor %}
-                                </select>
-                                <div class="card-text scoring-description">
-                                    {{ algorithm.html_description_content |safe }}
-                                </div>
-                            </form>
-                        </div>
-                    </details>
-                </div>
-                <div class="col-12 col-md-8">
-                    <div class="align-content-end">
-                        {% comment %}
-                        The full-page-cached shell renders auth-neutral for
-                        every account (issue #470); app-nav.js hydrates these
-                        flags per request from the uncached whoami endpoint.
-                        {% endcomment %}
-                        <div id="organization-list"
-                             data-authenticated="{% if auth_neutral_shell %}false{% else %}{{ user.is_authenticated|yesno:'true,false' }}{% endif %}"></div>
-                        {{ top_organization_list|json_script:"organization-data" }}
-                        {% comment %}
-                        Server-built, server-validated sign-in URL for the
-                        company details dialog (issue #465 AC-7). Account-neutral,
-                        so it is safe in the shared cached shell; the client only
-                        substitutes the organization id it already holds.
-                        {% endcomment %}
-                        <span id="organization-list-config"
-                              data-can-suggest-company="{% if auth_neutral_shell %}false{% else %}{{ user.is_authenticated|yesno:'true,false' }}{% endif %}"
-                              data-sign-in-url-template="{{ company_sign_in_url_template }}"></span>
+            <h1 class="h4 mb-1">Company rankings</h1>
+            <p class="text-muted mb-3">Compare companies by what matters to you, then open one to see the evidence.</p>
+            <details class="how-ranking-works mb-3" data-testid="how-ranking-works">
+                <summary class="how-ranking-works-summary">How ranking works</summary>
+                <div class="how-ranking-works-content">
+                    <h2 class="h6">{{ algorithm.name }}</h2>
+                    <div class="scoring-description">
+                        {{ algorithm.html_description_content |safe }}
                     </div>
+                    <dl class="ranking-definitions mb-0" data-testid="ranking-definitions">
+                        <dt>Company score</dt>
+                        <dd>The preset-weighted average of the rating dimensions. It is the same for everyone.</dd>
+                        <dt>Personal fit</dt>
+                        <dd>Shown only in Job Search matches. It is computed from your saved priorities and is never mixed into the company score.</dd>
+                        <dt>Profile completeness</dt>
+                        <dd>How many rating dimensions have at least one score for the company.</dd>
+                    </dl>
                 </div>
-            </div>
+            </details>
+            {{ ranking_presets|json_script:"ranking-presets" }}
+            {% comment %}
+            The full-page-cached shell renders auth-neutral for
+            every account (issue #470); app-nav.js hydrates these
+            flags per request from the uncached whoami endpoint.
+            {% endcomment %}
+            <div id="organization-list"
+                 data-authenticated="{% if auth_neutral_shell %}false{% else %}{{ user.is_authenticated|yesno:'true,false' }}{% endif %}"></div>
+            {{ top_organization_list|json_script:"organization-data" }}
+            {% comment %}
+            Server-built, server-validated sign-in URL for the
+            company details dialog (issue #465 AC-7). Account-neutral,
+            so it is safe in the shared cached shell; the client only
+            substitutes the organization id it already holds.
+            {% endcomment %}
+            <span id="organization-list-config"
+                  data-can-suggest-company="{% if auth_neutral_shell %}false{% else %}{{ user.is_authenticated|yesno:'true,false' }}{% endif %}"
+                  data-current-algorithm-id="{{ current_algorithm_id|default_if_none:'' }}"
+                  data-algorithm-url-template="/algo/__ALGORITHM_ID__/"
+                  data-sign-in-url-template="{{ company_sign_in_url_template }}"></span>
         </div>
     {% else %}
         <p class="container">No organizations are available or the Score Algorithm you specified doesn't exist.</p>
     {% endif %}
 
-    <script>
-        function submitForm() {
-            var algorithmId = document.getElementById('algorithm_id').value;
-            var algorithmUrl = "{% url 'index' 0 %}".replace('0', algorithmId);
-            window.location.href = algorithmUrl + window.location.search;
-        }
-    </script>
 {% endblock %}

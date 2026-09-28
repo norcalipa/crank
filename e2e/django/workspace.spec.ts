@@ -84,8 +84,8 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await expect(page.locator('[data-testid="assistant-panel"]')).not.toHaveAttribute('aria-modal');
         // Non-modal: a background control still takes focus and activates.
         // The rankings switch table→cards on the results container width
-        // once the drawer narrows it (#479 host reflow), so target whichever
-        // layout is visible.
+        // (#478) once the drawer narrows it (#479 host reflow), so target
+        // whichever layout is visible.
         const firstRow = page.locator('.organization-row:visible, .organization-card:visible').first();
         await firstRow.focus();
         await expect(firstRow).toBeFocused();

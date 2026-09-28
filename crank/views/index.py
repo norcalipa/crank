@@ -142,6 +142,13 @@ class IndexView(generic.ListView):
         context = super().get_context_data(**kwargs)
         context['algorithm'] = self.get_algorithm_details()
         context['all_algorithms'] = self.algorithms.filter(status=1)
+        # Non-user-specific preset list for the rankings toolbar select; safe
+        # in the shared cached shell (issue #478).
+        context['ranking_presets'] = [
+            {'id': algo.id, 'name': algo.name}
+            for algo in context['all_algorithms'].order_by('id')
+        ]
+        context['current_algorithm_id'] = self.algorithm.id if self.algorithm else None
         context['form'] = OrganizationFilterForm(
             initial={'accelerated_vesting': self.request.session.get('accelerated_vesting')}, request=self.request)
 
