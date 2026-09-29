@@ -175,7 +175,15 @@ def organization_outcome(result: Any) -> Outcome:
         errors = max(0, int(getattr(result, "errors", 0)))
     except (TypeError, ValueError):
         errors = 1
-    return Outcome.SUCCESS if errors == 0 else Outcome.PARTIAL
+    if errors == 0:
+        return Outcome.SUCCESS
+    try:
+        completed = int(getattr(result, "observations", 0) or 0) + int(
+            getattr(result, "items_seen", 0) or 0
+        )
+    except (TypeError, ValueError):
+        completed = 0
+    return Outcome.PARTIAL if completed > 0 else Outcome.FAILED
 
 
 def job_outcome(result: Any) -> Outcome:

@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-    # Exactly one schema-changing statement on MySQL (ADD COLUMN sourcecatalog.last_attempt_at; the help_text-only AlterField emits no DDL); the
+    # Exactly one schema-changing statement on MySQL (ADD COLUMN jobsourcecatalog.consecutive_failures); the
     # migration recorder commits after it, so an interrupted `migrate` leaves
     # only whole, recorded steps and a rerun resumes at the next migration.
     # MySQL DDL auto-commits, so a single migration with several statements
@@ -16,18 +16,13 @@ class Migration(migrations.Migration):
     # command (post-deploy), not in a migration.
 
     dependencies = [
-        ("crank", "0039_match_result_generation"),
+        ("crank", "0044_jobsourcecatalog_last_attempt_index"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name="sourcecatalog",
-            name="last_attempt_at",
-            field=models.DateTimeField(blank=True, help_text="Last scheduled or manual attempt of any outcome; orders dispatch and retry backoff.", null=True),
-        ),
-        migrations.AlterField(
-            model_name="sourcecatalog",
-            name="last_crawl_at",
-            field=models.DateTimeField(blank=True, db_index=True, help_text="Last SUCCESSFUL fetch. Never advanced by partial or failed attempts.", null=True),
+            model_name="jobsourcecatalog",
+            name="consecutive_failures",
+            field=models.PositiveIntegerField(default=0, help_text="Attempts since the last success that did not fully succeed."),
         ),
     ]

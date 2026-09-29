@@ -113,8 +113,20 @@ class PolicyTests(TestCase):
 
     def test_outcome_mapping(self):
         self.assertEqual(sf.organization_outcome(SimpleNamespace(errors=0)), sf.Outcome.SUCCESS)
-        self.assertEqual(sf.organization_outcome(SimpleNamespace(errors=2)), sf.Outcome.PARTIAL)
-        self.assertEqual(sf.organization_outcome(SimpleNamespace(errors="x")), sf.Outcome.PARTIAL)
+        self.assertEqual(
+            sf.organization_outcome(SimpleNamespace(errors=2, observations=3)), sf.Outcome.PARTIAL
+        )
+        self.assertEqual(
+            sf.organization_outcome(SimpleNamespace(errors=1, items_seen=2)), sf.Outcome.PARTIAL
+        )
+        self.assertEqual(sf.organization_outcome(SimpleNamespace(errors=2)), sf.Outcome.FAILED)
+        self.assertEqual(
+            sf.organization_outcome(SimpleNamespace(errors=1, observations=0)), sf.Outcome.FAILED
+        )
+        self.assertEqual(sf.organization_outcome(SimpleNamespace(errors="x")), sf.Outcome.FAILED)
+        self.assertEqual(
+            sf.organization_outcome(SimpleNamespace(errors=1, observations="x")), sf.Outcome.FAILED
+        )
         self.assertEqual(sf.job_outcome(JobIngestResult()), sf.Outcome.SUCCESS)
         self.assertEqual(sf.job_outcome(JobIngestResult(errors=1)), sf.Outcome.PARTIAL)
         self.assertEqual(
@@ -204,7 +216,7 @@ class OrganizationPlannerTests(TestCase):
         a, b, c = org_sources(3)
         b.enabled = False
         b.save()
-        results = {a.pk: SimpleNamespace(errors=2)}
+        results = {a.pk: SimpleNamespace(errors=2, observations=1)}
         counts = plan_crawls(
             phase="organization", max_sources=1, now=NOW,
             dispatchers={"organization": lambda s, n: results[s.pk]},
@@ -223,6 +235,21 @@ class OrganizationPlannerTests(TestCase):
         )
         self.assertEqual(again["deferred_backoff"], 1)
         self.assertEqual(again["scheduled"], 1)
+
+    def test_provider_exception_zero_work_is_failed_not_partial(self):
+        from crank.services.company_crawler import CompanyCrawlResult
+
+        (a,) = org_sources(1)
+        with patch(
+            "crank.services.crawl_scheduler.crawl_company_profile",
+            return_value=CompanyCrawlResult(errors=1, error_reasons=("provider_error",)),
+        ):
+            counts = plan_crawls(phase="organization", now=NOW)
+        a.refresh_from_db()
+        self.assertEqual((counts["failed"], counts["partial"], counts["succeeded"]), (1, 0, 0))
+        self.assertEqual(a.consecutive_failures, 1)
+        self.assertEqual(a.last_attempt_at, NOW)
+        self.assertIsNone(a.last_crawl_at)
 
     def test_deadline_defers_without_touching_source(self):
         (a,) = org_sources(1)
@@ -465,8 +492,8 @@ class MigrationAndManifestTests(TestCase):
                     outcome=outcome, **{field: target},
                 )
         # Simulates an interrupted-then-rerun command: calling it twice must
-        # be safe and land on the same result (review finding: 0040's
-        # backfill must be idempotent and resumable outside the migration).
+        # be safe and land on the same result (the backfill must be idempotent
+        # and resumable outside the migrations).
         backfill_last_crawl_at()
         backfill_last_crawl_at()
         for row in (job, org, keep):
@@ -507,10 +534,51 @@ class MigrationAndManifestTests(TestCase):
         self.assertIsNone(job.last_crawl_at)
         self.assertEqual(updated["crank.JobSourceCatalog"], 1)
 
+    def test_backfill_batch_size_rejects_non_positive_and_invalid(self):
+        from django.core.management.base import CommandError
+
+        for bad in ("0", "-1", "abc"):
+            with self.subTest(batch_size=bad), self.assertRaises(CommandError):
+                call_command("backfill_source_refresh_state", f"--batch-size={bad}")
+
+    def test_backfill_command_reports_dry_run(self):
+        (job,) = job_sources(1)
+        agent_run = AgentRun.objects.create(run_type=AgentRun.RunType.CRAWL, status=AgentRun.Status.SUCCEEDED)
+        CrawlRun.objects.create(
+            source_type="job", source_key="k", agent_run=agent_run,
+            started_at=NOW, finished_at=NOW, outcome="success", job_source=job,
+        )
+        out = StringIO()
+        call_command("backfill_source_refresh_state", "--dry-run", stdout=out)
+        job.refresh_from_db()
+        self.assertIsNone(job.last_crawl_at)
+        self.assertIn("[dry-run] would update 1 crank.JobSourceCatalog rows", out.getvalue())
+
+    def test_backfill_issues_no_per_source_queries(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from crank.management.commands.backfill_source_refresh_state import (
+            backfill_last_crawl_at,
+        )
+
+        targets = job_sources(6)
+        agent_run = AgentRun.objects.create(run_type=AgentRun.RunType.CRAWL, status=AgentRun.Status.SUCCEEDED)
+        for target in targets:
+            CrawlRun.objects.create(
+                source_type="job", source_key=f"k{target.pk}", agent_run=agent_run,
+                started_at=NOW, finished_at=NOW, outcome="success", job_source=target,
+            )
+        with CaptureQueriesContext(connection) as ctx:
+            updated = backfill_last_crawl_at(batch_size=6)
+        self.assertEqual(updated["crank.JobSourceCatalog"], 6)
+        updates = [q for q in ctx.captured_queries if q["sql"].startswith("UPDATE")]
+        self.assertEqual(len(updates), 1)
+
     def test_backfill_management_command_is_idempotent_across_runs(self):
         # Simulates the deployment runbook: run the command, then run it
         # again as if a rerun after an interruption (review finding: the
-        # backfill must be a resumable post-deploy step, not part of 0040).
+        # backfill must be a resumable post-deploy step, not part of a migration).
         (job,) = job_sources(1)
         agent_run = AgentRun.objects.create(run_type=AgentRun.RunType.CRAWL, status=AgentRun.Status.SUCCEEDED)
         CrawlRun.objects.create(
@@ -543,3 +611,68 @@ class MigrationAndManifestTests(TestCase):
             documents = yaml.safe_load_all((root / name).read_text())
             cron = next(d for d in documents if d and d.get("kind") == "CronJob")
             self.assertIs(cron["spec"]["suspend"], True)
+
+
+class SourceRefreshMigrationShapeTests(TestCase):
+    """Each #468 migration holds exactly one schema-changing operation.
+
+    MySQL DDL auto-commits while Django records a migration only after all
+    of its operations succeed, so a migration with two DDL statements can be
+    interrupted between them and then fail on rerun with a duplicate column.
+    """
+
+    NAMES = (
+        "0040_source_refresh_state",
+        "0041_sourcecatalog_last_attempt_index",
+        "0042_sourcecatalog_consecutive_failures",
+        "0043_jobsourcecatalog_last_attempt_at",
+        "0044_jobsourcecatalog_last_attempt_index",
+        "0045_jobsourcecatalog_consecutive_failures",
+    )
+
+    def _load(self):
+        from django.db import connection
+        from django.db.migrations.loader import MigrationLoader
+
+        return MigrationLoader(connection, ignore_no_migrations=True), connection
+
+    def test_each_migration_has_exactly_one_schema_altering_operation(self):
+        from django.db.migrations import AddField, AlterField
+
+        loader, connection = self._load()
+        for name in self.NAMES:
+            migration = loader.disk_migrations[("crank", name)]
+            state = loader.project_state(("crank", migration.dependencies[0][1]))
+            altering = 0
+            editor = connection.schema_editor()
+            for op in migration.operations:
+                self.assertIsInstance(op, (AddField, AlterField), name)
+                if isinstance(op, AddField):
+                    field = op.field
+                    self.assertFalse(
+                        field.db_index or field.unique or field.remote_field,
+                        f"{name}: AddField must not queue extra index/FK statements",
+                    )
+                    altering += 1
+                new_state = state.clone()
+                op.state_forwards("crank", new_state)
+                if isinstance(op, AlterField):
+                    old_field = state.models["crank", op.model_name_lower].fields[op.name]
+                    new_field = new_state.models["crank", op.model_name_lower].fields[op.name]
+                    old_field = old_field.clone()
+                    new_field = new_field.clone()
+                    for f in (old_field, new_field):
+                        f.set_attributes_from_name(op.name)
+                    altering += int(editor._field_should_be_altered(old_field, new_field))
+                state = new_state
+            self.assertEqual(altering, 1, name)
+
+    def test_migrations_are_chained_and_data_free(self):
+        loader, _ = self._load()
+        for previous, name in zip(("0039_match_result_generation",) + self.NAMES, self.NAMES):
+            migration = loader.disk_migrations[("crank", name)]
+            self.assertEqual(migration.dependencies, [("crank", previous)])
+        self.assertEqual(
+            [k for k in loader.graph.leaf_nodes() if k[0] == "crank"],
+            [("crank", self.NAMES[-1])],
+        )

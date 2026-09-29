@@ -295,28 +295,51 @@ from `0029_merge_20260815_1645` to the then-latest landed head (likely
 numbered merge migration if a head split remains, keeping
 `makemigrations --check --dry-run` clean on the merged result.
 
-## Allocation: 0040 (issue #468)
+## Allocation: 0040-0045 (issue #468)
 
-- **0040 → #468** (`0040_source_refresh_state`, parent
-  `0039_match_result_generation`): schema-only — additive `last_attempt_at`
-  and `consecutive_failures` on `SourceCatalog` and `JobSourceCatalog`, plus
-  a help-text-only `AlterField` on `last_crawl_at`. No constraints or partial
-  indexes, and no data migration: Django only records a migration as applied
-  after every one of its operations succeeds, and on MySQL each successful
-  `AddField` auto-commits regardless of `atomic`, so a `RunPython` backfill
-  bundled into 0040 could leave the new columns in place with 0040 unapplied
-  after an interruption, and a rerun of `migrate` would then fail on a
-  duplicate column. Expected MySQL behavior: `AddField` with a constant
-  default and nullable indexed columns run as online `ALGORITHM=INPLACE` (or
-  INSTANT) DDL on InnoDB, taking only a brief metadata lock at start and end;
-  both catalogs are small operational tables. Old pods ignore the new
-  columns, so rollback is a code-only redeploy. **0041 → #477** builds on top
-  of it.
-  - **Post-deploy step:** after 0040 is applied, run
+- **0040-0045 → #468**, parent `0039_match_result_generation`. Additive
+  `last_attempt_at` (indexed, nullable) and `consecutive_failures` (default 0)
+  on `SourceCatalog` and `JobSourceCatalog`, plus help-text-only
+  `AlterField`s on `last_crawl_at` (no DDL). **Every migration holds exactly
+  one schema-changing statement**, enforced by
+  `SourceRefreshMigrationShapeTests` in
+  `crank/tests/services/test_source_freshness.py`:
+
+  | Migration | Statement |
+  | --- | --- |
+  | `0040_source_refresh_state` | `ADD COLUMN sourcecatalog.last_attempt_at` |
+  | `0041_sourcecatalog_last_attempt_index` | `CREATE INDEX` on it |
+  | `0042_sourcecatalog_consecutive_failures` | `ADD COLUMN sourcecatalog.consecutive_failures` |
+  | `0043_jobsourcecatalog_last_attempt_at` | `ADD COLUMN jobsourcecatalog.last_attempt_at` |
+  | `0044_jobsourcecatalog_last_attempt_index` | `CREATE INDEX` on it |
+  | `0045_jobsourcecatalog_consecutive_failures` | `ADD COLUMN jobsourcecatalog.consecutive_failures` |
+
+  Why the split: MySQL DDL auto-commits, while Django records a migration
+  only after all of its operations (and deferred index SQL) succeed. A
+  migration with several statements that is interrupted midway leaves earlier
+  columns in place but unrecorded, and the next `migrate` fails on a
+  duplicate column. With one statement per migration, an interruption leaves
+  only whole, recorded steps and `migrate` resumes at the next unapplied
+  migration. The one residual case is a single statement that is killed
+  mid-flight: InnoDB rolls back an unfinished online `ALTER`, so the step is
+  simply unapplied and safe to retry. Index creation is its own migration
+  because `AddField` with `db_index=True` queues a second, deferred
+  `CREATE INDEX` statement. Expected MySQL behavior: nullable and
+  constant-default `AddField` and `CREATE INDEX` run as online
+  `ALGORITHM=INPLACE` (or INSTANT) DDL on InnoDB, taking only a brief
+  metadata lock at start and end; both catalogs are small operational tables.
+  Old pods ignore the new columns, so rollback is a code-only redeploy. These
+  are `sqlmigrate`-verified on SQLite only; there is no MySQL instance in CI.
+  - **Required post-deploy step:** after 0045 is applied, run
+    `python manage.py backfill_source_refresh_state --dry-run` and then
     `python manage.py backfill_source_refresh_state` to fill NULL
     `last_crawl_at` from each source's latest SUCCESS `CrawlRun` (never
-    PARTIAL). The command is chunked (500-row keyset batches by default,
-    `--batch-size` to override), idempotent, and safe to re-run from any
-    point — it only touches rows still NULL, so an interrupted run simply
-    continues on the next invocation. Use `--dry-run` to preview the row
-    counts first. Run it in a low-traffic window.
+    PARTIAL). The backfill is deliberately not in a migration (a data step
+    bundled with DDL reintroduces the interrupted-rerun problem above). It is
+    chunked (500-row keyset batches by default; `--batch-size` must be >= 1),
+    uses one set-based `UPDATE` per chunk with no per-source queries, is
+    idempotent, and is safe to re-run from any point: it only touches rows
+    still NULL. **Verify** by re-running with `--dry-run` (it must report `0`
+    rows for both catalogs); until it completes, sources with a NULL
+    `last_crawl_at` sort as "never crawled" in the due ordering. A release is
+    not complete until this step has run and verified.

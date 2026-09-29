@@ -2,28 +2,26 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 """Post-deploy backfill for NULL ``last_crawl_at`` (issue #468).
 
-Migration ``0040_source_refresh_state`` is schema-only: it adds the
-``last_attempt_at``/``consecutive_failures`` columns and tightens the
-``last_crawl_at`` help text, and nothing else. Backfilling NULL
-``last_crawl_at`` from each source's latest SUCCESS ``CrawlRun`` is done here
-instead of in a migration ``RunPython`` step, so it can be re-run after a
-partial failure without Django's "migration recorded only after every
-operation succeeds" trap: on MySQL each schema operation auto-commits, so if
-a data migration failed partway the migration would stay unapplied while the
-columns already existed, and a rerun of ``migrate`` would fail on a duplicate
-column. This command has no such constraint — run it again, from any point,
-as many times as needed.
+The schema behind this command is split across migrations 0040-0045
+(``0040_source_refresh_state`` .. ``0045_jobsourcecatalog_consecutive_failures``),
+each holding exactly one schema-changing statement. None of them backfills
+data: filling NULL ``last_crawl_at`` from each source's latest SUCCESS
+``CrawlRun`` is done here so it can be re-run from any point after an
+interruption, independent of Django's migration recorder.
 
-Chunked by primary key (keyset pagination, one aggregate query and at most
-one update per chunk) so it never loads every pk or issues a query per
-source. Idempotent: it only touches rows whose ``last_crawl_at`` is still
-NULL, so a re-run after an interruption simply continues where it left off.
+Chunked by primary key (keyset pagination). Per chunk it issues one pk query
+and one set-based ``UPDATE`` (with a correlated latest-success subquery);
+dry-run issues one ``COUNT`` per chunk instead. There is no per-source query.
+Idempotent: it only touches rows whose ``last_crawl_at`` is still NULL, so a
+re-run after an interruption simply continues where it left off.
 
-Run once, in a low-traffic window, after 0040 has been applied:
+Run once, in a low-traffic window, after migration 0045 has been applied:
 
     python manage.py backfill_source_refresh_state --dry-run
     python manage.py backfill_source_refresh_state
 """
+
+import argparse
 
 from django.core.management.base import BaseCommand
 from django.db import models
@@ -31,6 +29,17 @@ from django.db import models
 from crank.models import CrawlRun, JobSourceCatalog, SourceCatalog
 
 DEFAULT_BATCH_SIZE = 500
+
+
+def _positive_int(value):
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"invalid integer value: {value!r}")
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {number}")
+    return number
+
 
 _MODELS = (
     (JobSourceCatalog, "job_source"),
@@ -57,24 +66,22 @@ def backfill_last_crawl_at(*, batch_size=DEFAULT_BATCH_SIZE, dry_run=False):
             if not chunk:
                 break
             last_pk = chunk[-1]
-            latest = (
+            latest_success = (
                 CrawlRun.objects.filter(
-                    **{f"{field}__in": chunk},
+                    **{field: models.OuterRef("pk")},
                     outcome="success",
                     finished_at__isnull=False,
                 )
-                .values(field)
-                .annotate(latest=models.Max("finished_at"))
+                .order_by("-finished_at")
+                .values("finished_at")[:1]
             )
-            for row in latest:
-                if dry_run:
-                    count += Model.objects.filter(
-                        pk=row[field], last_crawl_at__isnull=True
-                    ).count()
-                else:
-                    count += Model.objects.filter(
-                        pk=row[field], last_crawl_at__isnull=True
-                    ).update(last_crawl_at=row["latest"])
+            rows = Model.objects.filter(
+                pk__in=chunk, last_crawl_at__isnull=True
+            ).filter(models.Exists(latest_success))
+            if dry_run:
+                count += rows.count()
+            else:
+                count += rows.update(last_crawl_at=models.Subquery(latest_success))
         updated[Model._meta.label] = count
     return updated
 
@@ -82,14 +89,13 @@ def backfill_last_crawl_at(*, batch_size=DEFAULT_BATCH_SIZE, dry_run=False):
 class Command(BaseCommand):
     help = (
         "Backfill NULL last_crawl_at from each source's latest SUCCESS "
-        "CrawlRun (post-deploy step for migration 0040_source_refresh_state, "
-        "issue #468). Idempotent and safe to re-run."
+        "CrawlRun (post-deploy step after migration 0045, issue #468). Idempotent and safe to re-run."
     )
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--batch-size",
-            type=int,
+            type=_positive_int,
             default=DEFAULT_BATCH_SIZE,
             help=f"Rows per keyset chunk (default: {DEFAULT_BATCH_SIZE}).",
         )
