@@ -2624,4 +2624,3 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 };
 
 export default JobSearchChat;
-
