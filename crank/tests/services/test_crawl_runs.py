@@ -287,6 +287,53 @@ class CrawlRunTests(TestCase):
         self.assertNotIn("response body", failed.error_summary)
         self.assertEqual(failed.agent_run.status, AgentRun.Status.FAILED)
 
+    def _assert_scheduling_updated_once_after_late_failure(self, target, attr, outcome_kind, autospec=False):
+        """A raise after record_outcome must not record a second FAILED attempt."""
+        before = timezone.now()
+        SourceCatalog.objects.filter(pk=self.source.pk).update(consecutive_failures=3)
+        original = getattr(target, attr)
+        calls = {"n": 0}
+
+        def raise_once(*args, **kwargs):
+            is_completion = attr != "record" or kwargs.get("action") == "crawl_completed" or kwargs.get("action") == "crawl_failed"
+            if is_completion:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise RuntimeError("late failure")
+            return original(*args, **kwargs)
+
+        errors = 0 if outcome_kind == "success" else 1
+        result = type("Result", (), {
+            "observations": 1, "errors": errors, "error_reasons": ("SchemaDriftError (rejected)",) if errors else (), "total": 1,
+        })()
+        with patch("crank.services.crawl_runs._execute", return_value=result), patch.object(
+            target, attr, side_effect=raise_once, autospec=autospec
+        ):
+            run = trigger_crawl(source_key="rating.v1", source_type="organization")
+        self.assertGreaterEqual(calls["n"], 2)
+        expected_status = AgentRun.Status.SUCCEEDED if attr == "record" else AgentRun.Status.FAILED
+        self.assertEqual(run.agent_run.status, expected_status)
+        self.source.refresh_from_db()
+        self.assertGreaterEqual(self.source.last_attempt_at, before)
+        if outcome_kind == "success":
+            self.assertEqual(self.source.consecutive_failures, 0)
+            self.assertGreaterEqual(self.source.last_crawl_at, before)
+        else:
+            self.assertEqual(self.source.consecutive_failures, 4)
+            self.assertIsNone(self.source.last_crawl_at)
+
+    def test_finalize_raising_after_success_updates_scheduling_once(self):
+        self._assert_scheduling_updated_once_after_late_failure(AgentRun, "finalize", "success", autospec=True)
+
+    def test_finalize_raising_after_partial_updates_scheduling_once(self):
+        self._assert_scheduling_updated_once_after_late_failure(AgentRun, "finalize", "partial", autospec=True)
+
+    def test_audit_raising_after_success_updates_scheduling_once(self):
+        self._assert_scheduling_updated_once_after_late_failure(OperationalChangeAudit, "record", "success")
+
+    def test_audit_raising_after_partial_updates_scheduling_once(self):
+        self._assert_scheduling_updated_once_after_late_failure(OperationalChangeAudit, "record", "partial")
+
     @patch("crank.services.crawl_runs._execute")
     def test_duplicate_running_source_is_rejected(self, execute):
         execute.return_value = type("Result", (), {"observations": 0, "errors": 0, "error_reasons": (), "total": 0})()

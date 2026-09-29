@@ -619,6 +619,8 @@ class SourceRefreshMigrationShapeTests(TestCase):
     MySQL DDL auto-commits while Django records a migration only after all
     of its operations succeed, so a migration with two DDL statements can be
     interrupted between them and then fail on rerun with a duplicate column.
+    AddField with a default must use ``db_default`` so the MySQL editor does
+    not append ``ALTER COLUMN ... DROP DEFAULT`` (a second DDL statement).
     """
 
     NAMES = (
@@ -654,6 +656,17 @@ class SourceRefreshMigrationShapeTests(TestCase):
                         f"{name}: AddField must not queue extra index/FK statements",
                     )
                     altering += 1
+                    from django.db.models import NOT_PROVIDED
+
+                    field = field.clone()
+                    field.set_attributes_from_name(op.name)
+                    self.assertTrue(
+                        field.db_default is not NOT_PROVIDED
+                        or editor.effective_default(field) is None,
+                        f"{name}: AddField with a default must use db_default; "
+                        "otherwise Django's MySQL editor follows ADD COLUMN with "
+                        "a second ALTER COLUMN ... DROP DEFAULT statement",
+                    )
                 new_state = state.clone()
                 op.state_forwards("crank", new_state)
                 if isinstance(op, AlterField):

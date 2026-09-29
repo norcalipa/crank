@@ -301,7 +301,7 @@ numbered merge migration if a head split remains, keeping
   `last_attempt_at` (indexed, nullable) and `consecutive_failures` (default 0)
   on `SourceCatalog` and `JobSourceCatalog`, plus help-text-only
   `AlterField`s on `last_crawl_at` (no DDL). **Every migration holds exactly
-  one schema-changing statement**, enforced by
+  one DDL statement**, enforced by
   `SourceRefreshMigrationShapeTests` in
   `crank/tests/services/test_source_freshness.py`:
 
@@ -309,27 +309,63 @@ numbered merge migration if a head split remains, keeping
   | --- | --- |
   | `0040_source_refresh_state` | `ADD COLUMN sourcecatalog.last_attempt_at` |
   | `0041_sourcecatalog_last_attempt_index` | `CREATE INDEX` on it |
-  | `0042_sourcecatalog_consecutive_failures` | `ADD COLUMN sourcecatalog.consecutive_failures` |
+  | `0042_sourcecatalog_consecutive_failures` | `ADD COLUMN sourcecatalog.consecutive_failures` (`db_default=0`) |
   | `0043_jobsourcecatalog_last_attempt_at` | `ADD COLUMN jobsourcecatalog.last_attempt_at` |
   | `0044_jobsourcecatalog_last_attempt_index` | `CREATE INDEX` on it |
-  | `0045_jobsourcecatalog_consecutive_failures` | `ADD COLUMN jobsourcecatalog.consecutive_failures` |
+  | `0045_jobsourcecatalog_consecutive_failures` | `ADD COLUMN jobsourcecatalog.consecutive_failures` (`db_default=0`) |
 
-  Why the split: MySQL DDL auto-commits, while Django records a migration
-  only after all of its operations (and deferred index SQL) succeed. A
-  migration with several statements that is interrupted midway leaves earlier
-  columns in place but unrecorded, and the next `migrate` fails on a
-  duplicate column. With one statement per migration, an interruption leaves
-  only whole, recorded steps and `migrate` resumes at the next unapplied
-  migration. The one residual case is a single statement that is killed
-  mid-flight: InnoDB rolls back an unfinished online `ALTER`, so the step is
-  simply unapplied and safe to retry. Index creation is its own migration
-  because `AddField` with `db_index=True` queues a second, deferred
-  `CREATE INDEX` statement. Expected MySQL behavior: nullable and
-  constant-default `AddField` and `CREATE INDEX` run as online
-  `ALGORITHM=INPLACE` (or INSTANT) DDL on InnoDB, taking only a brief
-  metadata lock at start and end; both catalogs are small operational tables.
-  Old pods ignore the new columns, so rollback is a code-only redeploy. These
-  are `sqlmigrate`-verified on SQLite only; there is no MySQL instance in CI.
+  Why the split: MySQL commits every DDL statement implicitly, while Django
+  records a migration only after all of its operations (and deferred index
+  SQL) succeed. Each of these migrations therefore performs exactly one DDL
+  statement, so no migration can be left with an earlier statement applied and
+  a later one pending. The two `consecutive_failures` `AddField`s use
+  `db_default=0` (Django >= 5.0; production pins `Django==5.0.14`): the MySQL
+  schema editor then keeps the database default and does not follow
+  `ADD COLUMN ... DEFAULT 0 NOT NULL` with a second
+  `ALTER COLUMN ... DROP DEFAULT`. This was checked against the Django 5.0.14
+  MySQL schema editor (`collect_sql=True`, no live server): the old field
+  emitted both statements, the `db_default` field emits only the `ADD COLUMN`.
+  The models keep `default=0` as well so Python-side instances carry an
+  integer. Index creation is its own migration because `AddField` with
+  `db_index=True` queues a second, deferred `CREATE INDEX` statement.
+  Expected MySQL behavior: nullable and constant-default `AddField` and
+  `CREATE INDEX` run as online `ALGORITHM=INPLACE` (or INSTANT) DDL on InnoDB,
+  taking only a brief metadata lock at start and end; both catalogs are small
+  operational tables. Old pods ignore the new columns, so rollback is a
+  code-only redeploy. The SQL shape is `sqlmigrate`-verified on SQLite and by
+  the offline MySQL editor check above; there is no MySQL instance in CI.
+
+  **Recovery if `migrate` is interrupted during 0040-0045.** One residual
+  window remains and is inherent to Django on MySQL: the statement's DDL has
+  committed but Django has not yet recorded the migration (for example the
+  process is killed right after the `ALTER`). A rerun would then fail with a
+  duplicate column or duplicate key name. To recover, run
+  `python manage.py showmigrations crank` to find the first unapplied
+  migration in 0040-0045, then check whether its change is already present:
+
+  ```sql
+  SHOW COLUMNS FROM crank_sourcecatalog;
+  SHOW INDEX FROM crank_sourcecatalog;
+  SHOW COLUMNS FROM crank_jobsourcecatalog;
+  SHOW INDEX FROM crank_jobsourcecatalog;
+  ```
+
+  | Migration | Table | Column / index to look for |
+  | --- | --- | --- |
+  | `0040_source_refresh_state` | `crank_sourcecatalog` | column `last_attempt_at` |
+  | `0041_sourcecatalog_last_attempt_index` | `crank_sourcecatalog` | index `crank_sourcecatalog_last_attempt_at_ec1c91f2` |
+  | `0042_sourcecatalog_consecutive_failures` | `crank_sourcecatalog` | column `consecutive_failures` |
+  | `0043_jobsourcecatalog_last_attempt_at` | `crank_jobsourcecatalog` | column `last_attempt_at` |
+  | `0044_jobsourcecatalog_last_attempt_index` | `crank_jobsourcecatalog` | index `crank_jobsourcecatalog_last_attempt_at_4bcab63e` |
+  | `0045_jobsourcecatalog_consecutive_failures` | `crank_jobsourcecatalog` | column `consecutive_failures` |
+
+  If that column or index is present but the migration is unapplied, run
+  `python manage.py migrate crank <that migration> --fake` (for example
+  `python manage.py migrate crank 0042_sourcecatalog_consecutive_failures --fake`),
+  then rerun `python manage.py migrate`. If it is absent, simply rerun
+  `migrate`; do not fake it. Repeat for the next unapplied migration if
+  `migrate` stops again. The `help_text`-only `AlterField` on `last_crawl_at`
+  in 0040 and 0043 emits no DDL, so it needs no check.
   - **Required post-deploy step:** after 0045 is applied, run
     `python manage.py backfill_source_refresh_state --dry-run` and then
     `python manage.py backfill_source_refresh_state` to fill NULL

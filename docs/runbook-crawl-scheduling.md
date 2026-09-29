@@ -60,6 +60,15 @@ source's latest SUCCESS `CrawlRun`. It is chunked, idempotent, and safe to
 re-run (verify with `--dry-run`, which must then report 0 rows); until it completes, sources with a NULL `last_crawl_at` sort as
 "never crawled" (maximum age) in the due ordering above.
 
+**If `migrate` is interrupted during 0040-0045:** MySQL commits each DDL
+statement before Django records the migration, so a kill in that window leaves
+the column or index in place but the migration unrecorded. Follow the recovery
+steps in `docs/deployment-migrations.md` ("Allocation: 0040-0045"): check
+`SHOW COLUMNS` / `SHOW INDEX` on `crank_sourcecatalog` and
+`crank_jobsourcecatalog` for the column or index that migration adds; if it is
+present, run `python manage.py migrate crank <that migration> --fake`, then
+rerun `migrate`.
+
 ## Single ingestion owner (issue #462)
 
 **Job-source ingestion has one owner: the job pipeline**

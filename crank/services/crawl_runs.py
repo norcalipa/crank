@@ -248,6 +248,7 @@ def trigger_crawl(*, source_key: str, source_type: str, requested_by=None) -> Cr
         "crawl_run_started",
         {"run_id": run.pk, "source_key": canonical_key},
     )
+    outcome_recorded = False
     try:
         result = _execute(source, source_type)
         outcome = _outcome(result)
@@ -264,6 +265,7 @@ def trigger_crawl(*, source_key: str, source_type: str, requested_by=None) -> Cr
             source_freshness.outcome_from_crawl_run(outcome),
             now=run.finished_at,
         )
+        outcome_recorded = True
         agent_run.finalize(
             AgentRun.Status.SUCCEEDED if outcome in {CrawlRun.Outcome.SUCCESS, CrawlRun.Outcome.PARTIAL} else AgentRun.Status.FAILED,
             counts=counts,
@@ -299,14 +301,15 @@ def trigger_crawl(*, source_key: str, source_type: str, requested_by=None) -> Cr
         run.error_summary = summary
         run.finished_at = timezone.now()
         run.save(update_fields=["outcome", "error_summary", "finished_at", "modified"])
-        if not isinstance(exc, SourceLockHeld):
+        if not isinstance(exc, SourceLockHeld) and not outcome_recorded:
             source_freshness.record_outcome(
                 type(source),
                 source.pk,
                 source_freshness.Outcome.FAILED,
                 now=run.finished_at,
             )
-        agent_run.finalize(AgentRun.Status.FAILED, error_summary=summary)
+        if agent_run.status in {AgentRun.Status.PENDING, AgentRun.Status.RUNNING}:
+            agent_run.finalize(AgentRun.Status.FAILED, error_summary=summary)
         monitoring.record_event(event, {"run_id": run.pk, "source_key": canonical_key})
         OperationalChangeAudit.record(
             actor=requested_by,

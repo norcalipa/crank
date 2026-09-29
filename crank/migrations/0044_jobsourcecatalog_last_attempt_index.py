@@ -7,13 +7,13 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     # Exactly one schema-changing statement on MySQL (CREATE INDEX on jobsourcecatalog.last_attempt_at); the
-    # migration recorder commits after it, so an interrupted `migrate` leaves
-    # only whole, recorded steps and a rerun resumes at the next migration.
-    # MySQL DDL auto-commits, so a single migration with several statements
-    # can still be left half-applied and unrecorded; this split is what
-    # prevents a duplicate-column failure on rerun. The NULL last_crawl_at
-    # backfill lives in the backfill_source_refresh_state management
-    # command (post-deploy), not in a migration.
+    # migration recorder commits after it. MySQL commits each DDL
+    # statement implicitly and Django records the migration only afterwards;
+    # that residual window is inherent to Django on MySQL and is covered by
+    # the recovery steps in docs/deployment-migrations.md (verify the
+    # column/index, then `migrate --fake` that migration). The NULL
+    # last_crawl_at backfill lives in the backfill_source_refresh_state
+    # management command (post-deploy), not in a migration.
 
     dependencies = [
         ("crank", "0043_jobsourcecatalog_last_attempt_at"),

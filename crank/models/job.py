@@ -64,6 +64,7 @@ class JobSourceCatalog(TimeStampedModel):
     )
     consecutive_failures = models.PositiveIntegerField(
         default=0,
+        db_default=0,
         help_text="Attempts since the last success that did not fully succeed.",
     )
     catalog_metadata = models.JSONField(
