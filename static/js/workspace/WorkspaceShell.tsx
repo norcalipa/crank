@@ -183,22 +183,26 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
             document.getElementById('assistant-panel-title')?.focus();
             return;
         }
-        // Prefer the composer (the assistant's primary input); fall back to the
-        // first focusable control when it is not present (e.g. sheet mode or
-        // a chat that has not finished loading). A disabled composer (pending
-        // or gated turn) cannot take focus, so it is excluded and the request
-        // falls back to an enabled control rather than being silently consumed
-        // with focus landing nowhere (issue #469 review). querySelector honours
-        // document order, so a single combined selector would catch the header
-        // buttons ahead of the composer.
-        const composer =
-            panelRef.current?.querySelector<HTMLElement>(
-                '[data-testid="assistant-composer"]:not(:disabled)',
-            );
+        // Destination order: an error alert's action (the user must deal with
+        // it), then the composer — never in sheet mode, where autofocus would
+        // raise the mobile keyboard over the sheet — then the first enabled
+        // control. The context strip's Clear context button is excluded: it
+        // sits ahead of the chat in document order, and Enter/Space there
+        // would undo the action that just opened the assistant. A disabled
+        // control cannot take focus, so it is excluded and the request falls
+        // back rather than being silently consumed (issue #469 review).
+        // querySelector honours document order, so one combined selector
+        // would catch the header buttons ahead of the composer.
+        const panel = panelRef.current;
+        const alertAction = panel?.querySelector<HTMLElement>('[role="alert"] button:not(:disabled)');
+        const composer = mode === 'sheet'
+            ? null
+            : panel?.querySelector<HTMLElement>('[data-testid="assistant-composer"]:not(:disabled)');
         const target =
+            alertAction ??
             composer ??
-            panelRef.current?.querySelector<HTMLElement>(
-                '[data-testid="assistant-back-to-results"]:not(:disabled), textarea:not(:disabled), button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+            panel?.querySelector<HTMLElement>(
+                '[data-testid="assistant-back-to-results"]:not(:disabled), textarea:not(:disabled):not([data-testid="assistant-composer"]), button:not(:disabled):not([data-testid="assistant-clear-context"]), [href], [tabindex]:not([tabindex="-1"])',
             );
         if (target) {
             target.focus();
@@ -208,7 +212,7 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
             // stays pending to be retried once one commits.
             setFocusRequest(0);
         }
-    }, [open, focusRequest, snapshot.loaded]);
+    }, [open, focusRequest, snapshot.loaded, mode]);
 
     return (
         <>

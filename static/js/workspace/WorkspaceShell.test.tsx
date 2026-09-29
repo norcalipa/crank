@@ -16,7 +16,10 @@ jest.mock('../JobSearchChat', () => ({
     __esModule: true,
     default: () => mockChatInitError ? (
         <section data-testid="job-search-chat">
-            <div role="alert">We couldn’t start the assistant.</div>
+            <div role="alert">
+                We couldn’t start the assistant.
+                <button type="button" data-testid="chat-start-conversation">Start a conversation</button>
+            </div>
         </section>
     ) : (
         <section data-testid="job-search-chat">
@@ -249,6 +252,33 @@ describe('WorkspaceShell', () => {
         ));
         expect(document.activeElement).not.toBe(opener);
         opener.remove();
+    });
+
+    test('a focus request on a chat init error targets the alert action, not the Clear context button', async () => {
+        mockChatInitError = true;
+        renderShell();
+        mockMode = 'docked';
+        act(() => openAssistant({surface: 'company', organizationId: 7, organizationName: 'Acme'}));
+        await waitFor(() => expect(screen.getByTestId('assistant-clear-context')).toBeInTheDocument());
+        act(() => {
+            window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        await waitFor(() => expect(document.activeElement)
+            .toBe(screen.getByTestId('chat-start-conversation')));
+    });
+
+    test('a focus request never autofocuses the composer in sheet mode, nor the Clear context button', async () => {
+        renderShell();
+        act(() => openAssistant({surface: 'company', organizationId: 7, organizationName: 'Acme'}));
+        await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
+        act(() => {
+            window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        await waitFor(() => expect(screen.getByTestId('assistant-panel')).toContainElement(
+            document.activeElement as HTMLElement,
+        ));
+        expect(document.activeElement).not.toBe(screen.getByTestId('assistant-composer'));
+        expect(document.activeElement).not.toBe(screen.getByTestId('assistant-clear-context'));
     });
 
     test('another blocking dialog acquiring a lock closes the sheet, and keeps its isolation', async () => {
