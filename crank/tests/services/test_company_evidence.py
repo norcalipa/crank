@@ -581,3 +581,141 @@ class ResolveFieldEvidenceForOrgsTests(TestCase):
 
     def test_bulk_empty_for_no_ids(self):
         assert resolve_field_evidence_for_orgs([]) == {}
+
+
+class ClaimTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        self.organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        self.reviewer = User.objects.create(username="claim-staff")
+        self.observation = make_observation(self.organization)
+
+    def _claim(self, value="Remote first", state=State.PENDING, observation=None):
+        from crank.services.company_evidence import record_claim
+
+        return record_claim(
+            self.organization,
+            FieldKey.RTO_POLICY,
+            value=value,
+            observation=observation or self.observation,
+            state=state,
+        )
+
+    def test_claim_is_open_and_never_resolves(self):
+        claim = self._claim()
+
+        self.assertEqual(claim.state, State.PENDING)
+        self.assertIsNone(claim.last_verified_at)
+        self.assertEqual(claim.scope_json, {"claimed_domain": "example.test"})
+        self.assertNotIn(FieldKey.RTO_POLICY, resolve_field_evidence(self.organization))
+
+    def test_claim_without_claimed_domain_has_empty_scope(self):
+        observation = make_observation(self.organization, observed_domain="")
+        self.assertEqual(self._claim(observation=observation).scope_json, {})
+
+    def test_claim_validation(self):
+        from crank.services.company_evidence import record_claim
+
+        for kwargs in (
+            {"state": State.ACCEPTED},
+            {"state": State.PENDING, "value": ""},
+        ):
+            params = {"value": "x", "state": State.PENDING, **kwargs}
+            with pytest.raises(ValueError):
+                record_claim(
+                    self.organization,
+                    FieldKey.RTO_POLICY,
+                    observation=self.observation,
+                    **params,
+                )
+        with pytest.raises(ValueError):
+            record_claim(
+                self.organization,
+                "not_a_field",
+                value="x",
+                observation=self.observation,
+                state=State.PENDING,
+            )
+
+    def test_repeat_claim_updates_in_place_and_tracks_change(self):
+        first = self._claim()
+        same = self._claim(state=State.CONFLICTED)
+        self.assertEqual(same.pk, first.pk)
+        self.assertEqual(same.state, State.CONFLICTED)
+        self.assertEqual(same.last_changed_at, first.last_changed_at)
+
+        changed = self._claim(value="Office five days")
+        self.assertEqual(changed.pk, first.pk)
+        self.assertEqual(changed.value_text, "Office five days")
+        self.assertGreaterEqual(changed.last_changed_at, first.last_changed_at)
+        self.assertEqual(CompanyFieldEvidence.objects.count(), 1)
+
+    def test_accept_claim_supersedes_previous_and_emits_event(self):
+        from crank.services.company_evidence import accept_claim
+
+        old_obs = make_observation(self.organization, fingerprint="old")
+        accept_observation_fields(old_obs)
+        old = CompanyFieldEvidence.objects.get(
+            field_key=FieldKey.RTO_POLICY, state=State.ACCEPTED
+        )
+        before = PublicationEvent.objects.count()
+        claim = self._claim(value="Hybrid")
+
+        accepted = accept_claim(claim, reviewer=self.reviewer)
+
+        self.assertEqual(accepted.state, State.ACCEPTED)
+        self.assertIsNotNone(accepted.last_verified_at)
+        old.refresh_from_db()
+        self.assertEqual(old.state, State.SUPERSEDED)
+        self.assertEqual(PublicationEvent.objects.count(), before + 1)
+        self.assertEqual(
+            resolve_field_evidence(self.organization)[FieldKey.RTO_POLICY].value_text,
+            "Hybrid",
+        )
+
+    def test_accept_claim_with_same_value_keeps_last_changed(self):
+        from crank.services.company_evidence import accept_claim
+
+        accept_observation_fields(make_observation(self.organization, fingerprint="a"))
+        old = CompanyFieldEvidence.objects.get(
+            field_key=FieldKey.RTO_POLICY, state=State.ACCEPTED
+        )
+        accepted = accept_claim(self._claim(), reviewer=self.reviewer)
+        self.assertEqual(accepted.last_changed_at, old.last_changed_at)
+
+    def test_accepted_or_rejected_claim_cannot_be_reviewed_again(self):
+        from crank.services.company_evidence import accept_claim, reject_claim
+
+        claim = self._claim()
+        rejected = reject_claim(claim, reviewer=self.reviewer)
+        self.assertEqual(rejected.state, State.REJECTED)
+        for action in (accept_claim, reject_claim):
+            with pytest.raises(EvidenceNotAcceptable):
+                action(claim, reviewer=self.reviewer)
+        self.assertNotIn(FieldKey.RTO_POLICY, resolve_field_evidence(self.organization))
+
+    def test_field_key_helper_and_allowlists(self):
+        from crank.services.company_evidence import (
+            AUTO_APPLY_FIELDS,
+            REVIEW_REQUIRED_FIELDS,
+            field_key_for_observation_attribute,
+        )
+
+        self.assertEqual(
+            field_key_for_observation_attribute("rto_evidence"), FieldKey.RTO_POLICY
+        )
+        self.assertIsNone(field_key_for_observation_attribute("description"))
+        self.assertFalse(AUTO_APPLY_FIELDS & REVIEW_REQUIRED_FIELDS)
+        self.assertEqual(
+            AUTO_APPLY_FIELDS | REVIEW_REQUIRED_FIELDS, set(FieldKey.values)
+        )
+
+    def test_field_keys_filter_limits_acceptance(self):
+        created = accept_observation_fields(
+            make_observation(self.organization, fingerprint="f"),
+            field_keys={FieldKey.COMPANY_NAME},
+        )
+        self.assertEqual([row.field_key for row in created], [FieldKey.COMPANY_NAME])
