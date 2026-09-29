@@ -97,14 +97,47 @@ test('a double click on submit creates one pending correction', async ({page}) =
     expect(listed).toHaveLength(1);
 });
 
-test('the job-results entry opens the form and returns to results', async ({page}) => {
+test('the job-results entry opens the form and Escape returns focus to the opener', async ({page}) => {
     await login(page);
+    await page.route('**/api/job-matches/status/', (route) => route.fulfill({json: {state: 'ok'}}));
+    await page.route('**/api/job-matches/?**', (route) => route.fulfill({json: {count: 1, results: []}}));
+    await page.route('**/api/job-matches/ranked/**', (route) => route.fulfill({
+        json: {
+            job_matches: [{
+                listing_id: 501, title: 'Staff Engineer', employer_name: COMPANY, organization_id: 2,
+                organization_name: COMPANY, canonical_url: 'https://example.com/jobs/501', location_text: 'Remote (US)',
+                is_remote: true, score: 0.8, reasons: ['Remote-first'],
+            }],
+            organization_matches: [],
+        },
+    }));
     await page.goto('/chat/');
-    const button = page.getByRole('button', {name: /Suggest a correction for/}).first();
-    test.skip(await button.count() === 0, 'no seeded ranked organizations rendered for this user');
+    const button = page.getByTestId('suggest-correction-org-2');
     await button.click();
     const form = page.getByRole('dialog', {name: /Suggest a correction/});
     await expect(form).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(form).toBeHidden();
+    await expect(button).toBeFocused();
+});
+
+test.describe('with the assistant drawer open at 1024px', () => {
+    test.use({viewport: {width: 1024, height: 768}});
+
+    test('Escape closes only the form; the drawer stays open', async ({page}) => {
+        await login(page);
+        await page.goto('/');
+        await page.getByRole('button', {name: 'Assistant'}).first().click();
+        const drawer = page.getByRole('heading', {name: 'Job Search Assistant'});
+        await expect(drawer).toBeVisible();
+        await page.locator(`[aria-label="View details for ${COMPANY}"] >> visible=true`).first().click();
+        await page.getByTestId('suggest-correction-link').click();
+        const form = page.getByRole('dialog', {name: /Suggest a correction/});
+        await expect(form).toBeVisible();
+        const box = await form.locator('.modal-content').boundingBox();
+        expect(box && box.x >= 0 && box.y >= 0 && box.x + box.width <= 1024 && box.y + box.height <= 768).toBe(true);
+        await page.keyboard.press('Escape');
+        await expect(form).toBeHidden();
+        await expect(drawer).toBeVisible();
+    });
 });

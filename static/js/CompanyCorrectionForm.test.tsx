@@ -383,6 +383,20 @@ describe('CompanyCorrectionForm', () => {
             expect(onClose).toHaveBeenCalledTimes(3);
         });
 
+        test('Escape does not reach document-level handlers such as the assistant drawer', async () => {
+            const behind = jest.fn();
+            document.addEventListener('keydown', behind);
+            try {
+                const {onClose} = renderForm();
+                await screen.findByTestId('correction-current-text');
+                fireEvent.keyDown(document, {key: 'Escape'});
+                expect(onClose).toHaveBeenCalledTimes(1);
+                expect(behind).not.toHaveBeenCalled();
+            } finally {
+                document.removeEventListener('keydown', behind);
+            }
+        });
+
         test('Tab and Shift+Tab are trapped inside the dialog', async () => {
             renderForm();
             await screen.findByTestId('correction-current-text');

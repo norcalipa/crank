@@ -160,6 +160,10 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
     React.useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === 'Escape') {
+                // Capture phase: the assistant drawer's document-level Escape
+                // handler must not also close what sits behind this dialog.
+                event.stopPropagation();
+                event.preventDefault();
                 onClose();
                 return;
             }
@@ -185,8 +189,8 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                 first.focus();
             }
         };
-        document.addEventListener('keydown', handleKeyDown);
-        return () => document.removeEventListener('keydown', handleKeyDown);
+        window.addEventListener('keydown', handleKeyDown, true);
+        return () => window.removeEventListener('keydown', handleKeyDown, true);
     }, [onClose]);
 
     React.useEffect(() => {

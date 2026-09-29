@@ -3353,3 +3353,19 @@ body.assistant-open .app-content .table-responsive,
 [data-testid="company-correction-modal"] .modal-body {
     overflow-wrap: anywhere;
 }
+
+[data-testid="company-correction-modal"] .modal-dialog {
+    display: flex;
+    flex-direction: column;
+    overflow-y: visible;
+}
+
+[data-testid="company-correction-modal"] .modal-content {
+    min-block-size: 0;
+    max-block-size: 100%;
+}
+
+[data-testid="company-correction-modal"] .modal-body {
+    min-block-size: 0;
+    overflow-y: auto;
+}
