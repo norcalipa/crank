@@ -399,7 +399,11 @@ class SeedE2ECommandTests(TestCase):
         self.assertNotEqual(first.pk, second.pk)
         self.assertTrue(second.check_password(DEFAULT_E2E_PASSWORD))
         self.assertEqual(second.email, f"{E2E_USERNAME_B}@example.test")
-        self.assertTrue(UserPreference.objects.filter(user=second).exists())
+        first_prefs = UserPreference.objects.get(user=first).preferences
+        second_prefs = UserPreference.objects.get(user=second).preferences
+        self.assertNotEqual(first_prefs, second_prefs)
+        self.assertEqual(second_prefs["work_location"]["modes"], ["remote"])
+        self.assertTrue(second_prefs["geography"]["remote_friendly"])
 
     def test_summary_is_bounded_and_labelled(self):
         out = StringIO()

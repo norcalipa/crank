@@ -216,6 +216,31 @@ describe('workspace persistence review fixes (issue #479)', () => {
             .toEqual({surface: 'rankings', organizationId: 7, organizationName: 'Acme', jobId: 3});
     });
 
+    test('a page entity with the same company id keeps the persisted name; another id drops it', () => {
+        const record = (organizationId: number) => window.sessionStorage.setItem(WORKSPACE_SESSION_KEY, JSON.stringify({
+            v: 1,
+            account: {status: 'authenticated', key: 'alice'},
+            visibility: 'open',
+            context: {organizationId, organizationName: 'Acme'},
+            savedAt: 1,
+        }));
+        record(7);
+        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+        setWorkspaceContext({surface: 'chat', organizationId: 7});
+        teardown = installWorkspacePersistence();
+        expect(getWorkspaceSnapshot().context)
+            .toEqual({surface: 'chat', organizationId: 7, organizationName: 'Acme'});
+        teardown();
+        resetWorkspaceForTests();
+        window.sessionStorage.clear();
+
+        record(7);
+        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+        setWorkspaceContext({surface: 'chat', organizationId: 12});
+        teardown = installWorkspacePersistence();
+        expect(getWorkspaceSnapshot().context).toEqual({surface: 'chat', organizationId: 12});
+    });
+
     test('an account switch here does not write the cross-tab signal itself (app-nav announces after hydration)', () => {
         setWorkspaceAccount({status: 'authenticated', key: 'alice'});
         teardown = installWorkspacePersistence();

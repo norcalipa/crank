@@ -133,8 +133,17 @@ export function installWorkspacePersistence(): () => void {
         // Explicit page context wins: when the page already names an entity
         // (e.g. ?company=12) the persisted entity group is dropped whole, so
         // a stale id/name pair can never be field-merged with the URL's.
+        // The one exception: the same company id, whose persisted name is
+        // consistent with it and which the URL alone cannot supply.
         const pageEntity = entityContext(snapshot.context);
-        const entity = Object.keys(pageEntity).length ? {} : record.context;
+        let entity: Partial<WorkspaceContext> = record.context;
+        if (Object.keys(pageEntity).length) {
+            const sameCompany = pageEntity.organizationId !== undefined
+                && pageEntity.organizationId === record.context.organizationId
+                && pageEntity.organizationName === undefined
+                && record.context.organizationName !== undefined;
+            entity = sameCompany ? {organizationName: record.context.organizationName} : {};
+        }
         const context = {...(snapshot.context ?? {}), ...entity} as WorkspaceContext;
         if (!surface && !Object.keys(entity).length) {
             writeRecord();

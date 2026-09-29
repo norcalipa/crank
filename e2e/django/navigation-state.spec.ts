@@ -18,6 +18,34 @@ async function askAboutCompany(page: Page): Promise<void> {
     await expect(page.locator(STRIP)).toContainText(`About ${COMPANY}`);
 }
 
+const OTHER_COMPANY = 'E2E Beta Labs';
+
+// The workspace store's account as this tab currently believes it. The nav of
+// a server-rendered page cannot flip, so the store is the tab's source of truth.
+function storeAccount(page: Page): Promise<{status: string; key: string} | null> {
+    return page.evaluate(() => (window as unknown as {
+        __crankWorkspace__?: {snapshot?: {account?: {status: string; key: string}}};
+    }).__crankWorkspace__?.snapshot?.account ?? null);
+}
+
+async function companyIdFor(page: Page, name: string): Promise<string> {
+    await page.goto('/');
+    await page.locator(`[aria-label="View details for ${name}"]:visible`).first().click();
+    const href = await page.getByTestId('company-chat-cta').getAttribute('href');
+    const match = /^\/chat\/\?company=(\d+)$/.exec(href ?? '');
+    expect(match).not.toBeNull();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    return (match as RegExpExecArray)[1];
+}
+
+async function sendMessage(page: Page, text: string): Promise<void> {
+    await page.locator('textarea[aria-label="Message"]').fill(text);
+    await page.getByLabel('Send message').click();
+    await expect(page.locator('article[aria-label="Your message"]', {hasText: text}).first()).toBeVisible();
+    await expect(page.locator('article[aria-label="Assistant message"]').last()).toBeVisible();
+}
+
 async function logout(page: Page): Promise<void> {
     await page.locator('.app-nav-rail form.app-nav-logout-form button[type="submit"]').first().click();
     await page.waitForURL((url) => url.pathname !== '/chat/');
@@ -99,6 +127,24 @@ test.describe('navigation state (issue #479)', () => {
         await expect(page.locator(STRIP)).toHaveCount(0);
     });
 
+    test('/chat/?company= replaces a persisted different company (name and id together)', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        const betaId = await companyIdFor(page, OTHER_COMPANY);
+        await askAboutCompany(page);
+        await page.goto(`/chat/?company=${betaId}`);
+        await expect(page.getByTestId('job-search-chat')).toBeVisible();
+        // Only the id is known from the URL: the strip must name that id, never
+        // the previously persisted company.
+        await expect(page.locator(STRIP)).toContainText(`About company #${betaId}`);
+        await expect(page.locator(STRIP)).not.toContainText(COMPANY);
+        const record = await page.evaluate(() => window.sessionStorage.getItem('crank:workspace:v1') ?? '');
+        expect(JSON.parse(record).context).toEqual({organizationId: Number(betaId)});
+        await page.reload();
+        await expect(page.locator(STRIP)).toContainText(`About company #${betaId}`);
+        await expect(page.locator(STRIP)).not.toContainText(COMPANY);
+    });
+
     // Issue #479 journey. The comparison leg stays open until #490 ships a
     // comparison surface; every leg that exists today is covered here.
     test('Rankings → company dialog → jobs → Back → Forward restores each step', async ({page}) => {
@@ -143,6 +189,106 @@ test.describe('navigation state (issue #479)', () => {
         expect(record).not.toContain('organizationId');
     });
 
+    test('a delayed logout in another tab leaves this tab signed out, then follows the next sign-in', async ({page, context}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/chat/');
+        await expect(page.getByTestId('job-match-panel')).toBeVisible();
+        await expect.poll(() => storeAccount(page)).toEqual({status: 'authenticated', key: 'e2e_user'});
+
+        const other = await context.newPage();
+        await other.goto('/chat/');
+        // Hold the logout POST: the signal must wait for the server-side change.
+        await other.route('**/accounts/logout/', async (route) => {
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            await route.continue();
+        });
+        await logout(other);
+
+        // This tab must end up on the signed-out account, not re-hydrated as the old user.
+        await expect.poll(() => storeAccount(page)).toEqual({status: 'anonymous', key: ''});
+        await expect(page.getByTestId('ranked-job-matches')).toHaveCount(0);
+        const record = await page.evaluate(() => window.sessionStorage.getItem('crank:workspace:v1') ?? '');
+        expect(record).not.toContain('e2e_user');
+
+        await login(other, 'e2e_user_b', E2E_PASSWORD);
+        await expect.poll(() => storeAccount(page)).toEqual({status: 'authenticated', key: 'e2e_user_b'});
+    });
+
+    test('reset in tab A: tab B reloads onto the new conversation with no stale draft', async ({page, context}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/chat/');
+        await expect(page.locator('textarea[aria-label="Message"]')).toBeEnabled();
+        await sendMessage(page, 'first conversation marker');
+
+        const other = await context.newPage();
+        await other.setViewportSize({width: 1280, height: 900});
+        await other.goto('/chat/');
+        await expect(other.locator('article[aria-label="Your message"]', {hasText: 'first conversation marker'}).first()).toBeVisible();
+        await other.locator('textarea[aria-label="Message"]').fill('tab B unsent draft');
+
+        page.once('dialog', (dialog) => dialog.accept());
+        await page.getByRole('button', {name: 'Reset chat'}).click();
+        await expect(page.locator('article[aria-label="Your message"]')).toHaveCount(0);
+
+        await other.reload();
+        await expect(other.getByTestId('job-search-chat')).toBeVisible();
+        await expect(other.locator('textarea[aria-label="Message"]')).toBeEnabled();
+        await expect(other.locator('article[aria-label="Your message"]')).toHaveCount(0);
+        await expect(other.locator('body')).not.toContainText('first conversation marker');
+    });
+
+    test('delete in tab A: tab B reloads without the deleted conversation', async ({page, context}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/chat/');
+        await expect(page.locator('textarea[aria-label="Message"]')).toBeEnabled();
+        await sendMessage(page, 'doomed conversation marker');
+
+        const other = await context.newPage();
+        await other.goto('/chat/');
+        await expect(other.locator('article[aria-label="Your message"]', {hasText: 'doomed conversation marker'}).first()).toBeVisible();
+
+        page.once('dialog', (dialog) => dialog.accept());
+        await page.getByRole('button', {name: 'Delete conversation'}).click();
+        await expect(page.locator('article[aria-label="Your message"]')).toHaveCount(0);
+
+        await other.reload();
+        await expect(other.getByTestId('job-search-chat')).toBeVisible();
+        await expect(other.locator('body')).not.toContainText('doomed conversation marker');
+    });
+
+    test('a reply landing after the context was cleared carries the stale-context note', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await askAboutCompany(page);
+        let release: () => void = () => undefined;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        await page.route(/\/api\/agent\/conversations\/\d+\/$/, async (route) => {
+            if (route.request().method() === 'POST') {
+                await gate;
+            }
+            await route.continue();
+        });
+        // The first send creates the conversation (not delayed), the second is the held turn.
+        const composer = page.locator('textarea[aria-label="Message"]');
+        await expect(composer).toBeEnabled();
+        await composer.fill('tell me about this company');
+        await page.getByLabel('Send message').click();
+        await expect(page.locator('article[aria-label="Your message"]', {hasText: 'tell me about this company'}).first()).toBeVisible();
+
+        await page.getByTestId('assistant-clear-context').click();
+        await expect(page.locator(STRIP)).toHaveCount(0);
+        release();
+
+        await expect(page.locator('article[aria-label="Assistant message"]').last()).toBeVisible();
+        await expect(page.getByTestId('stale-context-note')).toContainText(COMPANY);
+        await expect(page.locator(STRIP)).toHaveCount(0);
+    });
+
     test('at 375px the sheet stays open after Ask and restores minimized after navigation', async ({page}) => {
         await page.setViewportSize({width: 375, height: 800});
         await login(page);
@@ -163,6 +309,7 @@ test.describe('navigation state (issue #479)', () => {
         await page.goto('/chat/');
         const composer = page.locator('textarea[aria-label="Message"]');
         await expect(composer).toBeEnabled();
+        await sendMessage(page, 'user A sent message');
         await composer.fill('user A private draft');
         await logout(page);
         // Sign-out purged the record; only an empty anonymous stamp may remain.
@@ -176,6 +323,13 @@ test.describe('navigation state (issue #479)', () => {
         await expect(page.locator(STRIP)).toHaveCount(0);
         await expect(page.locator('textarea[aria-label="Message"]')).toHaveValue('');
         await expect(page.locator('body')).not.toContainText('user A private draft');
+        await expect(page.locator('body')).not.toContainText('user A sent message');
+        // B's resume returns B's own conversation.
+        await expect(page.locator('textarea[aria-label="Message"]')).toBeEnabled();
+        await sendMessage(page, 'user B sent message');
+        await page.reload();
+        await expect(page.locator('article[aria-label="Your message"]', {hasText: 'user B sent message'}).first()).toBeVisible();
+        await expect(page.locator('body')).not.toContainText('user A sent message');
     });
 
     test('two tabs keep independent company contexts', async ({page, context}) => {

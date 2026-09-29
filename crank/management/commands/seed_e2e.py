@@ -428,6 +428,10 @@ class Command(BaseCommand):
             # active listing satisfies, so match_jobs returns a live ranked result
             # with a positive work_location factor.
             preferences["work_location"]["modes"] = ["remote"]
+            if username == E2E_USERNAME_B:
+                # Distinct from the first account's document so isolation
+                # tests can tell the two accounts' preference payloads apart.
+                preferences["geography"]["remote_friendly"] = True
             preference, _ = UserPreference.objects.get_or_create(
                 user=user,
                 defaults={"preferences": preferences},
