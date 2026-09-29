@@ -1161,6 +1161,14 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
         window.history.replaceState(null, '', '/');
     });
 
+    // Cross-tab receivers announce the purge, then the post-change whoami.
+    const purgeAndHydrate = (detail: Record<string, unknown>) => {
+        act(() => {
+            document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
+            document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail}));
+        });
+    };
+
     test('reports the jobs surface on mount', async () => {
         installBatchedFetch([{title: 'First', generation: 1, hold: false}]);
         render(<JobMatchPanel/>);
@@ -1176,7 +1184,7 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
         render(<JobMatchPanel/>);
         await waitFor(() => expect(batches[0]).toBeDefined());
         // A purge issues a second request while the first is still in flight.
-        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        purgeAndHydrate({authenticated: true, username: 'bob'});
         await screen.findByText('Fresh');
         await act(async () => {
             batches[0].release();
@@ -1199,7 +1207,7 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
             return Promise.resolve(jsonResponse(matchPayload(1, [sampleJobMatch])));
         });
         render(<JobMatchPanel/>);
-        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        purgeAndHydrate({authenticated: true, username: 'bob'});
         await screen.findByText('Recovered');
         await act(async () => {
             rejectOld(new Error('late boom'));
@@ -1391,9 +1399,73 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
         ]);
         render(<JobMatchPanel/>);
         await screen.findByText('Alice data');
-        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        purgeAndHydrate({authenticated: true, username: 'bob'});
         expect(screen.queryByText('Alice data')).not.toBeInTheDocument();
         await screen.findByText('Bob data');
+    });
+
+    test('a purge holds the private re-fetch until the hydration arrives (issue #479)', async () => {
+        installBatchedFetch([
+            {title: 'Alice data', generation: 1, hold: false},
+            {title: 'Bob data', generation: 1, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Alice data');
+        const before = (global.fetch as jest.Mock).mock.calls.length;
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect((global.fetch as jest.Mock).mock.calls.length).toBe(before);
+        act(() => {
+            document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: true, username: 'bob'}}));
+        });
+        await screen.findByText('Bob data');
+        // Hydrations that are not following a purge never refetch.
+        const after = (global.fetch as jest.Mock).mock.calls.length;
+        act(() => {
+            document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: true, username: 'bob'}}));
+        });
+        expect((global.fetch as jest.Mock).mock.calls.length).toBe(after);
+    });
+
+    test('another tab signing out shows the signed-out state, not an error with a retry (issue #479)', async () => {
+        installBatchedFetch([{title: 'Alice data', generation: 1, hold: false}]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Alice data');
+        const before = (global.fetch as jest.Mock).mock.calls.length;
+        purgeAndHydrate({authenticated: false, username: null});
+        expect(await screen.findByTestId('job-match-signed-out')).toBeInTheDocument();
+        expect(screen.queryByText(/couldn’t load your job matches/i)).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: /try again/i})).not.toBeInTheDocument();
+        expect((global.fetch as jest.Mock).mock.calls.length).toBe(before);
+    });
+
+    test('another tab signing in turns a signed-out panel into the loaded matches (issue #479)', async () => {
+        installBatchedFetch([{title: 'Bob data', generation: 1, hold: false}]);
+        render(<JobMatchPanel isAuthenticated={false}/>);
+        expect(screen.getByTestId('job-match-signed-out')).toBeInTheDocument();
+        expect(global.fetch).not.toHaveBeenCalled();
+        purgeAndHydrate({authenticated: true, username: 'bob'});
+        await screen.findByText('Bob data');
+    });
+
+    test('a failed whoami after a purge keeps the last known account and retries (issue #479)', async () => {
+        installBatchedFetch([
+            {title: 'Alice data', generation: 1, hold: false},
+            {title: 'Alice again', generation: 1, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Alice data');
+        purgeAndHydrate({authenticated: false, username: null, unobserved: true});
+        await screen.findByText('Alice again');
+        expect(screen.queryByTestId('job-match-signed-out')).not.toBeInTheDocument();
+    });
+
+    test('a prop change from signed-in to signed-out is followed (issue #479)', async () => {
+        installBatchedFetch([{title: 'Alice data', generation: 1, hold: false}]);
+        const {rerender} = render(<JobMatchPanel isAuthenticated/>);
+        await screen.findByText('Alice data');
+        rerender(<JobMatchPanel isAuthenticated={false}/>);
+        expect(screen.getByTestId('job-match-signed-out')).toBeInTheDocument();
     });
 
     test('shows the error state with a retry when a refresh fails, and only for the latest request', async () => {

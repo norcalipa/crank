@@ -609,8 +609,16 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     const guardRef = React.useRef(createLatestGuard());
     const shownGenerationRef = React.useRef<number | null>(null);
 
+    // Account this panel fetches for. Starts at the server-rendered value and
+    // is re-resolved from the next `crank:auth-hydrated` after a cross-tab
+    // private-state purge, so a tab whose session another tab just ended shows
+    // the signed-out state instead of a job-match error that can never clear.
+    const [authed, setAuthed] = React.useState(isAuthenticated);
+    React.useEffect(() => setAuthed(isAuthenticated), [isAuthenticated]);
+    const awaitingHydrationRef = React.useRef(false);
+
     const fetchStatus = React.useCallback(async () => {
-        if (!isAuthenticated) return;
+        if (!authed) return;
         const request = guardRef.current.begin();
         setPhase('loading');
         setErrorMsg(null);
@@ -662,7 +670,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             setErrorMsg(e instanceof Error ? e.message : 'Could not load job match status.');
             setPhase('error');
         }
-    }, [isAuthenticated]);
+    }, [authed]);
 
     React.useEffect(() => {
         fetchStatus();
@@ -693,11 +701,31 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             setRankedMatches(null);
             setStoredRevision(null);
             setPhase('loading');
-            void fetchStatus();
+            // Private re-fetches wait for the post-change hydration, which is
+            // the first point the account the cookie belongs to is known.
+            awaitingHydrationRef.current = true;
+        };
+        const handleHydrated = (event: Event) => {
+            if (!awaitingHydrationRef.current) return;
+            awaitingHydrationRef.current = false;
+            const detail = (event as CustomEvent).detail as
+                {authenticated?: boolean; unobserved?: boolean} | undefined;
+            // A failed whoami says nothing about the account: keep the last
+            // known one and retry the fetch.
+            const next = detail && !detail.unobserved ? !!detail.authenticated : authed;
+            if (next === authed) {
+                void fetchStatus();
+            } else {
+                setAuthed(next);
+            }
         };
         document.addEventListener('crank:private-state-purged', handlePurged);
-        return () => document.removeEventListener('crank:private-state-purged', handlePurged);
-    }, [fetchStatus]);
+        document.addEventListener('crank:auth-hydrated', handleHydrated);
+        return () => {
+            document.removeEventListener('crank:private-state-purged', handlePurged);
+            document.removeEventListener('crank:auth-hydrated', handleHydrated);
+        };
+    }, [fetchStatus, authed]);
 
     const handleAction = React.useCallback((action: string) => {
         switch (action) {
@@ -737,7 +765,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         }
     }, [fetchStatus]);
 
-    if (!isAuthenticated) {
+    if (!authed) {
         return (
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
