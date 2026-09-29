@@ -379,3 +379,25 @@ numbered merge migration if a head split remains, keeping
     rows for both catalogs); until it completes, sources with a NULL
     `last_crawl_at` sort as "never crawled" in the due ordering. A release is
     not complete until this step has run and verified.
+
+## Allocation: 0047 (issue #477)
+
+- **0047 → #477**, `0047_companycorrection`, parent
+  `0045_jobsourcecatalog_consecutive_failures` while #474's
+  `0046_alter_companyfieldevidence_state` is unmerged; if #474 merges first,
+  re-parent 0047 onto 0046 before merge. Exactly one operation, a
+  `CreateModel` for the new `CompanyCorrection` table. The unique constraint
+  (`requester`, `idempotency_key`) is unconditioned; no partial unique
+  constraint is used (MySQL W036), and the one-pending-per-field rule is
+  serialized with `select_for_update` on the organization row instead.
+- On MySQL the migration emits `CREATE TABLE` (unique constraint inline)
+  followed by deferred `ADD CONSTRAINT ... FOREIGN KEY` statements for the four
+  foreign keys and `CREATE INDEX` for `status` and the
+  `crank_cc_org_field_status_idx` index. Every statement touches only the new,
+  empty table.
+- **Recovery if `migrate` is interrupted inside 0047.** `showmigrations crank`
+  lists 0047 unapplied. Run `SHOW TABLES LIKE 'crank_companycorrection'`. If the
+  table exists it is empty (no code writes to it before the migration is
+  recorded): `DROP TABLE crank_companycorrection;` and rerun `migrate`. Never
+  `--fake` 0047, since foreign keys or an index may be missing.
+- **Rollback.** The table persists harmlessly; older pods never read it.

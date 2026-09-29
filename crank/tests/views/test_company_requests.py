@@ -581,3 +581,106 @@ class CompanyRequestAdminTest(TestCase):
         req.refresh_from_db()
         self.assertEqual(req.status, CompanyRequest.Status.PENDING)
         message.assert_called_once()
+
+
+@override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
+class CompanyCorrectionAdminTest(TestCase):
+    def setUp(self):
+        import uuid
+
+        from crank.models.company_correction import CompanyCorrection
+
+        self.CompanyCorrection = CompanyCorrection
+        self.factory = RequestFactory()
+        self.staff = User.objects.create_superuser(username="cadmin", password="pw-477-xyz", email="c@test.com")
+        self.user = User.objects.create_user(username="creq", password="pw-477-xyz")
+        self.org = Organization.objects.create(name="Acme", status=1)
+        self.client.force_login(self.staff)
+        from django.contrib.admin.sites import AdminSite
+        from crank.admin import CompanyCorrectionAdmin
+
+        self.admin = CompanyCorrectionAdmin(CompanyCorrection, AdminSite())
+        self.make = lambda **kw: CompanyCorrection.objects.create(
+            requester=self.user,
+            organization=self.org,
+            field_key=kw.pop("field_key", "rto_policy"),
+            proposed_value="Hybrid",
+            evidence_url="https://acme.example.com/rto",
+            idempotency_key=uuid.uuid4(),
+            **kw,
+        )
+
+    def _post(self, confirm="yes"):
+        request = self.factory.post("/", {"confirm": confirm})
+        request.user = self.staff
+        request.session = SessionStore()
+        setattr(request, "_messages", FallbackStorage(request))
+        return request
+
+    def _qs(self):
+        return self.CompanyCorrection.objects.all()
+
+    def test_actions_without_confirmation_change_nothing(self):
+        item = self.make()
+        for action in (
+            self.admin.accept_corrections,
+            self.admin.reject_corrections,
+            self.admin.mark_corrections_duplicate,
+        ):
+            action(self._post(confirm="no"), self._qs())
+        item.refresh_from_db()
+        self.assertEqual(item.status, "pending")
+        self.assertEqual(OperationalChangeAudit.objects.count(), 0)
+
+    def test_accept_writes_evidence_and_audit(self):
+        from crank.models.company_profile import CompanyFieldEvidence
+
+        item = self.make()
+        self.admin.accept_corrections(self._post(), self._qs())
+        item.refresh_from_db()
+        self.assertEqual(item.status, "accepted")
+        self.assertEqual(CompanyFieldEvidence.objects.get().value_text, "Hybrid")
+        audit = OperationalChangeAudit.objects.get()
+        self.assertEqual((audit.action, audit.target_type, audit.actor), ("accept", "company_correction", self.staff))
+        self.assertTrue(audit.confirmed)
+
+    def test_team_scope_stays_pending_with_message(self):
+        item = self.make(scope_level="team", scope_value="Platform")
+        request = self._post()
+        self.admin.accept_corrections(request, self._qs())
+        item.refresh_from_db()
+        self.assertEqual(item.status, "pending")
+        self.assertEqual(OperationalChangeAudit.objects.count(), 0)
+        self.assertIn("team scope", " ".join(str(m) for m in request._messages))
+
+    def test_reject_and_duplicate_touch_only_the_correction(self):
+        from crank.models.company_profile import CompanyFieldEvidence
+
+        rejected, duplicate = self.make(), self.make(field_key="locations")
+        self.admin.reject_corrections(self._post(), self.CompanyCorrection.objects.filter(pk=rejected.pk))
+        self.admin.mark_corrections_duplicate(self._post(), self.CompanyCorrection.objects.filter(pk=duplicate.pk))
+        rejected.refresh_from_db()
+        duplicate.refresh_from_db()
+        self.assertEqual((rejected.status, duplicate.status), ("rejected", "duplicate"))
+        self.assertEqual(CompanyFieldEvidence.objects.count(), 0)
+        self.assertEqual(
+            sorted(OperationalChangeAudit.objects.values_list("action", flat=True)),
+            ["duplicate", "reject"],
+        )
+
+    def test_changelist_e2e_requires_confirmation_and_is_staff_only(self):
+        from django.urls import reverse
+
+        item = self.make()
+        url = reverse("admin:crank_companycorrection_changelist")
+        data = {"action": "reject_corrections", "_selected_action": [str(item.pk)], "index": "0", "select_across": "0"}
+        first = self.client.post(url, data)
+        self.assertContains(first, "requires an explicit confirmation step")
+        item.refresh_from_db()
+        self.assertEqual(item.status, "pending")
+        self.client.post(url, {**data, "confirm": "yes"})
+        item.refresh_from_db()
+        self.assertEqual(item.status, "rejected")
+        self.client.logout()
+        self.client.force_login(self.user)
+        self.assertNotEqual(self.client.get(url).status_code, 200)

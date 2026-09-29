@@ -3,6 +3,7 @@
 """Tests for accepted field-level evidence (issue #460)."""
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -17,7 +18,9 @@ from crank.models.publication import PublicationEvent
 from crank.services.company_evidence import (
     DEFAULT_FRESHNESS_DAYS,
     FIELD_FRESHNESS_POLICY,
+    CorrectionNotAcceptable,
     EvidenceNotAcceptable,
+    accept_correction,
     accept_observation_fields,
     field_evidence_payload,
     is_stale,
@@ -581,3 +584,132 @@ class ResolveFieldEvidenceForOrgsTests(TestCase):
 
     def test_bulk_empty_for_no_ids(self):
         assert resolve_field_evidence_for_orgs([]) == {}
+
+
+class AcceptCorrectionTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        self.org = Organization.objects.create(name="Acme", status=1)
+        self.user = User.objects.create_user(username="rev", password="pw-477-xyz")
+        self.now = timezone.now()
+        self.old = CompanyFieldEvidence.objects.create(
+            organization=self.org,
+            field_key="rto_policy",
+            value_text="Remote-first",
+            source_url="https://acme.example.com/old",
+            observed_at=self.now - timedelta(days=30),
+            validation_version="v",
+            extractor_version="v",
+            last_changed_at=self.now - timedelta(days=30),
+        )
+
+    def correction(self, **overrides):
+        import uuid
+
+        from crank.models.company_correction import CompanyCorrection
+
+        values = dict(
+            requester=self.user,
+            organization=self.org,
+            field_key="rto_policy",
+            proposed_value="Hybrid",
+            evidence_url="https://Careers.Acme.example.com/rto",
+            idempotency_key=uuid.uuid4(),
+        )
+        values.update(overrides)
+        return CompanyCorrection.objects.create(**values)
+
+    def test_company_scope_supersedes_and_creates_accepted_row(self):
+        item = self.correction()
+        evidence = accept_correction(item, reviewer=self.user, now=self.now)
+        self.old.refresh_from_db()
+        self.assertEqual(self.old.state, State.SUPERSEDED)
+        self.assertEqual(evidence.state, State.ACCEPTED)
+        self.assertEqual(evidence.value_text, "Hybrid")
+        self.assertEqual(evidence.source_domain, "careers.acme.example.com")
+        self.assertEqual(evidence.scope_json, {})
+        self.assertIsNone(evidence.observation)
+        self.assertIsNone(evidence.last_successful_fetch_at)
+        self.assertEqual(evidence.last_changed_at, self.now)
+        self.assertEqual(evidence.last_verified_at, self.now)
+        self.assertEqual(evidence.validation_version, "manual-correction.v1")
+        item.refresh_from_db()
+        self.assertEqual(item.status, "accepted")
+        self.assertEqual(item.reviewed_by, self.user)
+        self.assertEqual(resolve_field_evidence(self.org)["rto_policy"], evidence)
+        event = PublicationEvent.objects.get()
+        self.assertEqual(event.event_kind, PublicationEvent.EventKind.CHANGED)
+        self.assertEqual(event.payload, {"status": "accepted"})
+
+    def test_scope_mapping(self):
+        location = accept_correction(
+            self.correction(scope_level="location", scope_value="Germany"), reviewer=self.user
+        )
+        self.assertEqual(location.scope_json, {"countries": ["Germany"]})
+        role = accept_correction(
+            self.correction(scope_level="role", scope_value="engineering"), reviewer=self.user
+        )
+        self.assertEqual(role.scope_json, {"role_families": ["engineering"]})
+
+    def test_first_accept_without_prior_row(self):
+        evidence = accept_correction(
+            self.correction(field_key="funding_round", proposed_value="Series B"),
+            reviewer=self.user,
+            now=self.now,
+        )
+        self.assertEqual(evidence.last_changed_at, self.now)
+
+    def test_equal_value_keeps_last_changed_at(self):
+        evidence = accept_correction(
+            self.correction(proposed_value="Remote-first"), reviewer=self.user, now=self.now
+        )
+        self.assertEqual(evidence.last_changed_at, self.old.last_changed_at)
+
+    def test_supersedes_every_accepted_duplicate(self):
+        dup = CompanyFieldEvidence.objects.create(
+            organization=self.org,
+            field_key="rto_policy",
+            value_text="Dup",
+            source_url="https://acme.example.com/dup",
+            observed_at=self.now - timedelta(days=60),
+            validation_version="v",
+            extractor_version="v",
+        )
+        accept_correction(self.correction(), reviewer=self.user)
+        dup.refresh_from_db()
+        self.assertEqual(dup.state, State.SUPERSEDED)
+        self.assertEqual(
+            CompanyFieldEvidence.objects.filter(
+                organization=self.org, field_key="rto_policy", state=State.ACCEPTED
+            ).count(),
+            1,
+        )
+
+    def test_team_scope_refused_and_stays_pending(self):
+        item = self.correction(scope_level="team", scope_value="Platform")
+        with self.assertRaises(CorrectionNotAcceptable):
+            accept_correction(item, reviewer=self.user)
+        item.refresh_from_db()
+        self.assertEqual(item.status, "pending")
+        self.assertEqual(PublicationEvent.objects.count(), 0)
+
+    def test_second_accept_of_same_correction_refused(self):
+        item = self.correction()
+        accept_correction(item, reviewer=self.user)
+        with self.assertRaises(CorrectionNotAcceptable):
+            accept_correction(item, reviewer=self.user)
+
+    def test_publication_failure_rolls_back_everything(self):
+        item = self.correction()
+        with patch(
+            "crank.services.company_evidence.publication.record_event",
+            side_effect=RuntimeError("outbox down"),
+        ):
+            with self.assertRaises(RuntimeError):
+                accept_correction(item, reviewer=self.user)
+        self.old.refresh_from_db()
+        self.assertEqual(self.old.state, State.ACCEPTED)
+        item.refresh_from_db()
+        self.assertEqual(item.status, "pending")
+        self.assertEqual(CompanyFieldEvidence.objects.count(), 1)

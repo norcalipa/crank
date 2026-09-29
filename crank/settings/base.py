@@ -182,6 +182,7 @@ JOB_SEARCH_TURN_MAX_ATTEMPTS = int(os.environ.get("JOB_SEARCH_TURN_MAX_ATTEMPTS"
 # a turn whose worker was interrupted (crash/kill).
 JOB_SEARCH_TURN_LEASE_SECONDS = int(os.environ.get("JOB_SEARCH_TURN_LEASE_SECONDS", "300"))
 COMPANY_REQUEST_RATE_LIMIT_PER_HOUR = int(os.environ.get("COMPANY_REQUEST_RATE_LIMIT_PER_HOUR", "5"))
+COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR = int(os.environ.get("COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR", "10"))
 JOB_SEARCH_PROVIDER = os.environ.get("JOB_SEARCH_PROVIDER", "demo")
 REDIS_MASTER_URL = os.environ.get("REDIS_MASTER_URL", "redis://redis-master:6379/0")
 

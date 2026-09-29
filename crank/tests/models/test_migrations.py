@@ -68,3 +68,20 @@ class SilencedChecksTests(TransactionTestCase):
     def test_w036_is_silenced(self):
         from django.conf import settings
         self.assertIn("models.W036", settings.SILENCED_SYSTEM_CHECKS)
+
+
+class CompanyCorrectionMigrationShapeTests(TransactionTestCase):
+    """0047 is one CreateModel with an unconditioned unique constraint (MySQL W036)."""
+
+    def test_single_create_model_chained_to_0045(self):
+        from django.db.migrations import CreateModel
+        from django.db.models import UniqueConstraint
+
+        loader = MigrationLoader(connection, ignore_no_migrations=True)
+        migration = loader.disk_migrations[("crank", "0047_companycorrection")]
+        self.assertIn(("crank", "0045_jobsourcecatalog_consecutive_failures"), migration.dependencies)
+        self.assertEqual([type(op) for op in migration.operations], [CreateModel])
+        constraints = migration.operations[0].options["constraints"]
+        self.assertEqual(len(constraints), 1)
+        self.assertIsInstance(constraints[0], UniqueConstraint)
+        self.assertIsNone(constraints[0].condition)

@@ -372,10 +372,96 @@ def field_evidence_payload(organization, *, now: datetime | None = None) -> dict
     return {"fields": fields, "unverified_fields": unverified_fields}
 
 
+CORRECTION_VERSION = "manual-correction.v1"
+CORRECTION_SCOPE_TO_EVIDENCE_SCOPE = {
+    "company": None,
+    "location": "countries",
+    "role": "role_families",
+}
+
+
+class CorrectionNotAcceptable(Exception):
+    """Raised when a correction cannot be applied as accepted evidence."""
+
+
+def accept_correction(correction, *, reviewer, now: datetime | None = None):
+    """Apply a pending correction as the accepted evidence for its field.
+
+    Same lock-and-supersede shape as :func:`accept_observation_fields`. Team
+    scope is refused: matching only understands ``countries`` and
+    ``role_families``, so a team scope would silently act company-wide.
+    Nothing was fetched, so ``last_successful_fetch_at`` stays empty.
+    """
+    scope_key = CORRECTION_SCOPE_TO_EVIDENCE_SCOPE.get(correction.scope_level, False)
+    if scope_key is False:
+        raise CorrectionNotAcceptable(
+            f"{correction.scope_level} scope cannot be applied automatically"
+        )
+    now = now or timezone.now()
+    scope_json = {scope_key: [correction.scope_value]} if scope_key else {}
+    with transaction.atomic():
+        locked = type(correction).objects.select_for_update().get(pk=correction.pk)
+        if locked.status != locked.Status.PENDING:
+            raise CorrectionNotAcceptable("correction is no longer pending")
+        Organization.objects.select_for_update().filter(pk=locked.organization_id).first()
+        locked_rows = list(
+            CompanyFieldEvidence.objects.filter(
+                organization_id=locked.organization_id,
+                field_key=locked.field_key,
+                state=State.ACCEPTED,
+            )
+            .select_for_update()
+            .order_by("-observed_at", "-id")
+        )
+        current = locked_rows[0] if locked_rows else None
+        if locked_rows:
+            CompanyFieldEvidence.objects.filter(
+                pk__in=[row.pk for row in locked_rows]
+            ).update(state=State.SUPERSEDED, modified=now)
+        if current is None or current.value_text != locked.proposed_value:
+            last_changed_at = now
+        else:
+            last_changed_at = current.last_changed_at
+        evidence = CompanyFieldEvidence.objects.create(
+            organization_id=locked.organization_id,
+            field_key=locked.field_key,
+            value_text=locked.proposed_value,
+            source_url=locked.evidence_url,
+            source_domain=(urlsplit(locked.evidence_url).hostname or "").lower(),
+            observation=None,
+            scope_json=scope_json,
+            observed_at=now,
+            validation_version=CORRECTION_VERSION,
+            extractor_version=CORRECTION_VERSION,
+            state=State.ACCEPTED,
+            last_checked_at=now,
+            last_successful_fetch_at=None,
+            last_changed_at=last_changed_at,
+            last_verified_at=now,
+        )
+        locked.status = locked.Status.ACCEPTED
+        locked.reviewed_by = reviewer
+        locked.reviewed_at = now
+        locked.save(update_fields=["status", "reviewed_by", "reviewed_at", "modified"])
+        publication.record_event(
+            target_type=PublicationEvent.TargetType.ORGANIZATION,
+            target_id=locked.organization_id,
+            event_kind=PublicationEvent.EventKind.CHANGED,
+            payload={"status": "accepted"},
+        )
+    correction.status = locked.status
+    correction.reviewed_by = reviewer
+    correction.reviewed_at = now
+    return evidence
+
+
 __all__ = [
+    "CORRECTION_SCOPE_TO_EVIDENCE_SCOPE",
+    "CorrectionNotAcceptable",
     "DEFAULT_FRESHNESS_DAYS",
     "FIELD_FRESHNESS_POLICY",
     "EvidenceNotAcceptable",
+    "accept_correction",
     "accept_observation_fields",
     "field_evidence_payload",
     "is_stale",

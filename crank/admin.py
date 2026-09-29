@@ -1,10 +1,11 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.core import checks
 from django.db import models, transaction
 from django.shortcuts import render
+from django.utils import timezone
 from django.utils.translation import gettext as _
 from crank.models.agent_run import AgentRun
 from crank.models.crawl_run import CrawlRun
@@ -14,6 +15,7 @@ from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
 from crank.models.company_profile import CompanyProfileObservation
+from crank.models.company_correction import CompanyCorrection
 from crank.models.company_request import CompanyRequest
 from crank.models.preference import UserPreference, UserPreferenceAudit
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
@@ -551,6 +553,79 @@ class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admi
 
 
 admin.site.register(CompanyRequest, CompanyRequestAdmin)
+
+
+class CompanyCorrectionAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin.ModelAdmin):
+    model = CompanyCorrection
+    list_display = ["organization", "field_key", "proposed_value", "scope_level", "requester", "status", "created"]
+    list_filter = ["status", "field_key", "scope_level"]
+    search_fields = ["organization__name", "requester__username", "requester__email"]
+    list_select_related = ["requester", "organization"]
+    readonly_fields = [
+        "requester", "organization", "field_key", "current_value", "current_evidence",
+        "proposed_value", "evidence_url", "scope_level", "scope_value", "note", "status",
+        "reviewed_by", "reviewed_at", "idempotency_key", "created", "modified",
+    ]
+    fields = readonly_fields + ["admin_note"]
+    actions = ["accept_corrections", "reject_corrections", "mark_corrections_duplicate"]
+    confirmable_actions = ["accept_corrections", "reject_corrections", "mark_corrections_duplicate"]
+
+    def _audit(self, request, item, action, old, new):
+        OperationalChangeAudit.record(actor=request.user, target_type="company_correction", target_id=item.pk, action=action, old_value=old, new_value=new, confirmed=True)
+
+    def _close(self, request, queryset, status, action):
+        updated = 0
+        with transaction.atomic():
+            for item in queryset.filter(status=CompanyCorrection.Status.PENDING):
+                old = {"status": item.status}
+                item.status = status
+                item.reviewed_by = request.user
+                item.reviewed_at = timezone.now()
+                item.save(update_fields=["status", "reviewed_by", "reviewed_at", "modified"])
+                self._audit(request, item, action, old, {"status": item.status})
+                updated += 1
+        return updated
+
+    @admin.action(description="Accept selected corrections as accepted evidence")
+    def accept_corrections(self, request, queryset):
+        if not self._require_confirmation(request):
+            return
+        accepted = 0
+        refused = 0
+        with transaction.atomic():
+            for item in queryset.filter(status=CompanyCorrection.Status.PENDING):
+                old = {"status": item.status}
+                try:
+                    company_evidence.accept_correction(item, reviewer=request.user)
+                except company_evidence.CorrectionNotAcceptable:
+                    refused += 1
+                    continue
+                self._audit(request, item, "accept", old, {"status": item.status})
+                accepted += 1
+        self.message_user(request, f"{accepted} correction(s) accepted and audited.")
+        if refused:
+            self.message_user(
+                request,
+                f"{refused} correction(s) with team scope were left pending: team scope cannot be applied automatically.",
+                level=messages.WARNING,
+            )
+
+    @admin.action(description="Reject selected corrections")
+    def reject_corrections(self, request, queryset):
+        if not self._require_confirmation(request):
+            return
+        updated = self._close(request, queryset, CompanyCorrection.Status.REJECTED, "reject")
+        self.message_user(request, f"{updated} correction(s) rejected and audited.")
+
+    @admin.action(description="Mark selected corrections as duplicates")
+    def mark_corrections_duplicate(self, request, queryset):
+        if not self._require_confirmation(request):
+            return
+        updated = self._close(request, queryset, CompanyCorrection.Status.DUPLICATE, "duplicate")
+        self.message_user(request, f"{updated} correction(s) marked as duplicates and audited.")
+
+
+admin.site.register(CompanyCorrection, CompanyCorrectionAdmin)
 
 admin.site.register(ScoreType, ScoreTypeAdmin)
 admin.site.register(ScoreAlgorithm, ScoreAlgorithmAdmin)
