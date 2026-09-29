@@ -597,12 +597,22 @@ class SourceCatalogAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin
         "cadence",
         "last_success_at",
         "last_failure_at",
+        "last_crawl_at",
+        "last_attempt_at",
+        "consecutive_failures",
     ]
     list_filter = ["approval_state", "enabled", "cadence"]
     list_editable = ["enabled"]
     list_select_related = ["organization"]
     search_fields = ["name", "organization__name", "adapter_key"]
-    readonly_fields = ["approved_at", "created", "modified"]
+    readonly_fields = [
+        "approved_at",
+        "last_crawl_at",
+        "last_attempt_at",
+        "consecutive_failures",
+        "created",
+        "modified",
+    ]
     filter_horizontal = ["supported_score_types"]
     actions = ["approve_sources", "block_sources", "enable_sources", "disable_sources", "trigger_crawls"]
     # Allow-list enforced by ConfirmableAdminActionMixin.check().
@@ -762,10 +772,17 @@ class JobSourceCatalogAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, ad
 
     model = JobSourceCatalog
     inlines = [CrawlRunJobSourceInline]
-    list_display = ["name", "adapter_key", "approval_state", "enabled", "base_url", "created", "modified"]
+    list_display = [
+        "name", "adapter_key", "approval_state", "enabled", "base_url",
+        "last_crawl_at", "last_attempt_at", "consecutive_failures",
+        "created", "modified",
+    ]
     list_filter = ["approval_state", "enabled"]
     search_fields = ["name", "adapter_key", "base_url"]
-    readonly_fields = ["created", "modified"]
+    readonly_fields = [
+        "last_crawl_at", "last_attempt_at", "consecutive_failures",
+        "created", "modified",
+    ]
     actions = ["enable_sources", "disable_sources", "approve_sources", "block_sources", "trigger_crawls"]
     # Allow-list enforced by ConfirmableAdminActionMixin.check().
     confirmable_actions = [

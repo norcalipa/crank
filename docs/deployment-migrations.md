@@ -294,3 +294,88 @@ from `0029_merge_20260815_1645` to the then-latest landed head (likely
 `0030_jobsearch_turn_state` or `0032_score_tuple_anchor`) and adds a
 numbered merge migration if a head split remains, keeping
 `makemigrations --check --dry-run` clean on the merged result.
+
+## Allocation: 0040-0045 (issue #468)
+
+- **0040-0045 → #468**, parent `0039_match_result_generation`. Additive
+  `last_attempt_at` (indexed, nullable) and `consecutive_failures` (default 0)
+  on `SourceCatalog` and `JobSourceCatalog`, plus help-text-only
+  `AlterField`s on `last_crawl_at` (no DDL). **Every migration holds exactly
+  one DDL statement**, enforced by
+  `SourceRefreshMigrationShapeTests` in
+  `crank/tests/services/test_source_freshness.py`:
+
+  | Migration | Statement |
+  | --- | --- |
+  | `0040_source_refresh_state` | `ADD COLUMN sourcecatalog.last_attempt_at` |
+  | `0041_sourcecatalog_last_attempt_index` | `CREATE INDEX` on it |
+  | `0042_sourcecatalog_consecutive_failures` | `ADD COLUMN sourcecatalog.consecutive_failures` (`db_default=0`) |
+  | `0043_jobsourcecatalog_last_attempt_at` | `ADD COLUMN jobsourcecatalog.last_attempt_at` |
+  | `0044_jobsourcecatalog_last_attempt_index` | `CREATE INDEX` on it |
+  | `0045_jobsourcecatalog_consecutive_failures` | `ADD COLUMN jobsourcecatalog.consecutive_failures` (`db_default=0`) |
+
+  Why the split: MySQL commits every DDL statement implicitly, while Django
+  records a migration only after all of its operations (and deferred index
+  SQL) succeed. Each of these migrations therefore performs exactly one DDL
+  statement, so no migration can be left with an earlier statement applied and
+  a later one pending. The two `consecutive_failures` `AddField`s use
+  `db_default=0` (Django >= 5.0; production pins `Django==5.0.14`): the MySQL
+  schema editor then keeps the database default and does not follow
+  `ADD COLUMN ... DEFAULT 0 NOT NULL` with a second
+  `ALTER COLUMN ... DROP DEFAULT`. This was checked against the Django 5.0.14
+  MySQL schema editor (`collect_sql=True`, no live server): the old field
+  emitted both statements, the `db_default` field emits only the `ADD COLUMN`.
+  The models keep `default=0` as well so Python-side instances carry an
+  integer. Index creation is its own migration because `AddField` with
+  `db_index=True` queues a second, deferred `CREATE INDEX` statement.
+  Expected MySQL behavior: nullable and constant-default `AddField` and
+  `CREATE INDEX` run as online `ALGORITHM=INPLACE` (or INSTANT) DDL on InnoDB,
+  taking only a brief metadata lock at start and end; both catalogs are small
+  operational tables. Old pods ignore the new columns, so rollback is a
+  code-only redeploy. The SQL shape is `sqlmigrate`-verified on SQLite and by
+  the offline MySQL editor check above; there is no MySQL instance in CI.
+
+  **Recovery if `migrate` is interrupted during 0040-0045.** One residual
+  window remains and is inherent to Django on MySQL: the statement's DDL has
+  committed but Django has not yet recorded the migration (for example the
+  process is killed right after the `ALTER`). A rerun would then fail with a
+  duplicate column or duplicate key name. To recover, run
+  `python manage.py showmigrations crank` to find the first unapplied
+  migration in 0040-0045, then check whether its change is already present:
+
+  ```sql
+  SHOW COLUMNS FROM crank_sourcecatalog;
+  SHOW INDEX FROM crank_sourcecatalog;
+  SHOW COLUMNS FROM crank_jobsourcecatalog;
+  SHOW INDEX FROM crank_jobsourcecatalog;
+  ```
+
+  | Migration | Table | Column / index to look for |
+  | --- | --- | --- |
+  | `0040_source_refresh_state` | `crank_sourcecatalog` | column `last_attempt_at` |
+  | `0041_sourcecatalog_last_attempt_index` | `crank_sourcecatalog` | index `crank_sourcecatalog_last_attempt_at_ec1c91f2` |
+  | `0042_sourcecatalog_consecutive_failures` | `crank_sourcecatalog` | column `consecutive_failures` |
+  | `0043_jobsourcecatalog_last_attempt_at` | `crank_jobsourcecatalog` | column `last_attempt_at` |
+  | `0044_jobsourcecatalog_last_attempt_index` | `crank_jobsourcecatalog` | index `crank_jobsourcecatalog_last_attempt_at_4bcab63e` |
+  | `0045_jobsourcecatalog_consecutive_failures` | `crank_jobsourcecatalog` | column `consecutive_failures` |
+
+  If that column or index is present but the migration is unapplied, run
+  `python manage.py migrate crank <that migration> --fake` (for example
+  `python manage.py migrate crank 0042_sourcecatalog_consecutive_failures --fake`),
+  then rerun `python manage.py migrate`. If it is absent, simply rerun
+  `migrate`; do not fake it. Repeat for the next unapplied migration if
+  `migrate` stops again. The `help_text`-only `AlterField` on `last_crawl_at`
+  in 0040 and 0043 emits no DDL, so it needs no check.
+  - **Required post-deploy step:** after 0045 is applied, run
+    `python manage.py backfill_source_refresh_state --dry-run` and then
+    `python manage.py backfill_source_refresh_state` to fill NULL
+    `last_crawl_at` from each source's latest SUCCESS `CrawlRun` (never
+    PARTIAL). The backfill is deliberately not in a migration (a data step
+    bundled with DDL reintroduces the interrupted-rerun problem above). It is
+    chunked (500-row keyset batches by default; `--batch-size` must be >= 1),
+    uses one set-based `UPDATE` per chunk with no per-source queries, is
+    idempotent, and is safe to re-run from any point: it only touches rows
+    still NULL. **Verify** by re-running with `--dry-run` (it must report `0`
+    rows for both catalogs); until it completes, sources with a NULL
+    `last_crawl_at` sort as "never crawled" in the due ordering. A release is
+    not complete until this step has run and verified.

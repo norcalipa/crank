@@ -405,6 +405,12 @@ JOB_PIPELINE_DEADLINE_SECONDS = _env_int("JOB_PIPELINE_DEADLINE_SECONDS", 300)
 # operators enable the command and unsuspend the matching CronJobs.
 ORGANIZATION_FRESHNESS_HOURS = _env_int("ORGANIZATION_FRESHNESS_HOURS", 168)
 JOB_FRESHNESS_HOURS = _env_int("JOB_FRESHNESS_HOURS", 24)
+# Planner refresh TTL for job sources (distinct from the JOB_FRESHNESS_HOURS
+# stale threshold) plus retry backoff and cron start-jitter tolerance.
+JOB_REFRESH_TTL_HOURS = _env_int("JOB_REFRESH_TTL_HOURS", 6)
+SOURCE_RETRY_BACKOFF_MINUTES = _env_int("SOURCE_RETRY_BACKOFF_MINUTES", 60)
+SOURCE_RETRY_BACKOFF_MAX_HOURS = _env_int("SOURCE_RETRY_BACKOFF_MAX_HOURS", 24)
+CRAWL_SCHEDULE_TOLERANCE_MINUTES = _env_int("CRAWL_SCHEDULE_TOLERANCE_MINUTES", 15)
 CRAWL_CRON_ENABLED = _env_bool("CRAWL_CRON_ENABLED", False)
 ORGANIZATION_CRAWL_CRON = os.environ.get("ORGANIZATION_CRAWL_CRON", "0 */6 * * *")
 JOB_CRAWL_CRON = os.environ.get("JOB_CRAWL_CRON", "*/15 * * * *")
