@@ -18,7 +18,20 @@ function flushMicrotasks(times = 4): Promise<void> {
 }
 
 describe('app-nav (issue #465 private-state purge)', () => {
+    const storageListeners: EventListener[] = [];
+    const realAddEventListener = window.addEventListener.bind(window);
+
     beforeEach(() => {
+        // Each fresh require() registers another window `storage` listener;
+        // track them so one test's module never handles the next test's event.
+        jest.spyOn(window, 'addEventListener').mockImplementation(
+            (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
+                if (type === 'storage') {
+                    storageListeners.push(listener as EventListener);
+                }
+                realAddEventListener(type, listener, options);
+            },
+        );
         document.body.innerHTML = '';
         window.localStorage.clear();
         window.sessionStorage.clear();
@@ -26,6 +39,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
     });
 
     afterEach(() => {
+        storageListeners.splice(0).forEach((listener) => window.removeEventListener('storage', listener));
         jest.resetModules();
         jest.restoreAllMocks();
     });
@@ -50,7 +64,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
         });
         await flushMicrotasks();
 
-        expect(received).toEqual({authenticated: true, username: 'alice'});
+        expect(received).toEqual({authenticated: true, username: 'alice', unobserved: false});
     });
 
     test('applyAuthState dispatches a null username when anonymous', async () => {
@@ -65,7 +79,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
         });
         await flushMicrotasks();
 
-        expect(received).toEqual({authenticated: false, username: null});
+        expect(received).toEqual({authenticated: false, username: null, unobserved: true});
     });
 
     test('signing out purges every crank:jobsearch:* key, the auth intent, and crank:last-account before the request', async () => {
@@ -74,6 +88,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
         window.localStorage.setItem('crank:last-account', 'alice');
         window.localStorage.setItem('unrelated-key', 'keep-me');
         window.sessionStorage.setItem('crank:auth-intent', '{"route":"/chat/"}');
+        window.sessionStorage.setItem('crank:workspace:v1', '{"v":1}');
 
         // Mirrors the cached auth-neutral shell's form in
         // templates/_navigation.html: every logout form carries
@@ -108,6 +123,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
         expect(window.localStorage.getItem('crank:jobsearch:inflight:1:a')).toBeNull();
         expect(window.localStorage.getItem('crank:last-account')).toBeNull();
         expect(window.sessionStorage.getItem('crank:auth-intent')).toBeNull();
+        expect(window.sessionStorage.getItem('crank:workspace:v1')).toBeNull();
         expect(window.localStorage.getItem('unrelated-key')).toBe('keep-me');
     });
 
@@ -179,5 +195,198 @@ describe('app-nav (issue #465 private-state purge)', () => {
         } finally {
             Object.defineProperty(window, 'localStorage', {value: original, configurable: true});
         }
+    });
+
+    function whoamiAs(getUser: () => string | null): void {
+        (global.fetch as jest.Mock).mockImplementation((url: string) => {
+            if (String(url).includes('/api/account/whoami/')) {
+                const user = getUser();
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve(user ? {authenticated: true, username: user} : {authenticated: false}),
+                });
+            }
+            return Promise.resolve({ok: true});
+        });
+    }
+
+    function loadAppNav(): void {
+        jest.isolateModules(() => {
+            require('./app-nav.js');
+        });
+    }
+
+    test('submitting logout does not announce before the server has processed it', async () => {
+        whoamiAs(() => 'alice');
+        document.body.innerHTML = '<form data-nav-logout-form method="post" action="/logout/"></form>';
+        loadAppNav();
+        await flushMicrotasks();
+        const form = document.querySelector('form') as HTMLFormElement;
+        form.dispatchEvent(new Event('submit', {cancelable: true, bubbles: true}));
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+    });
+
+    test('a delayed logout POST sends no signal, and the signal follows the anonymous hydration after it', async () => {
+        let user: string | null = 'alice';
+        whoamiAs(() => user);
+        let releaseLogout: () => void = () => undefined;
+        const base = (global.fetch as jest.Mock).getMockImplementation() as (url: string) => Promise<unknown>;
+        (global.fetch as jest.Mock).mockImplementation((url: string, init?: {method?: string}) => {
+            if (init?.method === 'POST') {
+                return new Promise((resolve) => {
+                    releaseLogout = () => { user = null; resolve({ok: true}); };
+                });
+            }
+            return base(url);
+        });
+        Object.defineProperty(window, 'location', {value: {...window.location, href: '/x/'}, writable: true});
+        document.body.innerHTML = '<form data-nav-logout-form data-nav-js-logout action="/accounts/logout/"></form>';
+        loadAppNav();
+        await flushMicrotasks();
+        expect(window.sessionStorage.getItem('crank:nav-account-seen')).toBe('u:alice');
+        document.querySelector('form')!.dispatchEvent(new Event('submit', {cancelable: true, bubbles: true}));
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+        releaseLogout();
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+        // The next page load's hydration observes the completed logout.
+        jest.resetModules();
+        loadAppNav();
+        await flushMicrotasks();
+        const nonce = window.localStorage.getItem('crank:account-epoch');
+        expect(nonce).toBeTruthy();
+        expect(nonce).not.toContain('alice');
+        expect(window.sessionStorage.getItem('crank:nav-account-seen')).toBe('anon');
+    });
+
+    test('signing in as another account announces once the hydration observes it', async () => {
+        let user: string | null = 'alice';
+        whoamiAs(() => user);
+        loadAppNav();
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+        user = 'bob';
+        jest.resetModules();
+        loadAppNav();
+        await flushMicrotasks();
+        const nonce = window.localStorage.getItem('crank:account-epoch');
+        expect(nonce).toBeTruthy();
+        expect(nonce).not.toMatch(/alice|bob/);
+    });
+
+    test('anonymous to signed-in (login) announces; an unchanged account does not', async () => {
+        let user: string | null = null;
+        whoamiAs(() => user);
+        loadAppNav();
+        await flushMicrotasks();
+        jest.resetModules();
+        loadAppNav();
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+        user = 'bob';
+        jest.resetModules();
+        loadAppNav();
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeTruthy();
+    });
+
+    test('a failed whoami is not an account change', async () => {
+        whoamiAs(() => 'alice');
+        loadAppNav();
+        await flushMicrotasks();
+        (global.fetch as jest.Mock).mockRejectedValue(new Error('offline'));
+        jest.resetModules();
+        loadAppNav();
+        await flushMicrotasks();
+        (global.fetch as jest.Mock).mockResolvedValue({ok: false});
+        jest.resetModules();
+        loadAppNav();
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+        expect(window.sessionStorage.getItem('crank:nav-account-seen')).toBe('u:alice');
+    });
+
+    test('a broken sessionStorage does not break hydration or announce', async () => {
+        whoamiAs(() => 'alice');
+        const original = window.sessionStorage;
+        Object.defineProperty(window, 'sessionStorage', {
+            value: {getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); }, removeItem: () => undefined},
+            configurable: true,
+        });
+        try {
+            loadAppNav();
+            await flushMicrotasks();
+            expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+        } finally {
+            Object.defineProperty(window, 'sessionStorage', {value: original, configurable: true});
+        }
+    });
+
+    test('a broken localStorage does not stop the announcement path', async () => {
+        let user: string | null = 'alice';
+        whoamiAs(() => user);
+        loadAppNav();
+        await flushMicrotasks();
+        user = 'bob';
+        const spy = jest.spyOn(Storage.prototype, 'setItem').mockImplementation((key: string) => {
+            if (key === 'crank:account-epoch') throw new Error('quota');
+        });
+        jest.resetModules();
+        expect(() => loadAppNav()).not.toThrow();
+        await flushMicrotasks();
+        spy.mockRestore();
+    });
+
+    test('another tab changing the account resets this tab own state, keeps shared drafts, and re-hydrates', async () => {
+        (global.fetch as jest.Mock).mockImplementation((url: string) => {
+            if (String(url).includes('/api/account/whoami/')) {
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({authenticated: true, username: 'bob'}),
+                });
+            }
+            return Promise.resolve({ok: true});
+        });
+        jest.isolateModules(() => {
+            require('./app-nav.js');
+        });
+        await flushMicrotasks();
+        window.sessionStorage.setItem('crank:workspace:v1', '{"v":1}');
+        window.sessionStorage.setItem('crank:auth-intent', '{}');
+        window.localStorage.setItem('crank:jobsearch:draft:pending', 'alice draft');
+        const purged = jest.fn();
+        const hydrated = jest.fn();
+        document.addEventListener('crank:private-state-purged', purged);
+        document.addEventListener('crank:auth-hydrated', ((e: CustomEvent) => hydrated(e.detail)) as EventListener);
+
+        window.dispatchEvent(new StorageEvent('storage', {key: 'crank:account-epoch', newValue: 'n1'}));
+        await flushMicrotasks();
+
+        expect(purged).toHaveBeenCalledTimes(1);
+        expect(window.sessionStorage.getItem('crank:workspace:v1')).toBeNull();
+        expect(window.sessionStorage.getItem('crank:auth-intent')).toBeNull();
+        // Shared localStorage belongs to the tab that changed the account:
+        // the #465 sign-in handoff draft must survive another tab's login.
+        expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBe('alice draft');
+        expect(hydrated).toHaveBeenCalledWith({authenticated: true, username: 'bob', unobserved: false});
+        // The receiving tab never re-announces, even though its hydrated
+        // account differs from the one it last saw.
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+        expect(window.sessionStorage.getItem('crank:nav-account-seen')).toBe('u:bob');
+        document.removeEventListener('crank:private-state-purged', purged);
+    });
+
+    test('storage events for unrelated keys are ignored', async () => {
+        jest.isolateModules(() => {
+            require('./app-nav.js');
+        });
+        await flushMicrotasks();
+        const purged = jest.fn();
+        document.addEventListener('crank:private-state-purged', purged);
+        window.dispatchEvent(new StorageEvent('storage', {key: 'something-else', newValue: 'x'}));
+        expect(purged).not.toHaveBeenCalled();
+        document.removeEventListener('crank:private-state-purged', purged);
     });
 });

@@ -8,6 +8,7 @@ import * as React from 'react';
 import OrganizationList from './OrganizationList';
 import SuggestCompanyHost from './suggestCompany/SuggestCompanyHost';
 import * as suggestCompanyController from './suggestCompany/controller';
+import {clearWorkspaceContext, getWorkspaceSnapshot, resetWorkspaceForTests, setWorkspaceAccount, setWorkspaceContext} from './workspace/store';
 
 interface Organization {
     id: number;
@@ -89,6 +90,10 @@ describe('OrganizationList', () => {
 
     afterEach(() => {
         jest.restoreAllMocks();
+        // The list writes `company` into the URL (issue #479); keep tests
+        // independent of each other.
+        window.history.replaceState({}, '', '/');
+        resetWorkspaceForTests();
     });
 
     const organizations: Organization[] = [
@@ -983,6 +988,179 @@ describe('OrganizationList', () => {
         });
     });
 
+    describe('workspace context, URL and position (issue #479)', () => {
+        test('reports the rankings context for search and page changes', async () => {
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+            await waitFor(() => expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'rankings', page: 1}));
+            fireEvent.change(screen.getByPlaceholderText('Search organizations'), {target: {value: 'Organization'}});
+            await waitFor(() => expect(getWorkspaceSnapshot().context).toMatchObject({searchTerm: 'Organization'}));
+            fireEvent.click(screen.getByTestId('page-link-2'));
+            await waitFor(() => expect(getWorkspaceSnapshot().context).toMatchObject({page: 2}));
+        });
+
+        test('opening a company writes company= via replaceState (no new history entry) and closing removes it', async () => {
+            const pushSpy = jest.spyOn(window.history, 'pushState');
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+            expect(new URLSearchParams(window.location.search).get('company')).toBe('1');
+            expect(getWorkspaceSnapshot().context).toMatchObject({
+                surface: 'company', organizationId: 1, organizationName: 'Organization 1',
+            });
+            expect(pushSpy).not.toHaveBeenCalled();
+
+            fireEvent.click(screen.getByRole('button', {name: 'Close'}));
+            await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+            expect(new URLSearchParams(window.location.search).has('company')).toBe(false);
+            expect(getWorkspaceSnapshot().context?.organizationId).toBeUndefined();
+            expect(getWorkspaceSnapshot().context?.surface).toBe('rankings');
+        });
+
+        test('the URL only ever carries the allowlisted params', async () => {
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+            fireEvent.change(screen.getByPlaceholderText('Search organizations'), {target: {value: 'Organization 1'}});
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+            const keys = Array.from(new URLSearchParams(window.location.search).keys());
+            const allowed = ['search', 'accelerated_vesting', 'page', 'company'];
+            expect(keys.length).toBeGreaterThan(0);
+            keys.forEach((key) => expect(allowed).toContain(key));
+            expect(window.history.state?.crankPosition ?? {scrollY: 0}).not.toHaveProperty('search');
+        });
+
+        test('an incoming unknown param is dropped by every URL writer', async () => {
+            window.history.replaceState({}, '', '/?foo=secret&search=Organization&company=1&bar=2');
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+            // Closing rewrites the query through syncCompanyParam.
+            fireEvent.click(screen.getByRole('button', {name: 'Close'}));
+            await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+            expect(window.location.search).not.toContain('foo');
+            expect(window.location.search).not.toContain('bar');
+            expect(new URLSearchParams(window.location.search).get('search')).toBe('Organization');
+
+        });
+
+        test('page links and page changes drop an incoming unknown param', async () => {
+            window.history.replaceState({}, '', '/?foo=secret');
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+            const push = window.history.pushState as jest.Mock;
+            push.mockClear();
+            fireEvent.change(screen.getByPlaceholderText('Search organizations'), {target: {value: 'Organization'}});
+            expect(push).toHaveBeenLastCalledWith({}, '', '/?page=1&search=Organization');
+            expect(screen.getByTestId('page-link-2').getAttribute('href')).toBe('/?page=2');
+            fireEvent.click(screen.getByTestId('page-link-2'));
+            expect(String(push.mock.calls[push.mock.calls.length - 1][2])).not.toContain('foo');
+        });
+
+        describe('result anchor restoration', () => {
+            const visibleRect = {height: 20, bottom: 40, top: 20} as DOMRect;
+            let rectSpy: jest.SpyInstance;
+            let scrollTo: jest.Mock;
+            let rafSpy: jest.SpyInstance;
+
+            beforeEach(() => {
+                rectSpy = jest.spyOn(Element.prototype, 'getBoundingClientRect')
+                    .mockImplementation(() => visibleRect);
+                rafSpy = jest.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+                    cb(0);
+                    return 1;
+                });
+                scrollTo = jest.fn();
+                window.scrollTo = scrollTo as unknown as typeof window.scrollTo;
+            });
+
+            afterEach(() => {
+                rectSpy.mockRestore();
+                rafSpy.mockRestore();
+            });
+
+            test('mount restores by organization id at its saved viewport offset, instantly', () => {
+                window.history.replaceState(
+                    {crankPosition: {scrollY: 480, anchor: '2', anchorOffset: 5}}, '', '/');
+                render(<OrganizationList organizations={organizations} />);
+                expect(scrollTo).toHaveBeenCalledTimes(1);
+                expect(scrollTo).toHaveBeenCalledWith({top: 15, behavior: 'instant'});
+            });
+
+            test('restores again once the account hydrates when the user has not scrolled', () => {
+                window.history.replaceState(
+                    {crankPosition: {scrollY: 480, anchor: '2', anchorOffset: 5}}, '', '/');
+                render(<OrganizationList organizations={organizations} />);
+                expect(scrollTo).toHaveBeenCalledTimes(1);
+                act(() => setWorkspaceAccount({status: 'authenticated', key: 'alice'}));
+                expect(scrollTo).toHaveBeenCalledTimes(2);
+                act(() => setWorkspaceAccount({status: 'anonymous', key: ''}));
+                expect(scrollTo).toHaveBeenCalledTimes(2);
+            });
+
+            test('does not yank a user who scrolled before hydration settled', () => {
+                window.history.replaceState(
+                    {crankPosition: {scrollY: 480, anchor: '2', anchorOffset: 5}}, '', '/');
+                render(<OrganizationList organizations={organizations} />);
+                Object.defineProperty(window, 'scrollY', {configurable: true, value: 900});
+                act(() => setWorkspaceAccount({status: 'authenticated', key: 'alice'}));
+                expect(scrollTo).toHaveBeenCalledTimes(1);
+                Object.defineProperty(window, 'scrollY', {configurable: true, value: 0});
+            });
+
+            test('saves the first on-screen organization and its viewport offset', () => {
+                render(<OrganizationList organizations={organizations} />);
+                window.dispatchEvent(new Event('pagehide'));
+                expect(window.history.state?.crankPosition?.anchor).toBe('1');
+                expect(window.history.state?.crankPosition?.anchorOffset).toBe(20);
+            });
+
+            test('a non-numeric saved anchor falls back to the pixel offset', () => {
+                window.history.replaceState({crankPosition: {scrollY: 480, anchor: '"]x'}}, '', '/');
+                render(<OrganizationList organizations={organizations} />);
+                expect(scrollTo).toHaveBeenCalledTimes(1);
+                expect(scrollTo).toHaveBeenCalledWith({top: 480, behavior: 'instant'});
+            });
+
+            test('with nothing visible there is no anchor to save', () => {
+                rectSpy.mockImplementation(() => ({height: 0, bottom: 0, top: 0} as DOMRect));
+                render(<OrganizationList organizations={organizations} />);
+                window.dispatchEvent(new Event('pagehide'));
+                expect(window.history.state?.crankPosition?.anchor).toBeNull();
+            });
+        });
+
+        test('restores the saved scroll position on mount', () => {
+            window.history.replaceState({crankPosition: {scrollY: 480, anchor: null}}, '', '/');
+            const scrollTo = jest.fn();
+            window.scrollTo = scrollTo as unknown as typeof window.scrollTo;
+            render(<OrganizationList organizations={organizations} />);
+            expect(scrollTo).toHaveBeenCalledWith({top: 480, behavior: 'instant'});
+        });
+
+        test('clearing the workspace context closes the company dialog and leaves the list', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+
+            act(() => clearWorkspaceContext());
+
+            await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+            expect(new URLSearchParams(window.location.search).has('company')).toBe(false);
+            expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+        });
+
+        test('a company context set elsewhere (Ask CTA) survives searching', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            act(() => setWorkspaceContext({surface: 'company', organizationId: 2, organizationName: 'Organization 2'}));
+            fireEvent.change(screen.getByPlaceholderText('Search organizations'), {target: {value: 'Org'}});
+            await waitFor(() => expect(getWorkspaceSnapshot().context).toMatchObject({searchTerm: 'Org'}));
+            expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'company', organizationId: 2});
+        });
+
+        test('unmounting stops tracking and workspace subscription', () => {
+            const {unmount} = render(<OrganizationList organizations={organizations} />);
+            unmount();
+            expect(() => act(() => clearWorkspaceContext())).not.toThrow();
+        });
+    });
+
     test('normalizes an out-of-range page in the URL', async () => {
         window.history.replaceState({}, '', '/?page=99');
 
@@ -1444,8 +1622,12 @@ describe('OrganizationList', () => {
             const count = within(toolbar).getByText(/Showing 1-2 of 2 organizations/);
             const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
             expect(follows(search, chip)).toBe(true);
-            expect(follows(chip, select)).toBe(true);
-            expect(follows(select, count)).toBe(true);
+            const checkbox = within(toolbar).getByTestId('accelerated-vesting-checkbox');
+            expect(follows(search, select)).toBe(true);
+            expect(follows(select, checkbox)).toBe(true);
+            // The active-search chip sits below the filter grid (stable layout).
+            expect(follows(checkbox, chip)).toBe(true);
+            expect(follows(chip, count)).toBe(true);
             expect(select).toHaveValue('1');
         });
 
@@ -1503,7 +1685,8 @@ describe('OrganizationList', () => {
         test('score column and card label name the current preset', () => {
             render(<OrganizationList organizations={organizations} rankingPresets={presets} currentAlgorithmId={2} />);
             expect(screen.getByRole('columnheader', {name: 'Company score (Culture)'})).toBeInTheDocument();
-            expect(screen.getAllByText('Company score (Culture)').length).toBe(3);
+            expect(document.querySelector('.col-score-algorithm')).toHaveTextContent('Culture');
+            expect(screen.getAllByText('Company score (Culture)').length).toBe(2);
         });
 
         test('zero results shows exactly one suggest action with the search term prefilled', () => {
@@ -1594,7 +1777,7 @@ describe('OrganizationList', () => {
             const error = await screen.findByTestId('choices-status-error');
             expect(error).toHaveTextContent('raw codes are shown');
             fail = false;
-            fireEvent.click(within(error).getByRole('button', {name: 'Retry'}));
+            fireEvent.click(within(error).getByRole('button', {name: 'Retry labels'}));
             await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
             expect(screen.queryByTestId('choices-status-error')).not.toBeInTheDocument();
             consoleSpy.mockRestore();
@@ -1636,7 +1819,9 @@ describe('OrganizationList', () => {
             expect(loading.querySelector('.spinner-border')).toHaveAttribute('aria-hidden', 'true');
             expect(screen.queryByText(organizations[0].funding_round)).not.toBeInTheDocument();
             expect(screen.queryByText(organizations[0].rto_policy)).not.toBeInTheDocument();
-            expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+            expect(screen.queryByText('—')).not.toBeInTheDocument();
+            expect(screen.getAllByTestId('choice-skeleton').length).toBeGreaterThan(0);
+            expect(document.querySelector('.choices-status-slot')).toContainElement(loading);
         });
 
         test('falls back to raw codes once loading has finished and a label is missing', async () => {

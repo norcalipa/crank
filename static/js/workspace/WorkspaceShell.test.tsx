@@ -14,8 +14,15 @@ import * as modalIsolation from '../modalIsolation';
 
 jest.mock('../JobSearchChat', () => ({
     __esModule: true,
-    default: () => (
+    default: (props: {autoFocusComposer?: boolean}) => mockChatInitError ? (
         <section data-testid="job-search-chat">
+            <div role="alert">
+                We couldn’t start the assistant.
+                <button type="button" data-testid="chat-start-conversation">Start a conversation</button>
+            </div>
+        </section>
+    ) : (
+        <section data-testid="job-search-chat" data-autofocus={String(!!props.autoFocusComposer)}>
             <textarea
                 data-testid="assistant-composer"
                 aria-label="Message"
@@ -32,12 +39,14 @@ jest.mock('./useWorkspaceLayout', () => ({
 }));
 
 let mockComposerDisabled = false;
+let mockChatInitError = false;
 
 beforeEach(() => {
     resetWorkspaceForTests();
     document.body.className = '';
     mockMode = 'sheet';
     mockComposerDisabled = false;
+    mockChatInitError = false;
     // The shell observer needs the background roots to exist.
     document.body.innerHTML = '<div class="app-shell"></div><main class="app-content"></main>';
 });
@@ -214,14 +223,79 @@ describe('WorkspaceShell', () => {
         act(() => {
             window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
         });
-        // Still cold: the request is held pending, not focused to a header control.
+        // Still cold: the request is held pending, not focused to a header
+        // control — the panel heading holds focus in the interim.
         expect(document.activeElement).not.toBe(screen.getByTestId('assistant-composer'));
+        expect(document.activeElement).toBe(document.getElementById('assistant-panel-title'));
         // The lazy chunk commits and the store marks the workspace loaded.
         markLoaded.mockRestore();
         act(() => {
             storeModule.markWorkspaceLoaded();
         });
         await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-composer')));
+    });
+
+    test('a panel restored open is not marked user-opened, but launcher and Ask opens are (issue #479)', async () => {
+        mockMode = 'docked';
+        act(() => storeModule.replaceWorkspaceState('open', null));
+        renderShell();
+        await waitFor(() => expect(screen.getByTestId('job-search-chat')).toBeInTheDocument());
+        expect(screen.getByTestId('job-search-chat')).toHaveAttribute('data-autofocus', 'false');
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('job-search-chat')).toHaveAttribute('data-autofocus', 'true'));
+    });
+
+    test('a launcher click marks the panel user-opened (issue #479)', async () => {
+        mockMode = 'docked';
+        renderShell();
+        fireEvent.click(screen.getByTestId('assistant-launcher'));
+        await waitFor(() => expect(screen.getByTestId('job-search-chat')).toHaveAttribute('data-autofocus', 'true'));
+    });
+
+    test('a focus request on a chat initialization error lands inside the panel, not the background', async () => {
+        mockChatInitError = true;
+        const opener = document.createElement('button');
+        document.body.appendChild(opener);
+        opener.focus();
+        renderShell();
+        mockMode = 'docked';
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+        act(() => {
+            window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        await waitFor(() => expect(screen.getByTestId('assistant-panel')).toContainElement(
+            document.activeElement as HTMLElement,
+        ));
+        expect(document.activeElement).not.toBe(opener);
+        opener.remove();
+    });
+
+    test('a focus request on a chat init error targets the alert action, not the Clear context button', async () => {
+        mockChatInitError = true;
+        renderShell();
+        mockMode = 'docked';
+        act(() => openAssistant({surface: 'company', organizationId: 7, organizationName: 'Acme'}));
+        await waitFor(() => expect(screen.getByTestId('assistant-clear-context')).toBeInTheDocument());
+        act(() => {
+            window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        await waitFor(() => expect(document.activeElement)
+            .toBe(screen.getByTestId('chat-start-conversation')));
+    });
+
+    test('a focus request never autofocuses the composer in sheet mode, nor the Clear context button', async () => {
+        renderShell();
+        act(() => openAssistant({surface: 'company', organizationId: 7, organizationName: 'Acme'}));
+        await waitFor(() => expect(screen.getByTestId('assistant-composer')).toBeInTheDocument());
+        act(() => {
+            window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        await waitFor(() => expect(screen.getByTestId('assistant-panel')).toContainElement(
+            document.activeElement as HTMLElement,
+        ));
+        expect(document.activeElement).not.toBe(screen.getByTestId('assistant-composer'));
+        expect(document.activeElement).not.toBe(screen.getByTestId('assistant-clear-context'));
     });
 
     test('another blocking dialog acquiring a lock closes the sheet, and keeps its isolation', async () => {
@@ -271,5 +345,33 @@ describe('WorkspaceShell', () => {
         fireEvent.click(restore);
         await waitFor(() => expect(screen.getByTestId('assistant-panel')).toBeInTheDocument());
         expect(screen.queryByTestId('assistant-restore')).not.toBeInTheDocument();
+    });
+
+    test('assistant-open is on the body exactly while the panel is open, in every mode', async () => {
+        for (const mode of ['sheet', 'drawer', 'docked'] as const) {
+            mockMode = mode;
+            const {unmount} = renderShell();
+            expect(document.body.classList.contains('assistant-open')).toBe(false);
+            act(() => openAssistant());
+            await waitFor(() => expect(document.body.classList.contains('assistant-open')).toBe(true));
+            expect(document.body.classList.contains(`assistant-${mode}`)).toBe(true);
+            act(() => closeAssistant());
+            await waitFor(() => expect(document.body.classList.contains('assistant-open')).toBe(false));
+            unmount();
+            expect(document.body.className).toBe('');
+        }
+    });
+
+    test('the launcher and the restore pill both render inside the dock row, never while open', async () => {
+        renderShell();
+        const dock = screen.getByTestId('assistant-dock');
+        expect(dock).toContainElement(screen.getByTestId('assistant-launcher'));
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('assistant-panel')).toBeInTheDocument());
+        expect(screen.queryByTestId('assistant-dock')).not.toBeInTheDocument();
+        fireEvent.click(screen.getByTestId('assistant-minimize'));
+        await waitFor(() => expect(screen.getByTestId('assistant-restore')).toBeInTheDocument());
+        expect(screen.getByTestId('assistant-dock')).toContainElement(screen.getByTestId('assistant-restore'));
+        expect(screen.queryByTestId('assistant-launcher')).not.toBeInTheDocument();
     });
 });

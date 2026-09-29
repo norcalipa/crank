@@ -10,7 +10,9 @@
 
 import * as React from 'react';
 import {
+    clearWorkspaceContext,
     closeAssistant,
+    describeWorkspaceContext,
     markWorkspaceLoaded,
     minimizeAssistant,
 } from './store';
@@ -22,8 +24,9 @@ function contextLine(context: WorkspaceContext | null): string {
     if (!context) {
         return '';
     }
-    if (context.organizationName) {
-        return `About ${context.organizationName}`;
+    const entity = describeWorkspaceContext(context);
+    if (entity) {
+        return entity;
     }
     if (context.searchTerm) {
         return `Searching “${context.searchTerm}”`;
@@ -44,6 +47,9 @@ const LoadMarker: React.FC = () => {
 interface AssistantPanelProps {
     mode: WorkspaceMode;
     context: WorkspaceContext | null;
+    // Whether the chat may move focus into its composer once it has loaded:
+    // only when the user opened the panel on this page, never on a restore.
+    autoFocusComposer?: boolean;
     // Server-rendered auth context from the pinned /chat/ workspace host
     // (issue #465 AC-9/10), forwarded verbatim to JobSearchChat.
     authProps?: {
@@ -55,8 +61,15 @@ interface AssistantPanelProps {
     };
 }
 
-const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps}) => {
+const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps, autoFocusComposer = false}) => {
     const line = contextLine(context);
+    const entityLabel = describeWorkspaceContext(context);
+    // Clearing removes the strip, so focus moves to the panel heading rather
+    // than being lost with the button (issue #479 a11y).
+    const handleClear = () => {
+        clearWorkspaceContext();
+        document.getElementById('assistant-panel-title')?.focus();
+    };
     return (
         <div className="assistant-panel-inner">
             {/* Sheet mode: Back to results is the FIRST focusable control in
@@ -70,13 +83,23 @@ const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps
             )}
             <div className="assistant-panel-header">
                 <div className="assistant-panel-heading">
-                    <h2 className="assistant-panel-title" id="assistant-panel-title">
+                    <h2 className="assistant-panel-title" id="assistant-panel-title" tabIndex={-1}>
                         <i className="fa-solid fa-comments" aria-hidden="true"></i> Job Search Assistant
                     </h2>
                     {line && (
-                        <p className="assistant-panel-context" data-testid="assistant-context-line">
-                            {line}
-                        </p>
+                        <div className={entityLabel ? 'assistant-context-strip' : undefined}
+                             data-testid={entityLabel ? 'assistant-context-strip' : undefined}>
+                            <p className="assistant-panel-context" data-testid="assistant-context-line">
+                                {line}
+                            </p>
+                            {entityLabel && (
+                                <button type="button" className="btn btn-sm btn-outline-light assistant-clear-context"
+                                        onClick={handleClear} aria-label={`Clear context: ${entityLabel}`}
+                                        data-testid="assistant-clear-context">
+                                    Clear context
+                                </button>
+                            )}
+                        </div>
                     )}
                 </div>
                 <div className="assistant-panel-controls">
@@ -103,7 +126,7 @@ const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps
                             <span className="assistant-loading-line assistant-loading-line--message" aria-hidden="true"></span>
                             <span className="assistant-loading-line assistant-loading-line--message short" aria-hidden="true"></span>
                             <span className="assistant-loading-line assistant-loading-line--composer" aria-hidden="true"></span>
-                            <span className="visually-hidden">Loading the assistant…</span>
+                            <span className="assistant-loading-label">Loading conversation…</span>
                         </div>
                     )}
                 >
@@ -111,7 +134,7 @@ const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps
                     {/* Wrapper id preserves the popup.css rules and Django e2e
                         selectors that key off #job-search-chat (issue #472 AC-11). */}
                     <div id="job-search-chat">
-                        <LazyJobSearchChat {...(authProps ?? {})} workspaceMode={mode}/>
+                        <LazyJobSearchChat {...(authProps ?? {})} workspaceMode={mode} autoFocusComposer={autoFocusComposer}/>
                     </div>
                 </React.Suspense>
             </div>

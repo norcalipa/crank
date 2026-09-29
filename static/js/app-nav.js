@@ -117,6 +117,7 @@
     function purgePrivateClientState() {
         try {
             window.sessionStorage.removeItem("crank:auth-intent");
+            window.sessionStorage.removeItem("crank:workspace:v1");
         } catch (e) {
             // Storage unavailable; nothing durable to clear.
         }
@@ -153,6 +154,77 @@
         document.dispatchEvent(new CustomEvent("crank:private-state-purged"));
     }
 
+    // Cross-tab signal (issue #479): private state lives in each tab's memory
+    // and sessionStorage, so a logout, login or account switch here must reach
+    // every other open tab. It is sent only from a hydration that has observed
+    // the changed account (i.e. after the server processed the logout/login),
+    // never from the submit handler: a receiving tab re-hydrates immediately
+    // and would otherwise still be told the old account is signed in.
+    // localStorage writes raise a `storage` event in the *other* tabs; the
+    // value is an opaque nonce, never account data. Storage keys owned here:
+    //   crank:account-epoch    localStorage, shared; a nonce that is only
+    //                          ever overwritten, never read for its value and
+    //                          never removed by any purge.
+    //   crank:nav-account-seen sessionStorage, per tab; "u:<username>" or
+    //                          "anon". Deliberately not cleared by either
+    //                          purge: it is what detects the next change.
+    function announceAccountChange() {
+        try {
+            window.localStorage.setItem(
+                "crank:account-epoch",
+                Date.now() + ":" + Math.random().toString(36).slice(2),
+            );
+        } catch (e) {
+            // Storage unavailable; other tabs cannot be signalled.
+        }
+    }
+
+    // This tab's last hydrated account, tab-local. A hydration that differs
+    // from it is the moment the account change is known to have happened.
+    var ACCOUNT_SEEN_KEY = "crank:nav-account-seen";
+    var quietNextHydration = false;
+
+    function noteHydratedAccount(authenticated, username) {
+        var current = authenticated ? "u:" + username : "anon";
+        var previous = null;
+        try {
+            previous = window.sessionStorage.getItem(ACCOUNT_SEEN_KEY);
+            window.sessionStorage.setItem(ACCOUNT_SEEN_KEY, current);
+        } catch (e) {
+            // Storage unavailable; the account change cannot be detected.
+        }
+        var quiet = quietNextHydration;
+        quietNextHydration = false;
+        if (!quiet && previous !== null && previous !== current) {
+            announceAccountChange();
+        }
+    }
+
+    // Another tab changed the account: discard this tab's own state, then
+    // re-hydrate so the nav and workspace pick up the account the cookie now
+    // belongs to. The signal is only sent after the change completed, so the
+    // whoami below already sees the new account. The next hydration is quiet
+    // so tabs cannot ping-pong.
+    function handleAccountEpoch(event) {
+        if (event.key !== "crank:account-epoch") {
+            return;
+        }
+        // Only tab-local state: localStorage is shared, and the tab that
+        // changed the account has already purged (sign-out) or reconciled
+        // (account switch) it. Deleting it here would destroy the #465
+        // sign-in handoff draft and same-account recovery markers.
+        try {
+            window.sessionStorage.removeItem("crank:auth-intent");
+            window.sessionStorage.removeItem("crank:workspace:v1");
+        } catch (e) {
+            // Storage unavailable; nothing tab-local to clear.
+        }
+        document.dispatchEvent(new CustomEvent("crank:private-state-purged"));
+        quietNextHydration = true;
+        fetchWhoami();
+    }
+    window.addEventListener("storage", handleAccountEpoch);
+
     function handleLogoutSubmit(event) {
         var form = event.currentTarget;
         // Purge before the request settles: sign-out must discard every
@@ -184,6 +256,10 @@
 
     function applyAuthState(data) {
         var authenticated = !!(data && data.authenticated);
+        // A failed whoami (null / fallback) says nothing about the account.
+        if (data && typeof data.authenticated === "boolean" && !data.unobserved) {
+            noteHydratedAccount(authenticated, authenticated ? data.username : null);
+        }
         setVisible("[data-nav-auth-only]", authenticated);
         setVisible("[data-nav-anon-only]", !authenticated);
         if (authenticated) {
@@ -207,11 +283,18 @@
         // compare-and-purge decision lives there, not here, since it is the
         // one place that can act on both the old and new value together.
         document.dispatchEvent(new CustomEvent("crank:auth-hydrated", {
-            detail: { authenticated: authenticated, username: authenticated ? data.username : null },
+            // `unobserved`: the whoami request failed, so `authenticated` is only
+            // the anonymous fallback for the nav controls, not a fact about the
+            // account; listeners that persist state must ignore it.
+            detail: {
+                authenticated: authenticated,
+                username: authenticated ? data.username : null,
+                unobserved: !data || !!data.unobserved,
+            },
         }));
     }
 
-    function hydrateAccountState() {
+    function fetchWhoami() {
         fetch("/api/account/whoami/", {
             headers: { Accept: "application/json" },
             credentials: "same-origin",
@@ -225,8 +308,12 @@
             .catch(function () {
                 // Hydration must never break the nav: fall back to the
                 // anonymous controls so Login stays reachable.
-                applyAuthState({ authenticated: false });
+                applyAuthState({ authenticated: false, unobserved: true });
             });
+    }
+
+    function hydrateAccountState() {
+        fetchWhoami();
         // Every logout form, not just the cached shell's JS-submitted one.
         document.querySelectorAll("form[data-nav-logout-form]").forEach(function (form) {
             form.addEventListener("submit", handleLogoutSubmit);

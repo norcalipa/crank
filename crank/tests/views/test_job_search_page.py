@@ -111,6 +111,44 @@ class JobSearchPageTests(TestCase):
         self.assertEqual(response.context["selected_company_id"], org.id)
         self.assertContains(response, f'data-selected-company-id="{org.id}"')
 
+    def _org(self, **overrides):
+        fields = {
+            "name": "Named Org",
+            "status": 1,
+            "type": "C",
+            "url": "https://named.example.com",
+            "gives_ratings": True,
+            "public": True,
+            "accelerated_vesting": True,
+            "funding_round": "S",
+            "rto_policy": "R",
+        }
+        fields.update(overrides)
+        return Organization.objects.create(**fields)
+
+    def test_company_query_param_renders_the_display_name_for_the_context_strip(self):
+        org = self._org(name="Fancy & Co")
+
+        response = self.client.get(self.url, {"company": org.id})
+
+        self.assertEqual(response.context["selected_company_name"], "Fancy & Co")
+        self.assertContains(response, 'data-selected-company-name="Fancy &amp; Co"')
+
+    def test_inactive_company_keeps_the_id_but_never_discloses_the_name(self):
+        org = self._org(name="Hidden Org", status=0)
+
+        response = self.client.get(self.url, {"company": org.id})
+
+        self.assertEqual(response.context["selected_company_id"], org.id)
+        self.assertEqual(response.context["selected_company_name"], "")
+        self.assertNotContains(response, "Hidden Org")
+
+    def test_no_company_renders_no_company_attributes_with_values(self):
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.context["selected_company_name"], "")
+        self.assertContains(response, 'data-selected-company-name=""')
+
     def test_non_integer_company_query_param_is_ignored(self):
         response = self.client.get(self.url, {"company": "abc"})
 

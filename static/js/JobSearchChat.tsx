@@ -4,6 +4,12 @@ import * as React from 'react';
 import {createRoot} from 'react-dom/client';
 
 import {purgePrivateClientState} from './authIntent';
+import {
+    describeWorkspaceContext,
+    getWorkspaceSnapshot,
+    setWorkspaceConversation,
+    subscribeWorkspace,
+} from './workspace/store';
 
 export interface JobResult {
     id: number;
@@ -899,6 +905,10 @@ export interface JobSearchChatProps {
     // control, so directional microcopy must not claim the panel is beside
     // the chat. Undefined outside the workspace (legacy mount).
     workspaceMode?: 'docked' | 'drawer' | 'sheet';
+    // Workspace only: true when the user opened the panel on this page. A
+    // panel restored on load or Back must not take focus from the page
+    // (issue #479). Ignored outside the workspace, which always autofocuses.
+    autoFocusComposer?: boolean;
 }
 
 const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
@@ -923,17 +933,34 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const accountGuardRef = React.useRef(false);
     if (!accountGuardRef.current) {
         accountGuardRef.current = true;
-        reconcileAccountKey(accountKey);
+        reconcileAccountKey(accountKey || (props.workspaceMode !== undefined
+            && getWorkspaceSnapshot().account.status === 'authenticated'
+            ? getWorkspaceSnapshot().account.key
+            : ''));
     }
+    // Account gate (issue #479): a lazily mounted workspace chat has no
+    // server-rendered accountKey, so until the shared store knows the account
+    // (crank:auth-hydrated) it must not adopt a pending draft or read stored
+    // drafts. The store is read at mount, so a mount after hydration is not
+    // left waiting for an event it can no longer receive.
+    const workspaceAccount = React.useSyncExternalStore(
+        subscribeWorkspace,
+        () => getWorkspaceSnapshot().account,
+    );
+    const accountPending = props.workspaceMode !== undefined
+        && !accountKey
+        && workspaceAccount.status === 'unknown';
 
     const [effectiveAuthenticated, setEffectiveAuthenticated] = React.useState(isAuthenticated);
 
     const [conversationId, setConversationId] = React.useState<number | null>(null);
     const [messages, setMessages] = React.useState<ChatMessage[]>([]);
     const [input, setInput] = React.useState('');
+    // "Answered about …" notes keyed by assistant message id (issue #479).
+    const [staleNotes, setStaleNotes] = React.useState<Record<number, string>>({});
     const [pending, setPending] = React.useState(false);
     const [loading, setLoading] = React.useState(true);
-    const [initError, setInitError] = React.useState<string | null>(null);
+    const [initError, setInitErrorState] = React.useState<string | null>(null);
     const [error, setError] = React.useState<string | null>(null);
     const [errorType, setErrorType] = React.useState<string | null>(null);
     const [retrying, setRetrying] = React.useState(false);
@@ -1017,6 +1044,24 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // Auto-resize the composer textarea up to a bounded max rows.
     const MAX_COMPOSER_ROWS = 6;
     const composerRef = React.useRef<HTMLTextAreaElement>(null);
+    const initErrorActionRef = React.useRef<HTMLButtonElement>(null);
+    const refocusInitErrorRef = React.useRef(false);
+    // The error state unmounts the composer; if it held focus, hand focus to
+    // the alert's action once that commits so it never falls back to <body>.
+    const setInitError = (message: string | null) => {
+        if (message && composerRef.current && document.activeElement === composerRef.current) {
+            refocusInitErrorRef.current = true;
+        }
+        setInitErrorState(message);
+    };
+    React.useEffect(() => {
+        if (initError && refocusInitErrorRef.current) {
+            refocusInitErrorRef.current = false;
+            initErrorActionRef.current?.focus();
+        }
+    }, [initError]);
+    const autoFocusRef = React.useRef(true);
+    autoFocusRef.current = props.workspaceMode === undefined || !!props.autoFocusComposer;
     // Shared floor for the measured card height; must stay in sync with the
     // `20rem` inline minHeight below (16px rem * 20) so the two cannot drift.
     const MIN_CARD_PX = 320;
@@ -1312,6 +1357,20 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // history region must stay empty until an authenticated load succeeds
     // (AC-10).
     React.useEffect(() => {
+        if (accountPending) {
+            return undefined;
+        }
+        if (!accountKey && props.workspaceMode !== undefined) {
+            // Reconcile the now-known account before any stored draft is read.
+            const authenticated = workspaceAccount.status === 'authenticated';
+            if (authenticated) {
+                reconcileAccountKey(workspaceAccount.key);
+            }
+            if (authenticated !== effectiveAuthenticated) {
+                setEffectiveAuthenticated(authenticated);
+                return undefined;
+            }
+        }
         if (!effectiveAuthenticated) {
             setLoading(false);
             setInput((current) => current || readPendingDraft());
@@ -1354,7 +1413,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         // conversationId/loading commit) and is silently
                         // dropped, leaving the composer unfocused (CI: 400%
                         // zoom composer-focus race).
-                        window.setTimeout(() => composerRef.current?.focus(), 0);
+                        if (props.workspaceMode !== 'sheet' && autoFocusRef.current) {
+                            window.setTimeout(() => composerRef.current?.focus(), 0);
+                        }
                     } catch {
                         if (stale()) return;
                         setInitError('Could not start a conversation. Please try again.');
@@ -1374,12 +1435,16 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 adoptPendingDraft(data.id);
                 setLoading(false);
                 // Defer focus past the React commit (see above): the textarea
-                // is disabled until conversationId/loading land.
-                window.setTimeout(() => composerRef.current?.focus(), 0);
+                // is disabled until conversationId/loading land. The mobile
+                // sheet keeps focus on its Back control instead of raising
+                // the keyboard.
+                if (props.workspaceMode !== 'sheet' && autoFocusRef.current) {
+                    window.setTimeout(() => composerRef.current?.focus(), 0);
+                }
             })
             .catch(() => {
                 if (stale()) return;
-                setInitError('Could not load your conversation. Please refresh.');
+                setInitError('We couldn’t restore your previous conversation.');
                 setLoading(false);
             });
         return () => {
@@ -1388,7 +1453,13 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 resumeAbortRef.current = null;
             }
         };
-    }, [effectiveAuthenticated, purgeGeneration]);
+    }, [effectiveAuthenticated, purgeGeneration, accountPending, workspaceAccount.status]);
+
+    // Mirror the active conversation id into the shared workspace store
+    // (issue #479) — one effect covers resume, create, reset and delete.
+    React.useEffect(() => {
+        setWorkspaceConversation(conversationId);
+    }, [conversationId]);
 
     // Account-switch / sign-out purge (issue #465 AC-9). Any in-flight
     // submission is aborted (stopping only the client's wait — the server
@@ -1405,6 +1476,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         surfacedDraftRef.current = null;
         lastSent.current = null;
         setMessages([]);
+        setStaleNotes({});
         setConversationId(null);
         conversationIdRef.current = null;
         setInput('');
@@ -1606,6 +1678,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         if (turnConversationId == null || (pendingRef.current && !opts?.retriedAfterClose)) return;
         pendingRef.current = true;
         keepDraftRef.current = false;
+        // Context this turn was sent under (issue #479): compared with the
+        // live context when the reply lands.
+        const sentContextLabel = describeWorkspaceContext(getWorkspaceSnapshot().context);
         setPending(true);
         setError(null);
         setErrorType(null);
@@ -1811,6 +1886,16 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             if (conversationIdRef.current !== turnConversationId) {
                 clearInflightTurn(turnConversationId, key);
                 return;
+            }
+            // The reply is server history and is always appended; if the page
+            // context moved on meanwhile it is labelled with the page the
+            // question was asked from, without touching the context strip or
+            // the store. Page context is not sent to the model yet (#484), so
+            // the note must not claim the reply was about that entity.
+            if (sentContextLabel
+                && sentContextLabel !== describeWorkspaceContext(getWorkspaceSnapshot().context)) {
+                const answered = sentContextLabel.replace(/^(About|Comparing) /, '');
+                setStaleNotes((prev) => ({...prev, [data.message.id]: `Asked while viewing ${answered}`}));
             }
             // Keep the turn in its ORIGINAL position and insert the reply
             // immediately after it: a retried turn must never reorder the
@@ -2188,12 +2273,12 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                  style={chatCardStyle}>
             <div className="card-header d-flex justify-content-between align-items-center">
                 <h2 id="job-search-chat-title" className="h6 mb-0">Conversation</h2>
-                <div className="btn-group btn-group-sm flex-wrap" role="group" aria-label="Conversation controls">
-                    <button type="button" className="btn btn-outline-light" onClick={handleExport}
+                <div className="chat-conversation-actions" role="group" aria-label="Conversation controls">
+                    <button type="button" className="btn btn-sm btn-outline-light" onClick={handleExport}
                             disabled={!conversationId || !messages.length}>Export chat</button>
-                    <button type="button" className="btn btn-outline-light" onClick={handleReset}
+                    <button type="button" className="btn btn-sm btn-outline-light" onClick={handleReset}
                             disabled={!conversationId || pending}>Reset chat</button>
-                    <button type="button" className="btn btn-outline-danger" onClick={handleDelete}
+                    <button type="button" className="btn btn-sm btn-outline-danger" onClick={handleDelete}
                             disabled={!conversationId || pending}>Delete conversation</button>
                 </div>
             </div>
@@ -2315,17 +2400,25 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     <div className="alert alert-danger" role="alert">
                         {initError}
                         <div className="mt-2">
-                            <button type="button" className="btn btn-sm btn-primary" onClick={handleCreateConversation}>
+                            <button type="button" ref={initErrorActionRef} className="btn btn-sm btn-primary"
+                                    onClick={handleCreateConversation}>
                                 Start a conversation
                             </button>
                         </div>
                     </div>
                 )}
 
+                {!initError && (
                 <div className="d-flex flex-column flex-grow-1" style={{minHeight: 0}}>
-                    <div className="bg-dark border rounded p-3 mb-3 flex-grow-1" style={{minHeight: 0, overflowY: 'auto'}}
+                    <div className="bg-dark chat-transcript rounded p-3 mb-3 flex-grow-1" style={{minHeight: 0, overflowY: 'auto'}}
                          ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
-                        {effectiveAuthenticated && messages.length === 0 && !loading && !initError && (
+                        {effectiveAuthenticated && loading && (
+                            <div className="text-muted chat-loading-status" role="status" aria-live="polite"
+                                 data-testid="chat-loading">
+                                <i className="fa-solid fa-spinner fa-spin me-2" aria-hidden="true"></i>Loading conversation…
+                            </div>
+                        )}
+                        {effectiveAuthenticated && messages.length === 0 && !loading && (
                             <div data-testid="empty-history">
                                 <p className="empty-history-lead mb-2">
                                     Ask about compensation, work location, funding, or culture to get started.
@@ -2346,48 +2439,21 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         )}
                         {messages.map((m) => (
                             <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
-                                     className={`d-flex ${m.role === 'user' ? 'justify-content-end' : 'justify-content-start'} mb-2`}>
+                                     className={`d-flex flex-column ${m.role === 'user' ? 'align-items-end' : 'align-items-start'} mb-2`}>
                                 <div className={`chat-bubble ${m.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}
                                      style={{maxWidth: '80%', wordBreak: 'break-word'}}>
                                     <div style={{whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>{m.content}</div>
+                                    {m.role === 'assistant' && staleNotes[m.id] && (
+                                        <div className="chat-stale-context-note small mt-1"
+                                             data-testid="stale-context-note">
+                                            {staleNotes[m.id]}
+                                        </div>
+                                    )}
                                     {m.role === 'assistant' && m.results && (
                                         <ResultCards results={m.results} />
                                     )}
                                     {m.role === 'assistant' && m.id === lastAssistantId && !hasResults(m.results) && availability && availability.state !== 'ok' && (
                                         <AvailabilityNotice availability={availability} />
-                                    )}
-                                    {m.role === 'user' && m.delivery_state === 'failed' && retryKey !== m.idempotency_key && (
-                                        <div className="chat-failure-panel mt-2" data-testid="failed-turn">
-                                            <div className="chat-status-row" role="status">
-                                                <i className="fa-solid fa-triangle-exclamation chat-status-icon" aria-hidden="true"></i>
-                                                <div>
-                                                    {m.retry_available === false ? (
-                                                        <div>Response failed after several retries. Your message is saved.</div>
-                                                    ) : (
-                                                        <div>Response failed. Your message is saved; retries are limited.</div>
-                                                    )}
-                                                </div>
-                                            </div>
-                                            <div className="chat-actions mt-3" role="group" aria-label="Failed turn actions">
-                                                {m.retry_available === false ? (
-                                                    <button type="button" className="chat-btn chat-btn-primary chat-focus" disabled
-                                                            aria-label="Retry limit reached" data-testid="retry-response-button">
-                                                        Retry limit reached
-                                                    </button>
-                                                ) : (
-                                                    <button type="button" className="chat-btn chat-btn-primary chat-focus"
-                                                            onClick={() => handleRetryMessage(m)}
-                                                            aria-label="Retry response" data-testid="retry-response-button">
-                                                        Retry response
-                                                    </button>
-                                                )}
-                                                <button type="button" className="chat-btn chat-btn-secondary chat-focus"
-                                                        onClick={() => handleEditAsNew(m)}
-                                                        aria-label="Edit as new message" data-testid="edit-as-new-button">
-                                                    Edit as new message
-                                                </button>
-                                            </div>
-                                        </div>
                                     )}
                                     {m.role === 'user' && m.delivery_state === 'pending' && retryKey !== m.idempotency_key && (
                                         <div className="chat-retry-panel mt-2" data-testid="pending-turn">
@@ -2427,6 +2493,39 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                                         </div>
                                     )}
                                 </div>
+                                {m.role === 'user' && m.delivery_state === 'failed' && retryKey !== m.idempotency_key && (
+                                    <div className="chat-failure-panel chat-failure-panel--outside" data-testid="failed-turn">
+                                        <div className="chat-status-row" role="status">
+                                            <i className="fa-solid fa-triangle-exclamation chat-status-icon" aria-hidden="true"></i>
+                                            <div>
+                                                {m.retry_available === false ? (
+                                                    <div>Response failed after several retries. Your message is saved.</div>
+                                                ) : (
+                                                    <div>Response failed. Your message is saved; retries are limited.</div>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <div className="chat-actions mt-3" role="group" aria-label="Failed turn actions">
+                                            {m.retry_available === false ? (
+                                                <button type="button" className="chat-btn chat-btn-primary chat-focus" disabled
+                                                        aria-label="Retry limit reached" data-testid="retry-response-button">
+                                                    Retry limit reached
+                                                </button>
+                                            ) : (
+                                                <button type="button" className="chat-btn chat-btn-primary chat-focus"
+                                                        onClick={() => handleRetryMessage(m)}
+                                                        aria-label="Retry response" data-testid="retry-response-button">
+                                                    Retry response
+                                                </button>
+                                            )}
+                                            <button type="button" className="chat-btn chat-btn-secondary chat-focus"
+                                                    onClick={() => handleEditAsNew(m)}
+                                                    aria-label="Edit as new message" data-testid="edit-as-new-button">
+                                                Edit as new message
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
                             </article>
                         ))}
                         {pending && (
@@ -2448,7 +2547,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         </div>
                     )}
                 </div>
+                )}
 
+                {!initError && (
                 <div className="flex-shrink-0" style={{paddingBottom: 'calc(0.25rem + env(safe-area-inset-bottom))'}}>
                     {assistantStatus && (
                         <AssistantStatusNotice
@@ -2529,6 +2630,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         </div>
                     </form>
                 </div>
+                )}
 
                 {/* Screen-reader-only live region for pending/error transitions. */}
                 <div ref={statusRef} className="visually-hidden" role="status" aria-live="assertive">
@@ -2547,4 +2649,3 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 };
 
 export default JobSearchChat;
-
