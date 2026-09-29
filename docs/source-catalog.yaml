@@ -15,6 +15,14 @@
 #               API, scraping prohibited, paid/commercial-only, decommissioned).
 #   excluded  - not an external rating source (internal/self, or not attributable).
 #
+# Measurement semantics (#474): every source declares `measurement:` (a list of
+# kinds from crank/agents/sources/semantics.py) saying what its numbers measure.
+# `score_types_candidates` may only list score types those kinds validly feed
+# (a consumer/business star rating is Reputation-only, never Culture, Leadership
+# or hiring). `quality_mapping:` below records, per desired company quality, the
+# valid measurements, the sources and the honest status. Approval only ever
+# changes here by an explicit maintainer decision; fixtures never approve.
+#
 # Every source with seed `gives_ratings: true` is listed below (validated against
 # seeds/crank.organization.yaml by crank/tests/test_source_catalog.py).
 # Facts were verified by an autonomous agent on the review_date below using the
@@ -48,7 +56,6 @@ mvp:
     implementation and do not configure paid overage).
   score_types:
     - Reputation
-    - Culture
   fields:
     - rating            # 0.0-5.0 aggregate float
     - user_ratings_total # integer count
@@ -88,7 +95,9 @@ sources:
     url: https://www.google.com/
     kind: external
     seed_gives_ratings: true
-    score_types_candidates: [Reputation, Culture]
+    score_types_candidates: [Reputation]
+    measurement: [consumer_business_rating]
+    live_enabled: false
     api:
       available: official
       endpoint: https://places.googleapis.com/v1/places/:id
@@ -121,7 +130,9 @@ sources:
     url: https://www.glassdoor.com/
     kind: external
     seed_gives_ratings: true
-    score_types_candidates: [Culture, Total Compensation, Leadership, Reputation, RTO and Work Hours]
+    score_types_candidates: [Culture, Total Compensation, Leadership, RTO and Work Hours]
+    measurement: [employee_survey, compensation_benchmark]
+    live_enabled: false
     api:
       available: none_public
       endpoint: null
@@ -153,6 +164,8 @@ sources:
     kind: external
     seed_gives_ratings: true
     score_types_candidates: [Culture, Total Compensation, RTO and Work Hours]
+    measurement: [employee_survey, compensation_benchmark]
+    live_enabled: false
     api:
       available: none
       endpoint: null
@@ -180,7 +193,9 @@ sources:
     url: https://www.yelp.com/
     kind: external
     seed_gives_ratings: true
-    score_types_candidates: [Reputation, Culture]
+    score_types_candidates: [Reputation]
+    measurement: [consumer_business_rating]
+    live_enabled: false
     api:
       available: official_paid
       endpoint: https://api.yelp.com/v3/businesses/search
@@ -211,7 +226,9 @@ sources:
     url: https://www.comparably.com/
     kind: external
     seed_gives_ratings: true
-    score_types_candidates: [Culture, Total Compensation, Leadership, Reputation, Product and Mission]
+    score_types_candidates: [Culture, Total Compensation, Leadership]
+    measurement: [employee_survey, compensation_benchmark]
+    live_enabled: false
     api:
       available: none
       endpoint: null
@@ -241,7 +258,9 @@ sources:
     url: https://www.indeed.com/
     kind: external
     seed_gives_ratings: true
-    score_types_candidates: [Total Compensation, Reputation]
+    score_types_candidates: [Total Compensation]
+    measurement: [compensation_benchmark]
+    live_enabled: false
     api:
       available: partner_only
       endpoint: null
@@ -271,6 +290,8 @@ sources:
     kind: external
     seed_gives_ratings: true
     score_types_candidates: [Total Compensation, Lifecycle and Financials]
+    measurement: [compensation_benchmark]
+    live_enabled: false
     api:
       available: official_commercial
       endpoint: https://www.levels.fyi/api-access/
@@ -303,6 +324,8 @@ sources:
     kind: external
     seed_gives_ratings: true
     score_types_candidates: [Total Compensation, Lifecycle and Financials]
+    measurement: [compensation_benchmark]
+    live_enabled: false
     api:
       available: official_commercial
       endpoint: null
@@ -331,6 +354,8 @@ sources:
     kind: external
     seed_gives_ratings: true
     score_types_candidates: [Reputation]
+    measurement: [consumer_business_rating]
+    live_enabled: false
     api:
       available: none_public
       endpoint: null
@@ -361,6 +386,8 @@ sources:
     kind: internal
     seed_gives_ratings: true
     score_types_candidates: []
+    measurement: [curated_review]
+    live_enabled: false
     api:
       available: internal
       endpoint: null
@@ -387,7 +414,9 @@ sources:
     url: https://simplywall.st/
     kind: external
     seed_gives_ratings: true
-    score_types_candidates: [Lifecycle and Financials, Reputation]
+    score_types_candidates: [Lifecycle and Financials]
+    measurement: [curated_review]
+    live_enabled: false
     api:
       available: official_commercial
       endpoint: null
@@ -416,6 +445,8 @@ sources:
     kind: external
     seed_gives_ratings: true
     score_types_candidates: [Tech Stack]
+    measurement: [curated_review]
+    live_enabled: false
     api:
       available: decommissioned
       endpoint: null
@@ -448,3 +479,91 @@ follow_up_gaps:
   - Re-verify Google per-SKU free caps and rate limits at implementation time (pricing was restructured March 2025).
   - Levels.fyi remains the preferred follow-up for the "Total Compensation" slice if a budget/commercial licence is approved.
   - Re-check BBB for an official licensee data channel if reputation accreditation data is desired.
+
+# Per-quality measurement mapping (#474). `status` may be `supported` only when a
+# listed catalog source is `approved` AND its `measurement` overlaps
+# `valid_measurements`; otherwise it is `review_required`, `manual_only` or
+# `unsupported`. `live` is false unless an approved source has live_enabled true.
+quality_mapping:
+  culture:
+    target: Culture
+    valid_measurements: [employee_survey, curated_review]
+    sources:
+      - {name: Glassdoor, approval: blocked}
+      - {name: Blind, approval: blocked}
+      - {name: Comparably, approval: blocked}
+    status: unsupported
+    live: false
+    budget: none approved
+    provenance: employee-survey aggregates from an approved source only; a consumer or business star rating is never a culture measure
+    freshness_days: 90
+    retention: normalized aggregate and observation timestamp only
+    notes: No approved source measures employee culture. Stays unknown until a maintainer approves one.
+  leadership:
+    target: Leadership
+    valid_measurements: [employee_survey, curated_review]
+    sources:
+      - {name: Glassdoor, approval: blocked}
+      - {name: Comparably, approval: blocked}
+    status: unsupported
+    live: false
+    budget: none approved
+    provenance: employee-survey aggregates from an approved source only
+    freshness_days: 90
+    retention: normalized aggregate and observation timestamp only
+    notes: No approved source measures leadership.
+  compensation:
+    target: Total Compensation
+    valid_measurements: [compensation_benchmark, curated_review]
+    sources:
+      - {name: Glassdoor, approval: blocked}
+      - {name: Blind, approval: blocked}
+      - {name: Comparably, approval: blocked}
+      - {name: Indeed, approval: blocked}
+      - {name: Levels.fyi, approval: blocked}
+      - {name: Salary.com, approval: blocked}
+    status: unsupported
+    live: false
+    budget: Levels.fyi needs a commercial licence (maintainer budget decision)
+    provenance: compensation benchmark aggregates from a licensed source only
+    freshness_days: 180
+    retention: normalized aggregate and observation timestamp only
+    notes: No approved source; Levels.fyi is the preferred future candidate if a budget is approved.
+  office_policy:
+    target: rto_policy
+    valid_measurements: [employer_policy_statement, curated_review]
+    sources:
+      - {name: Employer careers pages (JobSourceCatalog firecrawl-careers), approval: per-source maintainer approval}
+    status: review_required
+    live: false
+    budget: Firecrawl credit budget per crawl (FIRECRAWL_CREDIT_BUDGET)
+    provenance: employer-published statement stored as a pending claim with source URL and scope; counts only after staff accept it in the Company field evidence admin
+    freshness_days: 90
+    retention: sanitized, bounded statement text with source URL; superseded and rejected claims are kept for provenance
+    notes: Crawls never auto-verify RTO, funding or public status; staff review with country and role-family scope.
+  vesting:
+    target: accelerated_vesting
+    valid_measurements: [curated_review]
+    sources:
+      - {name: Staff-reviewed user corrections (#477), approval: manual}
+    status: manual_only
+    live: false
+    budget: none
+    provenance: curated or user-submitted correction accepted by staff
+    freshness_days: 365
+    retention: correction record and accepted evidence row
+    notes: No automated source; never inferred from a crawl.
+  reputation:
+    target: Reputation
+    valid_measurements: [consumer_business_rating, curated_review]
+    sources:
+      - {name: Google, approval: approved}
+      - {name: Yelp, approval: blocked}
+      - {name: Better Business Bureau, approval: pending}
+    status: supported
+    live: false
+    budget: Google Places free tier only; no paid overage
+    provenance: Google Places aggregate star rating and review count
+    freshness_days: 30
+    retention: normalized aggregate and observation timestamp only (Google 30-day caching limit)
+    notes: Supported in policy but not live, because no Places adapter or API key exists. Reputation is not employee culture.

@@ -139,3 +139,119 @@ def test_ssrf_allowlist_contains_valid_bare_hostnames(catalog):
         assert "://" not in host, f"SSRF allowlist must be bare hostnames, got '{host}'"
         assert "/" not in host, f"SSRF allowlist must be hostnames (no path), got '{host}'"
         assert "." in host, f"SSRF allowlist entry must be a full hostname, got '{host}'"
+
+
+QUALITY_KEYS = {"culture", "leadership", "compensation", "office_policy", "vesting", "reputation"}
+QUALITY_STATUSES = {"supported", "review_required", "manual_only", "unsupported"}
+QUALITY_REQUIRED = {
+    "target",
+    "valid_measurements",
+    "sources",
+    "status",
+    "live",
+    "budget",
+    "provenance",
+    "freshness_days",
+    "retention",
+    "notes",
+}
+
+
+def _kinds(values):
+    from crank.agents.sources.semantics import MeasurementKind
+
+    return {MeasurementKind(value) for value in values}
+
+
+def test_every_source_declares_valid_measurement(catalog):
+    for source in catalog["sources"]:
+        assert isinstance(source["measurement"], list) and source["measurement"], source["name"]
+        _kinds(source["measurement"])  # ValueError on an unknown kind
+
+
+def test_candidates_are_allowed_for_source_measurement(catalog):
+    from crank.agents.sources.semantics import measurement_allows
+
+    for source in catalog["sources"]:
+        kinds = _kinds(source["measurement"])
+        for candidate in source["score_types_candidates"]:
+            assert any(measurement_allows(kind, candidate) for kind in kinds), (
+                f"{source['name']} cannot validly feed {candidate}"
+            )
+
+
+def test_consumer_ratings_never_list_culture_leadership_or_hiring(catalog):
+    for source in catalog["sources"]:
+        if "consumer_business_rating" not in source["measurement"]:
+            continue
+        assert source["score_types_candidates"] in ([], ["Reputation"]), source["name"]
+
+
+def test_non_approved_sources_are_not_live(catalog):
+    for source in catalog["sources"]:
+        assert isinstance(source["live_enabled"], bool)
+        if source["approval"]["state"] != "approved":
+            assert source["live_enabled"] is False, source["name"]
+
+
+def test_quality_mapping_shape(catalog):
+    mapping = catalog["quality_mapping"]
+    assert set(mapping) == QUALITY_KEYS
+    for name, entry in mapping.items():
+        assert QUALITY_REQUIRED <= set(entry), name
+        assert entry["status"] in QUALITY_STATUSES, name
+        assert isinstance(entry["live"], bool)
+        assert isinstance(entry["freshness_days"], int) and entry["freshness_days"] > 0
+        assert entry["sources"], name
+        _kinds(entry["valid_measurements"])
+
+
+def test_quality_mapping_status_reflects_actual_approvals(catalog):
+    by_name = {s["name"]: s for s in catalog["sources"]}
+    for name, entry in catalog["quality_mapping"].items():
+        valid = set(entry["valid_measurements"])
+        supporting = []
+        live_source = False
+        for ref in entry["sources"]:
+            source = by_name.get(ref["name"])
+            if source is None:
+                assert ref["approval"], f"{name}: {ref['name']} needs an approval note"
+                continue
+            assert ref["approval"] == source["approval"]["state"], (name, ref["name"])
+            if source["approval"]["state"] == "approved" and valid & set(source["measurement"]):
+                supporting.append(source)
+                live_source = live_source or source["live_enabled"]
+        if entry["status"] == "supported":
+            assert supporting, f"{name} is supported without an approved, valid source"
+        else:
+            assert not supporting, f"{name} has an approved valid source but is {entry['status']}"
+        if not live_source:
+            assert entry["live"] is False, name
+
+
+def test_quality_mapping_expected_values(catalog):
+    statuses = {k: v["status"] for k, v in catalog["quality_mapping"].items()}
+    assert statuses == {
+        "culture": "unsupported",
+        "leadership": "unsupported",
+        "compensation": "unsupported",
+        "office_policy": "review_required",
+        "vesting": "manual_only",
+        "reputation": "supported",
+    }
+
+
+def test_quality_mapping_targets_are_known(catalog):
+    from crank.agents.sources.semantics import SCORE_TYPE_ALLOWED_MEASUREMENTS
+    from crank.models.company_profile import CompanyFieldEvidence
+
+    for name, entry in catalog["quality_mapping"].items():
+        target = entry["target"]
+        assert (
+            target in SCORE_TYPE_ALLOWED_MEASUREMENTS
+            or target in CompanyFieldEvidence.FieldKey.values
+        ), name
+        if target in SCORE_TYPE_ALLOWED_MEASUREMENTS:
+            assert _kinds(entry["valid_measurements"]) <= set(
+                SCORE_TYPE_ALLOWED_MEASUREMENTS[target]
+            )
