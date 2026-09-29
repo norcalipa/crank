@@ -14,7 +14,7 @@ import * as modalIsolation from '../modalIsolation';
 
 jest.mock('../JobSearchChat', () => ({
     __esModule: true,
-    default: () => mockChatInitError ? (
+    default: (props: {autoFocusComposer?: boolean}) => mockChatInitError ? (
         <section data-testid="job-search-chat">
             <div role="alert">
                 We couldn’t start the assistant.
@@ -22,7 +22,7 @@ jest.mock('../JobSearchChat', () => ({
             </div>
         </section>
     ) : (
-        <section data-testid="job-search-chat">
+        <section data-testid="job-search-chat" data-autofocus={String(!!props.autoFocusComposer)}>
             <textarea
                 data-testid="assistant-composer"
                 aria-label="Message"
@@ -233,6 +233,23 @@ describe('WorkspaceShell', () => {
             storeModule.markWorkspaceLoaded();
         });
         await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-composer')));
+    });
+
+    test('a panel restored open is not marked user-opened, but launcher and Ask opens are (issue #479)', async () => {
+        mockMode = 'docked';
+        act(() => storeModule.replaceWorkspaceState('open', null));
+        renderShell();
+        await waitFor(() => expect(screen.getByTestId('job-search-chat')).toBeInTheDocument());
+        expect(screen.getByTestId('job-search-chat')).toHaveAttribute('data-autofocus', 'false');
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByTestId('job-search-chat')).toHaveAttribute('data-autofocus', 'true'));
+    });
+
+    test('a launcher click marks the panel user-opened (issue #479)', async () => {
+        mockMode = 'docked';
+        renderShell();
+        fireEvent.click(screen.getByTestId('assistant-launcher'));
+        await waitFor(() => expect(screen.getByTestId('job-search-chat')).toHaveAttribute('data-autofocus', 'true'));
     });
 
     test('a focus request on a chat initialization error lands inside the panel, not the background', async () => {

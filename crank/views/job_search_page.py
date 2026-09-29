@@ -25,22 +25,25 @@ def _chat_next_url(request, selected_company_id: int | None) -> str:
     return f"/chat/?company={selected_company_id}"
 
 
-def _selected_company_id(request) -> int | None:
-    """Return the ``?company=<id>`` value only when it names a real org.
+def _selected_company(request) -> tuple[int | None, str]:
+    """Return the ``?company=<id>`` id and display name for a real org.
 
     A non-integer or unknown id is ignored — the page still renders
-    normally, never a 404 or a redirect.
+    normally, never a 404 or a redirect. The name is only returned for an
+    active organization (the ones the public rankings list), so an inactive
+    record's name is never disclosed; the id is still honoured.
     """
     raw = request.GET.get("company")
     if raw is None:
-        return None
+        return None, ""
     try:
         company_id = int(raw)
     except (TypeError, ValueError):
-        return None
-    if not Organization.objects.filter(id=company_id).exists():
-        return None
-    return company_id
+        return None, ""
+    org = Organization.objects.filter(id=company_id).only("id", "name", "status").first()
+    if org is None:
+        return None, ""
+    return org.id, org.name if org.status == Organization.ACTIVE_STATUS else ""
 
 
 def _account_key(request) -> str:
@@ -66,7 +69,7 @@ def _account_key(request) -> str:
 @never_cache
 def job_search_page(request):
     """Render the job search assistant page for any requester."""
-    selected_company_id = _selected_company_id(request)
+    selected_company_id, selected_company_name = _selected_company(request)
     context = {
         "visitor_state": visitor_state(request),
         "sign_in_url": sign_in_url(
@@ -75,6 +78,7 @@ def job_search_page(request):
         "first_visit_intro": FIRST_VISIT_INTRO,
         "session_expired_message": SESSION_EXPIRED_MESSAGE,
         "selected_company_id": selected_company_id,
+        "selected_company_name": selected_company_name,
         "account_key": _account_key(request),
     }
     return render(request, "crank/job_search.html", context)

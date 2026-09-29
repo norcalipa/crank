@@ -369,7 +369,7 @@ export function describeWorkspaceContext(context: WorkspaceContext | null): stri
         return `About ${context.organizationName}`;
     }
     if (context.organizationId !== undefined) {
-        return `About company #${context.organizationId}`;
+        return 'About this company';
     }
     if (context.jobId !== undefined) {
         return `About job #${context.jobId}`;

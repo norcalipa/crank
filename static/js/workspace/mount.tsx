@@ -80,7 +80,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // never survive next to the URL's id.
     const selected = Number(host.dataset.selectedCompanyId);
     if (host.dataset.selectedCompanyId && Number.isInteger(selected) && selected > 0) {
-        setWorkspaceEntity({organizationId: selected});
+        const name = host.dataset.selectedCompanyName;
+        setWorkspaceEntity(name ? {organizationId: selected, organizationName: name} : {organizationId: selected});
     }
     installWorkspacePersistence();
     const root = createRoot(host);

@@ -134,14 +134,16 @@ test.describe('navigation state (issue #479)', () => {
         await askAboutCompany(page);
         await page.goto(`/chat/?company=${betaId}`);
         await expect(page.getByTestId('job-search-chat')).toBeVisible();
-        // Only the id is known from the URL: the strip must name that id, never
-        // the previously persisted company.
-        await expect(page.locator(STRIP)).toContainText(`About company #${betaId}`);
+        // The server renders the URL company's name with its id: the strip
+        // names that company (AC-2 copy), never the previously persisted one,
+        // and never exposes the database id.
+        await expect(page.locator(STRIP)).toContainText(`About ${OTHER_COMPANY}`);
         await expect(page.locator(STRIP)).not.toContainText(COMPANY);
+        await expect(page.locator(STRIP)).not.toContainText(`#${betaId}`);
         const record = await page.evaluate(() => window.sessionStorage.getItem('crank:workspace:v1') ?? '');
-        expect(JSON.parse(record).context).toEqual({organizationId: Number(betaId)});
+        expect(JSON.parse(record).context).toEqual({organizationId: Number(betaId), organizationName: OTHER_COMPANY});
         await page.reload();
-        await expect(page.locator(STRIP)).toContainText(`About company #${betaId}`);
+        await expect(page.locator(STRIP)).toContainText(`About ${OTHER_COMPANY}`);
         await expect(page.locator(STRIP)).not.toContainText(COMPANY);
     });
 

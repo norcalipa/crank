@@ -85,6 +85,16 @@ describe('workspace mount', () => {
         window.history.replaceState({}, '', '/');
     });
 
+    test('seeds the server-rendered company name together with the id (issue #479 AC-2)', () => {
+        window.history.replaceState({}, '', '/chat/?company=12');
+        mountPinned({
+            authenticated: 'true', accountKey: 'alice', selectedCompanyId: '12', selectedCompanyName: 'Gamma Corp',
+        });
+        expect(getWorkspaceSnapshot().context)
+            .toEqual({surface: 'chat', organizationId: 12, organizationName: 'Gamma Corp'});
+        window.history.replaceState({}, '', '/');
+    });
+
     test('URL-seeded company replaces a conflicting persisted entity in the real mount order', () => {
         window.sessionStorage.setItem('crank:workspace:v1', JSON.stringify({
             v: 1,

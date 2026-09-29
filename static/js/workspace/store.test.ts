@@ -34,7 +34,15 @@ describe('workspace store', () => {
             contextRevision: 0,
             account: {status: 'unknown', key: ''},
             conversationId: null,
+            userOpened: false,
         });
+    });
+
+    test('userOpened is set by openAssistant and cleared by a wholesale replace (issue #479)', () => {
+        openAssistant();
+        expect(getWorkspaceSnapshot().userOpened).toBe(true);
+        replaceWorkspaceState('open', null);
+        expect(getWorkspaceSnapshot().userOpened).toBe(false);
     });
 
     test('openAssistant transitions and notifies once', () => {
@@ -236,7 +244,7 @@ describe('workspace store (issue #479 contract)', () => {
         expect(describeWorkspaceContext(null)).toBe('');
         expect(describeWorkspaceContext({surface: 'rankings'})).toBe('');
         expect(describeWorkspaceContext({surface: 'company', organizationName: 'Acme'})).toBe('About Acme');
-        expect(describeWorkspaceContext({surface: 'company', organizationId: 4})).toBe('About company #4');
+        expect(describeWorkspaceContext({surface: 'company', organizationId: 4})).toBe('About this company');
         expect(describeWorkspaceContext({surface: 'jobs', jobId: 8})).toBe('About job #8');
         expect(describeWorkspaceContext({surface: 'comparison', comparisonIds: [1, 2]})).toBe('Comparing 2 companies');
     });
