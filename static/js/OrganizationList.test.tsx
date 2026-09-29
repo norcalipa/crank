@@ -1586,7 +1586,7 @@ describe('OrganizationList', () => {
 
         test('score column and card label name the current preset', () => {
             render(<OrganizationList organizations={organizations} rankingPresets={presets} currentAlgorithmId={2} />);
-            expect(screen.getByRole('columnheader', {name: 'Company score Culture'})).toBeInTheDocument();
+            expect(screen.getByRole('columnheader', {name: 'Company score (Culture)'})).toBeInTheDocument();
             expect(document.querySelector('.col-score-algorithm')).toHaveTextContent('Culture');
             expect(screen.getAllByText('Company score (Culture)').length).toBe(2);
         });

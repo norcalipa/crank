@@ -633,7 +633,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         <tr>
                             <th className="col-rank">Rank</th>
                             <th className="col-name">Name</th>
-                            <th className="col-score">Company score{currentPreset && <>{' '}<span className="col-score-algorithm">{currentPreset.name}</span></>}</th>
+                            <th className="col-score" aria-label={scoreLabel}>Company score{currentPreset && <>{' '}<span className="col-score-algorithm">{currentPreset.name}</span></>}</th>
                             <th className="col-funding">Funding Round</th>
                             <th className="col-rto">RTO Policy</th>
                             <th className="col-profile">Profile Completeness</th>
