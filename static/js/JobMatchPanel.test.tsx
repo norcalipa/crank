@@ -1412,7 +1412,7 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
         installBatchedFetch([{title: 'Initial', generation: 1, hold: false}]);
         render(<JobMatchPanel/>);
         await screen.findByText('Initial');
-        expect(scrollTo).toHaveBeenCalledWith(0, 300);
+        expect(scrollTo).toHaveBeenCalledWith({top: 300, behavior: 'instant'});
     });
 
     test('unmounting cancels the in-flight request', async () => {

@@ -182,8 +182,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         for (const element of Array.from(candidates)) {
             const rect = element.getBoundingClientRect();
             if (rect.height > 0 && rect.bottom > 0) {
-                const id = element.getAttribute('data-organization-id');
-                return id === null ? null : {id, offset: rect.top};
+                return {id: element.getAttribute('data-organization-id') as string, offset: rect.top};
             }
         }
         return null;
