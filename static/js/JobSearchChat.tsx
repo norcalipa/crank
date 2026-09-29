@@ -1865,13 +1865,15 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 clearInflightTurn(turnConversationId, key);
                 return;
             }
-            // The reply is server history and is always appended; if the
-            // context moved on meanwhile it is labelled with the context it
-            // answered, without touching the context strip or the store.
+            // The reply is server history and is always appended; if the page
+            // context moved on meanwhile it is labelled with the page the
+            // question was asked from, without touching the context strip or
+            // the store. Page context is not sent to the model yet (#484), so
+            // the note must not claim the reply was about that entity.
             if (sentContextLabel
                 && sentContextLabel !== describeWorkspaceContext(getWorkspaceSnapshot().context)) {
                 const answered = sentContextLabel.replace(/^(About|Comparing) /, '');
-                setStaleNotes((prev) => ({...prev, [data.message.id]: `Answered about ${answered}`}));
+                setStaleNotes((prev) => ({...prev, [data.message.id]: `Asked while viewing ${answered}`}));
             }
             // Keep the turn in its ORIGINAL position and insert the reply
             // immediately after it: a retried turn must never reorder the

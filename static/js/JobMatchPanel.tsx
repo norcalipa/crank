@@ -88,6 +88,52 @@ interface RankedMatchesPayload {
     organization_matches: RankedOrgMatch[];
 }
 
+// Generations carried by the entries of the payload that will be displayed.
+function rankedGenerations(payload: RankedMatchesPayload | null): {entries: number; values: number[]} {
+    const all = [...(payload?.job_matches ?? []), ...(payload?.organization_matches ?? [])];
+    const values = Array.from(new Set(
+        all
+            .map((entry) => entry.revision?.result_generation)
+            .filter((value): value is number => typeof value === 'number'),
+    ));
+    return {entries: all.length, values};
+}
+
+// Generation of the list actually shown: the ranked payload's own entries
+// when it has any, else the `/api/job-matches/` page's (empty ranked list).
+function displayedGeneration(payload: RankedMatchesPayload | null, matchGeneration: number | null): number | null {
+    const {entries, values} = rankedGenerations(payload);
+    if (entries > 0) {
+        return values.length > 0 ? Math.max(...values) : null;
+    }
+    return matchGeneration;
+}
+
+// A refresh may replace the displayed list only when it is provably not
+// older: a lower generation, a payload whose entries disagree or carry none,
+// a failed ranked fetch, or a ranked/matches endpoint mismatch all keep the list on screen. With
+// nothing shown yet, anything applies.
+function acceptsGeneration(
+    shown: number | null,
+    payload: RankedMatchesPayload | null,
+    matchGeneration: number | null,
+): boolean {
+    if (shown === null) {
+        return true;
+    }
+    if (payload === null) {
+        return false;
+    }
+    const {entries, values} = rankedGenerations(payload);
+    if (entries === 0) {
+        return matchGeneration === null || matchGeneration >= shown;
+    }
+    if (values.length !== 1 || values[0] < shown) {
+        return false;
+    }
+    return matchGeneration === null || matchGeneration === values[0];
+}
+
 type PanelPhase = 'loading' | 'error' | 'ready';
 
 /**
@@ -589,20 +635,20 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 return;
             }
             const revision = matchData?.results?.[0]?.revision ?? null;
-            const generation = revision?.result_generation ?? null;
-            const shown = shownGenerationRef.current;
-            if (generation !== null && shown !== null && generation < shown) {
-                // Older result set than the one displayed: keep what is shown.
+            if (!acceptsGeneration(shownGenerationRef.current, rankedData, revision?.result_generation ?? null)) {
+                // Older, unverifiable or endpoint-mismatched result set:
+                // keep what is shown.
                 setPhase('ready');
                 return;
             }
+            const generation = displayedGeneration(rankedData, revision?.result_generation ?? null);
             setEmptyState(statusData);
             if (matchData) {
                 setMatchCount(matchData.count || 0);
                 setStoredRevision(revision);
-                if (generation !== null) {
-                    shownGenerationRef.current = generation;
-                }
+            }
+            if (generation !== null) {
+                shownGenerationRef.current = generation;
             }
             setRankedMatches(rankedData);
             setPhase('ready');

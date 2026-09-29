@@ -131,4 +131,14 @@ describe('AssistantPanel', () => {
         expect(getWorkspaceSnapshot().contextRevision).toBe(revision + 1);
         expect(document.activeElement).toBe(document.getElementById('assistant-panel-title'));
     });
+
+    test('Clear context also removes the company param so a reload does not reseed it', () => {
+        window.history.replaceState({k: 1}, '', '/chat/?company=12&foo=bar#x');
+        setWorkspaceContext({surface: 'chat', organizationId: 12});
+        render(<AssistantPanel mode="docked" context={getWorkspaceSnapshot().context}/>);
+        fireEvent.click(screen.getByTestId('assistant-clear-context'));
+        expect(window.location.pathname + window.location.search + window.location.hash).toBe('/chat/?foo=bar#x');
+        expect(window.history.state).toEqual({k: 1});
+        window.history.replaceState(null, '', '/');
+    });
 });

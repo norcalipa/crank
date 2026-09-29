@@ -8,7 +8,7 @@ import * as React from 'react';
 import OrganizationList from './OrganizationList';
 import SuggestCompanyHost from './suggestCompany/SuggestCompanyHost';
 import * as suggestCompanyController from './suggestCompany/controller';
-import {clearWorkspaceContext, getWorkspaceSnapshot, resetWorkspaceForTests, setWorkspaceContext} from './workspace/store';
+import {clearWorkspaceContext, getWorkspaceSnapshot, resetWorkspaceForTests, setWorkspaceAccount, setWorkspaceContext} from './workspace/store';
 
 interface Organization {
     id: number;
@@ -1026,6 +1026,103 @@ describe('OrganizationList', () => {
             expect(keys.length).toBeGreaterThan(0);
             keys.forEach((key) => expect(allowed).toContain(key));
             expect(window.history.state?.crankPosition ?? {scrollY: 0}).not.toHaveProperty('search');
+        });
+
+        test('an incoming unknown param is dropped by every URL writer', async () => {
+            window.history.replaceState({}, '', '/?foo=secret&search=Organization&company=1&bar=2');
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+            // Closing rewrites the query through syncCompanyParam.
+            fireEvent.click(screen.getByRole('button', {name: 'Close'}));
+            await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+            expect(window.location.search).not.toContain('foo');
+            expect(window.location.search).not.toContain('bar');
+            expect(new URLSearchParams(window.location.search).get('search')).toBe('Organization');
+
+        });
+
+        test('page links and page changes drop an incoming unknown param', async () => {
+            window.history.replaceState({}, '', '/?foo=secret');
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+            const push = window.history.pushState as jest.Mock;
+            push.mockClear();
+            fireEvent.change(screen.getByPlaceholderText('Search organizations'), {target: {value: 'Organization'}});
+            expect(push).toHaveBeenLastCalledWith({}, '', '/?page=1&search=Organization');
+            expect(screen.getByTestId('page-link-2').getAttribute('href')).toBe('/?page=2');
+            fireEvent.click(screen.getByTestId('page-link-2'));
+            expect(String(push.mock.calls[push.mock.calls.length - 1][2])).not.toContain('foo');
+        });
+
+        describe('result anchor restoration', () => {
+            const visibleRect = {height: 20, bottom: 40, top: 20} as DOMRect;
+            let rectSpy: jest.SpyInstance;
+            let scrollIntoView: jest.Mock;
+            let rafSpy: jest.SpyInstance;
+
+            beforeEach(() => {
+                scrollIntoView = jest.fn();
+                Element.prototype.scrollIntoView = scrollIntoView as unknown as typeof Element.prototype.scrollIntoView;
+                rectSpy = jest.spyOn(Element.prototype, 'getBoundingClientRect')
+                    .mockImplementation(() => visibleRect);
+                rafSpy = jest.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
+                    cb(0);
+                    return 1;
+                });
+                window.scrollTo = jest.fn() as unknown as typeof window.scrollTo;
+            });
+
+            afterEach(() => {
+                rectSpy.mockRestore();
+                rafSpy.mockRestore();
+            });
+
+            test('mount restores by organization id, not just pixel offset', () => {
+                window.history.replaceState({crankPosition: {scrollY: 480, anchor: '2'}}, '', '/');
+                render(<OrganizationList organizations={organizations} />);
+                expect(scrollIntoView).toHaveBeenCalledTimes(1);
+                const target = scrollIntoView.mock.instances[0] as HTMLElement;
+                expect(target.getAttribute('data-organization-id')).toBe('2');
+                expect(window.scrollTo).not.toHaveBeenCalled();
+            });
+
+            test('restores again once the account hydrates when the user has not scrolled', () => {
+                window.history.replaceState({crankPosition: {scrollY: 480, anchor: '2'}}, '', '/');
+                render(<OrganizationList organizations={organizations} />);
+                expect(scrollIntoView).toHaveBeenCalledTimes(1);
+                act(() => setWorkspaceAccount({status: 'authenticated', key: 'alice'}));
+                expect(scrollIntoView).toHaveBeenCalledTimes(2);
+                act(() => setWorkspaceAccount({status: 'anonymous', key: ''}));
+                expect(scrollIntoView).toHaveBeenCalledTimes(2);
+            });
+
+            test('does not yank a user who scrolled before hydration settled', () => {
+                window.history.replaceState({crankPosition: {scrollY: 480, anchor: '2'}}, '', '/');
+                render(<OrganizationList organizations={organizations} />);
+                Object.defineProperty(window, 'scrollY', {configurable: true, value: 900});
+                act(() => setWorkspaceAccount({status: 'authenticated', key: 'alice'}));
+                expect(scrollIntoView).toHaveBeenCalledTimes(1);
+                Object.defineProperty(window, 'scrollY', {configurable: true, value: 0});
+            });
+
+            test('saves the first on-screen organization as the anchor', () => {
+                render(<OrganizationList organizations={organizations} />);
+                window.dispatchEvent(new Event('pagehide'));
+                expect(window.history.state?.crankPosition?.anchor).toBe('1');
+            });
+
+            test('a non-numeric saved anchor falls back to the pixel offset', () => {
+                window.history.replaceState({crankPosition: {scrollY: 480, anchor: '"]x'}}, '', '/');
+                render(<OrganizationList organizations={organizations} />);
+                expect(scrollIntoView).not.toHaveBeenCalled();
+                expect(window.scrollTo).toHaveBeenCalledWith(0, 480);
+            });
+
+            test('with nothing visible there is no anchor to save', () => {
+                rectSpy.mockImplementation(() => ({height: 0, bottom: 0, top: 0} as DOMRect));
+                render(<OrganizationList organizations={organizations} />);
+                window.dispatchEvent(new Event('pagehide'));
+                expect(window.history.state?.crankPosition?.anchor).toBeNull();
+            });
         });
 
         test('restores the saved scroll position on mount', () => {

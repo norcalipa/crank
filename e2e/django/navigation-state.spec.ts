@@ -82,6 +82,67 @@ test.describe('navigation state (issue #479)', () => {
         await expect(page.locator('#organization-list')).toBeVisible();
     });
 
+    test('Clear context on a pinned /chat/?company= URL survives a reload', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/');
+        await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
+        const href = await page.getByTestId('company-chat-cta').getAttribute('href');
+        expect(href).toMatch(/^\/chat\/\?company=\d+$/);
+        await page.goto(href as string);
+        await expect(page.locator(STRIP)).toContainText(COMPANY);
+        await page.getByTestId('assistant-clear-context').click();
+        await expect(page.locator(STRIP)).toHaveCount(0);
+        expect(new URL(page.url()).searchParams.has('company')).toBe(false);
+        await page.reload();
+        await expect(page.getByTestId('job-search-chat')).toBeVisible();
+        await expect(page.locator(STRIP)).toHaveCount(0);
+    });
+
+    // Issue #479 journey. The comparison leg stays open until #490 ships a
+    // comparison surface; every leg that exists today is covered here.
+    test('Rankings → company dialog → jobs → Back → Forward restores each step', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/');
+        await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
+        await expect(page.getByRole('dialog')).toBeVisible();
+        await expect.poll(() => new URL(page.url()).searchParams.has('company')).toBe(true);
+        const rankingsUrl = page.url();
+
+        await page.goto('/chat/');
+        await expect(page.getByTestId('job-match-panel')).toBeVisible();
+        await expect(page.getByTestId('ranked-job-matches')).toBeVisible();
+
+        await page.goBack();
+        expect(page.url()).toBe(rankingsUrl);
+        await expect(page.getByRole('dialog')).toBeVisible();
+        await expect(page.locator('#organization-details-title')).toHaveText(COMPANY);
+
+        await page.goForward();
+        await expect(page.getByTestId('job-match-panel')).toBeVisible();
+    });
+
+    test('an account change in another tab purges this tab private state', async ({page, context}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await askAboutCompany(page);
+        await page.goto('/chat/');
+        const composer = page.locator('textarea[aria-label="Message"]');
+        await expect(composer).toBeEnabled();
+        await composer.fill('tab one private draft');
+        await expect(page.locator(STRIP)).toContainText(`About ${COMPANY}`);
+
+        const other = await context.newPage();
+        await other.goto('/chat/');
+        await logout(other);
+
+        await expect(page.locator(STRIP)).toHaveCount(0);
+        await expect(page.locator('body')).not.toContainText('tab one private draft');
+        const record = await page.evaluate(() => window.sessionStorage.getItem('crank:workspace:v1') ?? '');
+        expect(record).not.toContain('organizationId');
+    });
+
     test('at 375px the sheet stays open after Ask and restores minimized after navigation', async ({page}) => {
         await page.setViewportSize({width: 375, height: 800});
         await login(page);
@@ -135,12 +196,18 @@ test.describe('navigation state (issue #479)', () => {
         await expect(page.locator('#organization-list')).toBeVisible();
         await page.evaluate(() => {
             document.body.style.minHeight = '3000px';
-            window.scrollTo(0, 400);
         });
-        await expect.poll(() => page.evaluate(() => window.history.state?.crankPosition?.scrollY ?? 0)).toBeGreaterThan(300);
+        // Scroll a result far down into view and remember which one it is.
+        const rows = page.locator('tr.organization-row');
+        const total = await rows.count();
+        const target = rows.nth(Math.max(0, total - 1));
+        await target.scrollIntoViewIfNeeded();
+        await expect.poll(() => page.evaluate(() => window.history.state?.crankPosition?.anchor ?? null)).not.toBeNull();
+        const targetId = await page.evaluate(() => window.history.state.crankPosition.anchor as string);
         await page.goto('/help/');
         await page.goBack();
         await expect(page.locator('#organization-list')).toBeVisible();
-        await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+        // The same organization — not merely some scroll offset — is on screen.
+        await expect(page.locator(`tr.organization-row[data-organization-id="${targetId}"]`)).toBeInViewport();
     });
 });

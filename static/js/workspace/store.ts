@@ -199,9 +199,33 @@ export function setWorkspaceContext(context: Partial<WorkspaceContext>): void {
     notify();
 }
 
+// URL params that seed an entity into the context (`/chat/?company=12`). A
+// cleared context must not be re-seeded by reloading the same URL.
+const ENTITY_QUERY_PARAMS = ['company'];
+
+function removeEntityQueryParams(): void {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        const present = ENTITY_QUERY_PARAMS.filter((key) => params.has(key));
+        if (present.length === 0) {
+            return;
+        }
+        present.forEach((key) => params.delete(key));
+        const query = params.toString();
+        window.history.replaceState(
+            window.history.state,
+            '',
+            `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`,
+        );
+    } catch {
+        // history unavailable; the URL keeps its parameter.
+    }
+}
+
 // Removes the entity keys but keeps the surface; bumps the revision only
 // when something was actually removed (issue #479 AC-3).
 export function clearWorkspaceContext(): void {
+    removeEntityQueryParams();
     const s = store();
     const current = s.snapshot.context;
     if (!current) {
@@ -313,7 +337,7 @@ export function resetWorkspaceForTests(): void {
 }
 
 // Human label for the entity part of a context (strip text and the chat's
-// "Answered about …" note). Empty when the context names no entity.
+// "Asked while viewing …" note). Empty when the context names no entity.
 export function describeWorkspaceContext(context: WorkspaceContext | null): string {
     if (!context) {
         return '';

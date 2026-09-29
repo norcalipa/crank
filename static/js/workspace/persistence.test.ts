@@ -8,7 +8,7 @@ import {
     setWorkspaceAccount,
     setWorkspaceContext,
 } from './store';
-import {WORKSPACE_SESSION_KEY} from './types';
+import {ACCOUNT_EPOCH_KEY, WORKSPACE_SESSION_KEY} from './types';
 
 let teardown: (() => void) | undefined;
 
@@ -188,5 +188,66 @@ describe('workspace persistence', () => {
         second();
         document.dispatchEvent(new CustomEvent('crank:auth-hydrated'));
         expect(getWorkspaceSnapshot().account.status).toBe('unknown');
+    });
+});
+
+describe('workspace persistence review fixes (issue #479)', () => {
+    beforeEach(() => window.localStorage.clear());
+
+    test.each([
+        ['/chat/?company=12', 'chat'],
+        ['/?company=12', 'rankings'],
+    ] as const)('explicit page company wins over a conflicting persisted entity on %s', (url, surface) => {
+        window.history.replaceState(null, '', url);
+        seedRecord({context: {organizationId: 7, organizationName: 'Acme'}});
+        setWorkspaceContext({surface, organizationId: 12});
+        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+        teardown = installWorkspacePersistence();
+        expect(getWorkspaceSnapshot().context).toEqual({surface, organizationId: 12});
+        window.history.replaceState(null, '', '/');
+    });
+
+    test('persisted entity group is applied whole when the page names no entity', () => {
+        seedRecord({context: {organizationId: 7, organizationName: 'Acme', jobId: 3}});
+        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+        teardown = installWorkspacePersistence();
+        expect(getWorkspaceSnapshot().context)
+            .toEqual({surface: 'rankings', organizationId: 7, organizationName: 'Acme', jobId: 3});
+    });
+
+    test('an account switch in this tab signals other tabs with an opaque nonce and no account data', () => {
+        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+        teardown = installWorkspacePersistence();
+        expect(window.localStorage.getItem(ACCOUNT_EPOCH_KEY)).toBeNull();
+        hydrate({authenticated: true, username: 'bob'});
+        const nonce = window.localStorage.getItem(ACCOUNT_EPOCH_KEY);
+        expect(nonce).toBeTruthy();
+        expect(nonce).not.toContain('alice');
+        expect(nonce).not.toContain('bob');
+    });
+
+    test('an unchanged account does not signal other tabs', () => {
+        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+        teardown = installWorkspacePersistence();
+        hydrate({authenticated: true, username: 'alice'});
+        expect(window.localStorage.getItem(ACCOUNT_EPOCH_KEY)).toBeNull();
+    });
+
+    test('a purge received from another tab never re-signals (no ping-pong)', () => {
+        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+        teardown = installWorkspacePersistence();
+        window.localStorage.removeItem(ACCOUNT_EPOCH_KEY);
+        document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
+        expect(window.localStorage.getItem(ACCOUNT_EPOCH_KEY)).toBeNull();
+    });
+
+    test('a broken localStorage does not break the account switch', () => {
+        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+        teardown = installWorkspacePersistence();
+        const spy = jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+            throw new Error('quota');
+        });
+        expect(() => hydrate({authenticated: true, username: 'bob'})).not.toThrow();
+        spy.mockRestore();
     });
 });

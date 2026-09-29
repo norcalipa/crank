@@ -55,6 +55,21 @@ interface OrganizationListProps {
     algorithmUrlTemplate?: string;
 }
 
+// Query parameters the list preserves when it rewrites the URL; anything
+// else on the incoming URL is dropped (issue #479). The scoring preset lives
+// in the path (/algo/<id>/), not the query.
+const ALLOWED_QUERY_PARAMS = ['search', 'accelerated_vesting', 'page', 'company'];
+
+function allowlistedParams(search: string): URLSearchParams {
+    const params = new URLSearchParams();
+    new URLSearchParams(search).forEach((value, key) => {
+        if (ALLOWED_QUERY_PARAMS.includes(key) && !params.has(key)) {
+            params.set(key, value);
+        }
+    });
+    return params;
+}
+
 interface OrganizationListState {
     organizations: Organization[];
     filteredOrganizations: Organization[];
@@ -131,8 +146,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         // list, restore the Back-navigation scroll position, and close the
         // company dialog when the assistant's "Clear context" removes it.
         this.reportContext();
-        this.stopPositionTracking = installPositionTracking(() => null);
-        restoreResultPosition(() => null);
+        this.stopPositionTracking = installPositionTracking(this.visibleOrganizationAnchor);
+        restoreResultPosition(this.findOrganizationAnchor);
+        this.restoredScrollY = window.scrollY;
         this.unsubscribeWorkspace = subscribeWorkspace(this.handleWorkspaceChange);
     }
 
@@ -156,6 +172,44 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     }
 
     private stopPositionTracking?: () => void;
+    private restoredAfterHydration = false;
+    private restoredScrollY = 0;
+
+    // Organization id of the first result on screen. Table rows and cards
+    // both carry the id; whichever layout is displayed has a non-empty box.
+    visibleOrganizationAnchor = (): string | null => {
+        const candidates = document.querySelectorAll<HTMLElement>('[data-organization-id]');
+        for (const element of Array.from(candidates)) {
+            const rect = element.getBoundingClientRect();
+            if (rect.height > 0 && rect.bottom > 0) {
+                return element.getAttribute('data-organization-id');
+            }
+        }
+        return null;
+    };
+
+    findOrganizationAnchor = (id: string): HTMLElement | null => {
+        if (!/^\d+$/.test(id)) {
+            return null;
+        }
+        const candidates = document.querySelectorAll<HTMLElement>(`[data-organization-id="${id}"]`);
+        return Array.from(candidates).find((element) => element.getBoundingClientRect().height > 0) ?? null;
+    };
+
+    // Account hydration can reopen the drawer/docked panel and reflow rows
+    // into cards, so the mount-time restore is repeated once, by result
+    // anchor, after the account settles — unless the user already scrolled.
+    private restoreAfterHydration = () => {
+        if (this.restoredAfterHydration || getWorkspaceSnapshot().account.status === 'unknown') {
+            return;
+        }
+        this.restoredAfterHydration = true;
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+            if (Math.abs(window.scrollY - this.restoredScrollY) <= 1) {
+                restoreResultPosition(this.findOrganizationAnchor);
+            }
+        }));
+    };
     private unsubscribeWorkspace?: () => void;
     // Company id this list last reported to the workspace, so a close only
     // removes context the list itself set (never the Ask CTA's).
@@ -164,7 +218,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     // `company` is the only extra URL param the list writes, via replaceState
     // so opening or closing a dialog never adds a history entry (issue #479).
     syncCompanyParam = () => {
-        const params = new URLSearchParams(window.location.search);
+        const params = allowlistedParams(window.location.search);
         const {showPopup, selectedOrganization} = this.state;
         const current = params.get('company');
         const wanted = showPopup && selectedOrganization ? String(selectedOrganization.id) : null;
@@ -208,6 +262,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     };
 
     handleWorkspaceChange = () => {
+        this.restoreAfterHydration();
         const {showPopup, selectedOrganization} = this.state;
         if (showPopup && selectedOrganization
             && this.reportedOrganizationId === selectedOrganization.id
@@ -262,14 +317,14 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     getPageCount = (resultCount: number) => Math.max(1, Math.ceil(resultCount / this.state.itemsPerPage));
 
     getPageUrl = (pageNumber: number) => {
-        const params = new URLSearchParams(window.location.search);
+        const params = allowlistedParams(window.location.search);
         params.set('page', pageNumber.toString());
         const query = params.toString();
         return `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`;
     };
 
     updateUrl = (pageNumber: number, searchTerm: string, acceleratedVesting: boolean, replace = false) => {
-        const params = new URLSearchParams(window.location.search);
+        const params = allowlistedParams(window.location.search);
         params.set('page', pageNumber.toString());
         if (searchTerm) {
             params.set('search', searchTerm);
@@ -653,6 +708,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             role="button"
                             aria-label={`View details for ${org.name}`}
                             className="organization-row"
+                            data-organization-id={org.id}
                         >
                             <td className="col-rank">{org.ranking}</td>
                             <td className="col-name"><span className="organization-name" title={org.name}>{org.name}</span></td>
@@ -669,6 +725,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         <article
                             key={`card-${org.id}`}
                             className="card organization-card"
+                            data-organization-id={org.id}
                             onClick={() => this.handleOrganizationClick(org)}
                             onKeyDown={(event) => {
                                 if (event.key === 'Enter' || event.key === ' ') {

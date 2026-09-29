@@ -177,6 +177,10 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
         // than settling for a header control that is about to be replaced
         // (issue #469 review).
         if (!snapshot.loaded) {
+            // Interim destination so keyboard/screen-reader users are never
+            // left on the background while the chunk loads or fails to load;
+            // the request stays pending and moves on to the composer later.
+            document.getElementById('assistant-panel-title')?.focus();
             return;
         }
         // Prefer the composer (the assistant's primary input); fall back to the

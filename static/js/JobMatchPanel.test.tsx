@@ -1105,7 +1105,15 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
     // Each refresh issues three fetches (status, matches, ranked). Every
     // batch of three is held until `release()` so overlapping refreshes can
     // resolve in any order.
-    function installBatchedFetch(specs: Array<{title: string; generation: number | null; hold: boolean}>): Batch[] {
+    function installBatchedFetch(specs: Array<{
+        title: string;
+        generation: number | null;
+        hold: boolean;
+        // Generation stamped on the ranked entries; defaults to `generation`.
+        rankedGeneration?: number | null;
+        rankedEmpty?: boolean;
+        matchesFail?: boolean;
+    }>): Batch[] {
         const batches: Batch[] = [];
         const gates: Array<Promise<void>> = [];
         let calls = 0;
@@ -1123,8 +1131,14 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
             return gate.then(() => {
                 if (url.includes('/status/')) return jsonResponse(statusPayload('ok'));
                 if (url.includes('/ranked/')) {
-                    return jsonResponse(rankedPayload([{...sampleJobMatch, title: spec.title}]));
+                    const rankedGeneration = spec.rankedGeneration === undefined ? spec.generation : spec.rankedGeneration;
+                    return jsonResponse(rankedPayload(spec.rankedEmpty ? [] : [{
+                        ...sampleJobMatch,
+                        title: spec.title,
+                        revision: rankedGeneration === null ? undefined : {result_generation: rankedGeneration},
+                    }]));
                 }
+                if (spec.matchesFail) return {ok: false, status: 500, json: () => Promise.resolve({})} as Response;
                 return jsonResponse(matchPayload(1, [{
                     ...sampleJobMatch,
                     revision: spec.generation === null ? undefined : {result_generation: spec.generation},
@@ -1206,15 +1220,111 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
         expect(screen.queryByText('Generation four')).not.toBeInTheDocument();
     });
 
-    test('a response without a generation always applies', async () => {
+    async function refreshAndSettle(callsBefore: number): Promise<void> {
+        await refresh();
+        await waitFor(() => expect((global.fetch as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(callsBefore + 3));
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+    }
+
+    test('a ranked payload without a generation never replaces a displayed higher generation', async () => {
         installBatchedFetch([
             {title: 'Old', generation: 5, hold: false},
             {title: 'Ungenerated', generation: null, hold: false},
         ]);
         render(<JobMatchPanel/>);
         await screen.findByText('Old');
+        await refreshAndSettle(3);
+        expect(screen.getByText('Old')).toBeInTheDocument();
+        expect(screen.queryByText('Ungenerated')).not.toBeInTheDocument();
+    });
+
+    test('a lower generation on the ranked payload is rejected even when the matches page looks newer', async () => {
+        installBatchedFetch([
+            {title: 'Gen five', generation: 5, hold: false},
+            {title: 'Ranked four', generation: 6, rankedGeneration: 4, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Gen five');
+        await refreshAndSettle(3);
+        expect(screen.getByText('Gen five')).toBeInTheDocument();
+        expect(screen.queryByText('Ranked four')).not.toBeInTheDocument();
+    });
+
+    test('an endpoint generation mismatch keeps the displayed list', async () => {
+        installBatchedFetch([
+            {title: 'Gen five', generation: 5, hold: false},
+            {title: 'Mismatch', generation: 6, rankedGeneration: 7, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Gen five');
+        await refreshAndSettle(3);
+        expect(screen.getByText('Gen five')).toBeInTheDocument();
+        expect(screen.queryByText('Mismatch')).not.toBeInTheDocument();
+    });
+
+    test('a newer ranked generation applies even when the matches page fails', async () => {
+        installBatchedFetch([
+            {title: 'Gen five', generation: 5, hold: false},
+            {title: 'Gen six', generation: 6, matchesFail: true, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Gen five');
+        await refreshAndSettle(3);
+        await screen.findByText('Gen six');
+    });
+
+    test('a failed ranked fetch never blanks the displayed list', async () => {
+        installBatchedFetch([{title: 'Gen five', generation: 5, hold: false}]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Gen five');
+        (global.fetch as jest.Mock).mockImplementation((url: string) => Promise.resolve(
+            url.includes('/status/') ? jsonResponse(statusPayload('ok'))
+                : url.includes('/ranked/') ? {ok: false, status: 500, json: () => Promise.resolve({})} as Response
+                    : jsonResponse(matchPayload(1, [{...sampleJobMatch, revision: {result_generation: 9}}])),
+        ));
         await refresh();
-        await screen.findByText('Ungenerated');
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+        expect(screen.getByText('Gen five')).toBeInTheDocument();
+    });
+
+    test('inconsistent generations inside one ranked payload keep the displayed list', async () => {
+        installBatchedFetch([{title: 'Gen five', generation: 5, hold: false}]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Gen five');
+        (global.fetch as jest.Mock).mockImplementation((url: string) => Promise.resolve(
+            url.includes('/status/') ? jsonResponse(statusPayload('ok'))
+                : url.includes('/ranked/') ? jsonResponse(rankedPayload([
+                    {...sampleJobMatch, title: 'Split A', revision: {result_generation: 6}},
+                    {...sampleJobMatch, listing_id: 43, title: 'Split B', revision: {result_generation: 7}},
+                ]))
+                    : jsonResponse(matchPayload(1, [{...sampleJobMatch, revision: {result_generation: 7}}])),
+        ));
+        await refresh();
+        await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
+        expect(screen.getByText('Gen five')).toBeInTheDocument();
+        expect(screen.queryByText('Split A')).not.toBeInTheDocument();
+    });
+
+    test('an empty ranked list at an equal matches generation applies', async () => {
+        installBatchedFetch([
+            {title: 'Gen five', generation: 5, hold: false},
+            {title: 'x', generation: 5, rankedEmpty: true, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Gen five');
+        await refreshAndSettle(3);
+        expect(screen.queryByText('Gen five')).not.toBeInTheDocument();
+    });
+
+    test('an empty ranked list at a lower matches generation keeps the displayed list', async () => {
+        installBatchedFetch([
+            {title: 'Gen five', generation: 5, hold: false},
+            {title: 'x', generation: 4, rankedEmpty: true, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Gen five');
+        await refreshAndSettle(3);
+        expect(screen.getByText('Gen five')).toBeInTheDocument();
     });
 
     test('crank:private-state-purged drops the data and reloads', async () => {

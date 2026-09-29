@@ -18,7 +18,20 @@ function flushMicrotasks(times = 4): Promise<void> {
 }
 
 describe('app-nav (issue #465 private-state purge)', () => {
+    const storageListeners: EventListener[] = [];
+    const realAddEventListener = window.addEventListener.bind(window);
+
     beforeEach(() => {
+        // Each fresh require() registers another window `storage` listener;
+        // track them so one test's module never handles the next test's event.
+        jest.spyOn(window, 'addEventListener').mockImplementation(
+            (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
+                if (type === 'storage') {
+                    storageListeners.push(listener as EventListener);
+                }
+                realAddEventListener(type, listener, options);
+            },
+        );
         document.body.innerHTML = '';
         window.localStorage.clear();
         window.sessionStorage.clear();
@@ -26,6 +39,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
     });
 
     afterEach(() => {
+        storageListeners.splice(0).forEach((listener) => window.removeEventListener('storage', listener));
         jest.resetModules();
         jest.restoreAllMocks();
     });
@@ -181,5 +195,64 @@ describe('app-nav (issue #465 private-state purge)', () => {
         } finally {
             Object.defineProperty(window, 'localStorage', {value: original, configurable: true});
         }
+    });
+
+    test('signing out announces the account change with an opaque localStorage nonce', async () => {
+        document.body.innerHTML = `<form data-nav-logout-form method="post" action="/logout/"></form>`;
+        jest.isolateModules(() => {
+            require('./app-nav.js');
+        });
+        await flushMicrotasks();
+        const form = document.querySelector('form') as HTMLFormElement;
+        form.dispatchEvent(new Event('submit', {cancelable: true, bubbles: true}));
+        const nonce = window.localStorage.getItem('crank:account-epoch');
+        expect(nonce).toBeTruthy();
+    });
+
+    test('another tab changing the account purges this tab and re-hydrates the account', async () => {
+        (global.fetch as jest.Mock).mockImplementation((url: string) => {
+            if (String(url).includes('/api/account/whoami/')) {
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({authenticated: true, username: 'bob'}),
+                });
+            }
+            return Promise.resolve({ok: true});
+        });
+        jest.isolateModules(() => {
+            require('./app-nav.js');
+        });
+        await flushMicrotasks();
+        window.sessionStorage.setItem('crank:workspace:v1', '{"v":1}');
+        window.sessionStorage.setItem('crank:auth-intent', '{}');
+        window.localStorage.setItem('crank:jobsearch:draft:pending', 'alice draft');
+        const purged = jest.fn();
+        const hydrated = jest.fn();
+        document.addEventListener('crank:private-state-purged', purged);
+        document.addEventListener('crank:auth-hydrated', ((e: CustomEvent) => hydrated(e.detail)) as EventListener);
+
+        window.dispatchEvent(new StorageEvent('storage', {key: 'crank:account-epoch', newValue: 'n1'}));
+        await flushMicrotasks();
+
+        expect(purged).toHaveBeenCalledTimes(1);
+        expect(window.sessionStorage.getItem('crank:workspace:v1')).toBeNull();
+        expect(window.sessionStorage.getItem('crank:auth-intent')).toBeNull();
+        expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBeNull();
+        expect(hydrated).toHaveBeenCalledWith({authenticated: true, username: 'bob'});
+        // The receiving tab never re-announces.
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+        document.removeEventListener('crank:private-state-purged', purged);
+    });
+
+    test('storage events for unrelated keys are ignored', async () => {
+        jest.isolateModules(() => {
+            require('./app-nav.js');
+        });
+        await flushMicrotasks();
+        const purged = jest.fn();
+        document.addEventListener('crank:private-state-purged', purged);
+        window.dispatchEvent(new StorageEvent('storage', {key: 'something-else', newValue: 'x'}));
+        expect(purged).not.toHaveBeenCalled();
+        document.removeEventListener('crank:private-state-purged', purged);
     });
 });

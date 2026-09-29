@@ -40,6 +40,9 @@ export interface WorkspaceSnapshot {
 
 // Per-tab sessionStorage record (issue #479).
 export const WORKSPACE_SESSION_KEY = 'crank:workspace:v1';
+// Cross-tab account-change nonce in localStorage (issue #479); app-nav.js
+// writes and listens on the same literal key.
+export const ACCOUNT_EPOCH_KEY = 'crank:account-epoch';
 
 export const WORKSPACE_OPEN_EVENT = 'crank:assistant-open';       // detail?: Partial<WorkspaceContext>
 export const WORKSPACE_CONTEXT_EVENT = 'crank:workspace-context'; // detail: Partial<WorkspaceContext>

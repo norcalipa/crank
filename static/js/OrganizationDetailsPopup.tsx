@@ -5,6 +5,7 @@ import {createPortal} from 'react-dom';
 import {lockBackground, unlockBackground} from './modalIsolation';
 import {openSuggestCompany} from './suggestCompany/controller';
 import {openAssistant} from './workspace/store';
+import {WORKSPACE_FOCUS_EVENT} from './workspace/types';
 
 interface ScoreDetail {
     type__name: string;
@@ -365,6 +366,10 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         onClose();
         window.requestAnimationFrame(() => {
             openAssistant({surface: 'company', organizationId, organizationName});
+            // The dialog's opener is gone; ask the shell to move focus into
+            // the assistant even when its chat never reaches a composer
+            // (initialization error, gated account).
+            window.dispatchEvent(new CustomEvent(WORKSPACE_FOCUS_EVENT));
         });
     };
 

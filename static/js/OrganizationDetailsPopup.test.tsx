@@ -1350,6 +1350,22 @@ describe('OrganizationDetailsPopup', () => {
             });
         });
 
+        test('requests assistant focus after opening so the error/gated path never strands focus', () => {
+            const workspace = document.createElement('div');
+            workspace.id = 'assistant-workspace';
+            document.body.appendChild(workspace);
+            const onFocusRequest = jest.fn();
+            window.addEventListener('crank:assistant-focus', onFocusRequest);
+            renderAuthenticated(jest.fn());
+
+            fireEvent.click(screen.getByTestId('company-chat-cta'));
+            expect(onFocusRequest).not.toHaveBeenCalled();
+            rafCallbacks.forEach((cb) => cb(0));
+
+            expect(onFocusRequest).toHaveBeenCalledTimes(1);
+            window.removeEventListener('crank:assistant-focus', onFocusRequest);
+        });
+
         test('falls back to the plain /chat/ link when the workspace host is absent', () => {
             const onClose = jest.fn();
             renderAuthenticated(onClose);

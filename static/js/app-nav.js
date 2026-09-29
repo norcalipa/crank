@@ -151,8 +151,37 @@
         } catch (e) {
             // Storage unavailable; nothing durable to clear.
         }
+        announceAccountChange();
         document.dispatchEvent(new CustomEvent("crank:private-state-purged"));
     }
+
+    // Cross-tab signal (issue #479): private state lives in each tab's memory
+    // and sessionStorage, so a logout or account switch here must reach every
+    // other open tab. localStorage writes raise a `storage` event in the
+    // *other* tabs; the value is an opaque nonce, never account data.
+    function announceAccountChange() {
+        try {
+            window.localStorage.setItem(
+                "crank:account-epoch",
+                Date.now() + ":" + Math.random().toString(36).slice(2),
+            );
+        } catch (e) {
+            // Storage unavailable; other tabs cannot be signalled.
+        }
+    }
+
+    // Another tab changed the account: discard this tab's private state and
+    // re-hydrate so the nav and workspace pick up the account the cookie
+    // now belongs to. Never re-announces, so tabs cannot ping-pong.
+    function handleAccountEpoch(event) {
+        if (event.key !== "crank:account-epoch") {
+            return;
+        }
+        purgePrivateClientState();
+        document.dispatchEvent(new CustomEvent("crank:private-state-purged"));
+        fetchWhoami();
+    }
+    window.addEventListener("storage", handleAccountEpoch);
 
     function handleLogoutSubmit(event) {
         var form = event.currentTarget;
@@ -212,7 +241,7 @@
         }));
     }
 
-    function hydrateAccountState() {
+    function fetchWhoami() {
         fetch("/api/account/whoami/", {
             headers: { Accept: "application/json" },
             credentials: "same-origin",
@@ -228,6 +257,10 @@
                 // anonymous controls so Login stays reachable.
                 applyAuthState({ authenticated: false });
             });
+    }
+
+    function hydrateAccountState() {
+        fetchWhoami();
         // Every logout form, not just the cached shell's JS-submitted one.
         document.querySelectorAll("form[data-nav-logout-form]").forEach(function (form) {
             form.addEventListener("submit", handleLogoutSubmit);

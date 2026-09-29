@@ -3705,7 +3705,7 @@ describe('workspace navigation state (issue #479)', () => {
         await waitFor(() => expect(getWorkspaceSnapshot().conversationId).toBe(11));
     });
 
-    test('a reply that lands after the context changed is appended with an "Answered about" note and leaves the store alone', async () => {
+    test('a reply that lands after the context changed is appended with an "Asked while viewing" note (no claim the model saw it) and leaves the store alone', async () => {
         global.fetch = statusAwareFetch();
         await renderChat([]);
         act(() => setWorkspaceContext({surface: 'company', organizationId: 3, organizationName: 'Acme'}));
@@ -3722,7 +3722,8 @@ describe('workspace navigation state (issue #479)', () => {
         settlePost(jsonResponse({message: assistantMessage(99, 'Acme is a great fit'), preferences_changed: false}));
 
         await screen.findByText('Acme is a great fit');
-        expect(screen.getByTestId('stale-context-note')).toHaveTextContent('Answered about Acme');
+        expect(screen.getByTestId('stale-context-note')).toHaveTextContent('Asked while viewing Acme');
+        expect(screen.getByTestId('stale-context-note')).not.toHaveTextContent(/answered/i);
         expect(getWorkspaceSnapshot().contextRevision).toBe(revision);
         expect(getWorkspaceSnapshot().context).toEqual(contextAfterClear);
     });

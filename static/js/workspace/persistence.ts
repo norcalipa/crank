@@ -19,6 +19,7 @@ import {
     AssistantVisibility,
     WorkspaceAccount,
     WorkspaceContext,
+    ACCOUNT_EPOCH_KEY,
     WORKSPACE_SESSION_KEY,
 } from './types';
 
@@ -99,6 +100,19 @@ function resetStore(): void {
     replaceWorkspaceState('closed', surface ? {surface} : null);
 }
 
+// Signals other tabs (they listen for `storage` in app-nav.js) that the
+// account changed. The value is an opaque nonce, never account data.
+function announceAccountChange(): void {
+    try {
+        window.localStorage.setItem(
+            ACCOUNT_EPOCH_KEY,
+            `${Date.now()}:${Math.random().toString(36).slice(2)}`,
+        );
+    } catch {
+        // Storage unavailable; other tabs cannot be signalled.
+    }
+}
+
 let installed = false;
 
 export function installWorkspacePersistence(): () => void {
@@ -126,8 +140,13 @@ export function installWorkspacePersistence(): () => void {
         }
         const snapshot = getWorkspaceSnapshot();
         const surface = snapshot.context?.surface;
-        const context = {...(snapshot.context ?? {}), ...record.context} as WorkspaceContext;
-        if (!surface && !Object.keys(record.context).length) {
+        // Explicit page context wins: when the page already names an entity
+        // (e.g. ?company=12) the persisted entity group is dropped whole, so
+        // a stale id/name pair can never be field-merged with the URL's.
+        const pageEntity = entityContext(snapshot.context);
+        const entity = Object.keys(pageEntity).length ? {} : record.context;
+        const context = {...(snapshot.context ?? {}), ...entity} as WorkspaceContext;
+        if (!surface && !Object.keys(entity).length) {
             writeRecord();
             return;
         }
@@ -162,6 +181,7 @@ export function installWorkspacePersistence(): () => void {
         const prev = getWorkspaceSnapshot().account;
         if (prev.status !== 'unknown' && (prev.status !== next.status || prev.key !== next.key)) {
             wipe();
+            announceAccountChange();
         }
         setWorkspaceAccount(next);
         tryRestore();

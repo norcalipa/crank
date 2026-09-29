@@ -240,3 +240,28 @@ describe('workspace store (issue #479 contract)', () => {
         expect(describeWorkspaceContext({surface: 'comparison', comparisonIds: [1, 2]})).toBe('Comparing 2 companies');
     });
 });
+
+describe('clearWorkspaceContext URL handling (issue #479 review)', () => {
+    afterEach(() => window.history.replaceState(null, '', '/'));
+
+    test('drops company from the URL even when no context is stored', () => {
+        window.history.replaceState(null, '', '/chat/?company=12');
+        clearWorkspaceContext();
+        expect(window.location.search).toBe('');
+    });
+
+    test('leaves a URL without an entity param untouched', () => {
+        window.history.replaceState(null, '', '/chat/?page=2');
+        clearWorkspaceContext();
+        expect(window.location.search).toBe('?page=2');
+    });
+
+    test('a throwing history API never breaks the clear', () => {
+        window.history.replaceState(null, '', '/chat/?company=12');
+        const spy = jest.spyOn(window.history, 'replaceState').mockImplementation(() => {
+            throw new Error('denied');
+        });
+        expect(() => clearWorkspaceContext()).not.toThrow();
+        spy.mockRestore();
+    });
+});

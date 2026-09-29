@@ -14,7 +14,11 @@ import * as modalIsolation from '../modalIsolation';
 
 jest.mock('../JobSearchChat', () => ({
     __esModule: true,
-    default: () => (
+    default: () => mockChatInitError ? (
+        <section data-testid="job-search-chat">
+            <div role="alert">We couldn’t start the assistant.</div>
+        </section>
+    ) : (
         <section data-testid="job-search-chat">
             <textarea
                 data-testid="assistant-composer"
@@ -32,12 +36,14 @@ jest.mock('./useWorkspaceLayout', () => ({
 }));
 
 let mockComposerDisabled = false;
+let mockChatInitError = false;
 
 beforeEach(() => {
     resetWorkspaceForTests();
     document.body.className = '';
     mockMode = 'sheet';
     mockComposerDisabled = false;
+    mockChatInitError = false;
     // The shell observer needs the background roots to exist.
     document.body.innerHTML = '<div class="app-shell"></div><main class="app-content"></main>';
 });
@@ -214,14 +220,35 @@ describe('WorkspaceShell', () => {
         act(() => {
             window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
         });
-        // Still cold: the request is held pending, not focused to a header control.
+        // Still cold: the request is held pending, not focused to a header
+        // control — the panel heading holds focus in the interim.
         expect(document.activeElement).not.toBe(screen.getByTestId('assistant-composer'));
+        expect(document.activeElement).toBe(document.getElementById('assistant-panel-title'));
         // The lazy chunk commits and the store marks the workspace loaded.
         markLoaded.mockRestore();
         act(() => {
             storeModule.markWorkspaceLoaded();
         });
         await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('assistant-composer')));
+    });
+
+    test('a focus request on a chat initialization error lands inside the panel, not the background', async () => {
+        mockChatInitError = true;
+        const opener = document.createElement('button');
+        document.body.appendChild(opener);
+        opener.focus();
+        renderShell();
+        mockMode = 'docked';
+        act(() => openAssistant());
+        await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+        act(() => {
+            window.dispatchEvent(new CustomEvent('crank:assistant-focus'));
+        });
+        await waitFor(() => expect(screen.getByTestId('assistant-panel')).toContainElement(
+            document.activeElement as HTMLElement,
+        ));
+        expect(document.activeElement).not.toBe(opener);
+        opener.remove();
     });
 
     test('another blocking dialog acquiring a lock closes the sheet, and keeps its isolation', async () => {
