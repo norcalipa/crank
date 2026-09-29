@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import {render, screen, fireEvent, waitFor, act} from '@testing-library/react';
+import {render, screen, fireEvent, waitFor, act, within} from '@testing-library/react';
 import * as React from 'react';
 
 import {
@@ -309,6 +309,40 @@ describe('JobSearchChat', () => {
             await screen.findByTestId('empty-history');
             expect(screen.getByTestId('empty-history')).toHaveTextContent(/Tap Back to results/i);
             expect(screen.getByTestId('empty-history')).not.toHaveTextContent(/Job Matches panel/i);
+        });
+
+        test('sheet mode leaves the composer unfocused on open; drawer mode focuses it (issue #479)', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+            setWorkspaceAccount({status: 'authenticated', key: 'tester'});
+            const {unmount} = render(<JobSearchChat workspaceMode="sheet"/>);
+            await screen.findByTestId('empty-history');
+            await new Promise((r) => setTimeout(r, 20));
+            expect(screen.getByLabelText('Message')).not.toHaveFocus();
+            unmount();
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+            render(<JobSearchChat workspaceMode="drawer"/>);
+            await screen.findByTestId('empty-history');
+            await waitFor(() => expect(screen.getByLabelText('Message')).toHaveFocus());
+        });
+
+        test('failed-turn alert is a sibling below the user bubble, not nested inside it (issue #479)', async () => {
+            await renderChat([userTurn('failed question', '123e4567-e89b-42d3-a456-426614174000', 'failed')]);
+            const article = screen.getByRole('article', {name: 'Your message'});
+            const bubble = article.querySelector('.chat-bubble-user') as HTMLElement;
+            const failure = screen.getByTestId('failed-turn');
+            expect(bubble).not.toContainElement(failure);
+            expect(failure.parentElement).toBe(article);
+            expect(failure.querySelector('[role="status"]')).not.toBeNull();
+            expect(screen.getByRole('group', {name: 'Failed turn actions'})).toBeInTheDocument();
+        });
+
+        test('conversation actions render as a grid group with Delete last (issue #479)', async () => {
+            await renderChat();
+            const group = screen.getByRole('group', {name: 'Conversation controls'});
+            expect(group).toHaveClass('chat-conversation-actions');
+            expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['Export chat', 'Reset chat', 'Delete conversation']);
         });
 
         test('renders existing message history', async () => {

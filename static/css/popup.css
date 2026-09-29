@@ -683,7 +683,7 @@ body.app-nav-drawer-open {
 }
 
 .organization-table .col-rank { width: 5rem; }
-.organization-table .col-score { width: 9rem; }
+.organization-table .col-score { width: 11rem; }
 .organization-table .col-funding { width: 9rem; }
 .organization-table .col-rto { width: 8rem; }
 .organization-table .col-profile { width: 9rem; }
@@ -1644,6 +1644,30 @@ body.app-nav-drawer-open {
     color: #fee2e2; /* text-red-100 */
 }
 
+.chat-failure-panel--outside {
+    margin-top: 0.5rem;
+    width: min(100%, 26rem);
+    container-type: inline-size;
+}
+
+/* Narrow bubble/drawer/sheet: actions stack full-width and labels break only
+   at word boundaries. */
+@container (max-width: 22rem) {
+    .chat-failure-panel--outside .chat-actions {
+        flex-direction: column;
+    }
+
+    .chat-failure-panel--outside .chat-btn {
+        width: 100%;
+    }
+}
+
+.chat-failure-panel .chat-btn {
+    word-break: normal;
+    overflow-wrap: normal;
+    white-space: normal;
+}
+
 .chat-retry-panel {
     border-radius: 0.5rem;
     border: 1px solid rgba(251, 191, 36, 0.5); /* border-amber-400/50 */
@@ -2323,7 +2347,7 @@ body.app-nav-drawer-open {
         right: 0;
         bottom: 0;
         width: var(--assistant-panel-width);
-        border-left: 1px solid #d9dee7;
+        border-left: 1px solid var(--bs-border-color);
         box-shadow: -8px 0 24px rgba(15, 23, 42, .35);
     }
 
@@ -2370,9 +2394,6 @@ body.app-nav-drawer-open {
         margin-bottom: 0;
     }
 
-    body.assistant-docked #job-search-chat .chat-failure-panel {
-        margin-top: 6px;
-    }
 }
 
 /* Collapsed rail: whenever the panel is docked OR drawn below 1440px the
@@ -2422,6 +2443,10 @@ body.app-nav-drawer-open {
 /* Drawer: 768-1279.98px. Non-modal right-edge overlay; the background stays
    focusable and scrollable, Escape closes. */
 @media (min-width: 768px) and (max-width: 1279.98px) {
+    body.assistant-drawer {
+        --assistant-drawer-active-width: clamp(300px, 34vw, 360px);
+    }
+
     .assistant-panel--drawer {
         position: fixed;
         top: 0;
@@ -2432,15 +2457,13 @@ body.app-nav-drawer-open {
         /* Strong visible edge (visual review #472 round 2, item 5): a 2px
            light border plus a deep shadow so the boundary with the
            workspace never relies on the shadow alone. */
-        border-left: 2px solid #e3e8f0;
+        border-left: 1px solid var(--bs-border-color);
         box-shadow: -12px 0 32px rgba(15, 23, 42, .55);
     }
 
-    /* Tablet-band drawer (visual review #472 round 4, item 5): a narrower,
-       fluid width and a softer shadow reduce the drawer's dominance at
-       1024px, while the 2px border keeps the workspace boundary explicit. */
+    /* Tablet-band drawer: fluid but never narrower than 300px. */
     .assistant-panel--drawer {
-        width: clamp(300px, 34vw, 360px);
+        width: var(--assistant-drawer-active-width);
         box-shadow: -8px 0 24px rgba(15, 23, 42, .40);
     }
 
@@ -2453,7 +2476,22 @@ body.app-nav-drawer-open {
        invariant without reintroducing overlap. */
     body.assistant-drawer .app-content,
     body.assistant-drawer .app-messages {
-        max-width: calc(100vw - var(--app-rail-width) - clamp(300px, 34vw, 360px));
+        max-width: calc(100vw - var(--app-rail-width) - var(--assistant-drawer-active-width));
+    }
+
+    body.assistant-drawer .app-content {
+        min-width: 0;
+        flex: 1 1 0;
+    }
+}
+
+/* Stable drawer width from 1000px up (issue #479 round 5): 24rem keeps the
+   failed-reply actions and composer whole; the rankings pane yields width
+   (min-width: 0) and its container query switches to cards. Below 1000px
+   the 300px floor keeps #main-content above half the viewport. */
+@media (min-width: 1000px) and (max-width: 1279.98px) {
+    body.assistant-drawer {
+        --assistant-drawer-active-width: clamp(24rem, 34vw, 26rem);
     }
 }
 
@@ -3180,4 +3218,92 @@ body.assistant-open .app-content .table-responsive,
 
 .popup-details-scores .table td:first-child {
     font-weight: 700;
+}
+
+/* issue #479 visual review round 5 */
+
+/* Lighter transcript outline and a clean conversation-actions grid. */
+#job-search-chat .chat-transcript {
+    border: 1px solid rgba(255, 255, 255, .08);
+}
+
+#job-search-chat .card-header {
+    flex-wrap: wrap;
+    gap: .5rem;
+}
+
+.chat-conversation-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: .5rem;
+    flex: 1 1 100%;
+}
+
+.chat-conversation-actions .btn-outline-danger {
+    grid-column: 1 / -1;
+}
+
+/* One focus ring on the composer: the outline from .chat-focus; Bootstrap's
+   :focus box-shadow ring is removed so the two never stack. */
+#job-search-chat textarea.form-control:focus {
+    box-shadow: none;
+}
+
+/* Mobile sheet: Back to results (or Close) is the exit; minimize is hidden. */
+@media (max-width: 767.98px) {
+    .assistant-panel--sheet [data-testid='assistant-minimize'] {
+        display: none;
+    }
+
+    /* Last ranking card stays above the dock: dock height (44px control +
+       .5rem padding top/bottom + 1px border) plus the safe-area inset. */
+    body:has(.assistant-dock) .app-content {
+        padding-bottom: calc(44px + 1rem + 1px + var(--safe-area-inset-bottom));
+    }
+}
+
+/* Rankings toolbar: stable grid, full preset label, loading placeholders. */
+.rankings-toolbar-preset {
+    flex: 1 1 16rem;
+    min-width: min(16rem, 100%);
+}
+
+.organization-search {
+    flex-wrap: nowrap;
+}
+
+.choices-status-slot {
+    min-height: 1.5rem;
+}
+
+.choices-skeleton {
+    display: inline-block;
+    width: 3.5rem;
+    height: .75rem;
+    border-radius: .375rem;
+    vertical-align: middle;
+    background: linear-gradient(90deg,
+        rgba(255, 255, 255, .18) 25%,
+        rgba(255, 255, 255, .32) 50%,
+        rgba(255, 255, 255, .18) 75%);
+    background-size: 200% 100%;
+    animation: assistant-loading-shimmer 1.4s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .choices-skeleton {
+        animation: none;
+    }
+}
+
+.organization-table .col-score-algorithm {
+    display: block;
+    font-size: .75rem;
+    font-weight: 400;
+    color: var(--bs-secondary-color);
+}
+
+.organization-table .organization-name {
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
 }

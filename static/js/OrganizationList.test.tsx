@@ -1524,8 +1524,12 @@ describe('OrganizationList', () => {
             const count = within(toolbar).getByText(/Showing 1-2 of 2 organizations/);
             const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
             expect(follows(search, chip)).toBe(true);
-            expect(follows(chip, select)).toBe(true);
-            expect(follows(select, count)).toBe(true);
+            const checkbox = within(toolbar).getByTestId('accelerated-vesting-checkbox');
+            expect(follows(search, select)).toBe(true);
+            expect(follows(select, checkbox)).toBe(true);
+            // The active-search chip sits below the filter grid (stable layout).
+            expect(follows(checkbox, chip)).toBe(true);
+            expect(follows(chip, count)).toBe(true);
             expect(select).toHaveValue('1');
         });
 
@@ -1582,8 +1586,9 @@ describe('OrganizationList', () => {
 
         test('score column and card label name the current preset', () => {
             render(<OrganizationList organizations={organizations} rankingPresets={presets} currentAlgorithmId={2} />);
-            expect(screen.getByRole('columnheader', {name: 'Company score (Culture)'})).toBeInTheDocument();
-            expect(screen.getAllByText('Company score (Culture)').length).toBe(3);
+            expect(screen.getByRole('columnheader', {name: 'Company score Culture'})).toBeInTheDocument();
+            expect(document.querySelector('.col-score-algorithm')).toHaveTextContent('Culture');
+            expect(screen.getAllByText('Company score (Culture)').length).toBe(2);
         });
 
         test('zero results shows exactly one suggest action with the search term prefilled', () => {
@@ -1674,7 +1679,7 @@ describe('OrganizationList', () => {
             const error = await screen.findByTestId('choices-status-error');
             expect(error).toHaveTextContent('raw codes are shown');
             fail = false;
-            fireEvent.click(within(error).getByRole('button', {name: 'Retry'}));
+            fireEvent.click(within(error).getByRole('button', {name: 'Retry labels'}));
             await waitFor(() => expect(screen.queryByTestId('choices-status-loading')).not.toBeInTheDocument());
             expect(screen.queryByTestId('choices-status-error')).not.toBeInTheDocument();
             consoleSpy.mockRestore();
@@ -1716,7 +1721,9 @@ describe('OrganizationList', () => {
             expect(loading.querySelector('.spinner-border')).toHaveAttribute('aria-hidden', 'true');
             expect(screen.queryByText(organizations[0].funding_round)).not.toBeInTheDocument();
             expect(screen.queryByText(organizations[0].rto_policy)).not.toBeInTheDocument();
-            expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+            expect(screen.queryByText('—')).not.toBeInTheDocument();
+            expect(screen.getAllByTestId('choice-skeleton').length).toBeGreaterThan(0);
+            expect(document.querySelector('.choices-status-slot')).toContainElement(loading);
         });
 
         test('falls back to raw codes once loading has finished and a label is missing', async () => {

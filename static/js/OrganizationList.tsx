@@ -526,7 +526,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         // Raw codes only appear as the explained error fallback; while the
         // labels load a placeholder keeps the cell from flashing "H"/"R".
         const choiceLabel = (choices: Record<string, string>, code: string) =>
-            choices[code] ?? (choicesStatus === 'loading' ? '—' : code);
+            choices[code] ?? (choicesStatus === 'loading'
+                ? <span className="choices-skeleton" aria-hidden="true" data-testid="choice-skeleton"></span>
+                : code);
 
         const renderPager = (position: 'top' | 'bottom') => (
 <nav aria-label={`Organization pagination${position === 'bottom' ? ' (bottom)' : ''}`}>
@@ -575,7 +577,6 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         {searchTerm && <button type="button" className="btn btn-outline-secondary" onClick={this.handleClearFilters} aria-label="Clear search">Clear search</button>}
                     </div>
                 </div>
-                {this.renderChips()}
                 {presets.length > 0 && (
                     <div className="rankings-toolbar-preset">
                         <label className="form-label" htmlFor="ranking-preset">Ranking preset</label>
@@ -596,13 +597,16 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     />
                     <label className="form-check-label" htmlFor="acceleratedVesting">Show only companies with first vesting in &lt; 1 year</label>
                 </div>
+                {this.renderChips()}
                 <div className="rankings-toolbar-count" role="status" aria-live="polite">
                     <div className="organization-results-count">{isEmpty ? 'Showing 0 organizations' : `Showing ${firstResult}-${lastResult} of ${filteredOrganizations.length} organizations`}</div>
+                    <div className="choices-status-slot">
                     {choicesStatus === 'loading' && <div className="choices-status text-muted" data-testid="choices-status-loading"><span className="spinner-border spinner-border-sm" aria-hidden="true"></span><span>Loading funding round and RTO labels…</span></div>}
                     {choicesStatus === 'error' && <div className="choices-status choices-status-error alert alert-danger py-1 px-2 mt-1 mb-0" data-testid="choices-status-error">
                         <span>Couldn't load funding round and RTO labels, so raw codes are shown instead.</span>{' '}
-                        <button type="button" className="btn btn-outline-danger btn-sm" data-testid="choices-retry" onClick={this.loadChoices}>Retry</button>
+                        <button type="button" className="btn btn-outline-danger btn-sm" data-testid="choices-retry" onClick={this.loadChoices}>Retry labels</button>
                     </div>}
+                    </div>
                     {pageCount > 1 && <div className="organization-page-count">{`Page ${displayedPage} of ${pageCount}`}</div>}
                 </div>
                 {this.props.isAuthenticated && !isEmpty && (
@@ -629,7 +633,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                         <tr>
                             <th className="col-rank">Rank</th>
                             <th className="col-name">Name</th>
-                            <th className="col-score">{scoreLabel}</th>
+                            <th className="col-score">Company score{currentPreset && <>{' '}<span className="col-score-algorithm">{currentPreset.name}</span></>}</th>
                             <th className="col-funding">Funding Round</th>
                             <th className="col-rto">RTO Policy</th>
                             <th className="col-profile">Profile Completeness</th>
