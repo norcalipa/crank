@@ -379,3 +379,18 @@ numbered merge migration if a head split remains, keeping
     rows for both catalogs); until it completes, sources with a NULL
     `last_crawl_at` sort as "never crawled" in the due ordering. A release is
     not complete until this step has run and verified.
+
+## Allocation: 0046 (issue #474)
+
+- **0046 → #474**, parent `0045_jobsourcecatalog_consecutive_failures`
+  (batch controller override: #477 had not started, so numbers follow the
+  actual start order; #477 later takes 0047 with parent 0046).
+- **`0046_alter_companyfieldevidence_state`** is a choices-only `AlterField`
+  adding the `pending` and `rejected` states to
+  `CompanyFieldEvidence.state`. Django treats `choices` as a non-DB
+  attribute, so it emits no SQL on MySQL or SQLite. There is no DDL to
+  interrupt, no backfill, and nothing to recover; rerunning `migrate` is
+  safe. Existing accepted rows are unchanged.
+- **Rollback** is a code redeploy: old code filters `state=accepted`, so it
+  ignores pending, rejected and conflicted rows.
+

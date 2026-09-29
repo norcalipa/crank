@@ -22,6 +22,7 @@ from crank.models.job import JobSourceCatalog
 from crank.models.organization import Organization
 from crank.models.publication import PublicationEvent
 from crank.models.score import Score, ScoreType
+from crank.services import company_evidence
 from crank.services.company_crawler import (
     EXTRACTION_VERSION,
     _brand,
@@ -60,6 +61,17 @@ def profile(**changes):
     }
     value.update(changes)
     return {"extract": value, "metadata": {"sourceURL": value["career_url"]}}
+
+
+def approve_open_claims(organization, field_key):
+    """Staff review: accept the open claim for one field."""
+    staff = User.objects.get_or_create(username="claim-reviewer")[0]
+    claim = CompanyFieldEvidence.objects.get(
+        organization=organization,
+        field_key=field_key,
+        state=CompanyFieldEvidence.State.PENDING,
+    )
+    return company_evidence.accept_claim(claim, reviewer=staff)
 
 
 @override_settings(FIRECRAWL_MAX_PAGES=3, FIRECRAWL_CREDIT_BUDGET=3)
@@ -312,12 +324,101 @@ class CompanyCrawlerTests(TestCase):
             state=CompanyFieldEvidence.State.ACCEPTED
         )
         self.assertEqual(evidence.count(), result.evidence_accepted)
-        rto = evidence.get(field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY)
-        self.assertEqual(rto.value_text, "Remote first")
+        self.assertEqual(
+            set(evidence.values_list("field_key", flat=True)),
+            {"company_name", "company_domain", "locations"},
+        )
+        name = evidence.get(field_key=CompanyFieldEvidence.FieldKey.COMPANY_NAME)
+        self.assertEqual(name.value_text, "Example Labs")
         # The fetched host, not the domain the page claims for itself.
-        self.assertEqual(rto.source_domain, "jobs.example.test")
-        self.assertEqual(rto.scope_json, {"claimed_domain": "example.test"})
-        self.assertIsNotNone(rto.last_verified_at)
+        self.assertEqual(name.source_domain, "jobs.example.test")
+        self.assertEqual(name.scope_json, {"claimed_domain": "example.test"})
+        self.assertIsNotNone(name.last_verified_at)
+
+    def test_review_required_fields_become_pending_claims_not_evidence(self):
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+
+        crawl_company_profile(self.source, client=FakeClient([profile()]))
+
+        claims = CompanyFieldEvidence.objects.filter(
+            organization=organization, state=CompanyFieldEvidence.State.PENDING
+        )
+        self.assertEqual(
+            {c.field_key: c.value_text for c in claims},
+            {
+                "rto_policy": "Remote first",
+                "funding_round": "Series A",
+                "public_status": "Private company",
+            },
+        )
+        self.assertFalse(
+            CompanyFieldEvidence.objects.filter(
+                field_key__in=["rto_policy", "funding_round", "public_status"],
+                state=CompanyFieldEvidence.State.ACCEPTED,
+            ).exists()
+        )
+        self.assertTrue(all(c.last_verified_at is None for c in claims))
+
+    def test_repeat_crawl_refreshes_the_open_claim_instead_of_duplicating(self):
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        crawl_company_profile(self.source, client=FakeClient([profile()]))
+        crawl_company_profile(
+            self.source, client=FakeClient([profile(rto_evidence="Hybrid, 2 days")])
+        )
+
+        claims = CompanyFieldEvidence.objects.filter(
+            organization=organization,
+            field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
+            state__in=company_evidence.OPEN_CLAIM_STATES,
+        )
+        self.assertEqual(claims.count(), 1)
+        self.assertEqual(claims.get().value_text, "Hybrid, 2 days")
+
+    def test_unchanged_review_field_is_not_reclaimed_or_verified(self):
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        crawl_company_profile(self.source, client=FakeClient([profile()]))
+        approved = approve_open_claims(
+            organization, CompanyFieldEvidence.FieldKey.RTO_POLICY
+        )
+        later = timezone.now() + timedelta(days=1)
+
+        crawl_company_profile(
+            self.source,
+            client=FakeClient([profile(brand_metadata={"color": "red"})]),
+            now=later,
+        )
+
+        approved.refresh_from_db()
+        self.assertEqual(approved.state, CompanyFieldEvidence.State.ACCEPTED)
+        self.assertEqual(approved.last_checked_at, later)
+        self.assertNotEqual(approved.last_verified_at, later)
+        self.assertFalse(
+            CompanyFieldEvidence.objects.filter(
+                field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
+                state=CompanyFieldEvidence.State.PENDING,
+            ).exists()
+        )
+
+    def test_hostile_text_is_stripped_of_invisible_characters(self):
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        crawl_company_profile(
+            self.source,
+            client=FakeClient([profile(rto_evidence="Re\u200bmote\u202e first\x07")]),
+        )
+
+        claim = CompanyFieldEvidence.objects.get(
+            organization=organization,
+            field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
+        )
+        self.assertEqual(claim.value_text, "Remote first")
 
     def test_successful_crawl_checks_fields_the_page_stopped_carrying(self):
         organization = Organization.objects.create(
@@ -325,12 +426,13 @@ class CompanyCrawlerTests(TestCase):
         )
         first_at = timezone.now() - timedelta(days=30)
         crawl_company_profile(self.source, client=FakeClient([profile()]), now=first_at)
-        rto = CompanyFieldEvidence.objects.get(
-            organization=organization,
-            field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
-            state=CompanyFieldEvidence.State.ACCEPTED,
+        rto = approve_open_claims(
+            organization, CompanyFieldEvidence.FieldKey.RTO_POLICY
         )
-        self.assertEqual(rto.last_checked_at, first_at)
+        rto.last_checked_at = first_at
+        rto.last_verified_at = first_at
+        rto.last_changed_at = first_at
+        rto.save()
 
         # The company drops its RTO statement from the page. The fetch still
         # succeeded, so the claim *was* checked — it just was not re-verified,
@@ -359,11 +461,12 @@ class CompanyCrawlerTests(TestCase):
         )
         first_at = timezone.now() - timedelta(days=3)
         crawl_company_profile(self.source, client=FakeClient([profile()]), now=first_at)
-        accepted = CompanyFieldEvidence.objects.get(
-            organization=organization,
-            field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
-            state=CompanyFieldEvidence.State.ACCEPTED,
+        accepted = approve_open_claims(
+            organization, CompanyFieldEvidence.FieldKey.RTO_POLICY
         )
+        accepted.last_changed_at = first_at
+        accepted.last_verified_at = first_at
+        accepted.save()
         self.assertEqual(accepted.value_text, "Remote first")
 
         # The page now conflicts with the accepted reading *and* claims a
@@ -389,6 +492,13 @@ class CompanyCrawlerTests(TestCase):
         # The attempt itself is still recorded.
         self.assertEqual(accepted.last_checked_at, second_at)
         self.assertEqual(accepted.last_successful_fetch_at, second_at)
+        # The conflicting reading waits for staff as a conflicted claim.
+        conflict = CompanyFieldEvidence.objects.get(
+            organization=organization,
+            field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
+            state=CompanyFieldEvidence.State.CONFLICTED,
+        )
+        self.assertEqual(conflict.value_text, "Five days in office, no exceptions")
 
         # And the API keeps serving the accepted value, not the conflict.
         cache.clear()
@@ -454,8 +564,10 @@ class CompanyCrawlerTests(TestCase):
         Score.objects.create(target=organization, source=organization, type=score_type, score=4.5)
 
         crawl_company_profile(self.source, client=FakeClient([profile()]))
+        approve_open_claims(organization, CompanyFieldEvidence.FieldKey.RTO_POLICY)
 
         self.assertEqual(Score.objects.get(target=organization).score, 4.5)
+        self.assertEqual(Score.objects.count(), 1)
 
 
 class CompanyProfileAdminTests(TestCase):

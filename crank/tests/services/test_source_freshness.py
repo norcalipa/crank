@@ -723,7 +723,6 @@ class SourceRefreshMigrationShapeTests(TestCase):
         for previous, name in zip(("0039_match_result_generation",) + self.NAMES, self.NAMES):
             migration = loader.disk_migrations[("crank", name)]
             self.assertEqual(migration.dependencies, [("crank", previous)])
-        self.assertEqual(
-            [k for k in loader.graph.leaf_nodes() if k[0] == "crank"],
-            [("crank", self.NAMES[-1])],
-        )
+        leaves = [k for k in loader.graph.leaf_nodes() if k[0] == "crank"]
+        self.assertEqual(len(leaves), 1)
+        self.assertIn(("crank", self.NAMES[-1]), loader.graph.forwards_plan(leaves[0]))

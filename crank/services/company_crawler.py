@@ -20,7 +20,7 @@ from crank.agents.jobs.base import APPROVED_JOB_SOURCE_DOMAINS, validate_job_url
 from crank.agents.jobs.errors import JobSourceDisabled, JobSourceNotApproved
 from crank.agents.jobs.firecrawl import FirecrawlClient
 from crank.agents.sources.errors import BlockedRedirectError, SchemaDriftError
-from crank.models.company_profile import CompanyProfileObservation
+from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
 from crank.models.employer import EmployerAlias, normalize_employer_domain, normalize_employer_name
 from crank.models.job import JobSourceCatalog
 from crank.models.organization import Organization
@@ -76,7 +76,7 @@ def _text(value: Any, field_name: str, maximum: int, *, required: bool = False) 
         value = ""
     if not isinstance(value, str):
         raise SchemaDriftError(f"{field_name} must be a string")
-    value = " ".join(strip_tags(value).split())
+    value = " ".join(company_evidence.strip_unsafe_characters(strip_tags(value)).split())
     if len(value) > maximum:
         raise SchemaDriftError(f"{field_name} exceeds configured limit")
     if required and not value:
@@ -183,6 +183,52 @@ def _organization_for(domain: str, name: str) -> tuple[Organization | None, list
     organization_id = next(iter(domain_matches or name_matches), None)
     organization = Organization.objects.filter(pk=organization_id).first() if organization_id else None
     return organization, []
+
+
+def _accepted_value(organization: Organization, field_key: str) -> str | None:
+    row = (
+        CompanyFieldEvidence.objects.filter(
+            organization=organization,
+            field_key=field_key,
+            state=CompanyFieldEvidence.State.ACCEPTED,
+        )
+        .order_by("-observed_at", "-id")
+        .first()
+    )
+    return row.value_text if row else None
+
+
+def _record_review_claims(
+    organization: Organization,
+    observation: CompanyProfileObservation,
+    field_keys: Any,
+    *,
+    conflicted: bool,
+    now: datetime,
+) -> set[str]:
+    """Queue claims for staff review; returns the keys that got a claim.
+
+    A field whose crawled value equals the accepted one needs no claim (and
+    earns no verification either); every other carried field becomes a
+    ``pending`` claim, or ``conflicted`` when the observation itself was
+    flagged as conflicting.
+    """
+    state = (
+        CompanyFieldEvidence.State.CONFLICTED
+        if conflicted
+        else CompanyFieldEvidence.State.PENDING
+    )
+    values = company_evidence.observation_field_values(observation)
+    claimed: set[str] = set()
+    for field_key in field_keys:
+        value = values.get(field_key)
+        if not value or value == _accepted_value(organization, field_key):
+            continue
+        company_evidence.record_claim(
+            organization, field_key, value=value, observation=observation, state=state, now=now
+        )
+        claimed.add(field_key)
+    return claimed
 
 
 def _fingerprint(data: Mapping[str, Any]) -> str:
@@ -305,10 +351,23 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
                     CompanyProfileObservation.Status.AUTO_APPLIED,
                     CompanyProfileObservation.Status.ACCEPTED,
                 ):
+                    # Only allowlisted identity fields are accepted without
+                    # review. RTO, funding, and public status become pending
+                    # claims for staff (issue #474): a crawl must not
+                    # auto-verify facts that gate an employment decision.
                     evidence_rows = company_evidence.accept_observation_fields(
-                        observation, now=observed_at
+                        observation,
+                        now=observed_at,
+                        field_keys=company_evidence.AUTO_APPLY_FIELDS,
                     )
                     counts["evidence_accepted"] += len(evidence_rows)
+                    claimed_keys = _record_review_claims(
+                        organization,
+                        observation,
+                        company_evidence.REVIEW_REQUIRED_FIELDS,
+                        conflicted=False,
+                        now=observed_at,
+                    )
                     # The fetch succeeded for the whole page, so every
                     # registered field was checked — including any the page
                     # stopped carrying. Recording the attempt on those keeps
@@ -318,7 +377,7 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
                     # and no verification: this fetch carried neither.
                     accepted_keys = {row.field_key for row in evidence_rows}
                     for field_key in company_evidence.FieldKey.values:
-                        if field_key in accepted_keys:
+                        if field_key in accepted_keys or field_key in claimed_keys:
                             continue
                         company_evidence.record_check(
                             organization,
@@ -338,9 +397,11 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
                     # is passed and ``accept_value`` stays False, so
                     # record_check can only move last_checked_at /
                     # last_successful_fetch_at.
-                    for field_key in company_evidence.observation_field_values(
-                        observation
-                    ):
+                    carried = company_evidence.observation_field_values(observation)
+                    _record_review_claims(
+                        organization, observation, carried, conflicted=True, now=observed_at
+                    )
+                    for field_key in carried:
                         company_evidence.record_check(
                             organization,
                             field_key,
