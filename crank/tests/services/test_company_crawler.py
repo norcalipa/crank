@@ -581,7 +581,7 @@ class CompanyProfileAdminTests(TestCase):
             extraction_version=EXTRACTION_VERSION,
             fingerprint="admin-fingerprint",
         )
-        request = RequestFactory().post("/admin/crank/companyprofileobservation/")
+        request = RequestFactory().post("/admin/crank/companyprofileobservation/", {"confirm": "yes"})
         request.user = user
         model_admin = CompanyProfileObservationAdmin(CompanyProfileObservation, AdminSite())
 
@@ -614,7 +614,7 @@ class CompanyProfileAdminTests(TestCase):
             extraction_version=EXTRACTION_VERSION,
             fingerprint="admin-fingerprint-accept",
         )
-        request = RequestFactory().post("/admin/crank/companyprofileobservation/")
+        request = RequestFactory().post("/admin/crank/companyprofileobservation/", {"confirm": "yes"})
         request.user = user
         model_admin = CompanyProfileObservationAdmin(CompanyProfileObservation, AdminSite())
         model_admin.message_user = lambda *_args, **_kwargs: None
@@ -660,7 +660,7 @@ class CompanyProfileAdminTests(TestCase):
             extraction_version=EXTRACTION_VERSION,
             fingerprint="admin-fingerprint-reject",
         )
-        request = RequestFactory().post("/admin/crank/companyprofileobservation/")
+        request = RequestFactory().post("/admin/crank/companyprofileobservation/", {"confirm": "yes"})
         request.user = user
         model_admin = CompanyProfileObservationAdmin(CompanyProfileObservation, AdminSite())
         model_admin.message_user = lambda *_args, **_kwargs: None
@@ -684,7 +684,7 @@ class CompanyProfileAdminTests(TestCase):
             extraction_version=EXTRACTION_VERSION,
             fingerprint="admin-fingerprint-2",
         )
-        request = RequestFactory().post("/admin/crank/companyprofileobservation/")
+        request = RequestFactory().post("/admin/crank/companyprofileobservation/", {"confirm": "yes"})
         request.user = user
         model_admin = CompanyProfileObservationAdmin(CompanyProfileObservation, AdminSite())
         model_admin.message_user = lambda *_args, **_kwargs: None

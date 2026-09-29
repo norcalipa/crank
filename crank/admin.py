@@ -3,6 +3,7 @@
 from django.contrib import admin
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.core import checks
+from django import forms
 from django.db import models, transaction
 from django.shortcuts import render
 from django.utils.translation import gettext as _
@@ -13,7 +14,7 @@ from crank.models.employer import EmployerAlias, UnresolvedEmployer
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
-from crank.models.company_profile import CompanyProfileObservation
+from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
 from crank.models.company_request import CompanyRequest
 from crank.models.preference import UserPreference, UserPreferenceAudit
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
@@ -399,7 +400,7 @@ class AgentRunAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     ]
 
 
-class CompanyProfileObservationAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
+class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin.ModelAdmin):
     model = CompanyProfileObservation
     list_display = [
         "observed_name", "observed_domain", "organization", "status",
@@ -416,12 +417,25 @@ class CompanyProfileObservationAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
         "modified", "reviewed_by", "reviewed_at",
     ]
     actions = ["accept_observations", "reject_observations", "conflict_observations"]
+    confirmable_actions = ["accept_observations", "reject_observations", "conflict_observations"]
 
     def _review(self, request, queryset, status):
+        if not self._require_confirmation(request):
+            return
         count = 0
         for observation in queryset:
             with transaction.atomic():
+                old_status = observation.status
                 observation.mark_reviewed(status=status, user=request.user)
+                OperationalChangeAudit.record(
+                    actor=request.user,
+                    target_type="company_profile_observation",
+                    target_id=observation.pk,
+                    action=f"review_{status}",
+                    old_value={"status": old_status},
+                    new_value={"status": status},
+                    confirmed=True,
+                )
                 if status == CompanyProfileObservation.Status.ACCEPTED:
                     # An operator accept is an ACCEPTED-producing surface, so
                     # it must create the same field-level evidence the
@@ -454,6 +468,169 @@ class CompanyProfileObservationAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 
 admin.site.register(Organization, OrganizationAdmin)
 admin.site.register(CompanyProfileObservation, CompanyProfileObservationAdmin)
+
+
+class CompanyFieldEvidenceScopeForm(forms.ModelForm):
+    """Validate the staff-editable scope of a claim.
+
+    Only ``countries`` and ``role_families`` (lists of short strings) and the
+    crawler's ``claimed_domain`` (a string) are understood. Team scope is
+    refused: team-level policy has no verified source, so a claim scoped to a
+    team would read as more specific than the evidence supports.
+    """
+
+    ALLOWED_LIST_KEYS = ("countries", "role_families")
+    ALLOWED_STRING_KEYS = ("claimed_domain",)
+    MAX_ITEMS_LIST = 50
+    MAX_ITEM_LENGTH = 100
+
+    class Meta:
+        model = CompanyFieldEvidence
+        fields = ["scope_json"]
+
+    def clean_scope_json(self):
+        scope = self.cleaned_data.get("scope_json")
+        if not isinstance(scope, dict):
+            raise forms.ValidationError("Scope must be a JSON object.")
+        if "teams" in scope or "team" in scope:
+            raise forms.ValidationError(
+                "Team scope is not supported; scope claims by countries or role_families."
+            )
+        unknown = sorted(set(scope) - set(self.ALLOWED_LIST_KEYS) - set(self.ALLOWED_STRING_KEYS))
+        if unknown:
+            raise forms.ValidationError(f"Unsupported scope keys: {', '.join(unknown)}.")
+        cleaned = {}
+        for key in self.ALLOWED_LIST_KEYS:
+            if key not in scope:
+                continue
+            items = scope[key]
+            if (
+                not isinstance(items, list)
+                or len(items) > self.MAX_ITEMS_LIST
+                or not all(isinstance(i, str) and i.strip() and len(i) <= self.MAX_ITEM_LENGTH for i in items)
+            ):
+                raise forms.ValidationError(
+                    f"{key} must be a list of at most {self.MAX_ITEMS_LIST} short non-empty strings."
+                )
+            cleaned[key] = sorted({company_evidence.strip_unsafe_characters(i).strip() for i in items})
+        for key in self.ALLOWED_STRING_KEYS:
+            if key in scope:
+                value = scope[key]
+                if not isinstance(value, str) or len(value) > self.MAX_ITEM_LENGTH * 3:
+                    raise forms.ValidationError(f"{key} must be a short string.")
+                cleaned[key] = company_evidence.strip_unsafe_characters(value).strip()
+        return cleaned
+
+
+class OpenClaimFilter(admin.SimpleListFilter):
+    """Default the changelist to claims awaiting review."""
+
+    title = "review queue"
+    parameter_name = "queue"
+
+    def lookups(self, request, model_admin):
+        return [("open", "Open claims (default)"), ("all", "All evidence")]
+
+    def queryset(self, request, queryset):
+        if self.value() == "all":
+            return queryset
+        return queryset.filter(state__in=company_evidence.OPEN_CLAIM_STATES)
+
+    def choices(self, changelist):
+        for lookup, title in self.lookup_choices:
+            yield {
+                "selected": (self.value() or "open") == lookup,
+                "query_string": changelist.get_query_string({self.parameter_name: lookup}),
+                "display": title,
+            }
+
+
+class CompanyFieldEvidenceAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin.ModelAdmin):
+    model = CompanyFieldEvidence
+    form = CompanyFieldEvidenceScopeForm
+    list_display = ["organization", "field_key", "value_text", "state", "source_domain", "observed_at", "last_verified_at"]
+    list_filter = [OpenClaimFilter, "state", "field_key"]
+    list_select_related = ["organization"]
+    search_fields = ["organization__name", "value_text", "source_domain"]
+    actions = ["accept_claims", "reject_claims"]
+    confirmable_actions = ["accept_claims", "reject_claims"]
+
+    _model_fields = [
+        "organization", "field_key", "value_text", "source_url", "source_domain",
+        "observation", "scope_json", "observed_at", "validation_version",
+        "extractor_version", "state", "last_checked_at", "last_successful_fetch_at",
+        "last_changed_at", "last_verified_at", "created", "modified",
+    ]
+
+    def get_fields(self, request, obj=None):
+        return self._model_fields
+
+    def get_readonly_fields(self, request, obj=None):
+        readonly = [f for f in self._model_fields if f != "scope_json"]
+        if obj is not None and obj.state not in company_evidence.OPEN_CLAIM_STATES:
+            readonly.append("scope_json")
+        return readonly
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def save_model(self, request, obj, form, change):
+        old = CompanyFieldEvidence.objects.filter(pk=obj.pk).values_list("scope_json", flat=True).first()
+        with transaction.atomic():
+            super().save_model(request, obj, form, change)
+            if old != obj.scope_json:
+                OperationalChangeAudit.record(
+                    actor=request.user,
+                    target_type="company_field_evidence",
+                    target_id=obj.pk,
+                    action="scope_change",
+                    old_value={"scope_json": old},
+                    new_value={"scope_json": obj.scope_json},
+                    confirmed=True,
+                )
+
+    def _decide(self, request, queryset, decision):
+        if not self._require_confirmation(request):
+            return
+        applied = skipped = 0
+        with transaction.atomic():
+            for claim in queryset:
+                old = {"state": claim.state, "value": claim.value_text}
+                try:
+                    decision(claim, reviewer=request.user)
+                except company_evidence.EvidenceNotAcceptable:
+                    skipped += 1
+                    continue
+                claim.refresh_from_db()
+                OperationalChangeAudit.record(
+                    actor=request.user,
+                    target_type="company_field_evidence",
+                    target_id=claim.pk,
+                    action=f"claim_{claim.state}",
+                    old_value=old,
+                    new_value={"state": claim.state, "value": claim.value_text},
+                    confirmed=True,
+                )
+                applied += 1
+        return applied, skipped
+
+    @admin.action(description="Accept selected open claims as verified evidence")
+    def accept_claims(self, request, queryset):
+        result = self._decide(request, queryset, company_evidence.accept_claim)
+        if result:
+            self.message_user(request, f"{result[0]} claim(s) accepted; {result[1]} skipped (not open).")
+
+    @admin.action(description="Reject selected open claims")
+    def reject_claims(self, request, queryset):
+        result = self._decide(request, queryset, company_evidence.reject_claim)
+        if result:
+            self.message_user(request, f"{result[0]} claim(s) rejected; {result[1]} skipped (not open).")
+
+
+admin.site.register(CompanyFieldEvidence, CompanyFieldEvidenceAdmin)
 class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin.ModelAdmin):
     model = CompanyRequest
     list_display = ["company_name", "website_url", "requester", "status", "created", "crawl_source_approved", "refresh_queued"]
