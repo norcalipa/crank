@@ -17,6 +17,7 @@ import {
     openAssistant,
     setWorkspaceAccount,
     setWorkspaceContext,
+    setWorkspaceEntity,
 } from './store';
 import {WorkspaceContext} from './types';
 
@@ -72,13 +73,16 @@ document.addEventListener('DOMContentLoaded', () => {
             ? {status: 'authenticated', key: host.dataset.accountKey ?? ''}
             : {status: 'anonymous', key: ''});
     }
-    installWorkspacePersistence();
     // /chat/?company=<id>: the server-validated id seeds the same context the
-    // in-place Ask CTA sets, before the panel opens (issue #479 AC-2).
+    // in-place Ask CTA sets (issue #479 AC-2). Seeded BEFORE persistence is
+    // installed — the restore runs synchronously on the pinned host — and as a
+    // whole-entity replacement, so a persisted name for another company can
+    // never survive next to the URL's id.
     const selected = Number(host.dataset.selectedCompanyId);
     if (host.dataset.selectedCompanyId && Number.isInteger(selected) && selected > 0) {
-        setWorkspaceContext({organizationId: selected});
+        setWorkspaceEntity({organizationId: selected});
     }
+    installWorkspacePersistence();
     const root = createRoot(host);
     root.render(<WorkspaceShell authProps={authPropsFrom(host)}/>);
     // /chat/ is the pinned case of the shared workspace: the panel opens

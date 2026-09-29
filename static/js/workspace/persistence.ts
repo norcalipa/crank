@@ -19,7 +19,6 @@ import {
     AssistantVisibility,
     WorkspaceAccount,
     WorkspaceContext,
-    ACCOUNT_EPOCH_KEY,
     WORKSPACE_SESSION_KEY,
 } from './types';
 
@@ -94,23 +93,14 @@ function writeRecord(): void {
     }
 }
 
-// Keeps the page's own surface, drops every entity and closes the panel.
+// Keeps the page's own surface and drops every entity. The panel closes
+// unless the page is the pinned /chat/ host, where the assistant is the
+// page's primary content and a cross-tab sign-out must not remove it.
 function resetStore(): void {
     const surface = getWorkspaceSnapshot().context?.surface;
-    replaceWorkspaceState('closed', surface ? {surface} : null);
-}
-
-// Signals other tabs (they listen for `storage` in app-nav.js) that the
-// account changed. The value is an opaque nonce, never account data.
-function announceAccountChange(): void {
-    try {
-        window.localStorage.setItem(
-            ACCOUNT_EPOCH_KEY,
-            `${Date.now()}:${Math.random().toString(36).slice(2)}`,
-        );
-    } catch {
-        // Storage unavailable; other tabs cannot be signalled.
-    }
+    const host = document.getElementById('assistant-workspace');
+    const pinned = host?.dataset.assistantPinned === 'true';
+    replaceWorkspaceState(pinned ? 'open' : 'closed', surface ? {surface} : null);
 }
 
 let installed = false;
@@ -181,7 +171,6 @@ export function installWorkspacePersistence(): () => void {
         const prev = getWorkspaceSnapshot().account;
         if (prev.status !== 'unknown' && (prev.status !== next.status || prev.key !== next.key)) {
             wipe();
-            announceAccountChange();
         }
         setWorkspaceAccount(next);
         tryRestore();

@@ -15,6 +15,7 @@ import {
     setWorkspaceAccount,
     setWorkspaceConversation,
     setWorkspaceContext,
+    setWorkspaceEntity,
     subscribeWorkspace,
 } from './store';
 import {WORKSPACE_CONTEXT_EVENT, WORKSPACE_OPEN_EVENT} from './types';
@@ -263,5 +264,18 @@ describe('clearWorkspaceContext URL handling (issue #479 review)', () => {
         });
         expect(() => clearWorkspaceContext()).not.toThrow();
         spy.mockRestore();
+    });
+});
+
+describe('setWorkspaceEntity (issue #479 review round 2)', () => {
+    test('replaces the whole entity group and keeps the rest', () => {
+        setWorkspaceContext({surface: 'chat', organizationId: 7, organizationName: 'Acme', jobId: 3, comparisonIds: [1, 2]});
+        setWorkspaceEntity({organizationId: 12});
+        expect(getWorkspaceSnapshot().context).toEqual({surface: 'chat', organizationId: 12});
+    });
+
+    test('an empty entity on an empty store leaves a null context', () => {
+        setWorkspaceEntity({});
+        expect(getWorkspaceSnapshot().context).toBeNull();
     });
 });

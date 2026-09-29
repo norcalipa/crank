@@ -151,14 +151,17 @@
         } catch (e) {
             // Storage unavailable; nothing durable to clear.
         }
-        announceAccountChange();
         document.dispatchEvent(new CustomEvent("crank:private-state-purged"));
     }
 
     // Cross-tab signal (issue #479): private state lives in each tab's memory
-    // and sessionStorage, so a logout or account switch here must reach every
-    // other open tab. localStorage writes raise a `storage` event in the
-    // *other* tabs; the value is an opaque nonce, never account data.
+    // and sessionStorage, so a logout, login or account switch here must reach
+    // every other open tab. It is sent only from a hydration that has observed
+    // the changed account (i.e. after the server processed the logout/login),
+    // never from the submit handler: a receiving tab re-hydrates immediately
+    // and would otherwise still be told the old account is signed in.
+    // localStorage writes raise a `storage` event in the *other* tabs; the
+    // value is an opaque nonce, never account data.
     function announceAccountChange() {
         try {
             window.localStorage.setItem(
@@ -170,15 +173,39 @@
         }
     }
 
-    // Another tab changed the account: discard this tab's private state and
-    // re-hydrate so the nav and workspace pick up the account the cookie
-    // now belongs to. Never re-announces, so tabs cannot ping-pong.
+    // This tab's last hydrated account, tab-local. A hydration that differs
+    // from it is the moment the account change is known to have happened.
+    var ACCOUNT_SEEN_KEY = "crank:nav-account-seen";
+    var quietNextHydration = false;
+
+    function noteHydratedAccount(authenticated, username) {
+        var current = authenticated ? "u:" + username : "anon";
+        var previous = null;
+        try {
+            previous = window.sessionStorage.getItem(ACCOUNT_SEEN_KEY);
+            window.sessionStorage.setItem(ACCOUNT_SEEN_KEY, current);
+        } catch (e) {
+            // Storage unavailable; the account change cannot be detected.
+        }
+        var quiet = quietNextHydration;
+        quietNextHydration = false;
+        if (!quiet && previous !== null && previous !== current) {
+            announceAccountChange();
+        }
+    }
+
+    // Another tab changed the account: discard this tab's private state, then
+    // re-hydrate so the nav and workspace pick up the account the cookie now
+    // belongs to. The signal is only sent after the change completed, so the
+    // whoami below already sees the new account. The next hydration is quiet
+    // so tabs cannot ping-pong.
     function handleAccountEpoch(event) {
         if (event.key !== "crank:account-epoch") {
             return;
         }
         purgePrivateClientState();
         document.dispatchEvent(new CustomEvent("crank:private-state-purged"));
+        quietNextHydration = true;
         fetchWhoami();
     }
     window.addEventListener("storage", handleAccountEpoch);
@@ -214,6 +241,10 @@
 
     function applyAuthState(data) {
         var authenticated = !!(data && data.authenticated);
+        // A failed whoami (null / fallback) says nothing about the account.
+        if (data && typeof data.authenticated === "boolean" && !data.unobserved) {
+            noteHydratedAccount(authenticated, authenticated ? data.username : null);
+        }
         setVisible("[data-nav-auth-only]", authenticated);
         setVisible("[data-nav-anon-only]", !authenticated);
         if (authenticated) {
@@ -255,7 +286,7 @@
             .catch(function () {
                 // Hydration must never break the nav: fall back to the
                 // anonymous controls so Login stays reachable.
-                applyAuthState({ authenticated: false });
+                applyAuthState({ authenticated: false, unobserved: true });
             });
     }
 

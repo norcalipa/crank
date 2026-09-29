@@ -4,11 +4,12 @@ import {installWorkspacePersistence} from './persistence';
 import {
     getWorkspaceSnapshot,
     openAssistant,
+    replaceWorkspaceState,
     resetWorkspaceForTests,
     setWorkspaceAccount,
     setWorkspaceContext,
 } from './store';
-import {ACCOUNT_EPOCH_KEY, WORKSPACE_SESSION_KEY} from './types';
+import {WORKSPACE_SESSION_KEY} from './types';
 
 let teardown: (() => void) | undefined;
 
@@ -215,30 +216,33 @@ describe('workspace persistence review fixes (issue #479)', () => {
             .toEqual({surface: 'rankings', organizationId: 7, organizationName: 'Acme', jobId: 3});
     });
 
-    test('an account switch in this tab signals other tabs with an opaque nonce and no account data', () => {
+    test('an account switch here does not write the cross-tab signal itself (app-nav announces after hydration)', () => {
         setWorkspaceAccount({status: 'authenticated', key: 'alice'});
         teardown = installWorkspacePersistence();
-        expect(window.localStorage.getItem(ACCOUNT_EPOCH_KEY)).toBeNull();
         hydrate({authenticated: true, username: 'bob'});
-        const nonce = window.localStorage.getItem(ACCOUNT_EPOCH_KEY);
-        expect(nonce).toBeTruthy();
-        expect(nonce).not.toContain('alice');
-        expect(nonce).not.toContain('bob');
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
     });
 
-    test('an unchanged account does not signal other tabs', () => {
+    test('a purge keeps a pinned /chat/ assistant open and resets its entity context', () => {
+        const host = document.createElement('div');
+        host.id = 'assistant-workspace';
+        host.dataset.assistantPinned = 'true';
+        document.body.appendChild(host);
         setWorkspaceAccount({status: 'authenticated', key: 'alice'});
         teardown = installWorkspacePersistence();
-        hydrate({authenticated: true, username: 'alice'});
-        expect(window.localStorage.getItem(ACCOUNT_EPOCH_KEY)).toBeNull();
-    });
-
-    test('a purge received from another tab never re-signals (no ping-pong)', () => {
-        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
-        teardown = installWorkspacePersistence();
-        window.localStorage.removeItem(ACCOUNT_EPOCH_KEY);
+        replaceWorkspaceState('open', {surface: 'chat', organizationId: 7, organizationName: 'Acme'});
         document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
-        expect(window.localStorage.getItem(ACCOUNT_EPOCH_KEY)).toBeNull();
+        expect(getWorkspaceSnapshot().visibility).toBe('open');
+        expect(getWorkspaceSnapshot().context).toEqual({surface: 'chat'});
+        host.remove();
+    });
+
+    test('a purge still closes the assistant on non-pinned pages', () => {
+        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+        teardown = installWorkspacePersistence();
+        replaceWorkspaceState('open', {surface: 'rankings', organizationId: 7});
+        document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
+        expect(getWorkspaceSnapshot().visibility).toBe('closed');
     });
 
     test('a broken localStorage does not break the account switch', () => {

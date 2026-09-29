@@ -85,6 +85,24 @@ describe('workspace mount', () => {
         window.history.replaceState({}, '', '/');
     });
 
+    test('URL-seeded company replaces a conflicting persisted entity in the real mount order', () => {
+        window.sessionStorage.setItem('crank:workspace:v1', JSON.stringify({
+            v: 1,
+            account: {status: 'authenticated', key: 'alice'},
+            visibility: 'open',
+            context: {organizationId: 7, organizationName: 'Acme'},
+            savedAt: 1,
+        }));
+        window.history.replaceState({}, '', '/chat/?company=12');
+        mountPinned({authenticated: 'true', accountKey: 'alice', selectedCompanyId: '12'});
+        const context = getWorkspaceSnapshot().context;
+        expect(context).toEqual({surface: 'chat', organizationId: 12});
+        const saved = JSON.parse(window.sessionStorage.getItem('crank:workspace:v1') as string);
+        expect(saved.context).toEqual({organizationId: 12});
+        window.sessionStorage.clear();
+        window.history.replaceState({}, '', '/');
+    });
+
     test('ignores an invalid selected company id and seeds an anonymous account', () => {
         mountPinned({authenticated: 'false', selectedCompanyId: 'abc'});
         const snapshot = getWorkspaceSnapshot();

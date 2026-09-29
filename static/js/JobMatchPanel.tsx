@@ -88,31 +88,34 @@ interface RankedMatchesPayload {
     organization_matches: RankedOrgMatch[];
 }
 
-// Generations carried by the entries of the payload that will be displayed.
-function rankedGenerations(payload: RankedMatchesPayload | null): {entries: number; values: number[]} {
-    const all = [...(payload?.job_matches ?? []), ...(payload?.organization_matches ?? [])];
-    const values = Array.from(new Set(
-        all
+// Generations carried by the JOB entries of the payload that will be
+// displayed. Organization entries never carry one (OrgMatchResult.revision()
+// has no result_generation) and live job results carry null, so only the
+// generations that are actually present guard anything.
+function jobGenerations(payload: RankedMatchesPayload | null): number[] {
+    return Array.from(new Set(
+        (payload?.job_matches ?? [])
             .map((entry) => entry.revision?.result_generation)
             .filter((value): value is number => typeof value === 'number'),
     ));
-    return {entries: all.length, values};
 }
 
-// Generation of the list actually shown: the ranked payload's own entries
-// when it has any, else the `/api/job-matches/` page's (empty ranked list).
+// Generation of the list actually shown: the ranked job entries' own when
+// present, else (no job entries at all) the `/api/job-matches/` page's.
+// Null when the payload carries none (org-only, live results).
 function displayedGeneration(payload: RankedMatchesPayload | null, matchGeneration: number | null): number | null {
-    const {entries, values} = rankedGenerations(payload);
-    if (entries > 0) {
-        return values.length > 0 ? Math.max(...values) : null;
+    const values = jobGenerations(payload);
+    if (values.length > 0) {
+        return Math.max(...values);
     }
-    return matchGeneration;
+    return (payload?.job_matches?.length ?? 0) === 0 ? matchGeneration : null;
 }
 
-// A refresh may replace the displayed list only when it is provably not
-// older: a lower generation, a payload whose entries disagree or carry none,
-// a failed ranked fetch, or a ranked/matches endpoint mismatch all keep the list on screen. With
-// nothing shown yet, anything applies.
+// A refresh may replace the displayed list unless it is provably older: a
+// failed ranked fetch, job entries that disagree with each other or carry a
+// lower generation, a zero-job payload whose matches page is older, or a
+// ranked/matches endpoint mismatch keep the list on screen. Payloads that
+// carry no generation (org-only, live) are unguarded.
 function acceptsGeneration(
     shown: number | null,
     payload: RankedMatchesPayload | null,
@@ -124,14 +127,14 @@ function acceptsGeneration(
     if (payload === null) {
         return false;
     }
-    const {entries, values} = rankedGenerations(payload);
-    if (entries === 0) {
-        return matchGeneration === null || matchGeneration >= shown;
-    }
-    if (values.length !== 1 || values[0] < shown) {
+    const values = jobGenerations(payload);
+    if (values.length > 1) {
         return false;
     }
-    return matchGeneration === null || matchGeneration === values[0];
+    if (values.length === 1) {
+        return values[0] >= shown && (matchGeneration === null || matchGeneration === values[0]);
+    }
+    return matchGeneration === null || matchGeneration >= shown;
 }
 
 type PanelPhase = 'loading' | 'error' | 'ready';

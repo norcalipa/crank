@@ -199,6 +199,26 @@ export function setWorkspaceContext(context: Partial<WorkspaceContext>): void {
     notify();
 }
 
+// Replaces the whole entity group (id, name, job, comparison) with the given
+// one, keeping the rest of the context. Unlike setWorkspaceContext this never
+// leaves a name that belongs to a different id behind.
+export function setWorkspaceEntity(entity: Partial<WorkspaceContext>): void {
+    const s = store();
+    const base = {...(s.snapshot.context ?? {})};
+    delete base.organizationId;
+    delete base.organizationName;
+    delete base.jobId;
+    delete base.comparisonIds;
+    const merged = {...base, ...normalizeWorkspaceContext(entity)};
+    const next = (Object.keys(merged).length > 0 ? merged : null) as WorkspaceContext | null;
+    s.snapshot = {
+        ...s.snapshot,
+        context: next,
+        contextRevision: revisionFor(s.snapshot, next),
+    };
+    notify();
+}
+
 // URL params that seed an entity into the context (`/chat/?company=12`). A
 // cleared context must not be re-seeded by reloading the same URL.
 const ENTITY_QUERY_PARAMS = ['company'];

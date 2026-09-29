@@ -1113,6 +1113,8 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
         rankedGeneration?: number | null;
         rankedEmpty?: boolean;
         matchesFail?: boolean;
+        withOrgs?: boolean;
+        matchesEmpty?: boolean;
     }>): Batch[] {
         const batches: Batch[] = [];
         const gates: Array<Promise<void>> = [];
@@ -1136,9 +1138,10 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
                         ...sampleJobMatch,
                         title: spec.title,
                         revision: rankedGeneration === null ? undefined : {result_generation: rankedGeneration},
-                    }]));
+                    }], spec.withOrgs ? [sampleOrgMatch] : []));
                 }
                 if (spec.matchesFail) return {ok: false, status: 500, json: () => Promise.resolve({})} as Response;
+                if (spec.matchesEmpty) return jsonResponse(matchPayload(0, []));
                 return jsonResponse(matchPayload(1, [{
                     ...sampleJobMatch,
                     revision: spec.generation === null ? undefined : {result_generation: spec.generation},
@@ -1226,7 +1229,7 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
         await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
     }
 
-    test('a ranked payload without a generation never replaces a displayed higher generation', async () => {
+    test('a job payload without a generation is unguarded when the matches page carries none', async () => {
         installBatchedFetch([
             {title: 'Old', generation: 5, hold: false},
             {title: 'Ungenerated', generation: null, hold: false},
@@ -1234,8 +1237,62 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
         render(<JobMatchPanel/>);
         await screen.findByText('Old');
         await refreshAndSettle(3);
+        expect(await screen.findByText('Ungenerated')).toBeInTheDocument();
+        expect(screen.queryByText('Old')).not.toBeInTheDocument();
+    });
+
+    test('a job payload without a generation is rejected when the matches page is older', async () => {
+        installBatchedFetch([
+            {title: 'Old', generation: 5, hold: false},
+            {title: 'Ungenerated', generation: 4, rankedGeneration: null, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Old');
+        await refreshAndSettle(3);
         expect(screen.getByText('Old')).toBeInTheDocument();
         expect(screen.queryByText('Ungenerated')).not.toBeInTheDocument();
+    });
+
+    test('an org-only refresh with zero jobs replaces a displayed generation and Refresh keeps working', async () => {
+        installBatchedFetch([
+            {title: 'Gen five', generation: 5, withOrgs: true, hold: false},
+            {title: 'x', generation: null, rankedEmpty: true, withOrgs: true, matchesEmpty: true, hold: false},
+            {title: 'x', generation: null, rankedEmpty: true, withOrgs: true, matchesEmpty: true, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Gen five');
+        await refreshAndSettle(3);
+        expect(screen.queryByText('Gen five')).not.toBeInTheDocument();
+        expect(screen.getByText('Acme Corp')).toBeInTheDocument();
+        const callsBefore = (global.fetch as jest.Mock).mock.calls.length;
+        await refreshAndSettle(6);
+        expect((global.fetch as jest.Mock).mock.calls.length).toBeGreaterThan(callsBefore);
+    });
+
+    test('a zero-job refresh at a newer matches generation applies with no organizations', async () => {
+        installBatchedFetch([
+            {title: 'Gen five', generation: 5, hold: false},
+            {title: 'x', generation: 6, rankedEmpty: true, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Gen five');
+        await refreshAndSettle(3);
+        expect(screen.queryByText('Gen five')).not.toBeInTheDocument();
+    });
+
+    test('a mixed payload guards on the job generation and ignores ungenerated organizations', async () => {
+        installBatchedFetch([
+            {title: 'Gen five', generation: 5, withOrgs: true, hold: false},
+            {title: 'Gen four', generation: 4, withOrgs: true, hold: false},
+            {title: 'Gen six', generation: 6, withOrgs: true, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Gen five');
+        await refreshAndSettle(3);
+        expect(screen.getByText('Gen five')).toBeInTheDocument();
+        expect(screen.queryByText('Gen four')).not.toBeInTheDocument();
+        await refreshAndSettle(6);
+        expect(await screen.findByText('Gen six')).toBeInTheDocument();
     });
 
     test('a lower generation on the ranked payload is rejected even when the matches page looks newer', async () => {
