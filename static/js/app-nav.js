@@ -194,7 +194,7 @@
         }
     }
 
-    // Another tab changed the account: discard this tab's private state, then
+    // Another tab changed the account: discard this tab's own state, then
     // re-hydrate so the nav and workspace pick up the account the cookie now
     // belongs to. The signal is only sent after the change completed, so the
     // whoami below already sees the new account. The next hydration is quiet
@@ -203,7 +203,16 @@
         if (event.key !== "crank:account-epoch") {
             return;
         }
-        purgePrivateClientState();
+        // Only tab-local state: localStorage is shared, and the tab that
+        // changed the account has already purged (sign-out) or reconciled
+        // (account switch) it. Deleting it here would destroy the #465
+        // sign-in handoff draft and same-account recovery markers.
+        try {
+            window.sessionStorage.removeItem("crank:auth-intent");
+            window.sessionStorage.removeItem("crank:workspace:v1");
+        } catch (e) {
+            // Storage unavailable; nothing tab-local to clear.
+        }
         document.dispatchEvent(new CustomEvent("crank:private-state-purged"));
         quietNextHydration = true;
         fetchWhoami();
@@ -268,7 +277,14 @@
         // compare-and-purge decision lives there, not here, since it is the
         // one place that can act on both the old and new value together.
         document.dispatchEvent(new CustomEvent("crank:auth-hydrated", {
-            detail: { authenticated: authenticated, username: authenticated ? data.username : null },
+            // `unobserved`: the whoami request failed, so `authenticated` is only
+            // the anonymous fallback for the nav controls, not a fact about the
+            // account; listeners that persist state must ignore it.
+            detail: {
+                authenticated: authenticated,
+                username: authenticated ? data.username : null,
+                unobserved: !data || !!data.unobserved,
+            },
         }));
     }
 

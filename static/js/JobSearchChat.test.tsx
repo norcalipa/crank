@@ -311,20 +311,50 @@ describe('JobSearchChat', () => {
             expect(screen.getByTestId('empty-history')).not.toHaveTextContent(/Job Matches panel/i);
         });
 
-        test('sheet mode leaves the composer unfocused on open; drawer mode focuses it (issue #479)', async () => {
+        test('sheet mode never autofocuses; drawer focuses only when the user opened the panel; a restore does not (issue #479)', async () => {
+            const mountWith = async (element: React.ReactElement) => {
+                (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+                (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+                setWorkspaceAccount({status: 'authenticated', key: 'tester'});
+                const view = render(element);
+                await screen.findByTestId('empty-history');
+                await new Promise((r) => setTimeout(r, 20));
+                return view;
+            };
+            let view = await mountWith(<JobSearchChat workspaceMode="sheet" autoFocusComposer/>);
+            expect(screen.getByLabelText('Message')).not.toHaveFocus();
+            view.unmount();
+            view = await mountWith(<JobSearchChat workspaceMode="drawer"/>);
+            expect(screen.getByLabelText('Message')).not.toHaveFocus();
+            expect(document.activeElement).toBe(document.body);
+            view.unmount();
+            view = await mountWith(<JobSearchChat workspaceMode="drawer" autoFocusComposer/>);
+            await waitFor(() => expect(screen.getByLabelText('Message')).toHaveFocus());
+        });
+
+        test('a conversation created on first load also leaves a restored panel unfocused (issue #479)', async () => {
             (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
-            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({detail: 'none'}, 404));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(43)));
             setWorkspaceAccount({status: 'authenticated', key: 'tester'});
-            const {unmount} = render(<JobSearchChat workspaceMode="sheet"/>);
+            render(<JobSearchChat workspaceMode="docked"/>);
             await screen.findByTestId('empty-history');
             await new Promise((r) => setTimeout(r, 20));
             expect(screen.getByLabelText('Message')).not.toHaveFocus();
-            unmount();
+        });
+
+        test('a resume failure while the composer holds focus moves focus to the alert action, not <body> (issue #479)', async () => {
+            let rejectResume: (r: unknown) => void = () => undefined;
             (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
-            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+            (global.fetch as jest.Mock).mockReturnValueOnce(new Promise((resolve) => { rejectResume = resolve; }));
+            setWorkspaceAccount({status: 'authenticated', key: 'tester'});
             render(<JobSearchChat workspaceMode="drawer"/>);
-            await screen.findByTestId('empty-history');
-            await waitFor(() => expect(screen.getByLabelText('Message')).toHaveFocus());
+            const composer = await screen.findByLabelText('Message');
+            composer.focus();
+            expect(composer).toHaveFocus();
+            rejectResume(jsonResponse({detail: 'boom'}, 500));
+            const action = await screen.findByRole('button', {name: 'Start a conversation'});
+            await waitFor(() => expect(action).toHaveFocus());
         });
 
         test('failed-turn alert is a sibling below the user bubble, not nested inside it (issue #479)', async () => {

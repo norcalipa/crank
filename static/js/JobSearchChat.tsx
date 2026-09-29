@@ -905,6 +905,10 @@ export interface JobSearchChatProps {
     // control, so directional microcopy must not claim the panel is beside
     // the chat. Undefined outside the workspace (legacy mount).
     workspaceMode?: 'docked' | 'drawer' | 'sheet';
+    // Workspace only: true when the user opened the panel on this page. A
+    // panel restored on load or Back must not take focus from the page
+    // (issue #479). Ignored outside the workspace, which always autofocuses.
+    autoFocusComposer?: boolean;
 }
 
 const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
@@ -956,7 +960,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const [staleNotes, setStaleNotes] = React.useState<Record<number, string>>({});
     const [pending, setPending] = React.useState(false);
     const [loading, setLoading] = React.useState(true);
-    const [initError, setInitError] = React.useState<string | null>(null);
+    const [initError, setInitErrorState] = React.useState<string | null>(null);
     const [error, setError] = React.useState<string | null>(null);
     const [errorType, setErrorType] = React.useState<string | null>(null);
     const [retrying, setRetrying] = React.useState(false);
@@ -1040,6 +1044,24 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // Auto-resize the composer textarea up to a bounded max rows.
     const MAX_COMPOSER_ROWS = 6;
     const composerRef = React.useRef<HTMLTextAreaElement>(null);
+    const initErrorActionRef = React.useRef<HTMLButtonElement>(null);
+    const refocusInitErrorRef = React.useRef(false);
+    // The error state unmounts the composer; if it held focus, hand focus to
+    // the alert's action once that commits so it never falls back to <body>.
+    const setInitError = (message: string | null) => {
+        if (message && composerRef.current && document.activeElement === composerRef.current) {
+            refocusInitErrorRef.current = true;
+        }
+        setInitErrorState(message);
+    };
+    React.useEffect(() => {
+        if (initError && refocusInitErrorRef.current) {
+            refocusInitErrorRef.current = false;
+            initErrorActionRef.current?.focus();
+        }
+    }, [initError]);
+    const autoFocusRef = React.useRef(true);
+    autoFocusRef.current = props.workspaceMode === undefined || !!props.autoFocusComposer;
     // Shared floor for the measured card height; must stay in sync with the
     // `20rem` inline minHeight below (16px rem * 20) so the two cannot drift.
     const MIN_CARD_PX = 320;
@@ -1391,7 +1413,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         // conversationId/loading commit) and is silently
                         // dropped, leaving the composer unfocused (CI: 400%
                         // zoom composer-focus race).
-                        if (props.workspaceMode !== 'sheet') {
+                        if (props.workspaceMode !== 'sheet' && autoFocusRef.current) {
                             window.setTimeout(() => composerRef.current?.focus(), 0);
                         }
                     } catch {
@@ -1416,7 +1438,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 // is disabled until conversationId/loading land. The mobile
                 // sheet keeps focus on its Back control instead of raising
                 // the keyboard.
-                if (props.workspaceMode !== 'sheet') {
+                if (props.workspaceMode !== 'sheet' && autoFocusRef.current) {
                     window.setTimeout(() => composerRef.current?.focus(), 0);
                 }
             })
@@ -2378,7 +2400,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     <div className="alert alert-danger" role="alert">
                         {initError}
                         <div className="mt-2">
-                            <button type="button" className="btn btn-sm btn-primary" onClick={handleCreateConversation}>
+                            <button type="button" ref={initErrorActionRef} className="btn btn-sm btn-primary"
+                                    onClick={handleCreateConversation}>
                                 Start a conversation
                             </button>
                         </div>

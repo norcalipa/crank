@@ -64,7 +64,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
         });
         await flushMicrotasks();
 
-        expect(received).toEqual({authenticated: true, username: 'alice'});
+        expect(received).toEqual({authenticated: true, username: 'alice', unobserved: false});
     });
 
     test('applyAuthState dispatches a null username when anonymous', async () => {
@@ -79,7 +79,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
         });
         await flushMicrotasks();
 
-        expect(received).toEqual({authenticated: false, username: null});
+        expect(received).toEqual({authenticated: false, username: null, unobserved: true});
     });
 
     test('signing out purges every crank:jobsearch:* key, the auth intent, and crank:last-account before the request', async () => {
@@ -339,7 +339,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
         spy.mockRestore();
     });
 
-    test('another tab changing the account purges this tab and re-hydrates the account', async () => {
+    test('another tab changing the account resets this tab own state, keeps shared drafts, and re-hydrates', async () => {
         (global.fetch as jest.Mock).mockImplementation((url: string) => {
             if (String(url).includes('/api/account/whoami/')) {
                 return Promise.resolve({
@@ -367,8 +367,10 @@ describe('app-nav (issue #465 private-state purge)', () => {
         expect(purged).toHaveBeenCalledTimes(1);
         expect(window.sessionStorage.getItem('crank:workspace:v1')).toBeNull();
         expect(window.sessionStorage.getItem('crank:auth-intent')).toBeNull();
-        expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBeNull();
-        expect(hydrated).toHaveBeenCalledWith({authenticated: true, username: 'bob'});
+        // Shared localStorage belongs to the tab that changed the account:
+        // the #465 sign-in handoff draft must survive another tab's login.
+        expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBe('alice draft');
+        expect(hydrated).toHaveBeenCalledWith({authenticated: true, username: 'bob', unobserved: false});
         // The receiving tab never re-announces, even though its hydrated
         // account differs from the one it last saw.
         expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();

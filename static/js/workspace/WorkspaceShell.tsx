@@ -253,7 +253,8 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
                         aria-labelledby="assistant-panel-title"
                         data-testid="assistant-panel"
                     >
-                        <AssistantPanel mode={mode} context={snapshot.context} authProps={authProps}/>
+                        <AssistantPanel mode={mode} context={snapshot.context} authProps={authProps}
+                                        autoFocusComposer={snapshot.userOpened}/>
                     </section>
                 ) : (
                     <section
@@ -263,7 +264,8 @@ const WorkspaceShell: React.FC<WorkspaceShellProps> = ({authProps}) => {
                         aria-labelledby="assistant-panel-title"
                         data-testid="assistant-panel"
                     >
-                        <AssistantPanel mode={mode} context={snapshot.context} authProps={authProps}/>
+                        <AssistantPanel mode={mode} context={snapshot.context} authProps={authProps}
+                                        autoFocusComposer={snapshot.userOpened}/>
                     </section>
                 )
             )}

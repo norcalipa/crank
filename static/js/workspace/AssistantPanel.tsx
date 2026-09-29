@@ -47,6 +47,9 @@ const LoadMarker: React.FC = () => {
 interface AssistantPanelProps {
     mode: WorkspaceMode;
     context: WorkspaceContext | null;
+    // Whether the chat may move focus into its composer once it has loaded:
+    // only when the user opened the panel on this page, never on a restore.
+    autoFocusComposer?: boolean;
     // Server-rendered auth context from the pinned /chat/ workspace host
     // (issue #465 AC-9/10), forwarded verbatim to JobSearchChat.
     authProps?: {
@@ -58,7 +61,7 @@ interface AssistantPanelProps {
     };
 }
 
-const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps}) => {
+const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps, autoFocusComposer = false}) => {
     const line = contextLine(context);
     const entityLabel = describeWorkspaceContext(context);
     // Clearing removes the strip, so focus moves to the panel heading rather
@@ -131,7 +134,7 @@ const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps
                     {/* Wrapper id preserves the popup.css rules and Django e2e
                         selectors that key off #job-search-chat (issue #472 AC-11). */}
                     <div id="job-search-chat">
-                        <LazyJobSearchChat {...(authProps ?? {})} workspaceMode={mode}/>
+                        <LazyJobSearchChat {...(authProps ?? {})} workspaceMode={mode} autoFocusComposer={autoFocusComposer}/>
                     </div>
                 </React.Suspense>
             </div>

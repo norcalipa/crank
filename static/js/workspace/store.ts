@@ -50,6 +50,7 @@ function initialSnapshot(): WorkspaceSnapshot {
         contextRevision: 0,
         account: {status: 'unknown', key: ''},
         conversationId: null,
+        userOpened: false,
     };
 }
 
@@ -161,6 +162,7 @@ export function openAssistant(context?: Partial<WorkspaceContext>): void {
     s.snapshot = {
         ...s.snapshot,
         visibility: 'open',
+        userOpened: true,
         context: next,
         contextRevision: revisionFor(s.snapshot, next),
     };
@@ -292,6 +294,7 @@ export function replaceWorkspaceState(
     s.snapshot = {
         ...s.snapshot,
         visibility,
+        userOpened: false,
         context,
         conversationId,
         contextRevision: revisionFor(s.snapshot, context),

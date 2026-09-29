@@ -13,7 +13,7 @@ import {WORKSPACE_SESSION_KEY} from './types';
 
 let teardown: (() => void) | undefined;
 
-function hydrate(detail: {authenticated: boolean; username: string | null}): void {
+function hydrate(detail: {authenticated: boolean; username: string | null; unobserved?: boolean}): void {
     document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail}));
 }
 
@@ -181,6 +181,28 @@ describe('workspace persistence', () => {
         expect(() => openAssistant({organizationId: 3})).not.toThrow();
         expect(getWorkspaceSnapshot().context?.organizationId).toBe(3);
         expect(() => document.dispatchEvent(new CustomEvent('crank:private-state-purged'))).not.toThrow();
+    });
+
+    test('a failed whoami (unobserved) never re-stamps the record or drops the context (issue #479)', () => {
+        seedRecord();
+        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+        teardown = installWorkspacePersistence();
+        const before = record();
+        hydrate({authenticated: false, username: null, unobserved: true});
+        expect(getWorkspaceSnapshot().account).toEqual({status: 'authenticated', key: 'alice'});
+        expect(getWorkspaceSnapshot().context?.organizationId).toBe(7);
+        expect(record()).toEqual(before);
+        // A later real anonymous hydration is still treated as a sign-out.
+        hydrate({authenticated: false, username: null});
+        expect(getWorkspaceSnapshot().account.status).toBe('anonymous');
+        expect(getWorkspaceSnapshot().context?.organizationId).toBeUndefined();
+    });
+
+    test('an unobserved hydration leaves an unknown account unknown', () => {
+        teardown = installWorkspacePersistence();
+        hydrate({authenticated: false, username: null, unobserved: true});
+        expect(getWorkspaceSnapshot().account.status).toBe('unknown');
+        expect(record()).toBeNull();
     });
 
     test('install is idempotent and hydration without detail is ignored', () => {

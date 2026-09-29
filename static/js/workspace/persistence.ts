@@ -170,8 +170,10 @@ export function installWorkspacePersistence(): () => void {
 
     const handleHydrated = (event: Event): void => {
         const detail = (event as CustomEvent).detail as
-            {authenticated?: boolean; username?: string | null} | undefined;
-        if (!detail) {
+            {authenticated?: boolean; username?: string | null; unobserved?: boolean} | undefined;
+        // A failed whoami says nothing about the account: keep the current
+        // record and store rather than treating it as a sign-out.
+        if (!detail || detail.unobserved) {
             return;
         }
         const next: WorkspaceAccount = detail.authenticated && detail.username

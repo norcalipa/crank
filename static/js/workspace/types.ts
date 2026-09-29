@@ -36,6 +36,10 @@ export interface WorkspaceSnapshot {
     account: WorkspaceAccount;
     // Mirror of the chat's active server conversation; never persisted.
     conversationId: number | null;
+    // True when the user (launcher, Ask, restore pill) or the pinned /chat/
+    // host opened the panel on this page; false for a panel restored from the
+    // per-tab record, which must not take focus from the page (issue #479).
+    userOpened: boolean;
 }
 
 // Per-tab sessionStorage record (issue #479).
