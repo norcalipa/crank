@@ -51,7 +51,10 @@ const getCookie = (name: string): string => {
 const newIdempotencyKey = (): string =>
     typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
         ? crypto.randomUUID()
-        : `k-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
+              const n = Math.floor(Math.random() * 16);
+              return (ch === 'x' ? n : (n & 0x3) | 0x8).toString(16);
+          });
 
 const formatDate = (isoString: string | null): string =>
     isoString
@@ -138,9 +141,9 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         return () => {
             unlockBackground();
             const opener = openerRef.current;
-            const fallback = document.querySelector<HTMLElement>(
+            const fallback = Array.from(document.querySelectorAll<HTMLElement>(
                 `[data-organization-id="${organizationId}"]`
-            );
+            )).find((element) => element.getBoundingClientRect().height > 0) ?? null;
             const target = opener && opener.isConnected ? opener : fallback;
             if (target) {
                 target.focus();

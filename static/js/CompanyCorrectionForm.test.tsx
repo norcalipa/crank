@@ -226,7 +226,7 @@ describe('CompanyCorrectionForm', () => {
                 renderForm();
                 await fillAndSubmit();
                 await screen.findByTestId('correction-status');
-                expect(JSON.parse(posts()[0][1].body).idempotency_key).toMatch(/^k-/);
+                expect(JSON.parse(posts()[0][1].body).idempotency_key).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
             } finally {
                 Object.defineProperty(crypto, 'randomUUID', {value: original, configurable: true});
             }
@@ -431,9 +431,14 @@ describe('CompanyCorrectionForm', () => {
         test('falls back to the company entry when the opener is gone', async () => {
             const opener = document.createElement('button');
             document.body.appendChild(opener);
+            const hidden = document.createElement('div');
+            hidden.setAttribute('data-organization-id', '1');
+            hidden.tabIndex = 0;
+            document.body.appendChild(hidden);
             const row = document.createElement('div');
             row.setAttribute('data-organization-id', '1');
             row.tabIndex = 0;
+            row.getBoundingClientRect = () => ({height: 20} as DOMRect);
             document.body.appendChild(row);
             opener.focus();
             const {unmount} = renderForm();
@@ -441,6 +446,7 @@ describe('CompanyCorrectionForm', () => {
             unmount();
             expect(row).toHaveFocus();
             row.remove();
+            hidden.remove();
         });
 
         test('blurs when neither the opener nor a company entry exists', async () => {
