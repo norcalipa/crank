@@ -161,7 +161,13 @@
     // never from the submit handler: a receiving tab re-hydrates immediately
     // and would otherwise still be told the old account is signed in.
     // localStorage writes raise a `storage` event in the *other* tabs; the
-    // value is an opaque nonce, never account data.
+    // value is an opaque nonce, never account data. Storage keys owned here:
+    //   crank:account-epoch    localStorage, shared; a nonce that is only
+    //                          ever overwritten, never read for its value and
+    //                          never removed by any purge.
+    //   crank:nav-account-seen sessionStorage, per tab; "u:<username>" or
+    //                          "anon". Deliberately not cleared by either
+    //                          purge: it is what detects the next change.
     function announceAccountChange() {
         try {
             window.localStorage.setItem(

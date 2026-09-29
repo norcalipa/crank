@@ -112,17 +112,17 @@ class JobSearchPageTests(TestCase):
         self.assertContains(response, f'data-selected-company-id="{org.id}"')
 
     def _org(self, **overrides):
-        fields = dict(
-            name="Named Org",
-            status=1,
-            type="C",
-            url="https://named.example.com",
-            gives_ratings=True,
-            public=True,
-            accelerated_vesting=True,
-            funding_round="S",
-            rto_policy="R",
-        )
+        fields = {
+            "name": "Named Org",
+            "status": 1,
+            "type": "C",
+            "url": "https://named.example.com",
+            "gives_ratings": True,
+            "public": True,
+            "accelerated_vesting": True,
+            "funding_round": "S",
+            "rto_policy": "R",
+        }
         fields.update(overrides)
         return Organization.objects.create(**fields)
 

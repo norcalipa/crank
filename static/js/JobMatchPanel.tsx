@@ -1062,4 +1062,3 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
 };
 
 export default JobMatchPanel;
-

@@ -239,6 +239,8 @@ test.describe('navigation state (issue #479)', () => {
         await expect(other.locator('textarea[aria-label="Message"]')).toBeEnabled();
         await expect(other.locator('article[aria-label="Your message"]')).toHaveCount(0);
         await expect(other.locator('body')).not.toContainText('first conversation marker');
+        // The unsent draft belonged to the reset conversation: no stale draft.
+        await expect(other.locator('textarea[aria-label="Message"]')).toHaveValue('');
     });
 
     test('delete in tab A: tab B reloads without the deleted conversation', async ({page, context}) => {
@@ -365,5 +367,153 @@ test.describe('navigation state (issue #479)', () => {
         await expect(page.locator('#organization-list')).toBeVisible();
         // The same organization — not merely some scroll offset — is on screen.
         await expect(page.locator(`tr.organization-row[data-organization-id="${targetId}"]`)).toBeInViewport();
+    });
+
+    test('the company is in the store before the first /api/agent/ request (AC-2, #484 ordering)', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        const companyId = await companyIdFor(page, COMPANY);
+        await page.goto('/');
+        const seenAtFirstFetch: Array<number | null> = [];
+        await page.route(/\/api\/agent\//, async (route) => {
+            seenAtFirstFetch.push(await page.evaluate(() => (window as unknown as {
+                __crankWorkspace__?: {snapshot?: {context?: {organizationId?: number} | null}};
+            }).__crankWorkspace__?.snapshot?.context?.organizationId ?? null));
+            await route.continue();
+        });
+        await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
+        await page.getByTestId('company-chat-cta').click();
+        await expect(page.locator(STRIP)).toContainText(`About ${COMPANY}`);
+        await expect.poll(() => seenAtFirstFetch.length).toBeGreaterThan(0);
+        expect(seenAtFirstFetch[0]).toBe(Number(companyId));
+    });
+
+    for (const width of [1280, 1024]) {
+        test(`a restored open panel does not take focus on load or Back at ${width}px`, async ({page}) => {
+            await page.setViewportSize({width, height: 900});
+            await login(page);
+            await page.goto('/');
+            await page.getByTestId('assistant-launcher').click();
+            const composer = page.locator('textarea[aria-label="Message"]');
+            await expect(composer).toBeEnabled();
+            // An explicit open still moves focus into the composer.
+            await expect(composer).toBeFocused();
+            await sendMessage(page, `focus restore marker ${width}`);
+
+            const settledOnBody = async (): Promise<void> => {
+                await expect(page.getByTestId('assistant-panel')).toBeVisible();
+                await expect(page.locator('article[aria-label="Your message"]', {hasText: `focus restore marker ${width}`}).first()).toBeVisible();
+                await expect(composer).toBeEnabled();
+                // Resume-driven focus used to land after a deferred tick.
+                await page.waitForTimeout(500);
+                expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('BODY');
+            };
+            await page.goto('/help/');
+            await settledOnBody();
+            await page.goBack();
+            await settledOnBody();
+        });
+    }
+
+    for (const width of [1280, 1024]) {
+        test(`Ask with a failing resume leaves focus on the alert action at ${width}px`, async ({page}) => {
+            await page.setViewportSize({width, height: 900});
+            await login(page);
+            await page.goto('/');
+            await page.route(/\/api\/agent\/conversations\/$/, async (route) => {
+                if (route.request().method() === 'GET') {
+                    await route.fulfill({status: 500, contentType: 'application/json', body: '{"detail":"boom"}'});
+                    return;
+                }
+                await route.continue();
+            });
+            await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
+            await page.getByTestId('company-chat-cta').click();
+            const action = page.getByRole('button', {name: 'Start a conversation'});
+            await expect(action).toBeVisible();
+            await expect(action).toBeFocused();
+        });
+    }
+
+    test('a failed whoami keeps this tab context on /chat/ and /help/ (not treated as sign-out)', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await askAboutCompany(page);
+        await page.goto('/chat/');
+        await expect(page.locator(STRIP)).toContainText(`About ${COMPANY}`);
+        await page.route('**/api/account/whoami/', (route) => route.fulfill({status: 503, body: 'down'}));
+        await page.reload();
+        await expect(page.getByTestId('job-search-chat')).toBeVisible();
+        await expect(page.locator(STRIP)).toContainText(`About ${COMPANY}`);
+        expect(await storeAccount(page)).toEqual({status: 'authenticated', key: 'e2e_user'});
+        await page.goto('/help/');
+        await page.waitForTimeout(500);
+        const record = JSON.parse(await page.evaluate(() => window.sessionStorage.getItem('crank:workspace:v1') ?? 'null'));
+        expect(record.account).toEqual({status: 'authenticated', key: 'e2e_user'});
+        expect(record.context.organizationName).toBe(COMPANY);
+        await page.unroute('**/api/account/whoami/');
+        await page.reload();
+        await expect(page.locator(STRIP)).toContainText(`About ${COMPANY}`);
+    });
+
+    test('after another tab signs out, /chat/ shows the signed-out job matches, not an error with retry', async ({page, context}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/chat/');
+        await expect(page.getByTestId('ranked-job-matches')).toBeVisible();
+        const other = await context.newPage();
+        await other.goto('/chat/');
+        await logout(other);
+        await expect(page.getByTestId('job-match-signed-out')).toBeVisible();
+        await expect(page.getByText('We couldn’t load your job matches')).toHaveCount(0);
+        await expect(page.getByRole('button', {name: /try again/i})).toHaveCount(0);
+    });
+
+    test('a second anonymous tab does not destroy the sign-in handoff draft (#465 AC-8)', async ({page, context}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        const anonymous = await context.newPage();
+        await anonymous.goto('/');
+        await expect(anonymous.locator('#organization-list')).toBeVisible();
+
+        await page.goto('/chat/');
+        const composer = page.locator('textarea[aria-label="Message"]');
+        await expect(composer).toBeEnabled();
+        const draft = 'handoff draft with another tab open';
+        await composer.fill(draft);
+        await expect.poll(() => page.evaluate(() => window.localStorage.getItem('crank:jobsearch:draft:pending'))).toBe(draft);
+        await page.getByTestId('job-search-sign-in-cta').click();
+        await page.locator('input[name="login"]').fill('e2e_user');
+        await page.locator('input[name="password"]').fill(E2E_PASSWORD);
+        await page.getByRole('button', {name: 'Sign In'}).click();
+        await page.waitForURL((url) => url.pathname === '/chat/');
+
+        // The other tab has been told and re-hydrated onto the signed-in account…
+        await expect.poll(() => anonymous.evaluate(() => window.sessionStorage.getItem('crank:nav-account-seen'))).toBe('u:e2e_user');
+        // …and the draft still arrives in the composer that signed in.
+        await expect(page.locator('textarea[aria-label="Message"]')).toHaveValue(draft);
+    });
+
+    test('a session that expires while another tab holds an unsent draft keeps that draft for re-login', async ({page, context}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/chat/');
+        const composer = page.locator('textarea[aria-label="Message"]');
+        await expect(composer).toBeEnabled();
+        await composer.fill('draft that must survive expiry');
+        await expect.poll(() => page.evaluate(() => Object.keys(window.localStorage).filter((k) => k.startsWith('crank:jobsearch:draft:') && !k.endsWith(':pending') && !k.includes('draftts')).length)).toBeGreaterThan(0);
+
+        const other = await context.newPage();
+        await other.goto('/');
+        await expect.poll(() => other.evaluate(() => window.sessionStorage.getItem('crank:nav-account-seen'))).toBe('u:e2e_user');
+        await context.clearCookies({name: 'sessionid'});
+        await other.reload();
+        await expect.poll(() => other.evaluate(() => window.sessionStorage.getItem('crank:nav-account-seen'))).toBe('anon');
+        // The announcing tab, not this receiver, owns the shared storage.
+        await expect.poll(() => page.evaluate(() => window.sessionStorage.getItem('crank:nav-account-seen'))).toBe('anon');
+        expect(await page.evaluate(() => Object.keys(window.localStorage).some((k) => /^crank:jobsearch:draft:\d+$/.test(k)))).toBe(true);
+
+        await login(other);
+        await page.goto('/chat/');
+        await expect(page.locator('textarea[aria-label="Message"]')).toHaveValue('draft that must survive expiry');
     });
 });
