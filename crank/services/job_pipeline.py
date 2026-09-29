@@ -436,7 +436,7 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                     JobSourceCatalog,
                     source.pk,
                     source_freshness.job_outcome(result),
-                    now=reference,
+                    now=options.get("now") or timezone.now(),
                 )
             counts["listings_ingested"] += int(result.ingested)
             counts["listings_updated"] += int(result.updated)
@@ -482,7 +482,7 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                 JobSourceCatalog,
                 source.pk,
                 source_freshness.Outcome.FAILED,
-                now=reference,
+                now=options.get("now") or timezone.now(),
             )
             agent_runs.monitoring.record_event(
                 "source_stage",

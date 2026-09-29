@@ -153,6 +153,44 @@ class PolicyTests(TestCase):
         job.refresh_from_db()
         self.assertEqual((job.consecutive_failures, job.last_crawl_at), (0, NOW))
 
+    def test_stale_attempt_never_overwrites_newer_state(self):
+        # Attempts finish on different paths after the source lock is released,
+        # so record_outcome must order by attempt time, not by call order.
+        older, newer = NOW - timedelta(minutes=5), NOW
+        (org,) = org_sources(1)
+        (job,) = job_sources(1)
+        for model, row in ((SourceCatalog, org), (JobSourceCatalog, job)):
+            with self.subTest(model=model.__name__, case="older success after newer failure"):
+                self.assertTrue(sf.record_outcome(model, row.pk, sf.Outcome.FAILED, now=newer))
+                self.assertFalse(sf.record_outcome(model, row.pk, sf.Outcome.SUCCESS, now=older))
+                row.refresh_from_db()
+                self.assertEqual(
+                    (row.consecutive_failures, row.last_attempt_at, row.last_crawl_at),
+                    (1, newer, None),
+                )
+            with self.subTest(model=model.__name__, case="older failure after newer success"):
+                self.assertTrue(sf.record_outcome(model, row.pk, sf.Outcome.SUCCESS, now=newer + timedelta(minutes=1)))
+                self.assertFalse(sf.record_outcome(model, row.pk, sf.Outcome.FAILED, now=newer))
+                row.refresh_from_db()
+                self.assertEqual(
+                    (row.consecutive_failures, row.last_attempt_at, row.last_crawl_at),
+                    (0, newer + timedelta(minutes=1), newer + timedelta(minutes=1)),
+                )
+            with self.subTest(model=model.__name__, case="equal timestamp applies"):
+                self.assertTrue(sf.record_outcome(model, row.pk, sf.Outcome.FAILED, now=row.last_attempt_at))
+                row.refresh_from_db()
+                self.assertEqual(row.consecutive_failures, 1)
+
+    def test_pipeline_stale_success_does_not_erase_newer_manual_failure(self):
+        # A manual crawl recorded a newer FAILED attempt before the pipeline
+        # (attempt timestamp older) records its SUCCESS.
+        (job,) = job_sources(1)
+        sf.record_outcome(JobSourceCatalog, job.pk, sf.Outcome.FAILED, now=NOW)
+        stale = NOW - timedelta(minutes=10)
+        self.assertFalse(sf.record_outcome(JobSourceCatalog, job.pk, sf.Outcome.SUCCESS, now=stale))
+        job.refresh_from_db()
+        self.assertEqual((job.consecutive_failures, job.last_attempt_at), (1, NOW))
+
 
 def org_sources(n):
     return [

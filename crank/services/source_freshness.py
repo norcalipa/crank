@@ -22,7 +22,7 @@ from enum import Enum
 from typing import Any, Iterable
 
 from django.conf import settings
-from django.db.models import F
+from django.db.models import F, Q
 
 MAX_AGE_HOURS = 8760  # telemetry cap: one year
 
@@ -194,20 +194,31 @@ def job_outcome(result: Any) -> Outcome:
     return Outcome.PARTIAL
 
 
-def record_outcome(model: Any, pk: Any, outcome: Outcome, *, now: datetime) -> None:
+def record_outcome(model: Any, pk: Any, outcome: Outcome, *, now: datetime) -> bool:
     """Persist one attempt; only SUCCESS moves ``last_crawl_at``.
+
+    The write is one conditional ``UPDATE`` that applies only when ``now`` is
+    not older than the stored ``last_attempt_at``, so attempts that finish
+    concurrently on different paths (scheduled pipeline, manual crawl) cannot
+    overwrite newer state, even though the source lock is released before the
+    outcome is recorded. Returns ``False`` when a stale outcome is dropped.
 
     A queryset ``update`` keeps concurrent admin edits (``enabled``,
     ``approval_state``) intact and never runs ``save()`` side effects.
     """
-    queryset = model.objects.filter(pk=pk)
+    queryset = model.objects.filter(pk=pk).filter(
+        Q(last_attempt_at__isnull=True) | Q(last_attempt_at__lte=now)
+    )
     if outcome == Outcome.SUCCESS:
-        queryset.update(last_crawl_at=now, last_attempt_at=now, consecutive_failures=0)
+        updated = queryset.update(
+            last_crawl_at=now, last_attempt_at=now, consecutive_failures=0
+        )
     else:
-        queryset.update(
+        updated = queryset.update(
             last_attempt_at=now,
             consecutive_failures=F("consecutive_failures") + 1,
         )
+    return bool(updated)
 
 
 def outcome_from_crawl_run(run_outcome: str) -> Outcome:

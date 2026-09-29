@@ -166,7 +166,7 @@ def plan_crawls(
         counts["errors"] += result_errors
         counts[outcome_keys[outcome]] += 1
         source_freshness.record_outcome(
-            SourceCatalog, source.pk, outcome, now=reference
+            SourceCatalog, source.pk, outcome, now=now or timezone.now()
         )
 
     counts["deferred_budget"] = counts["stale"] - counts["scheduled"]
