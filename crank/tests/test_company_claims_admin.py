@@ -133,6 +133,47 @@ class ClaimReviewTests(TestCase):
         self.rto.refresh_from_db()
         self.assertEqual(self.rto.state, State.PENDING)
 
+    def test_direct_confirmed_call_skips_rows_that_are_no_longer_open(self):
+        from django.contrib.admin.sites import AdminSite
+        from django.test import RequestFactory
+
+        from crank.admin import CompanyFieldEvidenceAdmin
+
+        accepted = CompanyFieldEvidence.objects.get(
+            organization=self.organization, field_key=FieldKey.COMPANY_NAME
+        )
+        request = RequestFactory().post(self.url, {"confirm": "yes"})
+        request.user = self.staff
+        model_admin = CompanyFieldEvidenceAdmin(CompanyFieldEvidence, AdminSite())
+        messages = []
+        model_admin.message_user = lambda _r, text, **_k: messages.append(text)
+        model_admin.reject_claims(
+            request, CompanyFieldEvidence.objects.filter(pk__in=[accepted.pk, self.rto.pk])
+        )
+        accepted.refresh_from_db()
+        self.rto.refresh_from_db()
+        self.assertEqual(accepted.state, State.ACCEPTED)
+        self.assertEqual(self.rto.state, State.REJECTED)
+        self.assertEqual(messages, ["1 claim(s) rejected; 1 skipped (not open)."])
+
+    def test_direct_observation_review_without_confirmation_is_a_noop(self):
+        from django.contrib.admin.sites import AdminSite
+        from django.test import RequestFactory
+
+        from crank.admin import CompanyProfileObservationAdmin
+
+        observation = CompanyProfileObservation.objects.get(organization=self.organization)
+        request = RequestFactory().post("/admin/")
+        request.user = self.staff
+        model_admin = CompanyProfileObservationAdmin(CompanyProfileObservation, AdminSite())
+        model_admin.message_user = lambda *a, **k: None
+        model_admin.reject_observations(
+            request, CompanyProfileObservation.objects.filter(pk=observation.pk)
+        )
+        observation.refresh_from_db()
+        self.assertEqual(observation.status, CompanyProfileObservation.Status.AUTO_APPLIED)
+        self.assertFalse(OperationalChangeAudit.objects.exists())
+
     def test_non_staff_cannot_reach_evidence_admin(self):
         plain = User.objects.create_user("plain", password="pw")
         self.client.force_login(plain)
