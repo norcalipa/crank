@@ -393,4 +393,3 @@ numbered merge migration if a head split remains, keeping
   safe. Existing accepted rows are unchanged.
 - **Rollback** is a code redeploy: old code filters `state=accepted`, so it
   ignores pending, rejected and conflicted rows.
-
