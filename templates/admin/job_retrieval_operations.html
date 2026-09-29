@@ -129,6 +129,52 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     margin-bottom: 1rem;
   }
   .jro-table-wrap { overflow-x: auto; }
+  .jro-callout { border-left: 6px solid #adb5bd; }
+  .jro-callout--danger { border-left-color: #b02a37; }
+  .jro-callout--warning { border-left-color: #d9a400; }
+  .jro-callout--info { border-left-color: #1d6f8c; }
+  .jro-callout--success { border-left-color: #2f7d4a; }
+  .jro-callout h3 { margin: 6px 0; font-size: 16px; }
+  .jro-links { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0 0; padding: 0; list-style: none; }
+  .jro-links a { display: inline-block; min-height: 44px; line-height: 44px; overflow-wrap: anywhere; }
+  .jro-stages { margin: 8px 0 0; padding: 0; list-style: none; counter-reset: jro-stage; }
+  .jro-stage {
+    counter-increment: jro-stage;
+    background: #fff;
+    border: 1px solid var(--jro-border, #d0d0d0);
+    border-left: 6px solid #adb5bd;
+    border-radius: 4px;
+    padding: 10px 14px;
+    margin: 0 0 8px;
+  }
+  .jro-stage--danger { border-left-color: #b02a37; }
+  .jro-stage--warning { border-left-color: #d9a400; }
+  .jro-stage--info { border-left-color: #1d6f8c; }
+  .jro-stage--success { border-left-color: #2f7d4a; }
+  .jro-stage--next { box-shadow: 0 0 0 2px #1f2933; }
+  .jro-stage-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+  .jro-stage-head::before { content: counter(jro-stage) "."; font-weight: 700; }
+  .jro-stage-name { font-weight: 700; overflow-wrap: anywhere; }
+  .jro-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: #1f2933;
+    color: #fff;
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+  }
+  .jro-stage p { margin: 6px 0 0; overflow-wrap: anywhere; }
+  .jro-empty { color: #333; font-style: italic; margin: 8px 0; }
+  .jro-error { border: 1px solid #fca5a5; background: #fee2e2; color: #7f1d1d; border-radius: 4px; padding: 10px 12px; margin: 8px 0; }
+  .jro-sources { border-collapse: collapse; min-width: 960px; width: 100%; }
+  .jro-sources th, .jro-sources td { text-align: left; vertical-align: top; padding: 6px 10px; border-bottom: 1px solid #d0d0d0; overflow-wrap: anywhere; }
+  .jro-note { color: #333; margin: 8px 0; }
+  .jro-stage a:focus-visible, .jro-callout a:focus-visible, .jro-sources a:focus-visible, .jro-backlog a:focus-visible {
+    outline: 3px solid var(--jro-warning);
+    outline-offset: 2px;
+  }
   @media (max-width: 480px) {
     .jro-fields { grid-template-columns: 1fr; gap: 2px 0; }
     .jro-fields dd { margin-bottom: 8px; }
@@ -174,6 +220,39 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
 
 {% block content %}
 <div id="content-main">
+
+  {# ── Next unmet prerequisite (first section after the page h1) ── #}
+  <section class="module jro-section" aria-labelledby="jro-next-heading">
+    <h2 id="jro-next-heading">Next step</h2>
+    {% if readiness %}
+      {% with step=readiness.next_step %}
+      {% if step %}
+      <div class="jro-card jro-callout jro-callout--{{ step.tone }}" role="status" data-next-stage="{{ step.key }}" data-status="{{ step.status }}">
+        <p class="jro-status-line">
+          <span class="jro-badge jro-badge--{{ step.tone }}">
+            <span class="jro-icon" aria-hidden="true">{{ step.icon }}</span>
+            {{ step.status_label }}
+          </span>
+        </p>
+        <h3>Step {{ step.position }} of {{ readiness.stages|length }}: {{ step.label }}</h3>
+        <p class="jro-explanation">{{ step.summary }}</p>
+        {% if step.remediation %}<p class="jro-explanation"><strong>What to do:</strong> {{ step.remediation }}</p>{% endif %}
+        <ul class="jro-links">
+          {% if step.admin_url %}<li><a href="{{ step.admin_url }}">Open {{ step.admin_label }}</a></li>{% endif %}
+          <li><a href="{{ step.runbook_url }}" rel="noopener">Runbook for this step</a></li>
+        </ul>
+      </div>
+      {% else %}
+      <div class="jro-card jro-callout jro-callout--success" role="status" data-next-stage="" data-status="met">
+        <p class="jro-status-line"><span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> All prerequisites met</span></p>
+        <p class="jro-explanation">Every stage below is met. Watch Run progress and Backlog for ongoing health.</p>
+      </div>
+      {% endif %}
+      {% endwith %}
+    {% else %}
+      <div class="jro-error" role="alert"><strong>Could not compute readiness</strong> — see server logs. The rest of this page is unaffected.</div>
+    {% endif %}
+  </section>
 
   {# ── Pipeline ownership & queue (primary operator status) ── #}
   <section class="module jro-section" aria-labelledby="jro-ownership-heading">
@@ -234,6 +313,151 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
         {% endif %}
       </div>
     </div>
+    {% endif %}
+  </section>
+
+  {# ── End-to-end readiness (ordered prerequisites) ── #}
+  <section class="module jro-section" aria-labelledby="jro-readiness-heading">
+    <h2 id="jro-readiness-heading">End-to-end readiness</h2>
+    {% if readiness %}
+    <ol class="jro-stages">
+      {% for stage in readiness.stages %}
+      <li class="jro-stage jro-stage--{{ stage.tone }}{% if stage.key == readiness.next_step.key %} jro-stage--next{% endif %}" data-stage="{{ stage.key }}" data-status="{{ stage.status }}"{% if stage.key == readiness.next_step.key %} aria-current="step"{% endif %}>
+        <div class="jro-stage-head">
+          <span class="jro-stage-name">{{ stage.label }}</span>
+          <span class="jro-badge jro-badge--{{ stage.tone }}"><span class="jro-icon" aria-hidden="true">{{ stage.icon }}</span> {{ stage.status_label }}</span>
+          {% if stage.key == readiness.next_step.key %}<span class="jro-tag">Next step</span>{% endif %}
+        </div>
+        <p>{{ stage.summary }}</p>
+        {% if stage.status != "met" and stage.remediation %}<p><strong>What to do:</strong> {{ stage.remediation }}</p>{% endif %}
+        <ul class="jro-links">
+          {% if stage.admin_url %}<li><a href="{{ stage.admin_url }}">{{ stage.admin_label }}</a></li>{% endif %}
+          <li><a href="{{ stage.runbook_url }}" rel="noopener">Runbook</a></li>
+        </ul>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <div class="jro-error">Readiness stages are unavailable — see server logs.</div>
+    {% endif %}
+  </section>
+
+  {# ── Run progress (queued is not completed) ── #}
+  <section class="module jro-section" aria-labelledby="jro-progress-heading">
+    <h2 id="jro-progress-heading">Run progress</h2>
+    {% if progress %}
+    {% with latest=progress.latest completed=progress.completed %}
+    <div class="jro-card" data-latest-run="{% if latest %}{{ latest.status }}{% else %}none{% endif %}">
+      <h3>Latest run</h3>
+      {% if latest %}
+      <p class="jro-status-line"><span class="jro-badge jro-badge--{{ latest.tone }}"><span class="jro-icon" aria-hidden="true">{{ latest.icon }}</span> {{ latest.label }}</span></p>
+      <dl class="jro-fields">
+        <dt>Queued</dt><dd>{{ latest.created_age }} ago <span class="jro-monospace">({{ latest.created_at }})</span></dd>
+        <dt>Started</dt><dd>{% if latest.started_at %}{{ latest.started_age }} ago <span class="jro-monospace">({{ latest.started_at }})</span>{% else %}Not started{% endif %}</dd>
+        <dt>Finished</dt><dd>{% if latest.finished_at %}{{ latest.finished_age }} ago <span class="jro-monospace">({{ latest.finished_at }})</span>{% else %}Not finished{% endif %}</dd>
+      </dl>
+      {% if latest.queued_only %}<p class="jro-explanation">No stage counts exist yet: a queued run has not fetched, accepted or matched anything.</p>{% endif %}
+      <ul class="jro-links"><li><a href="{{ latest.run_url }}">Open this agent run</a></li></ul>
+      {% else %}
+      <p class="jro-empty">No job-pipeline run has been recorded yet. Queue one from Actions once the prerequisites above are met.</p>
+      {% endif %}
+    </div>
+    <div class="jro-card" data-completed-run="{% if completed %}{{ completed.status }}{% else %}none{% endif %}">
+      <h3>Last completed run</h3>
+      {% if completed %}
+      <p class="jro-status-line"><span class="jro-badge jro-badge--{{ completed.tone }}"><span class="jro-icon" aria-hidden="true">{{ completed.icon }}</span> {{ completed.label }}</span></p>
+      <dl class="jro-fields">
+        <dt>Finished</dt><dd>{{ completed.finished_age }} ago <span class="jro-monospace">({{ completed.finished_at }})</span></dd>
+        <dt>Duration</dt><dd>{% if completed.duration %}{{ completed.duration }}{% else %}Unknown{% endif %}</dd>
+        {% for group in completed.stages %}
+        <dt>{{ group.label }}</dt>
+        <dd>{% for item in group.counts %}{{ item.label }}: <strong>{{ item.value }}</strong>{% if not forloop.last %} · {% endif %}{% empty %}<em>No counters recorded</em>{% endfor %}</dd>
+        {% endfor %}
+        {% if completed.error_summary %}<dt>Sanitized reason</dt><dd>{{ completed.error_summary }}</dd>{% endif %}
+      </dl>
+      <ul class="jro-links">
+        {% for link in completed.links %}<li><a href="{{ link.url }}">{{ link.label }}</a></li>{% endfor %}
+      </ul>
+      {% else %}
+      <p class="jro-empty">No pipeline run has finished yet, so there are no stage counts to show.</p>
+      {% endif %}
+    </div>
+    {% endwith %}
+    {% else %}
+    <div class="jro-error" role="alert"><strong>Could not compute run progress</strong> — see server logs.</div>
+    {% endif %}
+  </section>
+
+  {# ── Per-source table ── #}
+  <section class="module jro-section" aria-labelledby="jro-sources-heading">
+    <h2 id="jro-sources-heading">Sources</h2>
+    <p class="jro-note">Checked-in catalog approval (docs/job-source-catalog.yaml) is policy only; only the database row enables retrieval.</p>
+    {% if sources %}
+      {% if sources.rows %}
+      <div class="jro-table-wrap" tabindex="0" role="region" aria-labelledby="jro-sources-heading">
+      <table class="jro-sources">
+        <thead>
+          <tr>
+            <th scope="col">Source</th>
+            <th scope="col">Database state</th>
+            <th scope="col">Adapter</th>
+            <th scope="col">Credentials</th>
+            <th scope="col">Last success</th>
+            <th scope="col">Last attempt</th>
+            <th scope="col">Failures</th>
+            <th scope="col">Latest crawl</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in sources.rows %}
+          <tr data-source-row>
+            <th scope="row"><a href="{{ row.admin_url }}">{{ row.name }}</a><br><span class="jro-monospace">{{ row.adapter_key }}</span></th>
+            <td>Database: {{ row.approval_state }} · {% if row.enabled %}enabled{% else %}disabled{% endif %}</td>
+            <td>{% if row.adapter_registered %}<span class="jro-icon" aria-hidden="true">✓</span> Registered{% else %}<span class="jro-icon" aria-hidden="true">✖</span> Not registered{% endif %}</td>
+            <td>{% if row.credentials_present is None %}Unknown (no adapter){% elif row.credentials_present %}<span class="jro-icon" aria-hidden="true">✓</span> Present{% else %}<span class="jro-icon" aria-hidden="true">✖</span> Missing{% endif %}</td>
+            <td>{% if row.last_success_at %}{{ row.last_success_age }} ago{% else %}Never{% endif %}</td>
+            <td>{% if row.last_attempt_at %}{{ row.last_attempt_age }} ago{% else %}Never{% endif %}</td>
+            <td>{{ row.consecutive_failures }}</td>
+            <td>{% if row.latest_outcome %}<span class="jro-badge jro-badge--{{ row.outcome_tone }}">{{ row.latest_outcome|title }}</span>{% if row.latest_error %}<br>Sanitized reason: {{ row.latest_error }}{% endif %}{% else %}No crawl run{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% if sources.truncated %}<p class="jro-note">Showing {{ sources.shown }} of {{ sources.total }} sources. Open the Job Source Catalog for the rest.</p>{% endif %}
+      {% else %}
+      <p class="jro-empty">No job sources exist in the database. Use “Preview Seed” under Actions, then approve and enable a source in the Job Source Catalog.</p>
+      {% endif %}
+    {% else %}
+    <div class="jro-error" role="alert"><strong>Could not compute the source table</strong> — see server logs.</div>
+    {% endif %}
+  </section>
+
+  {# ── Backlog ── #}
+  <section class="module jro-section" aria-labelledby="jro-backlog-heading">
+    <h2 id="jro-backlog-heading">Backlog</h2>
+    {% if backlog %}
+    <dl class="jro-fields jro-backlog">
+      <dt>Unresolved employers</dt>
+      <dd><strong>{{ backlog.employers.unresolved }}</strong> · <a href="{{ links.unresolved }}">Review</a></dd>
+      <dt>Observation review</dt>
+      <dd><strong>{{ backlog.review.observations_pending }}</strong> pending · <strong>{{ backlog.review.observations_conflicted }}</strong> conflicted · <a href="{{ links.observations_pending }}">Pending</a> · <a href="{{ links.observations_conflicted }}">Conflicted</a></dd>
+      <dt>Publication outbox</dt>
+      <dd>
+        <strong>{{ backlog.outbox.pending }}</strong> pending{% if backlog.outbox.oldest_pending_at %}, oldest {{ backlog.outbox.oldest_pending_age }} old{% endif %} ·
+        consumer {% if backlog.outbox.consumer_enabled %}enabled{% else %}disabled{% endif %}
+      </dd>
+      <dt>Publication → match lag</dt>
+      <dd><strong>{{ backlog.matches.lag_display }}</strong>{% if not backlog.matches.lag_seconds %} (every generation reflects the watermark){% endif %} · <a href="https://github.com/norcalipa/crank/blob/main/docs/match-recompute.md#watermark-gap-g8" rel="noopener">How lag is measured</a></dd>
+      <dt>Users without a current generation</dt>
+      <dd><strong>{{ backlog.matches.users_without_generation }}</strong></dd>
+      <dt>Recompute</dt>
+      <dd>{% if backlog.matches.recompute_enabled %}enabled{% else %}disabled{% endif %}</dd>
+      <dt>Committed reads</dt>
+      <dd>{% if backlog.matches.read_enabled %}enabled{% else %}disabled{% endif %}</dd>
+    </dl>
+    {% else %}
+    <div class="jro-error" role="alert"><strong>Could not compute backlog</strong> — see server logs.</div>
     {% endif %}
   </section>
 
@@ -312,9 +536,9 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
         <th scope="row">Adapter registered</th>
         <td>
           {% if gates.adapter_registered %}
-            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes ({{ gates.adapter_count }} registered)</span>
+            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes ({{ gates.adapter_count }} job adapter{{ gates.adapter_count|pluralize }} registered)</span>
           {% else %}
-            <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No</span>
+            <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No{% if gates.adapter_unregistered_sources %} ({{ gates.adapter_unregistered_sources }} live source{{ gates.adapter_unregistered_sources|pluralize }} without an adapter){% endif %}</span>
           {% endif %}
         </td>
       </tr>
@@ -322,9 +546,9 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
         <th scope="row">Credentials configured</th>
         <td>
           {% if gates.credentials_configured %}
-            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes</span>
+            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes (all {{ gates.credentials_sources_checked }} live source{{ gates.credentials_sources_checked|pluralize }})</span>
           {% else %}
-            <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No</span>
+            <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No{% if not gates.credentials_sources_checked %} (no approved and enabled source){% elif gates.credentials_sources_missing %} ({{ gates.credentials_sources_missing }} of {{ gates.credentials_sources_checked }} live source{{ gates.credentials_sources_checked|pluralize }} missing settings){% endif %}</span>
           {% endif %}
         </td>
       </tr>
@@ -332,14 +556,14 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
         <th scope="row">Pipeline enabled</th>
         <td>
           {% if gates.pipeline_enabled %}
-            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes</span>
+            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes (AGENT_RUN_ENABLED, JOB_PIPELINE_ENABLED, switch)</span>
           {% else %}
-            <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No</span>
+            <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No{% if not gates.pipeline_parts.agent_run_enabled %} · AGENT_RUN_ENABLED off{% endif %}{% if not gates.pipeline_parts.job_pipeline_enabled %} · JOB_PIPELINE_ENABLED off{% endif %}{% if not gates.pipeline_parts.switch_enabled %} · job_pipeline switch disabled{% endif %}</span>
           {% endif %}
         </td>
       </tr>
       <tr>
-        <th scope="row">Scheduler enabled</th>
+        <th scope="row">Organization crawl scheduling (CRAWL_CRON_ENABLED)</th>
         <td>
           {% if gates.scheduler_enabled %}
             <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes</span>

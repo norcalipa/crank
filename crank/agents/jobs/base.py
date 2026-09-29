@@ -404,6 +404,9 @@ class JobSourceAdapter(ABC):
 
     key: str
     version: str
+    #: Setting/env names that must be non-empty for the adapter to start.
+    #: Read-only readiness checks report presence only, never the values.
+    required_settings: tuple[str, ...] = ()
 
     def __init__(self, source) -> None:
         self.source = source

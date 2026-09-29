@@ -250,6 +250,7 @@ class FirecrawlCareersAdapter(JobSourceAdapter):
 
     key = "firecrawl-careers"
     version = EXTRACTION_VERSION
+    required_settings = ("FIRECRAWL_API_KEY",)
 
     def __init__(self, source, *, client: FirecrawlClient | None = None) -> None:
         super().__init__(source)

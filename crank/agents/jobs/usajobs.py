@@ -149,6 +149,7 @@ class USAJobsAdapter(JobSourceAdapter):
 
     key = "usajobs"
     version = "1.0.0"
+    required_settings = ("USAJOBS_AUTH_KEY", "USAJOBS_USER_AGENT_EMAIL")
 
     def __init__(
         self,

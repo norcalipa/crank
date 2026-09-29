@@ -1,0 +1,747 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+"""Read-only end-to-end readiness snapshot for Job Retrieval Operations (#481).
+
+Every derivation the staff dashboard shows lives here so the page, later
+telemetry gauges, and tests share one definition. Nothing in this module writes
+to the database, reaches the network, constructs an adapter, or returns a
+credential value: outputs are bounded ints, ISO timestamps, booleans, short
+enums, and sanitized/truncated text.
+
+``STAGES`` keys are a frozen contract once merged; ``backlog()`` returns only
+ints, ISO timestamps, booleans, and enums so it can feed gauges unchanged.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from datetime import timedelta
+
+from django.conf import settings
+from django.db.models import Count, Min, OuterRef, Q, Subquery
+from django.urls import reverse
+from django.utils import timezone
+
+from crank.agents.jobs.base import validate_job_url
+from crank.agents.jobs.registry import REGISTRY
+from crank.models.agent_run import AgentRun
+from crank.models.company_profile import CompanyProfileObservation
+from crank.models.crawl_run import CrawlRun
+from crank.models.employer import UnresolvedEmployer
+from crank.models.job import JobListing, JobSourceCatalog
+from crank.models.job_match import JobMatch, MatchResultState
+from crank.models.preference import UserPreference
+from crank.models.publication import PublicationEvent
+from crank.services import inventory_health, match_recompute, match_results, monitoring, publication
+from crank.services.agent_runs import sanitize_error
+
+logger = logging.getLogger(__name__)
+
+RUNBOOK_BASE_URL = "https://github.com/norcalipa/crank/blob/main/docs/"
+
+MET, UNMET, PENDING, ATTENTION, UNKNOWN = "met", "unmet", "pending", "attention", "unknown"
+STATUSES = (MET, UNMET, PENDING, ATTENTION, UNKNOWN)
+
+#: Ordered ``(key, label, runbook anchor)``. Keys are frozen once merged.
+STAGES = (
+    ("source_policy", "Approved and enabled source", "runbook-initial-crawl.md#step-1-seed-job-sources"),
+    ("adapter", "Registered adapter and allowlisted URL", "runbook-initial-crawl.md#step-1-seed-job-sources"),
+    ("credentials", "Source credentials present", "runbook-initial-crawl.md#step-3-set-the-firecrawl-api-key"),
+    ("capability", "Job pipeline capability enabled", "runbook-initial-crawl.md#step-4-enable-capability-switches"),
+    ("scheduler", "Recent pipeline run finished", "runbook-initial-crawl.md#step-7-unsuspend-cronjobs"),
+    ("consumption", "Queued run consumed", "runbook-crawl-scheduling.md#queued-runs-are-consumed-issue-462"),
+    ("inventory", "Committed listing inventory", "runbook-initial-crawl.md#step-6-verify-listing-counts"),
+    ("employers", "Employers resolved", "runbook-initial-crawl.md#step-6-verify-listing-counts"),
+    ("matches", "Current matches", "match-recompute.md#rollout-order"),
+)
+STAGE_KEYS = tuple(key for key, _label, _anchor in STAGES)
+
+#: ``AgentRun.counts`` keys shown per stage of a completed run, in order.
+RUN_COUNT_GROUPS = (
+    ("Sources", ("sources_total", "sources_succeeded", "sources_failed", "sources_skipped", "sources_deferred")),
+    (
+        "Listings",
+        ("listings_ingested", "listings_updated", "listings_closed", "listings_expired", "listings_deleted"),
+    ),
+    ("Employers", ("employers_resolved", "employers_unresolved")),
+    (
+        "Matches",
+        ("users_total", "users_succeeded", "users_failed", "matches_persisted", "stale_discarded", "duplicate_skipped"),
+    ),
+)
+
+_NAME_LIST_LIMIT = 5
+_SOURCE_LIMIT = 500
+_RUN_ERROR_LIMIT = 300
+_SOURCE_ERROR_LIMIT = 200
+
+
+def runbook_url(anchor):
+    return RUNBOOK_BASE_URL + anchor
+
+
+def format_age(seconds):
+    """Compact age such as ``3h 12m`` or ``2d 4h`` from whole seconds."""
+    seconds = max(0, int(seconds))
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {sec}s"
+    return f"{sec}s"
+
+
+def _iso(dt):
+    return dt.isoformat() if dt else None
+
+
+def _age_seconds(dt, now):
+    return None if dt is None else max(0, int((now - dt).total_seconds()))
+
+
+def setting_present(name):
+    """Boolean presence of a setting/env value; the value itself never leaves."""
+    value = getattr(settings, name, "")
+    if not value:
+        value = os.environ.get(name, "")
+    return bool(str(value or "").strip())
+
+
+def _admin(name, query=""):
+    return reverse(f"admin:{name}") + query
+
+
+def _names(names):
+    names = sorted(names)
+    shown = ", ".join(names[:_NAME_LIST_LIMIT])
+    extra = len(names) - _NAME_LIST_LIMIT
+    return f"{shown} (+{extra} more)" if extra > 0 else shown
+
+
+def _freshness_hours():
+    return max(1, inventory_health.freshness_hours() or 24)
+
+
+class _Context:
+    """Lazily computed, shared inputs so each query runs at most once."""
+
+    def __init__(self, now):
+        self.now = now
+        self._cache = {}
+
+    def _memo(self, key, factory):
+        if key not in self._cache:
+            self._cache[key] = factory()
+        return self._cache[key]
+
+    @property
+    def source_counts(self):
+        def build():
+            return JobSourceCatalog.objects.aggregate(
+                total=Count("pk"),
+                approved=Count("pk", filter=Q(approval_state=JobSourceCatalog.ApprovalState.APPROVED)),
+                blocked=Count("pk", filter=Q(approval_state=JobSourceCatalog.ApprovalState.BLOCKED)),
+                enabled_any=Count("pk", filter=Q(enabled=True)),
+                live=Count(
+                    "pk",
+                    filter=Q(approval_state=JobSourceCatalog.ApprovalState.APPROVED, enabled=True),
+                ),
+            )
+
+        return self._memo("source_counts", build)
+
+    @property
+    def live_sources(self):
+        """Approved-and-enabled sources: the only rows that can be retrieved."""
+
+        def build():
+            return list(
+                JobSourceCatalog.objects.filter(
+                    approval_state=JobSourceCatalog.ApprovalState.APPROVED, enabled=True
+                )
+                .only("name", "adapter_key", "base_url")
+                .order_by("name")[:_SOURCE_LIMIT]
+            )
+
+        return self._memo("live_sources", build)
+
+    @property
+    def listings(self):
+        def build():
+            live = Q(
+                source__approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+                source__enabled=True,
+            )
+            return JobListing.objects.aggregate(
+                active=Count("pk"),
+                from_live_sources=Count("pk", filter=live),
+                with_organization=Count("pk", filter=Q(organization__isnull=False)),
+            )
+
+        return self._memo("listings", build)
+
+    @property
+    def last_finished_run(self):
+        def build():
+            return (
+                AgentRun.objects.filter(
+                    run_type=AgentRun.RunType.JOB_PIPELINE,
+                    finished_at__isnull=False,
+                    status__in=[AgentRun.Status.SUCCEEDED, AgentRun.Status.FAILED],
+                )
+                .order_by("-finished_at", "-id")
+                .first()
+            )
+
+        return self._memo("last_finished_run", build)
+
+    @property
+    def latest_run(self):
+        def build():
+            return (
+                AgentRun.objects.filter(run_type=AgentRun.RunType.JOB_PIPELINE)
+                .order_by("-created", "-id")
+                .first()
+            )
+
+        return self._memo("latest_run", build)
+
+    @property
+    def health(self):
+        return self._memo("health", lambda: inventory_health.check_inventory_health(now=self.now))
+
+    @property
+    def unresolved_employers(self):
+        return self._memo(
+            "unresolved", lambda: UnresolvedEmployer.objects.filter(resolved=False).count()
+        )
+
+    @property
+    def match_lag(self):
+        return self._memo("match_lag", lambda: publication_match_lag_seconds(self.now))
+
+
+def _result(key, status, summary, remediation="", link=None, anchor=None):
+    """Build one stage dict; ``link`` is ``(admin url name, query, label)``."""
+    label, default_anchor = next((lbl, a) for k, lbl, a in STAGES if k == key)
+    admin_name, admin_query, admin_label = link or ("", "", "")
+    return {
+        "key": key,
+        "label": label,
+        "status": status,
+        "summary": summary,
+        "remediation": remediation,
+        "admin_url": _admin(admin_name, admin_query) if admin_name else "",
+        "admin_label": admin_label,
+        "runbook_url": runbook_url(anchor or default_anchor),
+    }
+
+
+SOURCES_LINK = ("crank_jobsourcecatalog_changelist", "", "Job Source Catalog")
+
+
+def _waiting(key, upstream):
+    return _result(key, PENDING, f"Waiting on an earlier prerequisite ({upstream}).")
+
+
+def _stage_source_policy(ctx):
+    counts = ctx.source_counts
+    live = len(ctx.live_sources)
+    if live:
+        return _result("source_policy", MET, f"{live} source(s) are approved and enabled in the database.")
+    if not counts["total"]:
+        remediation = "No job sources exist in the database. Preview and run the curated seed, then approve and enable a source."
+    else:
+        remediation = (
+            f"{counts['total']} source(s) exist but none is both approved and enabled "
+            f"({counts['approved']} approved, {counts['blocked']} blocked, {counts['enabled_any']} enabled). "
+            "Approve and enable one in the Job Source Catalog."
+        )
+    return _result(
+        "source_policy",
+        UNMET,
+        "No source is approved and enabled in the database.",
+        remediation,
+        SOURCES_LINK,
+    )
+
+
+def _stage_adapter(ctx):
+    if not ctx.live_sources:
+        return _waiting("adapter", "source_policy")
+    unregistered = [s.name for s in ctx.live_sources if REGISTRY.get(s.adapter_key) is None]
+    bad_url = []
+    for source in ctx.live_sources:
+        try:
+            validate_job_url(source.base_url)
+        except Exception:
+            bad_url.append(source.name)
+    if not unregistered and not bad_url:
+        return _result("adapter", MET, "Every live source has a registered adapter and an allowlisted HTTPS URL.")
+    parts = []
+    if unregistered:
+        parts.append(f"no registered adapter: {_names(unregistered)}")
+    if bad_url:
+        parts.append(f"URL not allowlisted HTTPS: {_names(bad_url)}")
+    return _result(
+        "adapter",
+        UNMET,
+        "; ".join(parts),
+        "Correct the adapter key or base URL on the source row, or disable the source. "
+        f"Registered adapters: {', '.join(REGISTRY.keys())}.",
+        SOURCES_LINK,
+    )
+
+
+def missing_settings(adapter_key):
+    """Names (never values) of required settings that are empty for an adapter."""
+    adapter_cls = REGISTRY.get(adapter_key)
+    if adapter_cls is None:
+        return None
+    return [name for name in getattr(adapter_cls, "required_settings", ()) if not setting_present(name)]
+
+
+def _stage_credentials(ctx):
+    if not ctx.live_sources:
+        return _waiting("credentials", "source_policy")
+    missing = {}
+    for source in ctx.live_sources:
+        names = missing_settings(source.adapter_key)
+        if names:
+            missing[source.name] = names
+    if not missing:
+        return _result("credentials", MET, "Every live source's adapter has its required settings configured.")
+    detail = "; ".join(f"{name}: {', '.join(names)}" for name, names in sorted(missing.items())[:_NAME_LIST_LIMIT])
+    return _result(
+        "credentials",
+        UNMET,
+        f"Missing settings for {len(missing)} source(s) - {detail}.",
+        "Set the named environment variables in the deployment config (values are never shown here), then redeploy.",
+    )
+
+
+def capability_parts():
+    """Booleans for each part of the three-part pipeline gate."""
+    return {
+        "agent_run_enabled": bool(getattr(settings, "AGENT_RUN_ENABLED", False)),
+        "job_pipeline_enabled": bool(getattr(settings, "JOB_PIPELINE_ENABLED", False)),
+        "switch_enabled": monitoring.capability_enabled("job_pipeline", default=True),
+    }
+
+
+def pipeline_gate_enabled():
+    return all(capability_parts().values())
+
+
+def _stage_capability(ctx):
+    from crank.capability import capability_report
+
+    parts = capability_parts()
+    off = []
+    if not parts["agent_run_enabled"]:
+        off.append("AGENT_RUN_ENABLED is off")
+    if not parts["job_pipeline_enabled"]:
+        off.append("JOB_PIPELINE_ENABLED is off")
+    if not parts["switch_enabled"]:
+        off.append("the job_pipeline capability switch is disabled")
+    issues = [] if off else [
+        sanitize_error(issue, 200)
+        for status in capability_report().capabilities
+        if status.name == "job_pipeline"
+        for issue in status.issues
+    ]
+    if not off and not issues:
+        return _result("capability", MET, "AGENT_RUN_ENABLED, JOB_PIPELINE_ENABLED and the job_pipeline switch are all on.")
+    detail = "; ".join(off + issues)
+    return _result(
+        "capability",
+        UNMET,
+        f"The pipeline will not run: {detail}.",
+        "Turn on the named setting in deployment config, or re-enable the job_pipeline capability switch.",
+        ("crank_capabilityswitch_changelist", "", "Capability Switches"),
+    )
+
+
+def _stage_scheduler(ctx):
+    hours = _freshness_hours()
+    run = ctx.last_finished_run
+    if run is not None and ctx.now - run.finished_at <= timedelta(hours=hours):
+        return _result(
+            "scheduler",
+            MET,
+            f"A pipeline run finished {format_age(_age_seconds(run.finished_at, ctx.now))} ago.",
+            link=("crank_agentrun_changelist", "?run_type__exact=job_pipeline", "Agent Runs"),
+        )
+    return _result(
+        "scheduler",
+        UNMET,
+        f"No pipeline run finished in the last {hours}h. The job-pipeline CronJob may be suspended; "
+        "the app cannot read CronJob state.",
+        "Confirm the job-pipeline CronJob is unsuspended (kubectl), or queue a run from Actions below.",
+        ("crank_agentrun_changelist", "?run_type__exact=job_pipeline", "Agent Runs"),
+    )
+
+
+def _stage_consumption(ctx):
+    run = ctx.latest_run
+    ttl = timedelta(seconds=int(getattr(settings, "AGENT_RUN_STALE_AFTER_SECONDS", 3600)))
+    link = ("crank_agentrun_changelist", "?run_type__exact=job_pipeline", "Agent Runs")
+    if run is None:
+        return _result("consumption", PENDING, "No pipeline run has been queued or consumed yet.", link=link)
+    if run.status == AgentRun.Status.PENDING:
+        if run.created and ctx.now - run.created > ttl:
+            return _result(
+                "consumption",
+                UNMET,
+                "A queued run has waited past its TTL without being consumed.",
+                "Confirm the job-pipeline CronJob is unsuspended and the consumer is deployed; the run will be reclaimed as failed.",
+                link,
+            )
+        return _result(
+            "consumption",
+            PENDING,
+            "Queued - not yet consumed. The next pipeline tick or a manual run adopts it.",
+            "No action yet; if it is not consumed before the TTL, check the CronJob.",
+            link,
+        )
+    if run.status == AgentRun.Status.FAILED:
+        reason = (run.error_summary or "").lower()
+        kind = (
+            "reclaimed as stale"
+            if "stale run reclaimed" in reason
+            else "expired in the queue"
+            if "queued run reclaimed" in reason
+            else "failed"
+        )
+        return _result(
+            "consumption",
+            UNMET,
+            f"The most recent pipeline run {kind}.",
+            "Inspect the run's sanitized summary, then retry from Actions once the cause is fixed.",
+            link,
+        )
+    if run.status == AgentRun.Status.RUNNING:
+        return _result("consumption", MET, "A run has been claimed and is in progress.", link=link)
+    return _result("consumption", MET, "The most recent run was consumed and finished.", link=link)
+
+
+def _stage_inventory(ctx):
+    if not ctx.live_sources:
+        return _waiting("inventory", "source_policy")
+    link = ("crank_joblisting_changelist", "?status__exact=active", "Job Listings")
+    live_listings = ctx.listings["from_live_sources"]
+    health = ctx.health
+    fresh = health["enabled_sources"] - health["stale_sources"]
+    if live_listings == 0:
+        return _result(
+            "inventory",
+            UNMET,
+            "No active listings from approved and enabled sources.",
+            "Run the first crawl batch, then check the Crawl Runs for the source outcome.",
+            ("crank_crawlrun_changelist", "", "Crawl Runs"),
+            anchor="runbook-initial-crawl.md#step-5-run-the-first-crawl-batch",
+        )
+    if fresh <= 0:
+        return _result(
+            "inventory",
+            UNMET,
+            f"{live_listings} active listing(s) exist but no source has succeeded within {_freshness_hours()}h.",
+            "Check the per-source last success and failure reasons below; the crawl may be failing or not scheduled.",
+            ("crank_crawlrun_changelist", "", "Crawl Runs"),
+        )
+    problems = []
+    if health["stale_sources"]:
+        problems.append(f"{health['stale_sources']} stale")
+    if health["repeated_failure_sources"]:
+        problems.append(f"{health['repeated_failure_sources']} repeatedly failing")
+    if health["collapsed_sources"]:
+        problems.append(f"{health['collapsed_sources']} collapsed to zero listings")
+    if problems:
+        return _result(
+            "inventory",
+            ATTENTION,
+            f"{live_listings} active listing(s); sources needing attention: {', '.join(problems)}.",
+            "Review the per-source table below.",
+            link,
+        )
+    return _result("inventory", MET, f"{live_listings} active listing(s) from {fresh} freshly crawled source(s).", link=link)
+
+
+def _stage_employers(ctx):
+    listings = ctx.listings
+    if listings["active"] == 0:
+        return _waiting("employers", "inventory")
+    link = ("crank_unresolvedemployer_changelist", "?resolved__exact=0", "Unresolved Employers")
+    if listings["with_organization"] == 0:
+        return _result(
+            "employers",
+            UNMET,
+            f"{listings['active']} active listing(s) but none resolved to an organization.",
+            "Add employer aliases or resolve the queued employers so listings can match.",
+            link,
+        )
+    unresolved = ctx.unresolved_employers
+    if unresolved:
+        return _result(
+            "employers",
+            ATTENTION,
+            f"{unresolved} unresolved employer(s) awaiting review.",
+            "Resolve or alias them in Unresolved Employers.",
+            link,
+        )
+    return _result("employers", MET, "Listings resolve to organizations and no employers await review.", link=link)
+
+
+def _stage_matches(ctx):
+    link = ("crank_jobmatch_changelist", "", "Job Matches")
+    if match_results.read_enabled():
+        counts = match_recompute.pending_counts(0)
+        dirty = counts["preference_dirty"]
+        lag = ctx.match_lag
+        max_age = max(1, int(getattr(settings, "MATCH_RECOMPUTE_MAX_AGE_HOURS", 24))) * 3600
+        if dirty == 0 and lag <= max_age:
+            return _result("matches", MET, "Every user's committed match generation is current.", link=link)
+        tiers = ", ".join(
+            f"{name.replace('generation_dirty_', '').replace('_', ' ')}: {counts[name]}"
+            for name in (
+                "preference_dirty",
+                "generation_dirty_data_stale",
+                "generation_dirty_version_mismatch",
+                "generation_dirty_interrupted",
+                "generation_dirty_age_stale",
+            )
+        )
+        return _result(
+            "matches",
+            UNMET,
+            f"Committed matches are behind ({tiers}); publication-to-match lag {format_age(lag)}.",
+            "Enable MATCH_RECOMPUTE_ENABLED and run the recompute drain; see the rollout order.",
+            link,
+        )
+    has_matches = JobMatch.objects.exists()
+    if has_matches or not UserPreference.objects.exists():
+        return _result(
+            "matches",
+            MET,
+            "Live reads (committed generations not served): "
+            + ("matches exist." if has_matches else "no user has preferences yet."),
+            link=link,
+        )
+    return _result(
+        "matches",
+        UNMET,
+        "Live reads (committed generations not served): users have preferences but no matches exist.",
+        "Run the job pipeline so matches are persisted for users with preferences.",
+        link,
+    )
+
+
+_STAGE_FUNCS = {
+    "source_policy": _stage_source_policy,
+    "adapter": _stage_adapter,
+    "credentials": _stage_credentials,
+    "capability": _stage_capability,
+    "scheduler": _stage_scheduler,
+    "consumption": _stage_consumption,
+    "inventory": _stage_inventory,
+    "employers": _stage_employers,
+    "matches": _stage_matches,
+}
+
+
+def snapshot(now=None):
+    """Shared memo so one page render issues each underlying query once."""
+    return _Context(now or timezone.now())
+
+
+def readiness(now=None, ctx=None):
+    """Ordered stage results plus the single next step an operator should act on."""
+    ctx = ctx or snapshot(now)
+    stages = []
+    for key in STAGE_KEYS:
+        try:
+            stage = _STAGE_FUNCS[key](ctx)
+        except Exception as exc:
+            logger.warning("operations readiness stage %s failed: %s", key, sanitize_error(exc))
+            stage = _result(key, UNKNOWN, "Could not compute - see server logs.")
+        stage["position"] = len(stages) + 1
+        stages.append(stage)
+
+    next_step = None
+    for wanted in (UNMET, PENDING, UNKNOWN):
+        next_step = next((s for s in stages if s["status"] == wanted), None)
+        if next_step:
+            break
+    return {"stages": stages, "next_step": next_step, "all_met": next_step is None}
+
+
+def publication_match_lag_seconds(now=None):
+    """Age of the oldest event newer than the lowest committed data revision.
+
+    ``0`` when nobody has a generation or every generation reflects the
+    watermark. Events carry no per-user link, so this is a fleet-level bound.
+    """
+    now = now or timezone.now()
+    states = MatchResultState.objects.filter(current_generation__isnull=False)
+    if not states.exists():
+        return 0
+    min_revision = states.aggregate(m=Min("data_revision"))["m"] or 0
+    created = (
+        PublicationEvent.objects.filter(id__gt=min_revision).order_by("id").values_list("created_at", flat=True).first()
+    )
+    return _age_seconds(created, now) or 0
+
+
+def outbox_backlog(now=None):
+    now = now or timezone.now()
+    pending = PublicationEvent.objects.filter(processed_at__isnull=True)
+    oldest = pending.order_by("id").values_list("created_at", flat=True).first()
+    return {
+        "pending": pending.count(),
+        "oldest_pending_at": _iso(oldest),
+        "oldest_pending_age_seconds": _age_seconds(oldest, now),
+        "consumer_enabled": bool(publication.consumer_enabled()),
+    }
+
+
+def backlog(now=None, ctx=None):
+    """Bounded backlog sizes; ints, ISO timestamps, booleans only."""
+    ctx = ctx or snapshot(now)
+    now = ctx.now
+    observations = CompanyProfileObservation.objects.aggregate(
+        pending=Count("pk", filter=Q(status=CompanyProfileObservation.Status.PENDING)),
+        conflicted=Count("pk", filter=Q(status=CompanyProfileObservation.Status.CONFLICTED)),
+    )
+    without_generation = UserPreference.objects.filter(
+        Q(user__match_result_state__isnull=True) | Q(user__match_result_state__current_generation__isnull=True)
+    ).count()
+    return {
+        "employers": {"unresolved": ctx.unresolved_employers},
+        "review": {
+            "observations_pending": observations["pending"],
+            "observations_conflicted": observations["conflicted"],
+        },
+        "outbox": outbox_backlog(now),
+        "matches": {
+            "lag_seconds": ctx.match_lag,
+            "users_without_generation": without_generation,
+            "recompute_enabled": bool(match_recompute.recompute_enabled()),
+            "read_enabled": bool(match_results.read_enabled()),
+        },
+    }
+
+
+def source_rows(limit=50, now=None, ctx=None):
+    """Per-source table rows (ordered by name, capped) with sanitized outcomes."""
+    ctx = ctx or snapshot(now)
+    now = ctx.now
+    latest_run = CrawlRun.objects.filter(job_source=OuterRef("pk")).order_by("-started_at", "-id")
+    total = ctx.source_counts["total"]
+    queryset = (
+        JobSourceCatalog.objects.annotate(
+            latest_outcome=Subquery(latest_run.values("outcome")[:1]),
+            latest_error=Subquery(latest_run.values("error_summary")[:1]),
+        )
+        .order_by("name")[:limit]
+    )
+    rows = []
+    for source in queryset:
+        missing = missing_settings(source.adapter_key)
+        rows.append(
+            {
+                "name": source.name,
+                "adapter_key": source.adapter_key,
+                "approval_state": source.approval_state,
+                "enabled": bool(source.enabled),
+                "adapter_registered": missing is not None,
+                "credentials_present": None if missing is None else not missing,
+                "last_success_at": _iso(source.last_crawl_at),
+                "last_success_age": format_age(_age_seconds(source.last_crawl_at, now)) if source.last_crawl_at else "",
+                "last_attempt_at": _iso(source.last_attempt_at),
+                "last_attempt_age": format_age(_age_seconds(source.last_attempt_at, now)) if source.last_attempt_at else "",
+                "consecutive_failures": int(source.consecutive_failures),
+                "latest_outcome": source.latest_outcome or "",
+                "latest_error": sanitize_error(source.latest_error, _SOURCE_ERROR_LIMIT),
+                "admin_url": reverse("admin:crank_jobsourcecatalog_change", args=[source.pk]),
+            }
+        )
+    return {"rows": rows, "total": total, "shown": len(rows), "truncated": total > len(rows)}
+
+
+def _run_summary(run, now):
+    if run is None:
+        return None
+    started_age = _age_seconds(run.started_at, now)
+    finished_age = _age_seconds(run.finished_at, now)
+    created_age = _age_seconds(run.created, now)
+    duration = (
+        int((run.finished_at - run.started_at).total_seconds()) if run.started_at and run.finished_at else None
+    )
+    return {
+        "id": run.pk,
+        "status": run.status,
+        "queued_only": run.status == AgentRun.Status.PENDING,
+        "created_at": _iso(run.created),
+        "created_age": format_age(created_age) if created_age is not None else "",
+        "started_at": _iso(run.started_at),
+        "started_age": format_age(started_age) if started_age is not None else "",
+        "finished_at": _iso(run.finished_at),
+        "finished_age": format_age(finished_age) if finished_age is not None else "",
+        "duration": format_age(duration) if duration is not None else "",
+        "error_summary": sanitize_error(run.error_summary, _RUN_ERROR_LIMIT),
+        "run_url": reverse("admin:crank_agentrun_change", args=[run.pk]),
+    }
+
+
+def run_progress(now=None, ctx=None):
+    """Latest run state (queued is never shown as work) and the last completed run."""
+    ctx = ctx or snapshot(now)
+    now = ctx.now
+    latest = _run_summary(ctx.latest_run, now)
+    completed_run = ctx.last_finished_run
+    completed = _run_summary(completed_run, now)
+    if completed is not None:
+        raw = completed_run.counts if isinstance(completed_run.counts, dict) else {}
+        completed["stages"] = [
+            {
+                "label": label,
+                "counts": [
+                    {"key": key, "label": key.replace("_", " "), "value": int(raw[key])}
+                    for key in keys
+                    if isinstance(raw.get(key), (int, float)) and not isinstance(raw.get(key), bool)
+                ],
+            }
+            for label, keys in RUN_COUNT_GROUPS
+        ]
+        completed["links"] = [
+            {"label": "Agent run", "url": completed["run_url"]},
+            {"label": "Crawl runs for this run", "url": _admin("crank_crawlrun_changelist", f"?agent_run__id__exact={completed['id']}")},
+            {"label": "Active job listings", "url": _admin("crank_joblisting_changelist", "?status__exact=active")},
+            {"label": "Job matches", "url": _admin("crank_jobmatch_changelist", "?dismissed__exact=0")},
+        ]
+    return {"latest": latest, "completed": completed}
+
+
+__all__ = [
+    "snapshot",
+    "RUNBOOK_BASE_URL",
+    "STAGES",
+    "STAGE_KEYS",
+    "STATUSES",
+    "backlog",
+    "capability_parts",
+    "format_age",
+    "missing_settings",
+    "outbox_backlog",
+    "pipeline_gate_enabled",
+    "publication_match_lag_seconds",
+    "readiness",
+    "run_progress",
+    "setting_present",
+    "source_rows",
+]

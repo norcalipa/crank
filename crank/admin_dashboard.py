@@ -26,11 +26,11 @@ from crank.admin import StaffOnlyAdminMixin
 from crank.agents.jobs.base import APPROVED_JOB_SOURCE_DOMAINS
 from crank.management.commands.seed_job_sources import SEED_SOURCES
 from crank.models.agent_run import AgentRun
-from crank.models.employer import UnresolvedEmployer
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.monitoring import OperationalChangeAudit
-from crank.services import agent_runs, monitoring
+from crank.agents.jobs.registry import REGISTRY as JOB_ADAPTER_REGISTRY
+from crank.services import agent_runs, monitoring, operations_readiness
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,37 @@ PIPELINE_STATE_ICONS = {
     "reclaimed": "↻",
     "expired": "✖",
     "failed": "✖",
+}
+
+
+STAGE_STATUS_LABELS = {
+    "met": "Met",
+    "unmet": "Unmet",
+    "pending": "Pending",
+    "attention": "Needs attention",
+    "unknown": "Unknown",
+}
+STAGE_STATUS_TONES = {
+    "met": "success",
+    "unmet": "danger",
+    "pending": "info",
+    "attention": "warning",
+    "unknown": "warning",
+}
+STAGE_STATUS_ICONS = {
+    "met": "✓",
+    "unmet": "✖",
+    "pending": "⏳",
+    "attention": "⚠",
+    "unknown": "?",
+}
+OUTCOME_TONES = {
+    "success": "success",
+    "failure": "danger",
+    "timeout": "danger",
+    "partial": "warning",
+    "pending": "info",
+    "running": "info",
 }
 
 
@@ -350,7 +381,7 @@ def _pipeline_ownership_state():
                     ),
                     next_action="Inspect the sanitized summary below, then retry from Actions.",
                     consumption="Last run failed",
-                    progress=reclaim_summary[:300] or None,
+                    progress=agent_runs.sanitize_error(reclaim_summary, 300) or None,
                 )
 
     return state
@@ -367,36 +398,29 @@ def _is_allowed(host: str) -> bool:
     )
 
 
-def _aggregate_counts():
+def _aggregate_counts(ctx=None):
     """Compute dashboard aggregate counts in a single pass."""
-    sources_qs = JobSourceCatalog.objects.all()
-    configured = sources_qs.count()
-    approved = sources_qs.filter(
-        approval_state=JobSourceCatalog.ApprovalState.APPROVED
-    ).count()
-    enabled = sources_qs.filter(
-        approval_state=JobSourceCatalog.ApprovalState.APPROVED, enabled=True
-    ).count()
+    ctx = ctx or operations_readiness.snapshot()
+    source_counts = ctx.source_counts
+    configured = source_counts["total"]
+    approved = source_counts["approved"]
+    enabled = source_counts["live"]
 
     # Active listings
-    active_count = JobListing.objects.count()
+    active_count = ctx.listings["active"]
     stale_threshold = timezone.now() - timezone.timedelta(hours=_STALE_HOURS)
     stale_count = JobListing.objects.filter(
         last_seen_at__lt=stale_threshold
     ).count()
 
     # Unresolved employers
-    unresolved_count = UnresolvedEmployer.objects.filter(resolved=False).count()
+    unresolved_count = ctx.unresolved_employers
 
     # Matches
     match_count = JobMatch.objects.count()
 
     # Latest pipeline run
-    latest_run = (
-        AgentRun.objects.filter(run_type=AgentRun.RunType.JOB_PIPELINE)
-        .order_by("-created", "-id")
-        .first()
-    )
+    latest_run = ctx.latest_run
 
     latest_run_info = None
     if latest_run is not None:
@@ -409,7 +433,7 @@ def _aggregate_counts():
             "created_relative": _relative_time(latest_run.created),
             "correlation_id": str(latest_run.correlation_id),
             "correlation_abbrev": _abbrev_id(latest_run.correlation_id),
-            "error_summary": (latest_run.error_summary or "")[:300],
+            "error_summary": agent_runs.sanitize_error(latest_run.error_summary, 300),
         }
 
     # Queued (PENDING) pipeline runs awaiting a consumer (issue #462). A
@@ -457,20 +481,21 @@ def _aggregate_counts():
     }
 
 
-def _readiness_gates():
+def _readiness_gates(ctx=None):
     """Compute safe readiness checks without touching the network."""
-    from crank.agents.sources.registry import REGISTRY
-
-    adapter_count = len(REGISTRY)
-
-    # Credentials check: at least one job-source environment variable is set
-    credentials_configured = bool(
-        getattr(settings, "USAJOBS_AUTH_KEY", "").strip()
-        or getattr(settings, "FIRECRAWL_API_KEY", "").strip()
+    ctx = ctx or operations_readiness.snapshot()
+    live_sources = ctx.live_sources
+    adapter_keys = JOB_ADAPTER_REGISTRY.keys()
+    adapter_count = len(adapter_keys)
+    unregistered = sum(
+        1 for source in live_sources if JOB_ADAPTER_REGISTRY.get(source.adapter_key) is None
     )
+    missing = [
+        operations_readiness.missing_settings(source.adapter_key) for source in live_sources
+    ]
+    sources_missing_credentials = sum(1 for names in missing if names)
 
-    pipeline_enabled = bool(getattr(settings, "JOB_PIPELINE_ENABLED", False))
-    scheduler_enabled = bool(getattr(settings, "CRAWL_CRON_ENABLED", False))
+    parts = operations_readiness.capability_parts()
 
     active_run = AgentRun.objects.filter(
         run_type=AgentRun.RunType.JOB_PIPELINE,
@@ -478,14 +503,85 @@ def _readiness_gates():
     ).order_by("id").first()
 
     return {
-        "adapter_registered": adapter_count > 0,
+        "adapter_registered": adapter_count > 0 and unregistered == 0,
         "adapter_count": adapter_count,
-        "credentials_configured": credentials_configured,
-        "pipeline_enabled": pipeline_enabled,
-        "scheduler_enabled": scheduler_enabled,
+        "adapter_unregistered_sources": unregistered,
+        "credentials_configured": bool(live_sources)
+        and unregistered == 0
+        and sources_missing_credentials == 0,
+        "credentials_sources_checked": len(live_sources),
+        "credentials_sources_missing": sources_missing_credentials,
+        "pipeline_enabled": all(parts.values()),
+        "pipeline_parts": parts,
+        "scheduler_enabled": bool(getattr(settings, "CRAWL_CRON_ENABLED", False)),
         "active_run": active_run is not None,
         "active_run_status": active_run.status if active_run else None,
     }
+
+
+def _present_stage(stage):
+    stage["status_label"] = STAGE_STATUS_LABELS[stage["status"]]
+    stage["tone"] = STAGE_STATUS_TONES[stage["status"]]
+    stage["icon"] = STAGE_STATUS_ICONS[stage["status"]]
+    return stage
+
+
+def _readiness_context(ctx):
+    """End-to-end readiness with presentation fields, or ``None`` on failure."""
+    try:
+        readiness = operations_readiness.readiness(ctx=ctx)
+    except Exception as exc:
+        logger.warning("operations readiness failed: %s", agent_runs.sanitize_error(exc))
+        return None
+    for stage in readiness["stages"]:
+        _present_stage(stage)
+    if readiness["next_step"] is not None:
+        readiness["next_step"] = _present_stage(readiness["next_step"])
+    return readiness
+
+
+def _sources_context(ctx):
+    sources = operations_readiness.source_rows(ctx=ctx)
+    for row in sources["rows"]:
+        row["outcome_tone"] = OUTCOME_TONES.get(row["latest_outcome"], "info")
+    return sources
+
+
+def _progress_context(ctx):
+    progress = operations_readiness.run_progress(ctx=ctx)
+    for key in ("latest", "completed"):
+        run = progress[key]
+        if run is None:
+            continue
+        run["label"] = RUN_STATUS_LABELS.get(run["status"], run["status"])
+        if run["queued_only"]:
+            run["label"] = "Queued — not yet consumed"
+        run["tone"] = RUN_STATUS_TONES.get(run["status"], "info")
+        run["icon"] = RUN_STATUS_ICONS.get(run["status"], "•")
+    return progress
+
+
+def _backlog_context(ctx):
+    backlog = operations_readiness.backlog(ctx=ctx)
+    outbox = backlog["outbox"]
+    outbox["oldest_pending_age"] = (
+        operations_readiness.format_age(outbox["oldest_pending_age_seconds"])
+        if outbox["oldest_pending_age_seconds"] is not None
+        else ""
+    )
+    backlog["matches"]["lag_display"] = operations_readiness.format_age(
+        backlog["matches"]["lag_seconds"]
+    )
+    return backlog
+
+
+def _safe_section(name, factory):
+    """One failing section renders an inline error instead of a 500."""
+    try:
+        return factory()
+    except Exception as exc:
+        logger.warning("operations %s failed: %s", name, agent_runs.sanitize_error(exc))
+        return None
 
 
 def _confirm(request):
@@ -610,20 +706,43 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
                 "url": reverse("admin:crank_jobmatch_changelist"),
             },
             {
+                "label": "Company Profile Observations",
+                "url": reverse("admin:crank_companyprofileobservation_changelist"),
+            },
+            {
+                "label": "Capability Switches",
+                "url": reverse("admin:crank_capabilityswitch_changelist"),
+            },
+            {
                 "label": "Operational Change Audit",
                 "url": reverse("admin:crank_operationalchangeaudit_changelist"),
             },
         ]
 
+    def _backlog_links(self):
+        observations = reverse("admin:crank_companyprofileobservation_changelist")
+        return {
+            "unresolved": reverse("admin:crank_unresolvedemployer_changelist")
+            + "?resolved__exact=0",
+            "observations_pending": observations + "?status__exact=pending",
+            "observations_conflicted": observations + "?status__exact=conflicted",
+        }
+
     # ── Views ──
 
     def dashboard_view(self, request):
+        snapshot = operations_readiness.snapshot()
         context = {
             **self.admin_site.each_context(request),
             "title": "Job Retrieval Operations",
-            "counts": _aggregate_counts(),
-            "gates": _readiness_gates(),
+            "counts": _aggregate_counts(snapshot),
+            "gates": _readiness_gates(snapshot),
             "pipeline": _pipeline_ownership_state(),
+            "readiness": _readiness_context(snapshot),
+            "sources": _safe_section("sources", lambda: _sources_context(snapshot)),
+            "progress": _safe_section("run progress", lambda: _progress_context(snapshot)),
+            "backlog": _safe_section("backlog", lambda: _backlog_context(snapshot)),
+            "links": self._backlog_links(),
             "opts": self.model._meta,
             "admin_links": self._admin_links(),
         }

@@ -104,7 +104,7 @@ class JobRetrievalOpsAdminTests(TestCase):
         self.assertIn("Adapter registered", content)
         self.assertIn("Credentials configured", content)
         self.assertIn("Pipeline enabled", content)
-        self.assertIn("Scheduler enabled", content)
+        self.assertIn("Organization crawl scheduling (CRAWL_CRON_ENABLED)", content)
 
     def test_dashboard_shows_admin_links(self):
         request = self._request(self.staff)
@@ -990,7 +990,7 @@ class JobRetrievalOpsAdminTests(TestCase):
         response = self.admin.dashboard_view(request)
         content = response.render().content.decode()
         self.assertIn("Pipeline enabled", content)
-        self.assertIn("Scheduler enabled", content)
+        self.assertIn("Organization crawl scheduling (CRAWL_CRON_ENABLED)", content)
 
     @override_settings(
         USAJOBS_AUTH_KEY="test-key",
@@ -1392,23 +1392,24 @@ class JobRetrievalDashboardVisualContractTests(TestCase):
         self.assertEqual(self.content.count("<h1>"), 1)
         self.assertIn("<h1>Job Retrieval Operations</h1>", self.content)
         self.assertNotIn("<h2>Job Retrieval Operations</h2>", self.content)
-        ownership = self.content.index("Pipeline ownership &amp; queue")
-        aggregates = self.content.index("Inventory aggregates")
-        self.assertLess(
-            ownership, aggregates,
-            "Pipeline ownership & queue must precede inventory aggregates",
-        )
-        headings = {
-            "Inventory aggregates": "jro-aggregates-heading",
-            "Readiness gates": "jro-gates-heading",
-            "Related admin sections": "jro-links-heading",
-            "Actions": "jro-actions-heading",
-        }
-        for heading, dom_id in headings.items():
-            self.assertIn(
-                f'id="{dom_id}">{heading}</h2>',
-                self.content,
-            )
+        headings = [
+            ("Next step", "jro-next-heading"),
+            ("Pipeline ownership &amp; queue", "jro-ownership-heading"),
+            ("End-to-end readiness", "jro-readiness-heading"),
+            ("Run progress", "jro-progress-heading"),
+            ("Sources", "jro-sources-heading"),
+            ("Backlog", "jro-backlog-heading"),
+            ("Inventory aggregates", "jro-aggregates-heading"),
+            ("Readiness gates", "jro-gates-heading"),
+            ("Related admin sections", "jro-links-heading"),
+            ("Actions", "jro-actions-heading"),
+        ]
+        positions = []
+        for heading, dom_id in headings:
+            marker = f'id="{dom_id}">{heading}</h2>'
+            self.assertIn(marker, self.content)
+            positions.append(self.content.index(marker))
+        self.assertEqual(positions, sorted(positions))
 
     # ── Accessible status region ──
 
@@ -1588,3 +1589,245 @@ class JobRetrievalDashboardVisualContractTests(TestCase):
         self.assertNotIn('style="color: orange;"', content)
         self.assertIn("jro-badge--success", content)
         self.assertIn("jro-badge--danger", content)
+
+
+READINESS_ON = dict(
+    AGENT_RUN_ENABLED=True,
+    JOB_PIPELINE_ENABLED=True,
+    USAJOBS_AUTH_KEY="sekrit-usajobs-XYZ",
+    USAJOBS_USER_AGENT_EMAIL="ops-sekrit@example.test",
+    FIRECRAWL_API_KEY="sekrit-fc-XYZ",
+)
+
+
+@override_settings(**READINESS_ON)
+class JobRetrievalReadinessPanelTests(TestCase):
+    """Readiness panel, run progress, sources and backlog (issue #481)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.staff = User.objects.create_user(username="ready-staff", password="pw", is_staff=True)
+        cls.non_staff = User.objects.create_user(username="ready-user", password="pw")
+
+    def setUp(self):
+        self.client.force_login(self.staff)
+        self.url = reverse("admin:crank_jobretrievalops_changelist")
+
+    def _source(self, name="USAJOBS", **kwargs):
+        defaults = dict(
+            adapter_key="usajobs",
+            base_url="https://data.usajobs.gov/api/search",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+        )
+        defaults.update(kwargs)
+        return JobSourceCatalog.objects.create(name=name, **defaults)
+
+    def _get(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        return response.content.decode()
+
+    def test_non_staff_denied(self):
+        self.client.force_login(self.non_staff)
+        self.assertNotEqual(self.client.get(self.url).status_code, 200)
+
+    def test_empty_state_names_first_step_and_empty_states(self):
+        content = self._get()
+        self.assertIn('data-next-stage="source_policy"', content)
+        self.assertIn('aria-current="step"', content)
+        self.assertIn("Next step", content)
+        self.assertIn("No job sources exist in the database", content)
+        self.assertIn("No pipeline run has been queued or consumed yet", content)
+        for key in (
+            "source_policy", "adapter", "credentials", "capability", "scheduler",
+            "consumption", "inventory", "employers", "matches",
+        ):
+            self.assertIn(f'data-stage="{key}"', content)
+
+    def test_adapter_is_registered_with_usajobs_source_and_empty_rating_registry(self):
+        self._source()
+        content = self._get()
+        self.assertIn('data-stage="adapter" data-status="met"', content)
+
+    def test_queued_run_is_shown_as_queued_without_counts(self):
+        self._source()
+        run = AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.PENDING
+        )
+        content = self._get()
+        self.assertIn("Queued", content)
+        self.assertIn("not yet consumed", content)
+        self.assertIn("No pipeline run has finished yet", content)
+        self.assertNotIn(f"agent_run__id__exact={run.pk}", content)
+
+    def test_completed_run_shows_counts_and_links_resolve(self):
+        self._source()
+        now = timezone.now()
+        run = AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.SUCCEEDED,
+            started_at=now - timedelta(minutes=3),
+            finished_at=now - timedelta(minutes=1),
+            counts={"listings_ingested": 41, "matches_persisted": 17},
+        )
+        content = self._get()
+        self.assertIn("Last completed run", content)
+        self.assertIn("41", content)
+        self.assertIn("17", content)
+        import re
+
+        links = re.findall(r'href="(/admin/crank/[^"]*agent_run__id__exact=%d[^"]*)"' % run.pk, content)
+        self.assertTrue(links)
+        for link in set(links):
+            self.assertEqual(self.client.get(link.replace("&amp;", "&")).status_code, 200)
+
+    def test_secrets_and_hostile_text_never_rendered(self):
+        source = self._source(name='<script>alert("src")</script>')
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.FAILED,
+            finished_at=timezone.now(),
+            error_summary='<img src=x onerror=alert(1)> Authorization: Bearer abc123secret',
+        )
+        from crank.models.crawl_run import CrawlRun
+
+        CrawlRun.objects.create(
+            source_type=CrawlRun.SourceType.JOB,
+            source_key="usajobs",
+            job_source=source,
+            outcome=CrawlRun.Outcome.FAILURE,
+            started_at=timezone.now(),
+            error_summary="<b>bad</b> api_key=sekrit-usajobs-XYZ",
+        )
+        with override_settings(FIRECRAWL_API_KEY=""):
+            content = self._get()
+        for secret in ("sekrit-usajobs-XYZ", "sekrit-fc-XYZ", "ops-sekrit@example.test", "abc123secret"):
+            self.assertNotIn(secret, content)
+        self.assertNotIn("<script>alert", content)
+        self.assertNotIn("<img src=x", content)
+        self.assertNotIn("<b>bad</b>", content)
+        self.assertIn("&lt;script&gt;", content)
+
+    def test_missing_credentials_names_setting_only(self):
+        self._source()
+        with override_settings(USAJOBS_AUTH_KEY=""), patch.dict(
+            "os.environ", {"USAJOBS_AUTH_KEY": ""}
+        ):
+            content = self._get()
+        self.assertIn("USAJOBS_AUTH_KEY", content)
+        self.assertNotIn("ops-sekrit@example.test", content)
+
+    def test_sources_table_is_bounded(self):
+        for i in range(53):
+            self._source(name=f"bulk-{i:02d}")
+        content = self._get()
+        self.assertIn("Showing 50 of 53", content)
+
+    def test_query_count_is_independent_of_source_count(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def count():
+            with CaptureQueriesContext(connection) as ctx:
+                self.assertEqual(self.client.get(self.url).status_code, 200)
+            return len(ctx)
+
+        for i in range(3):
+            self._source(name=f"s{i}")
+        few = count()
+        for i in range(3, 30):
+            self._source(name=f"s{i}")
+        many = count()
+        self.assertEqual(few, many)
+        self.assertLessEqual(many, 35)
+
+    def test_readiness_failure_renders_inline_error_not_500(self):
+        with patch("crank.admin_dashboard.operations_readiness.readiness", side_effect=RuntimeError("x")):
+            content = self._get()
+        self.assertIn('role="alert"', content)
+        self.assertIn("Could not compute readiness", content)
+
+    def test_other_sections_fail_independently(self):
+        with patch("crank.admin_dashboard.operations_readiness.source_rows", side_effect=RuntimeError("x")), patch(
+            "crank.admin_dashboard.operations_readiness.run_progress", side_effect=RuntimeError("x")
+        ), patch("crank.admin_dashboard.operations_readiness.backlog", side_effect=RuntimeError("x")):
+            content = self._get()
+        self.assertIn('id="jro-sources-heading"', content)
+        self.assertIn('id="jro-progress-heading"', content)
+        self.assertIn('id="jro-backlog-heading"', content)
+        self.assertIn("Could not compute run progress", content)
+        self.assertIn("Could not compute the source table", content)
+        self.assertIn("Could not compute backlog", content)
+
+    def test_gate_reads_job_registry_not_rating_registry(self):
+        from crank.admin_dashboard import _readiness_gates
+
+        self._source()
+        with patch("crank.agents.sources.registry.REGISTRY.keys", return_value=[]):
+            gates = _readiness_gates()
+        self.assertEqual(gates["adapter_unregistered_sources"], 0)
+        JobSourceCatalog.objects.create(
+            name="ghost",
+            adapter_key="ghost",
+            base_url="https://data.usajobs.gov/api/search",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+        )
+        self.assertEqual(_readiness_gates()["adapter_unregistered_sources"], 1)
+
+    def test_availability_payloads_do_not_depend_on_readiness_module(self):
+        import inspect
+
+        import crank.empty_state as empty_state
+
+        self.assertNotIn("operations_readiness", inspect.getsource(empty_state))
+
+    def test_trace_pipeline_run_advances_readiness_stages(self):
+        from crank.agents.jobs.ingest import JobIngestResult
+        from crank.services import operations_readiness as ops
+        from crank.services.job_ingest import JobSourceIngestion
+        from crank.services.job_pipeline import run_job_pipeline
+
+        source = self._source()
+        run = AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.PENDING
+        )
+
+        def status(key):
+            return next(s for s in ops.readiness()["stages"] if s["key"] == key)["status"]
+
+        self.assertEqual(status("consumption"), "pending")
+        self.assertEqual(status("inventory"), "unmet")
+        self.assertTrue(ops.run_progress()["latest"]["queued_only"])
+
+        def fake_ingest(src, *args, **kwargs):
+            now = timezone.now()
+            JobListing.all_objects.create(
+                source=src,
+                external_id="trace-1",
+                canonical_url="https://data.usajobs.gov/job/trace-1",
+                employer_name="Trace Co",
+                title="Engineer",
+                first_seen_at=now,
+                last_seen_at=now,
+            )
+            JobSourceCatalog.objects.filter(pk=src.pk).update(last_crawl_at=now)
+            return JobSourceIngestion(result=JobIngestResult(ingested=1), skipped=False, reason="")
+
+        AgentRun.objects.filter(pk=run.pk).update(status=AgentRun.Status.RUNNING, started_at=timezone.now())
+        run.refresh_from_db()
+        with patch("crank.services.job_pipeline.ingest_job_source", side_effect=fake_ingest), patch(
+            "crank.services.job_pipeline._resolve_source_listings", return_value=(0, 0)
+        ), patch("crank.services.job_pipeline.agent_runs.record_agent_event"):
+            counts = run_job_pipeline(run)
+        AgentRun.objects.filter(pk=run.pk).update(
+            status=AgentRun.Status.SUCCEEDED, finished_at=timezone.now(), counts=counts
+        )
+
+        self.assertEqual(status("consumption"), "met")
+        self.assertEqual(status("inventory"), "met")
+        completed = ops.run_progress()["completed"]
+        flat = {i["key"]: i["value"] for g in completed["stages"] for i in g["counts"]}
+        self.assertEqual(flat["sources_total"], 1)
+        self.assertEqual(source.pk, JobSourceCatalog.objects.get().pk)
