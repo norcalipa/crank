@@ -3,7 +3,7 @@
 import * as React from 'react';
 import {createRoot} from "react-dom/client";
 import OrganizationDetailsPopup from './OrganizationDetailsPopup';
-import {closeSuggestCompany, openSuggestCompany} from './suggestCompany/controller';
+import {closeSuggestCompany, COMPANY_OPEN_EVENT, openSuggestCompany} from './suggestCompany/controller';
 import {installPositionTracking, PositionAnchor, restoreResultPosition} from './workspace/position';
 import {
     clearWorkspaceContext,
@@ -140,6 +140,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         this.loadChoices();
 
         window.addEventListener('popstate', this.handlePopState);
+        window.addEventListener(COMPANY_OPEN_EVENT, this.handleCompanyOpenEvent);
         this.normalizeCurrentPage();
         this.openCompanyFromUrl();
         // Issue #479: keep the shared workspace context in step with this
@@ -167,6 +168,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
     componentWillUnmount() {
         window.removeEventListener('popstate', this.handlePopState);
+        window.removeEventListener(COMPANY_OPEN_EVENT, this.handleCompanyOpenEvent);
         this.stopPositionTracking?.();
         this.unsubscribeWorkspace?.();
     }
@@ -283,6 +285,18 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         const companyId = Number(raw);
         if (!Number.isInteger(companyId)) return;
         const organization = this.props.organizations.find((org) => org.id === companyId);
+        if (organization) {
+            this.handleOrganizationClick(organization);
+        }
+    };
+
+    // "Back to <Company>" from the correction form (issue #477): reopens the
+    // company's details dialog through the same path as `?company=`. An
+    // unknown or non-integer id is ignored.
+    handleCompanyOpenEvent = (event: Event) => {
+        const organizationId = (event as CustomEvent).detail?.organizationId;
+        if (!Number.isInteger(organizationId)) return;
+        const organization = this.props.organizations.find((org) => org.id === organizationId);
         if (organization) {
             this.handleOrganizationClick(organization);
         }

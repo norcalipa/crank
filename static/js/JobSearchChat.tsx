@@ -828,6 +828,17 @@ function OrgCard({org}: {org: OrganizationResult}) {
                     Details ↗
                 </a>
             )}
+            <button
+                type="button"
+                className="btn btn-sm btn-link p-0 d-block mt-1"
+                data-testid={`suggest-correction-org-${org.id}`}
+                aria-label={`Suggest a correction for ${org.name}`}
+                onClick={() => window.dispatchEvent(new CustomEvent('crank:suggest-company', {
+                    detail: {kind: 'correction', source: 'assistant', organizationId: org.id, companyName: org.name},
+                }))}
+            >
+                Suggest correction
+            </button>
         </article>
     );
 }

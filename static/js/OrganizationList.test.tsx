@@ -878,6 +878,40 @@ describe('OrganizationList', () => {
         });
     });
 
+    describe('crank:company-open (issue #477 Back to company)', () => {
+        const fire = (detail: unknown) => act(() => {
+            window.dispatchEvent(new CustomEvent('crank:company-open', {detail}));
+        });
+
+        test('opens the details dialog for a listed organization', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            expect(screen.queryByRole('dialog')).toBeNull();
+            fire({organizationId: 1});
+            await waitFor(() => {
+                expect(screen.getByRole('dialog')).toBeInTheDocument();
+            });
+        });
+
+        test.each([[999999], ['1'], [1.5], [undefined]])('ignores an unknown or non-integer id (%p)', async (id) => {
+            render(<OrganizationList organizations={organizations} />);
+            fire({organizationId: id});
+            expect(screen.queryByRole('dialog')).toBeNull();
+        });
+
+        test('ignores an event with no detail', () => {
+            render(<OrganizationList organizations={organizations} />);
+            fire(null);
+            expect(screen.queryByRole('dialog')).toBeNull();
+        });
+
+        test('stops listening after unmount', () => {
+            const {unmount} = render(<OrganizationList organizations={organizations} />);
+            unmount();
+            fire({organizationId: 1});
+            expect(screen.queryByRole('dialog')).toBeNull();
+        });
+    });
+
     describe('deep-linked company dialog (issue #465 AC-7)', () => {
         afterEach(() => {
             window.history.replaceState({}, '', '/');

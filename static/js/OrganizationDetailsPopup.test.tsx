@@ -995,6 +995,7 @@ describe('OrganizationDetailsPopup', () => {
         fireEvent.click(screen.getByTestId('suggest-correction-link'));
 
         expect(openSpy).toHaveBeenCalledWith({
+            kind: 'correction',
             source: 'company_details',
             companyName: 'Test Organization',
             organizationId: 1,
@@ -1397,6 +1398,89 @@ describe('OrganizationDetailsPopup', () => {
             );
             expect(screen.getByTestId('company-sign-in-cta')).toHaveAttribute('href', expect.stringContaining('next='));
             expect(screen.queryByTestId('company-chat-cta')).not.toBeInTheDocument();
+        });
+    });
+
+    describe('per-field corrections and pending suggestions (issue #477)', () => {
+        const withCorrections = (respond: () => Promise<unknown>) => {
+            provenanceWithEvidence();
+            const base = global.fetch as jest.Mock;
+            global.fetch = jest.fn().mockImplementation((url: string) =>
+                url.includes('/api/company-corrections/') ? respond() : base(url));
+        };
+        const renderAuthed = (authed = true) => render(
+            <OrganizationDetailsPopup organization={mockOrganization} visible={true}
+                                      onClose={() => {}} isAuthenticated={authed}/>
+        );
+
+        test('evidence and unverified rows carry a per-field correction button that opens the form on that field', async () => {
+            withCorrections(() => Promise.resolve({ok: true, json: () => Promise.resolve({corrections: []})}));
+            const openSpy = jest.spyOn(suggestCompanyController, 'openSuggestCompany').mockImplementation(() => {});
+            const onClose = jest.fn();
+            render(<OrganizationDetailsPopup organization={mockOrganization} visible={true}
+                                             onClose={onClose} isAuthenticated={true}/>);
+
+            const evidenceButton = await screen.findByTestId('suggest-correction-field-rto_policy');
+            expect(screen.getByTestId('field-evidence-rto_policy')).toContainElement(evidenceButton);
+            expect(screen.getByTestId('field-unverified-funding_round'))
+                .toContainElement(screen.getByTestId('suggest-correction-field-funding_round'));
+
+            fireEvent.click(evidenceButton);
+            expect(openSpy).toHaveBeenCalledWith({
+                kind: 'correction', source: 'company_evidence', companyName: 'Test Organization',
+                organizationId: 1, fieldKey: 'rto_policy',
+            });
+            expect(onClose).toHaveBeenCalledTimes(1);
+            openSpy.mockRestore();
+        });
+
+        test('signed-out visitors get no per-field buttons and no pending list', async () => {
+            withCorrections(() => Promise.resolve({ok: true, json: () => Promise.resolve({corrections: []})}));
+            renderAuthed(false);
+            await screen.findByTestId('field-evidence-rto_policy');
+            expect(screen.queryByTestId('suggest-correction-field-rto_policy')).toBeNull();
+            expect(screen.queryByTestId('your-pending-corrections')).toBeNull();
+        });
+
+        test('lists only the requester\'s pending suggestions, labeled Pending review', async () => {
+            withCorrections(() => Promise.resolve({
+                ok: true,
+                json: () => Promise.resolve({corrections: [
+                    {id: 7, field_key: 'rto_policy', field_label: 'RTO policy', proposed_value: 'Hybrid', status: 'pending', status_label: 'Pending review'},
+                    {id: 8, field_key: 'locations', field_label: '', proposed_value: 'Austin', status: 'accepted', status_label: 'Accepted'},
+                    {id: 9, field_key: 'unknown_key', field_label: '', proposed_value: 'Nope', status: 'pending', status_label: 'Pending review'},
+                ]}),
+            }));
+            renderAuthed();
+            const list = await screen.findByTestId('your-pending-corrections');
+            expect(list).toHaveTextContent('Your pending suggestions');
+            expect(list).toHaveTextContent('Hybrid');
+            expect(list).toHaveTextContent('Pending review');
+            expect(list).not.toHaveTextContent('Austin');
+            expect(list).toHaveTextContent('unknown_key');
+            expect(list).not.toHaveTextContent(/verified/i);
+        });
+
+        test.each([
+            ['a non-ok response', () => Promise.resolve({ok: false, json: () => Promise.resolve({})})],
+            ['a malformed body', () => Promise.resolve({ok: true, json: () => Promise.resolve({})})],
+            ['a network failure', () => Promise.reject(new Error('offline'))],
+        ])('hides the pending list on %s', async (_name, respond) => {
+            withCorrections(respond);
+            renderAuthed();
+            await screen.findByTestId('field-evidence-rto_policy');
+            await waitFor(() => expect(global.fetch).toHaveBeenCalledWith('/api/company-corrections/?organization=1'));
+            expect(screen.queryByTestId('your-pending-corrections')).toBeNull();
+        });
+
+        test('ignores a pending response that resolves after unmount', async () => {
+            let resolve: (value: unknown) => void = () => {};
+            withCorrections(() => new Promise(r => { resolve = r; }));
+            const {unmount} = renderAuthed();
+            await waitFor(() => expect(global.fetch).toHaveBeenCalledWith('/api/company-corrections/?organization=1'));
+            unmount();
+            resolve({ok: true, json: () => Promise.resolve({corrections: [{id: 1, field_key: 'rto_policy', proposed_value: 'x', status: 'pending'}]})});
+            await Promise.resolve();
         });
     });
 });

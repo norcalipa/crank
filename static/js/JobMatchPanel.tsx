@@ -48,6 +48,21 @@ interface RevisionBlock {
     result_generation?: number | null;
 }
 
+// Opens the contextual correction form (issue #477) through the cross-bundle
+// `crank:suggest-company` channel: this bundle has no host of its own.
+function SuggestCorrectionButton({organizationId, companyName}: {organizationId: number; companyName: string}) {
+    return (
+        <button type="button" className="btn btn-sm btn-link job-match-correction p-0 mt-1"
+                data-testid={`suggest-correction-org-${organizationId}`}
+                aria-label={`Suggest a correction for ${companyName}`}
+                onClick={() => window.dispatchEvent(new CustomEvent('crank:suggest-company', {
+                    detail: {kind: 'correction', source: 'job_results', organizationId, companyName},
+                }))}>
+            Suggest correction
+        </button>
+    );
+}
+
 interface RankedJobMatch {
     listing_id: number;
     title: string;
@@ -894,6 +909,10 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                     )}
                                     <ThreeFigures scope={`job-${match.listing_id}`} fit={match.fit_score ?? match.score} company={match.company_score} coverage={match.coverage} />
                                     <RequirementChips requirements={match.requirements} />
+                                    {match.organization_id != null && (
+                                        <SuggestCorrectionButton organizationId={match.organization_id}
+                                                                 companyName={match.organization_name || match.employer_name} />
+                                    )}
                                 </div>
                             ))}
                         </div>
@@ -931,6 +950,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                     )}
                                     <ThreeFigures scope={`org-${org.organization_id}`} fit={org.fit_score ?? org.score} company={org.company_score} coverage={org.coverage} />
                                     <RequirementChips requirements={org.requirements} />
+                                    <SuggestCorrectionButton organizationId={org.organization_id} companyName={org.name} />
                                 </div>
                             ))}
                         </div>

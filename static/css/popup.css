@@ -3307,3 +3307,49 @@ body.assistant-open .app-content .table-responsive,
     -webkit-line-clamp: 2;
     line-clamp: 2;
 }
+
+/* issue #477 correction form */
+.correction-skeleton {
+    block-size: 1.5rem;
+    max-inline-size: 16rem;
+    border-radius: 0.25rem;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.12));
+    background-size: 200% 100%;
+    animation: correction-skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes correction-skeleton-pulse {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .correction-skeleton {
+        animation: none;
+    }
+}
+
+.suggest-correction-field,
+.job-match-correction,
+#job-search-chat .org-card .btn-link,
+[data-testid="company-correction-modal"] .btn,
+[data-testid="company-correction-modal"] .form-control,
+[data-testid="company-correction-modal"] .form-select {
+    min-block-size: 44px;
+}
+
+.suggest-correction-field,
+.job-match-correction,
+#job-search-chat .org-card .btn-link {
+    min-inline-size: 44px;
+    display: inline-flex;
+    align-items: center;
+}
+
+[data-testid="company-correction-modal"] .modal-dialog {
+    max-inline-size: min(36rem, 100%);
+}
+
+[data-testid="company-correction-modal"] .modal-body {
+    overflow-wrap: anywhere;
+}

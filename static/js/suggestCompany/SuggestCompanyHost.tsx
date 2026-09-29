@@ -1,6 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
+import CompanyCorrectionForm from '../CompanyCorrectionForm';
 import SuggestCompanyModal from '../SuggestCompanyModal';
 import {closeSuggestCompany, getSuggestCompanySnapshot, subscribeSuggestCompany} from './controller';
 
@@ -12,12 +13,21 @@ const SuggestCompanyHost: React.FC = () => {
         subscribeSuggestCompany, getSuggestCompanySnapshot, getSuggestCompanySnapshot
     );
 
+    const context = state.context;
+    const showCorrection = state.open && context?.kind === 'correction'
+        && context.organizationId !== undefined;
+
     return (
-        <SuggestCompanyModal
-            visible={state.open}
-            context={state.context}
-            onClose={closeSuggestCompany}
-        />
+        <>
+            <SuggestCompanyModal
+                visible={state.open && !showCorrection}
+                context={context}
+                onClose={closeSuggestCompany}
+            />
+            {showCorrection && context && (
+                <CompanyCorrectionForm context={context} onClose={closeSuggestCompany}/>
+            )}
+        </>
     );
 };
 

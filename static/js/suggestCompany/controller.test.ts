@@ -139,6 +139,27 @@ describe('suggestCompany controller', () => {
             });
         });
 
+        test('a correction context keeps kind and a known fieldKey', () => {
+            dispatch({kind: 'correction', source: 'company_evidence', organizationId: 5, fieldKey: 'rto_policy'});
+            expect(getSuggestCompanySnapshot().context).toEqual({
+                kind: 'correction', source: 'company_evidence', organizationId: 5, fieldKey: 'rto_policy',
+            });
+        });
+
+        test('a correction context drops an unknown or non-string fieldKey', () => {
+            dispatch({kind: 'correction', source: 'job_results', organizationId: 5, fieldKey: 'salary'});
+            expect(getSuggestCompanySnapshot().context).toEqual({
+                kind: 'correction', source: 'job_results', organizationId: 5,
+            });
+            dispatch({kind: 'correction', source: 'job_results', fieldKey: 3});
+            expect(getSuggestCompanySnapshot().context).toEqual({kind: 'correction', source: 'job_results'});
+        });
+
+        test('an unknown kind and a stray fieldKey are dropped', () => {
+            dispatch({kind: 'other', source: 'rankings', fieldKey: 'rto_policy'});
+            expect(getSuggestCompanySnapshot().context).toEqual({source: 'rankings'});
+        });
+
         test('an unrecognized source falls back to assistant', () => {
             dispatch({source: 'not-a-real-source'});
             expect(getSuggestCompanySnapshot().context).toEqual({source: 'assistant'});
