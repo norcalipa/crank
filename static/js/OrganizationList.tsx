@@ -4,7 +4,7 @@ import * as React from 'react';
 import {createRoot} from "react-dom/client";
 import OrganizationDetailsPopup from './OrganizationDetailsPopup';
 import {closeSuggestCompany, openSuggestCompany} from './suggestCompany/controller';
-import {installPositionTracking, restoreResultPosition} from './workspace/position';
+import {installPositionTracking, PositionAnchor, restoreResultPosition} from './workspace/position';
 import {
     clearWorkspaceContext,
     getWorkspaceSnapshot,
@@ -177,12 +177,13 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
     // Organization id of the first result on screen. Table rows and cards
     // both carry the id; whichever layout is displayed has a non-empty box.
-    visibleOrganizationAnchor = (): string | null => {
+    visibleOrganizationAnchor = (): PositionAnchor | null => {
         const candidates = document.querySelectorAll<HTMLElement>('[data-organization-id]');
         for (const element of Array.from(candidates)) {
             const rect = element.getBoundingClientRect();
             if (rect.height > 0 && rect.bottom > 0) {
-                return element.getAttribute('data-organization-id');
+                const id = element.getAttribute('data-organization-id');
+                return id === null ? null : {id, offset: rect.top};
             }
         }
         return null;

@@ -9,17 +9,31 @@
 export interface ResultPosition {
     scrollY: number;
     anchor: string | null;
+    // Viewport offset (px) of the anchor's top edge when saved.
+    anchorOffset: number;
+}
+
+export interface PositionAnchor {
+    id: string;
+    offset: number;
 }
 
 const STATE_KEY = 'crankPosition';
 const SCROLL_THROTTLE_MS = 200;
 
-export function saveResultPosition(anchor: string | null = null): void {
+// `behavior: 'instant'` overrides Bootstrap's `:root{scroll-behavior:smooth}`
+// so the position read straight after a restore is the settled one.
+const INSTANT = 'instant' as ScrollBehavior;
+
+export function saveResultPosition(anchor: string | null = null, anchorOffset = 0): void {
     try {
         const state = (window.history.state && typeof window.history.state === 'object')
             ? window.history.state
             : {};
-        const position: ResultPosition = {scrollY: Math.round(window.scrollY), anchor};
+        const position: ResultPosition = {scrollY: Math.round(window.scrollY),
+            anchor,
+            anchorOffset: Math.round(anchorOffset),
+        };
         window.history.replaceState({...state, [STATE_KEY]: position}, '');
     } catch {
         // history unavailable; position simply is not restored.
@@ -31,11 +45,17 @@ export function readResultPosition(): ResultPosition | null {
     if (!raw || typeof raw.scrollY !== 'number' || !Number.isFinite(raw.scrollY)) {
         return null;
     }
-    return {scrollY: raw.scrollY, anchor: typeof raw.anchor === 'string' ? raw.anchor : null};
+    return {
+        scrollY: raw.scrollY,
+        anchor: typeof raw.anchor === 'string' ? raw.anchor : null,
+        anchorOffset: typeof raw.anchorOffset === 'number' && Number.isFinite(raw.anchorOffset)
+            ? raw.anchorOffset
+            : 0,
+    };
 }
 
-// Restores the saved position: prefers scrolling the anchor into view, else
-// falls back to scrollY. Returns whether anything was restored.
+// Restores the saved position: prefers putting the anchor back at its saved
+// viewport offset, else falls back to scrollY. Returns whether anything was restored.
 export function restoreResultPosition(getAnchor: (id: string) => HTMLElement | null): boolean {
     const position = readResultPosition();
     if (!position) {
@@ -44,18 +64,28 @@ export function restoreResultPosition(getAnchor: (id: string) => HTMLElement | n
     if (position.anchor) {
         const el = getAnchor(position.anchor);
         if (el) {
-            el.scrollIntoView({block: 'center'});
+            const top = el.getBoundingClientRect().top + window.scrollY - position.anchorOffset;
+            window.scrollTo({top, behavior: INSTANT});
             return true;
         }
     }
-    window.scrollTo(0, position.scrollY);
+    window.scrollTo({top: position.scrollY, behavior: INSTANT});
     return true;
 }
 
 // Saves on throttled scroll and on pagehide; returns a teardown.
-export function installPositionTracking(getAnchor: () => string | null): () => void {
+export function installPositionTracking(
+    getAnchor: () => PositionAnchor | string | null,
+): () => void {
     let timer: number | null = null;
-    const save = (): void => saveResultPosition(getAnchor());
+    const save = (): void => {
+        const anchor = getAnchor();
+        if (typeof anchor === 'string' || anchor === null) {
+            saveResultPosition(anchor);
+        } else {
+            saveResultPosition(anchor.id, anchor.offset);
+        }
+    };
     const onScroll = (): void => {
         if (timer !== null) {
             return;

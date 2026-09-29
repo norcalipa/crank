@@ -1056,19 +1056,18 @@ describe('OrganizationList', () => {
         describe('result anchor restoration', () => {
             const visibleRect = {height: 20, bottom: 40, top: 20} as DOMRect;
             let rectSpy: jest.SpyInstance;
-            let scrollIntoView: jest.Mock;
+            let scrollTo: jest.Mock;
             let rafSpy: jest.SpyInstance;
 
             beforeEach(() => {
-                scrollIntoView = jest.fn();
-                Element.prototype.scrollIntoView = scrollIntoView as unknown as typeof Element.prototype.scrollIntoView;
                 rectSpy = jest.spyOn(Element.prototype, 'getBoundingClientRect')
                     .mockImplementation(() => visibleRect);
                 rafSpy = jest.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
                     cb(0);
                     return 1;
                 });
-                window.scrollTo = jest.fn() as unknown as typeof window.scrollTo;
+                scrollTo = jest.fn();
+                window.scrollTo = scrollTo as unknown as typeof window.scrollTo;
             });
 
             afterEach(() => {
@@ -1076,45 +1075,47 @@ describe('OrganizationList', () => {
                 rafSpy.mockRestore();
             });
 
-            test('mount restores by organization id, not just pixel offset', () => {
-                window.history.replaceState({crankPosition: {scrollY: 480, anchor: '2'}}, '', '/');
+            test('mount restores by organization id at its saved viewport offset, instantly', () => {
+                window.history.replaceState(
+                    {crankPosition: {scrollY: 480, anchor: '2', anchorOffset: 5}}, '', '/');
                 render(<OrganizationList organizations={organizations} />);
-                expect(scrollIntoView).toHaveBeenCalledTimes(1);
-                const target = scrollIntoView.mock.instances[0] as HTMLElement;
-                expect(target.getAttribute('data-organization-id')).toBe('2');
-                expect(window.scrollTo).not.toHaveBeenCalled();
+                expect(scrollTo).toHaveBeenCalledTimes(1);
+                expect(scrollTo).toHaveBeenCalledWith({top: 15, behavior: 'instant'});
             });
 
             test('restores again once the account hydrates when the user has not scrolled', () => {
-                window.history.replaceState({crankPosition: {scrollY: 480, anchor: '2'}}, '', '/');
+                window.history.replaceState(
+                    {crankPosition: {scrollY: 480, anchor: '2', anchorOffset: 5}}, '', '/');
                 render(<OrganizationList organizations={organizations} />);
-                expect(scrollIntoView).toHaveBeenCalledTimes(1);
+                expect(scrollTo).toHaveBeenCalledTimes(1);
                 act(() => setWorkspaceAccount({status: 'authenticated', key: 'alice'}));
-                expect(scrollIntoView).toHaveBeenCalledTimes(2);
+                expect(scrollTo).toHaveBeenCalledTimes(2);
                 act(() => setWorkspaceAccount({status: 'anonymous', key: ''}));
-                expect(scrollIntoView).toHaveBeenCalledTimes(2);
+                expect(scrollTo).toHaveBeenCalledTimes(2);
             });
 
             test('does not yank a user who scrolled before hydration settled', () => {
-                window.history.replaceState({crankPosition: {scrollY: 480, anchor: '2'}}, '', '/');
+                window.history.replaceState(
+                    {crankPosition: {scrollY: 480, anchor: '2', anchorOffset: 5}}, '', '/');
                 render(<OrganizationList organizations={organizations} />);
                 Object.defineProperty(window, 'scrollY', {configurable: true, value: 900});
                 act(() => setWorkspaceAccount({status: 'authenticated', key: 'alice'}));
-                expect(scrollIntoView).toHaveBeenCalledTimes(1);
+                expect(scrollTo).toHaveBeenCalledTimes(1);
                 Object.defineProperty(window, 'scrollY', {configurable: true, value: 0});
             });
 
-            test('saves the first on-screen organization as the anchor', () => {
+            test('saves the first on-screen organization and its viewport offset', () => {
                 render(<OrganizationList organizations={organizations} />);
                 window.dispatchEvent(new Event('pagehide'));
                 expect(window.history.state?.crankPosition?.anchor).toBe('1');
+                expect(window.history.state?.crankPosition?.anchorOffset).toBe(20);
             });
 
             test('a non-numeric saved anchor falls back to the pixel offset', () => {
                 window.history.replaceState({crankPosition: {scrollY: 480, anchor: '"]x'}}, '', '/');
                 render(<OrganizationList organizations={organizations} />);
-                expect(scrollIntoView).not.toHaveBeenCalled();
-                expect(window.scrollTo).toHaveBeenCalledWith(0, 480);
+                expect(scrollTo).toHaveBeenCalledTimes(1);
+                expect(scrollTo).toHaveBeenCalledWith({top: 480, behavior: 'instant'});
             });
 
             test('with nothing visible there is no anchor to save', () => {
@@ -1130,7 +1131,7 @@ describe('OrganizationList', () => {
             const scrollTo = jest.fn();
             window.scrollTo = scrollTo as unknown as typeof window.scrollTo;
             render(<OrganizationList organizations={organizations} />);
-            expect(scrollTo).toHaveBeenCalledWith(0, 480);
+            expect(scrollTo).toHaveBeenCalledWith({top: 480, behavior: 'instant'});
         });
 
         test('clearing the workspace context closes the company dialog and leaves the list', async () => {
