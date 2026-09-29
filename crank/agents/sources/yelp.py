@@ -39,6 +39,7 @@ from crank.agents.sources.contract import (
     SourceQuery,
     SourceResult,
 )
+from crank.agents.sources.semantics import MeasurementKind
 from crank.agents.sources.transport import SafeHTTPClient
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ class YelpSourceAdapter:
 
     key = ADAPTER_KEY
     version = ADAPTER_VERSION
+    measurement_kind = MeasurementKind.CONSUMER_BUSINESS_RATING
     allowed_hosts = ALLOWED_HOSTS
     expected_content_type = CONTENT_TYPE
 

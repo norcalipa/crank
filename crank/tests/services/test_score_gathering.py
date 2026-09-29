@@ -8,6 +8,7 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 
 from crank.agents.sources.contract import RawScoreObservation, SourceResult
+from crank.agents.sources.semantics import MeasurementKind
 from crank.agents.sources.types import build_resolution_config
 from crank.models import AgentRun, Organization, Score, ScoreType
 from crank.models.source import ApprovalState, SourceCatalog, SourceRun
@@ -21,6 +22,7 @@ from crank.services.score_gathering import (
 class FakeAdapter:
     key = "fake.v1"
     version = "1.0.0"
+    measurement_kind = MeasurementKind.CURATED_REVIEW
 
     def __init__(self, source, observations=(), error=None):
         self.source = source
@@ -112,6 +114,79 @@ class ScoreGatheringServiceTests(TestCase):
         self.assertEqual(Score.objects.count(), 1)
         source_run = SourceRun.objects.get(source=source)
         self.assertEqual(source_run.status, AgentRun.Status.SUCCEEDED)
+
+    def test_consumer_rating_adapter_cannot_write_culture_scores(self):
+        source = self.source("stars")
+        adapter = FakeAdapter(source, [observation()])
+        adapter.measurement_kind = MeasurementKind.CONSUMER_BUSINESS_RATING
+        with patch("crank.services.score_gathering.build_adapter", return_value=adapter):
+            counts = gather_scores(self.make_run(), resolution_config=self.config)
+
+        self.assertEqual(counts["observations_fetched"], 1)
+        self.assertEqual(counts["observations_unresolved"], 1)
+        self.assertEqual(counts["observations_normalized"], 0)
+        self.assertEqual(counts["observations_persisted"], 0)
+        self.assertEqual(Score.objects.count(), 0)
+
+    def test_consumer_rating_adapter_may_write_reputation_scores(self):
+        source = self.source("stars")
+        ScoreType.objects.create(name="Reputation")
+        config = build_resolution_config(
+            version="test",
+            source_key="default",
+            source_organization="Rating Source",
+            score_type_mappings=[
+                {"source": "default", "external": "rating", "score_type": "Reputation"}
+            ],
+        )
+        adapter = FakeAdapter(source, [observation()])
+        adapter.measurement_kind = MeasurementKind.CONSUMER_BUSINESS_RATING
+        with patch("crank.services.score_gathering.build_adapter", return_value=adapter):
+            counts = gather_scores(self.make_run(), resolution_config=config)
+        self.assertEqual(counts["observations_persisted"], 1)
+        self.assertEqual(Score.objects.get().type.name, "Reputation")
+
+    def test_measurement_kind_is_passed_to_the_normalizer(self):
+        source = self.source("stars")
+        adapter = FakeAdapter(source, [observation()])
+        with patch("crank.services.score_gathering.build_adapter", return_value=adapter), patch(
+            "crank.services.score_gathering.ScoreNormalizer"
+        ) as normalizer:
+            normalizer.return_value.normalize.return_value.outcomes = []
+            normalizer.return_value.normalize.return_value.normalized = 0
+            normalizer.return_value.normalize.return_value.unresolved = 0
+            normalizer.return_value.normalize.return_value.rejected = 0
+            normalizer.return_value.normalize.return_value.duplicates_skipped = 0
+            gather_scores(self.make_run(), resolution_config=self.config)
+        normalizer.assert_called_once_with(
+            self.config, measurement_kind=MeasurementKind.CURATED_REVIEW
+        )
+
+    def test_unapproved_and_disabled_sources_are_never_fetched(self):
+        from crank.agents.sources import registry as registry_module
+        from crank.agents.sources.registry import SourceRegistry
+
+        fetched = []
+
+        class Recording(FakeAdapter):
+            def fetch(self, query):
+                fetched.append(self.source.name)
+                return super().fetch(query)
+
+        registry = SourceRegistry()
+        registry.register(Recording)
+        pending = self.source("pending", approved=False)
+        blocked = self.source("blocked", approved=False)
+        SourceCatalog.objects.filter(pk=blocked.pk).update(
+            approval_state=ApprovalState.BLOCKED
+        )
+        self.source("disabled", enabled=False)
+        with patch.object(registry_module, "REGISTRY", registry):
+            counts = gather_scores(self.make_run(), resolution_config=self.config)
+        self.assertEqual(fetched, [])
+        self.assertEqual(counts["sources_total"], 0)
+        self.assertEqual(SourceRun.objects.count(), 0)
+        self.assertTrue(pending.pk and blocked.pk)
 
     def test_duplicate_replay_is_counted_and_not_written_twice(self):
         source = self.source("good")

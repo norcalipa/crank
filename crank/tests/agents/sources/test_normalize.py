@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from django.test import TestCase, override_settings
 
+from crank.agents.sources.semantics import MeasurementKind
 from crank.agents.sources.normalize import ScoreNormalizer, normalize_observations
 from crank.agents.sources.types import (
     RawScoreObservation,
@@ -161,6 +162,47 @@ class TypeResolution(NormalizeSetup):
                 {"source": "src", "external": "Culture", "score_type": "Nope"},
             ]))
         self.assertIs(rep.outcomes[0].reason, ResolutionReason.TYPE_UNKNOWN)
+
+
+class MeasurementSemantics(NormalizeSetup):
+    def setUp(self):
+        super().setUp()
+        _type("Culture")
+        _type("Reputation")
+        self.config = _config(score_type_mappings=[
+            {"source": "src", "external": "Culture", "score_type": "Culture"},
+            {"source": "src", "external": "Rating", "score_type": "Reputation"},
+        ])
+
+    def _report(self, external_type, kind):
+        norm = ScoreNormalizer(self.config, measurement_kind=kind)
+        return norm.normalize([_obs(external_type=external_type)])
+
+    def test_consumer_rating_cannot_feed_culture(self):
+        rep = self._report("Culture", MeasurementKind.CONSUMER_BUSINESS_RATING)
+        outcome = rep.outcomes[0]
+        self.assertIs(outcome.reason, ResolutionReason.TYPE_SEMANTIC_MISMATCH)
+        self.assertIs(outcome.status, ResolutionStatus.UNRESOLVED)
+        self.assertIsNone(outcome.observation)
+        self.assertEqual(rep.unresolved, 1)
+
+    def test_consumer_rating_may_feed_reputation(self):
+        rep = self._report("Rating", MeasurementKind.CONSUMER_BUSINESS_RATING)
+        self.assertIs(rep.outcomes[0].reason, ResolutionReason.RESOLVED)
+
+    def test_no_check_without_a_kind(self):
+        rep = self._report("Culture", None)
+        self.assertIs(rep.outcomes[0].reason, ResolutionReason.RESOLVED)
+
+    def test_invalid_kind_fails_closed(self):
+        rep = self._report("Rating", "star_rating")
+        self.assertIs(rep.outcomes[0].reason, ResolutionReason.TYPE_SEMANTIC_MISMATCH)
+
+    def test_reason_detail_is_sanitized(self):
+        rep = self._report("Culture", "<script>x</script>")
+        detail = rep.outcomes[0].detail
+        self.assertNotIn("<", detail)
+        self.assertIn("cannot feed score type 'Culture'", detail)
 
 
 class TargetResolution(NormalizeSetup):

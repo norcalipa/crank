@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from crank.agents.sources.allowlist import is_domain_allowed
+from crank.agents.sources.semantics import MeasurementKind
 from crank.agents.sources.observation import (  # noqa: F401
     RawScoreObservation,
     ObservationValidationError,
@@ -99,6 +100,7 @@ class SourceAdapter(Protocol):
 
     key: str
     version: str
+    measurement_kind: MeasurementKind
 
     def fetch(self, source) -> list[RawScoreObservation]:  # pragma: no cover
         """Return validated observations for ``source`` (concrete impl)."""
