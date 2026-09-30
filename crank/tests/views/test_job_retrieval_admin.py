@@ -1953,7 +1953,7 @@ class JobRetrievalActionStateTests(TestCase):
             self.assertIn("disabled", buttons[value])
         self.assertIn("is already queued.", content)
         self.assertNotIn("jro-btn--primary", content.split("</style>", 1)[1])
-        self.assertNotIn("Queue guidance</dt>\n          <dd>No action needed yet", content)
+        self.assertNotIn('href="#jro-action-queue', content)
 
     def test_running_run_reason_says_running(self):
         self._source()
