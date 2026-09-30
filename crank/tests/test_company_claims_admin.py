@@ -49,6 +49,10 @@ class ClaimReviewTests(TestCase):
     def _post_action(self, action, pks, confirm=True):
         data = {"action": action, ACTION_CHECKBOX_NAME: pks, "index": 0}
         if confirm:
+            preview = self.client.post(self.url, data)
+            context = getattr(preview, "context", None)
+            if context is not None and "extra_hidden" in context:
+                data.update(dict(context["extra_hidden"]))
             data["confirm"] = "yes"
         return self.client.post(self.url, data)
 
@@ -143,14 +147,16 @@ class ClaimReviewTests(TestCase):
         accepted = CompanyFieldEvidence.objects.get(
             organization=self.organization, field_key=FieldKey.COMPANY_NAME
         )
-        request = RequestFactory().post(self.url, {"confirm": "yes"})
-        request.user = self.staff
         model_admin = CompanyFieldEvidenceAdmin(CompanyFieldEvidence, AdminSite())
+        selected = CompanyFieldEvidence.objects.filter(pk__in=[accepted.pk, self.rto.pk])
+        request = RequestFactory().post(
+            self.url,
+            {"confirm": "yes", "claim_digest": model_admin.claims_digest(list(selected))},
+        )
+        request.user = self.staff
         messages = []
         model_admin.message_user = lambda _r, text, **_k: messages.append(text)
-        model_admin.reject_claims(
-            request, CompanyFieldEvidence.objects.filter(pk__in=[accepted.pk, self.rto.pk])
-        )
+        model_admin.reject_claims(request, selected)
         accepted.refresh_from_db()
         self.rto.refresh_from_db()
         self.assertEqual(accepted.state, State.ACCEPTED)
@@ -277,7 +283,6 @@ class ClaimReviewTests(TestCase):
                 status=CompanyProfileObservation.Status.CONFLICTED,
                 fingerprint=f"fp-{value}",
             ),
-            state=State.PENDING,
         )
 
     def test_bulk_accept_of_two_claims_for_one_field_is_refused(self):
@@ -348,7 +353,7 @@ class ClaimReviewTests(TestCase):
         observation.refresh_from_db()
         return observation
 
-    def test_rejecting_an_observation_rejects_its_open_claims(self):
+    def test_rejecting_an_observation_supersedes_its_open_claims(self):
         self._post_action("accept_claims", [self.rto.pk])
         observation = self._new_observation_review("reject_observations")
         claim = CompanyFieldEvidence.objects.get(
@@ -356,7 +361,7 @@ class ClaimReviewTests(TestCase):
             field_key=FieldKey.RTO_POLICY,
             value_text="Five days in office",
         )
-        self.assertEqual(claim.state, State.REJECTED)
+        self.assertEqual(claim.state, State.SUPERSEDED)
         audit = OperationalChangeAudit.objects.get(
             target_type="company_profile_observation", target_id=str(observation.pk)
         )
@@ -408,6 +413,323 @@ class ClaimReviewTests(TestCase):
                 target_type="company_profile_observation", target_id=str(observation.pk)
             ).exists()
         )
+
+    def _messages(self, response):
+        return [str(m) for m in response.context["messages"]] if response.context else []
+
+    def _make_legacy(self):
+        """Turn the RTO claim into a never-reviewed accepted (pre-#474) row."""
+        CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(state=State.ACCEPTED)
+        self.rto.refresh_from_db()
+        return self.rto
+
+    def test_select_across_is_refused_for_claim_actions(self):
+        response = self.client.post(
+            self.url,
+            {
+                "action": "accept_claims",
+                "select_across": "1",
+                ACTION_CHECKBOX_NAME: [self.rto.pk],
+                "index": 0,
+                "confirm": "yes",
+            },
+            follow=True,
+        )
+        self.assertTrue(any("select" in m.lower() for m in self._messages(response)))
+        self.rto.refresh_from_db()
+        self.assertEqual(self.rto.state, State.PENDING)
+        self.assertFalse(OperationalChangeAudit.objects.exists())
+
+    def test_confirmation_bound_to_other_claims_is_refused(self):
+        other = self._second_rto_claim()
+        data = {"action": "accept_claims", ACTION_CHECKBOX_NAME: [self.rto.pk], "index": 0}
+        preview = self.client.post(self.url, data)
+        digest = dict(preview.context["extra_hidden"])["claim_digest"]
+        other_preview = self.client.post(
+            self.url, {**data, ACTION_CHECKBOX_NAME: [other.pk]}
+        )
+        wrong = dict(other_preview.context["extra_hidden"])["claim_digest"]
+        self.assertNotEqual(digest, wrong)
+
+        response = self.client.post(
+            self.url, {**data, "confirm": "yes", "claim_digest": wrong}, follow=True
+        )
+        self.assertTrue(any("No changes made" in m for m in self._messages(response)))
+        self.rto.refresh_from_db()
+        self.assertEqual(self.rto.state, State.PENDING)
+
+        changed = self.client.post(self.url, data)
+        digest = dict(changed.context["extra_hidden"])["claim_digest"]
+        CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(value_text="Swapped")
+        response = self.client.post(
+            self.url, {**data, "confirm": "yes", "claim_digest": digest}, follow=True
+        )
+        self.assertTrue(any("No changes made" in m for m in self._messages(response)))
+        self.rto.refresh_from_db()
+        self.assertEqual(self.rto.state, State.PENDING)
+
+    def test_a_missing_claim_digest_is_refused(self):
+        self.client.post(
+            self.url,
+            {"action": "accept_claims", ACTION_CHECKBOX_NAME: [self.rto.pk], "index": 0,
+             "confirm": "yes"},
+        )
+        self.rto.refresh_from_db()
+        self.assertEqual(self.rto.state, State.PENDING)
+
+    def test_rejecting_a_legacy_claim_retracts_the_row_and_matching(self):
+        legacy = self._make_legacy()
+        self.assertTrue(company_evidence.legacy_unreviewed_rows(self.organization))
+        claim = company_evidence.queue_legacy_claim(legacy)
+        self._post_action("reject_claims", [claim.pk])
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.state, State.SUPERSEDED)
+        self.assertNotIn(
+            FieldKey.RTO_POLICY, company_evidence.resolve_field_evidence(self.organization)
+        )
+
+    def test_legacy_filter_and_relation_column(self):
+        legacy = self._make_legacy()
+        response = self.client.get(self.url, {"legacy": "unreviewed", "queue": "all"})
+        self.assertEqual({r.pk for r in response.context["cl"].result_list}, {legacy.pk})
+        claim = company_evidence.queue_legacy_claim(legacy)
+        model_admin = admin_site_registry(CompanyFieldEvidence)
+        self.assertEqual(model_admin.relation_to_accepted(claim), "legacy value in effect")
+        self.assertEqual(model_admin.relation_to_accepted(legacy), "")
+        differing = self._second_rto_claim("Something else")
+        self.assertEqual(model_admin.relation_to_accepted(differing), "differs from accepted")
+        label = model_admin.confirmation_label(claim)
+        self.assertIn("legacy value already in effect", label)
+
+    def test_confirmation_shows_scope_changes(self):
+        legacy = self._make_legacy()
+        CompanyFieldEvidence.objects.filter(pk=legacy.pk).update(
+            scope_json={"countries": ["Germany"], "claimed_domain": "example.test"}
+        )
+        claim = company_evidence.queue_legacy_claim(CompanyFieldEvidence.objects.get(pk=legacy.pk))
+        model_admin = admin_site_registry(CompanyFieldEvidence)
+        self.assertIn("scope {'countries': ['Germany']}", model_admin.confirmation_label(claim))
+        CompanyFieldEvidence.objects.filter(pk=claim.pk).update(
+            scope_json={"countries": []}
+        )
+        claim.refresh_from_db()
+        self.assertIn("CHANGES the accepted scope", model_admin.confirmation_label(claim))
+
+    def test_accepting_a_claim_for_the_accepted_value_keeps_its_scope(self):
+        legacy = self._make_legacy()
+        CompanyFieldEvidence.objects.filter(pk=legacy.pk).update(
+            scope_json={"countries": ["Germany"], "claimed_domain": "example.test"}
+        )
+        claim = company_evidence.queue_legacy_claim(CompanyFieldEvidence.objects.get(pk=legacy.pk))
+        self._post_action("accept_claims", [claim.pk])
+        accepted = CompanyFieldEvidence.objects.get(
+            organization=self.organization, field_key=FieldKey.RTO_POLICY,
+            state=State.ACCEPTED,
+        )
+        self.assertEqual(accepted.scope_json.get("countries"), ["Germany"])
+
+    def test_refused_scope_save_reports_no_success_and_logs_nothing(self):
+        from django.contrib.admin.models import LogEntry
+
+        CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(state=State.SUPERSEDED)
+        url = reverse("admin:crank_companyfieldevidence_change", args=[self.rto.pk])
+        before = LogEntry.objects.count()
+        response = self.client.post(
+            url, {"scope_json": json.dumps({"countries": ["Germany"]})}, follow=True
+        )
+        self.assertContains(response, "Scope not saved")
+        self.assertEqual(LogEntry.objects.count(), before)
+        self.assertFalse(
+            any("changed successfully" in m for m in self._messages(response))
+        )
+        self.assertFalse(OperationalChangeAudit.objects.filter(action="scope_change").exists())
+
+    def test_race_refused_scope_save_suppresses_log_and_success_message(self):
+        from django.contrib.admin.sites import AdminSite
+        from django.test import RequestFactory
+
+        from crank.admin import CompanyFieldEvidenceAdmin
+
+        stale = CompanyFieldEvidence.objects.get(pk=self.rto.pk)
+        stale.scope_json = {"countries": ["Germany"]}
+        CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(state=State.SUPERSEDED)
+        request = RequestFactory().post("/admin/")
+        request.user = self.staff
+        model_admin = CompanyFieldEvidenceAdmin(CompanyFieldEvidence, AdminSite())
+        model_admin.message_user = lambda *a, **k: None
+        model_admin.save_model(request, stale, None, True)
+        self.assertTrue(request._scope_save_refused)
+        self.assertIsNone(model_admin.log_change(request, stale, "changed"))
+        response = model_admin.response_change(request, stale)
+        self.assertEqual(response.status_code, 302)
+
+    def test_queue_filter_marks_the_effective_selection(self):
+        response = self.client.get(self.url, {"state__exact": "accepted"})
+        choices = list(
+            next(
+                f for f in response.context["cl"].filter_specs
+                if f.__class__.__name__ == "OpenClaimFilter"
+            ).choices(response.context["cl"])
+        )
+        self.assertFalse(any(c["selected"] for c in choices))
+        default = self.client.get(self.url)
+        choices = list(
+            next(
+                f for f in default.context["cl"].filter_specs
+                if f.__class__.__name__ == "OpenClaimFilter"
+            ).choices(default.context["cl"])
+        )
+        self.assertEqual(sum(1 for c in choices if c["selected"]), 1)
+
+    def test_empty_selection_reports_no_changes(self):
+        from django.contrib.admin.sites import AdminSite
+        from django.test import RequestFactory
+
+        from crank.admin import CompanyFieldEvidenceAdmin
+
+        model_admin = CompanyFieldEvidenceAdmin(CompanyFieldEvidence, AdminSite())
+        request = RequestFactory().post(self.url, {"confirm": "yes"})
+        request.user = self.staff
+        messages = []
+        model_admin.message_user = lambda _r, text, **_k: messages.append(text)
+        model_admin.accept_claims(request, CompanyFieldEvidence.objects.none())
+        self.assertEqual(len(messages), 1)
+        self.assertIn("No changes made", messages[0])
+
+    def test_accepting_an_observation_with_a_rejected_value_is_refused(self):
+        self._post_action("accept_claims", [self.rto.pk])
+        crawl_company_profile(
+            self.source, client=FakeClient([profile(rto_evidence="Hybrid")]),
+        )
+        claim = CompanyFieldEvidence.objects.get(value_text="Hybrid", state__in=company_evidence.OPEN_CLAIM_STATES)
+        self._post_action("reject_claims", [claim.pk])
+        observation = CompanyProfileObservation.objects.filter(
+            organization=self.organization, rto_evidence="Hybrid"
+        ).latest("id")
+        url = reverse("admin:crank_companyprofileobservation_changelist")
+        response = self.client.post(
+            url,
+            {"action": "accept_observations", ACTION_CHECKBOX_NAME: [observation.pk],
+             "index": 0, "confirm": "yes"},
+            follow=True,
+        )
+        observation.refresh_from_db()
+        self.assertNotEqual(observation.status, CompanyProfileObservation.Status.ACCEPTED)
+        self.assertTrue(any("reject" in m.lower() for m in self._messages(response)))
+        self.assertEqual(
+            CompanyFieldEvidence.objects.get(
+                organization=self.organization, field_key=FieldKey.RTO_POLICY,
+                state=State.ACCEPTED,
+            ).pk,
+            self.rto.pk,
+        )
+
+    def test_observation_confirmation_lists_carried_values(self):
+        self._post_action("accept_claims", [self.rto.pk])
+        crawl_company_profile(
+            self.source, client=FakeClient([profile(rto_evidence="Office five days")]),
+        )
+        observation = CompanyProfileObservation.objects.filter(
+            organization=self.organization
+        ).latest("id")
+        url = reverse("admin:crank_companyprofileobservation_changelist")
+        response = self.client.post(
+            url,
+            {"action": "accept_observations", ACTION_CHECKBOX_NAME: [observation.pk], "index": 0},
+        )
+        self.assertContains(response, "Office five days")
+        self.assertContains(response, "verifies policy fact")
+
+    def test_accepting_an_observation_restates_other_pages_claims(self):
+        self._post_action("accept_claims", [self.rto.pk])
+        twin = self._second_rto_claim("Five days in office", "https://other.example.test/about")
+        observation = self._new_observation_review("accept_observations")
+        twin.refresh_from_db()
+        self.assertEqual(observation.status, CompanyProfileObservation.Status.ACCEPTED)
+        self.assertEqual(twin.state, State.SUPERSEDED)
+        audit = OperationalChangeAudit.objects.get(
+            target_type="company_profile_observation", target_id=str(observation.pk)
+        )
+        self.assertIn(twin.pk, audit.new_value["claims_closed"])
+
+    def test_locked_scope_refusal_rolls_back_the_observation_accept(self):
+        from unittest import mock
+
+        self._post_action("accept_claims", [self.rto.pk])
+        with mock.patch.object(
+            company_evidence,
+            "accept_observation_fields",
+            side_effect=company_evidence.EvidenceNotAcceptable("scoped"),
+        ):
+            observation = self._new_observation_review("accept_observations")
+        self.assertNotEqual(observation.status, CompanyProfileObservation.Status.ACCEPTED)
+        self.assertFalse(
+            OperationalChangeAudit.objects.filter(
+                target_type="company_profile_observation", target_id=str(observation.pk)
+            ).exists()
+        )
+        self.rto.refresh_from_db()
+        self.assertEqual(self.rto.state, State.ACCEPTED)
+
+    def test_observation_label_shows_kept_scope_and_handles_unresolved_identity(self):
+        self._post_action("accept_claims", [self.rto.pk])
+        CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(
+            scope_json={"countries": ["Germany"], "claimed_domain": "example.test"}
+        )
+        crawl_company_profile(self.source, client=FakeClient([profile()]))
+        observation = CompanyProfileObservation.objects.filter(
+            organization=self.organization
+        ).latest("id")
+        model_admin = admin_site_registry(CompanyProfileObservation)
+        self.assertIn("keeps scope", model_admin.confirmation_label(observation))
+        observation.organization = None
+        label = model_admin.confirmation_label(observation)
+        self.assertNotIn("accepting records", label)
+
+    def test_relation_column_for_a_reviewed_accepted_value(self):
+        self._post_action("accept_claims", [self.rto.pk])
+        twin = CompanyFieldEvidence(
+            organization=self.organization,
+            field_key=FieldKey.RTO_POLICY,
+            value_text=self.rto.value_text,
+            state=State.PENDING,
+        )
+        model_admin = admin_site_registry(CompanyFieldEvidence)
+        self.assertEqual(model_admin.relation_to_accepted(twin), "matches reviewed value")
+
+    def test_queueing_skips_rows_that_are_not_legacy(self):
+        self._post_action("accept_claims", [self.rto.pk])
+        reviewed = CompanyFieldEvidence.objects.get(pk=self.rto.pk)
+        self.assertIsNone(company_evidence.queue_legacy_claim(reviewed))
+
+    def test_legacy_evidence_review_command_lists_and_queues(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        legacy = self._make_legacy()
+        out = StringIO()
+        call_command("legacy_evidence_review", stdout=out)
+        self.assertIn(str(legacy.pk), out.getvalue())
+        self.assertIn("1 legacy unreviewed row(s); 0 claim(s) queued.", out.getvalue())
+        out = StringIO()
+        call_command("legacy_evidence_review", "--queue", stdout=out)
+        self.assertIn("1 claim(s) queued.", out.getvalue())
+        out = StringIO()
+        call_command("legacy_evidence_review", "--queue", stdout=out)
+        self.assertIn("0 claim(s) queued.", out.getvalue())
+        self.assertEqual(
+            CompanyFieldEvidence.objects.filter(
+                field_key=FieldKey.RTO_POLICY, state=State.PENDING
+            ).count(),
+            1,
+        )
+
+
+def admin_site_registry(model):
+    from django.contrib import admin
+
+    return admin.site._registry[model]
 
 
 @override_settings(FIRECRAWL_MAX_PAGES=3, FIRECRAWL_CREDIT_BUDGET=3, CACHES=LOCMEM)

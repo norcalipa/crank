@@ -413,7 +413,7 @@ class CompanyCrawlerTests(TestCase):
         self.assertEqual(approved.last_checked_at, day_two)
         self.assertFalse(self._rto(organization).exists())
 
-    def test_identity_conflict_does_not_reverify(self):
+    def test_substantive_page_change_does_not_reverify(self):
         organization = Organization.objects.create(
             name="Example Labs", url="https://example.test"
         )

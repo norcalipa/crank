@@ -120,10 +120,98 @@ class ClaimToMatchingTests(TestCase):
         self.assertLessEqual(len(claim.value_text), MAX_EVIDENCE)
 
     def test_oversized_rto_text_is_not_stored_as_a_claim(self):
-        before = CompanyProfileObservation.objects.count()
-        self._crawl(rto_evidence="Remote " * 1000)
-        stored = CompanyFieldEvidence.objects.filter(
-            organization=self.organization, field_key=FieldKey.RTO_POLICY
+        result = crawl_company_profile(
+            self.source, client=FakeClient([profile(rto_evidence="Remote " * 1000)])
         )
-        self.assertTrue(all(len(row.value_text) <= MAX_EVIDENCE for row in stored))
-        self.assertGreaterEqual(CompanyProfileObservation.objects.count(), before)
+        self.assertEqual(result.errors, 1)
+        self.assertEqual(CompanyProfileObservation.objects.count(), 0)
+        self.assertFalse(
+            CompanyFieldEvidence.objects.filter(field_key=FieldKey.RTO_POLICY).exists()
+        )
+
+    def _two_pages(self, rto="Remote first", **changes):
+        other = "https://jobs.example.test/culture"
+        first = profile(rto_evidence=rto, **changes)
+        second = profile(career_url=other, rto_evidence=rto, description="Culture page.", **changes)
+        return FakeClient([first, second])
+
+    def test_every_page_of_a_multi_page_crawl_reverifies_a_reviewed_fact(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        crawl_company_profile(self.source, client=self._two_pages())
+        self.assertEqual(
+            CompanyFieldEvidence.objects.filter(
+                field_key=FieldKey.RTO_POLICY, state=State.PENDING
+            ).count(),
+            2,
+        )
+        first = CompanyFieldEvidence.objects.get(
+            field_key=FieldKey.RTO_POLICY, source_url="https://jobs.example.test/about"
+        )
+        accepted = company_evidence.accept_claim(first, reviewer=self.staff)
+        self.assertFalse(self._open_rto().exists())
+
+        later = timezone.now() + timedelta(days=3)
+        crawl_company_profile(self.source, client=self._two_pages(), now=later)
+        accepted.refresh_from_db()
+        self.assertEqual(accepted.last_verified_at, later)
+        self.assertFalse(self._open_rto().exists())
+
+        # The second page alone (not the org's latest observation) still counts.
+        much_later = later + timedelta(days=3)
+        crawl_company_profile(
+            self.source,
+            client=FakeClient([self._two_pages().data[1]]),
+            now=much_later,
+        )
+        accepted.refresh_from_db()
+        self.assertEqual(accepted.last_verified_at, much_later)
+
+    def _open_rto(self):
+        return CompanyFieldEvidence.objects.filter(
+            organization=self.organization,
+            field_key=FieldKey.RTO_POLICY,
+            state__in=company_evidence.OPEN_CLAIM_STATES,
+        )
+
+    def test_repeating_a_conflicted_observation_closes_claims_for_other_values(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        self._crawl()
+        company_evidence.accept_claim(self._rto_claim(), reviewer=self.staff)
+        t1 = timezone.now() + timedelta(days=1)
+        t2 = timezone.now() + timedelta(days=2)
+        t3 = timezone.now() + timedelta(days=3)
+        crawl_company_profile(self.source, client=FakeClient([profile(rto_evidence="Hybrid")]), now=t1)
+        crawl_company_profile(self.source, client=FakeClient([profile(rto_evidence="Office five days")]), now=t2)
+        self.assertEqual(self._open_rto().get().value_text, "Office five days")
+
+        result = crawl_company_profile(
+            self.source, client=FakeClient([profile(rto_evidence="Hybrid")]), now=t3
+        )
+
+        self.assertEqual(result.duplicates, 1)
+        self.assertEqual(self._open_rto().get().value_text, "Hybrid")
+        stale = CompanyFieldEvidence.objects.get(value_text="Office five days")
+        self.assertEqual(stale.state, State.SUPERSEDED)
+
+    def test_reverting_to_a_rejected_value_closes_the_stale_open_claim(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        self._crawl()
+        company_evidence.accept_claim(self._rto_claim(), reviewer=self.staff)
+        t1 = timezone.now() + timedelta(days=1)
+        crawl_company_profile(self.source, client=FakeClient([profile(rto_evidence="Hybrid")]), now=t1)
+        company_evidence.reject_claim(self._open_rto().get(), reviewer=self.staff)
+        t2 = timezone.now() + timedelta(days=2)
+        crawl_company_profile(self.source, client=FakeClient([profile(rto_evidence="Office five days")]), now=t2)
+        self.assertEqual(self._open_rto().get().value_text, "Office five days")
+        t3 = timezone.now() + timedelta(days=3)
+        crawl_company_profile(self.source, client=FakeClient([profile(rto_evidence="Hybrid")]), now=t3)
+        self.assertFalse(self._open_rto().exists())

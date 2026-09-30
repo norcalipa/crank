@@ -603,7 +603,7 @@ class ClaimTests(TestCase):
             FieldKey.RTO_POLICY,
             value=value,
             observation=observation or self.observation,
-            state=state,
+            conflicted=state == State.CONFLICTED,
         )
 
     def test_claim_is_open_and_never_resolves(self):
@@ -621,25 +621,19 @@ class ClaimTests(TestCase):
     def test_claim_validation(self):
         from crank.services.company_evidence import record_claim
 
-        for kwargs in (
-            {"state": State.ACCEPTED},
-            {"state": State.PENDING, "value": ""},
-        ):
-            params = {"value": "x", "state": State.PENDING, **kwargs}
-            with pytest.raises(ValueError):
-                record_claim(
-                    self.organization,
-                    FieldKey.RTO_POLICY,
-                    observation=self.observation,
-                    **params,
-                )
+        with pytest.raises(ValueError):
+            record_claim(
+                self.organization,
+                FieldKey.RTO_POLICY,
+                observation=self.observation,
+                value="",
+            )
         with pytest.raises(ValueError):
             record_claim(
                 self.organization,
                 "not_a_field",
                 value="x",
                 observation=self.observation,
-                state=State.PENDING,
             )
 
     def test_repeat_claim_refreshes_and_a_new_value_opens_a_new_claim(self):
@@ -774,7 +768,7 @@ class ClaimReconciliationTests(TestCase):
 
         claim = record_claim(
             self.organization, FieldKey.RTO_POLICY, value=value,
-            observation=self.observation, state=State.PENDING,
+            observation=self.observation,
         )
         return accept_claim(claim, reviewer=self.reviewer)
 
@@ -884,7 +878,7 @@ class ClaimReconciliationTests(TestCase):
             action="claim_accepted", target_id=str(second.pk)
         )
         self.assertEqual(audit.new_value["superseded"], [first.pk])
-        self.assertEqual(audit.old_value["state"], State.PENDING)
+        self.assertEqual(audit.old_value["state"], State.CONFLICTED)
         self.assertTrue(is_reviewed(second))
 
     def test_validate_claim_scope(self):
@@ -945,3 +939,258 @@ def is_reviewed(row):
     from crank.services.company_evidence import is_staff_reviewed
 
     return is_staff_reviewed(row)
+
+
+class RoundTwoReviewTests(TestCase):
+    """Adversarial-review round 2 fixes for #474."""
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        self.organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        self.reviewer = User.objects.create(username="r2-staff")
+
+    def _legacy(self, value="Remote first", **fields):
+        observation = make_observation(
+            self.organization, rto_evidence=value, fingerprint=f"legacy-{value}", **fields
+        )
+        accept_observation_fields(observation)
+        return CompanyFieldEvidence.objects.get(
+            organization=self.organization, field_key=FieldKey.RTO_POLICY, state=State.ACCEPTED
+        ), observation
+
+    def _observe(self, value, observation, **kwargs):
+        from crank.services.company_evidence import observe_review_field
+
+        return observe_review_field(
+            self.organization, FieldKey.RTO_POLICY, value=value, observation=observation, **kwargs
+        )
+
+    def _open(self):
+        return CompanyFieldEvidence.objects.filter(
+            organization=self.organization,
+            field_key=FieldKey.RTO_POLICY,
+            state__in=OPEN_CLAIM_STATES,
+        )
+
+    def test_rejecting_a_legacy_claim_retracts_the_unreviewed_row(self):
+        from crank.services.company_evidence import queue_legacy_claim, reject_claim
+
+        legacy, _ = self._legacy()
+        self.assertIn(FieldKey.RTO_POLICY, resolve_field_evidence(self.organization))
+        claim = queue_legacy_claim(legacy)
+        events = PublicationEvent.objects.count()
+
+        reject_claim(claim, reviewer=self.reviewer)
+
+        legacy.refresh_from_db()
+        claim.refresh_from_db()
+        self.assertEqual(legacy.state, State.SUPERSEDED)
+        self.assertEqual(claim.state, State.REJECTED)
+        self.assertNotIn(FieldKey.RTO_POLICY, resolve_field_evidence(self.organization))
+        self.assertEqual(PublicationEvent.objects.count(), events + 1)
+        audit = OperationalChangeAudit.objects.get(
+            action="claim_rejected", target_id=str(claim.pk)
+        )
+        self.assertEqual(audit.new_value["retracted"], [legacy.pk])
+
+    def test_rejecting_a_claim_never_touches_a_reviewed_row(self):
+        from crank.services.company_evidence import (
+            accept_claim,
+            queue_legacy_claim,
+            reject_claim,
+        )
+
+        legacy, observation = self._legacy()
+        accepted = accept_claim(queue_legacy_claim(legacy), reviewer=self.reviewer)
+        self._observe("Hybrid", observation)
+        reject_claim(self._open().get(), reviewer=self.reviewer)
+        accepted.refresh_from_db()
+        self.assertEqual(accepted.state, State.ACCEPTED)
+
+    def test_accepting_an_unchanged_value_preserves_the_scope(self):
+        legacy, _ = self._legacy()
+        CompanyFieldEvidence.objects.filter(pk=legacy.pk).update(
+            scope_json={"countries": ["Germany"], "claimed_domain": "example.test"}
+        )
+        again = make_observation(self.organization, fingerprint="again")
+        created = accept_observation_fields(again)
+        row = next(r for r in created if r.field_key == FieldKey.RTO_POLICY)
+        self.assertEqual(row.scope_json["countries"], ["Germany"])
+
+    def test_a_different_value_over_a_scoped_row_is_refused_or_skipped(self):
+        legacy, _ = self._legacy()
+        CompanyFieldEvidence.objects.filter(pk=legacy.pk).update(
+            scope_json={"countries": ["Germany"]}
+        )
+        changed = make_observation(
+            self.organization, rto_evidence="Office five days", fingerprint="chg"
+        )
+        with pytest.raises(EvidenceNotAcceptable):
+            accept_observation_fields(changed)
+        created = accept_observation_fields(changed, scoped_conflict="skip")
+        self.assertNotIn(FieldKey.RTO_POLICY, [r.field_key for r in created])
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.state, State.ACCEPTED)
+
+    def test_accept_claim_with_the_accepted_value_inherits_its_scope(self):
+        from crank.services.company_evidence import accept_claim
+
+        legacy, observation = self._legacy()
+        self._observe("Remote first", observation)  # legacy same value -> pending claim
+        claim = self._open().get()
+        CompanyFieldEvidence.objects.filter(pk=legacy.pk).update(
+            scope_json={"countries": ["Germany"]}
+        )
+        claim.refresh_from_db()
+        accepted = accept_claim(claim, reviewer=self.reviewer)
+        self.assertEqual(accepted.scope_json.get("countries"), ["Germany"])
+        audit = OperationalChangeAudit.objects.get(
+            action="claim_accepted", target_id=str(accepted.pk)
+        )
+        self.assertEqual(audit.new_value["scope_json"].get("countries"), ["Germany"])
+
+    def test_explicit_empty_countries_widens_the_scope(self):
+        from crank.services.company_evidence import accepted_scope_for_claim
+
+        legacy, observation = self._legacy()
+        CompanyFieldEvidence.objects.filter(pk=legacy.pk).update(
+            scope_json={"countries": ["Germany"]}
+        )
+        legacy.refresh_from_db()
+        claim = CompanyFieldEvidence(
+            value_text=legacy.value_text, scope_json={"countries": []}
+        )
+        self.assertEqual(accepted_scope_for_claim(claim, legacy)["countries"], [])
+        claim.scope_json = {}
+        self.assertEqual(accepted_scope_for_claim(claim, legacy)["countries"], ["Germany"])
+
+    def test_reverting_to_a_rejected_value_still_closes_stale_claims(self):
+        from crank.services.company_evidence import reject_claim
+
+        _, observation = self._legacy("Remote first")
+        self._observe("Hybrid", observation)
+        hybrid = self._open().get()
+        reject_claim(hybrid, reviewer=self.reviewer)
+        self._observe("Office five days", observation)
+        stale = self._open().get()
+        self.assertEqual(stale.value_text, "Office five days")
+
+        self._observe("Hybrid", observation)  # the rejected value returns
+
+        self.assertFalse(self._open().exists())
+        stale.refresh_from_db()
+        self.assertEqual(stale.state, State.SUPERSEDED)
+
+    def test_a_rejection_stops_suppressing_after_the_window(self):
+        from crank.services.company_evidence import (
+            REJECTION_SUPPRESSION_DAYS,
+            reject_claim,
+        )
+
+        _, observation = self._legacy("Remote first")
+        self._observe("Hybrid", observation)
+        rejected = reject_claim(self._open().get(), reviewer=self.reviewer)
+        self._observe("Hybrid", observation)
+        self.assertFalse(self._open().exists())
+        later = timezone.now() + timedelta(days=REJECTION_SUPPRESSION_DAYS + 1)
+        self._observe("Hybrid", observation, now=later)
+        reopened = self._open().get()
+        self.assertEqual(reopened.value_text, "Hybrid")
+        self.assertNotEqual(reopened.pk, rejected.pk)
+
+    def test_rejected_value_conflicts_lists_recent_rejections_only(self):
+        from crank.services.company_evidence import (
+            reject_claim,
+            rejected_value_conflicts,
+        )
+
+        _, observation = self._legacy("Remote first")
+        self._observe("Hybrid", observation)
+        rejected = reject_claim(self._open().get(), reviewer=self.reviewer)
+        carrier = make_observation(
+            self.organization, rto_evidence="Hybrid", fingerprint="carrier"
+        )
+        self.assertEqual(rejected_value_conflicts(carrier), [FieldKey.RTO_POLICY])
+        CompanyFieldEvidence.objects.filter(pk=rejected.pk).update(
+            last_checked_at=timezone.now() - timedelta(days=400)
+        )
+        self.assertEqual(rejected_value_conflicts(carrier), [])
+
+    def test_manual_correction_rows_count_as_staff_reviewed(self):
+        from crank.services.company_evidence import is_staff_reviewed
+
+        legacy, _ = self._legacy()
+        self.assertFalse(is_staff_reviewed(legacy))
+        CompanyFieldEvidence.objects.filter(pk=legacy.pk).update(
+            observation=None, validation_version="manual-correction.v1"
+        )
+        legacy.refresh_from_db()
+        self.assertTrue(is_staff_reviewed(legacy))
+        self.assertNotIn(legacy.pk, [r.pk for r in self._legacy_rows()])
+
+    def _legacy_rows(self):
+        from crank.services.company_evidence import legacy_unreviewed_rows
+
+        return legacy_unreviewed_rows(self.organization)
+
+    def test_legacy_rows_and_queueing_are_idempotent(self):
+        from crank.services.company_evidence import queue_legacy_claim
+
+        legacy, _ = self._legacy()
+        self.assertIn(legacy.pk, [r.pk for r in self._legacy_rows()])
+        claim = queue_legacy_claim(legacy)
+        self.assertEqual(claim.state, State.PENDING)
+        self.assertEqual(claim.scope_json, {})
+        self.assertIsNone(queue_legacy_claim(legacy))
+        claim.refresh_from_db()
+        self.assertEqual(self._open().count(), 1)
+
+    def test_accepting_a_claim_audits_full_hash_and_closed_claims(self):
+        from crank.services.company_evidence import accept_claim, value_digest
+
+        _, observation = self._legacy("Remote first")
+        long_value = "Hybrid " + "x" * 400
+        other = make_observation(
+            self.organization, source_url="https://o.example.test/a", fingerprint="oo",
+            rto_evidence=long_value,
+        )
+        self._observe(long_value, other)
+        self._observe(long_value, observation)
+        claim = self._open().get(value_text=long_value, source_url=observation.source_url)
+        twin = self._open().get(value_text=long_value, source_url=other.source_url)
+        accepted = accept_claim(claim, reviewer=self.reviewer)
+        audit = OperationalChangeAudit.objects.get(
+            action="claim_accepted", target_id=str(accepted.pk)
+        )
+        self.assertEqual(audit.new_value["value_sha256"], value_digest(long_value))
+        self.assertEqual(audit.new_value["value_length"], len(long_value))
+        self.assertEqual(audit.new_value["claims_closed"], [twin.pk])
+
+    def test_update_claim_scope_audits_inside_the_transaction_with_the_reviewer(self):
+        from crank.services.company_evidence import queue_legacy_claim, update_claim_scope
+
+        legacy, _ = self._legacy()
+        claim = queue_legacy_claim(legacy)
+        update_claim_scope(claim, {"countries": ["Germany"]}, reviewer=self.reviewer)
+        audit = OperationalChangeAudit.objects.get(
+            action="scope_change", target_id=str(claim.pk)
+        )
+        self.assertEqual(audit.actor, self.reviewer)
+        self.assertEqual(audit.new_value["scope_json"], {"countries": ["Germany"]})
+
+    def test_record_claim_applies_the_per_field_rules(self):
+        from crank.services.company_evidence import record_claim
+
+        legacy, observation = self._legacy("Remote first")
+        from crank.services.company_evidence import accept_claim, queue_legacy_claim
+
+        accept_claim(queue_legacy_claim(legacy), reviewer=self.reviewer)
+        self.assertIsNone(
+            record_claim(
+                self.organization, FieldKey.RTO_POLICY, value="Remote first",
+                observation=observation,
+            )
+        )

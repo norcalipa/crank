@@ -393,12 +393,36 @@ numbered merge migration if a head split remains, keeping
   safe. Existing accepted rows are unchanged.
 - **Rollback** is a code redeploy: old code filters `state=accepted`, so it
   ignores pending, rejected and conflicted rows.
-- **Legacy auto-verified rows.** Accepted rows written before this change
-  carry no staff review. "Staff-reviewed" is derived, not stored: an accepted
-  row counts as reviewed when a confirmed `claim_accepted` or
-  `observation_accepted` audit row exists for it, or its observation is
-  `accepted`. The next crawl that reads the same value from a legacy,
-  unreviewed row opens a `pending` claim so it reaches the review queue; the
-  row itself stays accepted and in effect until staff decide. Only reviewed
-  rows are re-verified (freshness advanced) by later crawls that read the
-  same value. No backfill is needed.
+- **Legacy auto-verified rows.** Accepted RTO, funding, public-status and
+  accelerated-vesting rows written before this change carry no staff review.
+  "Staff-reviewed" is derived, not stored: an accepted row counts as reviewed
+  when a confirmed `claim_accepted` or `observation_accepted` audit row exists
+  for it, its observation is `accepted`, or it is a staff correction (no
+  observation and a `manual-` validation version, such as #528's
+  `manual-correction.v1`) - the rule is source-agnostic. Until staff decide,
+  a legacy row stays accepted and in effect (it still drives matching).
+  Only reviewed rows are re-verified by later crawls that read the same value.
+- **Backfill for organizations that are never recrawled.** A crawl reading the
+  same value opens a `pending` claim for a legacy row, but an organization no
+  crawl revisits would never reach the queue. Triage is therefore explicit:
+  `python manage.py legacy_evidence_review` lists every legacy unreviewed row
+  (org, field, row id, value); add `--queue` to open a `pending` claim for each
+  (idempotent, no DDL). In the admin, `Company field evidence` has a
+  `legacy rows` filter (`?legacy=unreviewed`) and a "vs accepted" column
+  ("legacy value in effect", "matches reviewed value", "differs from
+  accepted"). Accepting a queued claim makes the value reviewed and keeps its
+  existing country/role scope; rejecting it retracts the legacy row (it becomes
+  superseded, the field is unverified and stops driving matching) and is audited.
+- **Rejections are not permanent.** A rejected value is suppressed for the same
+  organization, field, source and value for 30 days after the rejection or the
+  last time the crawl saw it (`REJECTION_SUPPRESSION_DAYS`); afterwards the
+  page may reopen it for review. Rejecting an observation supersedes its claims
+  instead of rejecting them, so it never blocks other pages' values. Accepting
+  an observation is refused for a recently rejected value or over a
+  scope-narrowed row with a different value, and its confirmation lists the
+  values it carries and the scope it keeps.
+- **Bulk claim review.** `select across all pages` is refused for claim actions;
+  the confirmation is bound to the selected claims' ids, value hashes and
+  states, and the accept is refused if any changed before confirming.
+  Selecting several claims with the same value for one field is allowed;
+  different values for one field are refused.

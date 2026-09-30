@@ -97,3 +97,11 @@ def test_production_registry_registers_no_blocked_source_adapter():
     for key in REGISTRY.keys():
         stem = re.sub(r"[^a-z0-9]", "", key.split(".")[0].lower())
         assert stem not in blocked, f"adapter {key!r} is registered for a blocked/pending source"
+
+
+def test_lifecycle_and_financials_does_not_accept_compensation_benchmarks():
+    from crank.agents.sources.semantics import MeasurementKind, measurement_allows
+
+    assert not measurement_allows(MeasurementKind.COMPENSATION_BENCHMARK, "Lifecycle and Financials")
+    assert measurement_allows(MeasurementKind.FINANCIAL_DATA, "Lifecycle and Financials")
+    assert measurement_allows(MeasurementKind.COMPENSATION_BENCHMARK, "Total Compensation")
