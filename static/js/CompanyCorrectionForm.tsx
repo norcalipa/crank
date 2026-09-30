@@ -4,6 +4,7 @@ import * as React from 'react';
 import {createPortal} from 'react-dom';
 import {CORRECTABLE_FIELD_LABELS, fieldKeyLabel} from './labels';
 import {lockBackground, unlockBackground} from './modalIsolation';
+import {getCachedProvenance, setCachedProvenance} from './provenanceCache';
 import {COMPANY_OPEN_EVENT} from './suggestCompany/controller';
 import type {SuggestCompanyContext} from './suggestCompany/controller';
 
@@ -65,9 +66,9 @@ export const describeCurrentValue = (
     provenance: ProvenanceState, fieldKey: string
 ): {
     kind: 'loading' | 'unavailable' | 'missing' | 'verified' | 'unselected';
-    text: string; value: string; meta: string; stale: boolean; date: string;
+    text: string; value: string; meta: string; domain: string; stale: boolean; date: string;
 } => {
-    const blank = {value: '', meta: '', stale: false, date: ''};
+    const blank = {value: '', meta: '', domain: '', stale: false, date: ''};
     if (!fieldKey) {
         return {kind: 'unselected', text: 'Choose a field to see its current value', ...blank};
     }
@@ -85,6 +86,7 @@ export const describeCurrentValue = (
             kind: 'verified',
             value: row.value,
             meta: source,
+            domain: row.source_domain || '',
             stale: row.stale,
             date,
             text: row.stale ? `${row.value} · ${verified} · Stale` : `${row.value} · ${verified}`,
@@ -115,16 +117,19 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
     const [authRequired, setAuthRequired] = React.useState(false);
     const [saved, setSaved] = React.useState<SavedCorrection | null>(null);
     const [duplicate, setDuplicate] = React.useState(false);
+    const [rateLimited, setRateLimited] = React.useState(false);
 
     const dialogRef = React.useRef<HTMLDivElement>(null);
     const closeButtonRef = React.useRef<HTMLButtonElement>(null);
+    const backButtonRef = React.useRef<HTMLButtonElement>(null);
     const openerRef = React.useRef<HTMLElement | null>(null);
     const submitInFlight = React.useRef(false);
     const idempotencyKey = React.useRef(newIdempotencyKey());
 
     React.useEffect(() => {
         let cancelled = false;
-        setProvenance({status: 'loading'});
+        const cached = getCachedProvenance(organizationId);
+        setProvenance(cached ? {status: 'ready', data: cached} : {status: 'loading'});
         fetch(`/api/organizations/${organizationId}/provenance/`)
             .then(response => {
                 if (!response.ok) {
@@ -133,6 +138,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                 return response.json();
             })
             .then(data => {
+                setCachedProvenance(organizationId, data);
                 if (!cancelled) setProvenance({status: 'ready', data});
             })
             .catch(() => {
@@ -166,8 +172,16 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
     }, [organizationId]);
 
     React.useEffect(() => {
-        closeButtonRef.current?.focus();
+        const frame = window.requestAnimationFrame(() => closeButtonRef.current?.focus());
+        return () => window.cancelAnimationFrame(frame);
     }, []);
+
+    const showBack = !!saved || duplicate;
+    React.useEffect(() => {
+        if (showBack) {
+            backButtonRef.current?.focus();
+        }
+    }, [showBack]);
 
     React.useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
@@ -229,9 +243,20 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         if (submitInFlight.current) {
             return;
         }
-        if (!fieldKey) {
+        const clientErrors: Record<string, string[]> = {};
+        if (!fieldKey) clientErrors.field_key = ['Choose what to correct.'];
+        if (!proposedValue.trim()) clientErrors.proposed_value = ['Enter the corrected value.'];
+        if (!evidenceUrl.trim()) {
+            clientErrors.evidence_url = ['Add a public link that starts with https://.'];
+        } else if (!/^https:\/\//i.test(evidenceUrl.trim())) {
+            clientErrors.evidence_url = ['Use a link that starts with https://.'];
+        }
+        if (scopeLevel !== 'company' && !scopeValue.trim()) {
+            clientErrors.scope_value = ['Say which one this applies to.'];
+        }
+        if (Object.keys(clientErrors).length) {
             setError('Please correct the highlighted fields.');
-            setFieldErrors({field_key: ['Choose what to correct.']});
+            setFieldErrors(clientErrors);
             return;
         }
         submitInFlight.current = true;
@@ -240,6 +265,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         setFieldErrors({});
         setAuthRequired(false);
         setDuplicate(false);
+        setRateLimited(false);
         try {
             const response = await fetch('/api/company-corrections/', {
                 method: 'POST',
@@ -268,6 +294,12 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                 setAuthRequired(true);
             } else if (response.status === 409) {
                 setDuplicate(true);
+            } else if (response.status === 429) {
+                const wait = Number(response.headers.get('Retry-After'));
+                const minutes = Number.isFinite(wait) && wait > 0 ? Math.ceil(wait / 60) : 0;
+                setRateLimited(true);
+                setError(`You've reached the hourly limit for suggestions. Your draft is kept — try again ${
+                    minutes ? `in ${minutes} minute${minutes === 1 ? '' : 's'}` : 'later'}.`);
             } else {
                 setError(data.error || 'Something went wrong. Please try again.');
                 setFieldErrors(data.field_errors || {});
@@ -302,8 +334,9 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     <span className="fw-semibold">{current.value}</span>
                     {' '}
                     <span className="small text-body-secondary">
-                        · {current.meta}last verified{' '}
-                        <span className="text-nowrap">{current.date}</span>
+                        {'· '}
+                        {current.domain && <><span className="text-nowrap">from {current.domain}</span>{' · '}</>}
+                        <span className="text-nowrap">last verified {current.date}</span>
                     </span>
                     {current.stale && <>{' '}<span className="badge text-bg-warning">Stale</span></>}
                 </span>
@@ -353,7 +386,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                                 </p>
                             </div>
                         </div>
-                        <dl className="mb-0">
+                        <dl className="correction-summary mb-0">
                             <dt>Your suggestion · {fieldKeyLabel(fieldKey)}</dt>
                             <dd className="d-flex flex-wrap align-items-center gap-2">
                                 <span data-testid="correction-saved-proposed">{saved?.proposed_value}</span>
@@ -401,7 +434,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     <div className="correction-current" aria-labelledby="correction-current-label"
                          aria-live="polite">{renderCurrent()}</div>
                     {current.kind === 'missing' && (
-                        <div className="text-body-secondary small mt-1">Nothing is verified yet — your suggestion could be the first.</div>
+                        <div className="text-body-secondary small mt-1">Your suggestion could be the first.</div>
                     )}
                 </div>
                 <div className="mb-3">
@@ -415,19 +448,19 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     {errorFor('proposed_value')}
                 </div>
                 <div className="mb-3">
-                    <label htmlFor="correction-evidence-url" className="form-label">Evidence link (https)</label>
+                    <label htmlFor="correction-evidence-url" className="form-label">Evidence link</label>
                     <input type="url" id="correction-evidence-url" className={`form-control${invalid('evidence_url')}`}
                            data-testid="correction-evidence-url" data-field="evidence_url"
                            value={evidenceUrl} autoComplete="off"
                            aria-required="true" aria-invalid={!!fieldErrors.evidence_url}
-                           aria-describedby={['correction-evidence-help', describedBy('evidence_url')]
+                           aria-describedby={[describedBy('evidence_url'), 'correction-evidence-help']
                                .filter(Boolean).join(' ')}
                            onChange={e => setEvidenceUrl(e.target.value)}/>
+                    {errorFor('evidence_url')}
                     <div id="correction-evidence-help" className="form-text">
-                        A public page that shows the correct value (must start with https://).
+                        A public page that shows the correct value. Must start with https://.
                         We never fetch this link.
                     </div>
-                    {errorFor('evidence_url')}
                 </div>
                 <div className="mb-3">
                     <label htmlFor="correction-scope-level" className="form-label">Applies to</label>
@@ -465,7 +498,6 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         );
     }
 
-    const showBack = saved || duplicate;
     const showForm = !authRequired && !saved && !duplicate;
     return createPortal(
         <div ref={dialogRef} className="modal d-block blocking-modal" tabIndex={-1} role="dialog"
@@ -486,19 +518,19 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     {showForm && (
                         <div className="modal-footer correction-footer">
                             {error && (
-                                <div className="alert alert-danger w-100 py-2 mb-0 small" role="alert"
+                                <div className={`alert ${rateLimited ? 'alert-warning' : 'alert-danger'} w-100 py-2 mb-0 small`} role="alert"
                                      data-testid="correction-error">{error}</div>
                             )}
                             <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
                             <button type="submit" form="correction-form" className="btn btn-primary"
-                                    disabled={submitting} data-testid="correction-submit">
+                                    disabled={submitting || rateLimited} data-testid="correction-submit">
                                 {submitting ? 'Submitting…' : 'Submit suggestion'}
                             </button>
                         </div>
                     )}
                     {showBack && (
                         <div className="modal-footer">
-                            <button type="button" className="btn btn-primary" onClick={handleBack}
+                            <button ref={backButtonRef} type="button" className="btn btn-primary" onClick={handleBack}
                                     data-testid="correction-back">
                                 {backToCompany ? `Back to ${companyName}` : 'Back to results'}
                             </button>

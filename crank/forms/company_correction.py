@@ -24,3 +24,8 @@ class CompanyCorrectionForm(forms.ModelForm):
             "note",
             "idempotency_key",
         ]
+        error_messages = {
+            "field_key": {"required": "Choose what to correct."},
+            "proposed_value": {"required": "Enter the corrected value."},
+            "evidence_url": {"required": "Add a public link that starts with https://."},
+        }

@@ -893,10 +893,14 @@ body.app-nav-drawer-open {
     background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%23fff'%3e%3cpath d='M.293.293a1 1 0 0 1 1.414 0L8 6.586 14.293.293a1 1 0 1 1 1.414 1.414L9.414 8l6.293 6.293a1 1 0 0 1-1.414 1.414L8 9.414l-6.293 6.293a1 1 0 0 1-1.414-1.414L6.586 8 .293 1.707a1 1 0 0 1 0-1.414z'/%3e%3c/svg%3e");
 }
 
-.modal.blocking-modal .btn-close:focus,
-.popup-details .card-header .btn-close:focus {
-    outline: 3px solid var(--bs-warning);
-    outline-offset: 2px;
+.modal.blocking-modal .btn-close:focus-visible,
+.popup-details .card-header .btn-close:focus-visible {
+    box-shadow: none;
+}
+
+.modal.blocking-modal .btn-close:focus:not(:focus-visible),
+.popup-details .card-header .btn-close:focus:not(:focus-visible) {
+    outline: 0;
     box-shadow: none;
 }
 
@@ -3380,6 +3384,7 @@ body.assistant-open .app-content .table-responsive,
 }
 
 #job-search-chat .org-card .org-card-actions > * {
+    font-size: .875rem;
     min-block-size: 44px;
     display: inline-flex;
     align-items: center;
@@ -3392,6 +3397,17 @@ body.assistant-open .app-content .table-responsive,
     column-gap: .75rem;
     row-gap: 0;
     min-inline-size: 0;
+}
+
+.evidence-row-value > :first-child {
+    flex: 1 0 100%;
+}
+
+@media (min-width: 992px) {
+    .evidence-row-value {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) max-content;
+    }
 }
 
 .correction-current {
@@ -3407,6 +3423,29 @@ body.assistant-open .app-content .table-responsive,
 
 .correction-current .correction-skeleton {
     flex: 1 1 auto;
+}
+
+.correction-current [data-testid="correction-current-retry"] {
+    margin-block: -.375rem;
+}
+
+[data-testid="company-correction-modal"] .correction-summary dt {
+    font-size: .875rem;
+    font-weight: 400;
+    color: var(--bs-secondary-color);
+    margin-top: .75rem;
+}
+
+[data-testid="company-correction-modal"] .correction-summary dt:first-of-type {
+    margin-top: 0;
+}
+
+[data-testid="company-correction-modal"] .correction-summary dd {
+    margin-bottom: 0;
+}
+
+[data-testid="correction-status"] .small {
+    text-wrap: pretty;
 }
 
 [data-testid="company-correction-modal"] .correction-heading {
@@ -3429,11 +3468,13 @@ body.assistant-open .app-content .table-responsive,
 
 @media (max-width: 575.98px) {
     [data-testid="company-correction-modal"] .modal-footer > .btn {
-        flex: 1 1 0;
+        flex: 1 1 auto;
+        white-space: nowrap;
     }
 }
 
 [data-testid="company-correction-modal"] .modal-dialog {
+    inline-size: min(36rem, 100%);
     max-inline-size: min(36rem, 100%);
 }
 

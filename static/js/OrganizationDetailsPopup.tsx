@@ -4,6 +4,7 @@ import * as React from 'react';
 import {createPortal} from 'react-dom';
 import {lockBackground, unlockBackground} from './modalIsolation';
 import {fieldKeyLabel} from './labels';
+import {setCachedProvenance} from './provenanceCache';
 import {openSuggestCompany} from './suggestCompany/controller';
 import {openAssistant} from './workspace/store';
 import {WORKSPACE_FOCUS_EVENT} from './workspace/types';
@@ -186,6 +187,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                 .then(response => response.json())
                 .then(data => {
                     setProvenance(data);
+                    setCachedProvenance(organization.id, data);
                     setProvenanceLoading(false);
                 })
                 .catch(error => {
@@ -348,12 +350,14 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         onClose();
     };
 
-    const fieldCorrectionButton = (fieldKey: string) => isAuthenticated && (
+    const fieldCorrectionButton = (
+        fieldKey: string, verb = 'Suggest a correction', joiner = 'to'
+    ) => isAuthenticated && (
         <button type="button" className="btn btn-link p-0 suggest-correction-field correction-action"
                 data-testid={`suggest-correction-field-${fieldKey}`}
                 onClick={() => openCorrection('company_evidence', fieldKey)}>
             <i className="fa-solid fa-pen-to-square" aria-hidden="true"></i>
-            Suggest a correction<span className="visually-hidden"> to {fieldKeyLabel(fieldKey)}</span>
+            {verb}<span className="visually-hidden"> {joiner} {fieldKeyLabel(fieldKey)}</span>
         </button>
     );
 
@@ -541,7 +545,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                     <hr className="my-3" />
                     <div className="row">
                         <div className="col-12">
-                            <h3 className="h6 mb-2">Data Freshness & Sources</h3>
+                            <h3 className="h5 mt-3 mb-2">Data Freshness & Sources</h3>
                             {provenanceLoading ? (
                                 <p data-testid="provenance-loading">Loading provenance…</p>
                             ) : provenance ? (
@@ -611,13 +615,13 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                                             </span>
                                                             <span className="text-muted small">
                                                                 {' '}— {fieldEvidence.source_domain || 'unknown source'},
-                                                                observed {formatDate(fieldEvidence.observed_at)}
+                                                                last verified <span className="text-nowrap">{formatDate(fieldEvidence.last_verified_at)}</span>
                                                                 {formatScope(fieldEvidence.scope)}
                                                             </span>
                                                             {fieldEvidence.stale && (
                                                                 <span className="badge bg-warning text-dark ms-1"
                                                                       data-testid={`field-stale-${fieldEvidence.field_key}`}>
-                                                                    Stale — last verified {formatDate(fieldEvidence.last_verified_at)}
+                                                                    Stale
                                                                 </span>
                                                             )}
                                                         </span>
@@ -637,7 +641,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                                     </div>
                                                     <div className="col-7 evidence-row-value">
                                                         <span className="text-muted">No accepted evidence</span>
-                                                        {fieldCorrectionButton(fieldKey)}
+                                                        {fieldCorrectionButton(fieldKey, 'Suggest a value', 'for')}
                                                     </div>
                                                 </div>
                                             ))}

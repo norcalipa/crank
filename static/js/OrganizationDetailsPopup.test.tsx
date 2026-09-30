@@ -6,6 +6,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import * as React from 'react';
 
 import OrganizationDetailsPopup from './OrganizationDetailsPopup';
+import {getCachedProvenance} from './provenanceCache';
 import * as suggestCompanyController from './suggestCompany/controller';
 import {getWorkspaceSnapshot, resetWorkspaceForTests} from './workspace/store';
 
@@ -868,7 +869,7 @@ describe('OrganizationDetailsPopup', () => {
         expect(screen.getByTestId('field-evidence-rto_policy')).toBeInTheDocument();
         expect(screen.getByTestId('field-value-rto_policy')).toHaveTextContent('Remote first');
         expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('example.com');
-        expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('observed');
+        expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('last verified');
         expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('countries: US');
         expect(screen.queryByTestId('field-stale-rto_policy')).not.toBeInTheDocument();
     });
@@ -1428,6 +1429,10 @@ describe('OrganizationDetailsPopup', () => {
             expect(screen.getByTestId('field-evidence-rto_policy')).toContainElement(evidenceButton);
             expect(screen.getByTestId('field-unverified-funding_round'))
                 .toContainElement(screen.getByTestId('suggest-correction-field-funding_round'));
+            expect(screen.getByTestId('suggest-correction-field-funding_round'))
+                .toHaveAccessibleName('Suggest a value for Funding Round');
+            expect(screen.getByRole('heading', {level: 3, name: 'Data Freshness & Sources'})).toHaveClass('h5');
+            expect(getCachedProvenance(1)).toBeDefined();
 
             fireEvent.click(evidenceButton);
             expect(openSpy).toHaveBeenCalledWith({

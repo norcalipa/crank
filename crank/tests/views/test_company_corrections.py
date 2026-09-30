@@ -137,6 +137,15 @@ class CompanyCorrectionsViewTest(TestCase):
         response = self.post(self.body(scope={"level": "planet", "value": "x"}))
         self.assertIn("scope_level", response.json()["field_errors"])
 
+    def test_missing_required_fields_use_specific_messages(self):
+        self.login()
+        response = self.post(self.body(field_key="", proposed_value="", evidence_url=""))
+        self.assertEqual(response.status_code, 400)
+        errors = response.json()["field_errors"]
+        self.assertEqual(errors["field_key"], ["Choose what to correct."])
+        self.assertEqual(errors["proposed_value"][0], "Enter the corrected value.")
+        self.assertEqual(errors["evidence_url"][0], "Add a public link that starts with https://.")
+
     def test_hostile_urls_and_values_are_rejected_or_kept_inert(self):
         self.login()
         for url in ("javascript:alert(1)", "https://localhost/x", "https://10.0.0.1/", "https://u:p@a.example.com/"):

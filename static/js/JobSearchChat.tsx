@@ -823,7 +823,6 @@ function OrgCard({org}: {org: OrganizationResult}) {
                     href={org.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="small"
                     aria-label={`View details for ${org.name} (opens in a new tab)`}
                 >
                     Details ↗

@@ -1,9 +1,10 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import {act, fireEvent, render, screen, waitFor} from '@testing-library/react';
+import {act, cleanup, fireEvent, render, screen, waitFor} from '@testing-library/react';
 import * as React from 'react';
 import CompanyCorrectionForm, {describeCurrentValue} from './CompanyCorrectionForm';
+import {clearProvenanceCache, getCachedProvenance} from './provenanceCache';
 import type {SuggestCompanyContext} from './suggestCompany/controller';
 
 const PROVENANCE = {
@@ -14,9 +15,10 @@ const PROVENANCE = {
     unverified_fields: ['funding_round'],
 };
 
-const jsonResponse = (status: number, body: unknown) => ({
+const jsonResponse = (status: number, body: unknown, headers: Record<string, string> = {}) => ({
     ok: status >= 200 && status < 300,
     status,
+    headers: {get: (name: string) => headers[name] ?? null},
     json: () => Promise.resolve(body),
 });
 
@@ -48,6 +50,7 @@ const fillAndSubmit = async (proposed = 'Hybrid', url = 'https://example.com/pol
 
 describe('CompanyCorrectionForm', () => {
     beforeEach(() => {
+        clearProvenanceCache();
         postResponse = () => Promise.resolve(jsonResponse(201, SAVED));
         provenanceResponse = () => Promise.resolve(jsonResponse(200, PROVENANCE));
         global.fetch = jest.fn().mockImplementation((url: string) =>
@@ -186,7 +189,7 @@ describe('CompanyCorrectionForm', () => {
             const url = screen.getByTestId('correction-evidence-url');
             expect(url).not.toHaveAttribute('placeholder');
             expect(url).toHaveAttribute('aria-describedby', 'correction-evidence-help');
-            expect(document.getElementById('correction-evidence-help')).toHaveTextContent(/must start with https:\/\//);
+            expect(document.getElementById('correction-evidence-help')).toHaveTextContent(/Must start with https:\/\//);
         });
 
         test('without a field in the context the select starts on a prompt and submit demands a choice', async () => {
@@ -196,11 +199,16 @@ describe('CompanyCorrectionForm', () => {
             expect(select).toHaveValue('');
             expect(screen.getByRole('option', {name: 'Choose what to correct…'})).toBeDisabled();
             expect(screen.getByTestId('correction-current-text')).toHaveTextContent('Choose a field to see its current value');
-            fireEvent.change(screen.getByTestId('correction-proposed-value'), {target: {value: 'Hybrid'}});
+            await waitFor(() => expect(screen.getByTestId('correction-close')).toHaveFocus());
             fireEvent.click(screen.getByTestId('correction-submit'));
             expect(await screen.findByTestId('correction-error')).toHaveTextContent('Please correct the highlighted fields.');
             expect(select).toHaveClass('is-invalid');
             expect(select).toHaveFocus();
+            expect(screen.getByTestId('correction-proposed-value')).toHaveClass('is-invalid');
+            expect(screen.getByTestId('correction-evidence-url')).toHaveClass('is-invalid');
+            expect(document.getElementById('correction-proposed_value-error')).toHaveTextContent('Enter the corrected value.');
+            expect(document.getElementById('correction-evidence_url-error'))
+                .toHaveTextContent('Add a public link that starts with https://.');
             expect(document.getElementById('correction-field_key-error')).toHaveTextContent('Choose what to correct.');
             expect(posts()).toHaveLength(0);
         });
@@ -213,6 +221,7 @@ describe('CompanyCorrectionForm', () => {
             renderForm();
             expect(await screen.findByTestId('correction-current-text')).toHaveTextContent(
                 /Remote-first · from acme\.example · last verified/);
+            expect(screen.getByText('from acme.example')).toHaveClass('text-nowrap');
         });
 
         test('scope detail appears for non-company scopes only', async () => {
@@ -224,9 +233,28 @@ describe('CompanyCorrectionForm', () => {
             expect(screen.queryByTestId('correction-scope-value')).toBeNull();
         });
 
-        test('moves focus to Close on open', async () => {
+        test('moves focus to Close after the next frame', async () => {
             renderForm();
-            expect(screen.getByTestId('correction-close')).toHaveFocus();
+            await waitFor(() => expect(screen.getByTestId('correction-close')).toHaveFocus());
+        });
+
+        test('cancels the pending focus when unmounted before the frame runs', async () => {
+            const cancel = jest.spyOn(window, 'cancelAnimationFrame');
+            const {unmount} = renderForm();
+            unmount();
+            expect(cancel).toHaveBeenCalled();
+            cancel.mockRestore();
+        });
+
+        test('starts from the cached provenance without a loading state and refreshes it', async () => {
+            renderForm();
+            await screen.findByTestId('correction-current-text');
+            expect(getCachedProvenance(1)).toEqual(PROVENANCE);
+            cleanup();
+            provenanceResponse = () => new Promise(() => {});
+            renderForm();
+            expect(screen.queryByTestId('correction-current-loading')).toBeNull();
+            expect(screen.getByTestId('correction-current-text')).toHaveTextContent('Remote-first');
         });
     });
 
@@ -285,12 +313,37 @@ describe('CompanyCorrectionForm', () => {
             }
         });
 
+        test('client validation rejects a non-https link and a missing scope detail without posting', async () => {
+            renderForm();
+            await screen.findByTestId('correction-current-text');
+            await waitFor(() => expect(screen.getByTestId('correction-close')).toHaveFocus());
+            fireEvent.change(screen.getByTestId('correction-scope-level'), {target: {value: 'team'}});
+            fireEvent.change(screen.getByTestId('correction-proposed-value'), {target: {value: 'Hybrid'}});
+            fireEvent.change(screen.getByTestId('correction-evidence-url'), {target: {value: 'http://example.com'}});
+            fireEvent.click(screen.getByTestId('correction-submit'));
+            expect(await screen.findByTestId('correction-error')).toBeInTheDocument();
+            expect(document.getElementById('correction-evidence_url-error'))
+                .toHaveTextContent('Use a link that starts with https://.');
+            expect(document.getElementById('correction-scope_value-error'))
+                .toHaveTextContent('Say which one this applies to.');
+            expect(posts()).toHaveLength(0);
+        });
+
+        test('moves focus to the Back button after success', async () => {
+            renderForm();
+            await fillAndSubmit();
+            await screen.findByTestId('correction-status');
+            await waitFor(() => expect(screen.getByTestId('correction-back')).toHaveFocus());
+        });
+
         test('two synchronous submits produce exactly one request and a Submitting… label', async () => {
             let finish: (value: unknown) => void = () => {};
             postResponse = () => new Promise(r => { finish = r; });
             renderForm();
             await screen.findByTestId('correction-current-text');
             const form = screen.getByTestId('correction-form');
+            fireEvent.change(screen.getByTestId('correction-proposed-value'), {target: {value: 'Hybrid'}});
+            fireEvent.change(screen.getByTestId('correction-evidence-url'), {target: {value: 'https://example.com/p'}});
             fireEvent.submit(form);
             fireEvent.submit(form);
             expect(posts()).toHaveLength(1);
@@ -308,7 +361,7 @@ describe('CompanyCorrectionForm', () => {
                 field_errors: {evidence_url: ['Use an https:// link.'], proposed_value: ['Enter the corrected value.']},
             }));
             renderForm();
-            await fillAndSubmit('Hybrid', 'http://example.com');
+            await fillAndSubmit('Hybrid', 'https://example.com');
 
             expect(await screen.findByTestId('correction-error')).toHaveAttribute('role', 'alert');
             const url = screen.getByTestId('correction-evidence-url');
@@ -317,11 +370,11 @@ describe('CompanyCorrectionForm', () => {
             expect(screen.getByTestId('correction-proposed-value')).toHaveClass('is-invalid');
             expect(screen.getByTestId('correction-field')).not.toHaveClass('is-invalid');
             expect(screen.getByTestId('correction-error').closest('.modal-footer')).not.toBeNull();
-            expect(url).toHaveAttribute('aria-describedby', 'correction-evidence-help correction-evidence_url-error');
+            expect(url).toHaveAttribute('aria-describedby', 'correction-evidence_url-error correction-evidence-help');
             expect(document.getElementById('correction-evidence_url-error')).toHaveTextContent('Use an https:// link.');
             expect(screen.getByTestId('correction-proposed-value')).toHaveFocus();
             expect(screen.getByTestId('correction-proposed-value')).toHaveValue('Hybrid');
-            expect(url).toHaveValue('http://example.com');
+            expect(url).toHaveValue('https://example.com');
             expect(screen.getByTestId('correction-submit')).not.toBeDisabled();
         });
 
@@ -331,7 +384,7 @@ describe('CompanyCorrectionForm', () => {
                 field_errors: {evidence_url: ['Add a public link that starts with https://.', 'Second message.']},
             }));
             renderForm();
-            await fillAndSubmit('Hybrid', '');
+            await fillAndSubmit();
             await screen.findByTestId('correction-error');
             const message = document.getElementById('correction-evidence_url-error');
             expect(message).toHaveTextContent('Add a public link that starts with https://.');
@@ -348,6 +401,9 @@ describe('CompanyCorrectionForm', () => {
             renderForm();
             await screen.findByTestId('correction-current-text');
             fireEvent.change(screen.getByTestId('correction-scope-level'), {target: {value: 'team'}});
+            fireEvent.change(screen.getByTestId('correction-proposed-value'), {target: {value: 'Hybrid'}});
+            fireEvent.change(screen.getByTestId('correction-evidence-url'), {target: {value: 'https://example.com/p'}});
+            fireEvent.change(screen.getByTestId('correction-scope-value'), {target: {value: 'Platform'}});
             fireEvent.click(screen.getByTestId('correction-submit'));
             await screen.findByTestId('correction-error');
             for (const name of ['field_key', 'scope_level', 'scope_value', 'note']) {
@@ -364,11 +420,26 @@ describe('CompanyCorrectionForm', () => {
         });
 
         test('a rate limit shows the server message and keeps the draft', async () => {
-            postResponse = () => Promise.resolve(jsonResponse(429, {error: 'Too many suggestions. Try later.'}));
+            postResponse = () => Promise.resolve(jsonResponse(429, {error: 'Too many.'}, {'Retry-After': '1800'}));
             renderForm();
             await fillAndSubmit();
-            expect(await screen.findByTestId('correction-error')).toHaveTextContent('Too many suggestions. Try later.');
+            const alert = await screen.findByTestId('correction-error');
+            expect(alert).toHaveTextContent("You've reached the hourly limit for suggestions. Your draft is kept — try again in 30 minutes.");
+            expect(alert).toHaveClass('alert-warning');
+            expect(screen.getByTestId('correction-submit')).toBeDisabled();
             expect(screen.getByTestId('correction-proposed-value')).toHaveValue('Hybrid');
+        });
+
+        test('a rate limit without a usable Retry-After says try again later, and 1 minute is singular', async () => {
+            postResponse = () => Promise.resolve(jsonResponse(429, {}));
+            renderForm();
+            await fillAndSubmit();
+            expect(await screen.findByTestId('correction-error')).toHaveTextContent('Your draft is kept — try again later.');
+            cleanup();
+            postResponse = () => Promise.resolve(jsonResponse(429, {}, {'Retry-After': '30'}));
+            renderForm();
+            await fillAndSubmit();
+            expect(await screen.findByTestId('correction-error')).toHaveTextContent('try again in 1 minute.');
         });
 
         test('a network failure keeps the draft and re-enables submit', async () => {
