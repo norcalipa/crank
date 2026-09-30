@@ -52,13 +52,13 @@ interface RevisionBlock {
 // `crank:suggest-company` channel: this bundle has no host of its own.
 function SuggestCorrectionButton({organizationId, companyName}: {organizationId: number; companyName: string}) {
     return (
-        <button type="button" className="btn btn-sm btn-link job-match-correction p-0 mt-1"
+        <button type="button" className="btn btn-link p-0 correction-action job-match-correction"
                 data-testid={`suggest-correction-org-${organizationId}`}
-                aria-label={`Suggest a correction for ${companyName}`}
                 onClick={() => window.dispatchEvent(new CustomEvent('crank:suggest-company', {
                     detail: {kind: 'correction', source: 'job_results', organizationId, companyName},
                 }))}>
-            Suggest correction
+            <i className="fa-solid fa-pen-to-square" aria-hidden="true"></i>
+            Suggest a correction<span className="visually-hidden"> for {companyName}</span>
         </button>
     );
 }

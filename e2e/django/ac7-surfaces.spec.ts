@@ -171,7 +171,7 @@ test.describe('shared request form', () => {
         await expect(page.getByTestId('suggest-company-modal')).toBeVisible();
     });
 
-    test('the company details "Suggest a Correction" action opens the correction form for that company and closes the details dialog', async ({page}) => {
+    test('the company details "Suggest a correction" action opens the correction form for that company and closes the details dialog', async ({page}) => {
         await login(page);
         await page.goto('/');
 
@@ -180,7 +180,7 @@ test.describe('shared request form', () => {
         await expect(details).toBeVisible();
 
         await details.getByTestId('suggest-correction-link').click();
-        const form = page.getByRole('dialog', {name: /Suggest a correction — E2E Alpha Corp/});
+        const form = page.getByRole('dialog', {name: /Suggest a correction E2E Alpha Corp/});
         await expect(form).toBeVisible();
         await expect(details).toBeHidden();
         await expect(form.getByTestId('correction-form')).toBeVisible();

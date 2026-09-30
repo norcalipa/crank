@@ -885,6 +885,21 @@ body.app-nav-drawer-open {
     outline-offset: 2px;
 }
 
+/* Bootstrap's dark-theme filter recolors the outline too (2.3:1); drop it
+   and draw the glyph white instead so the amber ring keeps its contrast. */
+[data-bs-theme="dark"] .modal.blocking-modal .btn-close,
+[data-bs-theme="dark"] .popup-details .card-header .btn-close {
+    filter: none;
+    background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='%23fff'%3e%3cpath d='M.293.293a1 1 0 0 1 1.414 0L8 6.586 14.293.293a1 1 0 1 1 1.414 1.414L9.414 8l6.293 6.293a1 1 0 0 1-1.414 1.414L8 9.414l-6.293 6.293a1 1 0 0 1-1.414-1.414L6.586 8 .293 1.707a1 1 0 0 1 0-1.414z'/%3e%3c/svg%3e");
+}
+
+.modal.blocking-modal .btn-close:focus,
+.popup-details .card-header .btn-close:focus {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
+    box-shadow: none;
+}
+
 #job-search-chat,
 #job-search-chat > section {
     min-width: 0;
@@ -3329,21 +3344,93 @@ body.assistant-open .app-content .table-responsive,
     }
 }
 
-.suggest-correction-field,
-.job-match-correction,
-#job-search-chat .org-card .btn-link,
 [data-testid="company-correction-modal"] .btn,
 [data-testid="company-correction-modal"] .form-control,
 [data-testid="company-correction-modal"] .form-select {
     min-block-size: 44px;
 }
 
-.suggest-correction-field,
-.job-match-correction,
-#job-search-chat .org-card .btn-link {
-    min-inline-size: 44px;
+.correction-action.btn-link {
     display: inline-flex;
     align-items: center;
+    min-block-size: 44px;
+    min-inline-size: 44px;
+    margin: 0;
+    font-size: .875rem;
+    font-weight: 400;
+    gap: .375rem;
+    text-decoration: underline;
+    text-underline-offset: .2em;
+}
+
+.correction-action .fa-pen-to-square {
+    font-size: 1em;
+}
+
+[data-testid="job-match-panel"] .correction-action.btn-link {
+    --bs-btn-color: #0dcaf0;
+    --bs-btn-hover-color: #6edff6;
+    --bs-btn-active-color: #6edff6;
+}
+
+.chat-bubble-assistant .correction-action.btn-link {
+    --bs-btn-color: #7dd3fc;
+    --bs-btn-hover-color: #bfdbfe;
+    --bs-btn-active-color: #bfdbfe;
+}
+
+#job-search-chat .org-card .org-card-actions > * {
+    min-block-size: 44px;
+    display: inline-flex;
+    align-items: center;
+}
+
+.evidence-row-value {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: .75rem;
+    row-gap: 0;
+    min-inline-size: 0;
+}
+
+.correction-current {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: .75rem;
+    min-block-size: 44px;
+    padding: .375rem .75rem;
+    border-radius: var(--bs-border-radius);
+    background-color: var(--bs-tertiary-bg);
+}
+
+.correction-current .correction-skeleton {
+    flex: 1 1 auto;
+}
+
+[data-testid="company-correction-modal"] .correction-heading {
+    min-width: 0;
+}
+
+[data-testid="company-correction-modal"] .modal-content {
+    display: flex;
+    flex-direction: column;
+}
+
+[data-testid="company-correction-modal"] .modal-footer {
+    flex-shrink: 0;
+    gap: .5rem;
+}
+
+[data-testid="company-correction-modal"] .modal-footer > * {
+    margin: 0;
+}
+
+@media (max-width: 575.98px) {
+    [data-testid="company-correction-modal"] .modal-footer > .btn {
+        flex: 1 1 0;
+    }
 }
 
 [data-testid="company-correction-modal"] .modal-dialog {

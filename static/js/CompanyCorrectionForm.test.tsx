@@ -31,7 +31,7 @@ let provenanceResponse: () => Promise<unknown>;
 const posts = () => (global.fetch as jest.Mock).mock.calls.filter(call => call[0] === '/api/company-corrections/');
 
 const baseContext: SuggestCompanyContext = {
-    kind: 'correction', source: 'company_details', organizationId: 1, companyName: 'Acme',
+    kind: 'correction', source: 'company_details', organizationId: 1, companyName: 'Acme', fieldKey: 'rto_policy',
 };
 
 const renderForm = (context: SuggestCompanyContext = baseContext, onClose = jest.fn()) => {
@@ -71,13 +71,13 @@ describe('CompanyCorrectionForm', () => {
         test('shows the verified value with its last verified date', async () => {
             renderForm({...baseContext, fieldKey: 'rto_policy'});
             const text = await screen.findByTestId('correction-current-text');
-            expect(text).toHaveTextContent(/Remote-first — last verified/);
+            expect(text).toHaveTextContent(/Remote-first.*last verified/);
             expect(text).not.toHaveTextContent(/stale/i);
         });
 
         test('marks a stale value in text', async () => {
             renderForm({...baseContext, fieldKey: 'locations'});
-            expect(await screen.findByTestId('correction-current-text')).toHaveTextContent(/Austin — stale, last verified/);
+            expect(await screen.findByTestId('correction-current-text')).toHaveTextContent(/Austin.*last verified.*Stale/);
         });
 
         test('says so when there is no verified value and invites a first suggestion', async () => {
@@ -142,7 +142,7 @@ describe('CompanyCorrectionForm', () => {
             const result = describeCurrentValue({status: 'ready', data: {fields: [
                 {field_key: 'rto_policy', value: 'X', stale: false, last_verified_at: null},
             ]}}, 'rto_policy');
-            expect(result.text).toBe('X — last verified Unknown');
+            expect(result.text).toBe('X · last verified Unknown');
         });
     });
 
@@ -150,8 +150,9 @@ describe('CompanyCorrectionForm', () => {
         test('is a labelled modal dialog with every required test id', async () => {
             renderForm();
             await screen.findByTestId('correction-current-text');
-            const dialog = screen.getByRole('dialog', {name: /Suggest a correction — Acme/});
+            const dialog = screen.getByRole('dialog', {name: 'Suggest a correction Acme'});
             expect(dialog).toHaveAttribute('aria-modal', 'true');
+            expect(screen.getByRole('heading', {name: 'Suggest a correction'})).toBeInTheDocument();
             for (const id of ['correction-form', 'correction-field', 'correction-current-value',
                 'correction-proposed-value', 'correction-evidence-url', 'correction-scope-level',
                 'correction-submit']) {
@@ -163,7 +164,55 @@ describe('CompanyCorrectionForm', () => {
 
         test('falls back to a generic title when the company name is unknown', async () => {
             renderForm({kind: 'correction', source: 'assistant', organizationId: 1});
-            expect(await screen.findByRole('dialog', {name: /Suggest a correction — this company/})).toBeInTheDocument();
+            expect(await screen.findByRole('dialog', {name: 'Suggest a correction this company'})).toBeInTheDocument();
+        });
+
+        test('pins Cancel and Submit in a footer outside the scrolling body, tied to the form', async () => {
+            renderForm();
+            await screen.findByTestId('correction-current-text');
+            const submit = screen.getByTestId('correction-submit');
+            const footer = submit.closest('.modal-footer');
+            expect(footer).not.toBeNull();
+            expect(submit.closest('.modal-body')).toBeNull();
+            expect(screen.getByTestId('correction-form').closest('.modal-body')).not.toBeNull();
+            expect(submit).toHaveAttribute('type', 'submit');
+            expect(submit).toHaveAttribute('form', 'correction-form');
+            expect(footer).toContainElement(screen.getByRole('button', {name: 'Cancel'}));
+        });
+
+        test('the evidence field has help text instead of a placeholder URL', async () => {
+            renderForm();
+            await screen.findByTestId('correction-current-text');
+            const url = screen.getByTestId('correction-evidence-url');
+            expect(url).not.toHaveAttribute('placeholder');
+            expect(url).toHaveAttribute('aria-describedby', 'correction-evidence-help');
+            expect(document.getElementById('correction-evidence-help')).toHaveTextContent(/must start with https:\/\//);
+        });
+
+        test('without a field in the context the select starts on a prompt and submit demands a choice', async () => {
+            renderForm({kind: 'correction', source: 'assistant', organizationId: 1, companyName: 'Acme'});
+            await screen.findByTestId('correction-current-text');
+            const select = screen.getByTestId('correction-field');
+            expect(select).toHaveValue('');
+            expect(screen.getByRole('option', {name: 'Choose what to correct…'})).toBeDisabled();
+            expect(screen.getByTestId('correction-current-text')).toHaveTextContent('Choose a field to see its current value');
+            fireEvent.change(screen.getByTestId('correction-proposed-value'), {target: {value: 'Hybrid'}});
+            fireEvent.click(screen.getByTestId('correction-submit'));
+            expect(await screen.findByTestId('correction-error')).toHaveTextContent('Please correct the highlighted fields.');
+            expect(select).toHaveClass('is-invalid');
+            expect(select).toHaveFocus();
+            expect(document.getElementById('correction-field_key-error')).toHaveTextContent('Choose what to correct.');
+            expect(posts()).toHaveLength(0);
+        });
+
+        test('shows where the current value came from', async () => {
+            provenanceResponse = () => Promise.resolve(jsonResponse(200, {fields: [
+                {field_key: 'rto_policy', value: 'Remote-first', stale: false,
+                 last_verified_at: '2025-01-10T12:00:00Z', source_domain: 'acme.example'},
+            ]}));
+            renderForm();
+            expect(await screen.findByTestId('correction-current-text')).toHaveTextContent(
+                /Remote-first · from acme\.example · last verified/);
         });
 
         test('scope detail appears for non-company scopes only', async () => {
@@ -199,6 +248,10 @@ describe('CompanyCorrectionForm', () => {
             expect(status).toHaveTextContent('Still in effect until review');
             expect(screen.getByTestId('correction-saved-current')).toHaveTextContent('Remote-first');
             expect(status).not.toHaveTextContent(/verified/i);
+            expect(status).toHaveTextContent('Suggestion submitted');
+            expect(status).toHaveTextContent('Your suggestion · RTO Policy');
+            expect(status.querySelector('.fa-circle-check')).not.toBeNull();
+            expect(status.querySelector('.badge-pending')).toHaveTextContent('Pending review');
 
             const [url, init] = posts()[0];
             expect(url).toBe('/api/company-corrections/');
@@ -260,12 +313,29 @@ describe('CompanyCorrectionForm', () => {
             expect(await screen.findByTestId('correction-error')).toHaveAttribute('role', 'alert');
             const url = screen.getByTestId('correction-evidence-url');
             expect(url).toHaveAttribute('aria-invalid', 'true');
-            expect(url).toHaveAttribute('aria-describedby', 'correction-evidence_url-error');
+            expect(url).toHaveClass('is-invalid');
+            expect(screen.getByTestId('correction-proposed-value')).toHaveClass('is-invalid');
+            expect(screen.getByTestId('correction-field')).not.toHaveClass('is-invalid');
+            expect(screen.getByTestId('correction-error').closest('.modal-footer')).not.toBeNull();
+            expect(url).toHaveAttribute('aria-describedby', 'correction-evidence-help correction-evidence_url-error');
             expect(document.getElementById('correction-evidence_url-error')).toHaveTextContent('Use an https:// link.');
             expect(screen.getByTestId('correction-proposed-value')).toHaveFocus();
             expect(screen.getByTestId('correction-proposed-value')).toHaveValue('Hybrid');
             expect(url).toHaveValue('http://example.com');
             expect(screen.getByTestId('correction-submit')).not.toBeDisabled();
+        });
+
+        test('shows only the first message per field', async () => {
+            postResponse = () => Promise.resolve(jsonResponse(400, {
+                error: 'Please correct the highlighted fields.',
+                field_errors: {evidence_url: ['Add a public link that starts with https://.', 'Second message.']},
+            }));
+            renderForm();
+            await fillAndSubmit('Hybrid', '');
+            await screen.findByTestId('correction-error');
+            const message = document.getElementById('correction-evidence_url-error');
+            expect(message).toHaveTextContent('Add a public link that starts with https://.');
+            expect(message).not.toHaveTextContent('Second message.');
         });
 
         test('errors on every field are announced', async () => {

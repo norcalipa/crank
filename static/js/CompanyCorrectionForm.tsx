@@ -17,6 +17,7 @@ interface EvidenceRow {
     value: string;
     stale: boolean;
     last_verified_at: string | null;
+    source_domain?: string | null;
 }
 
 interface ProvenanceResult {
@@ -28,7 +29,6 @@ interface SavedCorrection {
     proposed_value: string;
     current_value: string;
     status_label: string;
-    field_label: string;
 }
 
 type ProvenanceState =
@@ -63,25 +63,37 @@ const formatDate = (isoString: string | null): string =>
 
 export const describeCurrentValue = (
     provenance: ProvenanceState, fieldKey: string
-): {kind: 'loading' | 'unavailable' | 'missing' | 'verified'; text: string; value: string} => {
+): {
+    kind: 'loading' | 'unavailable' | 'missing' | 'verified' | 'unselected';
+    text: string; value: string; meta: string; stale: boolean; date: string;
+} => {
+    const blank = {value: '', meta: '', stale: false, date: ''};
+    if (!fieldKey) {
+        return {kind: 'unselected', text: 'Choose a field to see its current value', ...blank};
+    }
     if (provenance.status === 'loading') {
-        return {kind: 'loading', text: '', value: ''};
+        return {kind: 'loading', text: '', ...blank};
     }
     const row = provenance.status === 'ready'
         ? (provenance.data.fields || []).find(item => item.field_key === fieldKey)
         : undefined;
     if (row) {
-        const verified = `last verified ${formatDate(row.last_verified_at)}`;
+        const date = formatDate(row.last_verified_at);
+        const source = row.source_domain ? `from ${row.source_domain} · ` : '';
+        const verified = `${source}last verified ${date}`;
         return {
             kind: 'verified',
             value: row.value,
-            text: row.stale ? `${row.value} — stale, ${verified}` : `${row.value} — ${verified}`,
+            meta: source,
+            stale: row.stale,
+            date,
+            text: row.stale ? `${row.value} · ${verified} · Stale` : `${row.value} · ${verified}`,
         };
     }
     if (provenance.status === 'ready' && (provenance.data.unverified_fields || []).includes(fieldKey)) {
-        return {kind: 'missing', text: 'No verified value on record', value: ''};
+        return {kind: 'missing', text: 'No verified value on record', ...blank};
     }
-    return {kind: 'unavailable', text: 'Current value unavailable', value: ''};
+    return {kind: 'unavailable', text: 'Current value unavailable', ...blank};
 };
 
 const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, onClose}) => {
@@ -89,7 +101,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
     const companyName = context.companyName || 'this company';
     const backToCompany = context.source === 'company_details' || context.source === 'company_evidence';
 
-    const [fieldKey, setFieldKey] = React.useState(context.fieldKey || FIELD_ORDER[0]);
+    const [fieldKey, setFieldKey] = React.useState(context.fieldKey || '');
     const [proposedValue, setProposedValue] = React.useState('');
     const [evidenceUrl, setEvidenceUrl] = React.useState('');
     const [scopeLevel, setScopeLevel] = React.useState('company');
@@ -217,6 +229,11 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         if (submitInFlight.current) {
             return;
         }
+        if (!fieldKey) {
+            setError('Please correct the highlighted fields.');
+            setFieldErrors({field_key: ['Choose what to correct.']});
+            return;
+        }
         submitInFlight.current = true;
         setSubmitting(true);
         setError('');
@@ -246,7 +263,6 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     proposed_value: data.proposed_value,
                     current_value: data.current_value || '',
                     status_label: data.status_label,
-                    field_label: data.field_label,
                 });
             } else if (response.status === 401) {
                 setAuthRequired(true);
@@ -265,9 +281,10 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
     };
 
     const describedBy = (name: string) => (fieldErrors[name] ? `correction-${name}-error` : undefined);
+    const invalid = (name: string) => (fieldErrors[name] ? ' is-invalid' : '');
     const errorFor = (name: string) => fieldErrors[name] && (
         <div className="invalid-feedback d-block" id={`correction-${name}-error`}>
-            {fieldErrors[name].join(' ')}
+            {fieldErrors[name][0]}
         </div>
     );
 
@@ -279,15 +296,34 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                 </div>
             );
         }
-        return (
-            <>
-                <span data-testid="correction-current-text">{current.text}</span>
-                {current.kind === 'unavailable' && (
-                    <button type="button" className="btn btn-sm btn-link"
+        if (current.kind === 'verified') {
+            return (
+                <span data-testid="correction-current-text">
+                    <span className="fw-semibold">{current.value}</span>
+                    {' '}
+                    <span className="small text-body-secondary">
+                        · {current.meta}last verified{' '}
+                        <span className="text-nowrap">{current.date}</span>
+                    </span>
+                    {current.stale && <>{' '}<span className="badge text-bg-warning">Stale</span></>}
+                </span>
+            );
+        }
+        if (current.kind === 'unavailable') {
+            return (
+                <>
+                    <span className="text-warning-emphasis" data-testid="correction-current-text">
+                        <i className="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>
+                        {current.text}
+                    </span>
+                    <button type="button" className="btn btn-link p-0"
                             onClick={() => setReloadCount(count => count + 1)}
                             data-testid="correction-current-retry">Try again</button>
-                )}
-            </>
+                </>
+            );
+        }
+        return (
+            <span className="text-body-secondary" data-testid="correction-current-text">{current.text}</span>
         );
     };
 
@@ -308,16 +344,30 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     </p>
                 ) : (
                     <>
-                        <p className="mb-2">
-                            <span className="badge bg-secondary me-1">Pending review</span>
-                            Thanks — your suggestion was recorded and staff will review it.
-                        </p>
-                        <dl className="mb-2">
-                            <dt>Your suggestion ({saved?.field_label})</dt>
-                            <dd data-testid="correction-saved-proposed">{saved?.proposed_value}</dd>
-                            <dt>Current value — Still in effect until review</dt>
-                            <dd data-testid="correction-saved-current">
-                                {saved?.current_value || 'No verified value on record'}
+                        <div className="d-flex align-items-start gap-2 mb-3">
+                            <i className="fa-solid fa-circle-check text-success fs-5 mt-1" aria-hidden="true"></i>
+                            <div>
+                                <p className="fw-semibold mb-1">Suggestion submitted</p>
+                                <p className="small text-body-secondary mb-0">
+                                    Staff will review it. Nothing changes until then.
+                                </p>
+                            </div>
+                        </div>
+                        <dl className="mb-0">
+                            <dt>Your suggestion · {fieldKeyLabel(fieldKey)}</dt>
+                            <dd className="d-flex flex-wrap align-items-center gap-2">
+                                <span data-testid="correction-saved-proposed">{saved?.proposed_value}</span>
+                                <span className="badge text-bg-warning badge-pending">
+                                    <i className="fa-solid fa-hourglass-half me-1" aria-hidden="true"></i>
+                                    Pending review
+                                </span>
+                            </dd>
+                            <dt>Current value</dt>
+                            <dd className="mb-0">
+                                <span data-testid="correction-saved-current">
+                                    {saved?.current_value || 'No verified value on record'}
+                                </span>
+                                <div className="small text-body-secondary">Still in effect until review</div>
                             </dd>
                         </dl>
                     </>
@@ -326,21 +376,20 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         );
     } else {
         body = (
-            <form onSubmit={handleSubmit} noValidate data-testid="correction-form"
+            <form id="correction-form" onSubmit={handleSubmit} noValidate data-testid="correction-form"
                   aria-labelledby="correction-title">
-                <p className="text-muted small">
-                    Suggestions enter a review queue. The current value stays in effect until staff review it.
-                    We never fetch the evidence link on the server.
+                <p className="small text-body-secondary mb-3">
+                    Staff review every suggestion. The current value stays until one is approved.
                 </p>
-                {error && (
-                    <div className="alert alert-danger" role="alert" data-testid="correction-error">{error}</div>
-                )}
                 <div className="mb-3">
                     <label htmlFor="correction-field" className="form-label">Field</label>
-                    <select id="correction-field" className="form-select" data-testid="correction-field"
+                    <select id="correction-field" className={`form-select${invalid('field_key')}`} data-testid="correction-field"
                             data-field="field_key" value={fieldKey}
                             aria-invalid={!!fieldErrors.field_key} aria-describedby={describedBy('field_key')}
                             onChange={e => setFieldKey(e.target.value)}>
+                        {!context.fieldKey && (
+                            <option value="" disabled>Choose what to correct…</option>
+                        )}
                         {FIELD_ORDER.map(key => (
                             <option key={key} value={key}>{fieldKeyLabel(key)}</option>
                         ))}
@@ -348,15 +397,16 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     {errorFor('field_key')}
                 </div>
                 <div className="mb-3" data-testid="correction-current-value">
-                    <div className="form-label fw-bold" id="correction-current-label">Current value</div>
-                    <div aria-labelledby="correction-current-label" aria-live="polite">{renderCurrent()}</div>
+                    <div className="form-label" id="correction-current-label">Current value</div>
+                    <div className="correction-current" aria-labelledby="correction-current-label"
+                         aria-live="polite">{renderCurrent()}</div>
                     {current.kind === 'missing' && (
-                        <div className="text-muted small">Nothing is verified yet — your suggestion could be the first.</div>
+                        <div className="text-body-secondary small mt-1">Nothing is verified yet — your suggestion could be the first.</div>
                     )}
                 </div>
                 <div className="mb-3">
                     <label htmlFor="correction-proposed-value" className="form-label">Suggested value</label>
-                    <input type="text" id="correction-proposed-value" className="form-control"
+                    <input type="text" id="correction-proposed-value" className={`form-control${invalid('proposed_value')}`}
                            data-testid="correction-proposed-value" data-field="proposed_value"
                            value={proposedValue} maxLength={500} autoComplete="off"
                            aria-required="true" aria-invalid={!!fieldErrors.proposed_value}
@@ -366,17 +416,22 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                 </div>
                 <div className="mb-3">
                     <label htmlFor="correction-evidence-url" className="form-label">Evidence link (https)</label>
-                    <input type="url" id="correction-evidence-url" className="form-control"
+                    <input type="url" id="correction-evidence-url" className={`form-control${invalid('evidence_url')}`}
                            data-testid="correction-evidence-url" data-field="evidence_url"
-                           value={evidenceUrl} placeholder="https://example.com/careers" autoComplete="off"
+                           value={evidenceUrl} autoComplete="off"
                            aria-required="true" aria-invalid={!!fieldErrors.evidence_url}
-                           aria-describedby={describedBy('evidence_url')}
+                           aria-describedby={['correction-evidence-help', describedBy('evidence_url')]
+                               .filter(Boolean).join(' ')}
                            onChange={e => setEvidenceUrl(e.target.value)}/>
+                    <div id="correction-evidence-help" className="form-text">
+                        A public page that shows the correct value (must start with https://).
+                        We never fetch this link.
+                    </div>
                     {errorFor('evidence_url')}
                 </div>
                 <div className="mb-3">
                     <label htmlFor="correction-scope-level" className="form-label">Applies to</label>
-                    <select id="correction-scope-level" className="form-select"
+                    <select id="correction-scope-level" className={`form-select${invalid('scope_level')}`}
                             data-testid="correction-scope-level" data-field="scope_level" value={scopeLevel}
                             aria-invalid={!!fieldErrors.scope_level} aria-describedby={describedBy('scope_level')}
                             onChange={e => setScopeLevel(e.target.value)}>
@@ -389,7 +444,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                 {scopeLevel !== 'company' && (
                     <div className="mb-3">
                         <label htmlFor="correction-scope-value" className="form-label">Which one?</label>
-                        <input type="text" id="correction-scope-value" className="form-control"
+                        <input type="text" id="correction-scope-value" className={`form-control${invalid('scope_value')}`}
                                data-testid="correction-scope-value" data-field="scope_value"
                                value={scopeValue} maxLength={100} autoComplete="off"
                                aria-required="true" aria-invalid={!!fieldErrors.scope_value}
@@ -400,35 +455,47 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                 )}
                 <div className="mb-3">
                     <label htmlFor="correction-note" className="form-label">Note (optional)</label>
-                    <textarea id="correction-note" className="form-control" rows={2} maxLength={500}
+                    <textarea id="correction-note" className={`form-control${invalid('note')}`} rows={2} maxLength={500}
                               data-field="note" value={note} aria-invalid={!!fieldErrors.note}
                               aria-describedby={describedBy('note')}
                               onChange={e => setNote(e.target.value)}/>
                     {errorFor('note')}
-                </div>
-                <div className="d-flex justify-content-end gap-2">
-                    <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-                    <button type="submit" className="btn btn-primary" disabled={submitting}
-                            data-testid="correction-submit">
-                        {submitting ? 'Submitting…' : 'Submit suggestion'}
-                    </button>
                 </div>
             </form>
         );
     }
 
     const showBack = saved || duplicate;
+    const showForm = !authRequired && !saved && !duplicate;
     return createPortal(
         <div ref={dialogRef} className="modal d-block blocking-modal" tabIndex={-1} role="dialog"
-             aria-modal="true" aria-labelledby="correction-title" data-testid="company-correction-modal">
+             aria-modal="true" aria-labelledby="correction-title correction-company" data-testid="company-correction-modal">
             <div className="modal-dialog" role="document">
                 <div className="modal-content">
                     <div className="modal-header">
-                        <h5 className="modal-title" id="correction-title">Suggest a correction — {companyName}</h5>
+                        <div className="correction-heading">
+                            <h5 className="modal-title" id="correction-title">Suggest a correction</h5>
+                            <p className="mb-0 small text-body-secondary text-break" id="correction-company">
+                                {companyName}
+                            </p>
+                        </div>
                         <button ref={closeButtonRef} type="button" className="btn-close" aria-label="Close"
                                 onClick={onClose} data-testid="correction-close"></button>
                     </div>
                     <div className="modal-body">{body}</div>
+                    {showForm && (
+                        <div className="modal-footer correction-footer">
+                            {error && (
+                                <div className="alert alert-danger w-100 py-2 mb-0 small" role="alert"
+                                     data-testid="correction-error">{error}</div>
+                            )}
+                            <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
+                            <button type="submit" form="correction-form" className="btn btn-primary"
+                                    disabled={submitting} data-testid="correction-submit">
+                                {submitting ? 'Submitting…' : 'Submit suggestion'}
+                            </button>
+                        </div>
+                    )}
                     {showBack && (
                         <div className="modal-footer">
                             <button type="button" className="btn btn-primary" onClick={handleBack}

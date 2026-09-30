@@ -33,7 +33,7 @@ for (const {field, current, saved, ...viewport} of VIEWPORTS) {
             await opener.scrollIntoViewIfNeeded();
             await opener.click();
 
-            const form = page.getByRole('dialog', {name: new RegExp(`Suggest a correction — ${COMPANY}`)});
+            const form = page.getByRole('dialog', {name: new RegExp(`Suggest a correction ${COMPANY}`)});
             await expect(form).toBeVisible();
             await expect(details).toBeHidden();
             await expect(form.getByTestId('correction-field')).toHaveValue(field);
@@ -44,6 +44,10 @@ for (const {field, current, saved, ...viewport} of VIEWPORTS) {
             await form.getByRole('button', {name: 'Submit suggestion'}).click();
 
             await expect(form.getByRole('alert')).toBeVisible();
+            for (const locator of [form.getByRole('alert'), form.getByRole('button', {name: 'Submit suggestion'})]) {
+                await expect(locator).toBeInViewport({ratio: 1});
+            }
+            await expect(form.getByRole('textbox', {name: 'Evidence link (https)'})).toHaveClass(/is-invalid/);
             await expect(form.getByRole('textbox', {name: 'Evidence link (https)'})).toHaveAttribute('aria-invalid', 'true');
             await expect(form.getByRole('textbox', {name: 'Suggested value'})).toHaveValue('Hybrid, 3 days');
             await expectNoHorizontalOverflow(page);
@@ -136,6 +140,7 @@ test.describe('with the assistant drawer open at 1024px', () => {
         await expect(form).toBeVisible();
         const box = await form.locator('.modal-content').boundingBox();
         expect(box && box.x >= 0 && box.y >= 0 && box.x + box.width <= 1024 && box.y + box.height <= 768).toBe(true);
+        await expect(form.getByRole('button', {name: 'Submit suggestion'})).toBeInViewport({ratio: 1});
         await page.keyboard.press('Escape');
         await expect(form).toBeHidden();
         await expect(drawer).toBeVisible();

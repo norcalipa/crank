@@ -349,11 +349,11 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     };
 
     const fieldCorrectionButton = (fieldKey: string) => isAuthenticated && (
-        <button type="button" className="btn btn-sm btn-link suggest-correction-field p-0 ms-2"
+        <button type="button" className="btn btn-link p-0 suggest-correction-field correction-action"
                 data-testid={`suggest-correction-field-${fieldKey}`}
-                aria-label={`Suggest a correction to ${fieldKeyLabel(fieldKey)}`}
                 onClick={() => openCorrection('company_evidence', fieldKey)}>
-            Suggest correction
+            <i className="fa-solid fa-pen-to-square" aria-hidden="true"></i>
+            Suggest a correction<span className="visually-hidden"> to {fieldKeyLabel(fieldKey)}</span>
         </button>
     );
 
@@ -571,7 +571,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                             <div className="row mb-2">
                                                 <div className="col-5 text-end fw-bold">Last Observed:</div>
                                                 <div className="col-7">
-                                                    {formatRelativeTime(provenance.latest_observation.observed_at)}
+                                                    {formatRelativeTime(provenance.latest_observation.observed_at)}{' '}
                                                     ({formatDate(provenance.latest_observation.observed_at)})
                                                 </div>
                                             </div>
@@ -597,27 +597,30 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                     )}
                                     {provenance.fields && provenance.fields.length > 0 && (
                                         <div className="mt-2" data-testid="field-evidence">
+                                            <h4 className="h6 fw-semibold mt-3 mb-2">Field evidence</h4>
                                             {provenance.fields.map(fieldEvidence => (
-                                                <div className="row mb-2" key={fieldEvidence.field_key}
+                                                <div className="row mb-1 align-items-baseline evidence-row" key={fieldEvidence.field_key}
                                                      data-testid={`field-evidence-${fieldEvidence.field_key}`}>
                                                     <div className="col-5 text-end fw-bold">
                                                         {fieldKeyLabel(fieldEvidence.field_key)}:
                                                     </div>
-                                                    <div className="col-7">
-                                                        <span data-testid={`field-value-${fieldEvidence.field_key}`}>
-                                                            {fieldEvidence.value}
-                                                        </span>
-                                                        <span className="text-muted small">
-                                                            {' '}— {fieldEvidence.source_domain || 'unknown source'},
-                                                            observed {formatDate(fieldEvidence.observed_at)}
-                                                            {formatScope(fieldEvidence.scope)}
-                                                        </span>
-                                                        {fieldEvidence.stale && (
-                                                            <span className="badge bg-warning text-dark ms-1"
-                                                                  data-testid={`field-stale-${fieldEvidence.field_key}`}>
-                                                                Stale — last verified {formatDate(fieldEvidence.last_verified_at)}
+                                                    <div className="col-7 evidence-row-value">
+                                                        <span>
+                                                            <span data-testid={`field-value-${fieldEvidence.field_key}`}>
+                                                                {fieldEvidence.value}
                                                             </span>
-                                                        )}
+                                                            <span className="text-muted small">
+                                                                {' '}— {fieldEvidence.source_domain || 'unknown source'},
+                                                                observed {formatDate(fieldEvidence.observed_at)}
+                                                                {formatScope(fieldEvidence.scope)}
+                                                            </span>
+                                                            {fieldEvidence.stale && (
+                                                                <span className="badge bg-warning text-dark ms-1"
+                                                                      data-testid={`field-stale-${fieldEvidence.field_key}`}>
+                                                                    Stale — last verified {formatDate(fieldEvidence.last_verified_at)}
+                                                                </span>
+                                                            )}
+                                                        </span>
                                                         {fieldCorrectionButton(fieldEvidence.field_key)}
                                                     </div>
                                                 </div>
@@ -627,13 +630,13 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                     {provenance.unverified_fields && provenance.unverified_fields.length > 0 && (
                                         <div className="mt-2" data-testid="unverified-fields">
                                             {provenance.unverified_fields.map(fieldKey => (
-                                                <div className="row mb-2" key={fieldKey}
+                                                <div className="row mb-1 align-items-baseline evidence-row" key={fieldKey}
                                                      data-testid={`field-unverified-${fieldKey}`}>
                                                     <div className="col-5 text-end fw-bold">
                                                         {fieldKeyLabel(fieldKey)}:
                                                     </div>
-                                                    <div className="col-7 text-muted">
-                                                        No accepted evidence
+                                                    <div className="col-7 evidence-row-value">
+                                                        <span className="text-muted">No accepted evidence</span>
                                                         {fieldCorrectionButton(fieldKey)}
                                                     </div>
                                                 </div>
@@ -646,20 +649,24 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                                     className="btn btn-sm btn-outline-light"
                                                     data-testid="suggest-correction-link"
                                                     onClick={() => openCorrection('company_details')}>
-                                                Suggest a Correction
+                                                <i className="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>
+                                                Suggest a correction
                                             </button>
                                         </div>
                                     )}
                                     {isAuthenticated && pendingCorrections.length > 0 && (
                                         <div className="mt-3" data-testid="your-pending-corrections">
-                                            <h4 className="h6">Your pending suggestions</h4>
+                                            <h4 className="h6 fw-semibold mb-2">Your pending suggestions</h4>
                                             <ul className="list-unstyled small mb-0">
                                                 {pendingCorrections.map(item => (
-                                                    <li key={item.id} className="mb-1"
+                                                    <li key={item.id} className="d-flex flex-wrap align-items-center gap-2 mb-1"
                                                         data-testid={`your-pending-correction-${item.id}`}>
-                                                        <span className="fw-bold">{item.field_label || fieldKeyLabel(item.field_key)}:</span>{' '}
-                                                        {item.proposed_value}{' '}
-                                                        <span className="badge bg-secondary">Pending review</span>
+                                                        <span className="fw-bold">{fieldKeyLabel(item.field_key)}:</span>
+                                                        <span>{item.proposed_value}</span>
+                                                        <span className="badge text-bg-warning badge-pending">
+                                                            <i className="fa-solid fa-hourglass-half me-1" aria-hidden="true"></i>
+                                                            Pending review
+                                                        </span>
                                                     </li>
                                                 ))}
                                             </ul>

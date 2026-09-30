@@ -1421,6 +1421,10 @@ describe('OrganizationDetailsPopup', () => {
                                              onClose={onClose} isAuthenticated={true}/>);
 
             const evidenceButton = await screen.findByTestId('suggest-correction-field-rto_policy');
+            expect(evidenceButton).toHaveAccessibleName('Suggest a correction to RTO Policy');
+            expect(evidenceButton).not.toHaveAttribute('aria-label');
+            expect(screen.getByRole('button', {name: 'Suggest a correction'})).toHaveAttribute('data-testid', 'suggest-correction-link');
+            expect(screen.getByTestId('field-evidence')).toHaveTextContent('Field evidence');
             expect(screen.getByTestId('field-evidence-rto_policy')).toContainElement(evidenceButton);
             expect(screen.getByTestId('field-unverified-funding_round'))
                 .toContainElement(screen.getByTestId('suggest-correction-field-funding_round'));
@@ -1458,6 +1462,9 @@ describe('OrganizationDetailsPopup', () => {
             expect(list).toHaveTextContent('Pending review');
             expect(list).not.toHaveTextContent('Austin');
             expect(list).toHaveTextContent('unknown_key');
+            expect(list).toHaveTextContent('RTO Policy:');
+            expect(list).not.toHaveTextContent('RTO policy');
+            expect(list.querySelector('.badge-pending')).not.toBeNull();
             expect(list).not.toHaveTextContent(/verified/i);
         });
 

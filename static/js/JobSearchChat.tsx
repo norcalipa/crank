@@ -817,12 +817,13 @@ function OrgCard({org}: {org: OrganizationResult}) {
                 {funding && rto && ' · '}
                 {rto && <span>{rto}</span>}
             </div>
+            <div className="org-card-actions d-flex flex-wrap align-items-center column-gap-3 mt-1">
             {org.url && (
                 <a
                     href={org.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="small d-inline-block mt-1"
+                    className="small"
                     aria-label={`View details for ${org.name} (opens in a new tab)`}
                 >
                     Details ↗
@@ -830,15 +831,16 @@ function OrgCard({org}: {org: OrganizationResult}) {
             )}
             <button
                 type="button"
-                className="btn btn-sm btn-link p-0 d-block mt-1"
+                className="btn btn-link p-0 correction-action"
                 data-testid={`suggest-correction-org-${org.id}`}
-                aria-label={`Suggest a correction for ${org.name}`}
                 onClick={() => window.dispatchEvent(new CustomEvent('crank:suggest-company', {
                     detail: {kind: 'correction', source: 'assistant', organizationId: org.id, companyName: org.name},
                 }))}
             >
-                Suggest correction
+                <i className="fa-solid fa-pen-to-square" aria-hidden="true"></i>
+                Suggest a correction<span className="visually-hidden"> for {org.name}</span>
             </button>
+            </div>
         </article>
     );
 }
