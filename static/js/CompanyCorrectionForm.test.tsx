@@ -238,6 +238,20 @@ describe('CompanyCorrectionForm', () => {
             await waitFor(() => expect(screen.getByTestId('correction-close')).toHaveFocus());
         });
 
+        test('a late frame does not steal focus already inside the dialog', async () => {
+            const frames: FrameRequestCallback[] = [];
+            const raf = jest.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+                frames.push(callback);
+                return frames.length;
+            });
+            renderForm();
+            screen.getByTestId('correction-proposed-value').focus();
+            frames.forEach(callback => callback(0));
+            expect(screen.getByTestId('correction-proposed-value')).toHaveFocus();
+            expect(screen.getByTestId('correction-close')).not.toHaveFocus();
+            raf.mockRestore();
+        });
+
         test('cancels the pending focus when unmounted before the frame runs', async () => {
             const cancel = jest.spyOn(window, 'cancelAnimationFrame');
             const {unmount} = renderForm();

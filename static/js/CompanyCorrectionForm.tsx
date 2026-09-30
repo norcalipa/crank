@@ -172,7 +172,12 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
     }, [organizationId]);
 
     React.useEffect(() => {
-        const frame = window.requestAnimationFrame(() => closeButtonRef.current?.focus());
+        const frame = window.requestAnimationFrame(() => {
+            // A slow frame must not steal focus the dialog already placed itself
+            // (Back after success, first invalid field).
+            if (dialogRef.current!.contains(document.activeElement)) return;
+            closeButtonRef.current!.focus();
+        });
         return () => window.cancelAnimationFrame(frame);
     }, []);
 
