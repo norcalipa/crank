@@ -1,0 +1,20 @@
+{% comment %}
+Copyright (c) 2024 Isaac Adams
+Licensed under the MIT License. See LICENSE file in the project root for full license information.
+{% endcomment %}{% load jro_time %}<ol class="jro-stages">
+  {% for stage in readiness.stages %}
+  <li class="jro-stage jro-stage--{{ stage.tone }}{% if stage.key == readiness.next_step.key %} jro-stage--next{% endif %}" data-stage="{{ stage.key }}" data-status="{{ stage.status }}"{% if stage.key == readiness.next_step.key %} aria-current="step"{% endif %}>
+    <div class="jro-stage-head">
+      <span class="jro-stage-name">{{ stage.label }}</span>
+      <span class="jro-badge jro-badge--{{ stage.tone }}"><span class="jro-icon jro-icon--{{ stage.icon }}" aria-hidden="true"></span>{{ stage.status_label }}</span>
+      {% if stage.key == readiness.next_step.key %}<span class="jro-tag">Next step</span>{% endif %}
+    </div>
+    <p>{{ stage.summary }}</p>
+    {% if stage.status != "met" and stage.remediation %}<p class="jro-todo"><strong>What to do:</strong> {{ stage.remediation }}</p>{% endif %}
+    <ul class="jro-links">
+      {% if stage.admin_url %}<li><a href="{{ stage.admin_url }}">{{ stage.admin_label }}</a></li>{% endif %}
+      <li><a href="{{ stage.runbook_url }}" rel="noopener">Runbook</a></li>
+    </ul>
+  </li>
+  {% endfor %}
+</ol>

@@ -213,7 +213,7 @@ class JobRetrievalOpsAdminTests(TestCase):
             created=timezone.now() - timedelta(hours=2, minutes=5)
         )
         counts = _aggregate_counts()
-        self.assertEqual(counts["pending_run"]["oldest_age_display"], "2h 5m")
+        self.assertEqual(counts["pending_run"]["oldest_age_display"], "2h")
 
         AgentRun.objects.filter(pk=hours_old.pk).delete()
         seconds_old = AgentRun.objects.create(
@@ -1397,13 +1397,13 @@ class JobRetrievalDashboardVisualContractTests(TestCase):
             ("Next step", "jro-next-heading"),
             ("Pipeline ownership &amp; queue", "jro-ownership-heading"),
             ("End-to-end readiness", "jro-readiness-heading"),
+            ("Actions", "jro-actions-heading"),
             ("Run progress", "jro-progress-heading"),
             ("Sources", "jro-sources-heading"),
             ("Backlog", "jro-backlog-heading"),
             ("Inventory aggregates", "jro-aggregates-heading"),
             ("Readiness gates", "jro-gates-heading"),
             ("Related admin sections", "jro-links-heading"),
-            ("Actions", "jro-actions-heading"),
         ]
         positions = []
         for heading, dom_id in headings:
@@ -1466,10 +1466,10 @@ class JobRetrievalDashboardVisualContractTests(TestCase):
             created=timezone.now() - timedelta(minutes=40)
         )
         content = self.client.get(self.url).content.decode()
-        self.assertIn("Queued — waiting for pipeline consumer", content)
+        self.assertIn("Queued — waiting for a consumer", content)
         self.assertIn('data-state="queued"', content)
         self.assertIn("jro-badge--info", content)
-        self.assertIn("40m 0s ago", content)
+        self.assertIn("40m ago", content)
 
     def test_claimed_state_semantic_copy(self):
         content = self._render_with(
@@ -1504,7 +1504,7 @@ class JobRetrievalDashboardVisualContractTests(TestCase):
         # status region's explanation.
         self.assertIn("Blocking status: a second consumer", content)
         # Icon + text pairing, never color alone.
-        self.assertIn('class="jro-icon" aria-hidden="true">⚠', content)
+        self.assertIn('class="jro-icon jro-icon--alert" aria-hidden="true"></span>', content)
         self.assertIn("jro-badge--warning", content)
 
     def test_reclaimed_state_semantic_copy(self):
@@ -1563,13 +1563,17 @@ class JobRetrievalDashboardVisualContractTests(TestCase):
         self.assertIn("min-height: 44px", content)
         self.assertIn("min-width: 44px", content)
         for value, tone in (
-            ("Queue retrieval run", "jro-btn--primary"),
+            ("Queue retrieval run", "jro-btn--secondary"),
             ("Queue pipeline run", "jro-btn--secondary"),
-            ("Retry last failed run", "jro-btn--warning"),
-            ("Seed curated sources", "jro-btn--danger"),
-            ("Preview seed (dry run)", "jro-btn--secondary"),
+            ("Retry last failed run", "jro-btn--secondary"),
+            ("Seed curated sources", "jro-btn--secondary"),
+            ("Preview seed (dry run)", "jro-btn--primary"),
         ):
-            self.assertRegex(content, rf'value="{re.escape(value)}" class="jro-btn {tone}"')
+            self.assertRegex(
+                content, rf'value="{re.escape(value)}"[^>]* class="jro-btn {tone}"'
+            )
+        self.assertNotIn("jro-btn--danger", content.split("</style>", 1)[1])
+        self.assertNotIn("jro-btn--warning", content.split("</style>", 1)[1])
         self.assertNotIn("style=\"background:", content)
 
     # ── 375px guarantees (CSS contract; behavior proven by render script) ──
@@ -1588,7 +1592,9 @@ class JobRetrievalDashboardVisualContractTests(TestCase):
         self.assertNotIn("!important", style)
         for line in style.splitlines():
             stripped = line.strip()
-            if stripped.endswith("{") and not stripped.startswith(("@", "#jro-page", "/*", "*")):
+            if stripped.endswith("{") and not stripped.startswith(
+                ("@", "#jro-page", "/*", "*", 'html:not([data-theme="light"]) #jro-page', 'html[data-theme="dark"] #jro-page')
+            ):
                 self.fail(f"unscoped selector in page style: {stripped}")
 
     def test_diagnostic_sections_are_collapsed_and_follow_primary_sections(self):
@@ -1702,7 +1708,7 @@ class JobRetrievalReadinessPanelTests(TestCase):
         )
         content = self._get()
         self.assertIn("Queued", content)
-        self.assertIn("not yet consumed", content)
+        self.assertIn("waiting for a consumer", content)
         self.assertIn("No pipeline run has finished yet", content)
         self.assertNotIn(f"agent_run__id__exact={run.pk}", content)
 
@@ -1717,7 +1723,8 @@ class JobRetrievalReadinessPanelTests(TestCase):
             counts={"listings_ingested": 41, "matches_persisted": 17},
         )
         content = self._get()
-        self.assertIn("Last completed run", content)
+        self.assertIn("Latest run (also the last completed run)", content)
+        self.assertNotIn("<h3>Last completed run</h3>", content)
         self.assertIn("41", content)
         self.assertIn("17", content)
         import re
@@ -1876,3 +1883,158 @@ class JobRetrievalReadinessPanelTests(TestCase):
         flat = {i["key"]: i["value"] for g in completed["stages"] for i in g["counts"]}
         self.assertEqual(flat["sources_total"], 1)
         self.assertEqual(source.pk, JobSourceCatalog.objects.get().pk)
+
+
+@override_settings(**READINESS_ON)
+class JobRetrievalActionStateTests(TestCase):
+    """Primary/disabled Actions state, callout links and stage presentation (#481)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.staff = User.objects.create_user(username="action-staff", password="pw", is_staff=True)
+
+    def setUp(self):
+        self.client.force_login(self.staff)
+        self.url = reverse("admin:crank_jobretrievalops_changelist")
+
+    _source = JobRetrievalReadinessPanelTests._source
+    _get = JobRetrievalReadinessPanelTests._get
+
+    def _buttons(self, content):
+        return {
+            m.group(1): m.group(0)
+            for m in re.finditer(r'<input type="submit" value="([^"]+)"[^>]*>', content)
+        }
+
+    def test_empty_state_recommends_seed_preview_and_disables_retry(self):
+        content = self._get()
+        buttons = self._buttons(content)
+        self.assertIn("jro-btn--primary", buttons["Preview seed (dry run)"])
+        self.assertEqual(content.split("</style>", 1)[1].count("jro-btn--primary"), 1)
+        self.assertIn("disabled", buttons["Retry last failed run"])
+        self.assertIn("No failed run to retry.", content)
+        self.assertNotIn("disabled", buttons["Queue retrieval run"])
+        self.assertIn('href="#jro-action-seed-preview"', content)
+
+    def test_queue_next_step_makes_queue_retrieval_primary(self):
+        self._source()
+        content = self._get()
+        buttons = self._buttons(content)
+        self.assertIn("jro-btn--primary", buttons["Queue retrieval run"])
+        self.assertIn('href="#jro-action-queue-retrieval"', content)
+
+    def test_failed_run_makes_retry_primary_and_enabled(self):
+        self._source()
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.FAILED,
+            finished_at=timezone.now(),
+            error_summary="boom",
+        )
+        content = self._get()
+        buttons = self._buttons(content)
+        self.assertNotIn("disabled", buttons["Retry last failed run"])
+        self.assertIn("jro-btn--primary", buttons["Retry last failed run"])
+        self.assertIn('href="#jro-action-retry"', content)
+
+    def test_active_run_disables_queue_and_retry_with_reason(self):
+        self._source()
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.PENDING
+        )
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.FAILED,
+            finished_at=timezone.now(),
+        )
+        content = self._get()
+        buttons = self._buttons(content)
+        for value in ("Queue retrieval run", "Queue pipeline run", "Retry last failed run"):
+            self.assertIn("disabled", buttons[value])
+        self.assertIn("is already queued.", content)
+        self.assertNotIn("jro-btn--primary", content.split("</style>", 1)[1])
+        self.assertNotIn("Queue guidance</dt>\n          <dd>No action needed yet", content)
+
+    def test_running_run_reason_says_running(self):
+        self._source()
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.RUNNING,
+            started_at=timezone.now(),
+        )
+        self.assertIn("is already running.", self._get())
+
+    def test_all_met_has_no_primary_and_collapses_readiness(self):
+        from crank.admin_dashboard import _action_state
+
+        state = _action_state(
+            {"next_step": None}, {"state": "idle"}, source_total=1
+        )
+        self.assertIsNone(state["primary"])
+        self.assertFalse(state["queue_disabled"])
+        state = _action_state(None, {"state": "idle"}, source_total=0)
+        self.assertIsNone(state["primary"])
+
+    def test_only_next_stage_todo_and_no_emoji_icons(self):
+        content = self._get()
+        self.assertIn('class="jro-todo"', content)
+        self.assertIn("#jro-page .jro-stage:not(.jro-stage--next) .jro-todo { display: none; }", content)
+        page = content.split('<div id="jro-page">', 1)[1]
+        for glyph in ("✓", "✖", "⏳", "⚠", "▶"):
+            self.assertNotIn(glyph, page)
+        self.assertIn("icon-yes.svg", content)
+
+    def test_callout_title_states_unmet_fact_and_not_repeated(self):
+        self._source()
+        with patch.dict("os.environ", {"USAJOBS_AUTH_KEY": ""}), override_settings(USAJOBS_AUTH_KEY=""):
+            content = self._get()
+        self.assertIn("Missing settings for 1 source", content.split("<h3>Step 3 of 9: ", 1)[1].split("</h3>", 1)[0])
+
+    def test_present_stage_not_applicable_and_summary_split(self):
+        from crank.admin_dashboard import _present_stage
+
+        stage = _present_stage(
+            {"status": "met", "summary": "One thing. Second part.", "not_applicable": True}
+        )
+        self.assertEqual(stage["status_label"], "Not applicable yet")
+        self.assertEqual(stage["tone"], "neutral")
+        self.assertEqual(stage["headline"], "One thing")
+        self.assertEqual(stage["summary_rest"], "Second part.")
+
+    def test_all_met_readiness_is_collapsed_summary(self):
+        from crank.admin_dashboard import _readiness_context
+
+        fake = {
+            "stages": [
+                {"key": "a", "status": "met", "summary": "ok.", "remediation": ""},
+                {"key": "b", "status": "unmet", "summary": "no.", "remediation": "fix"},
+            ],
+            "next_step": None,
+        }
+        with patch("crank.admin_dashboard.operations_readiness.readiness", return_value=fake):
+            ctx = _readiness_context(object())
+        self.assertEqual(ctx["met_count"], 1)
+
+    def test_scheduler_remediation_rewritten_when_run_active(self):
+        from crank.admin_dashboard import _readiness_context
+
+        fake = {
+            "stages": [{"key": "scheduler", "status": "unmet", "summary": "x.", "remediation": "orig"}],
+            "next_step": None,
+        }
+        with patch("crank.admin_dashboard.operations_readiness.readiness", return_value=fake):
+            ctx = _readiness_context(object(), active_run=True)
+        self.assertIn("already queued or running", ctx["stages"][0]["remediation"])
+        fresh = {
+            "stages": [{"key": "scheduler", "status": "unmet", "summary": "x.", "remediation": "orig"}],
+            "next_step": None,
+        }
+        with patch("crank.admin_dashboard.operations_readiness.readiness", return_value=fresh):
+            ctx = _readiness_context(object(), active_run=False)
+        self.assertEqual(ctx["stages"][0]["remediation"], "orig")
+
+    def test_readiness_failure_returns_none(self):
+        from crank.admin_dashboard import _readiness_context
+
+        with patch("crank.admin_dashboard.operations_readiness.readiness", side_effect=RuntimeError("x")):
+            self.assertIsNone(_readiness_context(object()))

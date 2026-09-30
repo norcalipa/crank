@@ -82,18 +82,18 @@ def runbook_url(anchor):
 
 
 def format_age(seconds):
-    """Compact age such as ``3h 12m`` or ``2d 4h`` from whole seconds."""
+    """Coarse age such as ``45s``, ``12m``, ``3h`` or ``2d`` from whole seconds."""
     seconds = max(0, int(seconds))
-    minutes, sec = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    days, hours = divmod(hours, 24)
+    minutes = seconds // 60
+    hours = minutes // 60
+    days = hours // 24
     if days:
-        return f"{days}d {hours}h"
+        return f"{days}d"
     if hours:
-        return f"{hours}h {minutes}m"
+        return f"{hours}h"
     if minutes:
-        return f"{minutes}m {sec}s"
-    return f"{sec}s"
+        return f"{minutes}m"
+    return f"{seconds}s"
 
 
 def _iso(dt):
@@ -226,7 +226,11 @@ class _Context:
         return self._memo("match_lag", lambda: publication_match_lag_seconds(self.now))
 
 
-def _result(key, status, summary, remediation="", link=None, anchor=None):
+def _plural(count, noun):
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
+def _result(key, status, summary, remediation="", link=None, anchor=None, not_applicable=False):
     """Build one stage dict; ``link`` is ``(admin url name, query, label)``."""
     label, default_anchor = next((lbl, a) for k, lbl, a in STAGES if k == key)
     admin_name, admin_query, admin_label = link or ("", "", "")
@@ -239,6 +243,7 @@ def _result(key, status, summary, remediation="", link=None, anchor=None):
         "admin_url": _admin(admin_name, admin_query) if admin_name else "",
         "admin_label": admin_label,
         "runbook_url": runbook_url(anchor or default_anchor),
+        "not_applicable": not_applicable,
     }
 
 
@@ -246,19 +251,19 @@ SOURCES_LINK = ("crank_jobsourcecatalog_changelist", "", "Job Source Catalog")
 
 
 def _waiting(key, upstream):
-    return _result(key, PENDING, f"Waiting on an earlier prerequisite ({upstream}).")
+    return _result(key, PENDING, f"Waiting on step {STAGE_KEYS.index(upstream) + 1}.")
 
 
 def _stage_source_policy(ctx):
     counts = ctx.source_counts
     live = len(ctx.live_sources)
     if live:
-        return _result("source_policy", MET, f"{live} source(s) are approved and enabled in the database.")
+        return _result("source_policy", MET, f"{_plural(live, 'source')} approved and enabled in the database.")
     if not counts["total"]:
         remediation = "No job sources exist in the database. Preview and run the curated seed, then approve and enable a source."
     else:
         remediation = (
-            f"{counts['total']} source(s) exist but none is both approved and enabled "
+            f"{_plural(counts['total'], 'source')} exist but none is both approved and enabled "
             f"({counts['approved']} approved, {counts['blocked']} blocked, {counts['enabled_any']} enabled). "
             "Approve and enable one in the Job Source Catalog."
         )
@@ -320,7 +325,7 @@ def _stage_credentials(ctx):
     return _result(
         "credentials",
         UNMET,
-        f"Missing settings for {len(missing)} source(s) - {detail}.",
+        f"Missing settings for {_plural(len(missing), 'source')} — {detail}.",
         "Set the named environment variables in the deployment config (values are never shown here), then redeploy.",
     )
 
@@ -405,7 +410,7 @@ def _stage_consumption(ctx):
         return _result(
             "consumption",
             PENDING,
-            "Queued - not yet consumed. The next pipeline tick or a manual run adopts it.",
+            "Queued — waiting for a consumer. The next pipeline tick or a manual run adopts it.",
             "No action yet; if it is not consumed before the TTL, check the CronJob.",
             link,
         )
@@ -450,7 +455,7 @@ def _stage_inventory(ctx):
         return _result(
             "inventory",
             UNMET,
-            f"{live_listings} active listing(s) exist but no source has succeeded within {_freshness_hours()}h.",
+            f"{_plural(live_listings, 'active listing')} exist but no source has succeeded within {_freshness_hours()}h.",
             "Check the per-source last success and failure reasons below; the crawl may be failing or not scheduled.",
             ("crank_crawlrun_changelist", "", "Crawl Runs"),
         )
@@ -465,11 +470,11 @@ def _stage_inventory(ctx):
         return _result(
             "inventory",
             ATTENTION,
-            f"{live_listings} active listing(s); sources needing attention: {', '.join(problems)}.",
+            f"{_plural(live_listings, 'active listing')}; sources needing attention: {', '.join(problems)}.",
             "Review the per-source table below.",
             link,
         )
-    return _result("inventory", MET, f"{live_listings} active listing(s) from {fresh} freshly crawled source(s).", link=link)
+    return _result("inventory", MET, f"{_plural(live_listings, 'active listing')} from {_plural(fresh, 'freshly crawled source')}.", link=link)
 
 
 def _stage_employers(ctx):
@@ -481,7 +486,7 @@ def _stage_employers(ctx):
         return _result(
             "employers",
             UNMET,
-            f"{listings['active']} active listing(s) but none resolved to an organization.",
+            f"{_plural(listings['active'], 'active listing')} but none resolved to an organization.",
             "Add employer aliases or resolve the queued employers so listings can match.",
             link,
         )
@@ -490,7 +495,7 @@ def _stage_employers(ctx):
         return _result(
             "employers",
             ATTENTION,
-            f"{unresolved} unresolved employer(s) awaiting review.",
+            f"{_plural(unresolved, 'unresolved employer')} awaiting review.",
             "Resolve or alias them in Unresolved Employers.",
             link,
         )
@@ -531,6 +536,7 @@ def _stage_matches(ctx):
             "Live reads (committed generations not served): "
             + ("matches exist." if has_matches else "no user has preferences yet."),
             link=link,
+            not_applicable=not has_matches,
         )
     return _result(
         "matches",
@@ -568,7 +574,7 @@ def readiness(now=None, ctx=None):
             stage = _STAGE_FUNCS[key](ctx)
         except Exception as exc:
             logger.warning("operations readiness stage %s failed: %s", key, sanitize_error(exc))
-            stage = _result(key, UNKNOWN, "Could not compute - see server logs.")
+            stage = _result(key, UNKNOWN, "Could not compute — see server logs.")
         stage["position"] = len(stages) + 1
         stages.append(stage)
 

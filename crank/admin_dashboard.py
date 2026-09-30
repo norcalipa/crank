@@ -55,14 +55,14 @@ RUN_STATUS_TONES = {
     "skipped": "warning",
 }
 RUN_STATUS_ICONS = {
-    "pending": "⏳",
-    "running": "▶",
-    "succeeded": "✓",
-    "failed": "✖",
-    "skipped": "↻",
+    "pending": "clock",
+    "running": "play",
+    "succeeded": "check",
+    "failed": "x",
+    "skipped": "alert",
 }
 PIPELINE_STATE_TONES = {
-    "idle": "success",
+    "idle": "neutral",
     "queued": "info",
     "claimed": "info",
     "conflict": "warning",
@@ -71,13 +71,13 @@ PIPELINE_STATE_TONES = {
     "failed": "danger",
 }
 PIPELINE_STATE_ICONS = {
-    "idle": "✓",
-    "queued": "⏳",
-    "claimed": "▶",
-    "conflict": "⚠",
-    "reclaimed": "↻",
-    "expired": "✖",
-    "failed": "✖",
+    "idle": "dash",
+    "queued": "clock",
+    "claimed": "play",
+    "conflict": "alert",
+    "reclaimed": "alert",
+    "expired": "x",
+    "failed": "x",
 }
 
 
@@ -96,11 +96,11 @@ STAGE_STATUS_TONES = {
     "unknown": "warning",
 }
 STAGE_STATUS_ICONS = {
-    "met": "✓",
-    "unmet": "✖",
-    "pending": "⏳",
-    "attention": "⚠",
-    "unknown": "?",
+    "met": "check",
+    "unmet": "x",
+    "pending": "clock",
+    "attention": "alert",
+    "unknown": "unknown",
 }
 OUTCOME_TONES = {
     "success": "success",
@@ -110,6 +110,15 @@ OUTCOME_TONES = {
     "pending": "info",
     "running": "info",
 }
+OUTCOME_ICONS = {
+    "success": "check",
+    "failure": "x",
+    "timeout": "x",
+    "partial": "alert",
+    "pending": "clock",
+    "running": "play",
+}
+QUEUE_STEPS = ("scheduler", "consumption", "inventory")
 
 
 def _relative_time(dt, now=None):
@@ -120,26 +129,12 @@ def _relative_time(dt, now=None):
     seconds = max(0, int((now - dt).total_seconds()))
     if seconds < 45:
         return "just now"
-    minutes, sec = divmod(seconds, 60)
-    if minutes < 60:
-        return f"{minutes}m ago"
-    hours, minutes = divmod(minutes, 60)
-    if hours < 24:
-        return f"{hours}h {minutes}m ago"
-    days, hours = divmod(hours, 24)
-    return f"{days}d {hours}h ago"
+    return f"{operations_readiness.format_age(seconds)} ago"
 
 
 def _duration(seconds):
-    """Compact duration like ``2h 59m`` for countdown/age display."""
-    seconds = max(0, int(seconds))
-    minutes, sec = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"{hours}h {minutes}m"
-    if minutes:
-        return f"{minutes}m {sec}s"
-    return f"{sec}s"
+    """Compact duration like ``2h`` for countdown/age display."""
+    return operations_readiness.format_age(seconds)
 
 
 def _abbrev_id(value):
@@ -189,10 +184,10 @@ def _pipeline_ownership_state():
         "state": "idle",
         "tone": PIPELINE_STATE_TONES["idle"],
         "icon": PIPELINE_STATE_ICONS["idle"],
-        "label": "Idle — no active or queued pipeline run",
+        "label": "Idle — nothing queued",
         "explanation": (
             "Nothing is claimed or queued. The next scheduled pipeline tick "
-            "(or a manual run) will pick up approved+enabled sources."
+            "(or a manual run) will pick up approved and enabled sources."
         ),
         "blocking": False,
         "owner": None,
@@ -245,7 +240,7 @@ def _pipeline_ownership_state():
                 state="queued",
                 tone=PIPELINE_STATE_TONES["queued"],
                 icon=PIPELINE_STATE_ICONS["queued"],
-                label="Queued — waiting for pipeline consumer",
+                label="Queued — waiting for a consumer",
                 explanation=(
                     "The run is queued but not yet claimed. It is consumed by "
                     "the next scheduled pipeline tick or a manual "
@@ -451,14 +446,7 @@ def _aggregate_counts(ctx=None):
         age_seconds = max(
             0, int((timezone.now() - oldest_pending.created).total_seconds())
         )
-        hours, remainder = divmod(age_seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        if hours:
-            age_display = f"{hours}h {minutes}m"
-        elif minutes:
-            age_display = f"{minutes}m {seconds}s"
-        else:
-            age_display = f"{seconds}s"
+        age_display = operations_readiness.format_age(age_seconds)
         pending_run_info = {
             "count": pending_count,
             "oldest_age_seconds": age_seconds,
@@ -523,10 +511,17 @@ def _present_stage(stage):
     stage["status_label"] = STAGE_STATUS_LABELS[stage["status"]]
     stage["tone"] = STAGE_STATUS_TONES[stage["status"]]
     stage["icon"] = STAGE_STATUS_ICONS[stage["status"]]
+    if stage.get("not_applicable"):
+        stage["status_label"] = "Not applicable yet"
+        stage["tone"] = "neutral"
+        stage["icon"] = "dash"
+    headline, _, rest = stage["summary"].partition(". ")
+    stage["headline"] = headline.rstrip(".")
+    stage["summary_rest"] = rest.strip()
     return stage
 
 
-def _readiness_context(ctx):
+def _readiness_context(ctx, active_run=None):
     """End-to-end readiness with presentation fields, or ``None`` on failure."""
     try:
         readiness = operations_readiness.readiness(ctx=ctx)
@@ -535,15 +530,53 @@ def _readiness_context(ctx):
         return None
     for stage in readiness["stages"]:
         _present_stage(stage)
-    if readiness["next_step"] is not None:
-        readiness["next_step"] = _present_stage(readiness["next_step"])
+        if stage["key"] == "scheduler" and stage["status"] == "unmet" and active_run:
+            stage["remediation"] = (
+                "A run is already queued or running, so do not queue another. "
+                "If it is not claimed within the TTL, confirm the job-pipeline "
+                "CronJob is unsuspended (kubectl)."
+            )
+    readiness["met_count"] = sum(1 for s in readiness["stages"] if s["status"] == "met")
     return readiness
+
+
+def _action_state(readiness, pipeline, source_total):
+    """Which Actions button is primary, and which are disabled (with reasons).
+
+    Presentation only: the POST endpoints keep their own overlap and
+    eligibility guards.
+    """
+    active = pipeline["state"] in ("queued", "claimed", "conflict")
+    active_reason = ""
+    if active:
+        active_reason = (
+            f"Run {pipeline['correlation_abbrev']} is already "
+            f"{'queued' if pipeline['state'] == 'queued' else 'running'}."
+        )
+    failed_exists = AgentRun.objects.filter(
+        run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.FAILED
+    ).exists()
+    next_key = readiness["next_step"]["key"] if readiness and readiness["next_step"] else None
+    primary = None
+    if not active:
+        if next_key == "source_policy" and source_total == 0:
+            primary = "seed_preview"
+        elif next_key in QUEUE_STEPS:
+            primary = "retry" if failed_exists else "queue_retrieval"
+    return {
+        "primary": primary,
+        "queue_disabled": active,
+        "queue_reason": active_reason,
+        "retry_disabled": active or not failed_exists,
+        "retry_reason": active_reason if active else "No failed run to retry.",
+    }
 
 
 def _sources_context(ctx):
     sources = operations_readiness.source_rows(ctx=ctx)
     for row in sources["rows"]:
         row["outcome_tone"] = OUTCOME_TONES.get(row["latest_outcome"], "info")
+        row["outcome_icon"] = OUTCOME_ICONS.get(row["latest_outcome"], "clock")
     return sources
 
 
@@ -555,9 +588,9 @@ def _progress_context(ctx):
             continue
         run["label"] = RUN_STATUS_LABELS.get(run["status"], run["status"])
         if run["queued_only"]:
-            run["label"] = "Queued — not yet consumed"
+            run["label"] = "Queued — waiting for a consumer"
         run["tone"] = RUN_STATUS_TONES.get(run["status"], "info")
-        run["icon"] = RUN_STATUS_ICONS.get(run["status"], "•")
+        run["icon"] = RUN_STATUS_ICONS.get(run["status"], "clock")
     return progress
 
 
@@ -732,13 +765,19 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 
     def dashboard_view(self, request):
         snapshot = operations_readiness.snapshot()
+        pipeline = _pipeline_ownership_state()
+        readiness = _readiness_context(
+            snapshot, pipeline["state"] in ("queued", "claimed", "conflict")
+        )
         context = {
             **self.admin_site.each_context(request),
             "title": "Job Retrieval Operations",
             "counts": _aggregate_counts(snapshot),
             "gates": _readiness_gates(snapshot),
-            "pipeline": _pipeline_ownership_state(),
-            "readiness": _readiness_context(snapshot),
+            "pipeline": pipeline,
+            "readiness": readiness,
+            "error_time": timezone.now().strftime("%H:%M UTC"),
+            "actions": _action_state(readiness, pipeline, snapshot.source_counts["total"]),
             "sources": _safe_section("sources", lambda: _sources_context(snapshot)),
             "progress": _safe_section("run progress", lambda: _progress_context(snapshot)),
             "backlog": _safe_section("backlog", lambda: _backlog_context(snapshot)),

@@ -145,9 +145,9 @@ class RequiredSettingsContractTests(SimpleTestCase):
 
     def test_format_age(self):
         self.assertEqual(ops.format_age(5), "5s")
-        self.assertEqual(ops.format_age(125), "2m 5s")
-        self.assertEqual(ops.format_age(3 * 3600 + 120), "3h 2m")
-        self.assertEqual(ops.format_age(2 * 86400 + 4 * 3600), "2d 4h")
+        self.assertEqual(ops.format_age(125), "2m")
+        self.assertEqual(ops.format_age(3 * 3600 + 120), "3h")
+        self.assertEqual(ops.format_age(2 * 86400 + 4 * 3600), "2d")
         self.assertEqual(ops.format_age(-4), "0s")
 
 
@@ -170,7 +170,7 @@ class StageTests(TestCase):
         result = ops.readiness()
         policy = stage(result, "source_policy")
         self.assertEqual(policy["status"], ops.UNMET)
-        self.assertIn("3 source(s) exist", policy["remediation"])
+        self.assertIn("3 sources exist", policy["remediation"])
         self.assertTrue(policy["admin_url"].endswith("/jobsourcecatalog/"))
 
     def test_source_policy_met_with_live_source(self):
@@ -294,7 +294,7 @@ class StageTests(TestCase):
         make_run(AgentRun.Status.PENDING, age_minutes=2, finished=False)
         queued = stage(ops.readiness(), "consumption")
         self.assertEqual(queued["status"], ops.PENDING)
-        self.assertIn("not yet consumed", queued["summary"])
+        self.assertIn("waiting for a consumer", queued["summary"])
         AgentRun.objects.all().delete()
         make_run(AgentRun.Status.PENDING, age_minutes=600, finished=False)
         expired = stage(ops.readiness(), "consumption")
@@ -591,8 +591,8 @@ class BacklogAndProgressTests(TestCase):
             row = ops.source_rows(now=now)["rows"][0]
         self.assertTrue(row["adapter_registered"])
         self.assertIs(row["credentials_present"], False)
-        self.assertEqual(row["last_success_age"], "3h 0m")
-        self.assertEqual(row["last_attempt_age"], "5m 0s")
+        self.assertEqual(row["last_success_age"], "3h")
+        self.assertEqual(row["last_attempt_age"], "5m")
         self.assertEqual(row["consecutive_failures"], 2)
         self.assertEqual(row["latest_outcome"], "")
         self.assertEqual(row["latest_error"], "")
@@ -628,7 +628,7 @@ class BacklogAndProgressTests(TestCase):
         completed = progress["completed"]
         self.assertEqual(completed["id"], run.pk)
         self.assertEqual(completed["status"], "failed")
-        self.assertEqual(completed["duration"], "2m 0s")
+        self.assertEqual(completed["duration"], "2m")
         self.assertLessEqual(len(completed["error_summary"]), 300)
         self.assertNotIn("abc.def", completed["error_summary"])
         flat = {item["key"]: item["value"] for group in completed["stages"] for item in group["counts"]}
