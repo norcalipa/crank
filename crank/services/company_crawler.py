@@ -185,6 +185,11 @@ def _organization_for(domain: str, name: str) -> tuple[Organization | None, list
     return organization, []
 
 
+# A conflict only in these fields says nothing about whether a policy statement
+# the page still repeats is current, so it does not block re-verification.
+COSMETIC_CONFLICT_FIELDS = frozenset({"description", "logo_url", "brand_metadata"})
+
+
 def _reconcile_review_fields(
     organization: Organization,
     observation: CompanyProfileObservation,
@@ -401,7 +406,8 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
                     carried = company_evidence.observation_field_values(observation)
                     _reconcile_review_fields(
                         organization, observation, conflict_fields=conflict_fields,
-                        reverify=False, now=observed_at,
+                        reverify=set(conflict_fields) <= COSMETIC_CONFLICT_FIELDS,
+                        now=observed_at,
                     )
                     for field_key in carried:
                         company_evidence.record_check(

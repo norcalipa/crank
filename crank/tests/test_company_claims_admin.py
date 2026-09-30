@@ -15,6 +15,7 @@ from crank.models.employer import EmployerAlias
 from crank.models.job import JobSourceCatalog
 from crank.models.monitoring import OperationalChangeAudit
 from crank.models.organization import Organization
+from crank.services import company_evidence
 from crank.services.company_crawler import crawl_company_profile
 from crank.tests.services.test_company_crawler import FakeClient, profile
 
@@ -242,6 +243,171 @@ class ClaimReviewTests(TestCase):
         self.assertEqual(observation.status, CompanyProfileObservation.Status.REJECTED)
         audit = OperationalChangeAudit.objects.get(target_type="company_profile_observation")
         self.assertEqual(audit.action, "review_rejected")
+
+    def test_confirmation_page_describes_the_claim_and_escapes_hostile_text(self):
+        CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(
+            value_text="<script>alert(1)</script> Remote first"
+        )
+        response = self._post_action("accept_claims", [self.rto.pk], confirm=False)
+        html = response.content.decode("utf-8")
+        for expected in ("Example Labs", "rto_policy", "currently accepted", "company-wide", "jobs.example.test"):
+            self.assertIn(expected, html)
+        self.assertNotIn("<script>alert(1)", html)
+        self.assertIn("&lt;script&gt;alert(1)", html)
+
+    def test_state_filter_overrides_the_open_queue_default(self):
+        response = self.client.get(self.url, {"state__exact": "accepted"})
+        states = {row.state for row in response.context["cl"].result_list}
+        self.assertEqual(states, {State.ACCEPTED})
+
+    def _second_rto_claim(self, value="Hybrid, 2 days", source="https://other.example.test/about"):
+        observation = CompanyProfileObservation.objects.get(organization=self.organization)
+        return company_evidence.record_claim(
+            self.organization,
+            FieldKey.RTO_POLICY,
+            value=value,
+            observation=CompanyProfileObservation.objects.create(
+                organization=self.organization,
+                source_url=source,
+                observed_domain="example.test",
+                observed_name="Example Labs",
+                rto_evidence=value,
+                observed_at=observation.observed_at,
+                extraction_version="test",
+                status=CompanyProfileObservation.Status.CONFLICTED,
+                fingerprint=f"fp-{value}",
+            ),
+            state=State.PENDING,
+        )
+
+    def test_bulk_accept_of_two_claims_for_one_field_is_refused(self):
+        other = self._second_rto_claim()
+        messages = []
+        response = self._post_action("accept_claims", [self.rto.pk, other.pk])
+        self.assertEqual(response.status_code, 302)
+        self.rto.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual(self.rto.state, State.PENDING)
+        self.assertEqual(other.state, State.PENDING)
+        self.assertFalse(OperationalChangeAudit.objects.exists())
+        self.assertEqual(messages, [])
+
+    def test_accepting_one_claim_audits_what_it_superseded(self):
+        first = self._second_rto_claim()
+        self._post_action("accept_claims", [self.rto.pk])
+        self._post_action("accept_claims", [first.pk])
+        audit = OperationalChangeAudit.objects.get(
+            action="claim_accepted", target_id=str(first.pk)
+        )
+        self.assertEqual(audit.new_value["superseded"], [self.rto.pk])
+
+    def test_scope_edit_keeps_claimed_domain_and_documents_matching(self):
+        self._change(self.rto, {"countries": ["Germany"], "claimed_domain": "evil.test"})
+        self.rto.refresh_from_db()
+        self.assertEqual(
+            self.rto.scope_json, {"countries": ["Germany"], "claimed_domain": "example.test"}
+        )
+        audit = OperationalChangeAudit.objects.get(action="scope_change")
+        self.assertFalse(audit.confirmed)
+        form = self.client.get(
+            reverse("admin:crank_companyfieldevidence_change", args=[self.rto.pk])
+        )
+        self.assertContains(form, "whole-word")
+
+    def test_scope_save_after_the_claim_closed_reports_an_error_and_writes_nothing(self):
+        from django.contrib.admin.sites import AdminSite
+        from django.test import RequestFactory
+
+        from crank.admin import CompanyFieldEvidenceAdmin
+
+        stale = CompanyFieldEvidence.objects.get(pk=self.rto.pk)
+        stale.scope_json = {"countries": ["Germany"]}
+        CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(state=State.SUPERSEDED)
+        request = RequestFactory().post("/admin/")
+        request.user = self.staff
+        model_admin = CompanyFieldEvidenceAdmin(CompanyFieldEvidence, AdminSite())
+        messages = []
+        model_admin.message_user = lambda req, msg, level=None: messages.append((msg, level))
+        model_admin.save_model(request, stale, None, True)
+        self.assertEqual(len(messages), 1)
+        self.assertIn("Scope not saved", messages[0][0])
+        self.rto.refresh_from_db()
+        self.assertEqual(self.rto.scope_json, {"claimed_domain": "example.test"})
+        self.assertFalse(OperationalChangeAudit.objects.filter(action="scope_change").exists())
+
+    def _new_observation_review(self, action, value="Five days in office"):
+        crawl_company_profile(self.source, client=FakeClient([profile(rto_evidence=value)]))
+        observation = CompanyProfileObservation.objects.filter(
+            organization=self.organization
+        ).latest("id")
+        url = reverse("admin:crank_companyprofileobservation_changelist")
+        self.client.post(
+            url,
+            {"action": action, ACTION_CHECKBOX_NAME: [observation.pk], "index": 0, "confirm": "yes"},
+        )
+        observation.refresh_from_db()
+        return observation
+
+    def test_rejecting_an_observation_rejects_its_open_claims(self):
+        self._post_action("accept_claims", [self.rto.pk])
+        observation = self._new_observation_review("reject_observations")
+        claim = CompanyFieldEvidence.objects.get(
+            organization=self.organization,
+            field_key=FieldKey.RTO_POLICY,
+            value_text="Five days in office",
+        )
+        self.assertEqual(claim.state, State.REJECTED)
+        audit = OperationalChangeAudit.objects.get(
+            target_type="company_profile_observation", target_id=str(observation.pk)
+        )
+        self.assertIn(claim.pk, audit.new_value["claims_resolved"])
+
+    def test_accepting_an_observation_supersedes_its_claims_and_audits_ids(self):
+        self._post_action("accept_claims", [self.rto.pk])
+        observation = self._new_observation_review("accept_observations")
+        self.assertEqual(observation.status, CompanyProfileObservation.Status.ACCEPTED)
+        claim = CompanyFieldEvidence.objects.get(
+            organization=self.organization,
+            field_key=FieldKey.RTO_POLICY,
+            value_text="Five days in office",
+            state=State.SUPERSEDED,
+        )
+        audit = OperationalChangeAudit.objects.get(
+            target_type="company_profile_observation", target_id=str(observation.pk)
+        )
+        self.assertIn(claim.pk, audit.new_value["claims_resolved"])
+        self.assertIn(self.rto.pk, audit.new_value["evidence_superseded"])
+        created = audit.new_value["evidence_created"]
+        self.assertTrue(created)
+        self.assertEqual(
+            OperationalChangeAudit.objects.filter(
+                action="observation_accepted", target_id__in=[str(pk) for pk in created]
+            ).count(),
+            len(created),
+        )
+        self.assertEqual(
+            CompanyFieldEvidence.objects.get(
+                organization=self.organization,
+                field_key=FieldKey.RTO_POLICY,
+                state=State.ACCEPTED,
+            ).value_text,
+            "Five days in office",
+        )
+
+    def test_accepting_an_observation_that_would_replace_scoped_evidence_is_refused(self):
+        self._post_action("accept_claims", [self.rto.pk])
+        CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(
+            scope_json={"countries": ["Germany"], "claimed_domain": "example.test"}
+        )
+        observation = self._new_observation_review("accept_observations")
+        self.assertNotEqual(observation.status, CompanyProfileObservation.Status.ACCEPTED)
+        self.rto.refresh_from_db()
+        self.assertEqual(self.rto.state, State.ACCEPTED)
+        self.assertFalse(
+            OperationalChangeAudit.objects.filter(
+                target_type="company_profile_observation", target_id=str(observation.pk)
+            ).exists()
+        )
 
 
 @override_settings(FIRECRAWL_MAX_PAGES=3, FIRECRAWL_CREDIT_BUDGET=3, CACHES=LOCMEM)

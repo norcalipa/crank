@@ -393,3 +393,12 @@ numbered merge migration if a head split remains, keeping
   safe. Existing accepted rows are unchanged.
 - **Rollback** is a code redeploy: old code filters `state=accepted`, so it
   ignores pending, rejected and conflicted rows.
+- **Legacy auto-verified rows.** Accepted rows written before this change
+  carry no staff review. "Staff-reviewed" is derived, not stored: an accepted
+  row counts as reviewed when a confirmed `claim_accepted` or
+  `observation_accepted` audit row exists for it, or its observation is
+  `accepted`. The next crawl that reads the same value from a legacy,
+  unreviewed row opens a `pending` claim so it reaches the review queue; the
+  row itself stays accepted and in effect until staff decide. Only reviewed
+  rows are re-verified (freshness advanced) by later crawls that read the
+  same value. No backfill is needed.

@@ -378,7 +378,14 @@ class CompanyCrawlerTests(TestCase):
         self.assertEqual(claims.count(), 1)
         self.assertEqual(claims.get().value_text, "Hybrid, 2 days")
 
-    def test_unchanged_review_field_is_not_reclaimed_or_verified(self):
+    def _rto(self, organization, *states):
+        return CompanyFieldEvidence.objects.filter(
+            organization=organization,
+            field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
+            state__in=states or company_evidence.OPEN_CLAIM_STATES,
+        )
+
+    def test_reviewed_review_field_is_reverified_by_unchanged_and_cosmetic_crawls(self):
         organization = Organization.objects.create(
             name="Example Labs", url="https://example.test"
         )
@@ -386,24 +393,181 @@ class CompanyCrawlerTests(TestCase):
         approved = approve_open_claims(
             organization, CompanyFieldEvidence.FieldKey.RTO_POLICY
         )
-        later = timezone.now() + timedelta(days=1)
+        day_one = timezone.now() + timedelta(days=1)
+        day_two = timezone.now() + timedelta(days=2)
 
+        # Byte-identical page (a duplicate observation), then a page whose
+        # only change is cosmetic: both re-read the same statement.
+        crawl_company_profile(self.source, client=FakeClient([profile()]), now=day_one)
+        approved.refresh_from_db()
+        self.assertEqual(approved.last_verified_at, day_one)
         crawl_company_profile(
             self.source,
             client=FakeClient([profile(brand_metadata={"color": "red"})]),
-            now=later,
+            now=day_two,
         )
 
         approved.refresh_from_db()
         self.assertEqual(approved.state, CompanyFieldEvidence.State.ACCEPTED)
-        self.assertEqual(approved.last_checked_at, later)
-        self.assertNotEqual(approved.last_verified_at, later)
-        self.assertFalse(
-            CompanyFieldEvidence.objects.filter(
-                field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
-                state=CompanyFieldEvidence.State.PENDING,
-            ).exists()
+        self.assertEqual(approved.last_verified_at, day_two)
+        self.assertEqual(approved.last_checked_at, day_two)
+        self.assertFalse(self._rto(organization).exists())
+
+    def test_identity_conflict_does_not_reverify(self):
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
         )
+        crawl_company_profile(self.source, client=FakeClient([profile()]))
+        approved = approve_open_claims(
+            organization, CompanyFieldEvidence.FieldKey.RTO_POLICY
+        )
+        verified = approved.last_verified_at
+        later = timezone.now() + timedelta(days=1)
+        crawl_company_profile(
+            self.source,
+            client=FakeClient([profile(locations=["Berlin"])]),
+            now=later,
+        )
+        approved.refresh_from_db()
+        self.assertEqual(approved.last_verified_at, verified)
+        self.assertEqual(approved.last_checked_at, later)
+
+    def test_legacy_unreviewed_accepted_value_is_queued_for_review(self):
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        observation = CompanyProfileObservation.objects.create(
+            organization=organization,
+            source_url="https://jobs.example.test/about",
+            observed_domain="example.test",
+            observed_name="Example Labs",
+            rto_evidence="Remote first",
+            observed_at=timezone.now() - timedelta(days=200),
+            extraction_version="legacy",
+            status=CompanyProfileObservation.Status.AUTO_APPLIED,
+            fingerprint="legacy-observation",
+        )
+        company_evidence.accept_observation_fields(observation)
+        legacy = self._rto(organization, CompanyFieldEvidence.State.ACCEPTED).get()
+        self.assertFalse(company_evidence.is_staff_reviewed(legacy))
+
+        crawl_company_profile(self.source, client=FakeClient([profile()]))
+
+        claim = self._rto(organization).get()
+        self.assertEqual(claim.state, CompanyFieldEvidence.State.PENDING)
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.state, CompanyFieldEvidence.State.ACCEPTED)
+        reviewed = approve_open_claims(
+            organization, CompanyFieldEvidence.FieldKey.RTO_POLICY
+        )
+        self.assertTrue(company_evidence.is_staff_reviewed(reviewed))
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.state, CompanyFieldEvidence.State.SUPERSEDED)
+
+    def test_rejected_value_is_not_requeued_by_later_page_edits(self):
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        crawl_company_profile(self.source, client=FakeClient([profile()]))
+        staff = User.objects.get_or_create(username="claim-reviewer")[0]
+        company_evidence.reject_claim(self._rto(organization).get(), reviewer=staff)
+
+        crawl_company_profile(
+            self.source, client=FakeClient([profile(description="Edited copy")])
+        )
+        crawl_company_profile(
+            self.source, client=FakeClient([profile(description="Edited again")])
+        )
+
+        self.assertFalse(self._rto(organization).exists())
+        self.assertEqual(self._rto(organization, CompanyFieldEvidence.State.REJECTED).count(), 1)
+
+    def test_reverted_page_closes_the_stale_claim_before_it_can_be_accepted(self):
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        crawl_company_profile(self.source, client=FakeClient([profile()]))
+        approve_open_claims(organization, CompanyFieldEvidence.FieldKey.RTO_POLICY)
+        crawl_company_profile(
+            self.source, client=FakeClient([profile(rto_evidence="Hybrid, 2 days")])
+        )
+        stale = self._rto(organization).get()
+        self.assertEqual(stale.state, CompanyFieldEvidence.State.CONFLICTED)
+
+        # Exact revert: a duplicate of the first observation.
+        crawl_company_profile(self.source, client=FakeClient([profile()]))
+        stale.refresh_from_db()
+        self.assertEqual(stale.state, CompanyFieldEvidence.State.SUPERSEDED)
+        self.assertFalse(self._rto(organization).exists())
+        with self.assertRaises(company_evidence.EvidenceNotAcceptable):
+            company_evidence.accept_claim(stale, reviewer=User.objects.get_or_create(username="claim-reviewer")[0])
+
+        # Revert together with another edit: the value equals the accepted one.
+        crawl_company_profile(
+            self.source, client=FakeClient([profile(rto_evidence="Hybrid, 2 days")])
+        )
+        crawl_company_profile(
+            self.source, client=FakeClient([profile(description="Also edited")])
+        )
+        self.assertFalse(self._rto(organization).exists())
+        self.assertEqual(
+            self._rto(organization, CompanyFieldEvidence.State.ACCEPTED).get().value_text,
+            "Remote first",
+        )
+
+    def test_claim_state_follows_the_accepted_value_and_the_field_conflict(self):
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        crawl_company_profile(self.source, client=FakeClient([profile()]))
+        approve_open_claims(organization, CompanyFieldEvidence.FieldKey.RTO_POLICY)
+        crawl_company_profile(
+            self.source, client=FakeClient([profile(rto_evidence="Five days in office")])
+        )
+        self.assertEqual(self._rto(organization).get().state, CompanyFieldEvidence.State.CONFLICTED)
+
+        # The next crawl has the same RTO but drops the description: the
+        # observation is AUTO_APPLIED, yet the claim still contradicts the
+        # accepted value, so it stays conflicted.
+        crawl_company_profile(
+            self.source,
+            client=FakeClient([profile(rto_evidence="Five days in office", description="")]),
+        )
+        self.assertEqual(self._rto(organization).get().state, CompanyFieldEvidence.State.CONFLICTED)
+
+    def test_description_only_conflict_does_not_conflict_pending_claims(self):
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        crawl_company_profile(self.source, client=FakeClient([profile()]))
+        crawl_company_profile(
+            self.source, client=FakeClient([profile(description="A different description")])
+        )
+        states = set(
+            CompanyFieldEvidence.objects.filter(
+                organization=organization, field_key__in=company_evidence.REVIEW_REQUIRED_FIELDS
+            ).values_list("state", flat=True)
+        )
+        self.assertEqual(states, {CompanyFieldEvidence.State.PENDING})
+
+    def test_field_conflict_marks_only_that_field_conflicted(self):
+        organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        crawl_company_profile(self.source, client=FakeClient([profile()]))
+        crawl_company_profile(
+            self.source, client=FakeClient([profile(funding_evidence="Series B")])
+        )
+        by_field = {
+            claim.field_key: claim.state
+            for claim in CompanyFieldEvidence.objects.filter(
+                organization=organization,
+                state__in=company_evidence.OPEN_CLAIM_STATES,
+            )
+        }
+        self.assertEqual(by_field["funding_round"], CompanyFieldEvidence.State.CONFLICTED)
+        self.assertEqual(by_field["rto_policy"], CompanyFieldEvidence.State.PENDING)
+        self.assertEqual(by_field["public_status"], CompanyFieldEvidence.State.PENDING)
 
     def test_hostile_text_is_stripped_of_invisible_characters(self):
         organization = Organization.objects.create(

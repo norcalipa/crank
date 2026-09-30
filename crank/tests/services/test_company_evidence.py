@@ -12,6 +12,7 @@ from crank.models.company_profile import (
     CompanyFieldEvidence,
     CompanyProfileObservation,
 )
+from crank.models.monitoring import OperationalChangeAudit
 from crank.models.organization import Organization
 from crank.models.publication import PublicationEvent
 from crank.services.company_evidence import (
@@ -776,6 +777,16 @@ class ClaimReconciliationTests(TestCase):
             observation=self.observation, state=State.PENDING,
         )
         return accept_claim(claim, reviewer=self.reviewer)
+
+    def test_row_from_an_operator_accepted_observation_is_staff_reviewed(self):
+        from crank.services.company_evidence import is_staff_reviewed
+
+        row = self._accept()
+        OperationalChangeAudit.objects.all().delete()
+        self.assertFalse(is_staff_reviewed(CompanyFieldEvidence.objects.get(pk=row.pk)))
+        CompanyFieldEvidence.objects.filter(pk=row.pk).update(observation=self.observation)
+        type(self.observation).objects.filter(pk=self.observation.pk).update(status=Status.ACCEPTED)
+        self.assertTrue(is_staff_reviewed(CompanyFieldEvidence.objects.get(pk=row.pk)))
 
     def test_state_follows_the_accepted_value_not_the_prior_observation(self):
         self.assertEqual(self._observe("Remote first"), "claimed")

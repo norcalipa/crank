@@ -642,11 +642,16 @@ class CompanyFieldEvidenceAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin
             .values_list("value_text", flat=True)
             .first()
         )
+        scope = {
+            key: value
+            for key, value in (obj.scope_json or {}).items()
+            if key in company_evidence.SCOPE_LIST_KEYS
+        }
         return (
             f"{obj.organization.name} / {obj.field_key} [{obj.state}]: "
             f"proposed {obj.value_text!r}; currently accepted "
             f"{repr(accepted) if accepted is not None else 'none'}; "
-            f"scope {obj.scope_json or 'company-wide'}; source {obj.source_url}"
+            f"scope {scope or 'company-wide'}; source {obj.source_url}"
         )
 
     def save_model(self, request, obj, form, change):
