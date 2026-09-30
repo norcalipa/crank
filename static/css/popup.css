@@ -3403,10 +3403,21 @@ body.assistant-open .app-content .table-responsive,
     flex: 1 0 100%;
 }
 
+.evidence-row-value .evidence-meta {
+    display: block;
+    line-height: 1.25;
+}
+
 @media (min-width: 992px) {
     .evidence-row-value {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) max-content;
+        grid-template-columns: minmax(0, 1fr) 10.5rem;
+        align-items: center;
+    }
+
+    .evidence-row-value > .correction-action {
+        justify-self: start;
+        white-space: nowrap;
     }
 }
 

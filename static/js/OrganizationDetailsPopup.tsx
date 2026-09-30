@@ -613,17 +613,17 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                                             <span data-testid={`field-value-${fieldEvidence.field_key}`}>
                                                                 {fieldEvidence.value}
                                                             </span>
-                                                            <span className="text-muted small">
-                                                                {' '}— {fieldEvidence.source_domain || 'unknown source'},
-                                                                last verified <span className="text-nowrap">{formatDate(fieldEvidence.last_verified_at)}</span>
-                                                                {formatScope(fieldEvidence.scope)}
-                                                            </span>
                                                             {fieldEvidence.stale && (
                                                                 <span className="badge bg-warning text-dark ms-1"
                                                                       data-testid={`field-stale-${fieldEvidence.field_key}`}>
                                                                     Stale
                                                                 </span>
                                                             )}
+                                                            <span className="text-muted small evidence-meta">
+                                                                {fieldEvidence.source_domain || 'unknown source'},
+                                                                last verified <span className="text-nowrap">{formatDate(fieldEvidence.last_verified_at)}</span>
+                                                                {formatScope(fieldEvidence.scope)}
+                                                            </span>
                                                         </span>
                                                         {fieldCorrectionButton(fieldEvidence.field_key)}
                                                     </div>
