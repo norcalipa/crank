@@ -3,25 +3,41 @@
 Copyright (c) 2024 Isaac Adams
 Licensed under the MIT License. See LICENSE file in the project root for full license information.
 {% endcomment %}
-{% load i18n admin_urls %}
+{% load i18n admin_urls jro_time %}
 
 {% block extrahead %}{{ block.super }}
 <style>
-  /* Scoped operator-dashboard styles (issue #462). Admin shell has no
-     Bootstrap bundle; every var() carries an AA-contrast fallback token. */
-  :root {
+  /* Scoped operator-dashboard styles (issues #462, #481). Every rule is
+     rooted at #jro-page so it out-specifies Django admin's generic
+     .module / form .button / ul > li rules through specificity alone. */
+  #jro-page {
     --jro-warning: var(--bs-warning, #ffc107);
+    --jro-border: #c9ced3;
+    --jro-key-col: 17rem;
+    --jro-pad: 14px;
+    box-sizing: border-box;
+    max-width: 100%;
   }
-  .jro-section { margin: 0 0 1.5rem; }
-  .jro-card {
+  #jro-page *, #jro-page *::before, #jro-page *::after { box-sizing: border-box; }
+  #jro-page p { margin: 0 0 8px; padding: 0; line-height: 1.45; }
+  #jro-page ul, #jro-page ol { margin: 0; padding: 0; list-style: none; }
+  #jro-page li { list-style: none; margin: 0; padding: 0; background: none; }
+  #jro-page h3 { margin: 0 0 6px; padding: 0; font-size: 15px; font-weight: 700; color: #1f2933; text-transform: none; }
+  #jro-page dl { margin: 0; padding: 0; }
+  #jro-page dt, #jro-page dd { margin: 0; padding: 0; }
+  #jro-page .jro-section { margin: 0 0 20px; padding: 0; border: 0; background: none; }
+  #jro-page .jro-section > h2 { margin: 0; }
+  #jro-page .jro-card {
     background: #fff;
-    border: 1px solid var(--jro-border, #d0d0d0);
+    border: 1px solid var(--jro-border);
     border-radius: 4px;
-    padding: 12px 14px;
+    padding: 12px var(--jro-pad);
     margin: 8px 0 0;
+    width: 100%;
   }
-  .jro-card--blocking { border-color: var(--jro-warning); box-shadow: 0 0 0 1px var(--jro-warning); }
-  .jro-alert {
+  #jro-page .jro-section > .jro-card:first-of-type { margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+  #jro-page .jro-card--blocking { border-color: var(--jro-warning); box-shadow: 0 0 0 1px var(--jro-warning); }
+  #jro-page .jro-alert {
     display: flex;
     align-items: baseline;
     gap: 8px;
@@ -34,61 +50,61 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     padding: 10px 12px;
     margin: 0 0 10px;
   }
-  .jro-status-line { margin: 0 0 6px; }
-  .jro-badge {
+  #jro-page .jro-status-line { margin: 0 0 8px; }
+  #jro-page .jro-badge {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 10px;
+    padding: 3px 10px;
     border-radius: 4px;
     font-weight: 600;
+    line-height: 1.35;
     border: 1px solid transparent;
     max-width: 100%;
   }
-  .jro-badge--success { background: #dcfce7; color: #14532d; border-color: #86efac; }
-  .jro-badge--warning { background: #fef3c7; color: #713f12; border-color: #d9a400; }
-  .jro-badge--danger { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
-  .jro-badge--info { background: #dbeafe; color: #1e3a8a; border-color: #93c5fd; }
-  .jro-icon { font-style: normal; line-height: 1; }
-  .jro-explanation { margin: 0 0 10px; color: #333; }
-  .jro-fields {
+  #jro-page .jro-badge--success { background: #dcfce7; color: #14532d; border-color: #86efac; }
+  #jro-page .jro-badge--warning { background: #fef3c7; color: #713f12; border-color: #d9a400; }
+  #jro-page .jro-badge--danger { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
+  #jro-page .jro-badge--info { background: #dbeafe; color: #1e3a8a; border-color: #93c5fd; }
+  #jro-page .jro-icon { font-style: normal; line-height: 1; }
+  #jro-page .jro-explanation { margin: 0 0 10px; color: #333; }
+  #jro-page .jro-fields {
     display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 6px 18px;
-    margin: 0 0 10px;
+    grid-template-columns: var(--jro-key-col) minmax(0, 1fr);
+    align-items: baseline;
+    gap: 8px 18px;
+    margin: 0 0 4px;
   }
-  .jro-fields dt { font-weight: 600; color: #444; margin: 0; }
-  .jro-fields dd { margin: 0; min-width: 0; }
-  .jro-meta {
+  #jro-page .jro-fields dt { font-weight: 600; font-size: 13px; color: #333; }
+  #jro-page .jro-fields dd { min-width: 0; overflow-wrap: anywhere; }
+  #jro-page .jro-fields dd + dt, #jro-page .jro-fields dd + dt + dd { padding-top: 0; }
+  #jro-page .jro-fields + p, #jro-page .jro-fields + ul { margin-top: 10px; }
+  #jro-page .jro-meta {
     display: inline-flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 4px 12px;
     vertical-align: middle;
   }
-  .jro-relative { color: #333; }
-  .jro-monospace {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  #jro-page .jro-relative { color: #333; }
+  #jro-page .jro-monospace, #jro-page .jro-id, #jro-page time {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12px;
-    color: #555;
-    overflow-wrap: anywhere; /* fallback only; metadata is abbreviated first */
+    color: #444;
   }
-  .jro-details-secondary {
-    display: block;
-    margin: 6px 0 0;
-    color: #555;
-  }
-  details.jro-details > summary {
-    cursor: pointer;
-    color: #417690;
-  }
-  details.jro-details > summary:focus-visible {
+  #jro-page time { white-space: nowrap; }
+  #jro-page .jro-id { overflow-wrap: anywhere; }
+  #jro-page .jro-details-secondary { display: block; margin: 6px 0 0; color: #444; }
+  #jro-page details.jro-details > summary { cursor: pointer; color: #29566b; }
+  #jro-page details.jro-details > summary:focus-visible,
+  #jro-page .jro-diag > summary:focus-visible {
     outline: 3px solid var(--jro-warning);
     outline-offset: 2px;
   }
-  .jro-copy {
+  #jro-page .jro-copy {
     min-height: 44px;
     min-width: 44px;
+    margin: 0;
     padding: 8px 10px;
     border: 1px solid #b0b6bb;
     border-radius: 4px;
@@ -97,65 +113,82 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     font-size: 13px;
     cursor: pointer;
   }
-  .jro-copy:hover { background: #e4e8eb; }
-  .jro-btn {
+  #jro-page .jro-copy:hover { background: #e4e8eb; }
+  #jro-page .jro-btn {
+    display: inline-block;
     min-height: 44px;
     min-width: 44px;
+    margin: 0;
     padding: 10px 16px;
     border: 1px solid transparent;
     border-radius: 4px;
     font-size: 14px;
     font-weight: 600;
+    line-height: 1.2;
+    text-align: center;
     cursor: pointer;
   }
-  .jro-btn--primary { background: #1d6f8c; color: #fff; border-color: #155a72; }
-  .jro-btn--primary:hover { background: #175a72; }
-  .jro-btn--secondary { background: #f1f3f5; color: #1f2933; border-color: #adb5bd; }
-  .jro-btn--secondary:hover { background: #e4e8eb; }
-  .jro-btn--warning { background: #ffc107; color: #4a3200; border-color: #d9a400; }
-  .jro-btn--warning:hover { background: #e6ae06; }
-  .jro-btn--danger { background: #b02a37; color: #fff; border-color: #8c2230; }
-  .jro-btn--danger:hover { background: #98242f; }
-  .jro-btn:focus-visible,
-  .jro-copy:focus-visible,
-  .jro-card a:focus-visible {
+  #jro-page .jro-btn--primary { background: #1d6f8c; color: #fff; border-color: #155a72; }
+  #jro-page .jro-btn--primary:hover, #jro-page .jro-btn--primary:focus { background: #175a72; color: #fff; }
+  #jro-page .jro-btn--secondary { background: #fff; color: #1f2933; border-color: #6c757d; }
+  #jro-page .jro-btn--secondary:hover, #jro-page .jro-btn--secondary:focus { background: #e4e8eb; color: #1f2933; }
+  #jro-page .jro-btn--warning { background: #ffc107; color: #4a3200; border-color: #d9a400; }
+  #jro-page .jro-btn--warning:hover, #jro-page .jro-btn--warning:focus { background: #e6ae06; color: #4a3200; }
+  #jro-page .jro-btn--danger { background: #ba2121; color: #fff; border-color: #8c1a1a; }
+  #jro-page .jro-btn--danger:hover, #jro-page .jro-btn--danger:focus { background: #a41515; color: #fff; }
+  #jro-page .jro-btn:focus-visible,
+  #jro-page .jro-copy:focus-visible,
+  #jro-page .jro-card a:focus-visible {
     outline: 3px solid var(--jro-warning);
     outline-offset: 2px;
   }
-  .jro-action-box {
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    padding: 12px;
-    margin-bottom: 1rem;
+  #jro-page .jro-actions-intro { margin: 8px 0; }
+  #jro-page .jro-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+    gap: 12px;
+    margin: 0;
   }
-  .jro-table-wrap { overflow-x: auto; }
-  .jro-callout { border-left: 6px solid #adb5bd; }
-  .jro-callout--danger { border-left-color: #b02a37; }
-  .jro-callout--warning { border-left-color: #d9a400; }
-  .jro-callout--info { border-left-color: #1d6f8c; }
-  .jro-callout--success { border-left-color: #2f7d4a; }
-  .jro-callout h3 { margin: 6px 0; font-size: 16px; }
-  .jro-links { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 8px 0 0; padding: 0; list-style: none; }
-  .jro-links a { display: inline-block; min-height: 44px; line-height: 44px; overflow-wrap: anywhere; }
-  .jro-stages { margin: 8px 0 0; padding: 0; list-style: none; counter-reset: jro-stage; }
-  .jro-stage {
+  #jro-page .jro-action-box { display: flex; flex-direction: column; margin: 0; }
+  #jro-page .jro-action-box p { flex: 1 1 auto; color: #333; }
+  #jro-page .jro-action-box form { margin: 8px 0 0; padding: 0; }
+  #jro-page .jro-table-wrap {
+    overflow-x: auto;
+    max-width: 100%;
+    background:
+      linear-gradient(to right, #fff 30%, rgba(255, 255, 255, 0)) left center / 24px 100% no-repeat local,
+      linear-gradient(to left, #fff 30%, rgba(255, 255, 255, 0)) right center / 24px 100% no-repeat local,
+      linear-gradient(to right, rgba(0, 0, 0, 0.22), rgba(0, 0, 0, 0)) left center / 10px 100% no-repeat scroll,
+      linear-gradient(to left, rgba(0, 0, 0, 0.22), rgba(0, 0, 0, 0)) right center / 10px 100% no-repeat scroll;
+  }
+  #jro-page .jro-table-wrap:focus-visible { outline: 3px solid var(--jro-warning); outline-offset: 2px; }
+  #jro-page .jro-callout { border-left: 6px solid #adb5bd; padding-left: calc(var(--jro-pad) - 5px); }
+  #jro-page .jro-callout--danger { border-left-color: #b02a37; }
+  #jro-page .jro-callout--warning { border-left-color: #d9a400; }
+  #jro-page .jro-callout--info { border-left-color: #1d6f8c; }
+  #jro-page .jro-callout--success { border-left-color: #2f7d4a; }
+  #jro-page .jro-callout h3 { margin: 6px 0; font-size: 17px; }
+  #jro-page .jro-links { display: flex; flex-wrap: wrap; gap: 0 16px; margin: 4px 0 0; }
+  #jro-page .jro-links a { display: inline-block; min-height: 32px; line-height: 32px; overflow-wrap: anywhere; }
+  #jro-page .jro-stages { margin: 0; display: grid; gap: 8px; counter-reset: jro-stage; }
+  #jro-page .jro-stage {
     counter-increment: jro-stage;
     background: #fff;
-    border: 1px solid var(--jro-border, #d0d0d0);
+    border: 1px solid var(--jro-border);
     border-left: 6px solid #adb5bd;
     border-radius: 4px;
-    padding: 10px 14px;
-    margin: 0 0 8px;
+    padding: 10px var(--jro-pad) 10px calc(var(--jro-pad) - 5px);
+    margin: 0;
   }
-  .jro-stage--danger { border-left-color: #b02a37; }
-  .jro-stage--warning { border-left-color: #d9a400; }
-  .jro-stage--info { border-left-color: #1d6f8c; }
-  .jro-stage--success { border-left-color: #2f7d4a; }
-  .jro-stage--next { box-shadow: 0 0 0 2px #1f2933; }
-  .jro-stage-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
-  .jro-stage-head::before { content: counter(jro-stage) "."; font-weight: 700; }
-  .jro-stage-name { font-weight: 700; overflow-wrap: anywhere; }
-  .jro-tag {
+  #jro-page .jro-stage--danger { border-left-color: #b02a37; }
+  #jro-page .jro-stage--warning { border-left-color: #d9a400; }
+  #jro-page .jro-stage--info { border-left-color: #1d6f8c; }
+  #jro-page .jro-stage--success { border-left-color: #2f7d4a; }
+  #jro-page .jro-stage--next { box-shadow: 0 0 0 2px #1f2933; }
+  #jro-page .jro-stage-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 6px; }
+  #jro-page .jro-stage-head::before { content: counter(jro-stage) "."; font-weight: 700; }
+  #jro-page .jro-stage-name { font-weight: 700; overflow-wrap: anywhere; }
+  #jro-page .jro-tag {
     display: inline-block;
     padding: 2px 8px;
     border-radius: 4px;
@@ -165,21 +198,48 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     font-size: 12px;
     text-transform: uppercase;
   }
-  .jro-stage p { margin: 6px 0 0; overflow-wrap: anywhere; }
-  .jro-empty { color: #333; font-style: italic; margin: 8px 0; }
-  .jro-error { border: 1px solid #fca5a5; background: #fee2e2; color: #7f1d1d; border-radius: 4px; padding: 10px 12px; margin: 8px 0; }
-  .jro-sources { border-collapse: collapse; min-width: 960px; width: 100%; }
-  .jro-sources th, .jro-sources td { text-align: left; vertical-align: top; padding: 6px 10px; border-bottom: 1px solid #d0d0d0; overflow-wrap: anywhere; }
-  .jro-note { color: #333; margin: 8px 0; }
-  .jro-stage a:focus-visible, .jro-callout a:focus-visible, .jro-sources a:focus-visible, .jro-backlog a:focus-visible {
-    outline: 3px solid var(--jro-warning);
-    outline-offset: 2px;
+  #jro-page .jro-stage p { margin: 0 0 4px; overflow-wrap: anywhere; }
+  #jro-page .jro-empty { color: #333; font-style: italic; margin: 0; }
+  #jro-page .jro-error { border: 1px solid #fca5a5; background: #fee2e2; color: #7f1d1d; border-radius: 4px; padding: 10px 12px; margin: 0; }
+  #jro-page .jro-sources { border-collapse: collapse; min-width: 720px; width: 100%; }
+  #jro-page .jro-sources th, #jro-page .jro-sources td {
+    text-align: left; vertical-align: top; padding: 6px 10px; border-bottom: 1px solid #d0d0d0;
+    background: transparent; font-size: 13px; overflow-wrap: break-word;
   }
+  #jro-page .jro-sources thead th { white-space: nowrap; }
+  #jro-page .jro-sources thead th { font-weight: 600; color: #333; background: #f4f5f6; }
+  #jro-page .jro-sources tbody th { font-weight: 600; }
+  #jro-page .jro-scroll-hint { display: none; margin: 6px 0 0; font-size: 12px; color: #444; }
+  #jro-page .jro-note { color: #333; margin: 0 0 8px; }
+  #jro-page .jro-diag { margin: 0 0 20px; }
+  #jro-page .jro-diag > summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 12px;
+    border: 1px solid var(--jro-border);
+    border-radius: 4px;
+    background: #f4f5f6;
+    cursor: pointer;
+    list-style: none;
+  }
+  #jro-page .jro-diag > summary::-webkit-details-marker { display: none; }
+  #jro-page .jro-diag > summary::before { content: "\25B8"; color: #444; }
+  #jro-page .jro-diag[open] > summary::before { content: "\25BE"; }
+  #jro-page .jro-diag[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+  #jro-page .jro-diag > summary h2 {
+    margin: 0; padding: 0; background: none; border: 0;
+    color: #333; font-size: 14px; font-weight: 600; text-transform: none; letter-spacing: 0;
+  }
+  #jro-page .jro-diag-tag { margin-left: auto; font-size: 12px; color: #444; }
+  #jro-page .jro-diag > .jro-card { margin-top: 0; border-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
   @media (max-width: 480px) {
-    .jro-fields { grid-template-columns: 1fr; gap: 2px 0; }
-    .jro-fields dd { margin-bottom: 8px; }
-    .jro-action-box { padding: 10px; }
-    .jro-action-box form { margin-top: 8px; }
+    #jro-page .jro-fields { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
+    #jro-page .jro-fields dd { margin-bottom: 8px; }
+    #jro-page .jro-scroll-hint { display: block; }
+    #jro-page .jro-btn { width: 100%; }
+    #jro-page { --jro-pad: 10px; }
   }
 </style>
 <script>
@@ -220,6 +280,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
 
 {% block content %}
 <div id="content-main">
+<div id="jro-page">
 
   {# ── Next unmet prerequisite (first section after the page h1) ── #}
   <section class="module jro-section" aria-labelledby="jro-next-heading">
@@ -279,7 +340,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
           <dd>{{ pipeline.owner|default:"Unclaimed — awaiting consumer" }}</dd>
           {% if pipeline.owned_since_relative %}
           <dt>Owned since</dt>
-          <dd>{{ pipeline.owned_since_relative }}{% if pipeline.started_iso %} <span class="jro-monospace">({{ pipeline.started_iso }})</span>{% endif %}</dd>
+          <dd>{{ pipeline.owned_since_relative }}{% if pipeline.started_iso %} <span class="jro-monospace">({{ pipeline.started_iso|jro_time }})</span>{% endif %}</dd>
           {% endif %}
           <dt>Queue</dt>
           <dd>
@@ -297,20 +358,26 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
           <dt>Next step</dt>
           <dd>{{ pipeline.next_action }}</dd>
           {% endif %}
+          {% if pipeline.correlation_id %}
+          <dt>Run</dt>
+          <dd>
+            <span class="jro-meta">
+              {% if pipeline.correlation_abbrev %}<span class="jro-id">{{ pipeline.correlation_abbrev }}</span>{% endif %}
+              <button type="button" class="jro-copy" data-copy="{{ pipeline.correlation_id }}" data-aria-label="Copy correlation ID {{ pipeline.correlation_id }}" title="Copy correlation ID {{ pipeline.correlation_id }}" aria-label="Copy correlation ID {{ pipeline.correlation_id }}">Copy ID</button>
+            </span>
+          </dd>
+          <dt>Details</dt>
+          <dd>
+            <details class="jro-details">
+              <summary>Timestamps &amp; IDs</summary>
+              <div class="jro-details-secondary">
+                created {{ pipeline.created_iso|jro_time }}{% if pipeline.started_iso %} · started {{ pipeline.started_iso|jro_time }}{% endif %}<br>
+                correlation <span class="jro-id">{{ pipeline.correlation_id }}</span>
+              </div>
+            </details>
+          </dd>
+          {% endif %}
         </dl>
-        {% if pipeline.correlation_id %}
-        <div class="jro-meta">
-          <span class="jro-relative">{{ pipeline.owned_since_relative|default:"" }}{% if pipeline.correlation_abbrev %} · run {{ pipeline.correlation_abbrev }}{% endif %}</span>
-          <button type="button" class="jro-copy" data-copy="{{ pipeline.correlation_id }}" data-aria-label="Copy correlation ID {{ pipeline.correlation_id }}" title="Copy correlation ID {{ pipeline.correlation_id }}" aria-label="Copy correlation ID {{ pipeline.correlation_id }}">Copy ID</button>
-        </div>
-        <details class="jro-details">
-          <summary>Timestamps &amp; IDs</summary>
-          <div class="jro-details-secondary jro-monospace">
-            created {{ pipeline.created_iso|default:"—" }}{% if pipeline.started_iso %} · started {{ pipeline.started_iso }}{% endif %}<br>
-            correlation {{ pipeline.correlation_id }}
-          </div>
-        </details>
-        {% endif %}
       </div>
     </div>
     {% endif %}
@@ -352,9 +419,9 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
       {% if latest %}
       <p class="jro-status-line"><span class="jro-badge jro-badge--{{ latest.tone }}"><span class="jro-icon" aria-hidden="true">{{ latest.icon }}</span> {{ latest.label }}</span></p>
       <dl class="jro-fields">
-        <dt>Queued</dt><dd>{{ latest.created_age }} ago <span class="jro-monospace">({{ latest.created_at }})</span></dd>
-        <dt>Started</dt><dd>{% if latest.started_at %}{{ latest.started_age }} ago <span class="jro-monospace">({{ latest.started_at }})</span>{% else %}Not started{% endif %}</dd>
-        <dt>Finished</dt><dd>{% if latest.finished_at %}{{ latest.finished_age }} ago <span class="jro-monospace">({{ latest.finished_at }})</span>{% else %}Not finished{% endif %}</dd>
+        <dt>Queued</dt><dd>{{ latest.created_age }} ago <span class="jro-monospace">({{ latest.created_at|jro_time }})</span></dd>
+        <dt>Started</dt><dd>{% if latest.started_at %}{{ latest.started_age }} ago <span class="jro-monospace">({{ latest.started_at|jro_time }})</span>{% else %}Not started{% endif %}</dd>
+        <dt>Finished</dt><dd>{% if latest.finished_at %}{{ latest.finished_age }} ago <span class="jro-monospace">({{ latest.finished_at|jro_time }})</span>{% else %}Not finished{% endif %}</dd>
       </dl>
       {% if latest.queued_only %}<p class="jro-explanation">No stage counts exist yet: a queued run has not fetched, accepted or matched anything.</p>{% endif %}
       <ul class="jro-links"><li><a href="{{ latest.run_url }}">Open this agent run</a></li></ul>
@@ -367,7 +434,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
       {% if completed %}
       <p class="jro-status-line"><span class="jro-badge jro-badge--{{ completed.tone }}"><span class="jro-icon" aria-hidden="true">{{ completed.icon }}</span> {{ completed.label }}</span></p>
       <dl class="jro-fields">
-        <dt>Finished</dt><dd>{{ completed.finished_age }} ago <span class="jro-monospace">({{ completed.finished_at }})</span></dd>
+        <dt>Finished</dt><dd>{{ completed.finished_age }} ago <span class="jro-monospace">({{ completed.finished_at|jro_time }})</span></dd>
         <dt>Duration</dt><dd>{% if completed.duration %}{{ completed.duration }}{% else %}Unknown{% endif %}</dd>
         {% for group in completed.stages %}
         <dt>{{ group.label }}</dt>
@@ -391,6 +458,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
   {# ── Per-source table ── #}
   <section class="module jro-section" aria-labelledby="jro-sources-heading">
     <h2 id="jro-sources-heading">Sources</h2>
+    <div class="jro-card">
     <p class="jro-note">Checked-in catalog approval (docs/job-source-catalog.yaml) is policy only; only the database row enables retrieval.</p>
     {% if sources %}
       {% if sources.rows %}
@@ -411,7 +479,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
         <tbody>
           {% for row in sources.rows %}
           <tr data-source-row>
-            <th scope="row"><a href="{{ row.admin_url }}">{{ row.name }}</a><br><span class="jro-monospace">{{ row.adapter_key }}</span></th>
+            <th scope="row"><a href="{{ row.admin_url }}">{{ row.name }}</a><br><span class="jro-id">{{ row.adapter_key }}</span></th>
             <td>Database: {{ row.approval_state }} · {% if row.enabled %}enabled{% else %}disabled{% endif %}</td>
             <td>{% if row.adapter_registered %}<span class="jro-icon" aria-hidden="true">✓</span> Registered{% else %}<span class="jro-icon" aria-hidden="true">✖</span> Not registered{% endif %}</td>
             <td>{% if row.credentials_present is None %}Unknown (no adapter){% elif row.credentials_present %}<span class="jro-icon" aria-hidden="true">✓</span> Present{% else %}<span class="jro-icon" aria-hidden="true">✖</span> Missing{% endif %}</td>
@@ -424,6 +492,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
         </tbody>
       </table>
       </div>
+      <p class="jro-scroll-hint" aria-hidden="true">Scroll the table sideways to see every column →</p>
       {% if sources.truncated %}<p class="jro-note">Showing {{ sources.shown }} of {{ sources.total }} sources. Open the Job Source Catalog for the rest.</p>{% endif %}
       {% else %}
       <p class="jro-empty">No job sources exist in the database. Use “Preview Seed” under Actions, then approve and enable a source in the Job Source Catalog.</p>
@@ -431,11 +500,13 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     {% else %}
     <div class="jro-error" role="alert"><strong>Could not compute the source table</strong> — see server logs.</div>
     {% endif %}
+    </div>
   </section>
 
   {# ── Backlog ── #}
   <section class="module jro-section" aria-labelledby="jro-backlog-heading">
     <h2 id="jro-backlog-heading">Backlog</h2>
+    <div class="jro-card">
     {% if backlog %}
     <dl class="jro-fields jro-backlog">
       <dt>Unresolved employers</dt>
@@ -459,31 +530,29 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     {% else %}
     <div class="jro-error" role="alert"><strong>Could not compute backlog</strong> — see server logs.</div>
     {% endif %}
+    </div>
   </section>
 
   {# ── Inventory aggregates ── #}
-  <section class="module jro-section" aria-labelledby="jro-aggregates-heading">
-    <h2 id="jro-aggregates-heading">Inventory aggregates</h2>
-    <div class="jro-table-wrap">
-    <table>
-      <tr><th scope="row">Configured job sources</th><td><strong>{{ counts.configured }}</strong></td></tr>
-      <tr><th scope="row">Approved job sources</th><td><strong>{{ counts.approved }}</strong></td></tr>
-      <tr><th scope="row">Enabled job sources</th><td><strong>{{ counts.enabled }}</strong></td></tr>
-      <tr><th scope="row">Active listings</th><td><strong>{{ counts.active_listings }}</strong></td></tr>
-      <tr><th scope="row">Stale listings (&gt;7d)</th><td><strong>{{ counts.stale_listings }}</strong></td></tr>
-      <tr><th scope="row">Unresolved employers</th><td><strong>{{ counts.unresolved_employers }}</strong></td></tr>
-      <tr><th scope="row">Job matches</th><td><strong>{{ counts.matches }}</strong></td></tr>
-      <tr>
-        <th scope="row">Latest pipeline run</th>
-        <td>
-          {% if counts.latest_run %}
+  <details class="jro-diag">
+    <summary><h2 id="jro-aggregates-heading">Inventory aggregates</h2><span class="jro-diag-tag">Diagnostic</span></summary>
+    <div class="jro-card">
+    <dl class="jro-fields">
+      <dt>Configured job sources</dt><dd><strong>{{ counts.configured }}</strong></dd>
+      <dt>Approved job sources</dt><dd><strong>{{ counts.approved }}</strong></dd>
+      <dt>Enabled job sources</dt><dd><strong>{{ counts.enabled }}</strong></dd>
+      <dt>Active listings</dt><dd><strong>{{ counts.active_listings }}</strong></dd>
+      <dt>Stale listings (&gt;7d)</dt><dd><strong>{{ counts.stale_listings }}</strong></dd>
+      <dt>Unresolved employers</dt><dd><strong>{{ counts.unresolved_employers }}</strong></dd>
+      <dt>Job matches</dt><dd><strong>{{ counts.matches }}</strong></dd>
+      <dt>Latest pipeline run</dt><dd>{% if counts.latest_run %}
             <span class="jro-badge jro-badge--{{ counts.latest_run.tone }}" data-state-class="run-{{ counts.latest_run.status }}">
               <span class="jro-icon" aria-hidden="true">{{ counts.latest_run.icon }}</span>
               {{ counts.latest_run.label }}
             </span>
             <span class="jro-meta">
               <span class="jro-relative">{{ counts.latest_run.created_relative }}</span>
-              <span class="jro-monospace">{{ counts.latest_run.correlation_abbrev }}</span>
+              <span class="jro-id">{{ counts.latest_run.correlation_abbrev }}</span>
               <button type="button" class="jro-copy" data-copy="{{ counts.latest_run.correlation_id }}" data-aria-label="Copy correlation ID {{ counts.latest_run.correlation_id }}" title="Copy correlation ID {{ counts.latest_run.correlation_id }}" aria-label="Copy correlation ID {{ counts.latest_run.correlation_id }}">Copy ID</button>
             </span>
             {% if counts.latest_run.error_summary %}
@@ -491,161 +560,134 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
             {% endif %}
             <details class="jro-details">
               <summary>Timestamps &amp; IDs</summary>
-              <div class="jro-details-secondary jro-monospace">
-                created {{ counts.latest_run.created }}<br>
-                correlation {{ counts.latest_run.correlation_id }}
+              <div class="jro-details-secondary">
+                created {{ counts.latest_run.created|jro_time }}<br>
+                correlation <span class="jro-id">{{ counts.latest_run.correlation_id }}</span>
               </div>
             </details>
           {% else %}
             <em>None</em>
-          {% endif %}
-        </td>
-      </tr>
-      <tr>
-        <th scope="row">Queued runs awaiting consumer</th>
-        <td>
-          {% if counts.pending_run %}
+          {% endif %}</dd>
+      <dt>Queued runs awaiting consumer</dt><dd>{% if counts.pending_run %}
             <span class="jro-badge jro-badge--info">
               <span class="jro-icon" aria-hidden="true">⏳</span>
               {{ counts.pending_run.count }} queued
             </span>
             <span class="jro-meta">
               <span class="jro-relative">oldest queued {{ counts.pending_run.oldest_age_display }} ago</span>
-              <span class="jro-monospace">{{ counts.pending_run.oldest_correlation_abbrev }}</span>
+              <span class="jro-id">{{ counts.pending_run.oldest_correlation_abbrev }}</span>
               <button type="button" class="jro-copy" data-copy="{{ counts.pending_run.oldest_correlation_id }}" data-aria-label="Copy correlation ID {{ counts.pending_run.oldest_correlation_id }}" title="Copy correlation ID {{ counts.pending_run.oldest_correlation_id }}" aria-label="Copy correlation ID {{ counts.pending_run.oldest_correlation_id }}">Copy ID</button>
             </span>
             <details class="jro-details">
               <summary>Timestamps &amp; IDs</summary>
-              <div class="jro-details-secondary jro-monospace">correlation {{ counts.pending_run.oldest_correlation_id }}</div>
+              <div class="jro-details-secondary">correlation <span class="jro-id">{{ counts.pending_run.oldest_correlation_id }}</span></div>
             </details>
           {% else %}
             <em>None</em>
-          {% endif %}
-        </td>
-      </tr>
-    </table>
+          {% endif %}</dd>
+    </dl>
     </div>
-  </section>
+  </details>
 
   {# ── Readiness Gates ── #}
-  <section class="module jro-section" aria-labelledby="jro-gates-heading">
-    <h2 id="jro-gates-heading">Readiness gates</h2>
-    <div class="jro-table-wrap">
-    <table>
-      <tr>
-        <th scope="row">Adapter registered</th>
-        <td>
-          {% if gates.adapter_registered %}
+  <details class="jro-diag">
+    <summary><h2 id="jro-gates-heading">Readiness gates</h2><span class="jro-diag-tag">Diagnostic</span></summary>
+    <div class="jro-card">
+    <dl class="jro-fields">
+      <dt>Adapter registered</dt><dd>{% if gates.adapter_registered %}
             <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes ({{ gates.adapter_count }} job adapter{{ gates.adapter_count|pluralize }} registered)</span>
           {% else %}
             <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No{% if gates.adapter_unregistered_sources %} ({{ gates.adapter_unregistered_sources }} live source{{ gates.adapter_unregistered_sources|pluralize }} without an adapter){% endif %}</span>
-          {% endif %}
-        </td>
-      </tr>
-      <tr>
-        <th scope="row">Credentials configured</th>
-        <td>
-          {% if gates.credentials_configured %}
+          {% endif %}</dd>
+      <dt>Credentials configured</dt><dd>{% if gates.credentials_configured %}
             <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes (all {{ gates.credentials_sources_checked }} live source{{ gates.credentials_sources_checked|pluralize }})</span>
           {% else %}
             <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No{% if not gates.credentials_sources_checked %} (no approved and enabled source){% elif gates.credentials_sources_missing %} ({{ gates.credentials_sources_missing }} of {{ gates.credentials_sources_checked }} live source{{ gates.credentials_sources_checked|pluralize }} missing settings){% endif %}</span>
-          {% endif %}
-        </td>
-      </tr>
-      <tr>
-        <th scope="row">Pipeline enabled</th>
-        <td>
-          {% if gates.pipeline_enabled %}
+          {% endif %}</dd>
+      <dt>Pipeline enabled</dt><dd>{% if gates.pipeline_enabled %}
             <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes (AGENT_RUN_ENABLED, JOB_PIPELINE_ENABLED, switch)</span>
           {% else %}
             <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No{% if not gates.pipeline_parts.agent_run_enabled %} · AGENT_RUN_ENABLED off{% endif %}{% if not gates.pipeline_parts.job_pipeline_enabled %} · JOB_PIPELINE_ENABLED off{% endif %}{% if not gates.pipeline_parts.switch_enabled %} · job_pipeline switch disabled{% endif %}</span>
-          {% endif %}
-        </td>
-      </tr>
-      <tr>
-        <th scope="row">Organization crawl scheduling (CRAWL_CRON_ENABLED)</th>
-        <td>
-          {% if gates.scheduler_enabled %}
+          {% endif %}</dd>
+      <dt>Organization crawl scheduling (CRAWL_CRON_ENABLED)</dt><dd>{% if gates.scheduler_enabled %}
             <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes</span>
           {% else %}
             <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No</span>
-          {% endif %}
-        </td>
-      </tr>
-      <tr>
-        <th scope="row">Active or queued run / overlap</th>
-        <td>
-          {% if gates.active_run %}
+          {% endif %}</dd>
+      <dt>Active or queued run / overlap</dt><dd>{% if gates.active_run %}
             <span class="jro-badge jro-badge--warning"><span class="jro-icon" aria-hidden="true">⚠</span> Active — {{ gates.active_run_status|title }}; see Pipeline ownership &amp; queue</span>
           {% else %}
             <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Idle</span>
-          {% endif %}
-        </td>
-      </tr>
-    </table>
+          {% endif %}</dd>
+    </dl>
     </div>
-  </section>
+  </details>
 
   {# ── Admin Links ── #}
   <section class="module jro-section" aria-labelledby="jro-links-heading">
     <h2 id="jro-links-heading">Related admin sections</h2>
-    <ul>
+    <div class="jro-card">
+    <ul class="jro-links">
       {% for link in admin_links %}
         <li><a href="{{ link.url }}">{{ link.label }}</a></li>
       {% endfor %}
     </ul>
+    </div>
   </section>
 
   {# ── Bounded Audited Actions ── #}
   <section class="module jro-section" aria-labelledby="jro-actions-heading">
     <h2 id="jro-actions-heading">Actions</h2>
 
-    <p class="jro-explanation">All actions require explicit confirmation on a dedicated page before execution.</p>
+    <p class="jro-explanation jro-actions-intro">All actions require explicit confirmation on a dedicated page before execution.</p>
+    <div class="jro-actions">
 
-    <div class="jro-action-box">
+    <div class="jro-card jro-action-box">
       <h3>Seed Curated Job Sources (dry-run)</h3>
       <p>Preview seed_job_sources without writing to the database.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_seed_preview' %}">
         {% csrf_token %}
-        <input type="submit" value="Preview Seed" class="button jro-btn jro-btn--secondary">
+        <input type="submit" value="Preview seed (dry run)" class="jro-btn jro-btn--secondary">
       </form>
     </div>
 
-    <div class="jro-action-box">
+    <div class="jro-card jro-action-box">
       <h3>Seed Curated Job Sources</h3>
       <p>Create/update approved+enabled curated sources. Only allowlisted domains are seeded. Existing operator-set policy (approval/enabled) is preserved.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_seed_execute' %}">
         {% csrf_token %}
-        <input type="submit" value="Execute Seed" class="button jro-btn jro-btn--danger">
+        <input type="submit" value="Seed curated sources" class="jro-btn jro-btn--danger">
       </form>
     </div>
 
-    <div class="jro-action-box">
+    <div class="jro-card jro-action-box">
       <h3>Queue Retrieval for Approved+Enabled Sources</h3>
       <p>Creates a pending pipeline run for all approved+enabled job sources. Work is consumed by the next scheduled pipeline tick (or a manual run). Skipped if a run is already active or queued.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_queue_retrieval' %}">
         {% csrf_token %}
-        <input type="submit" value="Queue Retrieval" class="button jro-btn jro-btn--primary">
+        <input type="submit" value="Queue retrieval run" class="jro-btn jro-btn--primary">
       </form>
     </div>
 
-    <div class="jro-action-box">
+    <div class="jro-card jro-action-box">
       <h3>Queue Job Pipeline Run</h3>
       <p>Creates a pending pipeline run that the next deployed consumer adopts (correlation id preserved). Skipped if a run is already active or queued.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_queue_pipeline' %}">
         {% csrf_token %}
-        <input type="submit" value="Queue Pipeline Run" class="button jro-btn jro-btn--primary">
+        <input type="submit" value="Queue pipeline run" class="jro-btn jro-btn--secondary">
       </form>
     </div>
 
-    <div class="jro-action-box">
+    <div class="jro-card jro-action-box">
       <h3>Retry Eligible Failed Run</h3>
       <p>Retries the most recent failed pipeline run by creating a new pending run. Skipped if a run is already active or queued.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_retry_failed' %}">
         {% csrf_token %}
-        <input type="submit" value="Retry Failed Run" class="button jro-btn jro-btn--warning">
+        <input type="submit" value="Retry last failed run" class="jro-btn jro-btn--warning">
       </form>
     </div>
+    </div>
   </section>
+</div>
 </div>
 {% endblock %}

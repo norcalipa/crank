@@ -12,6 +12,7 @@ Covers:
 - Confirm interstitial UX (aligned with #422 pattern)
 """
 
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -1562,25 +1563,69 @@ class JobRetrievalDashboardVisualContractTests(TestCase):
         self.assertIn("min-height: 44px", content)
         self.assertIn("min-width: 44px", content)
         for value, tone in (
-            ("Queue Retrieval", "jro-btn--primary"),
-            ("Queue Pipeline Run", "jro-btn--primary"),
-            ("Retry Failed Run", "jro-btn--warning"),
-            ("Execute Seed", "jro-btn--danger"),
-            ("Preview Seed", "jro-btn--secondary"),
+            ("Queue retrieval run", "jro-btn--primary"),
+            ("Queue pipeline run", "jro-btn--secondary"),
+            ("Retry last failed run", "jro-btn--warning"),
+            ("Seed curated sources", "jro-btn--danger"),
+            ("Preview seed (dry run)", "jro-btn--secondary"),
         ):
-            self.assertIn(f'value="{value}"', content)
-            self.assertIn(tone, content)
+            self.assertRegex(content, rf'value="{re.escape(value)}" class="jro-btn {tone}"')
         self.assertNotIn("style=\"background:", content)
 
     # ── 375px guarantees (CSS contract; behavior proven by render script) ──
 
     def test_375px_css_contract(self):
         content = self.content
-        self.assertIn(".jro-table-wrap { overflow-x: auto; }", content)
+        self.assertIn("#jro-page .jro-table-wrap {\n    overflow-x: auto;", content)
         self.assertIn("@media (max-width: 480px)", content)
-        self.assertIn("grid-template-columns: 1fr;", content)
+        self.assertIn("grid-template-columns: minmax(0, 1fr);", content)
         self.assertIn("overflow-wrap: anywhere", content)
         self.assertIn("outline: 3px solid", content)
+
+    def test_page_styles_are_rooted_at_page_id_not_important(self):
+        style = self.content.split("<style>", 1)[1].split("</style>", 1)[0]
+        self.assertIn('<div id="jro-page">', self.content)
+        self.assertNotIn("!important", style)
+        for line in style.splitlines():
+            stripped = line.strip()
+            if stripped.endswith("{") and not stripped.startswith(("@", "#jro-page", "/*", "*")):
+                self.fail(f"unscoped selector in page style: {stripped}")
+
+    def test_diagnostic_sections_are_collapsed_and_follow_primary_sections(self):
+        content = self.content
+        self.assertEqual(content.count('<details class="jro-diag">'), 2)
+        self.assertNotIn('<details class="jro-diag" open', content)
+        for heading_id in ("jro-aggregates-heading", "jro-gates-heading"):
+            self.assertRegex(
+                content,
+                rf'<details class="jro-diag">\s*<summary><h2 id="{heading_id}">',
+            )
+        self.assertLess(content.index("jro-backlog-heading"), content.index("jro-aggregates-heading"))
+        page = content.split('<div id="jro-page">', 1)[1]
+        self.assertNotIn("<table>", page)
+
+    def test_key_value_sections_share_one_definition_list_class(self):
+        content = self.content
+        page = content.split('<div id="jro-page">', 1)[1]
+        self.assertNotIn('<th scope="row">', page.replace('<th scope="row"><a', ""))
+        self.assertGreaterEqual(content.count('<dl class="jro-fields'), 4)
+
+    def test_timestamps_render_compact_with_full_iso_in_title(self):
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.RUNNING,
+            created=timezone.now() - timedelta(minutes=5),
+            started_at=timezone.now() - timedelta(minutes=5),
+        )
+        content = self.client.get(self.url).content.decode()
+        self.assertRegex(
+            content,
+            r'<time datetime="[^"]+" title="[^"]+">\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC</time>',
+        )
+        self.assertNotRegex(content, r"\(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+")
+
+    def test_action_buttons_do_not_use_admin_button_class(self):
+        self.assertNotIn('class="button jro-btn', self.content)
 
     def test_readiness_gates_use_badge_classes(self):
         content = self.content
