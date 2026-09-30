@@ -207,8 +207,8 @@ class ClaimReviewTests(TestCase):
             {"colour": "blue"},
             {"countries": "US"},
             {"countries": [""]},
-            {"countries": ["x"] * 51},
-            {"claimed_domain": ["a"]},
+            {"countries": ["x"] * 11},
+            {"countries": ["\u200b"]},
             ["not", "an", "object"],
         ):
             response = self._change(self.rto, scope)

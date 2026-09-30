@@ -415,7 +415,7 @@ sources:
     kind: external
     seed_gives_ratings: true
     score_types_candidates: [Lifecycle and Financials]
-    measurement: [curated_review]
+    measurement: [financial_data]
     live_enabled: false
     api:
       available: official_commercial
@@ -445,7 +445,7 @@ sources:
     kind: external
     seed_gives_ratings: true
     score_types_candidates: [Tech Stack]
-    measurement: [curated_review]
+    measurement: [tech_stack_listing]
     live_enabled: false
     api:
       available: decommissioned

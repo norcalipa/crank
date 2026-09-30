@@ -164,5 +164,7 @@ accept them in the admin. Existing accepted evidence is unchanged.
   MVP source (`live_enabled: false`); marked all other seeded rating sources blocked/pending/excluded.
 - **2026-09-29** — #474: added per-source `measurement:` and `quality_mapping:`; removed Culture as a
   candidate for Google and Yelp and dropped candidates a source's measurement cannot validly feed
-  (Glassdoor/Blind/Comparably/Indeed Reputation, Comparably Product and Mission, Simply Wall Street
-  Reputation). No approval state changed.
+  (Glassdoor/Comparably/Indeed Reputation, Comparably Product and Mission, Simply Wall Street
+  Reputation). Simply Wall Street and Stackshare now declare the honest kinds `financial_data` and
+  `tech_stack_listing` (Lifecycle and Financials / Tech Stack only) instead of `curated_review`.
+  No approval state changed.

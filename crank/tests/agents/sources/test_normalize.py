@@ -185,6 +185,8 @@ class MeasurementSemantics(NormalizeSetup):
         self.assertIs(outcome.status, ResolutionStatus.UNRESOLVED)
         self.assertIsNone(outcome.observation)
         self.assertEqual(rep.unresolved, 1)
+        self.assertIn("'consumer_business_rating'", outcome.detail)
+        self.assertNotIn("MeasurementKind", outcome.detail)
 
     def test_consumer_rating_may_feed_reputation(self):
         rep = self._report("Rating", MeasurementKind.CONSUMER_BUSINESS_RATING)
@@ -197,6 +199,7 @@ class MeasurementSemantics(NormalizeSetup):
     def test_invalid_kind_fails_closed(self):
         rep = self._report("Rating", "star_rating")
         self.assertIs(rep.outcomes[0].reason, ResolutionReason.TYPE_SEMANTIC_MISMATCH)
+        self.assertIn("'star_rating'", rep.outcomes[0].detail)
 
     def test_reason_detail_is_sanitized(self):
         rep = self._report("Culture", "<script>x</script>")

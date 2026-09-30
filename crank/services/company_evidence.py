@@ -22,7 +22,12 @@ Invariants enforced here:
   first accept (there are none yet); and every accepted row for the field is
   superseded, not just the newest, so a duplicate left by any earlier race
   heals back to exactly one on the next accept.
-- ``record_check`` is the sole writer of the four freshness timestamps:
+- ``record_check`` is the writer of the four freshness timestamps for an
+  already-accepted row. Review decisions write them too, but only as part of
+  the state change they record: ``record_claim`` / ``observe_review_field``
+  set the check timestamps on the open claim they refresh, and
+  ``accept_claim`` / ``reject_claim`` stamp ``last_checked_at`` (and
+  ``last_verified_at`` / ``last_changed_at`` on accept). In ``record_check``
   ``last_checked_at`` moves on every attempt, ``last_successful_fetch_at``
   only on a successful fetch, ``last_changed_at`` only when the extracted
   value differs, and ``last_verified_at`` only when the fetch succeeded and
@@ -48,6 +53,7 @@ from crank.models.company_profile import (
     CompanyFieldEvidence,
     CompanyProfileObservation,
 )
+from crank.models.monitoring import OperationalChangeAudit
 from crank.models.organization import Organization
 from crank.models.publication import PublicationEvent
 from crank.services import publication
@@ -106,6 +112,10 @@ REVIEW_REQUIRED_FIELDS = frozenset(
 )
 
 OPEN_CLAIM_STATES = (State.PENDING, State.CONFLICTED)
+
+SCOPE_LIST_KEYS = ("countries", "role_families")
+SCOPE_MAX_ITEMS = 10
+SCOPE_MAX_ITEM_LENGTH = 100
 
 
 class EvidenceNotAcceptable(Exception):
@@ -267,6 +277,93 @@ def _lock_organization(organization_id) -> None:
     Organization.objects.select_for_update().filter(pk=organization_id).first()
 
 
+def _accepted_row_locked(organization_id, field_key: str):
+    return (
+        CompanyFieldEvidence.objects.filter(
+            organization_id=organization_id, field_key=field_key, state=State.ACCEPTED
+        )
+        .select_for_update()
+        .order_by("-observed_at", "-id")
+        .first()
+    )
+
+
+def _close_claims(rows, now: datetime) -> None:
+    ids = [row.pk for row in rows]
+    if ids:
+        CompanyFieldEvidence.objects.filter(pk__in=ids).update(
+            state=State.SUPERSEDED, modified=now
+        )
+
+
+def _open_claim_locked(
+    organization_id,
+    field_key: str,
+    value_text: str,
+    observation: CompanyProfileObservation,
+    state: str,
+    now: datetime,
+    observed_at: datetime,
+) -> CompanyFieldEvidence | None:
+    """Open, refresh or skip the claim for one value; caller holds the org lock.
+
+    A claim's value never changes after it is opened: a different value closes
+    the old claim (``superseded``) and opens a new row, so a review decision is
+    always bound to the value the reviewer saw. A value staff already rejected
+    for the same source is not re-queued.
+    """
+    if CompanyFieldEvidence.objects.filter(
+        organization_id=organization_id,
+        field_key=field_key,
+        source_url=observation.source_url,
+        value_text=value_text,
+        state=State.REJECTED,
+    ).exists():
+        return None
+    open_rows = list(
+        CompanyFieldEvidence.objects.filter(
+            organization_id=organization_id,
+            field_key=field_key,
+            source_url=observation.source_url,
+            state__in=OPEN_CLAIM_STATES,
+        )
+        .select_for_update()
+        .order_by("-observed_at", "-id")
+    )
+    same = next((row for row in open_rows if row.value_text == value_text), None)
+    _close_claims([row for row in open_rows if row is not same], now)
+    if same is not None:
+        same.state = state
+        same.observation = observation
+        same.observed_at = observed_at
+        same.last_checked_at = now
+        same.last_successful_fetch_at = now
+        same.save(
+            update_fields=[
+                "state", "observation", "observed_at", "last_checked_at",
+                "last_successful_fetch_at", "modified",
+            ]
+        )
+        return same
+    claimed_domain = _field_value_text(observation.observed_domain)
+    return CompanyFieldEvidence.objects.create(
+        organization_id=organization_id,
+        field_key=field_key,
+        value_text=value_text,
+        source_url=observation.source_url,
+        source_domain=(urlsplit(observation.source_url).hostname or "").lower(),
+        observation=observation,
+        scope_json={"claimed_domain": claimed_domain} if claimed_domain else {},
+        observed_at=observed_at,
+        validation_version=observation.extraction_version,
+        extractor_version=observation.extraction_version,
+        state=state,
+        last_checked_at=now,
+        last_successful_fetch_at=now,
+        last_changed_at=now,
+    )
+
+
 def record_claim(
     organization,
     field_key: str,
@@ -275,17 +372,17 @@ def record_claim(
     observation: CompanyProfileObservation,
     state: str,
     now: datetime | None = None,
-) -> CompanyFieldEvidence:
+) -> CompanyFieldEvidence | None:
     """Record (or refresh) the open review claim for one observed field.
 
     A claim is a ``CompanyFieldEvidence`` row in state ``pending`` (nothing
     accepted yet) or ``conflicted`` (the reading differs from the accepted
     value). Claims are never returned by the resolvers, so they can never
     count as verification. At most one open claim exists per
-    ``(organization, field_key, source_url)``: a repeat crawl updates the
-    open claim's value, state, observation and check timestamps in place,
-    serialized by the organization row lock, and keeps any scope staff have
-    already set.
+    ``(organization, field_key, source_url)`` and its value is immutable: a
+    repeat crawl of the same value refreshes the check timestamps, a new
+    value supersedes the old claim and opens a new one. Returns ``None``
+    when staff already rejected this value for this source.
     """
     if state not in OPEN_CLAIM_STATES:
         raise ValueError(f"claim state must be one of {OPEN_CLAIM_STATES}, got {state!r}")
@@ -296,48 +393,162 @@ def record_claim(
         raise ValueError("a claim needs a non-empty value")
     now = now or timezone.now()
     organization_id = getattr(organization, "pk", organization)
-    fetched_domain = (urlsplit(observation.source_url).hostname or "").lower()
-    claimed_domain = _field_value_text(observation.observed_domain)
     with transaction.atomic():
         _lock_organization(organization_id)
-        claim = (
-            CompanyFieldEvidence.objects.filter(
-                organization_id=organization_id,
-                field_key=field_key,
-                source_url=observation.source_url,
-                state__in=OPEN_CLAIM_STATES,
-            )
-            .select_for_update()
-            .order_by("-observed_at", "-id")
-            .first()
+        return _open_claim_locked(
+            organization_id, field_key, value_text, observation, state, now,
+            observation.observed_at,
         )
-        if claim is None:
-            return CompanyFieldEvidence.objects.create(
-                organization_id=organization_id,
-                field_key=field_key,
-                value_text=value_text,
-                source_url=observation.source_url,
-                source_domain=fetched_domain,
-                observation=observation,
-                scope_json={"claimed_domain": claimed_domain} if claimed_domain else {},
-                observed_at=observation.observed_at,
-                validation_version=observation.extraction_version,
-                extractor_version=observation.extraction_version,
-                state=state,
-                last_checked_at=now,
-                last_successful_fetch_at=now,
-                last_changed_at=now,
+
+
+def is_staff_reviewed(row: CompanyFieldEvidence) -> bool:
+    """True when a person accepted this evidence row.
+
+    Rows from an operator-accepted observation or from an accepted claim are
+    staff-reviewed. A row whose observation was ``AUTO_APPLIED`` and has no
+    ``claim_accepted`` / ``observation_accepted`` audit is a legacy crawl
+    acceptance from before review-required fields existed (#474).
+    """
+    observation = row.observation
+    if observation is not None and observation.status == ObservationStatus.ACCEPTED:
+        return True
+    return OperationalChangeAudit.objects.filter(
+        target_type="company_field_evidence",
+        target_id=str(row.pk),
+        action__in=("claim_accepted", "observation_accepted"),
+        confirmed=True,
+    ).exists()
+
+
+def observe_review_field(
+    organization,
+    field_key: str,
+    *,
+    value,
+    observation: CompanyProfileObservation,
+    conflicted: bool = False,
+    reverify: bool = True,
+    now: datetime | None = None,
+) -> str:
+    """Reconcile the open claims for one review-required field with a crawl.
+
+    Runs under the organization lock and returns the outcome:
+
+    * ``"verified"`` - the value equals the accepted row and a person reviewed
+      that row, so it is re-verified (``reverify`` permitting);
+    * ``"claimed"`` - a claim is open for the value: ``conflicted`` when an
+      accepted row holds a different value or ``conflicted`` (the field's own
+      attribute conflicted with the prior observation) is set, else
+      ``pending``. A legacy, never-reviewed accepted row with the same value
+      also gets a ``pending`` claim so staff can review it;
+    * ``"none"`` - nothing to claim (the field is absent, or staff rejected
+      this value for this source).
+
+    Open claims for this source that the crawl no longer supports (a field
+    the page stopped carrying, a value that reverted, or a value equal to a
+    reviewed accepted row) are closed as ``superseded``.
+    """
+    now = now or timezone.now()
+    organization_id = getattr(organization, "pk", organization)
+    value_text = _field_value_text(value) if value else ""
+    with transaction.atomic():
+        _lock_organization(organization_id)
+        if not value_text:
+            _close_claims(
+                CompanyFieldEvidence.objects.filter(
+                    organization_id=organization_id,
+                    field_key=field_key,
+                    source_url=observation.source_url,
+                    state__in=OPEN_CLAIM_STATES,
+                ),
+                now,
             )
-        if claim.value_text != value_text:
-            claim.value_text = value_text
-            claim.last_changed_at = now
-        claim.state = state
-        claim.observation = observation
-        claim.observed_at = observation.observed_at
-        claim.last_checked_at = now
-        claim.last_successful_fetch_at = now
-        claim.save()
-        return claim
+            return "none"
+        accepted = _accepted_row_locked(organization_id, field_key)
+        equal = accepted is not None and accepted.value_text == value_text
+        if equal and is_staff_reviewed(accepted):
+            _close_claims(
+                CompanyFieldEvidence.objects.filter(
+                    organization_id=organization_id,
+                    field_key=field_key,
+                    source_url=observation.source_url,
+                    state__in=OPEN_CLAIM_STATES,
+                ),
+                now,
+            )
+            if not reverify:
+                return "none"
+            record_check(
+                organization, field_key, success=True, verified=True, now=now
+            )
+            return "verified"
+        if accepted is not None and not equal:
+            state = State.CONFLICTED
+        else:
+            state = State.CONFLICTED if conflicted and not equal else State.PENDING
+        claim = _open_claim_locked(
+            organization_id, field_key, value_text, observation, state, now, now
+        )
+        return "claimed" if claim is not None else "none"
+
+
+def validate_claim_scope(scope) -> dict:
+    """Return the cleaned scope or raise :class:`EvidenceNotAcceptable`.
+
+    Only ``countries`` and ``role_families`` (at most
+    ``SCOPE_MAX_ITEMS`` non-empty strings of at most ``SCOPE_MAX_ITEM_LENGTH``
+    characters each) and the crawler's ``claimed_domain`` are understood;
+    matching cannot scope by team, so team scope is refused.
+    """
+    if not isinstance(scope, dict):
+        raise EvidenceNotAcceptable("Scope must be a JSON object.")
+    if "teams" in scope or "team" in scope:
+        raise EvidenceNotAcceptable(
+            "Team scope cannot be applied: matching cannot scope by team"
+        )
+    unknown = sorted(set(scope) - set(SCOPE_LIST_KEYS) - {"claimed_domain"})
+    if unknown:
+        raise EvidenceNotAcceptable(f"Unsupported scope keys: {', '.join(unknown)}.")
+    cleaned: dict = {}
+    for key in SCOPE_LIST_KEYS:
+        if key not in scope:
+            continue
+        items = scope[key]
+        if not isinstance(items, list) or len(items) > SCOPE_MAX_ITEMS:
+            raise EvidenceNotAcceptable(
+                f"{key} must be a list of at most {SCOPE_MAX_ITEMS} short non-empty strings."
+            )
+        entries = set()
+        for item in items:
+            text = strip_unsafe_characters(item).strip() if isinstance(item, str) else ""
+            if not text or len(text) > SCOPE_MAX_ITEM_LENGTH:
+                raise EvidenceNotAcceptable(
+                    f"{key} must be a list of at most {SCOPE_MAX_ITEMS} short non-empty strings."
+                )
+            entries.add(text)
+        cleaned[key] = sorted(entries)
+    if "claimed_domain" in scope:
+        domain = scope["claimed_domain"]
+        if not isinstance(domain, str) or len(domain) > SCOPE_MAX_ITEM_LENGTH * 3:
+            raise EvidenceNotAcceptable("claimed_domain must be a short string.")
+        cleaned["claimed_domain"] = strip_unsafe_characters(domain).strip()
+    return cleaned
+
+
+def update_claim_scope(claim: CompanyFieldEvidence, scope, *, reviewer=None) -> dict:
+    """Set an open claim's scope under the organization lock.
+
+    Returns ``{"old": ..., "new": ...}``. Only ``scope_json`` and ``modified``
+    are written, so a concurrent crawl or decision is never overwritten; a
+    claim that is no longer open is refused.
+    """
+    cleaned = validate_claim_scope(scope)
+    with transaction.atomic():
+        fresh = _locked_open_claim(claim)
+        old = fresh.scope_json
+        fresh.scope_json = cleaned
+        fresh.save(update_fields=["scope_json", "modified"])
+    return {"old": old, "new": cleaned}
 
 
 def _locked_open_claim(claim: CompanyFieldEvidence) -> CompanyFieldEvidence:
@@ -359,11 +570,25 @@ def accept_claim(
     ``last_verified_at`` set to now, and one publication event is recorded in
     the same transaction so a failure rolls back the whole acceptance.
     ``last_changed_at`` only advances when the value differs from the row
-    being replaced.
+    being replaced. A claim whose backing observation was rejected, or whose
+    scope is invalid, is refused. Other open claims for the field are
+    re-evaluated: same value closes them, a different value is now
+    ``conflicted``.
+
+    The decision is audited here (``claim_accepted``, with the superseded
+    evidence ids) in the same transaction, which is also what marks the row
+    as staff-reviewed for re-verification (:func:`is_staff_reviewed`).
     """
     now = now or timezone.now()
     with transaction.atomic():
         fresh = _locked_open_claim(claim)
+        if (
+            fresh.observation_id is not None
+            and fresh.observation.status == ObservationStatus.REJECTED
+        ):
+            raise EvidenceNotAcceptable("the backing observation was rejected")
+        validate_claim_scope(fresh.scope_json)
+        previous_state = fresh.state
         previous = list(
             CompanyFieldEvidence.objects.filter(
                 organization_id=fresh.organization_id,
@@ -373,10 +598,7 @@ def accept_claim(
             .select_for_update()
             .order_by("-observed_at", "-id")
         )
-        if previous:
-            CompanyFieldEvidence.objects.filter(
-                pk__in=[row.pk for row in previous]
-            ).update(state=State.SUPERSEDED, modified=now)
+        _close_claims(previous, now)
         if not previous or previous[0].value_text != fresh.value_text:
             fresh.last_changed_at = now
         else:
@@ -385,11 +607,33 @@ def accept_claim(
         fresh.last_checked_at = now
         fresh.last_verified_at = now
         fresh.save()
+        others = CompanyFieldEvidence.objects.filter(
+            organization_id=fresh.organization_id,
+            field_key=fresh.field_key,
+            state__in=OPEN_CLAIM_STATES,
+        )
+        _close_claims(others.filter(value_text=fresh.value_text), now)
+        others.filter(state=State.PENDING).exclude(value_text=fresh.value_text).update(
+            state=State.CONFLICTED, modified=now
+        )
         publication.record_event(
             target_type=PublicationEvent.TargetType.ORGANIZATION,
             target_id=fresh.organization_id,
             event_kind=PublicationEvent.EventKind.CHANGED,
             payload={"status": State.ACCEPTED.value},
+        )
+        OperationalChangeAudit.record(
+            actor=reviewer,
+            target_type="company_field_evidence",
+            target_id=fresh.pk,
+            action="claim_accepted",
+            old_value={"state": previous_state, "value": fresh.value_text},
+            new_value={
+                "state": State.ACCEPTED.value,
+                "value": fresh.value_text,
+                "superseded": [row.pk for row in previous],
+            },
+            confirmed=True,
         )
     logger.info("claim %s accepted by reviewer %s", fresh.pk, getattr(reviewer, "pk", reviewer))
     return fresh
@@ -402,11 +646,63 @@ def reject_claim(
     now = now or timezone.now()
     with transaction.atomic():
         fresh = _locked_open_claim(claim)
+        previous_state = fresh.state
         fresh.state = State.REJECTED
         fresh.last_checked_at = now
         fresh.save()
+        OperationalChangeAudit.record(
+            actor=reviewer,
+            target_type="company_field_evidence",
+            target_id=fresh.pk,
+            action="claim_rejected",
+            old_value={"state": previous_state, "value": fresh.value_text},
+            new_value={"state": State.REJECTED.value, "value": fresh.value_text},
+            confirmed=True,
+        )
     logger.info("claim %s rejected by reviewer %s", fresh.pk, getattr(reviewer, "pk", reviewer))
     return fresh
+
+
+def resolve_observation_claims(
+    observation: CompanyProfileObservation, state: str, *, now: datetime | None = None
+) -> list[int]:
+    """Close the open claims of a reviewed observation; returns their ids.
+
+    Accepting an observation whole already wrote its values as accepted
+    evidence, so its claims become ``superseded``; rejecting it rejects them.
+    """
+    if state not in (State.SUPERSEDED, State.REJECTED):
+        raise ValueError(f"unsupported claim resolution {state!r}")
+    now = now or timezone.now()
+    with transaction.atomic():
+        if observation.organization_id is not None:
+            _lock_organization(observation.organization_id)
+        rows = list(
+            CompanyFieldEvidence.objects.select_for_update().filter(
+                observation=observation, state__in=OPEN_CLAIM_STATES
+            )
+        )
+        ids = [row.pk for row in rows]
+        if ids:
+            CompanyFieldEvidence.objects.filter(pk__in=ids).update(state=state, modified=now)
+    return ids
+
+
+def scoped_accepted_conflicts(observation: CompanyProfileObservation) -> list[str]:
+    """Field keys where accepting ``observation`` whole would replace scoped evidence."""
+    if observation.organization_id is None:
+        return []
+    values = observation_field_values(observation)
+    blocked = []
+    for row in CompanyFieldEvidence.objects.filter(
+        organization_id=observation.organization_id,
+        field_key__in=list(values),
+        state=State.ACCEPTED,
+    ):
+        scope = row.scope_json or {}
+        if any(scope.get(key) for key in SCOPE_LIST_KEYS) and row.value_text != values[row.field_key]:
+            blocked.append(row.field_key)
+    return sorted(set(blocked))
 
 
 def record_check(
@@ -421,7 +717,7 @@ def record_check(
 ) -> CompanyFieldEvidence | None:
     """Record one re-check of the accepted claim for ``field_key``.
 
-    The sole writer of the four freshness timestamps. ``last_checked_at``
+    Writer of the freshness timestamps for accepted rows. ``last_checked_at``
     advances on every attempt; ``last_successful_fetch_at`` only when
     ``success``; ``last_verified_at`` only when the fetch succeeded *and* the
     value still validates. A failed or rejected fetch therefore advances
@@ -582,6 +878,12 @@ __all__ = [
     "record_check",
     "record_claim",
     "reject_claim",
+    "observe_review_field",
+    "is_staff_reviewed",
+    "resolve_observation_claims",
+    "scoped_accepted_conflicts",
+    "update_claim_scope",
+    "validate_claim_scope",
     "strip_unsafe_characters",
     "resolve_field_evidence",
     "resolve_field_evidence_for_orgs",

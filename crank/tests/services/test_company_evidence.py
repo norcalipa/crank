@@ -17,6 +17,7 @@ from crank.models.publication import PublicationEvent
 from crank.services.company_evidence import (
     DEFAULT_FRESHNESS_DAYS,
     FIELD_FRESHNESS_POLICY,
+    OPEN_CLAIM_STATES,
     EvidenceNotAcceptable,
     accept_observation_fields,
     field_evidence_payload,
@@ -640,18 +641,34 @@ class ClaimTests(TestCase):
                 state=State.PENDING,
             )
 
-    def test_repeat_claim_updates_in_place_and_tracks_change(self):
+    def test_repeat_claim_refreshes_and_a_new_value_opens_a_new_claim(self):
         first = self._claim()
         same = self._claim(state=State.CONFLICTED)
         self.assertEqual(same.pk, first.pk)
         self.assertEqual(same.state, State.CONFLICTED)
+        self.assertEqual(same.value_text, "Remote first")
         self.assertEqual(same.last_changed_at, first.last_changed_at)
 
         changed = self._claim(value="Office five days")
-        self.assertEqual(changed.pk, first.pk)
-        self.assertEqual(changed.value_text, "Office five days")
-        self.assertGreaterEqual(changed.last_changed_at, first.last_changed_at)
-        self.assertEqual(CompanyFieldEvidence.objects.count(), 1)
+        self.assertNotEqual(changed.pk, first.pk)
+        first.refresh_from_db()
+        self.assertEqual(first.value_text, "Remote first")
+        self.assertEqual(first.state, State.SUPERSEDED)
+        self.assertEqual(changed.state, State.PENDING)
+        self.assertEqual(
+            CompanyFieldEvidence.objects.filter(state__in=OPEN_CLAIM_STATES).count(), 1
+        )
+
+    def test_rejected_value_is_not_reopened_for_the_same_source(self):
+        from crank.services.company_evidence import reject_claim
+
+        claim = self._claim()
+        reject_claim(claim, reviewer=self.reviewer)
+        self.assertIsNone(self._claim())
+        self.assertFalse(
+            CompanyFieldEvidence.objects.filter(state__in=OPEN_CLAIM_STATES).exists()
+        )
+        self.assertIsNotNone(self._claim(value="Hybrid"))
 
     def test_accept_claim_supersedes_previous_and_emits_event(self):
         from crank.services.company_evidence import accept_claim
@@ -719,3 +736,201 @@ class ClaimTests(TestCase):
             field_keys={FieldKey.COMPANY_NAME},
         )
         self.assertEqual([row.field_key for row in created], [FieldKey.COMPANY_NAME])
+
+
+class ClaimReconciliationTests(TestCase):
+    """observe_review_field / accept_claim lifecycle rules (#474 AC6/AC7)."""
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        self.organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        self.reviewer = User.objects.create(username="reconcile-staff")
+        self.observation = make_observation(self.organization)
+
+    def _observe(self, value, *, conflicted=False, reverify=True, observation=None, now=None):
+        from crank.services.company_evidence import observe_review_field
+
+        return observe_review_field(
+            self.organization,
+            FieldKey.RTO_POLICY,
+            value=value,
+            observation=observation or self.observation,
+            conflicted=conflicted,
+            reverify=reverify,
+            now=now,
+        )
+
+    def _open(self):
+        return CompanyFieldEvidence.objects.filter(
+            field_key=FieldKey.RTO_POLICY, state__in=OPEN_CLAIM_STATES
+        )
+
+    def _accept(self, value="Remote first"):
+        from crank.services.company_evidence import accept_claim, record_claim
+
+        claim = record_claim(
+            self.organization, FieldKey.RTO_POLICY, value=value,
+            observation=self.observation, state=State.PENDING,
+        )
+        return accept_claim(claim, reviewer=self.reviewer)
+
+    def test_state_follows_the_accepted_value_not_the_prior_observation(self):
+        self.assertEqual(self._observe("Remote first"), "claimed")
+        self.assertEqual(self._open().get().state, State.PENDING)
+        self.assertEqual(self._observe("Remote first", conflicted=True), "claimed")
+        self.assertEqual(self._open().get().state, State.CONFLICTED)
+        self._accept("Remote first")
+        self.assertEqual(self._observe("Five days in office"), "claimed")
+        claim = self._open().get()
+        self.assertEqual(claim.state, State.CONFLICTED)
+        self.assertEqual(self._observe("Five days in office", conflicted=False), "claimed")
+        self.assertEqual(self._open().get().state, State.CONFLICTED)
+
+    def test_reviewed_equal_value_reverifies_and_closes_open_claims(self):
+        self._accept("Remote first")
+        self._observe("Hybrid, 2 days")
+        later = timezone.now() + timedelta(days=100)
+
+        self.assertEqual(self._observe("Remote first", now=later), "verified")
+
+        self.assertFalse(self._open().exists())
+        accepted = CompanyFieldEvidence.objects.get(state=State.ACCEPTED, field_key=FieldKey.RTO_POLICY)
+        self.assertEqual(accepted.last_verified_at, later)
+        self.assertEqual(accepted.value_text, "Remote first")
+
+    def test_reverify_can_be_withheld(self):
+        self._accept("Remote first")
+        self.assertEqual(self._observe("Remote first", reverify=False), "none")
+
+    def test_legacy_unreviewed_equal_value_gets_a_pending_claim(self):
+        accept_observation_fields(make_observation(self.organization, fingerprint="legacy"))
+        row = CompanyFieldEvidence.objects.get(field_key=FieldKey.RTO_POLICY, state=State.ACCEPTED)
+        verified_before = row.last_verified_at
+
+        self.assertEqual(self._observe("Remote first"), "claimed")
+
+        self.assertEqual(self._open().get().state, State.PENDING)
+        row.refresh_from_db()
+        self.assertEqual(row.last_verified_at, verified_before)
+        self.assertFalse(is_reviewed(row))
+
+    def test_a_dropped_field_and_a_reverted_value_close_stale_claims(self):
+        self._observe("Hybrid, 2 days")
+        self.assertEqual(self._observe(""), "none")
+        self.assertFalse(self._open().exists())
+        self._accept("Remote first")
+        self._observe("Hybrid, 2 days")
+        self._observe("Remote first")
+        self.assertFalse(self._open().exists())
+
+    def test_rejected_value_is_not_requeued(self):
+        from crank.services.company_evidence import reject_claim
+
+        self._observe("Remote first")
+        reject_claim(self._open().get(), reviewer=self.reviewer)
+        self.assertEqual(self._observe("Remote first"), "none")
+        self.assertFalse(self._open().exists())
+
+    def test_accept_claim_reevaluates_other_open_claims(self):
+        from crank.services.company_evidence import accept_claim
+
+        other = make_observation(
+            self.organization, source_url="https://other.example.test/about", fingerprint="o"
+        )
+        self._observe("Remote first")
+        self._observe("Hybrid, 3 days", observation=other)
+        winner = CompanyFieldEvidence.objects.get(value_text="Remote first", state=State.PENDING)
+        accept_claim(winner, reviewer=self.reviewer)
+        remaining = self._open().get()
+        self.assertEqual(remaining.value_text, "Hybrid, 3 days")
+        self.assertEqual(remaining.state, State.CONFLICTED)
+
+    def test_accept_claim_refuses_rejected_observation_and_bad_scope(self):
+        from crank.services.company_evidence import accept_claim
+
+        self._observe("Remote first")
+        claim = self._open().get()
+        self.observation.status = Status.REJECTED
+        self.observation.save()
+        with pytest.raises(EvidenceNotAcceptable):
+            accept_claim(claim, reviewer=self.reviewer)
+        self.observation.status = Status.AUTO_APPLIED
+        self.observation.save()
+        CompanyFieldEvidence.objects.filter(pk=claim.pk).update(scope_json={"teams": ["Payments"]})
+        with pytest.raises(EvidenceNotAcceptable, match="Team scope cannot be applied"):
+            accept_claim(claim, reviewer=self.reviewer)
+        self.assertEqual(self._open().get().state, State.PENDING)
+
+    def test_accept_audits_superseded_ids_and_marks_reviewed(self):
+        from crank.models.monitoring import OperationalChangeAudit
+
+        first = self._accept("Remote first")
+        second = self._accept("Hybrid, 2 days")
+        audit = OperationalChangeAudit.objects.get(
+            action="claim_accepted", target_id=str(second.pk)
+        )
+        self.assertEqual(audit.new_value["superseded"], [first.pk])
+        self.assertEqual(audit.old_value["state"], State.PENDING)
+        self.assertTrue(is_reviewed(second))
+
+    def test_validate_claim_scope(self):
+        from crank.services.company_evidence import validate_claim_scope
+
+        self.assertEqual(
+            validate_claim_scope(
+                {"countries": ["Germany", "\u200bGermany", "France"], "claimed_domain": " a.test "}
+            ),
+            {"countries": ["France", "Germany"], "claimed_domain": "a.test"},
+        )
+        for bad in (
+            [], {"teams": []}, {"x": 1}, {"countries": "US"}, {"countries": ["\u200b"]},
+            {"countries": ["a"] * 11}, {"role_families": ["a" * 101]}, {"claimed_domain": 3},
+        ):
+            with pytest.raises(EvidenceNotAcceptable):
+                validate_claim_scope(bad)
+
+    def test_update_claim_scope_only_touches_scope_and_refuses_closed_claims(self):
+        from crank.services.company_evidence import reject_claim, update_claim_scope
+
+        self._observe("Remote first")
+        claim = self._open().get()
+        result = update_claim_scope(claim, {"countries": ["Germany"]})
+        self.assertEqual(result["new"], {"countries": ["Germany"]})
+        claim.refresh_from_db()
+        self.assertEqual(claim.scope_json, {"countries": ["Germany"]})
+        reject_claim(claim, reviewer=self.reviewer)
+        with pytest.raises(EvidenceNotAcceptable):
+            update_claim_scope(claim, {"countries": ["France"]})
+
+    def test_resolve_observation_claims_and_scoped_conflicts(self):
+        from crank.services.company_evidence import (
+            resolve_observation_claims,
+            scoped_accepted_conflicts,
+        )
+
+        self._observe("Remote first")
+        self.assertEqual(len(resolve_observation_claims(self.observation, State.REJECTED)), 1)
+        self.assertEqual(self._open().count(), 0)
+        with pytest.raises(ValueError):
+            resolve_observation_claims(self.observation, State.ACCEPTED)
+        unresolved = make_observation(None, fingerprint="u")
+        self.assertEqual(resolve_observation_claims(unresolved, State.SUPERSEDED), [])
+        self.assertEqual(scoped_accepted_conflicts(unresolved), [])
+
+        accepted = self._accept("Hybrid, 2 days")
+        same = make_observation(self.organization, rto_evidence="Hybrid, 2 days", fingerprint="s")
+        self.assertEqual(scoped_accepted_conflicts(same), [])
+        CompanyFieldEvidence.objects.filter(pk=accepted.pk).update(
+            scope_json={"countries": ["Germany"]}
+        )
+        self.assertEqual(scoped_accepted_conflicts(self.observation), [FieldKey.RTO_POLICY])
+        self.assertEqual(scoped_accepted_conflicts(same), [])
+
+
+def is_reviewed(row):
+    from crank.services.company_evidence import is_staff_reviewed
+
+    return is_staff_reviewed(row)

@@ -24,7 +24,7 @@ import logging
 from decimal import Decimal, InvalidOperation
 from typing import Iterable, List, Optional, Sequence
 
-from crank.agents.sources.semantics import measurement_allows
+from crank.agents.sources.semantics import coerce_kind, measurement_allows
 from crank.agents.sources.types import (
     NormalizedScoreObservation,
     ObservationOutcome,
@@ -153,9 +153,13 @@ class ScoreNormalizer:
                 and not measurement_allows(self._measurement_kind, st.name)):
             return None, ResolutionReason.TYPE_SEMANTIC_MISMATCH, (
                 f"source measurement "
-                f"'{sanitize_label(str(self._measurement_kind))}' "
+                f"'{sanitize_label(self._kind_label())}' "
                 f"cannot feed score type '{sanitize_label(st.name)}'")
         return st, None, ""
+
+    def _kind_label(self) -> str:
+        kind = coerce_kind(self._measurement_kind)
+        return kind.value if kind is not None else str(self._measurement_kind)
 
     # -- target resolution -------------------------------------------------------
 

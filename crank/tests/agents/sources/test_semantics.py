@@ -78,6 +78,22 @@ def test_registration_requires_a_valid_measurement_kind():
 
 
 def test_production_registry_registers_no_blocked_source_adapter():
+    import re
+    from pathlib import Path
+
+    import yaml
+
     import crank.agents.sources  # noqa: F401 - imports every adapter module
 
-    assert "yelp" not in REGISTRY
+    catalog = yaml.safe_load(
+        (Path(__file__).resolve().parents[4] / "docs" / "source-catalog.yaml").read_text()
+    )
+    blocked = {
+        re.sub(r"[^a-z0-9]", "", source["name"].lower())
+        for source in catalog["sources"]
+        if source["approval"]["state"] in ("blocked", "pending")
+    }
+    assert "yelp" in blocked  # the derivation must see the catalog's blocked sources
+    for key in REGISTRY.keys():
+        stem = re.sub(r"[^a-z0-9]", "", key.split(".")[0].lower())
+        assert stem not in blocked, f"adapter {key!r} is registered for a blocked/pending source"
