@@ -1,11 +1,16 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
+import hashlib
+import json
+
 from django.contrib import admin
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.core import checks
 from django import forms
 from django.db import models, transaction
+from django.http import HttpResponseRedirect
 from django.shortcuts import render
+from django.utils import timezone
 from django.utils.translation import gettext as _
 from crank.models.agent_run import AgentRun
 from crank.models.crawl_run import CrawlRun
@@ -240,6 +245,10 @@ class ConfirmableAdminActionMixin:
         """Text shown for ``obj`` on the confirmation page; empty means ``str(obj)``."""
         return ""
 
+    def confirmation_hidden_fields(self, request, objects):
+        """Extra ``(name, value)`` pairs the confirmation form re-POSTs."""
+        return []
+
     def render_action_confirmation(self, request, queryset, drift=False):
         """Render a confirmation page that re-POSTs the same gated action.
 
@@ -279,6 +288,7 @@ class ConfirmableAdminActionMixin:
                 "drift": drift,
                 "drift_warning": self._drift_warning,
                 "selected_pks": selected_pks,
+                "extra_hidden": self.confirmation_hidden_fields(request, objects),
                 "select_across": "1" if select_across else "0",
                 "action_checkbox_name": ACTION_CHECKBOX_NAME,
                 "object_label": self.opts.verbose_name,
@@ -406,6 +416,10 @@ class AgentRunAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
     ]
 
 
+class _ScopedRefusal(Exception):
+    pass
+
+
 class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin.ModelAdmin):
     model = CompanyProfileObservation
     list_display = [
@@ -425,11 +439,41 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
     actions = ["accept_observations", "reject_observations", "conflict_observations"]
     confirmable_actions = ["accept_observations", "reject_observations", "conflict_observations"]
 
+    def confirmation_label(self, obj):
+        label = f"{obj.observed_name or obj.observed_domain} [{obj.status}] {obj.source_url}"
+        if obj.organization_id is None:
+            return label
+        values = company_evidence.observation_field_values(obj)
+        review = {
+            key: value for key, value in values.items()
+            if key in company_evidence.REVIEW_REQUIRED_FIELDS
+        }
+        accepted = {
+            row.field_key: row
+            for row in CompanyFieldEvidence.objects.filter(
+                organization_id=obj.organization_id,
+                state=CompanyFieldEvidence.State.ACCEPTED,
+                field_key__in=list(values),
+            ).order_by("-observed_at", "-id")
+        }
+        parts = []
+        for key, value in sorted(values.items()):
+            row = accepted.get(key)
+            note = ""
+            if row is not None and company_evidence.list_scope(row.scope_json):
+                note = f" (keeps scope {company_evidence.list_scope(row.scope_json)})"
+            marker = " [verifies policy fact]" if key in review else ""
+            parts.append(f"{key}={value!r}{marker}{note}")
+        if obj.status != CompanyProfileObservation.Status.ACCEPTED and parts:
+            label += "; accepting records as accepted evidence: " + "; ".join(parts)
+        return label
+
     def _review(self, request, queryset, status):
         if not self._require_confirmation(request):
             return
         count = 0
         refused = []
+        rejected_values = []
         accepting = status == CompanyProfileObservation.Status.ACCEPTED
         with transaction.atomic():
             for observation in queryset:
@@ -439,61 +483,86 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
                     # their claims.
                     refused.append(observation.pk)
                     continue
-                old_status = observation.status
-                observation.mark_reviewed(status=status, user=request.user)
-                created, superseded = [], []
-                if accepting:
-                    # An operator accept is an ACCEPTED-producing surface, so
-                    # it must create the same field-level evidence the
-                    # crawler does (issue #460, AC-4) — and, through the same
-                    # outbox event, the same provenance cache invalidation.
-                    # Same transaction as the review state: evidence is never
-                    # recorded for a review that did not commit.
-                    before = self._accepted_ids(observation)
-                    try:
-                        created = [
-                            row.pk
-                            for row in company_evidence.accept_observation_fields(observation)
-                        ]
-                    except company_evidence.EvidenceNotAcceptable:
-                        # Unresolved organization: the review outcome still
-                        # records, there is just no organization scope to
-                        # attach evidence to until the identity resolves.
-                        pass
-                    superseded = sorted(before - self._accepted_ids(observation))
-                claim_ids = []
-                if accepting:
-                    claim_ids = company_evidence.resolve_observation_claims(
-                        observation, company_evidence.State.SUPERSEDED
-                    )
-                elif status == CompanyProfileObservation.Status.REJECTED:
-                    claim_ids = company_evidence.resolve_observation_claims(
-                        observation, company_evidence.State.REJECTED
-                    )
-                OperationalChangeAudit.record(
-                    actor=request.user,
-                    target_type="company_profile_observation",
-                    target_id=observation.pk,
-                    action=f"review_{status}",
-                    old_value={"status": old_status},
-                    new_value={
-                        "status": status,
-                        "evidence_created": created,
-                        "evidence_superseded": superseded,
-                        "claims_resolved": claim_ids,
-                    },
-                    confirmed=True,
-                )
-                for evidence_id in created:
-                    OperationalChangeAudit.record(
-                        actor=request.user,
-                        target_type="company_field_evidence",
-                        target_id=evidence_id,
-                        action="observation_accepted",
-                        old_value={},
-                        new_value={"observation": observation.pk},
-                        confirmed=True,
-                    )
+                if accepting and company_evidence.rejected_value_conflicts(observation):
+                    rejected_values.append(observation.pk)
+                    continue
+                try:
+                    with transaction.atomic():
+                        old_status = observation.status
+                        observation.mark_reviewed(status=status, user=request.user)
+                        created, superseded = [], []
+                        if accepting:
+                            # An operator accept is an ACCEPTED-producing surface, so
+                            # it must create the same field-level evidence the
+                            # crawler does (issue #460, AC-4) — and, through the same
+                            # outbox event, the same provenance cache invalidation.
+                            # Same transaction as the review state: evidence is never
+                            # recorded for a review that did not commit.
+                            before = self._accepted_ids(observation)
+                            if observation.organization_id is not None:
+                                try:
+                                    with transaction.atomic():
+                                        created = [
+                                            row.pk
+                                            for row in company_evidence.accept_observation_fields(
+                                                observation
+                                            )
+                                        ]
+                                except company_evidence.EvidenceNotAcceptable:
+                                    # Scoped evidence appeared after the pre-check and
+                                    # the locked check refused: nothing was written.
+                                    raise _ScopedRefusal from None
+                            superseded = sorted(before - self._accepted_ids(observation))
+                        claim_ids = []
+                        restated_closed, restated_conflicted = [], []
+                        if accepting:
+                            claim_ids = company_evidence.resolve_observation_claims(
+                                observation, company_evidence.State.SUPERSEDED
+                            )
+                            now = timezone.now()
+                            for row in CompanyFieldEvidence.objects.filter(pk__in=created):
+                                closed, conflicted = company_evidence.restate_open_claims(
+                                    row.organization_id, row.field_key, row.value_text, now
+                                )
+                                restated_closed += closed
+                                restated_conflicted += conflicted
+                        elif status == CompanyProfileObservation.Status.REJECTED:
+                            # ``superseded``, not ``rejected``: a claim is a value
+                            # staff decided on, and rejecting a whole observation says
+                            # nothing about each value it carried.
+                            claim_ids = company_evidence.resolve_observation_claims(
+                                observation, company_evidence.State.SUPERSEDED
+                            )
+                        OperationalChangeAudit.record(
+                            actor=request.user,
+                            target_type="company_profile_observation",
+                            target_id=observation.pk,
+                            action=f"review_{status}",
+                            old_value={"status": old_status},
+                            new_value={
+                                "status": status,
+                                "evidence_created": created,
+                                "evidence_superseded": superseded,
+                                "claims_resolved": claim_ids,
+                                "claims_closed": restated_closed,
+                                "claims_conflicted": restated_conflicted,
+                            },
+                            confirmed=True,
+                        )
+                        for evidence_id in created:
+                            OperationalChangeAudit.record(
+                                actor=request.user,
+                                target_type="company_field_evidence",
+                                target_id=evidence_id,
+                                action="observation_accepted",
+                                old_value={},
+                                new_value={"observation": observation.pk},
+                                confirmed=True,
+                            )
+                except _ScopedRefusal:
+                    observation.refresh_from_db()
+                    refused.append(observation.pk)
+                    continue
                 count += 1
         self.message_user(request, f"{count} company profile observation(s) marked {status}.")
         if refused:
@@ -501,6 +570,13 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
                 request,
                 f"{len(refused)} observation(s) not accepted: accepting them would replace "
                 "scoped evidence. Review their claims instead.",
+                level="error",
+            )
+        if rejected_values:
+            self.message_user(
+                request,
+                f"{len(rejected_values)} observation(s) not accepted: they carry a value staff "
+                "recently rejected. Review their claims instead.",
                 level="error",
             )
 
@@ -554,6 +630,14 @@ class CompanyFieldEvidenceScopeForm(forms.ModelForm):
             )
         }
 
+    def clean(self):
+        cleaned = super().clean()
+        if self.instance.pk and self.instance.state not in company_evidence.OPEN_CLAIM_STATES:
+            raise forms.ValidationError(
+                f"Scope not saved: claim state {self.instance.state!r} is not open for review."
+            )
+        return cleaned
+
     def clean_scope_json(self):
         scope = self.cleaned_data.get("scope_json")
         if isinstance(scope, dict):
@@ -593,17 +677,33 @@ class OpenClaimFilter(admin.SimpleListFilter):
     def choices(self, changelist):
         for lookup, title in self.lookup_choices:
             yield {
-                "selected": (self.value() or "open") == lookup,
+                "selected": not self._explicit_state and (self.value() or "open") == lookup,
                 "query_string": changelist.get_query_string({self.parameter_name: lookup}),
                 "display": title,
             }
 
 
+class LegacyUnreviewedFilter(admin.SimpleListFilter):
+    """Accepted review-required rows no person reviewed (pre-#474 crawl acceptances)."""
+
+    title = "legacy rows"
+    parameter_name = "legacy"
+
+    def lookups(self, request, model_admin):
+        return [("unreviewed", "Accepted, never staff-reviewed")]
+
+    def queryset(self, request, queryset):
+        if self.value() != "unreviewed":
+            return queryset
+        ids = [row.pk for row in company_evidence.legacy_unreviewed_rows()]
+        return queryset.filter(pk__in=ids)
+
+
 class CompanyFieldEvidenceAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin.ModelAdmin):
     model = CompanyFieldEvidence
     form = CompanyFieldEvidenceScopeForm
-    list_display = ["organization", "field_key", "value_text", "state", "source_domain", "observed_at", "last_verified_at"]
-    list_filter = [OpenClaimFilter, "state", "field_key"]
+    list_display = ["organization", "field_key", "value_text", "state", "relation_to_accepted", "source_domain", "observed_at", "last_verified_at"]
+    list_filter = [OpenClaimFilter, LegacyUnreviewedFilter, "state", "field_key"]
     list_select_related = ["organization"]
     search_fields = ["organization__name", "value_text", "source_domain"]
     actions = ["accept_claims", "reject_claims"]
@@ -631,47 +731,110 @@ class CompanyFieldEvidenceAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin
     def has_delete_permission(self, request, obj=None):
         return False
 
-    def confirmation_label(self, obj):
-        accepted = (
+    def _accepted_row(self, obj):
+        return (
             CompanyFieldEvidence.objects.filter(
                 organization_id=obj.organization_id,
                 field_key=obj.field_key,
                 state=CompanyFieldEvidence.State.ACCEPTED,
             )
             .order_by("-observed_at", "-id")
-            .values_list("value_text", flat=True)
             .first()
         )
-        scope = {
-            key: value
-            for key, value in (obj.scope_json or {}).items()
-            if key in company_evidence.SCOPE_LIST_KEYS
-        }
+
+    def confirmation_label(self, obj):
+        accepted = self._accepted_row(obj)
+        current_scope = company_evidence.list_scope(accepted.scope_json) if accepted else {}
+        new_scope = company_evidence.list_scope(
+            company_evidence.accepted_scope_for_claim(obj, accepted)
+        )
+        scope_text = f"scope {new_scope or 'company-wide'}"
+        if accepted is not None and current_scope != new_scope:
+            scope_text += f" (CHANGES the accepted scope {current_scope or 'company-wide'})"
+        legacy = ""
+        if (
+            accepted is not None
+            and accepted.value_text == obj.value_text
+            and not company_evidence.is_staff_reviewed(accepted)
+        ):
+            legacy = " [re-confirms a legacy value already in effect; rejecting retracts it]"
         return (
             f"{obj.organization.name} / {obj.field_key} [{obj.state}]: "
             f"proposed {obj.value_text!r}; currently accepted "
-            f"{repr(accepted) if accepted is not None else 'none'}; "
-            f"scope {scope or 'company-wide'}; source {obj.source_url}"
+            f"{repr(accepted.value_text) if accepted is not None else 'none'}{legacy}; "
+            f"{scope_text}; source {obj.source_url}"
         )
+
+    @admin.display(description="vs accepted")
+    def relation_to_accepted(self, obj):
+        if obj.state not in company_evidence.OPEN_CLAIM_STATES:
+            return ""
+        accepted = self._accepted_row(obj)
+        if accepted is None:
+            return "no accepted value"
+        if accepted.value_text != obj.value_text:
+            return "differs from accepted"
+        if company_evidence.is_staff_reviewed(accepted):
+            return "matches reviewed value"
+        return "legacy value in effect"
+
+    def claims_digest(self, claims):
+        """Digest of exactly what a reviewer saw: each claim, its value hash, state,
+        scope and the accepted row it would replace."""
+        entries = []
+        for claim in sorted(claims, key=lambda c: c.pk):
+            accepted = self._accepted_row(claim)
+            entries.append(
+                [
+                    claim.pk,
+                    company_evidence.value_digest(claim.value_text),
+                    claim.state,
+                    claim.scope_json,
+                    [
+                        accepted.pk,
+                        company_evidence.value_digest(accepted.value_text),
+                        accepted.scope_json,
+                    ] if accepted else None,
+                ]
+            )
+        return hashlib.sha256(
+            json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    def confirmation_hidden_fields(self, request, objects):
+        return [("claim_digest", self.claims_digest(objects))]
+
+    def response_action(self, request, queryset, **kwargs):
+        if (
+            self._select_across_flag(request)
+            and self._requested_action(request) in self.confirmable_actions
+        ):
+            self.message_user(
+                request,
+                "No changes made: claims must be selected explicitly. A select-across "
+                "decision could act on claims you never saw; select the rows on the page "
+                "instead.",
+                level="error",
+            )
+            return None
+        return super().response_action(request, queryset, **kwargs)
 
     def save_model(self, request, obj, form, change):
         try:
-            result = company_evidence.update_claim_scope(
-                obj, obj.scope_json, reviewer=request.user
-            )
+            company_evidence.update_claim_scope(obj, obj.scope_json, reviewer=request.user)
         except company_evidence.EvidenceNotAcceptable as exc:
+            request._scope_save_refused = True
             self.message_user(request, f"Scope not saved: {exc}", level="error")
-            return
-        if result["old"] != result["new"]:
-            OperationalChangeAudit.record(
-                actor=request.user,
-                target_type="company_field_evidence",
-                target_id=obj.pk,
-                action="scope_change",
-                old_value={"scope_json": result["old"]},
-                new_value={"scope_json": result["new"]},
-                confirmed=False,
-            )
+
+    def log_change(self, request, obj, message):
+        if getattr(request, "_scope_save_refused", False):
+            return None
+        return super().log_change(request, obj, message)
+
+    def response_change(self, request, obj):
+        if getattr(request, "_scope_save_refused", False):
+            return HttpResponseRedirect(request.path)
+        return super().response_change(request, obj)
 
     def _decide(self, request, queryset, decision):
         if not self._require_confirmation(request):
@@ -679,17 +842,34 @@ class CompanyFieldEvidenceAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin
         applied = skipped = 0
         with transaction.atomic():
             claims = list(queryset)
+            if not claims:
+                self.message_user(
+                    request,
+                    "No changes made: none of the selected claims exist any more.",
+                    level="error",
+                )
+                return
+            if request.POST.get("claim_digest") != self.claims_digest(claims):
+                self.message_user(
+                    request,
+                    "No changes made: the selected claims changed (or were replaced by a new "
+                    "crawl) since you reviewed them. Review the current claims and confirm again.",
+                    level="error",
+                )
+                return
             if decision is company_evidence.accept_claim:
                 seen = {}
                 for claim in claims:
                     if claim.state in company_evidence.OPEN_CLAIM_STATES:
-                        seen.setdefault((claim.organization_id, claim.field_key), []).append(claim.pk)
-                if any(len(ids) > 1 for ids in seen.values()):
+                        seen.setdefault((claim.organization_id, claim.field_key), set()).add(
+                            claim.value_text
+                        )
+                if any(len(values) > 1 for values in seen.values()):
                     self.message_user(
                         request,
-                        "No changes made: the selection has several open claims for the same "
-                        "organization and field. Accept one claim per field; the others "
-                        "become conflicted or superseded.",
+                        "No changes made: the selection has claims with different values for "
+                        "the same organization and field. Accept one value per field; the "
+                        "others become conflicted or superseded.",
                         level="error",
                     )
                     return

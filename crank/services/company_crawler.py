@@ -185,9 +185,53 @@ def _organization_for(domain: str, name: str) -> tuple[Organization | None, list
     return organization, []
 
 
-# A conflict only in these fields says nothing about whether a policy statement
-# the page still repeats is current, so it does not block re-verification.
+# A difference only in these fields says nothing about whether a policy
+# statement the page still repeats is current, so it does not block
+# re-verification.
 COSMETIC_CONFLICT_FIELDS = frozenset({"description", "logo_url", "brand_metadata"})
+
+# Identity conflicts (against any page) make a page an unreliable witness.
+IDENTITY_CONFLICT_FIELDS = frozenset(
+    {"organization_identity", "stale_observation", "observed_domain", "observed_name"}
+)
+
+_COMPARED_FIELDS = (
+    "source_url", "observed_domain", "observed_name", "description", "locations",
+    "rto_evidence", "funding_evidence", "public_status_evidence", "logo_url",
+    "brand_metadata",
+)
+
+
+def _may_reverify(organization, observation, conflict_fields) -> bool:
+    """Whether a page that repeats a reviewed statement re-verifies it.
+
+    ``conflict_fields`` is computed against the organization's latest
+    observation from *any* page, so for a multi-page crawl every page after the
+    first differs in ``source_url`` and more; that alone must not stop
+    re-verification. The decision is per page: an identity conflict blocks, and
+    so does a non-cosmetic change against the previous reading of the *same*
+    page (``source_url``).
+    """
+    if set(conflict_fields) & IDENTITY_CONFLICT_FIELDS:
+        return False
+    earlier = (
+        CompanyProfileObservation.objects.filter(
+            organization=organization, source_url=observation.source_url
+        )
+        .exclude(status=CompanyProfileObservation.Status.REJECTED)
+        .exclude(pk=observation.pk)
+        .filter(observed_at__lte=observation.observed_at)
+        .order_by("-observed_at", "-id")
+        .first()
+    )
+    if earlier is None:
+        return True
+    changed = {
+        field for field in _COMPARED_FIELDS
+        if getattr(observation, field) and getattr(earlier, field)
+        and getattr(observation, field) != getattr(earlier, field)
+    }
+    return changed <= COSMETIC_CONFLICT_FIELDS
 
 
 def _reconcile_review_fields(
@@ -315,10 +359,20 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
                 if existing.organization_id is not None and existing.status in (
                     CompanyProfileObservation.Status.AUTO_APPLIED,
                     CompanyProfileObservation.Status.ACCEPTED,
+                    CompanyProfileObservation.Status.CONFLICTED,
                 ):
+                    stored_conflicts = (
+                        existing.conflict_fields
+                        if existing.status == CompanyProfileObservation.Status.CONFLICTED
+                        else ()
+                    )
                     _reconcile_review_fields(
-                        existing.organization, existing, conflict_fields=(),
-                        reverify=True, now=observed_at,
+                        existing.organization, existing,
+                        conflict_fields=stored_conflicts,
+                        reverify=_may_reverify(
+                            existing.organization, existing, stored_conflicts
+                        ),
+                        now=observed_at,
                     )
                 continue
             prior = (CompanyProfileObservation.objects.filter(organization=organization)
@@ -364,6 +418,7 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
                         observation,
                         now=observed_at,
                         field_keys=company_evidence.AUTO_APPLY_FIELDS,
+                        scoped_conflict="skip",
                     )
                     counts["evidence_accepted"] += len(evidence_rows)
                     outcomes = _reconcile_review_fields(
@@ -406,7 +461,7 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
                     carried = company_evidence.observation_field_values(observation)
                     _reconcile_review_fields(
                         organization, observation, conflict_fields=conflict_fields,
-                        reverify=set(conflict_fields) <= COSMETIC_CONFLICT_FIELDS,
+                        reverify=_may_reverify(organization, observation, conflict_fields),
                         now=observed_at,
                     )
                     for field_key in carried:
