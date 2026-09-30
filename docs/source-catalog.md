@@ -167,4 +167,5 @@ accept them in the admin. Existing accepted evidence is unchanged.
   (Glassdoor/Comparably/Indeed Reputation, Comparably Product and Mission, Simply Wall Street
   Reputation). Simply Wall Street and Stackshare now declare the honest kinds `financial_data` and
   `tech_stack_listing` (Lifecycle and Financials / Tech Stack only) instead of `curated_review`.
-  No approval state changed.
+  Levels.fyi and Salary.com no longer list Lifecycle and Financials: a salary
+  benchmark does not measure lifecycle stage or financial health. No approval state changed.

@@ -37,9 +37,7 @@ SCORE_TYPE_ALLOWED_MEASUREMENTS: dict[str, frozenset[MeasurementKind]] = {
     "Reputation": frozenset({_K.CONSUMER_BUSINESS_RATING, _K.CURATED_REVIEW}),
     "Product and Mission": frozenset({_K.CURATED_REVIEW}),
     "Tech Stack": frozenset({_K.TECH_STACK_LISTING, _K.CURATED_REVIEW}),
-    "Lifecycle and Financials": frozenset(
-        {_K.FINANCIAL_DATA, _K.COMPENSATION_BENCHMARK, _K.CURATED_REVIEW}
-    ),
+    "Lifecycle and Financials": frozenset({_K.FINANCIAL_DATA, _K.CURATED_REVIEW}),
     "RTO and Work Hours": frozenset(
         {_K.EMPLOYER_POLICY_STATEMENT, _K.EMPLOYEE_SURVEY, _K.CURATED_REVIEW}
     ),

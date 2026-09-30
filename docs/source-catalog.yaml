@@ -289,7 +289,7 @@ sources:
     url: https://www.levels.fyi/
     kind: external
     seed_gives_ratings: true
-    score_types_candidates: [Total Compensation, Lifecycle and Financials]
+    score_types_candidates: [Total Compensation]
     measurement: [compensation_benchmark]
     live_enabled: false
     api:
@@ -323,7 +323,7 @@ sources:
     url: https://www.salary.com/
     kind: external
     seed_gives_ratings: true
-    score_types_candidates: [Total Compensation, Lifecycle and Financials]
+    score_types_candidates: [Total Compensation]
     measurement: [compensation_benchmark]
     live_enabled: false
     api:
