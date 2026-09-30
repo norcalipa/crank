@@ -97,6 +97,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
   #jro-page .jro-badge--neutral { background: var(--jro-neutral-bg); color: var(--jro-neutral-fg); border-color: var(--jro-neutral-line); }
   #jro-page .jro-badge > .jro-icon { margin-top: 2px; }
   #jro-page .jro-detail { margin-left: 8px; color: var(--jro-text-quiet); }
+  #jro-page .jro-detail--block { display: block; margin: 2px 0 0; font-size: 12px; }
   #jro-page .jro-icon {
     display: inline-block;
     flex: none;
@@ -287,7 +288,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
   #jro-page .jro-section > h2 + .jro-error { border-top: 0; border-radius: 0 0 4px 4px; }
   #jro-page .jro-sources { border-collapse: collapse; width: 100%; }
   #jro-page .jro-sources th, #jro-page .jro-sources td {
-    text-align: left; vertical-align: top; padding: 6px 10px; border-bottom: 1px solid var(--jro-border);
+    text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--jro-border);
     background: transparent; font-size: 13px; overflow-wrap: break-word;
   }
   #jro-page .jro-sources thead th {
@@ -300,7 +301,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
   #jro-page .jro-sources td:nth-child(4) { white-space: nowrap; }
   #jro-page .jro-sources .jro-id { white-space: nowrap; overflow-wrap: normal; font-weight: 400; }
   #jro-page .jro-note { color: var(--jro-text); margin: 0 0 8px; }
-  #jro-page .jro-summary-line { margin: 0 0 8px; }
+  #jro-page .jro-summary-line { margin: 0 0 8px; padding: 0 calc(var(--jro-pad) + 1px); }
   #jro-page .jro-diag { margin: 0 0 20px; }
   #jro-page .jro-diag > summary {
     display: flex;
@@ -338,6 +339,8 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     #jro-page .jro-sources tbody th { display: block; padding: 0 0 4px; border: 0; }
     #jro-page .jro-sources td { display: grid; grid-template-columns: 8rem minmax(0, 1fr); gap: 12px; padding: 2px 0; border: 0; }
     #jro-page .jro-sources td::before { content: attr(data-label); font-weight: 600; }
+    #jro-page .jro-sources td > .jro-badge { justify-self: start; }
+    #jro-page .jro-sources td > .jro-detail--block { grid-column: 2; margin: 0; }
   }
 </style>
 <script>
@@ -650,7 +653,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
             <th scope="row" role="rowheader"><a href="{{ row.admin_url }}">{{ row.name }}</a><br><span class="jro-id">{{ row.adapter_key }}</span></th>
             <td role="cell" data-label="Database state">{{ row.approval_state|title }} · {% if row.enabled %}enabled{% else %}disabled{% endif %}</td>
             <td role="cell" data-label="Adapter">{% if row.adapter_registered %}<span class="jro-badge jro-badge--success"><span class="jro-icon jro-icon--check" aria-hidden="true"></span>Registered</span>{% else %}<span class="jro-badge jro-badge--danger"><span class="jro-icon jro-icon--x" aria-hidden="true"></span>Not registered</span>{% endif %}</td>
-            <td role="cell" data-label="Credentials">{% if row.credentials_present is None %}<span class="jro-badge jro-badge--neutral"><span class="jro-icon jro-icon--unknown" aria-hidden="true"></span>Unknown (no adapter)</span>{% elif row.credentials_present %}<span class="jro-badge jro-badge--success"><span class="jro-icon jro-icon--check" aria-hidden="true"></span>Present</span>{% elif row.enabled %}<span class="jro-badge jro-badge--danger"><span class="jro-icon jro-icon--x" aria-hidden="true"></span>Missing</span>{% else %}<span class="jro-badge jro-badge--neutral"><span class="jro-icon jro-icon--dash" aria-hidden="true"></span>Missing (source disabled)</span>{% endif %}</td>
+            <td role="cell" data-label="Credentials">{% if row.credentials_present is None %}<span class="jro-badge jro-badge--neutral"><span class="jro-icon jro-icon--unknown" aria-hidden="true"></span>Unknown</span> <span class="jro-detail jro-detail--block">no adapter</span>{% elif row.credentials_present %}<span class="jro-badge jro-badge--success"><span class="jro-icon jro-icon--check" aria-hidden="true"></span>Present</span>{% elif row.enabled %}<span class="jro-badge jro-badge--danger"><span class="jro-icon jro-icon--x" aria-hidden="true"></span>Missing</span>{% else %}<span class="jro-badge jro-badge--neutral"><span class="jro-icon jro-icon--dash" aria-hidden="true"></span>Missing</span> <span class="jro-detail jro-detail--block">source disabled</span>{% endif %}</td>
             <td role="cell" data-label="Last success">{% if row.last_success_at %}{{ row.last_success_age }} ago{% else %}Never{% endif %}</td>
             <td role="cell" data-label="Last attempt">{% if row.last_attempt_at %}{{ row.last_attempt_age }} ago{% else %}Never{% endif %}</td>
             <td role="cell" data-label="Failures">{{ row.consecutive_failures }}</td>

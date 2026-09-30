@@ -1900,6 +1900,17 @@ class JobRetrievalActionStateTests(TestCase):
     _source = JobRetrievalReadinessPanelTests._source
     _get = JobRetrievalReadinessPanelTests._get
 
+    def test_credentials_detail_for_disabled_and_adapterless_sources(self):
+        self._source(name="Disabled", enabled=False)
+        self._source(name="Orphan", adapter_key="no-such-adapter")
+        with patch(
+            "crank.services.operations_readiness.missing_settings",
+            side_effect=lambda key: None if key == "no-such-adapter" else ["USAJOBS_AUTH_KEY"],
+        ):
+            content = self._get()
+        self.assertIn('jro-detail--block">source disabled</span>', content)
+        self.assertIn('jro-detail--block">no adapter</span>', content)
+
     def _buttons(self, content):
         return {
             m.group(1): m.group(0)
