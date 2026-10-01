@@ -1170,11 +1170,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
         const bottomGap = safeAreaBottom || 16; // breathing room above the page bottom
         const computed = viewportHeight - top - bottomGap;
-        // Keep the transcript at least 8rem tall: when the page above leaves less
-        // room, the card grows and the panel scrolls rather than the composer
-        // painting over the history.
+        // Inside the assistant panel, keep the transcript at least 8rem tall: the
+        // card grows and the panel scrolls rather than the composer painting over
+        // the history. On the page the history alone yields (no page scroll).
         const log = historyRef.current;
-        const floor = log ? card.offsetHeight - log.offsetHeight + MIN_TRANSCRIPT_PX : 0;
+        const floor = log && card.closest('.assistant-panel-body') ? card.offsetHeight - log.offsetHeight + MIN_TRANSCRIPT_PX : 0;
         setCardHeight(Math.max(computed, MIN_CARD_PX, floor));
     }, []);
 
