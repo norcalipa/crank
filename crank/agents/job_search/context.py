@@ -122,7 +122,7 @@ class ModelContext:
                     title=bounded_name(row.get("title", "")),
                     organization_name=bounded_name(row.get("organization_name", "")),
                     organization_id=row.get("organization_id"),
-                    location=row.get("location", ""),
+                    location=bounded_name(row.get("location", "")),
                     remote=row.get("remote", False),
                     canonical_url=row.get("canonical_url", ""),
                 )
@@ -140,7 +140,7 @@ class ModelContext:
                     "listing_id={listing_id} title={title!r} score={score} "
                     "requirements={requirements} reasons={reasons}".format(
                         listing_id=row.get("listing_id"),
-                        title=row.get("title", ""),
+                        title=bounded_name(row.get("title", "")),
                         score=row.get("score", 0.0),
                         requirements=_requirements_text(row.get("requirements")),
                         reasons=row.get("reasons", []),
@@ -156,7 +156,7 @@ class ModelContext:
                     "organization_id={organization_id} name={name!r} score={score} "
                     "requirements={requirements} reasons={reasons}".format(
                         organization_id=row.get("organization_id"),
-                        name=row.get("name", ""),
+                        name=bounded_name(row.get("name", "")),
                         score=row.get("score", 0.0),
                         requirements=_requirements_text(row.get("requirements")),
                         reasons=row.get("reasons", []),

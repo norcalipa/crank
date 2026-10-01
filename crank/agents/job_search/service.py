@@ -259,6 +259,11 @@ class JobSearchOrchestrator:
                 "cited_ids_count": result.cited_ids_count,
                 "empty_result": result.empty_result,
                 "inventory_nonempty": result.inventory_nonempty,
+                "page_context": (
+                    "none"
+                    if page_context is None
+                    else "stale" if page_context.stale else "fresh"
+                ),
                 "actions_dropped": result.actions_dropped,
                 "action_drop_reasons": ",".join(result.action_drop_reasons),
                 "latency_ms": latency_ms,

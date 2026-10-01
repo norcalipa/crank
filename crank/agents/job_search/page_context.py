@@ -43,6 +43,9 @@ def _load_listing(listing_id: int) -> dict[str, Any] | None:
     row = tools.default_job_listing_detail_datasource(listing_id)
     if row is None:
         return None
+    org = row.organization
+    if org is not None and not (org.status == 1 and org.public):
+        return None
     return tools.normalize_job_listing_rows([row])[0]
 
 

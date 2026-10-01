@@ -144,6 +144,7 @@ def test_dropped_actions_are_counted_in_telemetry_and_logged(caplog):
             )
     turn = next(c.args[1] for c in record.call_args_list if c.args[0] == "job_search_turn")
     assert turn["actions_dropped"] == 2
+    assert turn["page_context"] == "none"
     assert turn["action_drop_reasons"] == "no_context,unknown_type"
     assert "job_search_actions_dropped" in caplog.text
     assert not any(c.args[1].get("reason_code") == "internal" for c in record.call_args_list)
@@ -279,8 +280,12 @@ def test_escaped_names_are_bounded_after_quoting():
     model_ctx = ctx_mod.build_model_context(
         prompt_id="p", system="s", conversation=[], user_prompt="hi", preference_markdown="",
         organization_catalog=[{"id": 1, "name": hostile}],
-        job_listings=[{"id": 2, "title": hostile, "organization_name": hostile}],
+        job_listings=[{"id": 2, "title": hostile, "organization_name": hostile, "location": hostile}],
         score_summaries=[], max_preference_characters=100, max_conversation_characters=1000,
+        matches={
+            "job_matches": [{"listing_id": 2, "title": hostile}],
+            "organization_matches": [{"organization_id": 1, "name": hostile}],
+        },
     )
     for line in model_ctx._tool_block().splitlines():
         assert len(line) < 3 * ctx_mod.MAX_NAME_CHARS + 120
@@ -448,6 +453,7 @@ def test_real_orchestrator_catalog_org_open_company_survives_service_gate(caplog
     assert "actions_exposed_ids" not in extras
     turn = next(c.args[1] for c in record.call_args_list if c.args[0] == "job_search_turn")
     assert turn["actions_dropped"] == 1
+    assert turn["page_context"] == "fresh"
     assert turn["action_drop_reasons"] == "unexposed_id"
 
 

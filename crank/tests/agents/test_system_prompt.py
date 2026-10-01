@@ -25,12 +25,15 @@ class TestSystemPrompt:
 
         digests = {
             5: {
-                False: "9cd200f8f2c479bac14230095f778c2de2c7172ac08395e39ee94b99dc603955",
-                True: "0634a17783fbe452928765d472acee34e283b6f4ef81b9e4e58db6f029ffe26e",
+                (False, True): "9cd200f8f2c479bac14230095f778c2de2c7172ac08395e39ee94b99dc603955",
+                (True, True): "0634a17783fbe452928765d472acee34e283b6f4ef81b9e4e58db6f029ffe26e",
+                (True, False): "7a18ff8c8b5a63c990d93f4c349065c0fc180f6451434016112db94889fed0ce",
             },
         }
-        for with_context, expected in digests[SYSTEM_PROMPT_VERSION].items():
-            text = build_system_prompt(include_page_context=with_context)
+        for (with_context, with_actions), expected in digests[SYSTEM_PROMPT_VERSION].items():
+            text = build_system_prompt(
+                include_page_context=with_context, include_actions=with_actions
+            )
             assert hashlib.sha256(text.encode()).hexdigest() == expected
 
     def test_contains_hard_citation_constraint(self):

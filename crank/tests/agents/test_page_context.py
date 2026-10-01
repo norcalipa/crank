@@ -171,7 +171,7 @@ def test_default_loaders_listing(db):
     from unittest.mock import patch
 
     row = SimpleNamespace(
-        id=5, title="T", organization=SimpleNamespace(id=1, name="O"), location_text="",
+        id=5, title="T", organization=SimpleNamespace(id=1, name="O", status=1, public=True), location_text="",
         is_remote=False, compensation_min=None, compensation_max=None,
         compensation_currency="", compensation_interval="", canonical_url="",
         last_seen_at=None, modified=None,
@@ -181,3 +181,42 @@ def test_default_loaders_listing(db):
     ):
         assert page_context._load_listing(5)["id"] == 5
         assert page_context._load_listing(6) is None
+
+
+def test_listing_resolution_hides_non_public_and_inactive_employers(db):
+    from crank.models.job import JobListing, JobSourceCatalog
+    from crank.models.organization import Organization
+
+    source = JobSourceCatalog.objects.create(
+        name="ctx-src", adapter_key="test", base_url="https://jobs.example.test",
+        approval_state="approved", enabled=True,
+    )
+
+    def listing(ext, org, status=JobListing.Status.ACTIVE):
+        return JobListing.all_objects.create(
+            source=source, external_id=ext, canonical_url=f"https://jobs.example.test/{ext}",
+            employer_name="Acme", title=f"Role {ext}", location_text="Remote", is_remote=True,
+            first_seen_at="2026-08-01T00:00:00Z", last_seen_at="2026-08-03T00:00:00Z",
+            status=status, organization=org,
+        )
+
+    visible = listing("v", Organization.objects.create(name="Vis", status=1, public=True))
+    private = listing("p", Organization.objects.create(name="Priv", status=1, public=False))
+    inactive = listing("i", Organization.objects.create(name="Inact", status=0, public=True))
+    orphan = listing("o", None)
+    closed = listing("c", None, status=JobListing.Status.CLOSED)
+
+    assert page_context._load_listing(visible.id)["organization_name"] == "Vis"
+    assert page_context._load_listing(orphan.id)["id"] == orphan.id
+    for hidden in (private, inactive, closed):
+        assert page_context._load_listing(hidden.id) is None
+
+    ctx = page_context.resolve({"revision": 1, "job_id": private.id}, user=None, loaders=Loaders(
+        organizations=page_context.DEFAULT_LOADERS.organizations,
+        listing=page_context.DEFAULT_LOADERS.listing,
+        algorithm=lambda _i: None,
+        preference_revision=lambda _u: None,
+        result_generation=lambda _u: None,
+    ))
+    assert ctx.listing is None and ctx.unresolved == (f"job_id:{private.id}",)
+    assert "Priv" not in ctx.to_model_text()

@@ -115,6 +115,7 @@ _SAFE_KEYS = frozenset(
         "cited_ids_count",
         "empty_result",
         "inventory_nonempty",
+        "page_context",
         "actions_dropped",
         "action_drop_reasons",
         "latency_bucket",
