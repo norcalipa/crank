@@ -10,7 +10,7 @@ from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
-from crank.agents.job_search.demo import DemoJobSearchProvider, JobSearchService
+from crank.agents.job_search.demo import JobSearchService
 from crank.models import JobSearchMessage, JobSearchTurn
 from crank.models.organization import Organization
 
@@ -26,7 +26,9 @@ class PageContextViewTests(TestCase):
         self.client = Client()
         self.client.force_login(self.alice)
         self.org = Organization.objects.create(name="Visible Co", status=1, public=True, rto_policy="R")
+        # ``public`` means publicly traded: a private company is still visible.
         self.private = Organization.objects.create(name="Private Co", status=1, public=False)
+        self.inactive = Organization.objects.create(name="Retired Co", status=0, public=True)
         resp = self.client.post(
             reverse("agent-conversation-list"),
             data=json.dumps({"create_new": True}), content_type="application/json",
@@ -48,8 +50,17 @@ class PageContextViewTests(TestCase):
         resp, _ = self.submit("Show only remote companies")
         self.assertEqual(resp.status_code, 201)
         body = resp.json()
-        self.assertEqual(set(body), {"message", "preferences_changed"} | ({"actions"} & set(body)))
-        self.assertNotIn("context", body)
+        self.assertEqual(set(body), {"message", "preferences_changed"})
+        self.assertIs(body["preferences_changed"], True)
+        self.assertEqual(
+            set(body["message"]),
+            {"content", "created", "id", "preferences_changed", "results", "role"},
+        )
+        self.assertTrue(body["message"]["preferences_changed"])
+        self.assertTrue(body["message"]["content"].startswith(
+            "Thanks! I can help you find organizations here on CRank."
+        ))
+        self.assertIsNone(body["message"]["results"])
 
     def test_context_is_echoed_and_actions_returned(self):
         resp, _ = self.submit(
@@ -60,7 +71,8 @@ class PageContextViewTests(TestCase):
         body = resp.json()
         self.assertEqual(
             body["context"],
-            {"revision": 7, "surface": "rankings", "stale": False, "unresolved": []},
+            {"revision": 7, "surface": "rankings", "stale": False, "unresolved": [],
+             "preference_revision": None, "result_generation": None},
         )
         self.assertEqual(
             body["actions"],
@@ -71,24 +83,33 @@ class PageContextViewTests(TestCase):
         resp, _ = self.submit(
             "open this company",
             context={"revision": 1, "surface": "company", "organization_id": self.org.id,
-                     "comparison_ids": [self.private.id, 99999]},
+                     "comparison_ids": [self.inactive.id, 99999]},
         )
         body = resp.json()
         self.assertEqual(body["actions"], [{"type": "open_company", "organization_id": self.org.id}])
         self.assertEqual(
             body["context"]["unresolved"],
-            [f"comparison_ids:{self.private.id}", "comparison_ids:99999"],
+            [f"comparison_ids:{self.inactive.id}", "comparison_ids:99999"],
         )
 
-    def test_private_org_is_never_resolved_or_openable(self):
+    def test_inactive_org_is_never_resolved_or_openable(self):
+        resp, _ = self.submit(
+            "open this company",
+            context={"revision": 1, "organization_id": self.inactive.id},
+        )
+        body = resp.json()
+        self.assertEqual(resp.status_code, 201)
+        self.assertNotIn("actions", body)
+        self.assertEqual(body["context"]["unresolved"], [f"organization_id:{self.inactive.id}"])
+
+    def test_privately_held_org_open_in_rankings_resolves(self):
         resp, _ = self.submit(
             "open this company",
             context={"revision": 1, "organization_id": self.private.id},
         )
         body = resp.json()
-        self.assertEqual(resp.status_code, 201)
-        self.assertNotIn("actions", body)
-        self.assertEqual(body["context"]["unresolved"], [f"organization_id:{self.private.id}"])
+        self.assertEqual(body["actions"], [{"type": "open_company", "organization_id": self.private.id}])
+        self.assertEqual(body["context"]["unresolved"], [])
 
     def test_invalid_context_is_400_and_persists_nothing(self):
         hostile = [
@@ -129,7 +150,7 @@ class PageContextViewTests(TestCase):
         resp, _ = self.submit("hello", context={"revision": 1})
         self.assertEqual(resp.status_code, 404)
 
-    def test_hostile_provider_action_fails_turn_retryably(self):
+    def test_hostile_provider_action_is_dropped_and_reply_still_delivered(self):
         class Hostile:
             def generate_reply(self, *, conversation, user_message, page_context=None):
                 return "ok", False, None, {
@@ -143,14 +164,10 @@ class PageContextViewTests(TestCase):
             lambda self, *a, **k: setattr(self, "provider", Hostile()),
         ):
             resp, key = self.submit("hello", context={"revision": 1})
-        self.assertEqual(resp.status_code, 500)
-        self.assertEqual(resp.json()["error"]["type"], "invalid_output")
-        turn = JobSearchTurn.objects.get(turn_key=key)
-        self.assertEqual(turn.delivery_state, JobSearchTurn.DeliveryState.FAILED)
+        self.assertEqual(resp.status_code, 201)
+        self.assertNotIn("actions", resp.json())
+        self.assertEqual(resp.json()["message"]["content"], "ok")
         self.assertTrue(
-            JobSearchMessage.objects.filter(role="user", idempotency_key=key).exists()
-        )
-        self.assertFalse(
             JobSearchMessage.objects.filter(role="assistant", idempotency_key=key).exists()
         )
 
