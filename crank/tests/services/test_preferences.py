@@ -204,13 +204,14 @@ class TestUnsupportedCriteria:
         doc["work_location"]["require_onsite"] = True
         assert "work_location.require_onsite" in prefs.unsupported_criteria(doc)
 
-    def test_importance_set_is_reported(self):
-        """Issue #459 review, MAJOR-2: a non-empty importance map is a
-        hard-requirement signal the matching engine cannot evaluate, so it
-        must be surfaced, not silently counted as satisfied."""
+    def test_importance_set_is_not_reported(self):
+        """Issue #480: matching treats ``importance[path] >= 1.0`` as a hard
+        requirement (``matching._is_hard``), so the registry marks it
+        supported and a set importance map is no longer "not evaluated"."""
         doc = prefs.default_preferences()
         doc["importance"]["compensation.minimum_salary"] = 1.0
-        assert "importance" in prefs.unsupported_criteria(doc)
+        assert prefs.CRITERION_SUPPORT["importance"] == prefs.SUPPORTED
+        assert "importance" not in prefs.unsupported_criteria(doc)
 
     def test_notes_set_is_reported_but_empty_notes_is_not(self):
         """``notes`` is UNSUPPORTED (nothing in matching reads it), and its
@@ -1861,3 +1862,215 @@ def _revision_observing_hook(change_id):
 
 def _exploding_hook(change_id):
     raise RuntimeError("hook exploded")
+
+
+# ---------------------------------------------------------------------------
+# Editor metadata, reset-with-undo, registry truth (issue #480)
+# ---------------------------------------------------------------------------
+class TestEditorMetadata:
+    def _doc(self):
+        doc = prefs.default_preferences()
+        doc["work_location"]["modes"] = ["remote"]
+        doc["work_location"]["max_in_office_days"] = 0
+        doc["compensation"]["minimum_salary"] = 150000
+        doc["compensation"]["minimum_total_compensation"] = 300000
+        doc["compensation"]["basis"] = "total"
+        doc["importance"]["work_location.modes"] = 1.0
+        doc["notes"] = "likes cats"
+        return doc
+
+    def _by_path(self, doc):
+        return {f["path"]: f for f in prefs.editor_fields(doc)}
+
+    def test_every_schema_leaf_except_importance_is_described(self):
+        fields = self._by_path(self._doc())
+        leaves = {path for path, _ in prefs._leaf_paths()} - {"importance"}
+        assert set(fields) == leaves
+
+    def test_supported_unsupported_and_labels(self):
+        fields = self._by_path(self._doc())
+        assert fields["compensation.minimum_salary"]["supported"] is True
+        assert fields["compensation.minimum_salary"]["label"] == "Minimum base salary"
+        total = fields["compensation.minimum_total_compensation"]
+        assert total["supported"] is False
+        assert total["label"] == "Minimum total compensation"
+        assert total["set"] is True and total["editable"] is True
+        assert fields["compensation.basis"]["editable"] is False
+        assert fields["compensation.basis"]["choices"] == ["base", "total"]
+
+    def test_hard_and_locked(self):
+        fields = self._by_path(self._doc())
+        modes = fields["work_location.modes"]
+        assert modes["hard"] is True and modes["hard_locked"] is False
+        assert modes["choices"] == ["remote", "hybrid", "in-office"]
+        days = fields["work_location.max_in_office_days"]
+        assert days["hard"] is True and days["hard_locked"] is True
+        assert fields["culture"]["hard"] is False
+
+    def test_unset_fields_are_not_set(self):
+        fields = self._by_path(prefs.default_preferences())
+        assert not any(f["set"] for f in fields.values())
+        assert fields["compensation.minimum_salary"]["value"] is None
+
+    def test_pre_migration_document_missing_keys_uses_defaults(self):
+        doc = prefs.default_preferences()
+        del doc["roles"]
+        fields = self._by_path(doc)
+        assert fields["roles.titles"]["value"] == []
+        assert fields["roles.titles"]["set"] is False
+
+    def test_chips_cover_set_fields_with_display(self):
+        doc = self._doc()
+        doc["compensation"]["require_public_company"] = True
+        doc["priorities"] = {"culture": 0.5}
+        chips = {c["path"]: c for c in prefs.criteria_chips(doc)}
+        assert chips["work_location.modes"]["display"] == "remote"
+        assert chips["work_location.modes"]["hard"] is True
+        assert chips["compensation.minimum_salary"]["display"] == "150000"
+        assert chips["compensation.require_public_company"]["display"] == "Yes"
+        assert chips["priorities"]["display"] == "culture"
+        assert chips["compensation.minimum_total_compensation"]["supported"] is False
+        assert "culture" not in chips
+
+    def test_patch_field_errors(self):
+        errors = prefs.patch_field_errors({"set": {
+            "work_location.max_in_office_days": 9,
+            "compensation.minimum_salary": 100,
+            "bogus.path": 1,
+            "priorities.culture": 0.5,
+            "work_location": {"modes": []},
+        }})
+        assert set(errors) == {
+            "work_location.max_in_office_days", "bogus.path",
+            "priorities.culture", "work_location",
+        }
+        assert "7" in errors["work_location.max_in_office_days"][0]
+
+    def test_patch_field_errors_tolerates_malformed(self):
+        assert prefs.patch_field_errors("nope") == {}
+        assert prefs.patch_field_errors({"set": ["x"]}) == {}
+        assert prefs.patch_field_errors({"remove": {"culture": ["a"]}}) == {}
+
+    def test_read_for_editor_creates_no_row(self, user):
+        snapshot = prefs.read_for_editor(user)
+        assert snapshot["exists"] is False and snapshot["revision"] == 0
+        assert snapshot["preferences"] == prefs.default_preferences()
+        assert UserPreference.objects.filter(user=user).count() == 0
+        prefs.apply_patch_to_user(user, {"set": {"culture": ["x"]}})
+        snapshot = prefs.read_for_editor(user)
+        assert snapshot["exists"] is True and snapshot["revision"] == 1
+        assert snapshot["preferences"]["culture"] == ["x"]
+
+
+class TestRegistryTruth:
+    SAMPLES = {
+        "int": 3, "float": 0.5, "str": "EUR", "str_list": ["remote"],
+        "float_map": {"culture": 0.5},
+    }
+
+    def test_importance_is_supported(self):
+        assert prefs.CRITERION_SUPPORT["importance"] == prefs.SUPPORTED
+
+    def test_every_supported_key_is_read_by_matching(self):
+        from crank.agents.jobs.matching import project_criteria
+
+        baseline = project_criteria(prefs.default_preferences(), SCHEMA_VERSION)
+        for path, support in prefs.CRITERION_SUPPORT.items():
+            if support != prefs.SUPPORTED:
+                continue
+            spec, _dynamic = prefs._resolve_spec(path)
+            doc = prefs.default_preferences()
+            if spec == "bool":
+                sample = True
+            elif path == "importance":
+                sample = {"work_location.modes": 1.0}
+            elif path == "work_location.modes":
+                sample = ["hybrid"]
+            else:
+                sample = self.SAMPLES[spec]
+            prefs._set(doc, path, sample)
+            assert project_criteria(doc, SCHEMA_VERSION) != baseline, path
+
+    def test_is_hard_requirement_agrees_with_matching(self):
+        from crank.agents.jobs import matching
+
+        for path in prefs.CRITERION_SUPPORT:
+            for importance in ({}, {path: 1.0}, {path: 0.5}):
+                criteria = matching.project_criteria(
+                    {"importance": importance}, SCHEMA_VERSION
+                )
+                assert matching.is_hard_requirement(path, criteria.importance) == (
+                    matching._is_hard(criteria, path)
+                )
+        assert matching.is_hard_requirement("work_location.max_in_office_days", {})
+        assert not matching.is_hard_requirement("culture", {})
+
+
+class TestResetWithRevision:
+    def test_reset_returns_changes_and_undo_that_restores(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {
+            "culture": ["x"], "compensation.minimum_salary": 120000,
+        }})
+        before = prefs.read(user)["preferences"]
+        result = prefs.reset(user, expected_revision=applied["revision"])
+        assert result["changed"] is True
+        assert result["revision"] == applied["revision"] + 1
+        assert {c["path"] for c in result["changes"]} == {
+            "culture", "compensation.minimum_salary",
+        }
+        assert result["undo"]["expected_revision"] == result["revision"]
+        undone = prefs.undo_preference_change(user, result["undo"])
+        assert undone["preferences"] == before
+        assert undone["revision"] == result["revision"] + 1
+
+    def test_reset_stale_revision_carries_current(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {"culture": ["x"]}})
+        with pytest.raises(StalePreferenceError) as info:
+            prefs.reset(user, expected_revision=applied["revision"] - 1)
+        assert info.value.current_revision == applied["revision"]
+        assert prefs.read(user)["preferences"]["culture"] == ["x"]
+
+    def test_reset_expected_revision_wins_over_modified(self, user):
+        first = prefs.apply_patch_to_user(user, {"set": {"culture": ["x"]}})
+        second = prefs.apply_patch_to_user(user, {"set": {"culture": ["y"]}})
+        result = prefs.reset(
+            user, expected_modified=first["modified"],
+            expected_revision=second["revision"],
+        )
+        assert result["changed"] is True
+
+    def test_reset_noop_has_no_undo(self, user):
+        result = prefs.reset(user, expected_revision=0)
+        assert result["changed"] is False
+        assert result["undo"] is None and result["changes"] == []
+
+    def test_reset_missing_row_with_nonzero_revision_is_stale(self, user):
+        with pytest.raises(StalePreferenceError) as info:
+            prefs.reset(user, expected_revision=3)
+        assert info.value.current_revision == 0
+        assert UserPreference.objects.filter(user=user).count() == 0
+
+    def test_reset_rejects_malformed_revision(self, user):
+        with pytest.raises(InvalidValueError):
+            prefs.reset(user, expected_revision=True)
+
+    def test_reset_preserves_additive_fields_and_reports_importance(self, user):
+        applied = prefs.apply_patch_to_user(user, {"set": {
+            "importance": {"work_location.modes": 1.0},
+        }})
+        row = UserPreference.objects.get(user=user)
+        doc = copy.deepcopy(row.preferences)
+        doc["future_section"] = {"keep": True}
+        row.preferences = doc
+        row.save()
+        result = prefs.reset(user, expected_revision=applied["revision"])
+        assert [c["path"] for c in result["changes"]] == ["importance"]
+        assert prefs.read(user)["preferences"]["future_section"] == {"keep": True}
+        assert "future_section" not in {c["path"] for c in result["changes"]}
+
+    def test_reset_schedules_one_recompute(self, user, monkeypatch):
+        applied = prefs.apply_patch_to_user(user, {"set": {"culture": ["x"]}})
+        calls = []
+        monkeypatch.setattr(prefs, "_schedule_recompute", calls.append)
+        prefs.reset(user, expected_revision=applied["revision"])
+        assert calls == ["{}:{}".format(user.pk, applied["revision"] + 1)]

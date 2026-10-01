@@ -559,10 +559,15 @@ _ALWAYS_HARD = frozenset(
 )
 
 
-def _is_hard(criteria: JobCriteria, path: str) -> bool:
+def is_hard_requirement(path: str, importance: Mapping[str, float]) -> bool:
+    """Whether *path* is a hard requirement given an importance map."""
     if path in _ALWAYS_HARD:
         return True
-    return criteria.importance.get(path, 0.0) >= 1.0
+    return importance.get(path, 0.0) >= 1.0
+
+
+def _is_hard(criteria: JobCriteria, path: str) -> bool:
+    return is_hard_requirement(path, criteria.importance)
 
 
 def _evidence_in_scope(evidence_row: Any, listing: Any) -> bool:
