@@ -3332,7 +3332,6 @@ body.assistant-open .app-content .table-responsive,
     background: #343a40;
     border: 1px solid transparent;
     max-width: 100%;
-    overflow-wrap: anywhere;
 }
 .priority-chip-button {
     display: inline-flex;
@@ -3351,8 +3350,8 @@ body.assistant-open .app-content .table-responsive,
 .priority-chip:hover { background: #3d444b; border-color: #adb5bd; }
 .priority-chip-hard { border-color: #6c757d; }
 .priority-chip-unsupported { border-style: dashed; border-color: #6c757d; }
-.priority-chip-label { color: #adb5bd; }
-.priority-chip-value { font-weight: 600; }
+.priority-chip-label { color: #adb5bd; overflow-wrap: anywhere; min-width: 0; }
+.priority-chip-value { font-weight: 600; white-space: nowrap; flex-shrink: 0; }
 .priority-chip-icon { font-size: 0.75rem; margin: 0; color: #adb5bd; }
 .priority-chip-lock { font-size: 0.75rem; }
 .priority-chip-skeleton {
@@ -3416,6 +3415,9 @@ body.assistant-open .app-content .table-responsive,
     .priorities-sidebar { padding-inline: 1rem; }
 }
 .priorities-sidebar .priorities-scroll { max-height: 60%; max-height: 60vh; }
+.priorities-main .priorities-scroll { margin-inline: 0; }
+.assistant-panel-body #job-search-chat { min-height: min-content; }
+.assistant-panel-body #job-search-chat .chat-transcript { min-height: 8rem !important; }
 
 /* Cards: neutral surface for review / confirm; success only for applied. */
 .priorities-card {
