@@ -552,6 +552,68 @@ class StageTests(TestCase):
             lagging = stage(ops.readiness(), "matches")
         self.assertEqual(lagging["status"], ops.UNMET)
 
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True)
+    def test_matches_version_mismatched_user_is_attention_not_met(self):
+        user = User.objects.create_user("mismatch", password="pw")
+        pref = UserPreference.objects.create(user=user)
+        MatchResultState.objects.create(
+            user=user,
+            issued_generation=1,
+            current_generation=1,
+            preference_revision=pref.revision,
+            preference_version=pref.schema_version,
+            ranker_version="old-ranker-0",
+            data_revision=0,
+            generated_at=timezone.now(),
+        )
+        result = ops.readiness()
+        matches = stage(result, "matches")
+        self.assertEqual(matches["status"], ops.ATTENTION)
+        self.assertIn("version mismatch: 1", matches["summary"])
+        self.assertNotIn("committed matches are current", matches["summary"])
+        self.assertFalse(result["all_met"])
+
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True)
+    def test_matches_interrupted_user_is_reported(self):
+        user = User.objects.create_user("interrupted", password="pw")
+        pref = UserPreference.objects.create(user=user)
+        MatchResultState.objects.create(
+            user=user,
+            issued_generation=2,
+            current_generation=1,
+            preference_revision=pref.revision,
+            preference_version=pref.schema_version,
+            data_revision=0,
+            generated_at=timezone.now(),
+        )
+        matches = stage(ops.readiness(), "matches")
+        self.assertNotEqual(matches["status"], ops.MET)
+        self.assertIn("interrupted: 1", matches["summary"])
+
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True)
+    def test_matches_age_stale_user_with_clean_preferences_is_attention(self):
+        user = User.objects.create_user("agestale", password="pw")
+        pref = UserPreference.objects.create(user=user)
+        MatchResultState.objects.create(
+            user=user,
+            issued_generation=1,
+            current_generation=1,
+            preference_revision=pref.revision,
+            preference_version=pref.schema_version,
+            data_revision=0,
+            generated_at=timezone.now() - timedelta(days=30),
+        )
+        result = ops.readiness()
+        matches = stage(result, "matches")
+        self.assertEqual(matches["status"], ops.ATTENTION)
+        self.assertIn("age stale: 1", matches["summary"])
+        self.assertFalse(result["all_met"])
+
+    def test_adapter_base_class_has_no_startup_blockers(self):
+        from crank.agents.jobs.base import JobSourceAdapter
+
+        self.assertEqual(JobSourceAdapter.startup_blockers(None), [])
+
     def test_stage_failure_is_unknown_and_isolated(self):
         make_source()
 
