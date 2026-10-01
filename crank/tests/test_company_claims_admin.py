@@ -840,6 +840,18 @@ class ClaimReviewTests(TestCase):
         other.refresh_from_db()
         self.assertIn(other.state, company_evidence.OPEN_CLAIM_STATES)
 
+    def test_changelist_column_marks_a_twin_of_a_reviewed_value(self):
+        self._post_action("accept_claims", [self.rto.pk])
+        twin = CompanyFieldEvidence.objects.create(
+            organization=self.organization, field_key=FieldKey.RTO_POLICY,
+            value_text=self.rto.value_text, source_url="https://jobs.example.test/twin",
+            source_domain="jobs.example.test", observed_at=self.rto.observed_at,
+            state=State.PENDING,
+        )
+        response = self.client.get(self.url)
+        listed = {r.pk: r for r in response.context["cl"].result_list}
+        self.assertEqual(listed[twin.pk]._vs_accepted, "matches reviewed value")
+
 
 def admin_site_registry(model):
     from django.contrib import admin
