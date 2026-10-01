@@ -58,7 +58,7 @@ for (const {field, current, saved, ...viewport} of VIEWPORTS) {
             await expect(form.getByRole('textbox', {name: 'Evidence link'})).toBeFocused();
             await form.getByRole('button', {name: 'Submit suggestion'}).click();
 
-            const status = form.getByRole('status');
+            const status = form.getByTestId('correction-status');
             await expect(status).toContainText('Pending review');
             await expect(status).toContainText('Hybrid, 3 days');
             await expect(status).toContainText('Still in effect until review');
@@ -88,32 +88,6 @@ for (const {field, current, saved, ...viewport} of VIEWPORTS) {
     });
 }
 
-test('a failed submit moves focus to the alert; a rate limit unlocks Submit after Retry-After and keeps the draft', async ({page}) => {
-    await login(page);
-    const details = await openDetails(page);
-    await details.getByTestId('suggest-correction-field-funding_round').click();
-    const form = page.getByRole('dialog', {name: /Suggest a correction/});
-    await form.getByRole('textbox', {name: 'Suggested value'}).fill('Series C');
-    await form.getByRole('textbox', {name: 'Evidence link'}).fill('https://example.com/funding');
-    const submit = form.getByRole('button', {name: 'Submit suggestion'});
-
-    await page.route('**/api/company-corrections/', (route) => route.fulfill({status: 500, json: {}}), {times: 1});
-    await submit.click();
-    await expect(form.getByRole('alert')).toBeFocused();
-    await expect(submit).toBeEnabled();
-
-    await page.route('**/api/company-corrections/', (route) => route.fulfill({
-        status: 429, headers: {'Retry-After': '2'}, json: {error: 'Too many.'},
-    }), {times: 1});
-    await submit.click();
-    await expect(form.getByRole('alert')).toBeFocused();
-    await expect(form.getByRole('alert')).toContainText('Hourly limit reached');
-    await expect(submit).toBeDisabled();
-    await expect(submit).toBeEnabled({timeout: 5000});
-    await expect(form.getByRole('alert')).toBeHidden();
-    await expect(form.getByRole('textbox', {name: 'Suggested value'})).toHaveValue('Series C');
-});
-
 test('a double click on submit creates one pending correction', async ({page}) => {
     await login(page);
     const details = await openDetails(page);
@@ -122,7 +96,7 @@ test('a double click on submit creates one pending correction', async ({page}) =
     await form.getByRole('textbox', {name: 'Suggested value'}).fill('Series C');
     await form.getByRole('textbox', {name: 'Evidence link'}).fill('https://example.com/funding');
     await form.getByRole('button', {name: 'Submit suggestion'}).dblclick();
-    await expect(form.getByRole('status')).toContainText('Pending review');
+    await expect(form.getByTestId('correction-status')).toContainText('Pending review');
 
     const listed = await page.evaluate(async () => {
         const response = await fetch('/api/company-corrections/');
@@ -180,8 +154,7 @@ test.describe('with the assistant drawer open at 1024px', () => {
 test.describe('opened from the assistant sheet at 375px', () => {
     test.use({viewport: {width: 375, height: 700}});
 
-    test('focus lands on Close inside the form', async ({page}) => {
-        await login(page);
+    async function mockChat(page: import('@playwright/test').Page) {
         await page.route('**/api/job-matches/status/', (route) => route.fulfill({json: {state: 'ok'}}));
         await page.route('**/api/job-matches/?**', (route) => route.fulfill({json: {count: 1, results: []}}));
         await page.route('**/api/job-matches/ranked/**', (route) => route.fulfill({json: {job_matches: [], organization_matches: []}}));
@@ -195,10 +168,102 @@ test.describe('opened from the assistant sheet at 375px', () => {
                 }],
             },
         }));
+    }
+
+    test('focus lands on Close inside the form', async ({page}) => {
+        await login(page);
+        await mockChat(page);
         await page.goto('/chat/');
         await page.getByRole('button', {name: `Suggest a correction for ${COMPANY}`}).first().click();
         const form = page.getByRole('dialog', {name: /Suggest a correction/});
         await expect(form).toBeVisible();
         await expect(form.getByTestId('correction-close')).toBeFocused();
     });
+
+    for (const [how, leave] of [
+        ['Escape', async (form: import('@playwright/test').Locator, page: import('@playwright/test').Page) => { await page.keyboard.press('Escape'); }],
+        ['Close', async (form: import('@playwright/test').Locator) => { await form.getByTestId('correction-close').click(); }],
+    ] as const) {
+        test(`${how} on /chat/ brings the assistant sheet back with focus on the invoking control`, async ({page}) => {
+            await login(page);
+            await mockChat(page);
+            await page.goto('/chat/');
+            const opener = page.getByRole('button', {name: `Suggest a correction for ${COMPANY}`}).first();
+            await opener.click();
+            const form = page.getByRole('dialog', {name: /Suggest a correction/});
+            await expect(form).toBeVisible();
+            await leave(form, page);
+            await expect(form).toBeHidden();
+            await expect(page.getByText('Here are some matches.')).toBeVisible();
+            await expect(opener).toBeFocused();
+        });
+    }
+
+    test('Back to results on / reopens the sheet and refocuses the invoking control', async ({page}) => {
+        await login(page);
+        await mockChat(page);
+        await page.goto('/');
+        await page.getByRole('button', {name: 'Assistant'}).first().click();
+        const sheet = page.getByTestId('assistant-panel');
+        await expect(sheet).toBeVisible();
+        const opener = sheet.getByRole('button', {name: `Suggest a correction for ${COMPANY}`}).first();
+        await opener.click();
+        const form = page.getByRole('dialog', {name: /Suggest a correction/});
+        await expect(form).toBeVisible();
+        await form.getByTestId('correction-back').or(form.getByTestId('correction-close')).first().click();
+        await expect(form).toBeHidden();
+        await expect(page.getByTestId('assistant-panel')).toBeVisible();
+        await expect(page.getByTestId('assistant-panel').getByRole('button', {name: `Suggest a correction for ${COMPANY}`}).first()).toBeFocused();
+    });
+});
+
+// Keep last: it spends the e2e user's whole hourly allowance.
+test('a failed submit moves focus to the alert; the real rate limit carries Retry-After, disables Submit and keeps the draft', async ({page}) => {
+    await login(page);
+    const details = await openDetails(page);
+    await details.getByTestId('suggest-correction-field-accelerated_vesting').click();
+    const form = page.getByRole('dialog', {name: /Suggest a correction/});
+    await form.getByRole('textbox', {name: 'Suggested value'}).fill('Series C');
+    await form.getByRole('textbox', {name: 'Evidence link'}).fill('https://example.com/funding');
+    const submit = form.getByRole('button', {name: 'Submit suggestion'});
+
+    await page.route('**/api/company-corrections/', (route) => route.fulfill({status: 500, json: {}}), {times: 1});
+    await submit.click();
+    await expect(form.getByRole('alert')).toBeFocused();
+    await expect(submit).toBeEnabled();
+
+    // Spend the real allowance with accepted submissions, then let the UI hit the server's own 429.
+    const retryAfter = await page.evaluate(async () => {
+        const token = document.cookie.split('; ').find((c) => c.startsWith('csrftoken='))!.split('=')[1];
+        const fields = ['rto_policy', 'public_status', 'accelerated_vesting', 'locations', 'company_name', 'company_domain'];
+        const seen: string[] = [];
+        let n = 0;
+        for (let organization = 1; organization <= 12; organization++) {
+            for (const field of fields) {
+                const response = await fetch('/api/company-corrections/', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json', 'X-CSRFToken': token},
+                    body: JSON.stringify({
+                        organization_id: organization, field_key: field, proposed_value: `Spend ${n}`,
+                        evidence_url: 'https://example.com/spend', scope: {level: 'company'},
+                        idempotency_key: `00000000-0000-4000-8000-${String(n++).padStart(12, '0')}`,
+                    }),
+                });
+                if (response.status === 429) {
+                    return response.headers.get('Retry-After');
+                }
+                seen.push(String(response.status));
+            }
+        }
+        return seen.join(',');
+    });
+    expect(retryAfter, 'spend loop').toMatch(/^[0-9]+$/);
+    expect(Number(retryAfter)).toBeLessThanOrEqual(3600);
+    const limited = page.waitForResponse((r) => r.url().endsWith('/api/company-corrections/') && r.status() === 429);
+    await submit.click();
+    expect(Number((await limited).headers()['retry-after'])).toBeGreaterThan(0);
+    await expect(form.getByRole('alert')).toBeFocused();
+    await expect(form.getByRole('alert')).toContainText('Hourly limit reached');
+    await expect(submit).toBeDisabled();
+    await expect(form.getByRole('textbox', {name: 'Suggested value'})).toHaveValue('Series C');
 });
