@@ -285,8 +285,9 @@ class StageTests(TestCase):
 
     def test_ready_stages_imply_every_registered_adapter_constructs(self):
         urls = {"usajobs": "https://data.usajobs.gov/api/search", "firecrawl-careers": "https://remoteok.com/jobs"}
-        for key in REGISTRY.keys():  # noqa: SIM118
+        for key in urls:
             with self.subTest(adapter=key):
+                self.assertIsNotNone(REGISTRY.get(key))
                 source = make_source(f"s-{key}", adapter_key=key, base_url=urls[key])
                 result = ops.readiness()
                 self.assertEqual(stage(result, "adapter")["status"], ops.MET)
