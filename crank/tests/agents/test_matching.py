@@ -687,3 +687,13 @@ def test_rto_days_ignores_hidden_and_compat_characters(value):
     assert _rto_days(value) == 0
     assert _normalized(value) == "remote"
     assert _rto_days(f"Hy\u200bbrid, 3 days") == 3
+
+
+def test_normalized_strips_hidden_characters_from_non_string_values():
+    from crank.agents.jobs.matching import _normalized
+
+    class Label:
+        def __str__(self):
+            return "Re\u200bmote"
+
+    assert _normalized(Label()) == "remote"

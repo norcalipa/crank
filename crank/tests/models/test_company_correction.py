@@ -130,6 +130,11 @@ class CompanyCorrectionModelTest(TestCase):
         item.clean()
         self.assertEqual(item.evidence_url, "https://acme.example.com:443/x")
 
+    def test_unparseable_and_overlong_idna_hosts_are_rejected(self):
+        for url in ("https://[::1/x", "https://\u00e9" + "a" * 62 + ".example.com/"):
+            with self.assertRaises(ValidationError, msg=url):
+                self.make(evidence_url=url).clean()
+
     def test_evidence_url_length_and_bad_idna(self):
         with self.assertRaises(ValidationError):
             self.make(evidence_url="https://acme.example.com/" + "a" * 760).clean()
