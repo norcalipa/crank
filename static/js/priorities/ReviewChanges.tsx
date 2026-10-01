@@ -28,6 +28,8 @@ export interface ReviewChangesProps {
     testId?: string;
 }
 
+const isEmptyValue = (v: unknown) => v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
+
 export function ChangeList({changes, label, labels}: {
     changes: PreferenceChange[];
     label: string;
@@ -39,10 +41,10 @@ export function ChangeList({changes, label, labels}: {
                 <li key={change.path} className="pref-change-item">
                     <span className="pref-change-path">{labels?.[change.path] || preferencePathLabel(change.path)}</span>
                     <span className="pref-change-values">
-                        <span className="pref-change-old">{preferenceValueLabel(change.old)}</span>
+                        <span className={`pref-change-old${isEmptyValue(change.old) ? ' is-empty' : ''}`}>{preferenceValueLabel(change.old, change.path)}</span>
                         <i className="fa-solid fa-arrow-right pref-change-arrow" aria-hidden="true"></i>
                         <span className="visually-hidden">changed to</span>
-                        <span className="pref-change-new">{preferenceValueLabel(change.new)}</span>
+                        <span className="pref-change-new">{preferenceValueLabel(change.new, change.path)}</span>
                     </span>
                 </li>
             ))}
@@ -106,7 +108,7 @@ export default function ReviewChanges({
                     </button>
                 )}
                 {onEdit && (
-                    <button type="button" className="btn btn-sm btn-outline-light"
+                    <button type="button" className="btn btn-sm btn-link text-light"
                             onClick={onEdit} disabled={pending}>Edit</button>
                 )}
                 {onApplySearchOnly && !isSearch && (

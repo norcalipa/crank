@@ -20,23 +20,40 @@ export function preferencePathLabel(path: string): string {
         .join(' › ');
 }
 
-/** Chip rendering of the server's display string: numbers are grouped, money gets a symbol. */
-export function chipValueLabel(path: string, display: string): string {
-    if (!/^-?\d+(\.\d+)?$/.test(display)) return display;
-    const grouped = Number(display).toLocaleString('en-US');
-    return /salary|compensation$/.test(path) ? `$${grouped}` : grouped;
+const MONEY_PATH = /salary|compensation$/;
+const PERCENT_PATH = /_percent$/;
+
+function humanizeToken(token: string): string {
+    if (/[A-Z]/.test(token)) return token;
+    return token.replace(/_/g, ' ').replace(/\b[a-z]/g, (c) => c.toUpperCase());
 }
 
-/** Human rendering of a preference value. */
-export function preferenceValueLabel(value: unknown): string {
+function formatNumber(path: string, n: number): string {
+    const grouped = n.toLocaleString('en-US');
+    if (MONEY_PATH.test(path)) return `$${grouped}`;
+    return PERCENT_PATH.test(path) ? `${grouped}%` : grouped;
+}
+
+/** Chip rendering of the server's display string: numbers get grouping, a symbol and a unit; enum words read as labels. */
+export function chipValueLabel(path: string, display: string): string {
+    if (/^-?\d+(\.\d+)?$/.test(display)) return formatNumber(path, Number(display));
+    return display.split(', ').map(humanizeToken).join(', ');
+}
+
+/** Human rendering of a preference value; pass the path for the same money/percent/label formatting the chips use. */
+export function preferenceValueLabel(value: unknown, path?: string): string {
     if (value === null || value === undefined) return 'Not set';
     if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-    if (typeof value === 'string') return value === '' ? 'Not set' : value;
+    if (typeof value === 'string') {
+        if (value === '') return 'Not set';
+        return path === undefined ? value : humanizeToken(value);
+    }
     if (typeof value === 'number') {
-        return Number.isFinite(value) ? value.toLocaleString('en-US') : String(value);
+        if (!Number.isFinite(value)) return String(value);
+        return path === undefined ? value.toLocaleString('en-US') : formatNumber(path, value);
     }
     if (Array.isArray(value)) {
-        return value.length ? value.map(preferenceValueLabel).join(', ') : 'None';
+        return value.length ? value.map((v) => preferenceValueLabel(v, path)).join(', ') : 'None';
     }
     try {
         return JSON.stringify(value);

@@ -3,6 +3,7 @@
 import '@testing-library/jest-dom';
 import * as React from 'react';
 import {fireEvent, render, screen} from '@testing-library/react';
+import PriorityChips from './PriorityChips';
 import ReviewChanges from './ReviewChanges';
 import AppliedChanges from './AppliedChanges';
 import {chipValueLabel, preferencePathLabel, preferenceValueLabel} from './format';
@@ -76,12 +77,68 @@ describe('format', () => {
     });
 });
 
+describe('preferenceValueLabel with a path', () => {
+    test('uses the chip formatting for money, percent and enum words', () => {
+        expect(preferenceValueLabel(150000, 'compensation.minimum_salary')).toBe('$150,000');
+        expect(preferenceValueLabel(0.5, 'compensation.equity_minimum_percent')).toBe('0.5%');
+        expect(preferenceValueLabel(Infinity, 'compensation.minimum_salary')).toBe('Infinity');
+        expect(preferenceValueLabel('series_b', 'funding_stage')).toBe('Series B');
+        expect(preferenceValueLabel(['remote', 'hybrid'], 'work_location.modes')).toBe('Remote, Hybrid');
+        expect(preferenceValueLabel('', 'culture')).toBe('Not set');
+    });
+});
+
+describe('PriorityChips', () => {
+    const make = (n: number, over: Record<string, unknown> = {}) => Array.from({length: n}, (_, i) => ({
+        path: `p${i}`, label: `Label ${i}`, display: `v${i}`, hard: false, supported: true, ...over,
+    }));
+
+    test('caps a long list at five with a +N more toggle', () => {
+        render(<PriorityChips chips={make(8)} onEdit={jest.fn()}/>);
+        expect(screen.getAllByTestId('priority-chip')).toHaveLength(5);
+        const more = screen.getByRole('button', {name: '+3 more'});
+        expect(more).toHaveAttribute('aria-expanded', 'false');
+        fireEvent.click(more);
+        expect(screen.getAllByTestId('priority-chip')).toHaveLength(8);
+        fireEvent.click(screen.getByRole('button', {name: 'Show less'}));
+        expect(screen.getAllByTestId('priority-chip')).toHaveLength(5);
+    });
+
+    test('short list has no toggle; the legend shows only for requirement or unsupported chips', () => {
+        const {rerender} = render(<PriorityChips chips={make(5)} onEdit={jest.fn()}/>);
+        expect(screen.queryByRole('button', {name: /more|Show less/})).not.toBeInTheDocument();
+        expect(screen.queryByTestId('priority-chip-legend')).not.toBeInTheDocument();
+        rerender(<PriorityChips chips={make(2, {hard: true})} onEdit={jest.fn()}/>);
+        expect(screen.getByTestId('priority-chip-legend')).toBeInTheDocument();
+        rerender(<PriorityChips chips={make(2, {supported: false})} onEdit={jest.fn()}/>);
+        expect(screen.getByTestId('priority-chip-legend')).toBeInTheDocument();
+    });
+});
+
+describe('ChangeList values', () => {
+    test('formats money like the chip and marks an empty old value', () => {
+        render(<ReviewChanges changes={[
+            {path: 'compensation.minimum_salary', old: null, new: 150000},
+            {path: 'culture', old: [], new: ['kind']},
+            {path: 'compensation.currency', old: 'EUR', new: 'USD'},
+        ]} onApply={jest.fn()} onCancel={jest.fn()}/>);
+        expect(screen.getByText('$150,000')).toBeInTheDocument();
+        expect(screen.getAllByText('Not set')[0]).toHaveClass('is-empty');
+        expect(screen.getByText('None')).toHaveClass('is-empty');
+        expect(screen.getByText('EUR')).not.toHaveClass('is-empty');
+    });
+});
+
 describe('chipValueLabel', () => {
     test('groups numbers, adds a currency symbol for money, leaves text alone', () => {
         expect(chipValueLabel('compensation.minimum_salary', '150000')).toBe('$150,000');
         expect(chipValueLabel('compensation.minimum_total_compensation', '200000')).toBe('$200,000');
         expect(chipValueLabel('vesting.max_cliff_months', '12')).toBe('12');
-        expect(chipValueLabel('culture', 'kind, curious')).toBe('kind, curious');
+        expect(chipValueLabel('culture', 'kind, curious')).toBe('Kind, Curious');
+        expect(chipValueLabel('compensation.equity_minimum_percent', '0.5')).toBe('0.5%');
+        expect(chipValueLabel('funding_stage', 'series_b')).toBe('Series B');
+        expect(chipValueLabel('work_location.countries', 'US, CA')).toBe('US, CA');
+        expect(chipValueLabel('roles.titles', 'Staff Engineer')).toBe('Staff Engineer');
     });
 });
 
