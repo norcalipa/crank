@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import traceback
 from datetime import timedelta
 
 from django.conf import settings
@@ -60,7 +61,7 @@ STAGES = (
 STAGE_KEYS = tuple(key for key, _label, _anchor in STAGES)
 
 #: ``AgentRun.counts`` keys shown per stage of a completed run, derived from the
-#: pipeline's own ``COUNT_KEYS`` so a new counter cannot be silently dropped.
+#: pipeline's own ``COUNT_KEYS`` with an "Other" group for keys no prefix claims, so a new counter is never dropped.
 RUN_COUNT_GROUPS = (
     ("Sources", tuple(k for k in COUNT_KEYS if k.startswith("sources_"))),
     ("Listings", tuple(k for k in COUNT_KEYS if k.startswith("listings_"))),
@@ -73,6 +74,10 @@ RUN_COUNT_GROUPS = (
             if k.startswith(("users_", "matches_")) or k in ("stale_discarded", "duplicate_skipped")
         ),
     ),
+)
+_GROUPED_KEYS = {key for _label, keys in RUN_COUNT_GROUPS for key in keys}
+RUN_COUNT_GROUPS += (
+    ("Other", tuple(k for k in COUNT_KEYS if k not in _GROUPED_KEYS and k != "deadline_reached")),
 )
 
 _NAME_LIST_LIMIT = 5
@@ -275,6 +280,14 @@ class _Context:
         return self._memo("match_lag", lambda: publication_match_lag_seconds(self.now))
 
 
+def log_failure(what, exc):
+    """Log the exception type and call-site frames only: no values, no messages."""
+    frames = " > ".join(
+        f"{os.path.basename(f.filename)}:{f.lineno}:{f.name}" for f in traceback.extract_tb(exc.__traceback__)[-6:]
+    )
+    logger.warning("%s failed: %s: %s [%s]", what, type(exc).__name__, sanitize_error(exc), frames)
+
+
 def _plural(count, noun):
     return f"{count} {noun}{'' if count == 1 else 's'}"
 
@@ -461,7 +474,7 @@ def _stage_scheduler(ctx):
                 ATTENTION,
                 f"A pipeline run finished {age} ago but stopped at its deadline"
                 + (f" ({_plural(deferred, 'source')} deferred)." if deferred else "."),
-                "Later sources or users were not processed. Check the run's counts; the next tick resumes the remainder.",
+                "Later sources or users were not processed. Check the run's counts; the remainder is handled by the next run that is consumed.",
                 link,
             )
         return _result("scheduler", MET, f"A pipeline run finished {age} ago.", link=link)
@@ -601,38 +614,48 @@ def _stage_matches(ctx):
         counts = match_recompute.pending_counts(0)
         dirty = counts["preference_dirty"]
         lag = ctx.match_lag
-        max_hours = max(1, int(getattr(settings, "MATCH_RECOMPUTE_MAX_AGE_HOURS", 24)))
+        configured = int(getattr(settings, "MATCH_RECOMPUTE_MAX_AGE_HOURS", 24))
+        # 0 disables the age backstop; the lag limit then falls back to the default.
+        max_hours = configured if configured > 0 else 24
         tier_names = (
             "preference_dirty",
             "generation_dirty_data_stale",
             "generation_dirty_version_mismatch",
             "generation_dirty_interrupted",
-            "generation_dirty_age_stale",
         )
         tiers = ", ".join(
             f"{name.replace('generation_dirty_', '').replace('_', ' ')}: {counts[name]}"
             for name in tier_names
             if counts[name]
         )
+        refresh = counts["generation_dirty_age_stale"]
+        refresh_note = (
+            f" {_plural(refresh, 'user')} due for the periodic refresh (older than {configured}h; the recompute drain handles it)."
+            if refresh
+            else ""
+        )
         if dirty == 0 and lag <= max_hours * 3600 and not tiers:
             return _result(
                 "matches",
                 MET,
-                f"No user has preference changes pending, and no user's committed matches are stale, mismatched or interrupted; publication-to-match lag is within {max_hours}h.",
+                f"No user has preference changes pending, and no user's committed matches are stale, mismatched or interrupted; publication-to-match lag is within {max_hours}h."
+                + refresh_note,
                 link=link,
             )
         if dirty == 0 and lag <= max_hours * 3600:
             return _result(
                 "matches",
                 ATTENTION,
-                f"Some users' committed matches are not current ({tiers}); publication-to-match lag {format_age(lag)}.",
+                f"Some users' committed matches are not current ({tiers}); publication-to-match lag {format_age(lag)}."
+                + refresh_note,
                 "Run the recompute drain so those users are republished; see the rollout order.",
                 link,
             )
         return _result(
             "matches",
             UNMET,
-            f"Committed matches are behind ({tiers or 'none pending'}); publication-to-match lag {format_age(lag)}.",
+            f"Committed matches are behind ({tiers or 'none pending'}); publication-to-match lag {format_age(lag)}."
+            + refresh_note,
             "Enable MATCH_RECOMPUTE_ENABLED and run the recompute drain; see the rollout order.",
             link,
         )
@@ -681,22 +704,25 @@ def readiness(now=None, ctx=None):
         try:
             stage = _STAGE_FUNCS[key](ctx)
         except Exception as exc:
-            logger.warning("operations readiness stage %s failed: %s", key, sanitize_error(exc))
+            log_failure(f"operations readiness stage {key}", exc)
             stage = _result(key, UNKNOWN, "Could not compute — see server logs.")
         stage["position"] = len(stages) + 1
         stages.append(stage)
 
-    # Attention is never "met": the first unmet-or-attention stage in order is
-    # the next step; pending (waiting on upstream) and unknown only follow.
-    next_step = next((s for s in stages if s["status"] in (UNMET, ATTENTION)), None)
-    for wanted in (PENDING, UNKNOWN):
-        if next_step is None:
-            next_step = next((s for s in stages if s["status"] == wanted), None)
+    # The callout names the first UNMET stage: a blocker is never displaced by a
+    # warning. Only when nothing is unmet does the first attention, pending
+    # (waiting on upstream) or unknown stage take over. Attention is never "met".
+    next_step = None
+    for wanted in (UNMET, ATTENTION, PENDING, UNKNOWN):
+        next_step = next((s for s in stages if s["status"] == wanted), None)
+        if next_step is not None:
+            break
     return {
         "stages": stages,
         "next_step": next_step,
         "all_met": all(s["status"] == MET for s in stages),
         "met_count": sum(1 for s in stages if s["status"] == MET),
+        "unmet_count": sum(1 for s in stages if s["status"] == UNMET),
         "attention_count": sum(1 for s in stages if s["status"] == ATTENTION),
     }
 
@@ -704,11 +730,15 @@ def readiness(now=None, ctx=None):
 def publication_match_lag_seconds(now=None):
     """Age of the oldest event newer than the lowest committed data revision.
 
+    Only users with a ``UserPreference`` count: the drain never recomputes the rest.
+
     ``0`` when nobody has a generation or every generation reflects the
     watermark. Events carry no per-user link, so this is a fleet-level bound.
     """
     now = now or timezone.now()
-    states = MatchResultState.objects.filter(current_generation__isnull=False)
+    states = MatchResultState.objects.filter(current_generation__isnull=False).exclude(
+        user__preferences__isnull=True
+    )
     if not states.exists():
         return 0
     min_revision = states.aggregate(m=Min(Coalesce("data_revision", 0)))["m"] or 0

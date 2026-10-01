@@ -21,6 +21,7 @@ from crank.models.monitoring import CapabilitySwitch
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference
 from crank.models.publication import PublicationEvent
+from crank.services import match_recompute
 from crank.services import operations_readiness as ops
 
 APPROVED = JobSourceCatalog.ApprovalState.APPROVED
@@ -284,15 +285,23 @@ class StageTests(TestCase):
         )
 
     def test_ready_stages_imply_every_registered_adapter_constructs(self):
+        from crank.agents.jobs.registry import build_job_adapter
+
         urls = {"usajobs": "https://data.usajobs.gov/api/search", "firecrawl-careers": "https://remoteok.com/jobs"}
-        for key in urls:
+        keys = [
+            key
+            for key in REGISTRY.keys()
+            if REGISTRY.get(key).__module__.startswith("crank.agents.jobs.")
+        ]
+        self.assertTrue(keys)
+        for key in keys:
             with self.subTest(adapter=key):
-                self.assertIsNotNone(REGISTRY.get(key))
+                self.assertIn(key, urls, f"add a readiness fixture URL for adapter {key!r}")
                 source = make_source(f"s-{key}", adapter_key=key, base_url=urls[key])
                 result = ops.readiness()
                 self.assertEqual(stage(result, "adapter")["status"], ops.MET)
                 self.assertEqual(stage(result, "credentials")["status"], ops.MET)
-                REGISTRY.get(key)(source)
+                build_job_adapter(source)
                 source.delete()
 
     def test_adapter_stage_unmet_exactly_when_adapter_refuses_to_start(self):
@@ -591,23 +600,80 @@ class StageTests(TestCase):
         self.assertIn("interrupted: 1", matches["summary"])
 
     @override_settings(MATCH_RESULTS_READ_ENABLED=True)
-    def test_matches_age_stale_user_with_clean_preferences_is_attention(self):
-        user = User.objects.create_user("agestale", password="pw")
-        pref = UserPreference.objects.create(user=user)
-        MatchResultState.objects.create(
+    def test_matches_age_stale_user_is_met_with_periodic_refresh_note(self):
+        self._state("agestale", generated_at=timezone.now() - timedelta(days=30))
+        matches = stage(ops.readiness(), "matches")
+        self.assertEqual(matches["status"], ops.MET)
+        self.assertIn("1 user due for the periodic refresh", matches["summary"])
+        self.assertNotIn("not current", matches["summary"])
+
+    def _state(self, name, *, with_preference=True, data_revision=0, generated_at=None, **extra):
+        user = User.objects.create_user(name, password="pw")
+        pref = UserPreference.objects.create(user=user) if with_preference else None
+        return MatchResultState.objects.create(
             user=user,
             issued_generation=1,
             current_generation=1,
-            preference_revision=pref.revision,
-            preference_version=pref.schema_version,
-            data_revision=0,
-            generated_at=timezone.now() - timedelta(days=30),
+            preference_revision=pref.revision if pref else 0,
+            preference_version=pref.schema_version if pref else 1,
+            data_revision=data_revision,
+            generated_at=generated_at or timezone.now(),
+            **{"ranker_version": match_recompute.DEFAULT_CONFIG.version, **extra},
         )
-        result = ops.readiness()
-        matches = stage(result, "matches")
+
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True)
+    def test_orphaned_state_without_preferences_does_not_pin_the_lag(self):
+        event = PublicationEvent.objects.create(target_type="listing", target_id=1, event_kind="ingested")
+        PublicationEvent.objects.filter(pk=event.pk).update(created_at=timezone.now() - timedelta(days=3))
+        self._state("orphan", with_preference=False, data_revision=event.pk - 1)
+        self.assertEqual(ops.publication_match_lag_seconds(), 0)
+        matches = stage(ops.readiness(), "matches")
+        self.assertEqual(matches["status"], ops.MET)
+
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True)
+    def test_lag_counts_users_with_preferences_and_null_revision_as_oldest(self):
+        first = PublicationEvent.objects.create(target_type="listing", target_id=1, event_kind="ingested")
+        second = PublicationEvent.objects.create(target_type="listing", target_id=2, event_kind="ingested")
+        PublicationEvent.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(hours=10))
+        PublicationEvent.objects.filter(pk=second.pk).update(created_at=timezone.now() - timedelta(hours=1))
+        self._state("current", data_revision=second.pk)
+        self._state("never", data_revision=None)
+        self.assertGreaterEqual(ops.publication_match_lag_seconds(), 10 * 3600 - 5)
+
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True, MATCH_RECOMPUTE_MAX_AGE_HOURS=0)
+    def test_zero_max_age_disables_backstop_and_falls_back_to_default_lag_limit(self):
+        self._state("old", generated_at=timezone.now() - timedelta(days=30))
+        matches = stage(ops.readiness(), "matches")
+        self.assertEqual(matches["status"], ops.MET)
+        self.assertIn("within 24h", matches["summary"])
+        self.assertNotIn("periodic refresh", matches["summary"])
+
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True)
+    def test_age_stale_alongside_version_mismatch_keeps_attention_and_mentions_refresh(self):
+        self._state("mismatch", ranker_version="old-ranker-0")
+        self._state("aged", generated_at=timezone.now() - timedelta(days=2))
+        matches = stage(ops.readiness(), "matches")
         self.assertEqual(matches["status"], ops.ATTENTION)
-        self.assertIn("age stale: 1", matches["summary"])
-        self.assertFalse(result["all_met"])
+        self.assertIn("version mismatch: 1", matches["summary"])
+        self.assertIn("due for the periodic refresh", matches["summary"])
+
+    def test_every_count_key_lands_in_a_run_count_group(self):
+        from crank.services.job_pipeline import COUNT_KEYS
+
+        grouped = {key for _label, keys in ops.RUN_COUNT_GROUPS for key in keys}
+        self.assertEqual(grouped, set(COUNT_KEYS) - {"deadline_reached"})
+        self.assertIn("oldest_source_age_hours", dict(ops.RUN_COUNT_GROUPS)["Other"])
+
+    def test_stage_failure_log_names_exception_type_and_frames_without_values(self):
+        def boom(ctx):
+            raise KeyError("lag_seconds")
+
+        with patch.dict(ops._STAGE_FUNCS, {"adapter": boom}), self.assertLogs(ops.logger, "WARNING") as logs:
+            ops.readiness()
+        line = "\n".join(logs.output)
+        self.assertIn("KeyError", line)
+        self.assertIn("boom", line)
+        self.assertIn("test_operations_readiness.py", line)
 
     def test_adapter_base_class_has_no_startup_blockers(self):
         from crank.agents.jobs.base import JobSourceAdapter
@@ -648,7 +714,10 @@ class StageTests(TestCase):
         unknown_only = run({"inventory": ops.UNKNOWN})
         self.assertEqual(unknown_only["next_step"]["key"], "inventory")
         earlier_attention = run({"inventory": ops.ATTENTION, "matches": ops.UNMET})
-        self.assertEqual(earlier_attention["next_step"]["key"], "inventory")
+        self.assertEqual(earlier_attention["next_step"]["key"], "matches")
+        self.assertEqual(earlier_attention["unmet_count"], 1)
+        attention_then_pending = run({"inventory": ops.PENDING, "employers": ops.ATTENTION})
+        self.assertEqual(attention_then_pending["next_step"]["key"], "employers")
         attention = run({"employers": ops.ATTENTION})
         self.assertEqual(attention["next_step"]["key"], "employers")
         self.assertFalse(attention["all_met"])
@@ -729,6 +798,7 @@ class BacklogAndProgressTests(TestCase):
         now = timezone.now()
         self.assertEqual(ops.publication_match_lag_seconds(now), 0)
         user = User.objects.create_user("lag", password="pw")
+        UserPreference.objects.create(user=user)
         state = MatchResultState.objects.create(
             user=user, issued_generation=1, current_generation=1, data_revision=None
         )

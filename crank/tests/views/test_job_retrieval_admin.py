@@ -1655,6 +1655,7 @@ READINESS_ON = dict(
 
 
 QUERY_BOUND = 35
+POPULATED_QUERY_BOUND = 39  # measured: 32 with the match gates off, 39 with all three on
 
 
 def _fixed_stage(key, status, summary="x", remediation=""):
@@ -1833,7 +1834,9 @@ class JobRetrievalReadinessPanelTests(TestCase):
                     started_at=timezone.now() - timedelta(minutes=i),
                 )
                 AgentRun.objects.create(run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.FAILED)
-            self.assertEqual(self._query_count(), before)
+            after = self._query_count()
+            self.assertEqual(after, before)
+            self.assertLessEqual(after, QUERY_BOUND)
 
     def test_crawl_history_does_not_change_inventory_health_result_or_query_count(self):
         from crank.models.crawl_run import CrawlRun
@@ -1906,6 +1909,98 @@ class JobRetrievalReadinessPanelTests(TestCase):
         with patch.object(_Context, "source_counts", new_callable=PropertyMock, side_effect=RuntimeError("db down")):
             content = self.client.get(self.url).content.decode()
         self.assertIn('id="jro-action-queue-retrieval"', content)
+
+    def test_ownership_section_failure_renders_inline_error_not_500(self):
+        from crank.services.operations_readiness import _Context
+
+        for prop in ("active_run", "latest_run", "pending_count", "oldest_pending"):
+            with self.subTest(prop=prop), patch.object(
+                _Context, prop, new_callable=PropertyMock, side_effect=RuntimeError("db down")
+            ), self.assertLogs("crank.services.operations_readiness", "WARNING") as logs:
+                content = self.client.get(self.url).content.decode()
+                self.assertIn("Could not compute pipeline ownership", content)
+                self.assertIn('id="jro-action-queue-retrieval"', content)
+                self.assertIn("RuntimeError", "\n".join(logs.output))
+
+    def _populate(self):
+        from crank.models.crawl_run import CrawlRun
+        from crank.models.job_match import MatchResultState
+        from crank.models.preference import UserPreference
+        from crank.models.publication import PublicationEvent
+
+        now = timezone.now()
+        usajobs = self._source()
+        self._source(
+            name="Careers",
+            adapter_key="firecrawl-careers",
+            base_url="https://remoteok.com/jobs",
+        )
+        listing = JobListing.all_objects.create(
+            source=usajobs,
+            external_id="p1",
+            canonical_url="https://data.usajobs.gov/job/p1",
+            employer_name="Acme",
+            title="Eng",
+            first_seen_at=now,
+            last_seen_at=now,
+            organization=Organization.objects.create(name="Acme P"),
+        )
+        UnresolvedEmployer.objects.create(
+            listing=listing, employer_name="Other", reason=UnresolvedEmployer.Reason.NO_MATCH
+        )
+        for i in range(3):
+            CrawlRun.objects.create(
+                source_type=CrawlRun.SourceType.JOB,
+                source_key="usajobs",
+                job_source=usajobs,
+                outcome=CrawlRun.Outcome.FAILURE,
+                started_at=now - timedelta(minutes=i),
+            )
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.SUCCEEDED,
+            started_at=now - timedelta(hours=2),
+            finished_at=now - timedelta(hours=1),
+            counts={"sources_total": 2, "deadline_reached": True, "sources_deferred": 1},
+        )
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.RUNNING, started_at=now
+        )
+        AgentRun.objects.create(run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.SKIPPED)
+        event = PublicationEvent.objects.create(target_type="listing", target_id=1, event_kind="ingested")
+        user = User.objects.create_user("populated", password="pw")
+        pref = UserPreference.objects.create(user=user)
+        MatchResultState.objects.create(
+            user=user,
+            issued_generation=2,
+            current_generation=1,
+            preference_revision=pref.revision,
+            preference_version=pref.schema_version,
+            data_revision=event.pk - 1,
+            generated_at=now - timedelta(days=2),
+            ranker_version="old-ranker-0",
+        )
+
+    def _assert_populated_page_is_bounded(self):
+        self._populate()
+        few = self._query_count()
+        for i in range(25):
+            self._source(name=f"extra-{i}")
+        many = self._query_count()
+        self.assertEqual(few, many)
+        self.assertLessEqual(many, POPULATED_QUERY_BOUND)
+        content = self._get()
+        self.assertNotIn("Could not compute", content)
+        self.assertNotIn("jro-error", content.split("</style>", 1)[1])
+
+    def test_populated_page_query_count_gates_off(self):
+        self._assert_populated_page_is_bounded()
+
+    @override_settings(
+        MATCH_RESULTS_READ_ENABLED=True, MATCH_RECOMPUTE_ENABLED=True, PUBLICATION_CONSUMER_ENABLED=True
+    )
+    def test_populated_page_query_count_gates_on(self):
+        self._assert_populated_page_is_bounded()
 
     def _all_stages_met_except(self, key, status, summary="x", remediation="Do the thing."):
         from crank.services import operations_readiness as ops
@@ -2023,7 +2118,7 @@ class JobRetrievalReadinessPanelTests(TestCase):
             counts={"deadline_reached": True},
         )
         completed = _progress_context(ops.snapshot())["completed"]
-        self.assertEqual(completed["deadline_note"], "Stopped at its deadline; the remainder resumes next run.")
+        self.assertEqual(completed["deadline_note"], "Stopped at its deadline; the remainder is handled by the next run that is consumed.")
 
     def test_diagnostic_headings_sit_outside_summary_and_stage_list_has_role(self):
         content = self._get()
@@ -2136,6 +2231,133 @@ class JobRetrievalReadinessPanelTests(TestCase):
 
 
 @override_settings(**READINESS_ON)
+class JobRetrievalCalloutOrderingTests(TestCase):
+    """The callout names the first UNMET stage; attention never displaces a blocker (#481 round 3)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.staff = User.objects.create_user(username="order-staff", password="pw", is_staff=True)
+
+    def setUp(self):
+        self.client.force_login(self.staff)
+        self.url = reverse("admin:crank_jobretrievalops_changelist")
+
+    _source = JobRetrievalReadinessPanelTests._source
+    _get = JobRetrievalReadinessPanelTests._get
+
+    def _finished_run(self, hours_ago, counts=None, status=AgentRun.Status.SUCCEEDED):
+        now = timezone.now()
+        return AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=status,
+            started_at=now - timedelta(hours=hours_ago, minutes=5),
+            finished_at=now - timedelta(hours=hours_ago),
+            counts=counts or {},
+        )
+
+    def _unresolved_employer(self, source):
+        listing = JobListing.all_objects.create(
+            source=source,
+            external_id="e1",
+            canonical_url="https://data.usajobs.gov/job/1",
+            employer_name="Acme",
+            title="Eng",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+            organization=Organization.objects.create(name="Acme Org"),
+        )
+        UnresolvedEmployer.objects.create(
+            listing=listing, employer_name="Other", reason=UnresolvedEmployer.Reason.NO_MATCH
+        )
+
+    def _callout(self, content):
+        return content.split('class="jro-card jro-callout', 1)[1].split("</ul>", 1)[0]
+
+    def test_unresolved_employer_does_not_hide_users_without_matches(self):
+        from crank.models.preference import UserPreference
+
+        source = self._source(last_crawl_at=timezone.now())
+        self._finished_run(1)
+        self._unresolved_employer(source)
+        UserPreference.objects.create(user=self.staff)
+        content = self._get()
+        self.assertIn('data-stage="employers" data-status="attention"', content)
+        self.assertIn('data-stage="matches" data-status="unmet"', content)
+        callout = self._callout(content)
+        self.assertIn('data-next-stage="matches" data-status="unmet"', callout)
+        self.assertIn("Run the job pipeline so matches are persisted", callout)
+        self.assertIn("7 of 9 steps met · 1 unmet · 1 needs attention.", content)
+        matches_card = content.split('data-stage="matches"', 1)[1].split("</li>", 1)[0]
+        self.assertIn("What to do:", matches_card)
+
+    def test_deadline_run_does_not_hide_expired_queue_and_copy_names_no_next_tick(self):
+        self._source(last_crawl_at=timezone.now())
+        self._finished_run(3, {"deadline_reached": True, "sources_deferred": 4})
+        queued = AgentRun.objects.create(run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.PENDING)
+        AgentRun.objects.filter(pk=queued.pk).update(created=timezone.now() - timedelta(hours=2))
+        content = self._get()
+        self.assertIn('data-stage="scheduler" data-status="attention"', content)
+        self.assertIn('data-stage="consumption" data-status="unmet"', content)
+        callout = self._callout(content)
+        self.assertIn('data-next-stage="consumption" data-status="unmet"', callout)
+        self.assertNotIn("next tick resumes", content)
+        self.assertNotIn("resumes next run", content)
+
+    def test_attention_is_the_callout_only_when_nothing_is_unmet(self):
+        self._source(last_crawl_at=timezone.now())
+        self._finished_run(1)
+        self._unresolved_employer(JobSourceCatalog.objects.get())
+        callout = self._callout(self._get())
+        self.assertIn('data-next-stage="employers" data-status="attention"', callout)
+        self.assertIn("What to do:", callout)
+
+    def test_attention_step_recommends_no_queue_or_retry(self):
+        source = self._source(last_crawl_at=timezone.now())
+        JobListing.all_objects.create(
+            source=source,
+            external_id="e2",
+            canonical_url="https://data.usajobs.gov/job/2",
+            employer_name="Acme",
+            title="Eng",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+            organization=Organization.objects.create(name="Acme Org 2"),
+        )
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.FAILED,
+            finished_at=timezone.now() - timedelta(days=5),
+        )
+        AgentRun.objects.filter(status=AgentRun.Status.FAILED).update(created=timezone.now() - timedelta(days=5))
+        self._finished_run(3, {"deadline_reached": True, "sources_deferred": 2})
+        content = self._get()
+        callout = self._callout(content)
+        self.assertIn('data-next-stage="scheduler" data-status="attention"', callout)
+        self.assertNotIn("Go to Retry failed run", callout)
+        self.assertNotIn("Go to Queue retrieval", callout)
+        self.assertNotIn('<span class="jro-tag">Recommended</span>', content)
+
+    def test_inventory_attention_does_not_point_at_queueing(self):
+        from crank.admin_dashboard import _action_state
+
+        step = {"key": "inventory", "status": "attention"}
+        state = _action_state({"next_step": step}, {"state": "idle"}, source_total=2)
+        self.assertIsNone(state["primary"])
+
+    def test_retry_only_recommended_when_latest_finished_run_failed(self):
+        from crank.admin_dashboard import _action_state
+
+        step = {"key": "scheduler", "status": "unmet"}
+        failed = AgentRun(status=AgentRun.Status.FAILED)
+        ok = AgentRun(status=AgentRun.Status.SUCCEEDED)
+        make = lambda latest: _action_state({"next_step": step}, {"state": "idle"}, 2, latest)
+        AgentRun.objects.create(run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.FAILED)
+        self.assertEqual(make(failed)["primary"], "retry")
+        self.assertEqual(make(ok)["primary"], "queue_retrieval")
+        self.assertEqual(make(None)["primary"], "queue_retrieval")
+
+
+@override_settings(**READINESS_ON)
 class JobRetrievalActionStateTests(TestCase):
     """Primary/disabled Actions state, callout links and stage presentation (#481)."""
 
@@ -2236,10 +2458,10 @@ class JobRetrievalActionStateTests(TestCase):
         state = _action_state(None, {"state": "idle"}, source_total=0)
         self.assertIsNone(state["primary"])
 
-    def test_only_next_stage_todo_and_no_emoji_icons(self):
+    def test_stage_todo_never_hidden_and_no_emoji_icons(self):
         content = self._get()
         self.assertIn('class="jro-todo"', content)
-        self.assertIn("#jro-page .jro-stage:not(.jro-stage--next) .jro-todo { display: none; }", content)
+        self.assertNotIn(".jro-todo { display: none", content)
         page = content.split('<div id="jro-page">', 1)[1]
         for glyph in ("✓", "✖", "⏳", "⚠", "▶"):
             self.assertNotIn(glyph, page)

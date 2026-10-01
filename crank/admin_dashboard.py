@@ -514,7 +514,7 @@ def _readiness_context(ctx, active_run=None):
     try:
         readiness = operations_readiness.readiness(ctx=ctx)
     except Exception as exc:
-        logger.warning("operations readiness failed: %s", agent_runs.sanitize_error(exc))
+        operations_readiness.log_failure("operations readiness", exc)
         return None
     for stage in readiness["stages"]:
         _present_stage(stage)
@@ -536,12 +536,16 @@ _FALLBACK_ACTIONS = {
 }
 
 
-def _action_state(readiness, pipeline, source_total):
+def _action_state(readiness, pipeline, source_total, latest_run=None):
     """Which Actions button is primary, and which are disabled (with reasons).
+
+    Queue or Retry is only recommended for an UNMET next step (an attention
+    step's own guidance applies); Retry only when the latest finished run failed.
 
     Presentation only: the POST endpoints keep their own overlap and
     eligibility guards.
     """
+    pipeline = pipeline or {"state": "idle"}
     active = pipeline["state"] in ("queued", "claimed", "conflict")
     active_reason = ""
     if active:
@@ -552,13 +556,15 @@ def _action_state(readiness, pipeline, source_total):
     failed_exists = AgentRun.objects.filter(
         run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.FAILED
     ).exists()
-    next_key = readiness["next_step"]["key"] if readiness and readiness["next_step"] else None
+    step = readiness["next_step"] if readiness else None
+    next_key = step["key"] if step else None
+    latest_failed = latest_run is not None and latest_run.status == AgentRun.Status.FAILED
     primary = None
     if not active:
         if next_key == "source_policy" and source_total == 0:
             primary = "seed_preview"
-        elif next_key in QUEUE_STEPS:
-            primary = "retry" if failed_exists else "queue_retrieval"
+        elif next_key in QUEUE_STEPS and step["status"] == "unmet":
+            primary = "retry" if failed_exists and latest_failed else "queue_retrieval"
     return {
         "primary": primary,
         "queue_disabled": active,
@@ -592,9 +598,9 @@ def _progress_context(ctx):
             run["tone"] = "warning"
             run["icon"] = "alert"
             run["deadline_note"] = (
-                f"Stopped at its deadline ({run['sources_deferred']} sources deferred); the remainder resumes next run."
+                f"Stopped at its deadline ({run['sources_deferred']} sources deferred); the remainder is handled by the next run that is consumed."
                 if run.get("sources_deferred")
-                else "Stopped at its deadline; the remainder resumes next run."
+                else "Stopped at its deadline; the remainder is handled by the next run that is consumed."
             )
     return progress
 
@@ -618,7 +624,7 @@ def _safe_section(name, factory):
     try:
         return factory()
     except Exception as exc:
-        logger.warning("operations %s failed: %s", name, agent_runs.sanitize_error(exc))
+        operations_readiness.log_failure(f"operations {name}", exc)
         return None
 
 
@@ -770,9 +776,9 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 
     def dashboard_view(self, request):
         snapshot = operations_readiness.snapshot()
-        pipeline = _pipeline_ownership_state(snapshot)
+        pipeline = _safe_section("ownership", lambda: _pipeline_ownership_state(snapshot))
         readiness = _readiness_context(
-            snapshot, pipeline["state"] in ("queued", "claimed", "conflict")
+            snapshot, bool(pipeline) and pipeline["state"] in ("queued", "claimed", "conflict")
         )
         context = {
             **self.admin_site.each_context(request),
@@ -783,7 +789,10 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
             "readiness": readiness,
             "error_time": timezone.now().strftime("%H:%M UTC"),
             "actions": _safe_section(
-                "actions", lambda: _action_state(readiness, pipeline, snapshot.source_counts["total"])
+                "actions",
+                lambda: _action_state(
+                    readiness, pipeline, snapshot.source_counts["total"], snapshot.latest_run
+                )
             )
             or _FALLBACK_ACTIONS,
             "sources": _safe_section("sources", lambda: _sources_context(snapshot)),

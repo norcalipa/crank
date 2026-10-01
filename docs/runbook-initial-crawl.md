@@ -160,8 +160,9 @@ infrastructure outages surface even when the event pipeline is down.
 ## Verify with the readiness panel
 
 Open **Job Retrieval Operations** in Django admin (staff only). The
-"Next step" callout names the first prerequisite that is not met, and the
-"End-to-end readiness" list shows every stage with a text status. The panel
+"Next step" callout names the first unmet prerequisite (a blocker is never
+displaced by a warning); only when nothing is unmet does it name the first stage
+that needs attention. The "End-to-end readiness" list shows every stage with a text status. The panel
 is read-only: it never calls a provider and only reports whether a credential
 is present, never its value.
 
