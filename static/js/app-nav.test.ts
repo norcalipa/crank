@@ -19,6 +19,7 @@ function flushMicrotasks(times = 4): Promise<void> {
 
 describe('app-nav (issue #465 private-state purge)', () => {
     const storageListeners: EventListener[] = [];
+    const pageshowListeners: EventListener[] = [];
     const realAddEventListener = window.addEventListener.bind(window);
 
     beforeEach(() => {
@@ -28,6 +29,9 @@ describe('app-nav (issue #465 private-state purge)', () => {
             (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
                 if (type === 'storage') {
                     storageListeners.push(listener as EventListener);
+                }
+                if (type === 'pageshow') {
+                    pageshowListeners.push(listener as EventListener);
                 }
                 realAddEventListener(type, listener, options);
             },
@@ -40,6 +44,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
 
     afterEach(() => {
         storageListeners.splice(0).forEach((listener) => window.removeEventListener('storage', listener));
+        pageshowListeners.splice(0).forEach((listener) => window.removeEventListener('pageshow', listener));
         jest.resetModules();
         jest.restoreAllMocks();
     });
@@ -244,7 +249,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
         document.body.innerHTML = '<form data-nav-logout-form data-nav-js-logout action="/accounts/logout/"></form>';
         loadAppNav();
         await flushMicrotasks();
-        expect(window.sessionStorage.getItem('crank:nav-account-seen')).toBe('u:alice');
+        expect(window.sessionStorage.getItem('crank:nav-account-seen')).toMatch(/^u:[0-9a-f]{16}$/);
         document.querySelector('form')!.dispatchEvent(new Event('submit', {cancelable: true, bubbles: true}));
         await flushMicrotasks();
         expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
@@ -258,6 +263,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
         const nonce = window.localStorage.getItem('crank:account-epoch');
         expect(nonce).toBeTruthy();
         expect(nonce).not.toContain('alice');
+        expect(nonce).not.toMatch(/^\d+:/);
         expect(window.sessionStorage.getItem('crank:nav-account-seen')).toBe('anon');
     });
 
@@ -305,7 +311,7 @@ describe('app-nav (issue #465 private-state purge)', () => {
         loadAppNav();
         await flushMicrotasks();
         expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
-        expect(window.sessionStorage.getItem('crank:nav-account-seen')).toBe('u:alice');
+        expect(window.sessionStorage.getItem('crank:nav-account-seen')).toMatch(/^u:[0-9a-f]{16}$/);
     });
 
     test('a broken sessionStorage does not break hydration or announce', async () => {
@@ -374,8 +380,109 @@ describe('app-nav (issue #465 private-state purge)', () => {
         // The receiving tab never re-announces, even though its hydrated
         // account differs from the one it last saw.
         expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
-        expect(window.sessionStorage.getItem('crank:nav-account-seen')).toBe('u:bob');
+        expect(window.sessionStorage.getItem('crank:nav-account-seen')).toMatch(/^u:[0-9a-f]{16}$/);
         document.removeEventListener('crank:private-state-purged', purged);
+    });
+
+    test('the seen account is a digest, never the username, and a legacy raw value migrates without a purge', async () => {
+        whoamiAs(() => 'alice');
+        loadAppNav();
+        await flushMicrotasks();
+        const digest = window.sessionStorage.getItem('crank:nav-account-seen');
+        expect(digest).toMatch(/^u:[0-9a-f]{16}$/);
+        expect(digest).not.toContain('alice');
+
+        window.sessionStorage.setItem('crank:nav-account-seen', 'u:alice');
+        jest.resetModules();
+        loadAppNav();
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+        expect(window.sessionStorage.getItem('crank:nav-account-seen')).toBe(digest);
+
+        // The migrated value is stable: another load announces nothing.
+        jest.resetModules();
+        loadAppNav();
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+
+        // A legacy raw value for a different account is a real change.
+        window.sessionStorage.setItem('crank:nav-account-seen', 'u:carol');
+        jest.resetModules();
+        loadAppNav();
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeTruthy();
+    });
+
+    test('the account epoch falls back to a random nonce without crypto.randomUUID', async () => {
+        let user: string | null = 'alice';
+        whoamiAs(() => user);
+        loadAppNav();
+        await flushMicrotasks();
+        user = 'bob';
+        const original = window.crypto.randomUUID;
+        Object.defineProperty(window.crypto, 'randomUUID', {value: undefined, configurable: true});
+        try {
+            jest.resetModules();
+            loadAppNav();
+            await flushMicrotasks();
+        } finally {
+            Object.defineProperty(window.crypto, 'randomUUID', {value: original, configurable: true});
+        }
+        expect(window.localStorage.getItem('crank:account-epoch')).toMatch(/^[0-9a-z]{4,}$/);
+    });
+
+    function pageshow(persisted: boolean): void {
+        const event = new Event('pageshow') as Event & {persisted: boolean};
+        Object.defineProperty(event, 'persisted', {value: persisted});
+        window.dispatchEvent(event);
+    }
+
+    test('a bfcache restore (pageshow.persisted) of a stale account purges tab state and re-hydrates', async () => {
+        let user: string | null = 'alice';
+        whoamiAs(() => user);
+        loadAppNav();
+        await flushMicrotasks();
+        const whoamiCalls = () => (global.fetch as jest.Mock).mock.calls.filter(([u]) => String(u).includes('whoami')).length;
+        const before = whoamiCalls();
+        const purged = jest.fn();
+        const hydrated = jest.fn();
+        document.addEventListener('crank:private-state-purged', purged);
+        document.addEventListener('crank:auth-hydrated', ((e: CustomEvent) => hydrated(e.detail)) as EventListener);
+        window.sessionStorage.setItem('crank:workspace:v1', '{"v":1}');
+
+        // A non-persisted pageshow (ordinary load) does nothing.
+        pageshow(false);
+        await flushMicrotasks();
+        expect(whoamiCalls()).toBe(before);
+
+        // Same account: re-check only, no purge.
+        pageshow(true);
+        await flushMicrotasks();
+        expect(whoamiCalls()).toBe(before + 1);
+        expect(purged).not.toHaveBeenCalled();
+
+        // Another document of this tab observed a different account.
+        window.sessionStorage.setItem('crank:nav-account-seen', 'anon');
+        user = 'bob';
+        pageshow(true);
+        await flushMicrotasks();
+        expect(purged).toHaveBeenCalledTimes(1);
+        expect(window.sessionStorage.getItem('crank:workspace:v1')).toBeNull();
+        expect(whoamiCalls()).toBe(before + 2);
+        expect(hydrated).toHaveBeenLastCalledWith({authenticated: true, username: 'bob', unobserved: false});
+        // The receiving document is quiet: it never re-announces.
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+
+        document.removeEventListener('crank:private-state-purged', purged);
+    });
+
+    test('a pageshow restore with unreadable sessionStorage still re-checks without throwing', async () => {
+        whoamiAs(() => null);
+        loadAppNav();
+        await flushMicrotasks();
+        jest.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('denied'); });
+        expect(() => pageshow(true)).not.toThrow();
+        await flushMicrotasks();
     });
 
     test('storage events for unrelated keys are ignored', async () => {

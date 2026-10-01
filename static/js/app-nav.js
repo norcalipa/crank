@@ -162,18 +162,44 @@
     // and would otherwise still be told the old account is signed in.
     // localStorage writes raise a `storage` event in the *other* tabs; the
     // value is an opaque nonce, never account data. Storage keys owned here:
-    //   crank:account-epoch    localStorage, shared; a nonce that is only
-    //                          ever overwritten, never read for its value and
-    //                          never removed by any purge.
-    //   crank:nav-account-seen sessionStorage, per tab; "u:<username>" or
-    //                          "anon". Deliberately not cleared by either
-    //                          purge: it is what detects the next change.
+    //   crank:account-epoch    localStorage, shared; a random nonce (no
+    //                          timestamp) that is only ever overwritten,
+    //                          never read for its value and never removed
+    //                          by any purge.
+    //   crank:nav-account-seen sessionStorage, per tab; "u:<digest>" or
+    //                          "anon", where <digest> is a short one-way
+    //                          hash of the username (equality checks only).
+    //                          Deliberately not cleared by either purge: it
+    //                          is what detects the next change. A legacy
+    //                          raw "u:<username>" value is read as the same
+    //                          account once and rewritten as a digest.
+    function randomNonce() {
+        var cryptoApi = window.crypto;
+        if (cryptoApi && typeof cryptoApi.randomUUID === "function") {
+            return cryptoApi.randomUUID();
+        }
+        return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+    }
+
+    // Synchronous 64-bit cyrb53-style digest: stable across loads and
+    // available in non-secure contexts, where crypto.subtle is not.
+    function accountDigest(text) {
+        var h1 = 0xdeadbeef;
+        var h2 = 0x41c6ce57;
+        for (var i = 0; i < text.length; i++) {
+            var ch = text.charCodeAt(i);
+            h1 = Math.imul(h1 ^ ch, 2654435761);
+            h2 = Math.imul(h2 ^ ch, 1597334677);
+        }
+        h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+        h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+        return ("00000000" + (h2 >>> 0).toString(16)).slice(-8)
+            + ("00000000" + (h1 >>> 0).toString(16)).slice(-8);
+    }
+
     function announceAccountChange() {
         try {
-            window.localStorage.setItem(
-                "crank:account-epoch",
-                Date.now() + ":" + Math.random().toString(36).slice(2),
-            );
+            window.localStorage.setItem("crank:account-epoch", randomNonce());
         } catch (e) {
             // Storage unavailable; other tabs cannot be signalled.
         }
@@ -184,14 +210,21 @@
     var ACCOUNT_SEEN_KEY = "crank:nav-account-seen";
     var quietNextHydration = false;
 
+    var lastObservedAccount = null;
+
     function noteHydratedAccount(authenticated, username) {
-        var current = authenticated ? "u:" + username : "anon";
+        var current = authenticated ? "u:" + accountDigest(username) : "anon";
         var previous = null;
         try {
             previous = window.sessionStorage.getItem(ACCOUNT_SEEN_KEY);
             window.sessionStorage.setItem(ACCOUNT_SEEN_KEY, current);
         } catch (e) {
             // Storage unavailable; the account change cannot be detected.
+        }
+        lastObservedAccount = current;
+        if (authenticated && previous === "u:" + username) {
+            // Pre-digest value for the same account: not a change.
+            previous = current;
         }
         var quiet = quietNextHydration;
         quietNextHydration = false;
@@ -224,6 +257,28 @@
         fetchWhoami();
     }
     window.addEventListener("storage", handleAccountEpoch);
+
+    // A page restored from the back/forward cache never re-runs its scripts
+    // and could not receive `storage` events while cached, so compare the
+    // account this document last observed with the tab's current one and
+    // re-check whoami. Purging here is tab-local only (same as a received
+    // epoch); it never re-announces.
+    window.addEventListener("pageshow", function (event) {
+        if (!event.persisted) {
+            return;
+        }
+        var seen = null;
+        try {
+            seen = window.sessionStorage.getItem(ACCOUNT_SEEN_KEY);
+        } catch (e) {
+            // Storage unavailable; the change cannot be compared.
+        }
+        if (seen !== lastObservedAccount) {
+            handleAccountEpoch({ key: "crank:account-epoch" });
+        } else {
+            fetchWhoami();
+        }
+    });
 
     function handleLogoutSubmit(event) {
         var form = event.currentTarget;

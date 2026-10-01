@@ -3,10 +3,11 @@
 // Navigation-state sharing (issue #479): the conversation, page context,
 // drafts and result position survive full Django page transitions, never
 // cross accounts, and never appear in URLs or history.state.
-import {expect, Page, test} from '@playwright/test';
-import {E2E_PASSWORD, login, requireDjangoTier} from './support';
+import {chromium, expect, Page, test} from '@playwright/test';
+import {DJANGO_BASE_URL, E2E_PASSWORD, login, requireDjangoTier} from './support';
 
 const COMPANY = 'E2E Alpha Corp';
+const ACCOUNT_DIGEST = /^u:[0-9a-f]{16}$/;
 const STRIP = '[data-testid="assistant-context-strip"]';
 
 async function askAboutCompany(page: Page): Promise<void> {
@@ -449,7 +450,9 @@ test.describe('navigation state (issue #479)', () => {
         await page.goto('/help/');
         await page.waitForTimeout(500);
         const record = JSON.parse(await page.evaluate(() => window.sessionStorage.getItem('crank:workspace:v1') ?? 'null'));
-        expect(record.account).toEqual({status: 'authenticated', key: 'e2e_user'});
+        expect(record.account.status).toBe('authenticated');
+        expect(record.account.key).toMatch(/^d:[0-9a-f]{16}$/);
+        expect(JSON.stringify(record)).not.toContain('e2e_user');
         expect(record.context.organizationName).toBe(COMPANY);
         await page.unroute('**/api/account/whoami/');
         await page.reload();
@@ -488,7 +491,7 @@ test.describe('navigation state (issue #479)', () => {
         await page.waitForURL((url) => url.pathname === '/chat/');
 
         // The other tab has been told and re-hydrated onto the signed-in account…
-        await expect.poll(() => anonymous.evaluate(() => window.sessionStorage.getItem('crank:nav-account-seen'))).toBe('u:e2e_user');
+        await expect.poll(() => anonymous.evaluate(() => window.sessionStorage.getItem('crank:nav-account-seen'))).toMatch(ACCOUNT_DIGEST);
         // …and the draft still arrives in the composer that signed in.
         await expect(page.locator('textarea[aria-label="Message"]')).toHaveValue(draft);
     });
@@ -504,7 +507,7 @@ test.describe('navigation state (issue #479)', () => {
 
         const other = await context.newPage();
         await other.goto('/');
-        await expect.poll(() => other.evaluate(() => window.sessionStorage.getItem('crank:nav-account-seen'))).toBe('u:e2e_user');
+        await expect.poll(() => other.evaluate(() => window.sessionStorage.getItem('crank:nav-account-seen'))).toMatch(ACCOUNT_DIGEST);
         await context.clearCookies({name: 'sessionid'});
         await other.reload();
         await expect.poll(() => other.evaluate(() => window.sessionStorage.getItem('crank:nav-account-seen'))).toBe('anon');
@@ -515,5 +518,70 @@ test.describe('navigation state (issue #479)', () => {
         await login(other);
         await page.goto('/chat/');
         await expect(page.locator('textarea[aria-label="Message"]')).toHaveValue('draft that must survive expiry');
+    });
+
+    test('a failed whoami that lands after the chat mounts keeps the signed-in draft slot and hides the signed-out introduction', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/chat/');
+        await sendMessage(page, 'seed a conversation for the draft key');
+
+        let failedWhoami = false;
+        await page.route('**/api/account/whoami/', async (route) => {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            failedWhoami = true;
+            await route.fulfill({status: 503, body: 'down'});
+        });
+        await page.reload();
+        const composer = page.locator('textarea[aria-label="Message"]');
+        await expect(composer).toBeEnabled();
+        await expect.poll(() => failedWhoami, {timeout: 10_000}).toBe(true);
+        // Let the page process the failed hydration before typing.
+        await page.waitForTimeout(500);
+        await expect(page.getByTestId('signed-out-introduction')).toHaveCount(0);
+        await composer.fill('SIGNED-IN PRIVATE TEXT');
+        await expect.poll(() => page.evaluate(() => Object.keys(window.localStorage)
+            .filter((k) => /^crank:jobsearch:draft:\d+$/.test(k))
+            .map((k) => window.localStorage.getItem(k)))).toContain('SIGNED-IN PRIVATE TEXT');
+        expect(await page.evaluate(() => window.localStorage.getItem('crank:jobsearch:draft:pending'))).toBeNull();
+        await expect(page.getByTestId('signed-out-introduction')).toHaveCount(0);
+    });
+
+    test('a page restored from the back/forward cache is purged after another account signs in (real bfcache)', async () => {
+        const browser = await chromium.launch({
+            channel: 'chromium',
+            ignoreDefaultArgs: ['--disable-back-forward-cache'],
+            args: ['--host-resolver-rules=MAP local.crank.fyi 127.0.0.1'],
+        });
+        try {
+            const context = await browser.newContext({baseURL: DJANGO_BASE_URL, viewport: {width: 1280, height: 900}});
+            await context.addInitScript(() => {
+                const w = window as unknown as {__pageshows: boolean[]};
+                w.__pageshows = [];
+                window.addEventListener('pageshow', (e) => w.__pageshows.push(e.persisted));
+            });
+            const page = await context.newPage();
+            await login(page);
+            await askAboutCompany(page);
+            await page.goto('/help/');
+            await expect(page).toHaveURL(/\/help\/$/);
+
+            const other = await context.newPage();
+            await other.goto('/chat/');
+            await logout(other);
+            await login(other, 'e2e_user_b', E2E_PASSWORD);
+
+            await page.goBack({waitUntil: 'commit'});
+            await expect.poll(() => page.evaluate(() => (window as unknown as {__pageshows?: boolean[]}).__pageshows ?? []),
+                {message: 'the page must come from the back/forward cache'}).toContain(true);
+            await expect(page.locator('#nav-account')).toContainText('e2e_user_b');
+            await expect(page.locator(STRIP)).toHaveCount(0);
+            const record = await page.evaluate(() => window.sessionStorage.getItem('crank:workspace:v1') ?? '');
+            expect(record).not.toContain(COMPANY);
+            expect(record).not.toContain('e2e_user');
+            await context.close();
+        } finally {
+            await browser.close();
+        }
     });
 });

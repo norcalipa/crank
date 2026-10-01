@@ -1509,8 +1509,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         // synchronously by reconcileAccountKey() above — this covers the
         // rest, using the same comparison so the two cannot disagree.
         const handleHydrated = (e: Event) => {
-            const detail = (e as CustomEvent).detail as {authenticated?: boolean; username?: string} | undefined;
-            if (!detail) return;
+            const detail = (e as CustomEvent).detail as {authenticated?: boolean; username?: string; unobserved?: boolean} | undefined;
+            // A failed whoami says nothing about the account: keep the
+            // current auth state so the signed-in draft never moves to the
+            // shared anonymous `pending` slot.
+            if (!detail || detail.unobserved) return;
             setEffectiveAuthenticated(!!detail.authenticated);
             if (!detail.authenticated || !detail.username) return;
             if (reconcileAccountKey(detail.username)) {

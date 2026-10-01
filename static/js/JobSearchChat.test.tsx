@@ -3171,6 +3171,23 @@ describe('signed-out visitor and account-switch purge (issue #465)', () => {
         expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('alice draft');
     });
 
+    test('an unobserved (failed whoami) crank:auth-hydrated keeps the signed-in state and the per-conversation draft', async () => {
+        window.localStorage.setItem('crank:last-account', 'alice');
+        await renderChat([userMessage('alice transcript')]);
+
+        act(() => {
+            document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {
+                detail: {authenticated: false, username: null, unobserved: true},
+            }));
+        });
+
+        expect(screen.queryByTestId('signed-out-introduction')).not.toBeInTheDocument();
+        expect(screen.getByText('alice transcript')).toBeInTheDocument();
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'private typing'}});
+        await waitFor(() => expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('private typing'));
+        expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBeNull();
+    });
+
     test('crank:private-state-purged aborts an in-flight send and clears the view', async () => {
         const abortSpy = jest.spyOn(AbortController.prototype, 'abort');
         await renderChat([]);

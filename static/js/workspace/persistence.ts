@@ -30,6 +30,24 @@ interface WorkspaceRecord {
     savedAt: number;
 }
 
+// One-way digest of the account key for the persisted record: it is only
+// ever compared for equality, so the raw username need not sit in storage.
+function accountDigest(text: string): string {
+    if (!text) {
+        return '';
+    }
+    let h1 = 0xdeadbeef;
+    let h2 = 0x41c6ce57;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text.charCodeAt(i);
+        h1 = Math.imul(h1 ^ ch, 2654435761);
+        h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return `d:${(h2 >>> 0).toString(16).padStart(8, '0')}${(h1 >>> 0).toString(16).padStart(8, '0')}`;
+}
+
 function readRecord(): WorkspaceRecord | null {
     try {
         const raw = window.sessionStorage.getItem(WORKSPACE_SESSION_KEY);
@@ -81,7 +99,7 @@ function writeRecord(): void {
     const {account, visibility, context} = getWorkspaceSnapshot();
     const record: WorkspaceRecord = {
         v: 1,
-        account: {status: account.status, key: account.key},
+        account: {status: account.status, key: accountDigest(account.key)},
         visibility,
         context: entityContext(context),
         savedAt: Date.now(),
@@ -123,7 +141,11 @@ export function installWorkspacePersistence(): () => void {
             writeRecord();
             return;
         }
-        if (record.account.status !== account.status || record.account.key !== account.key) {
+        // A pre-digest record holds the raw key; accept it once as the same
+        // account so the upgrade does not drop the restored state.
+        const keyMatches = record.account.key === accountDigest(account.key)
+            || record.account.key === account.key;
+        if (record.account.status !== account.status || !keyMatches) {
             deleteRecord();
             writeRecord();
             return;
