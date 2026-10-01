@@ -506,6 +506,10 @@ describe('app-nav (issue #465 private-state purge)', () => {
         await flushMicrotasks();
         const tracker = trackPurge();
         window.sessionStorage.setItem('crank:workspace:v1', '{"v":1}');
+        const label = document.createElement('span');
+        label.setAttribute('data-nav-user-label', '');
+        label.textContent = 'alice';
+        document.body.appendChild(label);
         // Another tab changed the account while this document sat in the
         // bfcache, and the whoami re-check fails (offline).
         window.localStorage.setItem('crank:account-epoch', 'changed-elsewhere');
@@ -516,8 +520,10 @@ describe('app-nav (issue #465 private-state purge)', () => {
         // Synchronous: purged before any network round trip settles.
         expect(tracker.purged).toHaveBeenCalledTimes(1);
         expect(window.sessionStorage.getItem('crank:workspace:v1')).toBeNull();
+        expect(label.textContent).toBe('Account');
         await flushMicrotasks();
         expect(window.localStorage.getItem('crank:account-epoch')).toBe('changed-elsewhere');
+        label.remove();
 
         // The epoch is now known: a second restore is not another change.
         pageshow(true);

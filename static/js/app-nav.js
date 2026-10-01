@@ -272,6 +272,11 @@
         } catch (e) {
             // Storage unavailable; nothing tab-local to clear.
         }
+        // The previous account's name must not outlive the purge if the
+        // re-check below cannot confirm the new one (e.g. offline).
+        document.querySelectorAll("[data-nav-user-label]").forEach(function (label) {
+            label.textContent = "Account";
+        });
         document.dispatchEvent(new CustomEvent("crank:private-state-purged"));
         quietNextHydration = true;
         fetchWhoami();

@@ -608,7 +608,7 @@ test.describe('navigation state (issue #479)', () => {
                 await expect(page.getByText(secret)).toHaveCount(0);
                 await expect(page.locator(STRIP)).toHaveCount(0);
                 if (variant.offline) {
-                    await expect(page.locator('#nav-account')).toBeHidden();
+                    await expect(page.locator('#nav-account')).not.toContainText('e2e_user');
                 } else {
                     await expect(page.locator('#nav-account')).toContainText('e2e_user_b');
                 }
