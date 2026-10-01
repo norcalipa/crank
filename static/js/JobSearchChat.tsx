@@ -10,6 +10,7 @@ import {
     setWorkspaceConversation,
     subscribeWorkspace,
 } from './workspace/store';
+import {accountDigest} from './workspace/persistence';
 
 export interface JobResult {
     id: number;
@@ -202,7 +203,8 @@ function clearPendingDraft(): void {
 // Name of the account that last wrote private artefacts into this browser's
 // storage. Written by both the synchronous server-rendered reconciliation
 // below and the asynchronous whoami hydration, which agree on the value
-// (Django's username) so either can detect a switch the other missed.
+// (a digest of Django's username) so either can detect a switch the other
+// missed. A legacy raw username is read as the same account and rewritten.
 export const LAST_ACCOUNT_KEY = 'crank:last-account';
 
 /**
@@ -220,6 +222,7 @@ export const LAST_ACCOUNT_KEY = 'crank:last-account';
  */
 export function reconcileAccountKey(accountKey: string): boolean {
     if (!accountKey) return false;
+    const digest = accountDigest(accountKey);
     let lastAccount: string | null = null;
     try {
         lastAccount = window.localStorage.getItem(LAST_ACCOUNT_KEY);
@@ -228,12 +231,14 @@ export function reconcileAccountKey(accountKey: string): boolean {
         // so there is nothing to leak and nothing to record.
         return false;
     }
-    const switched = !!lastAccount && lastAccount !== accountKey;
+    // A pre-digest raw username for the same account is not a switch; it is
+    // rewritten as a digest below.
+    const switched = !!lastAccount && lastAccount !== digest && lastAccount !== accountKey;
     if (switched) {
         purgePrivateClientState();
     }
     try {
-        window.localStorage.setItem(LAST_ACCOUNT_KEY, accountKey);
+        window.localStorage.setItem(LAST_ACCOUNT_KEY, digest);
     } catch {
         // Storage unavailable; switch detection cannot persist across
         // reloads, but nothing durable exists to expose either.

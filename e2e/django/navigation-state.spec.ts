@@ -526,6 +526,13 @@ test.describe('navigation state (issue #479)', () => {
         await page.goto('/chat/');
         await sendMessage(page, 'seed a conversation for the draft key');
 
+        await page.addInitScript(() => {
+            const w = window as unknown as {__hydrations: {unobserved: boolean}[]};
+            w.__hydrations = [];
+            document.addEventListener('crank:auth-hydrated', (e) => {
+                w.__hydrations.push({unobserved: (e as CustomEvent).detail.unobserved === true});
+            });
+        });
         let failedWhoami = false;
         await page.route('**/api/account/whoami/', async (route) => {
             await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -536,8 +543,10 @@ test.describe('navigation state (issue #479)', () => {
         const composer = page.locator('textarea[aria-label="Message"]');
         await expect(composer).toBeEnabled();
         await expect.poll(() => failedWhoami, {timeout: 10_000}).toBe(true);
-        // Let the page process the failed hydration before typing.
-        await page.waitForTimeout(500);
+        // Type only once the page has processed the failed hydration.
+        await expect.poll(() => page.evaluate(() => (window as unknown as {
+            __hydrations: {unobserved: boolean}[];
+        }).__hydrations.some((h) => h.unobserved))).toBe(true);
         await expect(page.getByTestId('signed-out-introduction')).toHaveCount(0);
         await composer.fill('SIGNED-IN PRIVATE TEXT');
         await expect.poll(() => page.evaluate(() => Object.keys(window.localStorage)
@@ -547,46 +556,73 @@ test.describe('navigation state (issue #479)', () => {
         await expect(page.getByTestId('signed-out-introduction')).toHaveCount(0);
     });
 
-    test('a page restored from the back/forward cache is purged after another account signs in (real bfcache)', async () => {
-        const browser = await chromium.launch({
-            channel: 'chromium',
-            ignoreDefaultArgs: ['--disable-back-forward-cache'],
-            args: ['--host-resolver-rules=MAP local.crank.fyi 127.0.0.1'],
-        });
-        try {
-            const context = await browser.newContext({baseURL: DJANGO_BASE_URL, viewport: {width: 1280, height: 900}});
-            await context.addInitScript(() => {
-                const w = window as unknown as {__pageshows: boolean[]};
-                w.__pageshows = [];
-                // Chromium replays queued storage events after pageshow, which
-                // would purge the page without any app logic; swallow them so
-                // the pageshow re-check is the only thing that can (WebKit is
-                // not known to replay them).
-                window.addEventListener('storage', (e) => e.stopImmediatePropagation(), true);
-                window.addEventListener('pageshow', (e) => w.__pageshows.push(e.persisted));
+    // `nonAppPage`: the tab sits on a document without app-nav (so its
+    // `crank:nav-account-seen` never moves) while the account changes in
+    // another tab. Storage events are swallowed only in documents that have
+    // entered the bfcache, modelling an engine that does not replay them.
+    for (const variant of [
+        {name: 'a page of the app', offline: false, away: '/help/'},
+        {name: 'a non-app page', offline: false, away: '/static/dist/manifest.json'},
+        {name: 'a non-app page, offline at restore', offline: true, away: '/static/dist/manifest.json'},
+    ]) {
+        test(`a page restored from the back/forward cache is purged after another account signs in: tab on ${variant.name} (real bfcache)`, async () => {
+            const browser = await chromium.launch({
+                channel: 'chromium',
+                ignoreDefaultArgs: ['--disable-back-forward-cache'],
+                args: ['--host-resolver-rules=MAP local.crank.fyi 127.0.0.1'],
             });
-            const page = await context.newPage();
-            await login(page);
-            await askAboutCompany(page);
-            await page.goto('/help/');
-            await expect(page).toHaveURL(/\/help\/$/);
+            try {
+                const context = await browser.newContext({baseURL: DJANGO_BASE_URL, viewport: {width: 1280, height: 900}});
+                await context.addInitScript(() => {
+                    const w = window as unknown as {__pageshows: boolean[]; __cached: boolean};
+                    w.__pageshows = [];
+                    w.__cached = false;
+                    window.addEventListener('pagehide', (e) => {
+                        if (e.persisted) w.__cached = true;
+                    });
+                    window.addEventListener('storage', (e) => {
+                        if (w.__cached) e.stopImmediatePropagation();
+                    }, true);
+                    window.addEventListener('pageshow', (e) => w.__pageshows.push(e.persisted));
+                });
+                const page = await context.newPage();
+                await login(page);
+                await askAboutCompany(page);
+                const secret = 'PRIVATE MESSAGE FROM ACCOUNT A';
+                await sendMessage(page, secret);
+                await page.goto(variant.away);
+                await expect(page).toHaveURL(new RegExp(`${variant.away.replace(/\./g, '\\.')}$`));
 
-            const other = await context.newPage();
-            await other.goto('/chat/');
-            await logout(other);
-            await login(other, 'e2e_user_b', E2E_PASSWORD);
+                const other = await context.newPage();
+                await other.goto('/chat/');
+                await logout(other);
+                await login(other, 'e2e_user_b', E2E_PASSWORD);
 
-            await page.goBack({waitUntil: 'commit'});
-            await expect.poll(() => page.evaluate(() => (window as unknown as {__pageshows?: boolean[]}).__pageshows ?? []),
-                {message: 'the page must come from the back/forward cache'}).toContain(true);
-            await expect(page.locator('#nav-account')).toContainText('e2e_user_b');
-            await expect(page.locator(STRIP)).toHaveCount(0);
-            const record = await page.evaluate(() => window.sessionStorage.getItem('crank:workspace:v1') ?? '');
-            expect(record).not.toContain(COMPANY);
-            expect(record).not.toContain('e2e_user');
-            await context.close();
-        } finally {
-            await browser.close();
-        }
-    });
+                if (variant.offline) {
+                    await context.setOffline(true);
+                }
+                await page.goBack({waitUntil: 'commit'});
+                await expect.poll(() => page.evaluate(() => (window as unknown as {__pageshows?: boolean[]}).__pageshows ?? []),
+                    {message: 'the page must come from the back/forward cache'}).toContain(true);
+                // No wait for whoami: the epoch comparison purges synchronously.
+                await expect(page.getByText(secret)).toHaveCount(0);
+                await expect(page.locator(STRIP)).toHaveCount(0);
+                if (variant.offline) {
+                    await expect(page.locator('#nav-account')).toBeHidden();
+                } else {
+                    await expect(page.locator('#nav-account')).toContainText('e2e_user_b');
+                }
+                const record = await page.evaluate(() => window.sessionStorage.getItem('crank:workspace:v1') ?? '');
+                expect(record).not.toContain(COMPANY);
+                expect(record).not.toContain('e2e_user');
+                // The restored document never re-announced: the epoch is still
+                // the one the other tab wrote.
+                const epoch = await page.evaluate(() => window.localStorage.getItem('crank:account-epoch'));
+                expect(await other.evaluate(() => window.localStorage.getItem('crank:account-epoch'))).toBe(epoch);
+                await context.close();
+            } finally {
+                await browser.close();
+            }
+        });
+    }
 });

@@ -199,7 +199,9 @@
 
     function announceAccountChange() {
         try {
-            window.localStorage.setItem("crank:account-epoch", randomNonce());
+            var nonce = randomNonce();
+            window.localStorage.setItem("crank:account-epoch", nonce);
+            lastSeenEpoch = nonce;
         } catch (e) {
             // Storage unavailable; other tabs cannot be signalled.
         }
@@ -210,18 +212,35 @@
     var ACCOUNT_SEEN_KEY = "crank:nav-account-seen";
     var quietNextHydration = false;
 
+    // Both stay null until this document has observed an account through
+    // readable storage; null means "unknown", never "changed".
     var lastObservedAccount = null;
+    var lastObservedUsername = null;
+
+    // The shared epoch nonce this document last saw (at load, after its own
+    // announcement, or from a storage event). undefined = storage unreadable.
+    function readAccountEpoch() {
+        try {
+            return window.localStorage.getItem("crank:account-epoch");
+        } catch (e) {
+            return undefined;
+        }
+    }
+    var lastSeenEpoch = readAccountEpoch();
 
     function noteHydratedAccount(authenticated, username) {
         var current = authenticated ? "u:" + accountDigest(username) : "anon";
         var previous = null;
+        var readable = true;
         try {
             previous = window.sessionStorage.getItem(ACCOUNT_SEEN_KEY);
             window.sessionStorage.setItem(ACCOUNT_SEEN_KEY, current);
         } catch (e) {
             // Storage unavailable; the account change cannot be detected.
+            readable = false;
         }
-        lastObservedAccount = current;
+        lastObservedAccount = readable ? current : null;
+        lastObservedUsername = authenticated ? username : null;
         if (authenticated && previous === "u:" + username) {
             // Pre-digest value for the same account: not a change.
             previous = current;
@@ -242,6 +261,7 @@
         if (event.key !== "crank:account-epoch") {
             return;
         }
+        lastSeenEpoch = event.newValue;
         // Only tab-local state: localStorage is shared, and the tab that
         // changed the account has already purged (sign-out) or reconciled
         // (account switch) it. Deleting it here would destroy the #465
@@ -259,23 +279,33 @@
     window.addEventListener("storage", handleAccountEpoch);
 
     // A page restored from the back/forward cache never re-runs its scripts
-    // and could not receive `storage` events while cached, so compare the
-    // account this document last observed with the tab's current one and
-    // re-check whoami. Purging here is tab-local only (same as a received
-    // epoch); it never re-announces.
+    // and may not receive the `storage` events it missed while cached. Two
+    // synchronous, network-free signals say the account changed meanwhile:
+    // the shared epoch nonce differs from the one this document last saw, or
+    // this tab's recorded account differs from the one this document
+    // observed. Either purges tab-local state at once; an unknown account or
+    // unreadable storage is no evidence. Whoami is then re-checked quietly:
+    // purging here is tab-local only and never re-announces.
     window.addEventListener("pageshow", function (event) {
         if (!event.persisted) {
             return;
         }
+        var epoch = readAccountEpoch();
+        var epochChanged = epoch !== undefined && lastSeenEpoch !== undefined
+            && epoch !== lastSeenEpoch;
         var seen = null;
         try {
             seen = window.sessionStorage.getItem(ACCOUNT_SEEN_KEY);
         } catch (e) {
             // Storage unavailable; the change cannot be compared.
         }
-        if (seen !== lastObservedAccount) {
-            handleAccountEpoch({ key: "crank:account-epoch" });
+        var seenChanged = seen !== null && lastObservedAccount !== null
+            && seen !== lastObservedAccount
+            && seen !== "u:" + lastObservedUsername;
+        if (epochChanged || seenChanged) {
+            handleAccountEpoch({ key: "crank:account-epoch", newValue: epoch });
         } else {
+            quietNextHydration = true;
             fetchWhoami();
         }
     });

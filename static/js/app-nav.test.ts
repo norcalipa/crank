@@ -494,13 +494,112 @@ describe('app-nav (issue #465 private-state purge)', () => {
         document.removeEventListener('crank:private-state-purged', purged);
     });
 
-    test('a pageshow restore with unreadable sessionStorage still re-checks without throwing', async () => {
-        whoamiAs(() => null);
+    function trackPurge() {
+        const purged = jest.fn();
+        document.addEventListener('crank:private-state-purged', purged);
+        return {purged, stop: () => document.removeEventListener('crank:private-state-purged', purged)};
+    }
+
+    test('a restore with a changed shared epoch purges at once without the network and never re-announces', async () => {
+        whoamiAs(() => 'alice');
+        loadAppNav();
+        await flushMicrotasks();
+        const tracker = trackPurge();
+        window.sessionStorage.setItem('crank:workspace:v1', '{"v":1}');
+        // Another tab changed the account while this document sat in the
+        // bfcache, and the whoami re-check fails (offline).
+        window.localStorage.setItem('crank:account-epoch', 'changed-elsewhere');
+        (global.fetch as jest.Mock).mockImplementation(() => Promise.reject(new Error('offline')));
+
+        pageshow(true);
+
+        // Synchronous: purged before any network round trip settles.
+        expect(tracker.purged).toHaveBeenCalledTimes(1);
+        expect(window.sessionStorage.getItem('crank:workspace:v1')).toBeNull();
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:account-epoch')).toBe('changed-elsewhere');
+
+        // The epoch is now known: a second restore is not another change.
+        pageshow(true);
+        expect(tracker.purged).toHaveBeenCalledTimes(1);
+        await flushMicrotasks();
+        tracker.stop();
+    });
+
+    test('an epoch announced after load (even from null) or received as a storage event is tracked', async () => {
+        whoamiAs(() => 'alice');
+        loadAppNav();
+        await flushMicrotasks();
+        const tracker = trackPurge();
+        // Received while the page was alive: not a change at restore time.
+        window.localStorage.setItem('crank:account-epoch', 'n1');
+        window.dispatchEvent(new StorageEvent('storage', {key: 'crank:account-epoch', newValue: 'n1'}));
+        await flushMicrotasks();
+        expect(tracker.purged).toHaveBeenCalledTimes(1);
+        pageshow(true);
+        expect(tracker.purged).toHaveBeenCalledTimes(1);
+        await flushMicrotasks();
+        tracker.stop();
+    });
+
+    test('this document own announcement is not a change on restore', async () => {
+        let user: string | null = 'alice';
+        whoamiAs(() => user);
+        window.sessionStorage.setItem('crank:nav-account-seen', 'anon');
+        loadAppNav();
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:account-epoch')).not.toBeNull();
+        const tracker = trackPurge();
+        pageshow(true);
+        expect(tracker.purged).not.toHaveBeenCalled();
+        await flushMicrotasks();
+        tracker.stop();
+    });
+
+    test('an account this document never observed is not evidence of a change; whoami is still re-checked', async () => {
+        (global.fetch as jest.Mock).mockImplementation(() => Promise.reject(new Error('offline')));
+        loadAppNav();
+        await flushMicrotasks();
+        // A later page of the tab recorded an account.
+        window.sessionStorage.setItem('crank:nav-account-seen', 'u:0123456789abcdef');
+        window.sessionStorage.setItem('crank:workspace:v1', '{"v":1}');
+        const tracker = trackPurge();
+        const calls = (global.fetch as jest.Mock).mock.calls.length;
+
+        pageshow(true);
+        await flushMicrotasks();
+
+        expect(tracker.purged).not.toHaveBeenCalled();
+        expect(window.sessionStorage.getItem('crank:workspace:v1')).toBe('{"v":1}');
+        expect((global.fetch as jest.Mock).mock.calls.length).toBe(calls + 1);
+        tracker.stop();
+    });
+
+    test('a legacy raw seen value for the observed account is not a change on restore', async () => {
+        whoamiAs(() => 'alice');
+        loadAppNav();
+        await flushMicrotasks();
+        window.sessionStorage.setItem('crank:nav-account-seen', 'u:alice');
+        const tracker = trackPurge();
+        pageshow(true);
+        expect(tracker.purged).not.toHaveBeenCalled();
+        await flushMicrotasks();
+        tracker.stop();
+    });
+
+    test('unreadable storage is not evidence of a change; the restore still re-checks without throwing', async () => {
+        whoamiAs(() => 'alice');
+        jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('denied'); });
         loadAppNav();
         await flushMicrotasks();
         jest.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('denied'); });
+        const tracker = trackPurge();
+        const calls = (global.fetch as jest.Mock).mock.calls.length;
         expect(() => pageshow(true)).not.toThrow();
         await flushMicrotasks();
+        expect(tracker.purged).not.toHaveBeenCalled();
+        expect((global.fetch as jest.Mock).mock.calls.length).toBe(calls + 1);
+        tracker.stop();
     });
 
     test('storage events for unrelated keys are ignored', async () => {

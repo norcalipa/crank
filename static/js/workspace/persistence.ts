@@ -30,9 +30,11 @@ interface WorkspaceRecord {
     savedAt: number;
 }
 
-// One-way digest of the account key for the persisted record: it is only
-// ever compared for equality, so the raw username need not sit in storage.
-function accountDigest(text: string): string {
+// Short unsalted digest of an account key: storage only ever compares it for
+// equality, so the raw username need not sit there. It hides the name from
+// casual inspection but a guessable username can still be confirmed by
+// hashing candidates; it is not a secret.
+export function accountDigest(text: string): string {
     if (!text) {
         return '';
     }
