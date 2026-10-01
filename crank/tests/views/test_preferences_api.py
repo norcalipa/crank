@@ -263,6 +263,13 @@ class TestReset:
         response = post(client_a, "agent-preference-reset", {"expected_revision": value})
         assert response.status_code == 400
 
+    def test_malformed_json_is_400(self, client_a):
+        response = client_a.post(
+            reverse("agent-preference-reset"), data="{", content_type="application/json"
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["type"] == "malformed_json"
+
     def test_missing_revision_is_400(self, client_a):
         assert post(client_a, "agent-preference-reset", {}).status_code == 400
 
