@@ -13,7 +13,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from crank.agents.job_search.actions import parse_actions
+from crank.agents.job_search.actions import sanitize_actions
 from crank.agents.job_search.errors import InvalidModelOutputError
 
 #: Top-level keys that must all be present in the model's result object.
@@ -198,9 +198,11 @@ class AssistantCompletion:
         proposes a this-search-only filter that is never persisted.
     actions:
         Optional allowlisted UI actions (issue #484), schema-checked by
-        :func:`crank.agents.job_search.actions.parse_actions`. Their
-        organization references are validated against the exposed ids
-        downstream.
+        :func:`crank.agents.job_search.actions.sanitize_actions`; bad ones
+        are dropped, never fatal. Their organization references are checked
+        against the exposed ids downstream.
+    action_drop_reasons:
+        Low-cardinality reasons for actions dropped at parse time.
     """
 
     message: str
@@ -209,6 +211,7 @@ class AssistantCompletion:
     preference_patch: dict[str, Any] | None = None
     preference_scope: str = "account"
     actions: tuple[dict[str, Any], ...] = ()
+    action_drop_reasons: tuple[str, ...] = ()
 
     @classmethod
     def from_json(cls, raw: Any) -> AssistantCompletion:
@@ -320,13 +323,15 @@ class AssistantCompletion:
                 )
             )
 
+        actions, action_drop_reasons = sanitize_actions(payload.get("actions"))
         return cls(
             message=message.strip(),
             cited_organization_ids=tuple(sorted(org_ids)),
             cited_job_listing_ids=tuple(sorted(listing_ids)),
             preference_patch=_freeze_patch(patch) if patch is not None else None,
             preference_scope=scope,
-            actions=parse_actions(payload.get("actions")),
+            actions=actions,
+            action_drop_reasons=action_drop_reasons,
         )
 
     @property

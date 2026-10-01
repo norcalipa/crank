@@ -403,16 +403,18 @@ class MalformedActionPayloadTests(TestCase):
         assert after == before
 
     def test_unknown_action_names_are_rejected(self):
-        with pytest.raises(InvalidModelOutputError):
-            AssistantCompletion.from_json(
-                {
-                    "message": "safe",
-                    "cited_organization_ids": [],
-                    "cited_job_listing_ids": [],
-                    "preference_patch": None,
-                    "actions": [{"name": "run_shell", "args": {"cmd": "id"}}],
-                }
-            )
+        completion = AssistantCompletion.from_json(
+            {
+                "message": "safe",
+                "cited_organization_ids": [],
+                "cited_job_listing_ids": [],
+                "preference_patch": None,
+                "actions": [{"name": "run_shell", "args": {"cmd": "id"}}],
+            }
+        )
+        # Hostile actions are dropped (never executed, never fatal).
+        assert completion.actions == ()
+        assert completion.action_drop_reasons == ("unknown_type",)
         with pytest.raises(InvalidModelOutputError):
             AssistantCompletion.from_json(
                 {
@@ -435,12 +437,15 @@ class MalformedActionPayloadTests(TestCase):
             {"type": "open_company", "organization_id": 1, "url": "https://evil.example"},
             {"type": "propose_filters", "filters": {"search": "salary 250000"}},
         ):
-            with pytest.raises(InvalidModelOutputError):
-                AssistantCompletion.from_json({**base, "actions": [action]})
-        self._assert_rejected(
-            {**base, "actions": [{"type": "open_company", "organization_id": 424242}]},
-            InvalidModelOutputError,
+            completion = AssistantCompletion.from_json({**base, "actions": [action]})
+            assert completion.actions == ()
+            assert completion.action_drop_reasons == ("bad_schema",)
+        from crank.agents.job_search import actions as ui_actions
+
+        kept, dropped = ui_actions.sanitize_actions(
+            [{"type": "open_company", "organization_id": 424242}], {1}
         )
+        assert kept == () and dropped == ("unexposed_id",)
 
     def test_patch_keys_outside_validated_spec_fail_closed(self):
         # Unknown top-level patch operations.

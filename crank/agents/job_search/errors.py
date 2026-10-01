@@ -145,13 +145,3 @@ class InvalidRequirementReferenceError(InvalidModelOutputError):
     the server did not expose is treated as a hallucinated reference and
     rejected without persistence.
     """
-
-
-class InvalidActionError(InvalidModelOutputError):
-    """The model proposed a UI action that references an ID the server did not expose.
-
-    Mirrors the citation policy: an ``open_company``/``compare_companies``
-    action may only name organization IDs the server exposed this turn (the
-    catalog plus the resolved page context). Anything else is a hallucinated
-    reference and fails the turn without persisting a reply.
-    """
