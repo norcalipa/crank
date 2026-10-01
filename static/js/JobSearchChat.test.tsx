@@ -182,6 +182,20 @@ describe('JobSearchChat', () => {
             expect(chat).toHaveStyle({height: '752px', minHeight: '20rem'});
         });
 
+        test('grows the card so the transcript keeps at least 8rem when little room is left', async () => {
+            await renderChat();
+            const chat = screen.getByTestId('job-search-chat');
+            const log = screen.getByRole('log');
+            Object.defineProperty(chat, 'offsetHeight', {configurable: true, value: 900});
+            Object.defineProperty(log, 'offsetHeight', {configurable: true, value: 100});
+            await act(async () => {
+                fireEvent(window, new Event('resize'));
+                await flushRaf();
+            });
+            // chrome 800 + 128px transcript floor beats the 752px viewport fit.
+            expect(chat).toHaveStyle({height: '928px'});
+        });
+
         test('observes the parent for match-panel resizes when ResizeObserver is available', async () => {
             const observe = jest.fn();
             const disconnect = jest.fn();

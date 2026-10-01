@@ -5,6 +5,7 @@ import {createRoot} from 'react-dom/client';
 
 import {purgePrivateClientState} from './authIntent';
 import {preferencePathLabel, preferenceValueLabel} from './priorities/format';
+import {prioritiesSurface} from './priorities/surface';
 import {
     describeWorkspaceContext,
     getWorkspaceSnapshot,
@@ -1056,6 +1057,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // Shared floor for the measured card height; must stay in sync with the
     // `20rem` inline minHeight below (16px rem * 20) so the two cannot drift.
     const MIN_CARD_PX = 320;
+    const MIN_TRANSCRIPT_PX = 128;
     const adjustComposerHeight = React.useCallback(() => {
         const ta = composerRef.current;
         if (!ta) return;
@@ -1168,7 +1170,12 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
         const bottomGap = safeAreaBottom || 16; // breathing room above the page bottom
         const computed = viewportHeight - top - bottomGap;
-        setCardHeight(Math.max(computed, MIN_CARD_PX));
+        // Keep the transcript at least 8rem tall: when the page above leaves less
+        // room, the card grows and the panel scrolls rather than the composer
+        // painting over the history.
+        const log = historyRef.current;
+        const floor = log ? card.offsetHeight - log.offsetHeight + MIN_TRANSCRIPT_PX : 0;
+        setCardHeight(Math.max(computed, MIN_CARD_PX, floor));
     }, []);
 
     // Coalesce high-frequency resize/viewport events (fired many times per second
@@ -2314,11 +2321,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         onReview={() => {
                             // Stale-conflict recovery: review the current
                             // priorities in the inline editor (issue #480).
-                            setPrioritiesEditorOpen('sidebar');
+                            setPrioritiesEditorOpen(prioritiesSurface());
                         }}
                         onEdit={() => {
                             setPrefProposal(null);
-                            setPrioritiesEditorOpen('sidebar');
+                            setPrioritiesEditorOpen(prioritiesSurface());
                         }}
                         onSearchOnly={() => handlePreferenceProposalDecision('apply', 'search')}
                     />
@@ -2362,7 +2369,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         onReview={() => {
                             // Stale-conflict recovery: review the current
                             // priorities in the inline editor (issue #480).
-                            setPrioritiesEditorOpen('sidebar');
+                            setPrioritiesEditorOpen(prioritiesSurface());
                         }}
                     />
                 )}
