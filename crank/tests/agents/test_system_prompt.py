@@ -15,6 +15,24 @@ class TestSystemPrompt:
     def test_version_is_current(self):
         assert SYSTEM_PROMPT_VERSION == 5
 
+    def test_prompt_text_is_tied_to_its_version(self):
+        """Changing prompt wording without bumping SYSTEM_PROMPT_VERSION fails here.
+
+        Whichever of #484a/#473b merges second rebases onto the next integer
+        and re-records its digests.
+        """
+        import hashlib
+
+        digests = {
+            5: {
+                False: "9cd200f8f2c479bac14230095f778c2de2c7172ac08395e39ee94b99dc603955",
+                True: "0634a17783fbe452928765d472acee34e283b6f4ef81b9e4e58db6f029ffe26e",
+            },
+        }
+        for with_context, expected in digests[SYSTEM_PROMPT_VERSION].items():
+            text = build_system_prompt(include_page_context=with_context)
+            assert hashlib.sha256(text.encode()).hexdigest() == expected
+
     def test_contains_hard_citation_constraint(self):
         text = build_system_prompt()
         assert "ORGANIZATION CATALOG" in text

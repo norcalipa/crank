@@ -129,6 +129,8 @@ class OrchestratorResult:
     empty_result: bool = True
     inventory_nonempty: bool = False
     actions: tuple = ()
+    actions_dropped: int = 0
+    action_drop_reasons: tuple = ()
 
 
 class JobSearchOrchestrator:
@@ -256,6 +258,8 @@ class JobSearchOrchestrator:
                 "cited_ids_count": result.cited_ids_count,
                 "empty_result": result.empty_result,
                 "inventory_nonempty": result.inventory_nonempty,
+                "actions_dropped": result.actions_dropped,
+                "action_drop_reasons": ",".join(result.action_drop_reasons),
                 "latency_ms": latency_ms,
                 "latency_bucket": monitoring.latency_bucket(latency_ms),
             },
@@ -286,7 +290,7 @@ class JobSearchOrchestrator:
         if page_context is not None:
             # Entities the user is viewing may sit outside the bounded
             # catalog; expose them (already visibility-checked) so they are
-            # citable, without evicting any catalog row.
+            # citable. They are pinned when the context is bounded.
             catalog_ids = {row.get("id") for row in org_rows}
             org_rows = org_rows + [
                 row for row in page_context.organizations if row["id"] not in catalog_ids
@@ -363,6 +367,17 @@ class JobSearchOrchestrator:
             page_context=(
                 page_context.to_model_text() if page_context is not None else None
             ),
+            pinned_organization_ids=(
+                page_context.exposed_organization_ids()
+                if page_context is not None
+                else frozenset()
+            ),
+            pinned_job_listing_ids=(
+                frozenset({page_context.listing["id"]})
+                if page_context is not None and page_context.listing is not None
+                else frozenset()
+            ),
+            include_page_context=page_context is not None,
         )
 
         # 3. Provider call (maps provider failures to typed errors).
@@ -378,8 +393,20 @@ class JobSearchOrchestrator:
         self._validate_listing_citations(
             completion.cited_job_listing_ids, frozenset(known_listing_ids)
         )
-        # Actions follow the citation policy: only exposed organization ids.
-        actions.validate_action_references(completion.actions, known_ids)
+        # Actions are advisory: drop (and count) any that name an id the
+        # server did not expose instead of failing the whole reply.
+        valid_actions, ref_drops = actions.sanitize_actions(
+            completion.actions,
+            known_ids,
+            stale=page_context is not None and page_context.stale,
+        )
+        action_drops = completion.action_drop_reasons + ref_drops
+        if action_drops:
+            logger.warning(
+                "job_search_actions_dropped prompt_id=%s reasons=%s",
+                model_context.prompt_id,
+                sorted(set(action_drops)),
+            )
         if match_enabled:
             self._validate_match_references(completion.message, match_data)
 
@@ -455,7 +482,9 @@ class JobSearchOrchestrator:
             cited_ids_count=cited_ids_count,
             empty_result=cited_ids_count == 0,
             inventory_nonempty=inventory_nonempty,
-            actions=completion.actions,
+            actions=valid_actions,
+            actions_dropped=len(action_drops),
+            action_drop_reasons=tuple(sorted(set(action_drops))),
         )
 
     def _propose_preference_patch(
@@ -577,6 +606,7 @@ class JobSearchOrchestrator:
             max_score_rows=self._max_score_summary_results,
             max_job_listings=self._max_job_listing_results,
             max_match_results=self._max_match_results,
+            include_page_context=bool(kwargs.get("include_page_context")),
         )
         # Availability state for honesty about inventory/matches (issue #476).
         # Only derived for a persisted user; stand-in objects in tests keep it
@@ -600,6 +630,8 @@ class JobSearchOrchestrator:
             matches=kwargs.get("matches"),
             availability=availability,
             page_context=kwargs.get("page_context"),
+            pinned_organization_ids=kwargs.get("pinned_organization_ids", frozenset()),
+            pinned_job_listing_ids=kwargs.get("pinned_job_listing_ids", frozenset()),
         )
 
     def _invoke_gateway(

@@ -143,17 +143,22 @@ class DemoJobSearchProvider:
     def generate_reply(self, *, conversation, user_message, page_context=None):
         """Return ``(reply_text, preferences_changed, results[, extras])`` for a turn.
 
-        Deterministic actions (issue #484), for the dev/e2e tier only: "only
-        remote" proposes the remote filter and "open it"/"open this company"
-        opens the context organization.
+        Deterministic actions (issue #484), for the dev/e2e tier only and only
+        on turns that carry page context (context-less turns behave exactly as
+        before): "only remote" proposes the remote filter and "open it"/"open
+        this company" opens the context organization.
         """
         text = (user_message or "").strip()
         proposed = []
-        if self._ONLY_REMOTE.search(text):
+        if page_context is not None and self._ONLY_REMOTE.search(text):
             proposed.append(
                 {"type": "propose_filters", "target": "rankings", "filters": {"rto_policy": "R"}}
             )
-        if self._OPEN_THIS.search(text) and page_context is not None and page_context.organizations:
+        if (
+            page_context is not None
+            and self._OPEN_THIS.search(text)
+            and page_context.organizations
+        ):
             proposed.append(
                 {"type": "open_company", "organization_id": page_context.organizations[0]["id"]}
             )
@@ -306,21 +311,21 @@ class JobSearchService:
             else:
                 reply_text, changed, results = outcome
                 extras = None
-            if (
-                extras
-                and extras.get("actions")
-                and not getattr(self.provider, "validates_actions", False)
-            ):
-                # Defence in depth (issue #484): every provider passes one
-                # gate. The orchestrator validated its own actions already.
-                parsed = ui_actions.parse_actions(extras["actions"])
-                ui_actions.validate_action_references(
-                    parsed,
+            if extras and extras.get("actions"):
+                # Every provider's actions pass this one gate (issue #484):
+                # bad, unexposed or stale-context actions are dropped, never fatal.
+                valid, dropped = ui_actions.sanitize_actions(
+                    extras["actions"],
                     page_context.exposed_organization_ids()
                     if page_context is not None
                     else (),
+                    stale=page_context is not None and page_context.stale,
                 )
-                extras = {**extras, "actions": ui_actions.to_wire(parsed)}
+                if dropped:
+                    logger.warning(
+                        "job_search_actions_dropped reasons=%s", sorted(set(dropped))
+                    )
+                extras = {**extras, "actions": ui_actions.to_wire(valid)}
         except JobSearchServiceError:
             # Already a typed service error (e.g. from generate_reply);
             # let it propagate without re-wrapping.
