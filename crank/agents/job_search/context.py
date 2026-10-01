@@ -91,7 +91,7 @@ class ModelContext:
                 "id={id} name={name!r} funding_round={funding_round} "
                 "rto_policy={rto_policy}".format(
                     id=row.get("id"),
-                    name=_bounded_name(row.get("name", "")),
+                    name=bounded_name(row.get("name", "")),
                     funding_round=row.get("funding_round", ""),
                     rto_policy=row.get("rto_policy", ""),
                 )
@@ -119,8 +119,8 @@ class ModelContext:
                 "organization_id={organization_id} location={location!r} "
                 "remote={remote} url={canonical_url}".format(
                     id=row.get("id"),
-                    title=_bounded_name(row.get("title", "")),
-                    organization_name=_bounded_name(row.get("organization_name", "")),
+                    title=bounded_name(row.get("title", "")),
+                    organization_name=bounded_name(row.get("organization_name", "")),
                     organization_id=row.get("organization_id"),
                     location=row.get("location", ""),
                     remote=row.get("remote", False),
@@ -175,8 +175,16 @@ class ModelContext:
 MAX_NAME_CHARS = 120
 
 
-def _bounded_name(value: object) -> str:
-    return str(value)[:MAX_NAME_CHARS]
+def bounded_name(value: object) -> str:
+    """Truncate so the ``!r``-escaped form is at most ``MAX_NAME_CHARS`` long.
+
+    Non-printable code points expand when escaped (up to ~10x), so the bound
+    is applied to the rendered form, never to the raw string.
+    """
+    text = str(value)[:MAX_NAME_CHARS]
+    while len(repr(text)) - 2 > MAX_NAME_CHARS:
+        text = text[:-1]
+    return text
 
 
 def truncate_conversation(

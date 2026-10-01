@@ -311,21 +311,31 @@ class JobSearchService:
             else:
                 reply_text, changed, results = outcome
                 extras = None
-            if extras and extras.get("actions"):
+            if extras:
                 # Every provider's actions pass this one gate (issue #484):
-                # bad, unexposed or stale-context actions are dropped, never fatal.
-                valid, dropped = ui_actions.sanitize_actions(
-                    extras["actions"],
-                    page_context.exposed_organization_ids()
-                    if page_context is not None
-                    else (),
-                    stale=page_context is not None and page_context.stale,
-                )
-                if dropped:
-                    logger.warning(
-                        "job_search_actions_dropped reasons=%s", sorted(set(dropped))
+                # bad, unexposed, stale-context or no-context actions are
+                # dropped (and counted), never fatal. The exposed set is the
+                # provider's full set (catalog + page context) when it reports
+                # one, else the page-context ids.
+                provider_ids = extras.get("actions_exposed_ids")
+                extras = {k: v for k, v in extras.items() if k != "actions_exposed_ids"}
+                if extras.get("actions"):
+                    exposed = set(provider_ids or ())
+                    if page_context is not None:
+                        exposed |= page_context.exposed_organization_ids()
+                    valid, dropped = ui_actions.sanitize_actions(
+                        extras["actions"],
+                        exposed,
+                        stale=page_context is not None and page_context.stale,
+                        has_context=page_context is not None,
                     )
-                extras = {**extras, "actions": ui_actions.to_wire(valid)}
+                    if dropped:
+                        logger.warning(
+                            "job_search_actions_dropped count=%d reasons=%s",
+                            len(dropped),
+                            sorted(set(dropped)),
+                        )
+                    extras["actions"] = ui_actions.to_wire(valid)
         except JobSearchServiceError:
             # Already a typed service error (e.g. from generate_reply);
             # let it propagate without re-wrapping.

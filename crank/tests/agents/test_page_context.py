@@ -128,7 +128,7 @@ def test_default_loaders_enforce_visibility(db, django_user_model):
     from django.test import override_settings
 
     visible = Organization.objects.create(name="Visible", status=1, public=True)
-    # ``public`` means publicly traded; rankings and the org API only check status.
+    # ``Organization.public`` is the visibility flag shared with the assistant catalog.
     private = Organization.objects.create(name="Private", status=1, public=False)
     inactive = Organization.objects.create(name="Inactive", status=0, public=True)
     algo = ScoreAlgorithm.objects.create(name="Preset", status=1)
@@ -140,9 +140,11 @@ def test_default_loaders_enforce_visibility(db, django_user_model):
          "algorithm_id": off_algo.id},
         user=user,
     )
-    assert ctx.exposed_organization_ids() == {visible.id, private.id}
+    assert ctx.exposed_organization_ids() == {visible.id}
     assert set(ctx.unresolved) == {
-        f"comparison_ids:{inactive.id}", f"algorithm_id:{off_algo.id}",
+        f"comparison_ids:{private.id}",
+        f"comparison_ids:{inactive.id}",
+        f"algorithm_id:{off_algo.id}",
     }
     assert page_context.resolve({"revision": 1, "algorithm_id": algo.id}, user=user).algorithm == {
         "id": algo.id, "name": "Preset",

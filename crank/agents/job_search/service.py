@@ -131,6 +131,7 @@ class OrchestratorResult:
     actions: tuple = ()
     actions_dropped: int = 0
     action_drop_reasons: tuple = ()
+    exposed_organization_ids: frozenset = frozenset()
 
 
 class JobSearchOrchestrator:
@@ -287,6 +288,9 @@ class JobSearchOrchestrator:
         """
         # 1. Bounded, server-controlled dataset (active/public only).
         org_rows = self._load_organization_catalog()
+        # Tool telemetry counts only what the tools returned, not pinned rows.
+        org_result_count = len(org_rows)
+        catalog_inventory = bool(tools.union_server_controlled_ids(org_rows))
         if page_context is not None:
             # Entities the user is viewing may sit outside the bounded
             # catalog; expose them (already visibility-checked) so they are
@@ -302,6 +306,8 @@ class JobSearchOrchestrator:
 
         # 1b. Bounded, server-controlled job listings (active/open only).
         listing_rows = self._load_job_listings()
+        listing_result_count = len(listing_rows)
+        listing_inventory = bool(tools.union_server_controlled_listing_ids(listing_rows))
         if page_context is not None and page_context.listing is not None:
             if page_context.listing["id"] not in {row.get("id") for row in listing_rows}:
                 listing_rows = listing_rows + [page_context.listing]
@@ -319,10 +325,10 @@ class JobSearchOrchestrator:
         result_counts: list[int] = []
 
         tools_used.append("query_active_organizations")
-        result_counts.append(len(org_rows))
+        result_counts.append(org_result_count)
         monitoring.record_event(
             "job_search_tool_invocation",
-            {"tool": "query_active_organizations", "result_count": len(org_rows)},
+            {"tool": "query_active_organizations", "result_count": org_result_count},
         )
 
         if known_ids:
@@ -334,10 +340,10 @@ class JobSearchOrchestrator:
             )
 
         tools_used.append("search_job_listings")
-        result_counts.append(len(listing_rows))
+        result_counts.append(listing_result_count)
         monitoring.record_event(
             "job_search_tool_invocation",
-            {"tool": "search_job_listings", "result_count": len(listing_rows)},
+            {"tool": "search_job_listings", "result_count": listing_result_count},
         )
 
         if match_enabled:
@@ -378,6 +384,7 @@ class JobSearchOrchestrator:
                 else frozenset()
             ),
             include_page_context=page_context is not None,
+            include_actions=page_context is not None and not page_context.stale,
         )
 
         # 3. Provider call (maps provider failures to typed errors).
@@ -399,6 +406,7 @@ class JobSearchOrchestrator:
             completion.actions,
             known_ids,
             stale=page_context is not None and page_context.stale,
+            has_context=page_context is not None,
         )
         action_drops = completion.action_drop_reasons + ref_drops
         if action_drops:
@@ -481,10 +489,11 @@ class JobSearchOrchestrator:
             result_counts=result_counts,
             cited_ids_count=cited_ids_count,
             empty_result=cited_ids_count == 0,
-            inventory_nonempty=inventory_nonempty,
+            inventory_nonempty=catalog_inventory or listing_inventory,
             actions=valid_actions,
             actions_dropped=len(action_drops),
             action_drop_reasons=tuple(sorted(set(action_drops))),
+            exposed_organization_ids=frozenset(known_ids),
         )
 
     def _propose_preference_patch(
@@ -607,6 +616,7 @@ class JobSearchOrchestrator:
             max_job_listings=self._max_job_listing_results,
             max_match_results=self._max_match_results,
             include_page_context=bool(kwargs.get("include_page_context")),
+            include_actions=bool(kwargs.get("include_actions")),
         )
         # Availability state for honesty about inventory/matches (issue #476).
         # Only derived for a persisted user; stand-in objects in tests keep it

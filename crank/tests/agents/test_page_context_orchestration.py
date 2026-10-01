@@ -113,12 +113,20 @@ def test_action_for_unexposed_org_is_dropped_and_good_parts_survive():
     assert result.actions_dropped == 1
     assert result.action_drop_reasons == ("unexposed_id",)
     result, _ = run({"actions": [OPEN_3]})
-    assert result.actions == () and result.action_drop_reasons == ("unexposed_id",)
+    assert result.actions == () and result.action_drop_reasons == ("no_context",)
+
+
+def test_no_context_turn_returns_no_actions_at_all():
+    result, _ = run({"actions": [GOOD_FILTER, OPEN_1]})
+    assert result.actions == ()
+    assert result.actions_dropped == 2
+    assert result.action_drop_reasons == ("no_context",)
 
 
 def test_hostile_action_is_dropped_not_fatal():
     result, _ = run(
-        {"actions": [{"type": "navigate", "url": "https://evil.example"}, GOOD_FILTER]}
+        {"actions": [{"type": "navigate", "url": "https://evil.example"}, GOOD_FILTER]},
+        {"revision": 2, "organization_id": 3},
     )
     assert [a["type"] for a in result.actions] == ["propose_filters"]
     assert result.action_drop_reasons == ("unknown_type",)
@@ -133,9 +141,9 @@ def test_dropped_actions_are_counted_in_telemetry_and_logged(caplog):
             make_orchestrator(gw, orgs=(ORG_ACME,)).run(
                 user_prompt="x", conversation=[], preference_markdown=""
             )
-    turn = [c.args[1] for c in record.call_args_list if c.args[0] == "job_search_turn"][0]
+    turn = next(c.args[1] for c in record.call_args_list if c.args[0] == "job_search_turn")
     assert turn["actions_dropped"] == 2
-    assert turn["action_drop_reasons"] == "unexposed_id,unknown_type"
+    assert turn["action_drop_reasons"] == "no_context,unknown_type"
     assert "job_search_actions_dropped" in caplog.text
     assert not any(c.args[1].get("reason_code") == "internal" for c in record.call_args_list)
 
@@ -159,6 +167,50 @@ def test_actions_section_only_with_page_context():
     assert "UI ACTIONS" in system_text(with_ctx)
     assert "UI ACTIONS" not in system_text(without)
     assert '"actions"' not in system_text(without)
+
+
+def test_stale_context_omits_actions_section_from_prompt():
+    stale = page_context.resolve(
+        {"revision": 2, "organization_id": 3, "preference_revision": 1},
+        user=object(), loaders=make_loaders(pref=4),
+    )
+    gw = ScriptedGateway({**BASE})
+    make_orchestrator(gw, orgs=(ORG_ACME,)).run(
+        user_prompt="x", conversation=[], preference_markdown="", page_context=stale
+    )
+    text = system_text(gw)
+    assert "PAGE CONTEXT" in text and "stale=True" in "\n".join(
+        m["content"] for m in gw.requests[0].messages
+    )
+    assert "UI ACTIONS" not in text and '"actions"' not in text
+
+
+def test_pinned_rows_do_not_inflate_tool_telemetry():
+    from unittest.mock import patch
+
+    ctx = page_context.resolve(
+        {"revision": 2, "organization_id": 3, "job_id": 10}, user=object(),
+        loaders=make_loaders(),
+    )
+    with patch("crank.agents.job_search.service.monitoring.record_event") as record:
+        gw = ScriptedGateway({**BASE})
+        result = make_orchestrator(gw, orgs=(ORG_ACME,)).run(
+            user_prompt="x", conversation=[], preference_markdown="", page_context=ctx
+        )
+    counts = {
+        c.args[1]["tool"]: c.args[1]["result_count"]
+        for c in record.call_args_list
+        if c.args[0] == "job_search_tool_invocation" and "result_count" in c.args[1]
+    }
+    assert counts["query_active_organizations"] == 1
+    assert counts["search_job_listings"] == 0
+    assert result.result_counts[0] == 1
+    # Pinned rows alone are not tool-returned inventory.
+    gw = ScriptedGateway({**BASE})
+    from crank.tests.agents.test_golden_conversations import make_orchestrator as mk
+    empty = mk(gw, orgs=())
+    r = empty.run(user_prompt="x", conversation=[], preference_markdown="", page_context=ctx)
+    assert r.inventory_nonempty is False
 
 
 def test_viewed_entities_survive_a_full_catalog():
@@ -217,6 +269,28 @@ def test_long_names_are_bounded_in_catalog_and_listing_blocks():
     )
     text = model_ctx._tool_block()
     assert "Z" * (ctx_mod.MAX_NAME_CHARS + 1) not in text
+
+
+def test_escaped_names_are_bounded_after_quoting():
+    from crank.agents.job_search import context as ctx_mod
+
+    hostile = "\U000e0041" * 500
+    model_ctx = ctx_mod.build_model_context(
+        prompt_id="p", system="s", conversation=[], user_prompt="hi", preference_markdown="",
+        organization_catalog=[{"id": 1, "name": hostile}],
+        job_listings=[{"id": 2, "title": hostile, "organization_name": hostile}],
+        score_summaries=[], max_preference_characters=100, max_conversation_characters=1000,
+    )
+    for line in model_ctx._tool_block().splitlines():
+        assert len(line) < 3 * ctx_mod.MAX_NAME_CHARS + 120
+    rendered = repr(ctx_mod.bounded_name(hostile))
+    assert 0 < len(rendered) - 2 <= ctx_mod.MAX_NAME_CHARS
+    ctx = page_context.resolve(
+        {"revision": 1, "organization_id": 1}, user=object(),
+        loaders=make_loaders(orgs={1: {"id": 1, "name": hostile, "funding_round": "A", "rto_policy": "R"}}),
+    )
+    org_line = [l for l in ctx.to_model_text().splitlines() if l.startswith("organization id=1")]
+    assert len(org_line) == 1 and len(org_line[0]) < 3 * ctx_mod.MAX_NAME_CHARS + 120
 
 
 def test_actions_key_is_optional_in_completion():
@@ -304,6 +378,90 @@ def test_service_validation_is_unconditional_even_for_orchestrator_providers():
     assert extras["actions"] == []
 
 
+def test_service_gate_counts_every_drop(caplog):
+    with caplog.at_level("WARNING", logger="crank.agents.job_search"):
+        JobSearchService(StubProvider([OPEN_3, GOOD_FILTER])).run_turn(
+            conversation=FakeConversation, user_message="x", page_context=ctx_for(1)
+        )
+    assert "job_search_actions_dropped count=1 reasons=['unexposed_id']" in caplog.text
+
+
+def test_service_gate_trusts_provider_reported_exposed_ids_and_strips_them():
+    class Reporting(StubProvider):
+        def generate_reply(self, **kw):
+            return "x", False, None, {"actions": [OPEN_3], "actions_exposed_ids": {3}}
+
+    *_, extras = JobSearchService(Reporting([])).run_turn(
+        conversation=FakeConversation, user_message="x", page_context=ctx_for(1)
+    )
+    assert extras == {"actions": [OPEN_3]}
+
+
+class _Owner:
+    pk = 7
+
+
+class _OrchConversation(FakeConversation):
+    owner = _Owner()
+
+
+def orchestrator_turn(payload, raw_context, **kw):
+    from unittest.mock import patch
+
+    from crank.agents.job_search.providers import OrchestratorJobSearchProvider
+    from crank.tests.agents.test_golden_conversations import (
+        ScriptedGateway,
+        make_orchestrator,
+    )
+
+    gw = ScriptedGateway({**BASE, **payload})
+    provider = OrchestratorJobSearchProvider(
+        orchestrator=make_orchestrator(gw, orgs=(ORG_ACME,), **kw)
+    )
+    ctx = (
+        page_context.resolve(raw_context, user=object(), loaders=make_loaders())
+        if raw_context
+        else None
+    )
+    with patch.object(provider, "_resolve_user", return_value=None), patch.object(
+        provider, "_build_conversation_history", return_value=[]
+    ), patch.object(provider, "_read_preference_snapshot", return_value=""), patch.object(
+        provider, "_make_lifecycle_guard", return_value=None
+    ):
+        *_, extras = JobSearchService(provider).run_turn(
+            conversation=FakeConversation, user_message="x", page_context=ctx
+        )
+    return extras
+
+
+def test_real_orchestrator_catalog_org_open_company_survives_service_gate(caplog):
+    from unittest.mock import patch
+
+    # Org 1 is a catalog org (ORG_ACME); the context org is 3. Both are exposed.
+    with patch("crank.agents.job_search.service.monitoring.record_event") as record:
+        extras = orchestrator_turn(
+            {"actions": [OPEN_1, OPEN_3, {"type": "open_company", "organization_id": 404}]},
+            {"revision": 2, "organization_id": 3},
+        )
+    assert extras["actions"] == [OPEN_1, OPEN_3]
+    assert "actions_exposed_ids" not in extras
+    turn = next(c.args[1] for c in record.call_args_list if c.args[0] == "job_search_turn")
+    assert turn["actions_dropped"] == 1
+    assert turn["action_drop_reasons"] == "unexposed_id"
+
+
+def test_real_orchestrator_rankings_context_without_org_keeps_catalog_open_company():
+    extras = orchestrator_turn(
+        {"actions": [OPEN_1]}, {"revision": 2, "surface": "rankings"}
+    )
+    assert extras["actions"] == [OPEN_1]
+
+
+def test_real_orchestrator_no_context_turn_returns_no_actions():
+    extras = orchestrator_turn({"actions": [GOOD_FILTER, OPEN_1]}, None)
+    assert extras is None or "actions" not in extras
+
+
 def test_service_suppresses_actions_for_stale_context():
     ctx = page_context.resolve(
         {"revision": 1, "organization_id": 1, "preference_revision": 1},
@@ -334,4 +492,6 @@ def test_prompt_documents_actions_only_with_page_context():
     with_ctx = system_prompt.build_system_prompt(include_page_context=True)
     assert "PAGE CONTEXT" in with_ctx and '"actions"' in with_ctx
     assert with_ctx.index("UI ACTIONS") < with_ctx.index("Available tools")
+    stale = system_prompt.build_system_prompt(include_page_context=True, include_actions=False)
+    assert "PAGE CONTEXT" in stale and "UI ACTIONS" not in stale
     assert "compare_companies is not available yet" in with_ctx

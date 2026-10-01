@@ -26,7 +26,7 @@ class PageContextViewTests(TestCase):
         self.client = Client()
         self.client.force_login(self.alice)
         self.org = Organization.objects.create(name="Visible Co", status=1, public=True, rto_policy="R")
-        # ``public`` means publicly traded: a private company is still visible.
+        # ``Organization.public`` is the visibility flag shared with the assistant catalog.
         self.private = Organization.objects.create(name="Private Co", status=1, public=False)
         self.inactive = Organization.objects.create(name="Retired Co", status=0, public=True)
         resp = self.client.post(
@@ -102,14 +102,14 @@ class PageContextViewTests(TestCase):
         self.assertNotIn("actions", body)
         self.assertEqual(body["context"]["unresolved"], [f"organization_id:{self.inactive.id}"])
 
-    def test_privately_held_org_open_in_rankings_resolves(self):
+    def test_non_public_org_is_not_resolved_pinned_or_openable(self):
         resp, _ = self.submit(
             "open this company",
             context={"revision": 1, "organization_id": self.private.id},
         )
         body = resp.json()
-        self.assertEqual(body["actions"], [{"type": "open_company", "organization_id": self.private.id}])
-        self.assertEqual(body["context"]["unresolved"], [])
+        self.assertNotIn("actions", body)
+        self.assertEqual(body["context"]["unresolved"], [f"organization_id:{self.private.id}"])
 
     def test_invalid_context_is_400_and_persists_nothing(self):
         hostile = [

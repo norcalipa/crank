@@ -101,6 +101,7 @@ DROP_BAD_SCHEMA = "bad_schema"
 DROP_UNEXPOSED_ID = "unexposed_id"
 DROP_OVER_LIMIT = "over_limit"
 DROP_STALE_CONTEXT = "stale_context"
+DROP_NO_CONTEXT = "no_context"
 
 
 def _parse_one(item: Any) -> dict:
@@ -123,7 +124,7 @@ def _referenced_ids(action: dict) -> list[int]:
 
 
 def sanitize_actions(
-    raw: Any, exposed_ids=None, *, stale: bool = False
+    raw: Any, exposed_ids=None, *, stale: bool = False, has_context: bool = True
 ) -> tuple[tuple[dict, ...], tuple[str, ...]]:
     """Return ``(valid_actions, drop_reasons)`` for a model ``actions`` value.
 
@@ -132,7 +133,9 @@ def sanitize_actions(
     the server did not expose (when ``exposed_ids`` is given) is dropped and a
     low-cardinality reason is returned for telemetry. With ``stale=True`` (the
     user's view is outdated) every otherwise-valid action is dropped as
-    ``stale_context``. ``compare_companies`` is
+    ``stale_context``. With ``has_context=False`` (the request carried no page
+    context, so the client has no revision to check them against) every action
+    is dropped as ``no_context``. ``compare_companies`` is
     accepted here but not advertised in the prompt until #490.
     """
     if raw is None:
@@ -143,6 +146,9 @@ def sanitize_actions(
     kept: list[dict] = []
     reasons: list[str] = []
     for item in raw:
+        if not has_context:
+            reasons.append(DROP_NO_CONTEXT)
+            continue
         if len(kept) >= MAX_ACTIONS:
             reasons.append(DROP_OVER_LIMIT)
             continue

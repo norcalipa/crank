@@ -275,10 +275,6 @@ class OrchestratorJobSearchProvider:
     friendly error messages rather than crashes.
     """
 
-    #: The orchestrator already schema- and reference-validates actions against
-    #: the ids it exposed; the service re-validates only other providers.
-    validates_actions = True
-
     def __init__(
         self,
         *,
@@ -711,6 +707,9 @@ class OrchestratorJobSearchProvider:
             # Issue #484: already schema- and reference-validated by the
             # orchestrator; the transport re-serialises only typed fields.
             extras["actions"] = actions.to_wire(result.actions)
+            # Lets the service gate re-check against the full exposed set
+            # (catalog + page context), not just the page-context ids.
+            extras["actions_exposed_ids"] = result.exposed_organization_ids
         extras = extras or None
         return result.message, result.preferences_changed, result.results, extras
 
