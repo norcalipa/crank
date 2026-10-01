@@ -419,6 +419,63 @@ class CompanyCorrectionsViewTest(TestCase):
             response = self.client.get(f"{URL}?organization={value}")
             self.assertEqual(response.status_code, 400)
 
+    def test_hidden_characters_get_a_clear_400(self):
+        self.login()
+        for field, value in (
+            ("proposed_value", "Hybrid\u202e3 days\u202c"),
+            ("note", "n\u200bote\x07"),
+            ("evidence_url", "https://exa\u200bmple.com/p"),
+            ("evidence_url", "https://ex\u0430mple.com/p"),
+            ("evidence_url", "https://[2606:4700:4700::1111]/x"),
+        ):
+            response = self.post(self.body(**{field: value}))
+            self.assertEqual(response.status_code, 400, (field, value))
+            self.assertIn(field, response.json()["field_errors"])
+        self.assertEqual(CompanyCorrection.objects.count(), 0)
+
+    def test_zero_width_variant_of_current_value_is_already_accepted(self):
+        self.login()
+        response = self.post(self.body(proposed_value="Remote-first"))
+        self.assertEqual(response.status_code, 400)
+        response = self.post(self.body(proposed_value="\uff32emote-first"))
+        self.assertEqual(response.status_code, 400)
+
+    def test_huge_integers_are_a_400_not_a_500(self):
+        self.login()
+        response = self.post(raw='{"organization_id": ' + "1" * 4400 + "}")
+        self.assertEqual(response.status_code, 400)
+        response = self.post(self.body(organization_id=2**70))
+        self.assertEqual(response.status_code, 400)
+        response = self.client.get(f"{URL}?organization={'1' * 4400}")
+        self.assertEqual(response.status_code, 400)
+
+    def test_per_address_cap_applies_across_accounts(self):
+        third = User.objects.create_user(username="u3", password="pw-477-xyz")
+        with override_settings(COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR=2):
+            for user, field in ((self.user, "rto_policy"), (self.other, "locations")):
+                client = Client()
+                client.force_login(user)
+                self.assertEqual(self.post(self.body(field_key=field), client=client).status_code, 201)
+            client = Client()
+            client.force_login(third)
+            limited = self.post(self.body(field_key="funding_round"), client=client)
+            self.assertEqual(limited.status_code, 429)
+            self.assertTrue(1 <= int(limited["Retry-After"]) <= 3600)
+            self.assertEqual(cache.get(f"company-correction-rate:{third.pk}") or 0, 0)
+
+    def test_per_address_rejection_cap(self):
+        with override_settings(COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR=2):
+            for user in (self.user, self.other):
+                client = Client()
+                client.force_login(user)
+                self.assertEqual(
+                    self.post(self.body(proposed_value="Remote-first"), client=client).status_code, 400
+                )
+            third = User.objects.create_user(username="u3", password="pw-477-xyz")
+            client = Client()
+            client.force_login(third)
+            self.assertEqual(self.post(self.body(), client=client).status_code, 429)
+
     def test_detail_is_owner_scoped(self):
         self.login()
         mine = self.post().json()
@@ -431,3 +488,43 @@ class CompanyCorrectionsViewTest(TestCase):
         missing = self.client.get(f"{URL}{mine['id']}/")
         self.assertEqual(missing.status_code, 404)
         self.assertEqual(missing["Cache-Control"], "private, no-store")
+
+
+class RedisRateLimitTest(TestCase):
+    """Locks in the django_redis atomicity the locmem tests only approximate."""
+
+    def setUp(self):
+        import redis
+        from django.conf import settings
+
+        try:
+            client = redis.Redis.from_url(settings.REDIS_MASTER_URL, socket_connect_timeout=1)
+            client.ping()
+        except Exception:
+            self.skipTest("Redis is not available")
+        self.user = User.objects.create_user(username="redis-u", password="pw-477-xyz")
+
+    def test_concurrent_reservations_grant_exactly_the_limit(self):
+        import threading
+
+        from django.core.cache import cache as default_cache
+
+        from crank.views import company_corrections as view
+
+        base = f"company-correction-rate:test-redis-{uuid.uuid4()}"
+        keys = (base, base + ":reset")
+        granted = []
+
+        def worker():
+            granted.append(view._reserve(keys, 10))
+
+        try:
+            threads = [threading.Thread(target=worker) for _ in range(40)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(sum(granted), 10)
+            self.assertEqual(default_cache.ttl(keys[0]), 3600)
+        finally:
+            default_cache.delete_many(list(keys))

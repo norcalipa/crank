@@ -183,17 +183,11 @@ def accept_observation_fields(
                 if " ".join(value.split()).casefold() == " ".join(
                     manual.value_text.split()
                 ).casefold():
+                    # Only the check time moves: the crawl fetched a different
+                    # page than the user's link, so no fetch or verification is
+                    # stamped onto the manual row's provenance.
                     manual.last_checked_at = now
-                    manual.last_successful_fetch_at = now
-                    manual.last_verified_at = now
-                    manual.save(
-                        update_fields=[
-                            "last_checked_at",
-                            "last_successful_fetch_at",
-                            "last_verified_at",
-                            "modified",
-                        ]
-                    )
+                    manual.save(update_fields=["last_checked_at", "modified"])
                 else:
                     conflicted_attributes.append(_OBSERVATION_FIELD_MAP[field_key])
                 continue
@@ -435,7 +429,18 @@ def scoped_correction_blocked(scope_level: str, scope_value: str, current) -> bo
     return current.scope_json != {scope_key: [scope_value]}
 
 
-def accept_correction(correction, *, reviewer, now: datetime | None = None):
+def accepted_fact_changed(correction, current) -> bool:
+    """True when ``current`` is no longer the fact the correction was submitted against."""
+    if current is None:
+        return correction.current_evidence_id is not None or bool(correction.current_value)
+    return current.pk != correction.current_evidence_id or (
+        current.value_text != correction.current_value
+    )
+
+
+def accept_correction(
+    correction, *, reviewer, now: datetime | None = None, allow_stale: bool = False
+):
     """Apply a pending correction as the accepted evidence for its field.
 
     Same lock-and-supersede shape as :func:`accept_observation_fields`. Team
@@ -445,7 +450,19 @@ def accept_correction(correction, *, reviewer, now: datetime | None = None):
     fact with a different scope: the model holds one accepted row per field,
     so accepting would turn every listing outside the scope UNKNOWN.
     Nothing was fetched, so ``last_successful_fetch_at`` stays empty.
+
+    Refused (``CorrectionNotAcceptable``) when the company is no longer active,
+    when the text carries hidden characters, and, unless ``allow_stale``, when
+    the accepted fact changed since the suggestion was submitted. The created
+    row gets a ``superseded_ids`` attribute for the audit trail.
     """
+    from crank.models.company_correction import find_hidden_character
+
+    if any(
+        find_hidden_character(text) is not None
+        for text in (correction.proposed_value, correction.scope_value)
+    ) or find_hidden_character(correction.evidence_url) is not None:
+        raise CorrectionNotAcceptable("the correction contains hidden or control characters")
     scope_key = CORRECTION_SCOPE_TO_EVIDENCE_SCOPE.get(correction.scope_level, False)
     if scope_key is False:
         raise CorrectionNotAcceptable(
@@ -457,7 +474,11 @@ def accept_correction(correction, *, reviewer, now: datetime | None = None):
         locked = type(correction).objects.select_for_update().get(pk=correction.pk)
         if locked.status != locked.Status.PENDING:
             raise CorrectionNotAcceptable("correction is no longer pending")
-        Organization.objects.select_for_update().filter(pk=locked.organization_id).first()
+        organization = (
+            Organization.objects.select_for_update().filter(pk=locked.organization_id).first()
+        )
+        if organization is None or organization.status != 1:
+            raise CorrectionNotAcceptable("the company is no longer active")
         locked_rows = list(
             CompanyFieldEvidence.objects.filter(
                 organization_id=locked.organization_id,
@@ -468,15 +489,23 @@ def accept_correction(correction, *, reviewer, now: datetime | None = None):
             .order_by("-observed_at", "-id")
         )
         current = locked_rows[0] if locked_rows else None
+        if not allow_stale and accepted_fact_changed(locked, current):
+            raise CorrectionNotAcceptable(
+                "the accepted value changed since this was submitted "
+                f"(now {current.value_text!r})"
+                if current
+                else "the accepted fact was removed since this was submitted"
+            )
         if scope_json and any(row.scope_json != scope_json for row in locked_rows):
             raise CorrectionNotAcceptable(
                 "a scoped correction would replace the fact that already applies to "
                 "other listings; the model keeps one accepted fact per field"
             )
+        superseded_ids = [row.pk for row in locked_rows]
         if locked_rows:
-            CompanyFieldEvidence.objects.filter(
-                pk__in=[row.pk for row in locked_rows]
-            ).update(state=State.SUPERSEDED, modified=now)
+            CompanyFieldEvidence.objects.filter(pk__in=superseded_ids).update(
+                state=State.SUPERSEDED, modified=now
+            )
         if current is None or current.value_text != locked.proposed_value:
             last_changed_at = now
         else:
@@ -511,6 +540,7 @@ def accept_correction(correction, *, reviewer, now: datetime | None = None):
     correction.status = locked.status
     correction.reviewed_by = reviewer
     correction.reviewed_at = now
+    evidence.superseded_ids = superseded_ids
     return evidence
 
 
@@ -540,6 +570,7 @@ __all__ = [
     "FIELD_FRESHNESS_POLICY",
     "EvidenceNotAcceptable",
     "accept_correction",
+    "accepted_fact_changed",
     "scoped_correction_blocked",
     "accept_observation_fields",
     "field_evidence_payload",

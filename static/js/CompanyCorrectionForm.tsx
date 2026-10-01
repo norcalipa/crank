@@ -641,7 +641,8 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     {errorFor('evidence_url')}
                     <div id="correction-evidence-help" className="form-text">
                         A public page that shows the correct value. Must start with https://.
-                        We never fetch this link.
+                        We never fetch this link. If staff accept your suggestion, this link
+                        becomes the public source shown for that fact.
                     </div>
                 </div>
                 <div className="mb-3">

@@ -92,3 +92,52 @@ class CompanyCorrectionModelTest(TestCase):
         item.save()
         self.assertNotIn("secret-value", str(item))
         self.assertEqual(str(item), f"{self.org.pk}:rto_policy [pending]")
+
+    def test_hidden_characters_are_rejected_in_every_text_field(self):
+        for char in ("\u202e", "\u200b", "\x07", "\ufeff", "\u2028"):
+            for name, extra in (
+                ("proposed_value", {}),
+                ("scope_value", {"scope_level": "role"}),
+                ("note", {}),
+            ):
+                with self.assertRaises(ValidationError, msg=f"{name} {char!r}") as ctx:
+                    self.make(**{name: f"ab{char}cd"}, **extra).clean()
+                self.assertIn(name, ctx.exception.message_dict)
+
+    def test_note_keeps_newlines_but_nfkc_normalizes(self):
+        item = self.make(note="line one\nline two \uff21")
+        item.clean()
+        self.assertEqual(item.note, "line one\nline two A")
+
+    def test_evidence_url_hostile_hosts(self):
+        for url in (
+            "https://exa\u200bmple.com/p",
+            "https://acme.com\u202e.evil.example/p",
+            "https://ex\u0430mple.com/p",
+            "https://[2606:4700:4700::1111]/x",
+            "https://1.1.1.1/x",
+            "https://exa\x07mple.com/p",
+        ):
+            with self.assertRaises(ValidationError, msg=url) as ctx:
+                self.make(evidence_url=url).clean()
+            self.assertIn("evidence_url", ctx.exception.message_dict)
+
+    def test_evidence_url_idna_host_is_stored_as_punycode(self):
+        item = self.make(evidence_url="https://B\u00fccher.example.com/Path?q=1")
+        item.clean()
+        self.assertEqual(item.evidence_url, "https://xn--bcher-kva.example.com/Path?q=1")
+        item = self.make(evidence_url="https://acme.example.com:443/x")
+        item.clean()
+        self.assertEqual(item.evidence_url, "https://acme.example.com:443/x")
+
+    def test_evidence_url_length_and_bad_idna(self):
+        with self.assertRaises(ValidationError):
+            self.make(evidence_url="https://acme.example.com/" + "a" * 760).clean()
+        with self.assertRaises(ValidationError):
+            self.make(evidence_url="https://" + "a" * 70 + ".example.com/").clean()
+
+    def test_canonical_text_folds_hidden_and_compat_characters(self):
+        from crank.models.company_correction import canonical_text
+
+        self.assertEqual(canonical_text("Remote\u200b-first"), canonical_text("remote-first"))
+        self.assertEqual(canonical_text("\uff28ybrid  3"), "hybrid 3")

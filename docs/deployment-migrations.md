@@ -403,3 +403,14 @@ numbered merge migration if a head split remains, keeping
   recorded): `DROP TABLE crank_companycorrection;` and rerun `migrate`. Never
   `--fake` 0047, since foreign keys or an index may be missing.
 - **Rollback.** The table persists harmlessly; older pods never read it.
+- **Merge order with #525 (`0046`, parent `0045`).**
+  - *#528 merges first:* the crank graph then has two leaves (0046 and 0047,
+    both on 0045). #525 re-parents: it either sets 0046's dependency to
+    `0047_companycorrection` or adds a merge migration, and updates the
+    exact-leaf list in `test_readiness_baseline`. #528 changes nothing.
+  - *#525 merges first:* #528 re-parents 0047 onto 0046 (edit its
+    `dependencies`) and updates the same exact-leaf list.
+  - The crawl-protection hunk in `accept_observation_fields` (a manual
+    correction is not overwritten by an unreviewed crawl) overlaps #525's
+    rewrite of that function; keep the four crawl/manual-correction tests in
+    `test_company_evidence.py` through that rebase so the guard is not lost.

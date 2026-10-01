@@ -564,15 +564,31 @@ class CompanyCorrectionAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, a
     list_select_related = ["requester", "organization"]
     readonly_fields = [
         "requester", "organization", "field_key", "current_value", "current_evidence",
-        "proposed_value", "evidence_url", "scope_level", "scope_value", "note", "status",
+        "live_accepted_value", "proposed_value", "evidence_url", "scope_level", "scope_value", "note", "status",
         "reviewed_by", "reviewed_at", "idempotency_key", "created", "modified",
     ]
     fields = readonly_fields + ["admin_note"]
-    actions = ["accept_corrections", "reject_corrections", "mark_corrections_duplicate"]
-    confirmable_actions = ["accept_corrections", "reject_corrections", "mark_corrections_duplicate"]
+    actions = [
+        "accept_corrections", "accept_corrections_over_changed_value",
+        "reject_corrections", "mark_corrections_duplicate",
+    ]
+    confirmable_actions = [
+        "accept_corrections", "accept_corrections_over_changed_value",
+        "reject_corrections", "mark_corrections_duplicate",
+    ]
 
     def _audit(self, request, item, action, old, new):
         OperationalChangeAudit.record(actor=request.user, target_type="company_correction", target_id=item.pk, action=action, old_value=old, new_value=new, confirmed=True)
+
+    @admin.display(description="Accepted value now")
+    def live_accepted_value(self, obj):
+        if obj is None or not obj.pk:
+            return "-"
+        current = company_evidence.resolve_field_evidence(obj.organization).get(obj.field_key)
+        live = current.value_text if current else "(none)"
+        if company_evidence.accepted_fact_changed(obj, current):
+            return f"{live} (changed since submission; was: {obj.current_value or '(none)'})"
+        return live
 
     def has_add_permission(self, request):
         return False
@@ -615,8 +631,7 @@ class CompanyCorrectionAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, a
                 updated += 1
         return updated
 
-    @admin.action(description="Accept selected corrections as accepted evidence")
-    def accept_corrections(self, request, queryset):
+    def _accept(self, request, queryset, *, allow_stale):
         pending = list(
             queryset.filter(status=CompanyCorrection.Status.PENDING).order_by("organization_id", "created", "pk")
         )
@@ -641,19 +656,39 @@ class CompanyCorrectionAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, a
             for item in pending:
                 old = {"status": item.status}
                 try:
-                    company_evidence.accept_correction(item, reviewer=request.user)
+                    evidence = company_evidence.accept_correction(
+                        item, reviewer=request.user, allow_stale=allow_stale
+                    )
                 except company_evidence.CorrectionNotAcceptable as exc:
                     refused.append(f"#{item.pk}: {exc}")
                     continue
-                self._audit(request, item, "accept", old, {"status": item.status})
+                self._audit(
+                    request, item, "accept", old,
+                    {
+                        "status": item.status,
+                        "evidence_id": evidence.pk,
+                        "superseded_ids": evidence.superseded_ids,
+                        "value": evidence.value_text,
+                        "overrode_changed_value": allow_stale,
+                    },
+                )
                 accepted += 1
         self.message_user(request, f"{accepted} correction(s) accepted and audited.")
         if refused:
+            hint = "" if allow_stale else " Use 'Accept even if the accepted value changed' to override a changed value."
             self.message_user(
                 request,
-                f"{len(refused)} correction(s) were left unchanged — " + "; ".join(refused) + ".",
+                f"{len(refused)} correction(s) were left unchanged — " + "; ".join(refused) + "." + hint,
                 level=messages.WARNING,
             )
+
+    @admin.action(description="Accept selected corrections as accepted evidence")
+    def accept_corrections(self, request, queryset):
+        self._accept(request, queryset, allow_stale=False)
+
+    @admin.action(description="Accept even if the accepted value changed since submission")
+    def accept_corrections_over_changed_value(self, request, queryset):
+        self._accept(request, queryset, allow_stale=True)
 
     @admin.action(description="Reject selected corrections")
     def reject_corrections(self, request, queryset):

@@ -678,3 +678,12 @@ def test_funding_label_uppercases_canonical_stage():
     assert _canonical_stage("Seed") == "s"
     assert _funding_label("a") == "Series A"
     assert _funding_label("s") == "Seed"
+
+
+@pytest.mark.parametrize("value", ["Re\u200bmote", "Rem\u202eote", "Remo\x07te", "\uff32emote", "Re\ufeffmote"])
+def test_rto_days_ignores_hidden_and_compat_characters(value):
+    from crank.agents.jobs.matching import _normalized, _rto_days
+
+    assert _rto_days(value) == 0
+    assert _normalized(value) == "remote"
+    assert _rto_days(f"Hy\u200bbrid, 3 days") == 3

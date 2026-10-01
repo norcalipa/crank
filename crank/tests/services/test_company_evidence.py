@@ -609,6 +609,7 @@ class AcceptCorrectionTests(TestCase):
 
         from crank.models.company_correction import CompanyCorrection
 
+        live = resolve_field_evidence(self.org).get(overrides.get("field_key", "rto_policy"))
         values = dict(
             requester=self.user,
             organization=self.org,
@@ -616,6 +617,8 @@ class AcceptCorrectionTests(TestCase):
             proposed_value="Hybrid",
             evidence_url="https://Careers.Acme.example.com/rto",
             idempotency_key=uuid.uuid4(),
+            current_evidence=live,
+            current_value=live.value_text if live else "",
         )
         values.update(overrides)
         return CompanyCorrection.objects.create(**values)
@@ -738,6 +741,7 @@ class AcceptCorrectionTests(TestCase):
 
     def test_crawl_confirming_a_manual_value_refreshes_its_freshness(self):
         manual = accept_correction(self.correction(proposed_value="Hybrid 3 days"), reviewer=self.user)
+        manual_verified = manual.last_verified_at
         later = timezone.now() + timedelta(days=80)
         observation = make_observation(self.org, rto_evidence="  hybrid   3 DAYS ")
         accept_observation_fields(observation, now=later)
@@ -745,9 +749,9 @@ class AcceptCorrectionTests(TestCase):
         self.assertEqual(observation.status, Status.AUTO_APPLIED)
         manual.refresh_from_db()
         self.assertEqual(manual.state, State.ACCEPTED)
-        self.assertEqual(manual.last_verified_at, later)
         self.assertEqual(manual.last_checked_at, later)
-        self.assertEqual(manual.last_successful_fetch_at, later)
+        self.assertEqual(manual.last_verified_at, manual_verified)
+        self.assertIsNone(manual.last_successful_fetch_at)
 
     def test_scoped_correction_blocked_matches_what_accept_refuses(self):
         from crank.services.company_evidence import scoped_correction_blocked
@@ -855,3 +859,55 @@ class AcceptCorrectionTests(TestCase):
         item.refresh_from_db()
         self.assertEqual(item.status, "pending")
         self.assertEqual(CompanyFieldEvidence.objects.count(), 1)
+
+    def test_stale_snapshot_is_refused_unless_overridden(self):
+        first = self.correction(proposed_value="Fully in office")
+        stale = self.correction(proposed_value="Hybrid")
+        accept_correction(first, reviewer=self.user)
+        with self.assertRaises(CorrectionNotAcceptable) as ctx:
+            accept_correction(stale, reviewer=self.user)
+        self.assertIn("changed since", str(ctx.exception))
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, "pending")
+        evidence = accept_correction(stale, reviewer=self.user, allow_stale=True)
+        self.assertEqual(evidence.value_text, "Hybrid")
+        self.assertEqual(len(evidence.superseded_ids), 1)
+
+    def test_removed_accepted_fact_is_refused_as_stale(self):
+        item = self.correction()
+        CompanyFieldEvidence.objects.filter(pk=self.old.pk).update(state=State.SUPERSEDED)
+        with self.assertRaises(CorrectionNotAcceptable) as ctx:
+            accept_correction(item, reviewer=self.user)
+        self.assertIn("removed", str(ctx.exception))
+
+    def test_correction_for_first_fact_has_no_snapshot(self):
+        CompanyFieldEvidence.objects.all().delete()
+        item = self.correction(current_evidence=None, current_value="")
+        evidence = accept_correction(item, reviewer=self.user)
+        self.assertEqual(evidence.superseded_ids, [])
+
+    def test_inactive_company_is_refused(self):
+        item = self.correction()
+        type(self.org).objects.filter(pk=self.org.pk).update(status=0)
+        with self.assertRaises(CorrectionNotAcceptable) as ctx:
+            accept_correction(item, reviewer=self.user)
+        self.assertIn("no longer active", str(ctx.exception))
+
+    def test_hidden_characters_stored_before_validation_are_refused(self):
+        for overrides in (
+            {"proposed_value": "Hy\u200bbrid"},
+            {"evidence_url": "https://exa\u200bmple.com/p"},
+            {"scope_level": "role", "scope_value": "Eng\u202e"},
+        ):
+            item = self.correction(**overrides)
+            with self.assertRaises(CorrectionNotAcceptable, msg=str(overrides)):
+                accept_correction(item, reviewer=self.user)
+
+    def test_accepted_fact_changed_helper(self):
+        from crank.services.company_evidence import accepted_fact_changed
+
+        item = self.correction()
+        self.assertFalse(accepted_fact_changed(item, self.old))
+        self.assertTrue(accepted_fact_changed(item, None))
+        empty = self.correction(current_evidence=None, current_value="")
+        self.assertFalse(accepted_fact_changed(empty, None))

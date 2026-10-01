@@ -18,7 +18,7 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_protect
 
 from crank.forms.company_correction import CompanyCorrectionForm
-from crank.models.company_correction import CompanyCorrection
+from crank.models.company_correction import CompanyCorrection, canonical_text
 from crank.models.company_profile import CompanyFieldEvidence
 from crank.models.organization import Organization
 from crank.services.company_evidence import resolve_field_evidence, scoped_correction_blocked
@@ -26,6 +26,10 @@ from crank.services.company_evidence import resolve_field_evidence, scoped_corre
 RATE_LIMIT_SECONDS = 60 * 60
 DEFAULT_RATE_LIMIT = 10
 DEFAULT_REJECTED_LIMIT = 60
+DEFAULT_IP_RATE_LIMIT = 30
+DEFAULT_IP_REJECTED_LIMIT = 300
+MAX_ID_DIGITS = 18
+MAX_ORGANIZATION_ID = 2**63 - 1
 MAX_BODY_BYTES = 8 * 1024
 MAX_LIST = 50
 _FIELD_LABELS = dict(CompanyFieldEvidence.FieldKey.choices)
@@ -66,8 +70,22 @@ def _payload(correction):
     }
 
 
+def _client_ip(request):
+    return request.META.get("REMOTE_ADDR") or "unknown"
+
+
 def _rate_keys(request):
     base = f"company-correction-rate:{request.user.pk}"
+    return base, f"{base}:reset"
+
+
+def _ip_rate_keys(request):
+    base = f"company-correction-rate-ip:{_client_ip(request)}"
+    return base, f"{base}:reset"
+
+
+def _ip_rejection_keys(request):
+    base = f"company-correction-rejected-ip:{_client_ip(request)}"
     return base, f"{base}:reset"
 
 
@@ -101,14 +119,24 @@ def _release(key):
         pass
 
 
-def _reserve_slot(request):
-    """Take one allowance atomically; False (and nothing held) once over the limit."""
-    limit = getattr(settings, "COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR", DEFAULT_RATE_LIMIT)
-    key, reset_key = _rate_keys(request)
+def _reserve(keys, limit):
+    key, reset_key = keys
     if _bump(key, reset_key) > limit:
         _release(key)
         return False
     return True
+
+
+def _reserve_slot(request):
+    """Take one allowance atomically; False (and nothing held) once over the limit."""
+    limit = getattr(settings, "COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR", DEFAULT_RATE_LIMIT)
+    return _reserve(_rate_keys(request), limit)
+
+
+def _reserve_ip_slot(request):
+    """Coarse per-address allowance in front of the per-account one."""
+    limit = getattr(settings, "COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR", DEFAULT_IP_RATE_LIMIT)
+    return _reserve(_ip_rate_keys(request), limit)
 
 
 def _rejection_keys(request):
@@ -117,19 +145,26 @@ def _rejection_keys(request):
 
 
 def _rejections_exhausted(request):
-    limit = getattr(
+    """The reset key of the exhausted rejection cap (user, then address), else None."""
+    user_limit = getattr(
         settings, "COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR", DEFAULT_REJECTED_LIMIT
     )
-    key, _ = _rejection_keys(request)
-    return (cache.get(key) or 0) >= limit
+    ip_limit = getattr(
+        settings, "COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR", DEFAULT_IP_REJECTED_LIMIT
+    )
+    for keys, limit in ((_rejection_keys(request), user_limit), (_ip_rejection_keys(request), ip_limit)):
+        if (cache.get(keys[0]) or 0) >= limit:
+            return keys[1]
+    return None
 
 
 def _count_rejection(request):
     _bump(*_rejection_keys(request))
+    _bump(*_ip_rejection_keys(request))
 
 
 def _normalized(value):
-    return " ".join((value or "").split()).casefold()
+    return canonical_text(value)
 
 
 def _existing_response(existing):
@@ -152,7 +187,11 @@ def _list(request):
     )
     organization = request.GET.get("organization")
     if organization is not None:
-        if not (organization.isascii() and organization.isdigit()):
+        if not (
+            organization.isascii()
+            and organization.isdigit()
+            and len(organization) <= MAX_ID_DIGITS
+        ):
             return _error_response("organization must be an integer id.")
         queryset = queryset.filter(organization_id=int(organization))
     return [_payload(item) for item in queryset[:MAX_LIST]]
@@ -164,7 +203,7 @@ def _create(request):
         return _error_response("That request is too large.", status=413)
     try:
         payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, ValueError):
         return _error_response("Send a JSON object.")
     if not isinstance(payload, dict):
         return _error_response("Send a JSON object.")
@@ -202,18 +241,27 @@ def _limited_store(request, payload, idempotency_key):
     The slot is held only by a stored (201) correction; every other outcome
     releases it, and rejected attempts count against a separate, larger cap.
     """
-    if _rejections_exhausted(request):
-        return _too_many(request, _rejection_keys(request)[1])
+    exhausted = _rejections_exhausted(request)
+    if exhausted:
+        return _too_many(request, exhausted)
+    if not _reserve_ip_slot(request):
+        return _too_many(request, _ip_rate_keys(request)[1])
     if not _reserve_slot(request):
+        _release(_ip_rate_keys(request)[0])
         return _too_many(request, _rate_keys(request)[1])
-    key, _ = _rate_keys(request)
+    keys = (_rate_keys(request)[0], _ip_rate_keys(request)[0])
+
+    def release():
+        for held in keys:
+            _release(held)
+
     try:
         response = _store(request, payload, idempotency_key)
     except BaseException:
-        _release(key)
+        release()
         raise
     if response.status_code != 201:
-        _release(key)
+        release()
         if response.status_code in (400, 404, 409):
             _count_rejection(request)
     return response
@@ -233,7 +281,11 @@ def _store(request, payload, idempotency_key):
     form = CompanyCorrectionForm(data)
     field_errors = {}
     organization_id = payload.get("organization_id")
-    if isinstance(organization_id, bool) or not isinstance(organization_id, int):
+    if (
+        isinstance(organization_id, bool)
+        or not isinstance(organization_id, int)
+        or not 0 < organization_id <= MAX_ORGANIZATION_ID
+    ):
         field_errors["organization_id"] = ["Choose a company."]
     if not form.is_valid():
         field_errors.update({name: list(errors) for name, errors in form.errors.items()})

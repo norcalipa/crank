@@ -644,6 +644,47 @@ class CompanyCorrectionAdminTest(TestCase):
         self.assertEqual((audit.action, audit.target_type, audit.actor), ("accept", "company_correction", self.staff))
         self.assertTrue(audit.confirmed)
 
+    def test_accept_audit_links_created_and_superseded_rows(self):
+        from crank.models.company_profile import CompanyFieldEvidence
+
+        item = self.make()
+        self.admin.accept_corrections(self._post(), self._qs())
+        audit = OperationalChangeAudit.objects.get()
+        created = CompanyFieldEvidence.objects.get(state="accepted")
+        self.assertEqual(audit.new_value["evidence_id"], created.pk)
+        self.assertEqual(audit.target_id, str(item.pk))
+        self.assertEqual(audit.new_value["superseded_ids"], [])
+        self.assertEqual(audit.new_value["value"], "Hybrid")
+        self.assertFalse(audit.new_value["overrode_changed_value"])
+
+    def test_stale_accept_is_refused_then_overridable_and_live_value_shown(self):
+        from crank.models.company_profile import CompanyFieldEvidence
+        from crank.services.company_evidence import accept_correction
+
+        first = self.make()
+        stale = self.make()
+        accept_correction(first, reviewer=self.staff)
+        self.assertIn("changed since submission", self.admin.live_accepted_value(stale))
+        request = self._post()
+        self.admin.accept_corrections(request, self.CompanyCorrection.objects.filter(pk=stale.pk))
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, "pending")
+        self.assertIn("Accept even if", " ".join(str(m) for m in request._messages))
+        self.admin.accept_corrections_over_changed_value(
+            self._post(), self.CompanyCorrection.objects.filter(pk=stale.pk)
+        )
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, "accepted")
+        audit = OperationalChangeAudit.objects.get(target_id=stale.pk)
+        self.assertTrue(audit.new_value["overrode_changed_value"])
+        self.assertEqual(len(audit.new_value["superseded_ids"]), 1)
+        self.assertEqual(CompanyFieldEvidence.objects.filter(state="accepted").count(), 1)
+
+    def test_live_accepted_value_display_branches(self):
+        self.assertEqual(self.admin.live_accepted_value(None), "-")
+        item = self.make()
+        self.assertEqual(self.admin.live_accepted_value(item), "(none)")
+
     def test_team_scope_stays_pending_with_message(self):
         item = self.make(scope_level="team", scope_value="Platform")
         request = self._post()
@@ -659,7 +700,11 @@ class CompanyCorrectionAdminTest(TestCase):
 
         company = self.make()
         accept_correction(company, reviewer=self.staff)
-        scoped = self.make(scope_level="location", scope_value="London")
+        live = CompanyFieldEvidence.objects.get(state="accepted")
+        scoped = self.make(
+            scope_level="location", scope_value="London",
+            current_evidence=live, current_value=live.value_text,
+        )
         request = self._post()
         self.admin.accept_corrections(request, self.CompanyCorrection.objects.filter(pk=scoped.pk))
         scoped.refresh_from_db()
