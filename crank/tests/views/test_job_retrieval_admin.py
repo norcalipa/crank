@@ -16,7 +16,7 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, PropertyMock, patch
 
 from django.contrib.admin.sites import AdminSite
 from django.contrib.auth.models import User
@@ -1434,6 +1434,9 @@ class JobRetrievalDashboardVisualContractTests(TestCase):
                 created=timezone.now() - timedelta(minutes=1),
             )
             content = self.client.get(self.url).content.decode()
+            if status == AgentRun.Status.SKIPPED:
+                self.assertNotIn('data-state-class="run-skipped"', content)
+                continue
             self.assertIn(
                 f'data-state-class="run-{status}"',
                 content,
@@ -1604,7 +1607,7 @@ class JobRetrievalDashboardVisualContractTests(TestCase):
         for heading_id in ("jro-aggregates-heading", "jro-gates-heading"):
             self.assertRegex(
                 content,
-                rf'<details class="jro-diag">\s*<summary><h2 id="{heading_id}">',
+                rf'<h2 id="{heading_id}">[^<]*</h2>\s*<details class="jro-diag">\s*<summary><span class="jro-diag-label">Show details</span>',
             )
         self.assertLess(content.index("jro-backlog-heading"), content.index("jro-aggregates-heading"))
         page = content.split('<div id="jro-page">', 1)[1]
@@ -1651,6 +1654,9 @@ READINESS_ON = dict(
 )
 
 
+QUERY_BOUND = 35
+
+
 @override_settings(**READINESS_ON)
 class JobRetrievalReadinessPanelTests(TestCase):
     """Readiness panel, run progress, sources and backlog (issue #481)."""
@@ -1681,7 +1687,9 @@ class JobRetrievalReadinessPanelTests(TestCase):
 
     def test_non_staff_denied(self):
         self.client.force_login(self.non_staff)
-        self.assertNotEqual(self.client.get(self.url).status_code, 200)
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/admin/login/", response["Location"])
 
     def test_empty_state_names_first_step_and_empty_states(self):
         content = self._get()
@@ -1729,10 +1737,12 @@ class JobRetrievalReadinessPanelTests(TestCase):
         self.assertIn("17", content)
         import re
 
-        links = re.findall(r'href="(/admin/crank/[^"]*agent_run__id__exact=%d[^"]*)"' % run.pk, content)
-        self.assertTrue(links)
-        for link in set(links):
-            self.assertEqual(self.client.get(link.replace("&amp;", "&")).status_code, 200)
+        card = content.split("Latest run (also the last completed run)", 1)[1].split("</div>", 1)[0]
+        links = set(re.findall(r'href="(/admin/[^"]*)"', card))
+        self.assertEqual(len(links), 4)
+        self.assertTrue(any("agent_run__id__exact=%d" % run.pk in link for link in links))
+        for link in links:
+            self.assertEqual(self.client.get(link.replace("&amp;", "&")).status_code, 200, link)
 
     def test_secrets_and_hostile_text_never_rendered(self):
         source = self._source(name='<script>alert("src")</script>')
@@ -1776,23 +1786,257 @@ class JobRetrievalReadinessPanelTests(TestCase):
         content = self._get()
         self.assertIn("Showing 50 of 53", content)
 
-    def test_query_count_is_independent_of_source_count(self):
+    def _query_count(self):
         from django.db import connection
         from django.test.utils import CaptureQueriesContext
 
-        def count():
-            with CaptureQueriesContext(connection) as ctx:
-                self.assertEqual(self.client.get(self.url).status_code, 200)
-            return len(ctx)
+        with CaptureQueriesContext(connection) as ctx:
+            self.assertEqual(self.client.get(self.url).status_code, 200)
+        return len(ctx)
 
-        for i in range(3):
-            self._source(name=f"s{i}")
-        few = count()
-        for i in range(3, 30):
-            self._source(name=f"s{i}")
-        many = count()
-        self.assertEqual(few, many)
-        self.assertLessEqual(many, 35)
+    def test_query_count_is_independent_of_source_count(self):
+        gates = (
+            dict(),
+            dict(MATCH_RESULTS_READ_ENABLED=True, MATCH_RECOMPUTE_ENABLED=True, PUBLICATION_CONSUMER_ENABLED=True),
+        )
+        for index, overrides in enumerate(gates):
+            with self.subTest(gates=sorted(overrides)), override_settings(**overrides):
+                JobSourceCatalog.objects.all().delete()
+                for i in range(3):
+                    self._source(name=f"s{index}-{i}")
+                few = self._query_count()
+                for i in range(3, 30):
+                    self._source(name=f"s{index}-{i}")
+                many = self._query_count()
+                self.assertEqual(few, many)
+                self.assertLessEqual(many, QUERY_BOUND)
+
+    def test_query_count_is_flat_with_runs_users_and_crawl_history(self):
+        self._source()
+        with override_settings(MATCH_RESULTS_READ_ENABLED=True, MATCH_RECOMPUTE_ENABLED=True):
+            before = self._query_count()
+            from crank.models.crawl_run import CrawlRun
+
+            source = JobSourceCatalog.objects.get()
+            for i in range(30):
+                CrawlRun.objects.create(
+                    source_type=CrawlRun.SourceType.JOB,
+                    source_key="usajobs",
+                    job_source=source,
+                    outcome=CrawlRun.Outcome.FAILURE,
+                    started_at=timezone.now() - timedelta(minutes=i),
+                )
+                AgentRun.objects.create(run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.FAILED)
+            self.assertEqual(self._query_count(), before)
+
+    def test_crawl_history_does_not_change_inventory_health_result_or_query_count(self):
+        from crank.models.crawl_run import CrawlRun
+        from crank.services import inventory_health
+
+        source = self._source(last_crawl_at=timezone.now())
+        base = timezone.now()
+        CrawlRun.objects.bulk_create(
+            [
+                CrawlRun(
+                    source_type=CrawlRun.SourceType.JOB,
+                    source_key="usajobs",
+                    job_source=source,
+                    outcome=CrawlRun.Outcome.SUCCESS if i < 2000 else CrawlRun.Outcome.FAILURE,
+                    started_at=base - timedelta(minutes=2000 - i if i < 2000 else i),
+                )
+                for i in range(2200)
+            ]
+        )
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            health = inventory_health.check_inventory_health()
+        self.assertEqual(health["repeated_failure_sources"], 0)
+        self.assertLessEqual(len(ctx), 5)
+        threshold = inventory_health.DEFAULT_MIN_CONSECUTIVE_FAILURES
+        CrawlRun.objects.filter(job_source=source).update(
+            outcome=CrawlRun.Outcome.SUCCESS, started_at=base - timedelta(days=1)
+        )
+        newest = list(CrawlRun.objects.filter(job_source=source).order_by("-id")[:threshold])
+        for run in newest:
+            CrawlRun.objects.filter(pk=run.pk).update(outcome=CrawlRun.Outcome.FAILURE, started_at=base)
+        self.assertEqual(inventory_health.check_inventory_health()["repeated_failure_sources"], 1)
+        with patch("crank.services.inventory_health._setting_int", return_value=1):
+            self.assertEqual(inventory_health.check_inventory_health()["repeated_failure_sources"], 1)
+
+    def test_snapshot_input_failure_renders_inline_errors_not_500(self):
+        from crank.services.operations_readiness import _Context
+
+        self._source()
+        with patch.object(_Context, "listings", new_callable=PropertyMock, side_effect=RuntimeError("db down")):
+            response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Could not compute inventory aggregates", content)
+        self.assertIn('data-stage="inventory" data-status="unknown"', content)
+
+    def test_source_counts_failure_renders_inline_errors_not_500(self):
+        from crank.services.operations_readiness import _Context
+
+        with patch.object(_Context, "source_counts", new_callable=PropertyMock, side_effect=RuntimeError("db down")):
+            response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Could not compute inventory aggregates", response.content.decode())
+
+    def test_capability_failure_renders_gates_error_not_500(self):
+        from crank.services.operations_readiness import _Context
+
+        with patch.object(_Context, "capability_parts", new_callable=PropertyMock, side_effect=RuntimeError("db down")):
+            response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode()
+        self.assertIn("Could not compute readiness gates", content)
+        self.assertIn('id="jro-action-queue-retrieval"', content)
+
+    def test_never_set_up_page_still_renders_actions_after_failure(self):
+        from crank.services.operations_readiness import _Context
+
+        with patch.object(_Context, "source_counts", new_callable=PropertyMock, side_effect=RuntimeError("db down")):
+            content = self.client.get(self.url).content.decode()
+        self.assertIn('id="jro-action-queue-retrieval"', content)
+
+    def _all_stages_met_except(self, key, status, summary="x", remediation="Do the thing."):
+        from crank.services import operations_readiness as ops
+
+        funcs = {
+            k: (lambda k: lambda ctx: ops._result(k, "met", "Fine."))(k) for k in ops.STAGE_KEYS if k != key
+        }
+        funcs[key] = lambda ctx: ops._result(key, status, summary, remediation)
+        return patch.dict(ops._STAGE_FUNCS, funcs)
+
+    def test_attention_stage_is_next_step_not_all_met(self):
+        with self._all_stages_met_except("employers", "attention", "1 unresolved employer awaiting review."):
+            content = self._get()
+        self.assertNotIn("All prerequisites met", content)
+        self.assertNotIn("Every stage is met", content)
+        self.assertNotIn("steps met</summary>", content)
+        self.assertIn('data-next-stage="employers" data-status="attention"', content)
+        self.assertIn("8 of 9 steps met · 1 needs attention.", content)
+        self.assertIn("Do the thing.", content.split('data-stage="employers"', 1)[1])
+        self.assertIn("Needs attention", content)
+
+    def test_no_attention_and_all_met_shows_collapsed_all_met(self):
+        from crank.services import operations_readiness as ops
+
+        funcs = {k: (lambda k: lambda ctx: ops._result(k, "met", "Fine."))(k) for k in ops.STAGE_KEYS}
+        with patch.dict(ops._STAGE_FUNCS, funcs):
+            content = self._get()
+        self.assertIn("All prerequisites met", content)
+        self.assertIn("<summary>All 9 steps met", content)
+        self.assertIn("<details class=\"jro-details jro-card\">", content)
+
+    def test_real_unresolved_employer_never_reads_all_met(self):
+        from crank.models.employer import UnresolvedEmployer
+
+        source = self._source(last_crawl_at=timezone.now())
+        from crank.models.organization import Organization
+
+        listing = JobListing.all_objects.create(
+            source=source,
+            external_id="e1",
+            canonical_url="https://data.usajobs.gov/job/1",
+            employer_name="Acme",
+            title="Eng",
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+            organization=Organization.objects.create(name="Acme Org"),
+        )
+        UnresolvedEmployer.objects.create(
+            listing=listing, employer_name="Other", reason=UnresolvedEmployer.Reason.NO_MATCH
+        )
+        content = self._get()
+        self.assertNotIn("All prerequisites met", content)
+        self.assertIn('data-stage="employers" data-status="attention"', content)
+
+    def test_skipped_row_does_not_hide_expired_queued_run_or_replace_latest(self):
+        self._source()
+        old = AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.PENDING
+        )
+        AgentRun.objects.filter(pk=old.pk).update(created=timezone.now() - timedelta(minutes=90))
+        AgentRun.objects.create(run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.SKIPPED)
+        content = self._get()
+        self.assertIn('data-stage="consumption" data-status="unmet"', content)
+        self.assertNotIn("The most recent run was consumed and finished", content)
+        self.assertNotIn('data-latest-run="skipped"', content)
+        self.assertIn('data-latest-run="pending"', content)
+
+    def test_only_skipped_rows_show_no_latest_run(self):
+        self._source()
+        AgentRun.objects.create(run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.SKIPPED)
+        content = self._get()
+        self.assertIn('data-latest-run="none"', content)
+
+    def test_failed_run_stays_visible_behind_a_skipped_row(self):
+        self._source()
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.FAILED,
+            finished_at=timezone.now(),
+            error_summary="boom",
+        )
+        AgentRun.objects.create(run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.SKIPPED)
+        content = self._get()
+        self.assertIn('data-latest-run="failed"', content)
+        self.assertIn('data-state="failed"', content)
+
+    def test_deadline_run_shows_stopped_not_succeeded(self):
+        self._source()
+        now = timezone.now()
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.SUCCEEDED,
+            started_at=now - timedelta(minutes=30),
+            finished_at=now - timedelta(minutes=1),
+            counts={"deadline_reached": True, "sources_deferred": 3, "sources_total": 5},
+        )
+        content = self._get()
+        card = content.split("Latest run (also the last completed run)", 1)[1]
+        self.assertIn("Stopped at deadline", card)
+        self.assertIn("3 sources deferred", card)
+        self.assertNotIn(">Succeeded<", card.split("</div>", 1)[0].replace(" ", "").replace("\n", ""))
+        self.assertIn('data-stage="scheduler" data-status="attention"', content)
+
+    def test_deadline_without_deferred_count_has_plain_note(self):
+        from crank.admin_dashboard import _progress_context
+        from crank.services import operations_readiness as ops
+
+        self._source()
+        now = timezone.now()
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.SUCCEEDED,
+            started_at=now - timedelta(minutes=3),
+            finished_at=now,
+            counts={"deadline_reached": True},
+        )
+        completed = _progress_context(ops.snapshot())["completed"]
+        self.assertEqual(completed["deadline_note"], "Stopped at its deadline; the remainder resumes next run.")
+
+    def test_diagnostic_headings_sit_outside_summary_and_stage_list_has_role(self):
+        content = self._get()
+        for heading in ("jro-aggregates-heading", "jro-gates-heading"):
+            self.assertIn(f'<h2 id="{heading}">', content)
+        import re
+
+        for summary in re.findall(r"<summary>(.*?)</summary>", content, re.S):
+            self.assertNotIn("<h2", summary)
+        self.assertIn('<ol class="jro-stages" role="list">', content)
+
+    def test_firecrawl_disabled_names_the_flag_and_adapter_step(self):
+        self._source(
+            name="fc", adapter_key="firecrawl-careers", base_url="https://remoteok.com/jobs"
+        )
+        with override_settings(FIRECRAWL_ENABLED=False, FIRECRAWL_API_KEY="fc-key"):
+            content = self._get()
+        self.assertIn('data-next-stage="adapter"', content)
+        self.assertIn("FIRECRAWL_ENABLED is off", content)
 
     def test_readiness_failure_renders_inline_error_not_500(self):
         with patch("crank.admin_dashboard.operations_readiness.readiness", side_effect=RuntimeError("x")):
@@ -2011,20 +2255,6 @@ class JobRetrievalActionStateTests(TestCase):
         self.assertEqual(stage["tone"], "neutral")
         self.assertEqual(stage["headline"], "One thing")
         self.assertEqual(stage["summary_rest"], "Second part.")
-
-    def test_all_met_readiness_is_collapsed_summary(self):
-        from crank.admin_dashboard import _readiness_context
-
-        fake = {
-            "stages": [
-                {"key": "a", "status": "met", "summary": "ok.", "remediation": ""},
-                {"key": "b", "status": "unmet", "summary": "no.", "remediation": "fix"},
-            ],
-            "next_step": None,
-        }
-        with patch("crank.admin_dashboard.operations_readiness.readiness", return_value=fake):
-            ctx = _readiness_context(object())
-        self.assertEqual(ctx["met_count"], 1)
 
     def test_scheduler_remediation_rewritten_when_run_active(self):
         from crank.admin_dashboard import _readiness_context
