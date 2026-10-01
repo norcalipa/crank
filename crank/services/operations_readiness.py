@@ -43,6 +43,8 @@ logger = logging.getLogger(__name__)
 
 RUNBOOK_BASE_URL = "https://github.com/norcalipa/crank/blob/main/docs/"
 
+_PACKAGE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep
+
 MET, UNMET, PENDING, ATTENTION, UNKNOWN = "met", "unmet", "pending", "attention", "unknown"
 STATUSES = (MET, UNMET, PENDING, ATTENTION, UNKNOWN)
 
@@ -266,6 +268,10 @@ class _Context:
         return self._memo("match_read_enabled", lambda: bool(match_results.read_enabled()))
 
     @property
+    def recompute_enabled(self):
+        return self._memo("recompute_enabled", lambda: bool(match_recompute.recompute_enabled()))
+
+    @property
     def health(self):
         return self._memo("health", lambda: inventory_health.check_inventory_health(now=self.now))
 
@@ -281,11 +287,11 @@ class _Context:
 
 
 def log_failure(what, exc):
-    """Log the exception type and call-site frames only: no values, no messages."""
-    frames = " > ".join(
-        f"{os.path.basename(f.filename)}:{f.lineno}:{f.name}" for f in traceback.extract_tb(exc.__traceback__)[-6:]
-    )
-    logger.warning("%s failed: %s: %s [%s]", what, type(exc).__name__, sanitize_error(exc), frames)
+    """Log the exception type and project call-site frames only: no values, no messages."""
+    extracted = traceback.extract_tb(exc.__traceback__)
+    own = [f for f in extracted if f.filename.startswith(_PACKAGE_DIR)] or extracted
+    frames = " > ".join(f"{os.path.basename(f.filename)}:{f.lineno}:{f.name}" for f in own[-6:])
+    logger.warning("%s failed: %s [%s]", what, type(exc).__name__, frames)
 
 
 def _plural(count, noun):
@@ -629,11 +635,16 @@ def _stage_matches(ctx):
             if counts[name]
         )
         refresh = counts["generation_dirty_age_stale"]
-        refresh_note = (
-            f" {_plural(refresh, 'user')} due for the periodic refresh (older than {configured}h; the recompute drain handles it)."
-            if refresh
-            else ""
-        )
+        refresh_note = ""
+        if refresh:
+            drain = (
+                "the recompute drain handles it"
+                if ctx.recompute_enabled
+                else "paused while MATCH_RECOMPUTE_ENABLED is off"
+            )
+            refresh_note = (
+                f" {_plural(refresh, 'user')} due for the periodic refresh (older than {configured}h; {drain})."
+            )
         if dirty == 0 and lag <= max_hours * 3600 and not tiers:
             return _result(
                 "matches",
@@ -660,14 +671,27 @@ def _stage_matches(ctx):
             link,
         )
     has_matches = JobMatch.objects.exists()
-    if has_matches or not UserPreference.objects.exists():
+    run = ctx.last_finished_run
+    counted = run is not None and "users_total" in _raw_counts(run)
+    if has_matches or (counted and _count(run, "users_total") == 0) or (
+        not counted and not UserPreference.objects.filter(user__is_active=True).exists()
+    ):
         return _result(
             "matches",
             MET,
             "Live reads (committed generations not served): "
-            + ("matches exist." if has_matches else "no user has preferences yet."),
+            + ("matches exist." if has_matches else "no user has active preferences yet."),
             link=link,
             not_applicable=not has_matches,
+        )
+    if counted:
+        return _result(
+            "matches",
+            UNMET,
+            "Live reads (committed generations not served): the last pipeline run processed "
+            f"{_plural(_count(run, 'users_total'), 'user')} but persisted no matches.",
+            "Check that run's counts and the users' preferences; no matches exist yet.",
+            link,
         )
     return _result(
         "matches",
@@ -724,6 +748,8 @@ def readiness(now=None, ctx=None):
         "met_count": sum(1 for s in stages if s["status"] == MET),
         "unmet_count": sum(1 for s in stages if s["status"] == UNMET),
         "attention_count": sum(1 for s in stages if s["status"] == ATTENTION),
+        "pending_count": sum(1 for s in stages if s["status"] == PENDING),
+        "unknown_count": sum(1 for s in stages if s["status"] == UNKNOWN),
     }
 
 
@@ -781,7 +807,7 @@ def backlog(now=None, ctx=None):
         "matches": {
             "lag_seconds": ctx.match_lag,
             "users_without_generation": without_generation,
-            "recompute_enabled": bool(match_recompute.recompute_enabled()),
+            "recompute_enabled": ctx.recompute_enabled,
             "read_enabled": ctx.match_read_enabled,
         },
     }

@@ -2277,7 +2277,7 @@ class JobRetrievalCalloutOrderingTests(TestCase):
         from crank.models.preference import UserPreference
 
         source = self._source(last_crawl_at=timezone.now())
-        self._finished_run(1)
+        self._finished_run(1, {"users_total": 1, "matches_persisted": 0})
         self._unresolved_employer(source)
         UserPreference.objects.create(user=self.staff)
         content = self._get()
@@ -2285,10 +2285,77 @@ class JobRetrievalCalloutOrderingTests(TestCase):
         self.assertIn('data-stage="matches" data-status="unmet"', content)
         callout = self._callout(content)
         self.assertIn('data-next-stage="matches" data-status="unmet"', callout)
-        self.assertIn("Run the job pipeline so matches are persisted", callout)
+        self.assertIn("persisted no matches", callout)
         self.assertIn("7 of 9 steps met · 1 unmet · 1 needs attention.", content)
         matches_card = content.split('data-stage="matches"', 1)[1].split("</li>", 1)[0]
         self.assertIn("What to do:", matches_card)
+
+    def test_last_run_with_no_eligible_users_clears_matches_stage(self):
+        from crank.models.preference import UserPreference
+
+        self._source(last_crawl_at=timezone.now())
+        self._finished_run(1, {"users_total": 0, "matches_persisted": 0})
+        UserPreference.objects.create(user=self.staff)
+        content = self._get()
+        self.assertIn('data-stage="matches" data-status="met"', content)
+        self.assertIn("no user has active preferences yet", content)
+        self.assertNotIn("Run the job pipeline so matches are persisted", content)
+
+    def test_last_run_that_matched_nothing_does_not_ask_to_run_again(self):
+        from crank.models.preference import UserPreference
+
+        self._source(last_crawl_at=timezone.now())
+        self._finished_run(1, {"users_total": 2, "matches_persisted": 0})
+        UserPreference.objects.create(user=self.staff)
+        content = self._get()
+        self.assertIn('data-stage="matches" data-status="unmet"', content)
+        self.assertIn("processed 2 users but persisted no matches", content)
+        self.assertNotIn("Run the job pipeline so matches are persisted", content)
+
+    def test_inactive_user_preferences_do_not_block_matches_stage(self):
+        from crank.models.preference import UserPreference
+
+        self._source(last_crawl_at=timezone.now())
+        self._finished_run(1)
+        self.staff.is_active = False
+        self.staff.save()
+        UserPreference.objects.create(user=self.staff)
+        self.assertIn(
+            "no user has active preferences yet",
+            self._stage_summary("matches"),
+        )
+
+    def _stage_summary(self, key):
+        from crank.services import operations_readiness as ops
+
+        return next(s for s in ops.readiness()["stages"] if s["key"] == key)["summary"]
+
+    def test_overdue_queued_run_has_consistent_guidance(self):
+        self._source(last_crawl_at=timezone.now())
+        queued = AgentRun.objects.create(run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.PENDING)
+        AgentRun.objects.filter(pk=queued.pk).update(created=timezone.now() - timedelta(hours=2))
+        content = self._get()
+        self.assertIn("Queued — past TTL, awaiting reclaim", content)
+        self.assertNotIn("~0s left", content)
+        self.assertNotIn("No action needed yet", content)
+        self.assertNotIn("If it is not claimed within the TTL", content)
+        self.assertIn("past its TTL, so do not queue another", content)
+
+    def test_fresh_queued_run_keeps_within_ttl_guidance(self):
+        self._source(last_crawl_at=timezone.now())
+        AgentRun.objects.create(run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.PENDING)
+        content = self._get()
+        self.assertIn("Queued — waiting for a consumer", content)
+        self.assertIn("If it is not claimed within the TTL", content)
+
+    def test_summary_line_pluralizes_and_counts_pending(self):
+        content = self._get()
+        self.assertRegex(content, r"\d of 9 steps met · \d+ unmet · \d+ pending\.")
+        source = self._source(last_crawl_at=timezone.now())
+        self._finished_run(3, {"deadline_reached": True})
+        self._unresolved_employer(source)
+        content = self._get()
+        self.assertIn("2 need attention", content)
 
     def test_deadline_run_does_not_hide_expired_queue_and_copy_names_no_next_tick(self):
         self._source(last_crawl_at=timezone.now())

@@ -498,7 +498,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     <h2 id="jro-readiness-heading">End-to-end readiness</h2>
     {% if readiness %}
     {% if readiness.next_step %}
-    <p class="jro-summary-line jro-note">{{ readiness.met_count }} of {{ readiness.stages|length }} steps met{% if readiness.unmet_count %} · {{ readiness.unmet_count }} unmet{% endif %}{% if readiness.attention_count %} · {{ readiness.attention_count }} needs attention{% endif %}.</p>
+    <p class="jro-summary-line jro-note">{{ readiness.met_count }} of {{ readiness.stages|length }} steps met{% if readiness.unmet_count %} · {{ readiness.unmet_count }} unmet{% endif %}{% if readiness.attention_count %} · {{ readiness.attention_count }} need{{ readiness.attention_count|pluralize:"s," }} attention{% endif %}{% if readiness.pending_count %} · {{ readiness.pending_count }} pending{% endif %}{% if readiness.unknown_count %} · {{ readiness.unknown_count }} unknown{% endif %}.</p>
     {% include "admin/_job_retrieval_stages.html" %}
     {% else %}
     <details class="jro-details jro-card">

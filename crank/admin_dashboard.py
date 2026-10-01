@@ -193,6 +193,7 @@ def _pipeline_ownership_state(ctx=None):
         "queue_count": pending_count,
         "oldest_wait_relative": None,
         "oldest_reclaim_remaining": None,
+        "overdue": False,
         "oldest_correlation_id": None,
         "oldest_correlation_abbrev": None,
         "consumption": "Not running",
@@ -232,7 +233,30 @@ def _pipeline_ownership_state(ctx=None):
         state["started_iso"] = (
             active.started_at.isoformat() if active.started_at else None
         )
-        if active.status == AgentRun.Status.PENDING:
+        if active.status == AgentRun.Status.PENDING and active.created and now - active.created >= stale_after:
+            state.update(
+                state="queued",
+                overdue=True,
+                tone=PIPELINE_STATE_TONES["queued"],
+                icon=PIPELINE_STATE_ICONS["queued"],
+                label="Queued — past TTL, awaiting reclaim",
+                explanation=(
+                    "Queued, not yet claimed, and past its TTL. The next consumer "
+                    "reclaims this run as failed and starts a fresh one."
+                ),
+                owner="Unclaimed — awaiting consumer",
+                consumption="Waiting for consumer",
+                next_consumer=(
+                    "Next scheduled pipeline tick or a manual run_job_pipeline "
+                    "invocation"
+                ),
+                next_action=(
+                    "Confirm the job-pipeline CronJob is unsuspended (kubectl); "
+                    "the next tick reclaims this run and starts a fresh one. "
+                    "Queueing again is not needed."
+                ),
+            )
+        elif active.status == AgentRun.Status.PENDING:
             state.update(
                 state="queued",
                 tone=PIPELINE_STATE_TONES["queued"],
@@ -509,7 +533,7 @@ def _present_stage(stage):
     return stage
 
 
-def _readiness_context(ctx, active_run=None):
+def _readiness_context(ctx, active_run=None, overdue=False):
     """End-to-end readiness with presentation fields, or ``None`` on failure."""
     try:
         readiness = operations_readiness.readiness(ctx=ctx)
@@ -519,11 +543,18 @@ def _readiness_context(ctx, active_run=None):
     for stage in readiness["stages"]:
         _present_stage(stage)
         if stage["key"] == "scheduler" and stage["status"] == "unmet" and active_run:
-            stage["remediation"] = (
-                "A run is already queued or running, so do not queue another. "
-                "If it is not claimed within the TTL, confirm the job-pipeline "
-                "CronJob is unsuspended (kubectl)."
-            )
+            if overdue:
+                stage["remediation"] = (
+                    "A run is already queued and past its TTL, so do not queue another. "
+                    "Confirm the job-pipeline CronJob is unsuspended (kubectl); "
+                    "the next tick reclaims it and starts a fresh run."
+                )
+            else:
+                stage["remediation"] = (
+                    "A run is already queued or running, so do not queue another. "
+                    "If it is not claimed within the TTL, confirm the job-pipeline "
+                    "CronJob is unsuspended (kubectl)."
+                )
     return readiness
 
 
@@ -778,7 +809,9 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
         snapshot = operations_readiness.snapshot()
         pipeline = _safe_section("ownership", lambda: _pipeline_ownership_state(snapshot))
         readiness = _readiness_context(
-            snapshot, bool(pipeline) and pipeline["state"] in ("queued", "claimed", "conflict")
+            snapshot,
+            bool(pipeline) and pipeline["state"] in ("queued", "claimed", "conflict"),
+            bool(pipeline) and bool(pipeline.get("overdue")),
         )
         context = {
             **self.admin_site.each_context(request),

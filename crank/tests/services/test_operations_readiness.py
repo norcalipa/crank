@@ -4,7 +4,7 @@
 
 import os
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 
 from django.contrib.auth.models import User
 from django.test import SimpleTestCase, TestCase, override_settings
@@ -674,6 +674,38 @@ class StageTests(TestCase):
         self.assertIn("KeyError", line)
         self.assertIn("boom", line)
         self.assertIn("test_operations_readiness.py", line)
+        self.assertNotIn("lag_seconds", line)
+
+    def test_stage_failure_log_omits_message_and_names_project_frames(self):
+        import sqlite3
+
+        message = "connect mysql://crank:s3cr3tpw@db.internal/crank for alice@example.com"
+        with patch.object(
+            ops._Context, "listings", new_callable=PropertyMock, side_effect=sqlite3.OperationalError(message)
+        ), self.assertLogs(ops.logger, "WARNING") as logs:
+            ops.readiness()
+        text = "\n".join(logs.output)
+        self.assertNotIn("s3cr3tpw", text)
+        self.assertNotIn("alice@example.com", text)
+        self.assertIn("OperationalError", text)
+        self.assertIn("operations_readiness.py", text)
+
+    def test_log_failure_without_project_frames_falls_back_to_all_frames(self):
+        exc = RuntimeError("x")
+        with self.assertLogs(ops.logger, "WARNING") as logs, patch.object(ops, "_PACKAGE_DIR", "/nonexistent/"):
+            try:
+                raise exc
+            except RuntimeError as caught:
+                ops.log_failure("probe", caught)
+        self.assertIn("RuntimeError", logs.output[0])
+
+    @override_settings(MATCH_RESULTS_READ_ENABLED=True)
+    def test_age_stale_note_says_paused_when_recompute_is_off(self):
+        self._state("agestale", generated_at=timezone.now() - timedelta(days=30))
+        with override_settings(MATCH_RECOMPUTE_ENABLED=False):
+            matches = stage(ops.readiness(), "matches")
+        self.assertIn("paused while MATCH_RECOMPUTE_ENABLED is off", matches["summary"])
+        self.assertNotIn("drain handles it", matches["summary"])
 
     def test_adapter_base_class_has_no_startup_blockers(self):
         from crank.agents.jobs.base import JobSourceAdapter
