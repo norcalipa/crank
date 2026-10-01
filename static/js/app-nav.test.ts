@@ -9,6 +9,8 @@
  * immediately on load) can be observed under a controlled fetch mock.
  */
 
+import {accountDigest} from './workspace/persistence';
+
 function flushMicrotasks(times = 4): Promise<void> {
     let chain: Promise<unknown> = Promise.resolve();
     for (let i = 0; i < times; i++) {
@@ -672,5 +674,89 @@ describe('app-nav (issue #465 private-state purge)', () => {
         window.dispatchEvent(new StorageEvent('storage', {key: 'something-else', newValue: 'x'}));
         expect(purged).not.toHaveBeenCalled();
         document.removeEventListener('crank:private-state-purged', purged);
+    });
+
+    test('a restore with no local evidence purges when the quiet re-check observes another account or signed-out', async () => {
+        let user: string | null = 'alice';
+        whoamiAs(() => user);
+        loadAppNav();
+        await flushMicrotasks();
+        const tracker = trackPurge();
+        const hydrated = jest.fn();
+        document.addEventListener('crank:auth-hydrated', ((e: CustomEvent) => hydrated(e.detail)) as EventListener);
+        window.sessionStorage.setItem('crank:workspace:v1', '{"v":1}');
+
+        user = null;
+        pageshow(true);
+        await flushMicrotasks();
+        expect(tracker.purged).toHaveBeenCalledTimes(1);
+        expect(window.sessionStorage.getItem('crank:workspace:v1')).toBeNull();
+        expect(hydrated).toHaveBeenLastCalledWith({authenticated: false, username: null, unobserved: false});
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+
+        user = 'bob';
+        pageshow(true);
+        await flushMicrotasks();
+        expect(tracker.purged).toHaveBeenCalledTimes(2);
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+        tracker.stop();
+    });
+
+    test('a quiet re-check of the same account or a failed whoami never purges', async () => {
+        let user: string | null = 'alice';
+        whoamiAs(() => user);
+        loadAppNav();
+        await flushMicrotasks();
+        const tracker = trackPurge();
+        pageshow(true);
+        await flushMicrotasks();
+        (global.fetch as jest.Mock).mockImplementation(() => Promise.reject(new Error('offline')));
+        pageshow(true);
+        await flushMicrotasks();
+        expect(tracker.purged).not.toHaveBeenCalled();
+        tracker.stop();
+    });
+
+    test('a purge by the restore signals is not repeated by the observed hydration that follows', async () => {
+        let user: string | null = 'alice';
+        whoamiAs(() => user);
+        loadAppNav();
+        await flushMicrotasks();
+        const tracker = trackPurge();
+        window.localStorage.setItem('crank:account-epoch', 'changed-elsewhere');
+        user = 'bob';
+        pageshow(true);
+        await flushMicrotasks();
+        expect(tracker.purged).toHaveBeenCalledTimes(1);
+        tracker.stop();
+    });
+
+    test('a first observation against another account clears its leftovers and adopts the new account', async () => {
+        window.localStorage.setItem('crank:last-account', 'd:0000000000000000');
+        window.localStorage.setItem('crank:jobsearch:draft:alice', 'old');
+        whoamiAs(() => 'bob');
+        loadAppNav();
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:jobsearch:draft:alice')).toBeNull();
+        expect(window.localStorage.getItem('crank:last-account')).toBe(accountDigest('bob'));
+        const epoch = window.localStorage.getItem('crank:account-epoch');
+        expect(epoch).not.toBeNull();
+
+        jest.resetModules();
+        loadAppNav();
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:account-epoch')).toBe(epoch);
+    });
+
+    test('the JS digest twin stays bit-identical to the TS accountDigest', async () => {
+        for (const name of ['alice', 'e2e_user_b', 'user@example.com', '\u00e5lice', 'x'.repeat(150), 'abcdef0123456789']) {
+            window.sessionStorage.clear();
+            jest.resetModules();
+            whoamiAs(() => name);
+            loadAppNav();
+            await flushMicrotasks();
+            const seen = window.sessionStorage.getItem('crank:nav-account-seen') as string;
+            expect(`d:${seen.slice(2)}`).toBe(accountDigest(name));
+        }
     });
 });

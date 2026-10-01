@@ -216,6 +216,9 @@
     // readable storage; null means "unknown", never "changed".
     var lastObservedAccount = null;
     var lastObservedUsername = null;
+    // True once a tab-local purge ran that the next observed hydration need
+    // not repeat.
+    var tabPurgedSinceObservation = false;
 
     // The shared epoch nonce this document last saw (at load, after its own
     // announcement, or from a storage event). undefined = storage unreadable.
@@ -252,8 +255,18 @@
             // Storage unavailable; the account change cannot be detected.
             readable = false;
         }
+        var observedBefore = lastObservedAccount;
         lastObservedAccount = readable ? current : null;
         lastObservedUsername = authenticated ? username : null;
+        var purged = tabPurgedSinceObservation;
+        tabPurgedSinceObservation = false;
+        if (observedBefore !== null && observedBefore !== current && !purged) {
+            // This document itself saw another account (or signed-out) answer
+            // after it observed a different one: its transcript and drafts
+            // belong to the previous account, whatever `quiet` says.
+            purgeTabLocalState();
+            tabPurgedSinceObservation = false;
+        }
         if (authenticated && previous === "u:" + username) {
             // Pre-digest value for the same account: not a change.
             previous = current;
@@ -268,6 +281,16 @@
         if (!quiet && switched) {
             announceAccountChange();
         }
+        if (previous === null && authenticated && switched) {
+            // First observation against another account's leftovers: clear
+            // them and adopt this account so later tabs do not repeat.
+            purgePrivateClientState();
+            try {
+                window.localStorage.setItem("crank:last-account", "d:" + accountDigest(username));
+            } catch (e) {
+                // Storage unavailable; nothing durable to reconcile.
+            }
+        }
     }
 
     // Another tab changed the account: discard this tab's own state, then
@@ -275,11 +298,7 @@
     // belongs to. The signal is only sent after the change completed, so the
     // whoami below already sees the new account. The next hydration is quiet
     // so tabs cannot ping-pong.
-    function handleAccountEpoch(event) {
-        if (event.key !== "crank:account-epoch") {
-            return;
-        }
-        lastSeenEpoch = event.newValue;
+    function purgeTabLocalState() {
         // Only tab-local state: localStorage is shared, and the tab that
         // changed the account has already purged (sign-out) or reconciled
         // (account switch) it. Deleting it here would destroy the #465
@@ -291,25 +310,36 @@
             // Storage unavailable; nothing tab-local to clear.
         }
         // The previous account's name must not outlive the purge if the
-        // re-check below cannot confirm the new one (e.g. offline).
+        // re-check cannot confirm the new one (e.g. offline).
         document.querySelectorAll("[data-nav-user-label]").forEach(function (label) {
             label.textContent = "Account";
         });
         document.dispatchEvent(new CustomEvent("crank:private-state-purged"));
+        tabPurgedSinceObservation = true;
+    }
+
+    function handleAccountEpoch(event) {
+        if (event.key !== "crank:account-epoch") {
+            return;
+        }
+        lastSeenEpoch = event.newValue;
+        purgeTabLocalState();
         quietNextHydration = true;
         fetchWhoami();
     }
     window.addEventListener("storage", handleAccountEpoch);
 
     // A page restored from the back/forward cache never re-runs its scripts
-    // and may not receive the `storage` events it missed while cached. Two
+    // and may not receive the `storage` events it missed while cached. Three
     // synchronous, network-free signals say the account changed meanwhile:
     // the shared epoch nonce differs from the one this document last saw,
     // this tab's recorded account differs from the one this document
     // observed, or the shared last-account names another account (covers a
-    // switch no tab saw as a transition). Any of them purges tab-local state at once; an unknown account or
-    // unreadable storage is no evidence. Whoami is then re-checked quietly:
-    // purging here is tab-local only and never re-announces.
+    // switch no tab saw as a transition). Any of them purges tab-local state
+    // at once; an unknown account or unreadable storage is no evidence.
+    // Whoami is then re-checked quietly: purging here is tab-local only and
+    // never re-announces. If that re-check shows an account other than the one
+    // this document last observed, noteHydratedAccount purges as well.
     window.addEventListener("pageshow", function (event) {
         if (!event.persisted) {
             return;
