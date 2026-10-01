@@ -12,6 +12,7 @@ export interface CachedProvenance {
         source_domain?: string | null;
     }>;
     unverified_fields?: string[];
+    displayed_values?: Record<string, string>;
 }
 
 const cache = new Map<number, CachedProvenance>();

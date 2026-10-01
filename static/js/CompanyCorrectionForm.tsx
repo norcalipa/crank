@@ -6,6 +6,7 @@ import {CORRECTABLE_FIELD_LABELS, fieldKeyLabel} from './labels';
 import {lockBackground, unlockBackground} from './modalIsolation';
 import {getCachedProvenance, setCachedProvenance} from './provenanceCache';
 import {COMPANY_OPEN_EVENT} from './suggestCompany/controller';
+import {getWorkspaceSnapshot, openAssistant} from './workspace/store';
 import type {SuggestCompanyContext} from './suggestCompany/controller';
 
 interface CompanyCorrectionFormProps {
@@ -24,9 +25,16 @@ interface EvidenceRow {
 interface ProvenanceResult {
     fields?: EvidenceRow[];
     unverified_fields?: string[];
+    displayed_values?: Record<string, string>;
+}
+
+interface PendingSuggestion {
+    field_key: string;
+    proposed_value: string;
 }
 
 interface SavedCorrection {
+    field_label: string;
     proposed_value: string;
     current_value: string;
     status_label: string;
@@ -38,7 +46,6 @@ type ProvenanceState =
 const FIELD_ORDER = Object.keys(CORRECTABLE_FIELD_LABELS);
 const SCOPE_LEVELS: ReadonlyArray<[string, string]> = [
     ['company', 'Whole company'],
-    ['team', 'A team'],
     ['role', 'A role'],
     ['location', 'A location'],
 ];
@@ -68,8 +75,11 @@ export const describeCurrentValue = (
 ): {
     kind: 'loading' | 'unavailable' | 'missing' | 'verified' | 'unselected';
     text: string; value: string; meta: string; domain: string; stale: boolean; date: string;
+    displayed: string;
 } => {
-    const blank = {value: '', meta: '', domain: '', stale: false, date: ''};
+    const displayed = provenance.status === 'ready'
+        ? (provenance.data.displayed_values || {})[fieldKey] || '' : '';
+    const blank = {value: '', meta: '', domain: '', stale: false, date: '', displayed};
     if (!fieldKey) {
         return {kind: 'unselected', text: 'Choose a field to see its current value', ...blank};
     }
@@ -90,6 +100,7 @@ export const describeCurrentValue = (
             domain: row.source_domain || '',
             stale: row.stale,
             date,
+            displayed,
             text: row.stale ? `${row.value} · ${verified} · Stale` : `${row.value} · ${verified}`,
         };
     }
@@ -120,6 +131,8 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
     const [duplicate, setDuplicate] = React.useState(false);
     const [rateLimited, setRateLimited] = React.useState(false);
     const [retryAt, setRetryAt] = React.useState<number | null>(null);
+    const [pending, setPending] = React.useState<PendingSuggestion[]>([]);
+    const [announcement, setAnnouncement] = React.useState('');
 
     const dialogRef = React.useRef<HTMLDivElement>(null);
     const closeButtonRef = React.useRef<HTMLButtonElement>(null);
@@ -130,6 +143,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
     const focusInvalidAfterSubmit = React.useRef(false);
     const focusAlertAfterError = React.useRef(false);
     const idempotencyKey = React.useRef(newIdempotencyKey());
+    const lastSentPayload = React.useRef('');
 
     React.useEffect(() => {
         let cancelled = false;
@@ -154,16 +168,56 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         };
     }, [organizationId, reloadCount]);
 
+    React.useEffect(() => {
+        let cancelled = false;
+        fetch(`/api/company-corrections/?organization=${organizationId}`)
+            .then(response => (response.ok ? response.json() : null))
+            .then(data => {
+                if (cancelled || !data) return;
+                setPending((data.corrections || [])
+                    .filter((item: {status: string}) => item.status === 'pending')
+                    .map((item: {field_key: string; proposed_value: string}) => ({
+                        field_key: item.field_key, proposed_value: item.proposed_value,
+                    })));
+            })
+            .catch(() => undefined);
+        return () => {
+            cancelled = true;
+        };
+    }, [organizationId]);
+
     // Opener is captured BEFORE lockBackground() (issue #464 contract). The
     // details dialog that launched this form unmounts around the same time,
     // so a disconnected opener falls back to the company's list entry.
     React.useLayoutEffect(() => {
-        openerRef.current = document.activeElement instanceof HTMLElement
-            ? document.activeElement : null;
+        const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        openerRef.current = opener;
+        // The phone assistant sheet yields to this dialog (issue #472), so
+        // it has to be brought back, with focus on the control that opened
+        // the form, once the dialog closes (issue #477 AC 8).
+        const sheetWasOpen = getWorkspaceSnapshot().visibility === 'open';
+        const openerTestId = opener?.getAttribute('data-testid') || '';
         lockBackground();
         return () => {
             unlockBackground();
-            const opener = openerRef.current;
+            if (sheetWasOpen && getWorkspaceSnapshot().visibility === 'closed') {
+                openAssistant();
+                if (openerTestId) {
+                    let frames = 0;
+                    const refocus = () => {
+                        const target = Array.from(document.querySelectorAll<HTMLElement>(
+                            `[data-testid="${openerTestId}"]`
+                        )).find((element) => element.getBoundingClientRect().height > 0);
+                        if (target) {
+                            target.focus();
+                        } else if (frames++ < 120) {
+                            window.requestAnimationFrame(refocus);
+                        }
+                    };
+                    window.requestAnimationFrame(refocus);
+                }
+                return;
+            }
             const fallback = Array.from(document.querySelectorAll<HTMLElement>(
                 `[data-organization-id="${organizationId}"]`
             )).find((element) => element.getBoundingClientRect().height > 0) ?? null;
@@ -187,6 +241,16 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
     }, []);
 
     const showBack = !!saved || duplicate;
+    React.useEffect(() => {
+        if (duplicate) {
+            setAnnouncement('You already suggested a change to this field. Pending review.');
+        } else if (saved) {
+            setAnnouncement(`Suggestion submitted for ${saved.field_label}: ${saved.proposed_value}. `
+                + 'Pending review. Staff will review it.');
+        } else {
+            setAnnouncement('');
+        }
+    }, [saved, duplicate]);
     React.useEffect(() => {
         if (showBack) {
             backButtonRef.current?.focus();
@@ -266,6 +330,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
     });
 
     const current = describeCurrentValue(provenance, fieldKey);
+    const pendingForField = pending.find(item => item.field_key === fieldKey);
 
     const handleBack = () => {
         onClose();
@@ -299,6 +364,19 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
             setFieldErrors(clientErrors);
             return;
         }
+        const payload = {
+            organization_id: organizationId,
+            field_key: fieldKey,
+            proposed_value: proposedValue,
+            evidence_url: evidenceUrl,
+            scope: {level: scopeLevel, value: scopeValue},
+            note,
+        };
+        const signature = JSON.stringify(payload);
+        if (lastSentPayload.current && lastSentPayload.current !== signature) {
+            idempotencyKey.current = newIdempotencyKey();
+        }
+        lastSentPayload.current = signature;
         submitInFlight.current = true;
         setSubmitting(true);
         setError('');
@@ -314,19 +392,12 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     'Content-Type': 'application/json',
                     'X-CSRFToken': getCookie('csrftoken'),
                 },
-                body: JSON.stringify({
-                    organization_id: organizationId,
-                    field_key: fieldKey,
-                    proposed_value: proposedValue,
-                    evidence_url: evidenceUrl,
-                    scope: {level: scopeLevel, value: scopeValue},
-                    note,
-                    idempotency_key: idempotencyKey.current,
-                }),
+                body: JSON.stringify({...payload, idempotency_key: idempotencyKey.current}),
             });
             const data = await response.json();
             if (response.ok) {
                 setSaved({
+                    field_label: data.field_label || fieldKeyLabel(fieldKey),
                     proposed_value: data.proposed_value,
                     current_value: data.current_value || '',
                     status_label: data.status_label,
@@ -384,6 +455,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         if (current.kind === 'verified') {
             return (
                 <span data-testid="correction-current-text">
+                    <span className="small text-body-secondary d-block">Verified evidence</span>
                     <span className="fw-semibold me-2">{current.value}</span>
                     <span className="small text-body-secondary d-inline-block">
                         {current.domain && <><span className="text-nowrap">{current.domain},</span>{' '}</>}
@@ -411,6 +483,24 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         );
     };
 
+    const renderDisplayed = () => {
+        if (!current.displayed || current.kind === 'loading' || current.kind === 'unselected') {
+            return null;
+        }
+        return (
+            <div className="small mt-2" data-testid="correction-displayed-value">
+                <span className="text-body-secondary d-block">Shown on the company card</span>
+                <span className="fw-semibold">{current.displayed}</span>
+                {current.kind === 'verified' && current.displayed !== current.value && (
+                    <span className="text-body-secondary d-block">
+                        These can differ: the card uses the company profile, the evidence record is
+                        what staff verified.
+                    </span>
+                )}
+            </div>
+        );
+    };
+
     let body: React.ReactNode;
     if (authRequired) {
         body = (
@@ -421,7 +511,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         );
     } else if (saved || duplicate) {
         body = (
-            <div role="status" data-testid="correction-status">
+            <div id="correction-status-text" data-testid="correction-status">
                 {duplicate ? (
                     <p className="fw-bold mb-2" data-testid="correction-duplicate">
                         You already suggested a change to this field — Pending review
@@ -433,12 +523,13 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                             <div>
                                 <p className="fw-semibold mb-1">Suggestion submitted</p>
                                 <p className="small text-body-secondary mb-0">
-                                    Staff will review it. Nothing changes until then.
+                                    Staff will review it. Nothing changes until then. If accepted, it updates
+                                    the verified evidence record; the company card may update separately.
                                 </p>
                             </div>
                         </div>
                         <dl className="correction-summary mb-0">
-                            <dt>Your suggestion · {fieldKeyLabel(fieldKey)}</dt>
+                            <dt>Your suggestion · {saved?.field_label}</dt>
                             <dd className="d-flex flex-wrap align-items-center gap-2">
                                 <span data-testid="correction-saved-proposed">{saved?.proposed_value}</span>
                                 <span className="badge text-bg-warning badge-pending">
@@ -446,7 +537,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                                     Pending review
                                 </span>
                             </dd>
-                            <dt>Current value</dt>
+                            <dt>Verified evidence</dt>
                             <dd className="mb-0">
                                 <span data-testid="correction-saved-current">
                                     {saved?.current_value || 'No verified value on record'}
@@ -465,6 +556,12 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                 <p className="small text-body-secondary mb-3">
                     Staff review every suggestion. The current value stays until one is approved.
                 </p>
+                {pendingForField && (
+                    <div className="alert alert-info py-2 small" data-testid="correction-pending-notice">
+                        You already suggested <strong>{pendingForField.proposed_value}</strong> for{' '}
+                        {fieldKeyLabel(fieldKey)} — Pending review. Choose another field, or wait for staff.
+                    </div>
+                )}
                 <div className="mb-3">
                     <label htmlFor="correction-field" className="form-label">Field</label>
                     <select id="correction-field" className={`form-select${invalid('field_key')}`} data-testid="correction-field"
@@ -487,8 +584,11 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     <div className="form-label" id="correction-current-label">Current value</div>
                     <div className="correction-current" aria-labelledby="correction-current-label"
                          aria-live="polite">{renderCurrent()}</div>
+                    {renderDisplayed()}
                     {current.kind === 'missing' && (
-                        <div className="text-body-secondary small mt-1">Your suggestion could be the first.</div>
+                        <div className="text-body-secondary small mt-1">
+                            No evidence record yet — your suggestion could be the first.
+                        </div>
                     )}
                 </div>
                 <div className="mb-3">
@@ -568,6 +668,8 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
     return createPortal(
         <div ref={dialogRef} className="modal d-block blocking-modal" tabIndex={-1} role="dialog"
              aria-modal="true" aria-labelledby="correction-title correction-company" data-testid="company-correction-modal">
+            <div className="visually-hidden" role="status" aria-live="polite"
+                 data-testid="correction-live">{announcement}</div>
             <div className="modal-dialog" role="document">
                 <div className="modal-content">
                     <div className="modal-header">
@@ -590,7 +692,8 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                             )}
                             <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
                             <button type="submit" form="correction-form" className="btn btn-primary"
-                                    disabled={retryAt !== null} aria-disabled={submitting || undefined}
+                                    disabled={retryAt !== null || !!pendingForField}
+                                    aria-disabled={submitting || undefined}
                                     data-testid="correction-submit">
                                 {submitting ? 'Submitting…' : 'Submit suggestion'}
                             </button>
@@ -599,7 +702,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     {showBack && (
                         <div className="modal-footer">
                             <button ref={backButtonRef} type="button" className="btn btn-primary" onClick={handleBack}
-                                    data-testid="correction-back">
+                                    aria-describedby="correction-status-text" data-testid="correction-back">
                                 {backToCompany ? `Back to ${companyName}` : 'Back to results'}
                             </button>
                         </div>

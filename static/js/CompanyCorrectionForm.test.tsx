@@ -6,6 +6,7 @@ import * as React from 'react';
 import CompanyCorrectionForm, {describeCurrentValue} from './CompanyCorrectionForm';
 import {clearProvenanceCache, getCachedProvenance, setCachedProvenance} from './provenanceCache';
 import type {SuggestCompanyContext} from './suggestCompany/controller';
+import {closeAssistant, getWorkspaceSnapshot, openAssistant, resetWorkspaceForTests} from './workspace/store';
 
 const PROVENANCE = {
     fields: [
@@ -296,14 +297,15 @@ describe('CompanyCorrectionForm', () => {
             fireEvent.click(screen.getByTestId('correction-submit'));
 
             const status = await screen.findByTestId('correction-status');
-            expect(status).toHaveAttribute('role', 'status');
+            expect(status).not.toHaveAttribute('role');
+            expect(screen.getByTestId('correction-live')).toHaveAttribute('role', 'status');
             expect(status).toHaveTextContent('Pending review');
             expect(screen.getByTestId('correction-saved-proposed')).toHaveTextContent('Hybrid');
             expect(status).toHaveTextContent('Still in effect until review');
             expect(screen.getByTestId('correction-saved-current')).toHaveTextContent('Remote-first');
-            expect(status).not.toHaveTextContent(/verified/i);
+            expect(status).not.toHaveTextContent(/has been verified|is verified/i);
             expect(status).toHaveTextContent('Suggestion submitted');
-            expect(status).toHaveTextContent('Your suggestion · RTO Policy');
+            expect(status).toHaveTextContent('Your suggestion · RTO policy');
             expect(status.querySelector('.fa-circle-check')).not.toBeNull();
             expect(status.querySelector('.badge-pending')).toHaveTextContent('Pending review');
 
@@ -742,6 +744,129 @@ describe('CompanyCorrectionForm', () => {
             const spy = jest.spyOn(document, 'activeElement', 'get').mockReturnValue(null);
             expect(() => unmount()).not.toThrow();
             spy.mockRestore();
+        });
+    });
+
+    describe('review round 1', () => {
+        afterEach(() => resetWorkspaceForTests());
+
+        test('reopens the phone assistant sheet and refocuses the opener on unmount', async () => {
+            const opener = document.createElement('button');
+            opener.setAttribute('data-testid', 'sheet-opener');
+            opener.getBoundingClientRect = () => ({height: 20} as DOMRect);
+            document.body.appendChild(opener);
+            opener.focus();
+            openAssistant();
+            const {unmount} = renderForm();
+            closeAssistant();
+            opener.blur();
+            expect(getWorkspaceSnapshot().visibility).toBe('closed');
+            const raf = jest.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => {
+                cb(0);
+                return 0;
+            });
+            unmount();
+            expect(getWorkspaceSnapshot().visibility).toBe('open');
+            expect(opener).toHaveFocus();
+            raf.mockRestore();
+            opener.remove();
+        });
+
+        test('gives up refocusing when the opener never becomes visible', async () => {
+            const opener = document.createElement('button');
+            opener.setAttribute('data-testid', 'sheet-opener-2');
+            document.body.appendChild(opener);
+            opener.focus();
+            openAssistant();
+            const {unmount} = renderForm();
+            closeAssistant();
+            opener.remove();
+            const raf = jest.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => {
+                cb(0);
+                return 0;
+            });
+            expect(() => unmount()).not.toThrow();
+            expect(getWorkspaceSnapshot().visibility).toBe('open');
+            raf.mockRestore();
+        });
+
+        test('does not reopen a sheet that was not open', async () => {
+            const {unmount} = renderForm();
+            unmount();
+            expect(getWorkspaceSnapshot().visibility).not.toBe('open');
+        });
+
+        test('shows the card value next to the verified evidence and notes a difference', async () => {
+            provenanceResponse = () => Promise.resolve(jsonResponse(200, {
+                ...PROVENANCE, displayed_values: {rto_policy: 'Hybrid (3 days)', locations: 'Austin'},
+            }));
+            renderForm({...baseContext, fieldKey: 'rto_policy'});
+            const shown = await screen.findByTestId('correction-displayed-value');
+            expect(shown).toHaveTextContent('Hybrid (3 days)');
+            expect(shown).toHaveTextContent(/differ/i);
+            fireEvent.change(screen.getByTestId('correction-field'), {target: {value: 'locations'}});
+            expect(screen.getByTestId('correction-displayed-value')).not.toHaveTextContent(/differ/i);
+        });
+
+        test('offers no team scope', async () => {
+            renderForm();
+            await screen.findByTestId('correction-current-text');
+            const options = Array.from(screen.getByTestId('correction-scope-level').querySelectorAll('option'))
+                .map(o => (o as HTMLOptionElement).value);
+            expect(options).not.toContain('team');
+        });
+
+        test('keeps the key for a retry of the same draft and rotates it when the draft changes', async () => {
+            postResponse = () => Promise.resolve(jsonResponse(500, {}));
+            renderForm();
+            await fillAndSubmit('Hybrid');
+            await waitFor(() => expect(posts()).toHaveLength(1));
+            await waitFor(() => expect(screen.getByTestId('correction-submit')).not.toBeDisabled());
+            fireEvent.click(screen.getByTestId('correction-submit'));
+            await waitFor(() => expect(posts()).toHaveLength(2));
+            await waitFor(() => expect(screen.getByTestId('correction-submit')).not.toBeDisabled());
+            fireEvent.change(screen.getByTestId('correction-proposed-value'), {target: {value: 'Onsite'}});
+            fireEvent.click(screen.getByTestId('correction-submit'));
+            await waitFor(() => expect(posts()).toHaveLength(3));
+            const keys = posts().map(call => JSON.parse(call[1].body).idempotency_key);
+            expect(keys[0]).toBe(keys[1]);
+            expect(keys[2]).not.toBe(keys[0]);
+        });
+
+        test('labels the saved suggestion from the response field_label', async () => {
+            postResponse = () => Promise.resolve(jsonResponse(201, {...SAVED, field_label: 'Funding stage'}));
+            renderForm();
+            await fillAndSubmit();
+            expect(await screen.findByTestId('correction-status')).toHaveTextContent('Your suggestion · Funding stage');
+        });
+
+        test('announces the saved state in the live region and links Back to it', async () => {
+            renderForm();
+            await fillAndSubmit();
+            await screen.findByTestId('correction-status');
+            await waitFor(() => expect(screen.getByTestId('correction-live')).toHaveTextContent(/submitted/i));
+            expect(screen.getByTestId('correction-back')).toHaveAttribute('aria-describedby', 'correction-status-text');
+        });
+
+        test('blocks a second suggestion for a field that already has one pending', async () => {
+            global.fetch = jest.fn().mockImplementation((url: string) => {
+                if (url.includes('/provenance/')) {
+                    return provenanceResponse();
+                }
+                if (url.includes('/api/company-corrections/?organization=')) {
+                    return Promise.resolve(jsonResponse(200, {corrections: [
+                        {id: 9, field_key: 'rto_policy', proposed_value: 'Onsite', status: 'pending'},
+                        {id: 8, field_key: 'locations', proposed_value: 'Rome', status: 'accepted'},
+                    ]}));
+                }
+                return postResponse();
+            });
+            renderForm({...baseContext, fieldKey: 'rto_policy'});
+            const notice = await screen.findByTestId('correction-pending-notice');
+            expect(notice).toHaveTextContent('Onsite');
+            expect(screen.getByTestId('correction-submit')).toBeDisabled();
+            fireEvent.change(screen.getByTestId('correction-field'), {target: {value: 'locations'}});
+            expect(screen.queryByTestId('correction-pending-notice')).toBeNull();
         });
     });
 });
