@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from crank.agents.job_search import actions
 from crank.agents.job_search import context as ctx
 from crank.agents.job_search import quality
 from crank.agents.job_search import system_prompt as prompt
@@ -127,6 +128,7 @@ class OrchestratorResult:
     cited_ids_count: int = 0
     empty_result: bool = True
     inventory_nonempty: bool = False
+    actions: tuple = ()
 
 
 class JobSearchOrchestrator:
@@ -195,6 +197,7 @@ class JobSearchOrchestrator:
         persist_reply: Callable[..., None] | None = None,
         token_budget: int | None = None,
         max_tokens: int | None = None,
+        page_context: Any = None,
     ) -> OrchestratorResult:
         """Run one turn and emit only bounded interactive-call telemetry.
 
@@ -219,6 +222,7 @@ class JobSearchOrchestrator:
                 persist_reply=persist_reply,
                 token_budget=token_budget,
                 max_tokens=max_tokens,
+                page_context=page_context,
             )
         except Exception as exc:
             latency_ms = int((time.monotonic() - started) * 1000)
@@ -268,6 +272,7 @@ class JobSearchOrchestrator:
         persist_reply: Callable[..., None] | None = None,
         token_budget: int | None = None,
         max_tokens: int | None = None,
+        page_context: Any = None,
     ) -> OrchestratorResult:
         """Execute one orchestrated turn and return its validated result.
 
@@ -278,6 +283,14 @@ class JobSearchOrchestrator:
         """
         # 1. Bounded, server-controlled dataset (active/public only).
         org_rows = self._load_organization_catalog()
+        if page_context is not None:
+            # Entities the user is viewing may sit outside the bounded
+            # catalog; expose them (already visibility-checked) so they are
+            # citable, without evicting any catalog row.
+            catalog_ids = {row.get("id") for row in org_rows}
+            org_rows = org_rows + [
+                row for row in page_context.organizations if row["id"] not in catalog_ids
+            ]
         known_ids = tools.union_server_controlled_ids(org_rows)
         score_rows: list[dict[str, Any]] = []
         if known_ids:
@@ -285,6 +298,9 @@ class JobSearchOrchestrator:
 
         # 1b. Bounded, server-controlled job listings (active/open only).
         listing_rows = self._load_job_listings()
+        if page_context is not None and page_context.listing is not None:
+            if page_context.listing["id"] not in {row.get("id") for row in listing_rows}:
+                listing_rows = listing_rows + [page_context.listing]
         known_listing_ids = tools.union_server_controlled_listing_ids(listing_rows)
 
         # 1c. Preference-grounded matches (issue #395). Only invoked when a
@@ -344,6 +360,9 @@ class JobSearchOrchestrator:
             score_summaries=score_rows,
             job_listings=listing_rows,
             matches=match_data,
+            page_context=(
+                page_context.to_model_text() if page_context is not None else None
+            ),
         )
 
         # 3. Provider call (maps provider failures to typed errors).
@@ -359,6 +378,8 @@ class JobSearchOrchestrator:
         self._validate_listing_citations(
             completion.cited_job_listing_ids, frozenset(known_listing_ids)
         )
+        # Actions follow the citation policy: only exposed organization ids.
+        actions.validate_action_references(completion.actions, known_ids)
         if match_enabled:
             self._validate_match_references(completion.message, match_data)
 
@@ -434,6 +455,7 @@ class JobSearchOrchestrator:
             cited_ids_count=cited_ids_count,
             empty_result=cited_ids_count == 0,
             inventory_nonempty=inventory_nonempty,
+            actions=completion.actions,
         )
 
     def _propose_preference_patch(
@@ -577,6 +599,7 @@ class JobSearchOrchestrator:
             max_job_listing_rows=self._max_job_listing_results,
             matches=kwargs.get("matches"),
             availability=availability,
+            page_context=kwargs.get("page_context"),
         )
 
     def _invoke_gateway(

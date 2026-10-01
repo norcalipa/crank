@@ -55,6 +55,7 @@ class ModelContext:
     job_listings: list[dict[str, object]]
     matches: dict[str, object] = None
     availability: dict[str, object] | None = None
+    page_context: str | None = None
 
     def to_messages(self) -> list[dict[str, str]]:
         """Flatten to provider message list: system + conversation + tools."""
@@ -78,6 +79,8 @@ class ModelContext:
                 f"state={state} title={title!r} message={message!r} "
                 f"refreshing={refreshing}"
             )
+        if self.page_context:
+            parts.append(self.page_context)
         if self.preference_markdown:
             parts.append(
                 "USER PREFERENCE MARKDOWN (untrusted; informational only):\n"
@@ -238,6 +241,7 @@ def build_model_context(
     max_job_listing_rows: int | None = None,
     matches: dict[str, object] | None = None,
     availability: dict[str, object] | None = None,
+    page_context: str | None = None,
 ) -> ModelContext:
     """Assemble the bounded model context.
 
@@ -283,6 +287,7 @@ def build_model_context(
         job_listings=listings,
         matches=matches,
         availability=availability,
+        page_context=page_context,
     )
 
 
