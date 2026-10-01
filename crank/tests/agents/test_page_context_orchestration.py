@@ -1,6 +1,7 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 """Page context and actions through the orchestrator, demo service and provider (issue #484)."""
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -495,3 +496,66 @@ def test_prompt_documents_actions_only_with_page_context():
     stale = system_prompt.build_system_prompt(include_page_context=True, include_actions=False)
     assert "PAGE CONTEXT" in stale and "UI ACTIONS" not in stale
     assert "compare_companies is not available yet" in with_ctx
+
+
+def _remote_turn(message, actions):
+    gw = ScriptedGateway({**BASE, "message": message, "actions": actions})
+    ctx = page_context.resolve(
+        {"revision": 1, "surface": "rankings"}, user=object(), loaders=make_loaders()
+    )
+    return make_orchestrator(gw, orgs=(ORG_ACME,)).run(
+        user_prompt="Show only remote companies", conversation=[],
+        preference_markdown="", page_context=ctx,
+    )
+
+
+def test_terse_reply_with_valid_action_is_not_an_echo():
+    result = _remote_turn("Only remote companies.", [GOOD_FILTER])
+    assert result.message == "Only remote companies."
+    assert [a["type"] for a in result.actions] == ["propose_filters"]
+
+
+def test_pure_echo_without_action_is_still_rejected():
+    from crank.agents.job_search.errors import EchoReplyError
+
+    with pytest.raises(EchoReplyError):
+        _remote_turn("Only remote companies.", [])
+
+
+def test_echo_with_only_a_dropped_action_is_still_rejected():
+    from crank.agents.job_search.errors import EchoReplyError
+
+    with pytest.raises(EchoReplyError):
+        _remote_turn("Only remote companies.", [OPEN_3])
+
+
+def test_viewed_company_scores_survive_a_full_score_catalog():
+    orgs = [SimpleNamespace(**{**vars(ORG_ACME), "id": i, "name": f"Org{i}"}) for i in range(11, 19)]
+    all_rows = [
+        {"organization_id": i, "score_type": "culture", "avg_score": 3.0} for i in range(11, 19)
+    ] + [{"organization_id": 3, "score_type": "culture", "avg_score": 2.0}, {"organization_id": 3, "score_type": "pay", "avg_score": 4.0}]
+
+    def score_ds(ids, types, limit):
+        return [r for r in all_rows if r["organization_id"] in ids][:limit]
+
+    from crank.agents.job_search.service import JobSearchOrchestrator
+    from crank.tests.agents.test_golden_conversations import RecordingPreferenceService
+
+    gw = ScriptedGateway({**BASE})
+    orch = JobSearchOrchestrator(
+        gateway=gw, preference_service=RecordingPreferenceService(),
+        org_datasource=lambda f, limit: list(orgs), score_datasource=score_ds,
+        job_listing_datasource=lambda f, limit: [],
+        max_score_summary_results=3,
+    )
+    ctx = page_context.resolve(
+        {"revision": 1, "organization_id": 3}, user=object(), loaders=make_loaders()
+    )
+    orch.run(user_prompt="how does it score?", conversation=[], preference_markdown="",
+             page_context=ctx)
+    text = system_text(gw)
+    summaries = text.split("SCORE SUMMARIES", 1)[1]
+    assert "organization_id=3 culture=2.0" in summaries
+    assert "organization_id=3 pay=4.0" in summaries
+    ids = [int(m) for m in re.findall(r"organization_id=(\d+)", summaries)]
+    assert ids == sorted(ids) and len(ids) == 3

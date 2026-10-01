@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -302,7 +302,12 @@ class JobSearchOrchestrator:
         known_ids = tools.union_server_controlled_ids(org_rows)
         score_rows: list[dict[str, Any]] = []
         if known_ids:
-            score_rows = self._load_score_summaries(known_ids)
+            score_rows = self._load_score_summaries(
+                known_ids,
+                page_context.exposed_organization_ids()
+                if page_context is not None
+                else frozenset(),
+            )
 
         # 1b. Bounded, server-controlled job listings (active/open only).
         listing_rows = self._load_job_listings()
@@ -426,6 +431,7 @@ class JobSearchOrchestrator:
             user_prompt=user_prompt,
             completion=completion,
             inventory_nonempty=inventory_nonempty,
+            valid_actions=valid_actions,
         )
 
         # 6. Build citation-validated structured results BEFORE the guarded
@@ -560,15 +566,32 @@ class JobSearchOrchestrator:
         rows = self._org_datasource(filters, capped)
         return tools.normalize_organization_rows(rows)
 
-    def _load_score_summaries(self, known_ids: list[int]) -> list[dict[str, Any]]:
+    def _load_score_summaries(
+        self, known_ids: list[int], pinned_ids: frozenset[int] = frozenset()
+    ) -> list[dict[str, Any]]:
+        """Load bounded score summaries, reserving room for the viewed targets.
+
+        The viewed (pinned) targets are queried first so the bound cannot cut
+        them; the remaining budget goes to the other exposed targets. The
+        result is sorted by ``(organization_id, score_type)`` so the model
+        context does not depend on database row order.
+        """
         capped = tools.clamp_result_limit(
             self._max_score_summary_results, maximum=tools.MAX_SCORE_SUMMARY_RESULTS
         )
-        rows = self._score_datasource(known_ids, None, capped)
+        pinned = sorted(i for i in known_ids if i in pinned_ids)
+        rest = [i for i in known_ids if i not in pinned_ids]
+        raw: list[Any] = []
+        if pinned:
+            raw.extend(self._score_datasource(pinned, None, capped)[:capped])
+        room = capped - len(raw)
+        if rest and room > 0:
+            raw.extend(self._score_datasource(rest, None, room)[:room])
         # Normalize in the service layer so a mis-shapen/injected datasource
         # surfaces as InvalidScoreSummaryRowError instead of a bare KeyError
         # when the context renderer formats the rows.
-        return tools.normalize_score_summary_rows(rows)
+        rows = tools.normalize_score_summary_rows(raw)
+        return sorted(rows, key=lambda r: (r["organization_id"], r["score_type"]))
 
     def _load_job_listings(self) -> list[dict[str, Any]]:
         capped = tools.clamp_result_limit(
@@ -756,7 +779,11 @@ class JobSearchOrchestrator:
 
     @staticmethod
     def _guard_echo(
-        *, user_prompt: str, completion: AssistantCompletion, inventory_nonempty: bool
+        *,
+        user_prompt: str,
+        completion: AssistantCompletion,
+        inventory_nonempty: bool,
+        valid_actions: Sequence[Any] = (),
     ) -> None:
         """Reject an unrooted echo of the user turn when inventory is non-empty.
 
@@ -770,6 +797,8 @@ class JobSearchOrchestrator:
             return
         if completion.cited_organization_ids or completion.cited_job_listing_ids:
             return
+        if valid_actions:
+            return  # an applied action carries the substance of the turn.
         if completion.has_preference_patch:
             return  # preference elicitation / patch turns are legitimate.
         if quality.is_echo(user_prompt, completion.message):

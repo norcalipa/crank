@@ -293,7 +293,9 @@ def build_model_context(
         preference_markdown = preference_markdown[:max_preference_characters]
 
     catalog = _bounded_catalog(organization_catalog, max_catalog_rows, pinned_organization_ids)
-    summaries = _bounded_catalog(score_summaries, max_score_rows)
+    summaries = _bounded_catalog(
+        score_summaries, max_score_rows, pinned_organization_ids, key="organization_id"
+    )
     listings = _bounded_catalog(job_listings, max_job_listing_rows, pinned_job_listing_ids)
 
     return ModelContext(
@@ -310,7 +312,7 @@ def build_model_context(
     )
 
 
-def _bounded_catalog(rows, limit, pinned_ids=frozenset()) -> list[dict[str, object]]:
+def _bounded_catalog(rows, limit, pinned_ids=frozenset(), key="id") -> list[dict[str, object]]:
     """Bound ``rows`` to ``limit``; rows whose id is pinned are never cut.
 
     Pinned rows (the entities the user is viewing) keep their place and the
@@ -321,7 +323,7 @@ def _bounded_catalog(rows, limit, pinned_ids=frozenset()) -> list[dict[str, obje
     rows = list(rows)
     if not (isinstance(limit, int) and limit > 0):
         return rows
-    pinned = [i for i, row in enumerate(rows) if row.get("id") in pinned_ids]
+    pinned = [i for i, row in enumerate(rows) if row.get(key) in pinned_ids]
     if not pinned:
         return rows[:limit]
     room = max(0, limit - len(pinned))
