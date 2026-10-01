@@ -196,6 +196,28 @@ describe('JobSearchChat', () => {
             expect(observe).toHaveBeenCalled();
         });
 
+        test('also observes the priorities block above the chat in the assistant panel', async () => {
+            const observe = jest.fn();
+            class MockResizeObserver {
+                observe = observe;
+                disconnect = jest.fn();
+            }
+            (globalThis as {ResizeObserver?: unknown}).ResizeObserver = MockResizeObserver;
+            const panelBody = document.createElement('div');
+            panelBody.className = 'assistant-panel-body';
+            const priorities = document.createElement('section');
+            priorities.setAttribute('data-testid', 'priorities-sidebar');
+            const container = document.createElement('div');
+            panelBody.append(priorities, container);
+            document.body.appendChild(panelBody);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
+            render(<JobSearchChat/>, {container});
+            await screen.findByLabelText('Message');
+            expect(observe).toHaveBeenCalledWith(priorities);
+            panelBody.remove();
+        });
+
         test('re-measures the card height when the viewport resizes', async () => {
             await renderChat();
             const chat = screen.getByTestId('job-search-chat');

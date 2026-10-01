@@ -3312,9 +3312,10 @@ body.assistant-open .app-content .table-responsive,
 .priorities-section {
     margin-bottom: 1rem;
     color: #e9ecef;
+    container-type: inline-size;
 }
-.priorities-title { margin-bottom: 0.5rem; }
-.priorities-empty { margin: 0 0 0.5rem; color: #ced4da; }
+.priorities-title { font-size: 1rem; font-weight: 600; color: #f8f9fa; margin-bottom: 0.5rem; }
+.priorities-empty { margin: 0 0 0.5rem; font-size: 0.875rem; color: #adb5bd; }
 .priority-chips {
     list-style: none;
     margin: 0 0 0.5rem;
@@ -3324,54 +3325,163 @@ body.assistant-open .app-content .table-responsive,
     gap: 0.4rem;
 }
 .priority-chip {
-    border: 1px solid #adb5bd;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
     border-radius: 999px;
-    padding: 0.2rem 0.7rem;
-    font-size: 0.85rem;
-    background: #212529;
+    background: #343a40;
+    border: 1px solid transparent;
     max-width: 100%;
     overflow-wrap: anywhere;
 }
-.priority-chip-hard { border-color: #3fb27f; border-width: 2px; }
-.priority-chip-unsupported { border-style: dashed; }
-.priority-chip-icon { margin-right: 0.3rem; }
-.priority-chip-skeleton {
-    width: 6rem;
-    min-height: 1.9rem;
-    background: #343a40;
-    border-color: #343a40;
-    animation: priorities-pulse 1.4s ease-in-out infinite;
+.priority-chip-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    min-height: 2rem;
+    padding: 0.2rem 0.75rem;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: #e9ecef;
+    font-size: 0.85rem;
+    text-align: left;
+    cursor: pointer;
 }
-@keyframes priorities-pulse { 50% { opacity: 0.5; } }
+.priority-chip:hover { background: #3d444b; border-color: #adb5bd; }
+.priority-chip-hard { border-color: #6c757d; }
+.priority-chip-unsupported { border-style: dashed; border-color: #6c757d; }
+.priority-chip-label { color: #adb5bd; }
+.priority-chip-value { font-weight: 600; }
+.priority-chip-icon { font-size: 0.75rem; margin: 0; color: #adb5bd; }
+.priority-chip-lock { font-size: 0.75rem; }
+.priority-chip-skeleton {
+    display: block;
+    width: 6rem;
+    min-height: 2rem;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.08) 25%, rgba(255, 255, 255, 0.16) 50%, rgba(255, 255, 255, 0.08) 75%);
+    background-size: 200% 100%;
+    animation: assistant-loading-shimmer 1.4s linear infinite;
+}
 @media (prefers-reduced-motion: reduce) {
     .priority-chip-skeleton { animation: none; }
 }
-.priorities-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.priorities-actions .btn,
-.priorities-section .chat-btn,
+.priorities-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.priorities-section .btn,
 .priorities-toggle { min-height: 44px; }
+.priorities-section .btn-link.text-light { text-decoration: none; }
 .priorities-group { border: 0; padding: 0; margin: 0 0 0.75rem; min-width: 0; }
-.priorities-legend { font-size: 0.95rem; font-weight: 600; margin-bottom: 0.25rem; }
+.priorities-legend {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #adb5bd;
+    margin-bottom: 0.25rem;
+}
 .priorities-field { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.6rem; }
-.priorities-label { font-size: 0.9rem; }
-.priorities-field-error { color: #ff9d9d; font-size: 0.85rem; }
-.priorities-field-note { color: #ced4da; font-size: 0.85rem; }
-.priorities-importance { display: flex; gap: 0.4rem; }
+.priorities-label { font-size: 0.875rem; font-weight: 500; color: #dee2e6; }
+.priorities-field-note { color: #adb5bd; font-size: 0.8125rem; }
+.priorities-readonly { font-size: 0.875rem; color: #adb5bd; }
+.priorities-readonly-row { display: flex; justify-content: space-between; gap: 0.5rem; padding: 0.25rem 0; }
+.priorities-unsupported { margin-bottom: 0.75rem; }
+.priorities-unsupported summary { cursor: pointer; font-size: 0.875rem; color: #adb5bd; min-height: 2rem; }
+.priorities-importance { display: flex; gap: 0; margin-top: 0.375rem; }
+.priorities-importance .priorities-toggle:first-child { border-radius: 0.375rem 0 0 0.375rem; }
+.priorities-importance .priorities-toggle:last-child { border-radius: 0 0.375rem 0.375rem 0; margin-left: -1px; }
 .priorities-toggle { border: 1px solid #adb5bd; color: #e9ecef; background: transparent; }
-.priorities-toggle.active { background: #198754; border-color: #3fb27f; color: #fff; font-weight: 600; }
-.priorities-toggle.active::before { content: "\2713\00a0"; }
+.priorities-toggle.active { background: #0d6efd; border-color: #0d6efd; color: #fff; font-weight: 600; }
 .priorities-section input:focus-visible,
 .priorities-section select:focus-visible,
 .priorities-section button:focus-visible,
+.priorities-section summary:focus-visible,
 .priorities-section [tabindex="-1"]:focus-visible {
     outline: 3px solid #6ea8fe;
     outline-offset: 2px;
 }
-.priorities-scroll { max-height: 70vh; overflow-y: auto; }
-.priorities-sidebar { flex: 0 0 auto; padding: 0.5rem 0.75rem; border-bottom: 1px solid #495057; margin-bottom: 0; }
-.priorities-sidebar .priority-chips {
-    flex-wrap: wrap;
-    max-height: 3.6rem;
-    overflow: hidden;
+.priorities-scroll {
+    max-height: 70vh;
+    overflow-y: auto;
+    padding: 6px;
+    margin-inline: -6px;
+    scroll-padding: 8px;
+    background:
+        linear-gradient(#212529 30%, rgba(33, 37, 41, 0)) top / 100% 24px no-repeat local,
+        linear-gradient(rgba(33, 37, 41, 0), #212529 70%) bottom / 100% 24px no-repeat local,
+        radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.55), transparent) top / 100% 8px no-repeat scroll,
+        radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.55), transparent) bottom / 100% 8px no-repeat scroll;
+}
+.priorities-sidebar { flex: 0 0 auto; padding: 0.5rem 0.75rem 1rem; border-bottom: 1px solid #495057; margin-bottom: 0; }
+@media (min-width: 768px) {
+    .priorities-sidebar { padding-inline: 1rem; }
 }
 .priorities-sidebar .priorities-scroll { max-height: 60%; max-height: 60vh; }
+
+/* Cards: neutral surface for review / confirm; success only for applied. */
+.priorities-card {
+    background: #2b3035;
+    border: 1px solid #495057;
+    border-radius: 0.5rem;
+    padding: 0.75rem;
+    color: #dee2e6;
+}
+.priorities-section .priorities-heading {
+    display: flex;
+    gap: 0.375rem;
+    align-items: baseline;
+    font-weight: 600;
+}
+.priorities-section .pref-change-list { max-inline-size: none; }
+.priorities-section .pref-change-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+}
+.priorities-review .pref-change-item { border-top-color: #495057; }
+.priorities-review .pref-change-path { color: #dee2e6; }
+.priorities-review .pref-change-new { color: #f8f9fa; font-weight: 600; }
+.priorities-section .pref-change-values { flex-wrap: wrap; min-width: 0; }
+.priorities-section .pref-change-old,
+.priorities-section .pref-change-new { white-space: nowrap; }
+@container (min-width: 32rem) {
+    .priorities-section .pref-change-item {
+        display: grid;
+        grid-template-columns: minmax(9rem, 16rem) minmax(0, 1fr);
+        column-gap: 1rem;
+        align-items: baseline;
+    }
+}
+.priorities-section .chat-actions { flex-direction: row; flex-wrap: wrap; align-items: center; margin-top: 0.5rem; }
+.priorities-section .chat-actions > .btn { white-space: nowrap; flex: 1 1 auto; }
+.priorities-review .chat-actions > :first-child { flex-basis: 100%; }
+.priorities-section .pref-change-error,
+.priorities-load-error {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #842029;
+    border-radius: 0.375rem;
+    background: #2c0b0e;
+    color: #ea868f;
+}
+.priorities-form-error { color: #ea868f; font-size: 0.875rem; padding-bottom: 0.25rem; }
+.priorities-footer {
+    position: sticky;
+    bottom: -6px;
+    z-index: 1;
+    margin: 0 -6px -6px;
+    padding: 0.5rem 6px 0.25rem;
+    background: #212529;
+    border-top: 1px solid #495057;
+    box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.8);
+}
+.priorities-footer .chat-actions { margin-top: 0; }
+.priorities-review > .chat-actions {
+    position: sticky;
+    bottom: -6px;
+    background: #2b3035;
+    padding-top: 0.5rem;
+}

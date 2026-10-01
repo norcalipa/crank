@@ -1195,6 +1195,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         if (typeof ResizeObserver !== 'undefined' && cardRef.current?.parentElement) {
             observer = new ResizeObserver(scheduleMeasure);
             observer.observe(cardRef.current.parentElement);
+            // The priorities block above the chat (assistant panel) resizes as
+            // its steps change; the card height depends on its offset.
+            const priorities = cardRef.current.closest('.assistant-panel-body')
+                ?.querySelector('[data-testid="priorities-sidebar"]');
+            if (priorities) observer.observe(priorities);
         }
         return () => {
             if (rafIdRef.current !== null) {

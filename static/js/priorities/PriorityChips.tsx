@@ -7,6 +7,7 @@
 
 import * as React from 'react';
 import type {PriorityChip} from './api';
+import {chipValueLabel} from './format';
 
 export function PriorityChipsSkeleton({count = 3}: {count?: number}) {
     return (
@@ -18,18 +19,21 @@ export function PriorityChipsSkeleton({count = 3}: {count?: number}) {
     );
 }
 
-export default function PriorityChips({chips}: {chips: PriorityChip[]}) {
+export default function PriorityChips({chips, onEdit}: {chips: PriorityChip[]; onEdit: () => void}) {
     return (
         <ul className="priority-chips" aria-label="Your saved priorities">
             {chips.map((chip) => (
-                <li key={chip.path}
-                    className={`priority-chip${chip.hard ? ' priority-chip-hard' : ''}${chip.supported ? '' : ' priority-chip-unsupported'}`}
-                    data-testid="priority-chip">
-                    {chip.hard && <i className="fa-solid fa-lock priority-chip-icon" aria-hidden="true"></i>}
-                    <span className="priority-chip-label">{chip.label}:</span>{' '}
-                    <span className="priority-chip-value">{chip.display}</span>
-                    {chip.hard && <span className="visually-hidden"> (required)</span>}
-                    {!chip.supported && <span className="visually-hidden"> (not used for matching yet)</span>}
+                <li key={chip.path} data-testid="priority-chip"
+                    className={`priority-chip${chip.hard ? ' priority-chip-hard' : ''}${chip.supported ? '' : ' priority-chip-unsupported'}`}>
+                    <button type="button" className="priority-chip-button" onClick={onEdit}
+                            aria-label={`Edit ${chip.label}`}>
+                        {chip.hard && <i className="fa-solid fa-lock priority-chip-lock" aria-hidden="true"></i>}
+                        <span className="priority-chip-label">{chip.label}:</span>
+                        <span className="priority-chip-value">{chipValueLabel(chip.path, chip.display)}</span>
+                        <i className="fa-solid fa-pen priority-chip-icon" aria-hidden="true"></i>
+                    </button>
+                    {chip.hard && <span className="visually-hidden">(required)</span>}
+                    {!chip.supported && <span className="visually-hidden">(not used for matching yet)</span>}
                 </li>
             ))}
         </ul>

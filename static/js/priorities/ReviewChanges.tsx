@@ -23,15 +23,21 @@ export interface ReviewChangesProps {
     onEdit?: () => void;
     onApplySearchOnly?: () => void;
     onReviewLatest?: () => void;
+    // Editor field labels by path, so the diff names a field as the editor does.
+    labels?: Record<string, string>;
     testId?: string;
 }
 
-export function ChangeList({changes, label}: {changes: PreferenceChange[]; label: string}) {
+export function ChangeList({changes, label, labels}: {
+    changes: PreferenceChange[];
+    label: string;
+    labels?: Record<string, string>;
+}) {
     return (
         <ul className="pref-change-list" aria-label={label}>
             {changes.map((change) => (
                 <li key={change.path} className="pref-change-item">
-                    <span className="pref-change-path">{preferencePathLabel(change.path)}</span>
+                    <span className="pref-change-path">{labels?.[change.path] || preferencePathLabel(change.path)}</span>
                     <span className="pref-change-values">
                         <span className="pref-change-old">{preferenceValueLabel(change.old)}</span>
                         <i className="fa-solid fa-arrow-right pref-change-arrow" aria-hidden="true"></i>
@@ -47,7 +53,7 @@ export function ChangeList({changes, label}: {changes: PreferenceChange[]; label
 export default function ReviewChanges({
     changes, scope = 'account', pending = false, error = null, stale = false,
     heading = 'Review your changes', onApply, onCancel, onEdit, onApplySearchOnly, onReviewLatest,
-    testId = 'priorities-review',
+    labels, testId = 'priorities-review',
 }: ReviewChangesProps) {
     const headingId = `priorities-review-${React.useId()}`;
     const headingRef = React.useRef<HTMLHeadingElement>(null);
@@ -56,18 +62,23 @@ export default function ReviewChanges({
     }, []);
     const isSearch = scope === 'search';
     return (
-        <div className="alert alert-warning pref-change-notice priorities-review" data-testid={testId}
+        <div className="priorities-card priorities-review" data-testid={testId}
              role="group" aria-labelledby={headingId}>
             <h3 id={headingId} className="h6 priorities-heading" tabIndex={-1} ref={headingRef}>
                 {heading}
             </h3>
+            <span className="visually-hidden" role="status">
+                {changes.length === 1 ? '1 change to review' : `${changes.length} changes to review`}
+            </span>
             <p className="priorities-scope-note">
                 {isSearch
                     ? 'These changes apply to this search only. They are not saved.'
-                    : 'These changes will be saved to your account and used for matching.'}
+                    : onApplySearchOnly
+                        ? 'Save these to your account, or use them for this search only.'
+                        : 'These changes will be saved to your account and used for matching.'}
             </p>
             {changes.length > 0 ? (
-                <ChangeList changes={changes} label="Proposed changes"/>
+                <ChangeList changes={changes} label="Proposed changes" labels={labels}/>
             ) : (
                 <p className="pref-change-empty" data-testid="priorities-review-empty">
                     Nothing would change. Edit a priority to continue.
@@ -79,12 +90,12 @@ export default function ReviewChanges({
                     {error}
                 </div>
             )}
-            <div className="chat-actions mt-2" role="group" aria-label="Review actions">
+            <div className="chat-actions" role="group" aria-label="Review actions">
                 {stale && onReviewLatest ? (
-                    <button type="button" className="chat-btn chat-btn-primary chat-focus"
+                    <button type="button" className="btn btn-sm btn-primary"
                             onClick={onReviewLatest}>Review latest</button>
                 ) : (
-                    <button type="button" className="chat-btn chat-btn-primary chat-focus"
+                    <button type="button" className="btn btn-sm btn-primary"
                             onClick={onApply} disabled={pending || changes.length === 0} aria-busy={pending}>
                         {pending ? (
                             <>
@@ -95,16 +106,16 @@ export default function ReviewChanges({
                     </button>
                 )}
                 {onEdit && (
-                    <button type="button" className="chat-btn chat-btn-secondary chat-focus"
+                    <button type="button" className="btn btn-sm btn-outline-light"
                             onClick={onEdit} disabled={pending}>Edit</button>
                 )}
                 {onApplySearchOnly && !isSearch && (
-                    <button type="button" className="chat-btn chat-btn-secondary chat-focus"
+                    <button type="button" className="btn btn-sm btn-outline-light"
                             onClick={onApplySearchOnly} disabled={pending || changes.length === 0}>
                         This search only
                     </button>
                 )}
-                <button type="button" className="chat-btn chat-btn-secondary chat-focus"
+                <button type="button" className="btn btn-sm btn-link text-light"
                         onClick={onCancel} disabled={pending}>Cancel</button>
             </div>
         </div>

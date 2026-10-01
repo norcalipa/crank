@@ -5,7 +5,7 @@ import * as React from 'react';
 import {fireEvent, render, screen} from '@testing-library/react';
 import ReviewChanges from './ReviewChanges';
 import AppliedChanges from './AppliedChanges';
-import {preferencePathLabel, preferenceValueLabel} from './format';
+import {chipValueLabel, preferencePathLabel, preferenceValueLabel} from './format';
 
 const changes = [{path: 'compensation.minimum_salary', old: 0, new: 150000}];
 
@@ -73,5 +73,24 @@ describe('format', () => {
         const cyclic: any = {};
         cyclic.self = cyclic;
         expect(preferenceValueLabel(cyclic)).toBe('[object Object]');
+    });
+});
+
+describe('chipValueLabel', () => {
+    test('groups numbers, adds a currency symbol for money, leaves text alone', () => {
+        expect(chipValueLabel('compensation.minimum_salary', '150000')).toBe('$150,000');
+        expect(chipValueLabel('compensation.minimum_total_compensation', '200000')).toBe('$200,000');
+        expect(chipValueLabel('vesting.max_cliff_months', '12')).toBe('12');
+        expect(chipValueLabel('culture', 'kind, curious')).toBe('kind, curious');
+    });
+});
+
+describe('ReviewChanges copy', () => {
+    test('offers the save-or-search note and announces plural change counts', () => {
+        const h = {onApply: jest.fn(), onCancel: jest.fn(), onApplySearchOnly: jest.fn()};
+        const two = [...changes, {path: 'culture', old: [], new: ['kind']}];
+        render(<ReviewChanges changes={two} {...h}/>);
+        expect(screen.getByRole('status')).toHaveTextContent('2 changes to review');
+        expect(screen.getByText('Save these to your account, or use them for this search only.')).toBeInTheDocument();
     });
 });

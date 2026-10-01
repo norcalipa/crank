@@ -16,6 +16,7 @@ import AppliedChanges from './AppliedChanges';
 import PriorityChips, {PriorityChipsSkeleton} from './PriorityChips';
 import PriorityEditor from './PriorityEditor';
 import ReviewChanges from './ReviewChanges';
+import {preferencePathLabel} from './format';
 import {Draft, DraftValue, buildPatch, emptyDraft, isDirty} from './patch';
 import {useWorkspace} from './useWorkspace';
 import {createLatestGuard} from '../workspace/requests';
@@ -138,6 +139,13 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated, signInUrl})
 
     const fields: EditorField[] = snapshot?.fields || [];
     const dirty = isDirty(fields, draft);
+    const labels = React.useMemo(
+        () => Object.fromEntries(fields.map((f) => [
+            f.path,
+            f.path.includes('.') ? `${preferencePathLabel(f.path).split(' \u203a ')[0]} \u203a ${f.label}` : f.label,
+        ])) as Record<string, string>,
+        [fields],
+    );
 
     const startReview = async (rebaseFrom?: Draft) => {
         if (!snapshot || busy) return;
@@ -187,7 +195,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated, signInUrl})
             finishWrite(
                 result,
                 scope === 'search'
-                    ? `Applied to this search only (${result.matchCount ?? 0} matches). Nothing was saved.`
+                    ? `This search only \u2014 not saved. ${result.matchCount ?? 0} matches.`
                     : 'Priorities saved. Job matches will update.',
             );
         } catch (err) {
@@ -257,7 +265,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated, signInUrl})
         return (
             <section className={className} aria-labelledby="priorities-title-main" data-testid="priorities-signed-out">
                 <h2 id="priorities-title-main" className="h6 priorities-title">Your priorities</h2>
-                <p className="priorities-empty">Sign in to set the priorities used to match jobs.</p>
+                <p className="priorities-empty">Sign in to save your priorities.</p>
                 {signInUrl && <a className="btn btn-sm btn-primary" href={signInUrl}>Sign in</a>}
             </section>
         );
@@ -269,10 +277,10 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated, signInUrl})
         body = <div aria-busy="true"><PriorityChipsSkeleton/><span className="visually-hidden" role="status">Loading your priorities</span></div>;
     } else if (phase === 'error' && !snapshot) {
         body = (
-            <div className="pref-change-error" role="alert" data-testid="priorities-load-error">
-                <i className="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>
-                {loadError || 'Could not load your priorities.'}{' '}
-                <button type="button" className="btn btn-sm btn-outline-light" onClick={() => void load()}>Try again</button>
+            <div className="priorities-load-error" role="alert" data-testid="priorities-load-error">
+                <i className="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+                <span className="flex-grow-1">{loadError || 'Couldn\u2019t load your priorities.'}</span>
+                <button type="button" className="btn btn-sm btn-outline-light ms-auto" onClick={() => void load()}>Try again</button>
             </div>
         );
     } else if (step === 'edit' && snapshot) {
@@ -290,7 +298,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated, signInUrl})
     } else if (step === 'review' && proposal) {
         body = (
             <div className="priorities-scroll">
-                <ReviewChanges changes={proposal.changes} pending={busy} error={reviewError} stale={stale}
+                <ReviewChanges changes={proposal.changes} labels={labels} pending={busy} error={reviewError} stale={stale}
                                onApply={() => void apply('account')}
                                onApplySearchOnly={() => void apply('search')}
                                onEdit={() => setStep('edit')} onCancel={close}
@@ -299,21 +307,21 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated, signInUrl})
         );
     } else if (step === 'applied' && applied) {
         body = (
-            <AppliedChanges changes={applied.result.changes} summary={applied.summary}
+            <AppliedChanges changes={applied.result.changes} labels={labels} summary={applied.summary}
                             canUndo={applied.result.undo !== null} undoPending={undoPending}
                             undoError={undoError} undone={undone} onUndo={() => void undo()}
                             onDismiss={() => setStep('view')}/>
         );
     } else if (step === 'confirm-reset') {
         body = (
-            <div className="alert alert-warning priorities-confirm" role="group" aria-label="Confirm reset">
+            <div className="priorities-card priorities-confirm" role="group" aria-label="Confirm reset">
                 <p>Reset all saved priorities to their defaults? Your conversations are not changed. Job matches will update.</p>
                 <div className="chat-actions" role="group" aria-label="Reset actions">
-                    <button type="button" className="chat-btn chat-btn-primary chat-focus"
+                    <button type="button" className="btn btn-sm btn-danger"
                             onClick={() => void reset()} disabled={busy} aria-busy={busy}>
                         {busy ? 'Resetting…' : 'Reset priorities'}
                     </button>
-                    <button type="button" className="chat-btn chat-btn-secondary chat-focus"
+                    <button type="button" className="btn btn-sm btn-outline-light"
                             onClick={() => setStep('view')} disabled={busy}>Keep priorities</button>
                 </div>
             </div>
@@ -323,24 +331,25 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated, signInUrl})
         body = (
             <>
                 {formError && (
-                    <div className="pref-change-error" role="alert" data-testid="priorities-view-error">
-                        <i className="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>{formError}
+                    <div className="priorities-load-error" role="alert" data-testid="priorities-view-error">
+                        <i className="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+                        <span className="flex-grow-1">{formError}</span>
                     </div>
                 )}
                 {chips.length > 0 ? (
-                    <PriorityChips chips={chips}/>
+                    <PriorityChips chips={chips} onEdit={() => setPrioritiesEditorOpen(variant)}/>
                 ) : (
                     <p className="priorities-empty" data-testid="priorities-empty">
                         No priorities saved yet. Add a few so job matches fit what you want.
                     </p>
                 )}
                 <div className="priorities-actions" role="group" aria-label="Priorities actions">
-                    <button type="button" className="btn btn-sm btn-primary priorities-edit"
+                    <button type="button" className="btn btn-sm btn-outline-primary priorities-edit"
                             onClick={() => setPrioritiesEditorOpen(variant)}>
                         {chips.length > 0 ? 'Edit priorities' : 'Add priorities'}
                     </button>
                     {chips.length > 0 && (
-                        <button type="button" className="btn btn-sm btn-outline-light"
+                        <button type="button" className="btn btn-sm btn-link link-danger priorities-reset"
                                 onClick={() => setStep('confirm-reset')}>Reset priorities</button>
                     )}
                 </div>

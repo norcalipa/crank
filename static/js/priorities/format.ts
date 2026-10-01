@@ -20,6 +20,13 @@ export function preferencePathLabel(path: string): string {
         .join(' › ');
 }
 
+/** Chip rendering of the server's display string: numbers are grouped, money gets a symbol. */
+export function chipValueLabel(path: string, display: string): string {
+    if (!/^-?\d+(\.\d+)?$/.test(display)) return display;
+    const grouped = Number(display).toLocaleString('en-US');
+    return /salary|compensation$/.test(path) ? `$${grouped}` : grouped;
+}
+
 /** Human rendering of a preference value. */
 export function preferenceValueLabel(value: unknown): string {
     if (value === null || value === undefined) return 'Not set';
