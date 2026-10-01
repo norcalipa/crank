@@ -54,6 +54,8 @@ for (const {field, current, saved, ...viewport} of VIEWPORTS) {
             await expectNoHorizontalOverflow(page);
 
             await form.getByRole('textbox', {name: 'Evidence link'}).fill('https://example.com/policy');
+            await expect(form.getByRole('textbox', {name: 'Evidence link'})).not.toHaveClass(/is-invalid/);
+            await expect(form.getByRole('textbox', {name: 'Evidence link'})).toBeFocused();
             await form.getByRole('button', {name: 'Submit suggestion'}).click();
 
             const status = form.getByRole('status');
@@ -85,6 +87,32 @@ for (const {field, current, saved, ...viewport} of VIEWPORTS) {
         });
     });
 }
+
+test('a failed submit moves focus to the alert; a rate limit unlocks Submit after Retry-After and keeps the draft', async ({page}) => {
+    await login(page);
+    const details = await openDetails(page);
+    await details.getByTestId('suggest-correction-field-funding_round').click();
+    const form = page.getByRole('dialog', {name: /Suggest a correction/});
+    await form.getByRole('textbox', {name: 'Suggested value'}).fill('Series C');
+    await form.getByRole('textbox', {name: 'Evidence link'}).fill('https://example.com/funding');
+    const submit = form.getByRole('button', {name: 'Submit suggestion'});
+
+    await page.route('**/api/company-corrections/', (route) => route.fulfill({status: 500, json: {}}), {times: 1});
+    await submit.click();
+    await expect(form.getByRole('alert')).toBeFocused();
+    await expect(submit).toBeEnabled();
+
+    await page.route('**/api/company-corrections/', (route) => route.fulfill({
+        status: 429, headers: {'Retry-After': '2'}, json: {error: 'Too many.'},
+    }), {times: 1});
+    await submit.click();
+    await expect(form.getByRole('alert')).toBeFocused();
+    await expect(form.getByRole('alert')).toContainText('Hourly limit reached');
+    await expect(submit).toBeDisabled();
+    await expect(submit).toBeEnabled({timeout: 5000});
+    await expect(form.getByRole('alert')).toBeHidden();
+    await expect(form.getByRole('textbox', {name: 'Suggested value'})).toHaveValue('Series C');
+});
 
 test('a double click on submit creates one pending correction', async ({page}) => {
     await login(page);
