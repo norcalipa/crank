@@ -29,3 +29,11 @@ class CompanyCorrectionForm(forms.ModelForm):
             "proposed_value": {"required": "Enter the corrected value."},
             "evidence_url": {"required": "Add a public link that starts with https://."},
         }
+
+    def clean_scope_level(self):
+        level = self.cleaned_data["scope_level"]
+        if level == CompanyCorrection.ScopeLevel.TEAM:
+            raise forms.ValidationError(
+                "Team-specific suggestions cannot be reviewed yet. Choose the whole company, a role or a location."
+            )
+        return level

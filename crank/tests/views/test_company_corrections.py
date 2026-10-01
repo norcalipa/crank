@@ -112,7 +112,7 @@ class CompanyCorrectionsViewTest(TestCase):
                 field_key="bogus",
                 proposed_value="  ",
                 evidence_url="http://acme.example.com/",
-                scope={"level": "team", "value": ""},
+                scope={"level": "role", "value": ""},
                 note="n" * 501,
                 idempotency_key="nope",
             )
@@ -123,6 +123,13 @@ class CompanyCorrectionsViewTest(TestCase):
             "field_key", "proposed_value", "evidence_url", "scope_value", "note", "idempotency_key",
         ):
             self.assertIn(key, errors)
+        self.assertEqual(CompanyCorrection.objects.count(), 0)
+
+    def test_team_scope_is_not_accepted(self):
+        self.login()
+        response = self.post(self.body(scope={"level": "team", "value": "Platform"}))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Team-specific", response.json()["field_errors"]["scope_level"][0])
         self.assertEqual(CompanyCorrection.objects.count(), 0)
 
     def test_scope_shapes(self):
@@ -237,6 +244,32 @@ class CompanyCorrectionsViewTest(TestCase):
             self.assertEqual(self.post().status_code, 201)
             self.assertEqual(self.post(self.body(field_key="locations")).status_code, 429)
 
+    def test_rejected_attempts_do_not_spend_the_allowance(self):
+        self.login()
+        with override_settings(COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR=2):
+            for _ in range(5):
+                self.assertEqual(
+                    self.post(self.body(evidence_url="http://acme.example.com/")).status_code, 400
+                )
+            self.assertEqual(self.post(self.body(organization_id=999999)).status_code, 404)
+            self.assertEqual(self.post(self.body(proposed_value="Remote-first")).status_code, 400)
+            self.assertEqual(self.post().status_code, 201)
+            self.assertEqual(self.post(self.body(proposed_value="x")).status_code, 409)
+            self.assertEqual(self.post(self.body(field_key="locations")).status_code, 201)
+            self.assertEqual(self.post(self.body(field_key="funding_round")).status_code, 429)
+
+    def test_rate_limit_sends_retry_after_from_the_window(self):
+        self.login()
+        with override_settings(COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR=1):
+            self.assertEqual(self.post().status_code, 201)
+            limited = self.post(self.body(field_key="locations"))
+            self.assertEqual(limited.status_code, 429)
+            wait = int(limited["Retry-After"])
+            self.assertTrue(3500 <= wait <= 3600)
+            cache.delete(f"company-correction-rate:{self.user.pk}:reset")
+            self.assertEqual(self.post(self.body(field_key="locations")).status_code, 429)
+            self.assertEqual(self.post(self.body(field_key="locations"))["Retry-After"], "3600")
+
     def test_rate_counter_recovers_when_incr_fails(self):
         self.login()
         key = f"company-correction-rate:{self.user.pk}"
@@ -318,6 +351,12 @@ class CompanyCorrectionsViewTest(TestCase):
         bad = self.client.get(f"{URL}?organization=abc")
         self.assertEqual(bad.status_code, 400)
         self.assertEqual(bad["Cache-Control"], "private, no-store")
+
+    def test_list_rejects_non_ascii_digit_organization(self):
+        self.login()
+        for value in ("%C2%B2", "%D9%A1", "abc"):
+            response = self.client.get(f"{URL}?organization={value}")
+            self.assertEqual(response.status_code, 400)
 
     def test_detail_is_owner_scoped(self):
         self.login()

@@ -168,6 +168,13 @@ def accept_observation_fields(
                 .order_by("-observed_at", "-id")
             )
             current = locked_rows[0] if locked_rows else None
+            if observation.status == ObservationStatus.AUTO_APPLIED and any(
+                row.extractor_version == CORRECTION_VERSION for row in locked_rows
+            ):
+                # A staff-accepted manual correction is not overwritten by an
+                # unreviewed crawl; only an operator-accepted observation may
+                # replace it.
+                continue
             if locked_rows:
                 # Supersede the whole accepted set, not only ``current``: if
                 # an earlier race left duplicates, this accept heals them
@@ -257,6 +264,10 @@ def record_check(
         )
         if row is None:
             return None
+        if row.extractor_version == CORRECTION_VERSION and not accept_value:
+            # Nothing was fetched for a manual correction, so a crawl cannot
+            # stamp a fetch or verification onto it.
+            return row
         update_fields = ["last_checked_at", "modified"]
         row.last_checked_at = now
         if success:
@@ -389,7 +400,10 @@ def accept_correction(correction, *, reviewer, now: datetime | None = None):
 
     Same lock-and-supersede shape as :func:`accept_observation_fields`. Team
     scope is refused: matching only understands ``countries`` and
-    ``role_families``, so a team scope would silently act company-wide.
+    ``role_families``, so a team scope would silently act company-wide. A
+    location or role scope is refused while the field already has an accepted
+    fact with a different scope: the model holds one accepted row per field,
+    so accepting would turn every listing outside the scope UNKNOWN.
     Nothing was fetched, so ``last_successful_fetch_at`` stays empty.
     """
     scope_key = CORRECTION_SCOPE_TO_EVIDENCE_SCOPE.get(correction.scope_level, False)
@@ -414,6 +428,11 @@ def accept_correction(correction, *, reviewer, now: datetime | None = None):
             .order_by("-observed_at", "-id")
         )
         current = locked_rows[0] if locked_rows else None
+        if scope_json and any(row.scope_json != scope_json for row in locked_rows):
+            raise CorrectionNotAcceptable(
+                "a scoped correction would replace the fact that already applies to "
+                "other listings; the model keeps one accepted fact per field"
+            )
         if locked_rows:
             CompanyFieldEvidence.objects.filter(
                 pk__in=[row.pk for row in locked_rows]
@@ -455,8 +474,27 @@ def accept_correction(correction, *, reviewer, now: datetime | None = None):
     return evidence
 
 
+def displayed_field_values(organization) -> dict[str, str]:
+    """Values the rankings, details header and assistant show per field key.
+
+    These come from the Organization columns, not from evidence rows, so the
+    correction form can show both and say which one a correction would change.
+    """
+    values = {
+        "rto_policy": organization.get_rto_policy_display(),
+        "funding_round": organization.get_funding_round_display(),
+        "accelerated_vesting": "Yes" if organization.accelerated_vesting else "No",
+        "company_name": organization.name,
+    }
+    domain = (urlsplit(organization.url or "").hostname or "").lower()
+    if domain:
+        values["company_domain"] = domain
+    return {key: str(value) for key, value in values.items() if value}
+
+
 __all__ = [
     "CORRECTION_SCOPE_TO_EVIDENCE_SCOPE",
+    "displayed_field_values",
     "CorrectionNotAcceptable",
     "DEFAULT_FRESHNESS_DAYS",
     "FIELD_FRESHNESS_POLICY",

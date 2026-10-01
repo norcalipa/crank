@@ -620,7 +620,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                                                 </span>
                                                             )}
                                                             <span className="text-muted small evidence-meta">
-                                                                {fieldEvidence.source_domain || 'unknown source'},
+                                                                {fieldEvidence.source_domain || 'unknown source'},{' '}
                                                                 <span className="text-nowrap">last verified {formatDate(fieldEvidence.last_verified_at)}</span>
                                                                 {formatScope(fieldEvidence.scope)}
                                                             </span>

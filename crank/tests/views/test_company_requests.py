@@ -653,6 +653,78 @@ class CompanyCorrectionAdminTest(TestCase):
         self.assertEqual(OperationalChangeAudit.objects.count(), 0)
         self.assertIn("team scope", " ".join(str(m) for m in request._messages))
 
+    def test_scoped_accept_over_company_wide_fact_is_refused_with_reason(self):
+        from crank.models.company_profile import CompanyFieldEvidence
+        from crank.services.company_evidence import accept_correction
+
+        company = self.make()
+        accept_correction(company, reviewer=self.staff)
+        scoped = self.make(scope_level="location", scope_value="London")
+        request = self._post()
+        self.admin.accept_corrections(request, self.CompanyCorrection.objects.filter(pk=scoped.pk))
+        scoped.refresh_from_db()
+        self.assertEqual(scoped.status, "pending")
+        self.assertEqual(CompanyFieldEvidence.objects.filter(state="accepted").count(), 1)
+        text = " ".join(str(m) for m in request._messages)
+        self.assertIn(f"#{scoped.pk}", text)
+        self.assertIn("scoped correction", text)
+
+    def test_batch_with_two_corrections_for_one_field_is_refused_whole(self):
+        from crank.models.company_profile import CompanyFieldEvidence
+
+        older = self.make()
+        newer = self.make()
+        other = self.make(field_key="locations")
+        request = self._post()
+        self.admin.accept_corrections(request, self._qs())
+        for item in (older, newer, other):
+            item.refresh_from_db()
+            self.assertEqual(item.status, "pending")
+        self.assertEqual(CompanyFieldEvidence.objects.count(), 0)
+        self.assertEqual(OperationalChangeAudit.objects.count(), 0)
+        text = " ".join(str(m) for m in request._messages)
+        self.assertIn("Nothing was accepted", text)
+        self.assertIn(f"{older.pk}", text)
+        self.assertIn(f"{newer.pk}", text)
+
+    def test_batch_with_distinct_fields_is_accepted(self):
+        self.make()
+        self.make(field_key="locations")
+        self.admin.accept_corrections(self._post(), self._qs())
+        self.assertEqual(self.CompanyCorrection.objects.filter(status="accepted").count(), 2)
+
+    def test_no_longer_pending_is_reported_as_such(self):
+        item = self.make()
+        request = self._post()
+        queryset = self.CompanyCorrection.objects.filter(pk=item.pk)
+        with patch(
+            "crank.admin.company_evidence.accept_correction",
+            side_effect=__import__("crank.services.company_evidence", fromlist=["x"]).CorrectionNotAcceptable(
+                "correction is no longer pending"
+            ),
+        ):
+            self.admin.accept_corrections(request, queryset)
+        self.assertIn("no longer pending", " ".join(str(m) for m in request._messages))
+
+    def test_add_and_delete_are_not_offered_and_notes_are_audited(self):
+        from django.urls import reverse
+
+        item = self.make()
+        self.assertEqual(self.client.get(reverse("admin:crank_companycorrection_add")).status_code, 403)
+        self.assertEqual(self.client.post(reverse("admin:crank_companycorrection_add"), {}).status_code, 403)
+        delete_url = reverse("admin:crank_companycorrection_delete", args=[item.pk])
+        self.assertEqual(self.client.post(delete_url, {"post": "yes"}).status_code, 403)
+        self.assertTrue(self.CompanyCorrection.objects.filter(pk=item.pk).exists())
+        change_url = reverse("admin:crank_companycorrection_change", args=[item.pk])
+        self.assertEqual(self.client.post(change_url, {"admin_note": "checked source"}).status_code, 302)
+        item.refresh_from_db()
+        self.assertEqual(item.admin_note, "checked source")
+        audit = OperationalChangeAudit.objects.get()
+        self.assertEqual(audit.action, "note")
+        self.assertEqual(audit.new_value, {"admin_note": "checked source"})
+        self.client.post(change_url, {"admin_note": "checked source"})
+        self.assertEqual(OperationalChangeAudit.objects.count(), 1)
+
     def test_reject_and_duplicate_touch_only_the_correction(self):
         from crank.models.company_profile import CompanyFieldEvidence
 

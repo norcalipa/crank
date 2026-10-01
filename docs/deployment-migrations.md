@@ -385,7 +385,9 @@ numbered merge migration if a head split remains, keeping
 - **0047 → #477**, `0047_companycorrection`, parent
   `0045_jobsourcecatalog_consecutive_failures` while #474's
   `0046_alter_companyfieldevidence_state` is unmerged; if #474 merges first,
-  re-parent 0047 onto 0046 before merge. Exactly one operation, a
+  re-parent 0047 onto 0046 before merge (edit its `dependencies`, then
+  update the exact-leaf list in `test_readiness_baseline`; the shape tests in
+  `test_migrations` and `test_source_freshness` assert the chain dynamically). Exactly one operation, a
   `CreateModel` for the new `CompanyCorrection` table. The unique constraint
   (`requester`, `idempotency_key`) is unconditioned; no partial unique
   constraint is used (MySQL W036), and the one-pending-per-field rule is

@@ -8,6 +8,7 @@ fetches the evidence URL.
 """
 
 import json
+import time
 import uuid
 
 from django.conf import settings
@@ -64,20 +65,37 @@ def _payload(correction):
     }
 
 
+def _rate_keys(request):
+    base = f"company-correction-rate:{request.user.pk}"
+    return base, f"{base}:reset"
+
+
+def _retry_after(request):
+    """Seconds until the caller's hourly window ends (at least 1)."""
+    _, reset_key = _rate_keys(request)
+    reset_at = cache.get(reset_key)
+    if not isinstance(reset_at, (int, float)):
+        return RATE_LIMIT_SECONDS
+    return max(1, min(RATE_LIMIT_SECONDS, int(reset_at - time.time()) + 1))
+
+
 def _rate_limited(request):
+    """True once the caller has used up the hourly allowance; never counts."""
     limit = getattr(settings, "COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR", DEFAULT_RATE_LIMIT)
-    key = f"company-correction-rate:{request.user.pk}"
-    count = cache.get(key)
-    if count is None:
-        cache.add(key, 1, RATE_LIMIT_SECONDS)
-        count = 1
-    else:
-        try:
-            count = cache.incr(key)
-        except ValueError:
-            cache.set(key, 1, RATE_LIMIT_SECONDS)
-            count = 1
-    return count > limit
+    key, _ = _rate_keys(request)
+    return (cache.get(key) or 0) >= limit
+
+
+def _count_submission(request):
+    """Spend one allowance; called only after a correction was stored."""
+    key, reset_key = _rate_keys(request)
+    cache.add(reset_key, time.time() + RATE_LIMIT_SECONDS, RATE_LIMIT_SECONDS)
+    if cache.add(key, 1, RATE_LIMIT_SECONDS):
+        return
+    try:
+        cache.incr(key)
+    except ValueError:
+        cache.set(key, 1, RATE_LIMIT_SECONDS)
 
 
 def _normalized(value):
@@ -104,7 +122,7 @@ def _list(request):
     )
     organization = request.GET.get("organization")
     if organization is not None:
-        if not organization.isdigit():
+        if not (organization.isascii() and organization.isdigit()):
             return _error_response("organization must be an integer id.")
         queryset = queryset.filter(organization_id=int(organization))
     return [_payload(item) for item in queryset[:MAX_LIST]]
@@ -138,9 +156,11 @@ def _create(request):
             return JsonResponse(_payload(replay), status=200)
 
     if _rate_limited(request):
-        return _error_response(
+        response = _error_response(
             "You have reached the correction limit. Please try again later.", status=429
         )
+        response["Retry-After"] = str(_retry_after(request))
+        return response
 
     scope = payload.get("scope")
     if not isinstance(scope, dict):
@@ -208,6 +228,7 @@ def _create(request):
         if winner is None:
             raise
         return JsonResponse(_payload(winner), status=200)
+    _count_submission(request)
     return JsonResponse(_payload(correction), status=201)
 
 

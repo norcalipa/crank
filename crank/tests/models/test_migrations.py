@@ -73,13 +73,17 @@ class SilencedChecksTests(TransactionTestCase):
 class CompanyCorrectionMigrationShapeTests(TransactionTestCase):
     """0047 is one CreateModel with an unconditioned unique constraint (MySQL W036)."""
 
-    def test_single_create_model_chained_to_0045(self):
+    def test_single_create_model_is_the_leaf_with_one_earlier_parent(self):
         from django.db.migrations import CreateModel
         from django.db.models import UniqueConstraint
 
         loader = MigrationLoader(connection, ignore_no_migrations=True)
         migration = loader.disk_migrations[("crank", "0047_companycorrection")]
-        self.assertIn(("crank", "0045_jobsourcecatalog_consecutive_failures"), migration.dependencies)
+        crank_parents = [name for app, name in migration.dependencies if app == "crank"]
+        self.assertEqual(len(crank_parents), 1)
+        self.assertLess(int(crank_parents[0].split("_")[0]), 47)
+        self.assertIn(("crank", crank_parents[0]), loader.disk_migrations)
+        self.assertEqual(loader.graph.leaf_nodes("crank"), [("crank", "0047_companycorrection")])
         self.assertEqual([type(op) for op in migration.operations], [CreateModel])
         constraints = migration.operations[0].options["constraints"]
         self.assertEqual(len(constraints), 1)

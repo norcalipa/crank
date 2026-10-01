@@ -573,10 +573,31 @@ class CompanyCorrectionAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, a
     def _audit(self, request, item, action, old, new):
         OperationalChangeAudit.record(actor=request.user, target_type="company_correction", target_id=item.pk, action=action, old_value=old, new_value=new, confirmed=True)
 
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def save_model(self, request, obj, form, change):
+        if not (change and "admin_note" in form.changed_data):
+            super().save_model(request, obj, form, change)
+            return
+        with transaction.atomic():
+            old = {"admin_note": CompanyCorrection.objects.get(pk=obj.pk).admin_note}
+            super().save_model(request, obj, form, change)
+            self._audit(request, obj, "note", old, {"admin_note": obj.admin_note})
+
     def _close(self, request, queryset, status, action):
         updated = 0
         with transaction.atomic():
-            for item in queryset.filter(status=CompanyCorrection.Status.PENDING):
+            pks = list(
+                queryset.filter(status=CompanyCorrection.Status.PENDING).values_list("pk", flat=True)
+            )
+            locked = CompanyCorrection.objects.select_for_update().filter(
+                pk__in=pks, status=CompanyCorrection.Status.PENDING
+            ).order_by("pk")
+            for item in locked:
                 old = {"status": item.status}
                 item.status = status
                 item.reviewed_by = request.user
@@ -588,17 +609,33 @@ class CompanyCorrectionAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, a
 
     @admin.action(description="Accept selected corrections as accepted evidence")
     def accept_corrections(self, request, queryset):
+        pending = list(
+            queryset.filter(status=CompanyCorrection.Status.PENDING).order_by("organization_id", "created", "pk")
+        )
+        seen = {}
+        for item in pending:
+            seen.setdefault((item.organization_id, item.field_key), []).append(item.pk)
+        conflicts = [pks for pks in seen.values() if len(pks) > 1]
+        if conflicts:
+            self.message_user(
+                request,
+                "Nothing was accepted: several selected corrections target the same company field "
+                "(ids " + "; ".join(", ".join(map(str, pks)) for pks in conflicts)
+                + "). Accept one per company field and reject or mark the others as duplicates.",
+                level=messages.ERROR,
+            )
+            return
         if not self._require_confirmation(request):
             return
         accepted = 0
-        refused = 0
+        refused = []
         with transaction.atomic():
-            for item in queryset.filter(status=CompanyCorrection.Status.PENDING):
+            for item in pending:
                 old = {"status": item.status}
                 try:
                     company_evidence.accept_correction(item, reviewer=request.user)
-                except company_evidence.CorrectionNotAcceptable:
-                    refused += 1
+                except company_evidence.CorrectionNotAcceptable as exc:
+                    refused.append(f"#{item.pk}: {exc}")
                     continue
                 self._audit(request, item, "accept", old, {"status": item.status})
                 accepted += 1
@@ -606,7 +643,7 @@ class CompanyCorrectionAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, a
         if refused:
             self.message_user(
                 request,
-                f"{refused} correction(s) with team scope were left pending: team scope cannot be applied automatically.",
+                f"{len(refused)} correction(s) were left unchanged — " + "; ".join(refused) + ".",
                 level=messages.WARNING,
             )
 
