@@ -608,6 +608,60 @@ describe('app-nav (issue #465 private-state purge)', () => {
         tracker.stop();
     });
 
+    test('a first observation announces only when the shared last-account names another account', async () => {
+        whoamiAs(() => 'bob');
+        loadAppNav();
+        await flushMicrotasks();
+        const bobDigest = window.sessionStorage.getItem('crank:nav-account-seen')!.slice(2);
+
+        const fresh = async (lastAccount: string | null, user: string | null) => {
+            window.localStorage.clear();
+            window.sessionStorage.clear();
+            if (lastAccount !== null) window.localStorage.setItem('crank:last-account', lastAccount);
+            whoamiAs(() => user);
+            jest.resetModules();
+            loadAppNav();
+            await flushMicrotasks();
+            return window.localStorage.getItem('crank:account-epoch');
+        };
+
+        // Another account was signed in last and no tab saw the transition.
+        expect(await fresh('d:0123456789abcdef', 'bob')).not.toBeNull();
+        // Legacy raw value for another account.
+        expect(await fresh('alice', 'bob')).not.toBeNull();
+        // Same account (digest or legacy raw), nothing stored, or anonymous: no announcement.
+        expect(await fresh(`d:${bobDigest}`, 'bob')).toBeNull();
+        expect(await fresh('bob', 'bob')).toBeNull();
+        expect(await fresh(null, 'bob')).toBeNull();
+        expect(await fresh('d:0123456789abcdef', null)).toBeNull();
+    });
+
+    test('a restore whose last-account names another account purges at once, even with no epoch change', async () => {
+        whoamiAs(() => 'alice');
+        loadAppNav();
+        await flushMicrotasks();
+        const tracker = trackPurge();
+        window.sessionStorage.setItem('crank:workspace:v1', '{"v":1}');
+        (global.fetch as jest.Mock).mockImplementation(() => Promise.reject(new Error('offline')));
+
+        // Nothing stored, or the same account (legacy raw or digest): no purge.
+        pageshow(true);
+        window.localStorage.setItem('crank:last-account', 'alice');
+        pageshow(true);
+        window.localStorage.setItem('crank:last-account', `d:${window.sessionStorage.getItem('crank:nav-account-seen')!.slice(2)}`);
+        pageshow(true);
+        expect(tracker.purged).not.toHaveBeenCalled();
+
+        // Another account signed in from a tab that never announced it.
+        window.localStorage.setItem('crank:last-account', 'd:0123456789abcdef');
+        pageshow(true);
+        expect(tracker.purged).toHaveBeenCalledTimes(1);
+        expect(window.sessionStorage.getItem('crank:workspace:v1')).toBeNull();
+        await flushMicrotasks();
+        expect(window.localStorage.getItem('crank:account-epoch')).toBeNull();
+        tracker.stop();
+    });
+
     test('storage events for unrelated keys are ignored', async () => {
         jest.isolateModules(() => {
             require('./app-nav.js');

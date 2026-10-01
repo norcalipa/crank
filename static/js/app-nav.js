@@ -228,6 +228,19 @@
     }
     var lastSeenEpoch = readAccountEpoch();
 
+    // True when the shared `crank:last-account` (a "d:" digest, or a legacy
+    // raw username) names a different account than `username`. Absent or
+    // unreadable is no evidence.
+    function lastAccountDiffers(username) {
+        try {
+            var stored = window.localStorage.getItem("crank:last-account");
+            return stored !== null && stored !== "d:" + accountDigest(username)
+                && stored !== username;
+        } catch (e) {
+            return false;
+        }
+    }
+
     function noteHydratedAccount(authenticated, username) {
         var current = authenticated ? "u:" + accountDigest(username) : "anon";
         var previous = null;
@@ -245,9 +258,14 @@
             // Pre-digest value for the same account: not a change.
             previous = current;
         }
+        // The first observation in a tab has no previous value; the shared
+        // last-account shows whether another account was signed in before.
+        var switched = previous !== null
+            ? previous !== current
+            : authenticated && lastAccountDiffers(username);
         var quiet = quietNextHydration;
         quietNextHydration = false;
-        if (!quiet && previous !== null && previous !== current) {
+        if (!quiet && switched) {
             announceAccountChange();
         }
     }
@@ -286,9 +304,10 @@
     // A page restored from the back/forward cache never re-runs its scripts
     // and may not receive the `storage` events it missed while cached. Two
     // synchronous, network-free signals say the account changed meanwhile:
-    // the shared epoch nonce differs from the one this document last saw, or
+    // the shared epoch nonce differs from the one this document last saw,
     // this tab's recorded account differs from the one this document
-    // observed. Either purges tab-local state at once; an unknown account or
+    // observed, or the shared last-account names another account (covers a
+    // switch no tab saw as a transition). Any of them purges tab-local state at once; an unknown account or
     // unreadable storage is no evidence. Whoami is then re-checked quietly:
     // purging here is tab-local only and never re-announces.
     window.addEventListener("pageshow", function (event) {
@@ -307,7 +326,9 @@
         var seenChanged = seen !== null && lastObservedAccount !== null
             && seen !== lastObservedAccount
             && seen !== "u:" + lastObservedUsername;
-        if (epochChanged || seenChanged) {
+        var lastAccountChanged = lastObservedUsername !== null
+            && lastAccountDiffers(lastObservedUsername);
+        if (epochChanged || seenChanged || lastAccountChanged) {
             handleAccountEpoch({ key: "crank:account-epoch", newValue: epoch });
         } else {
             quietNextHydration = true;
