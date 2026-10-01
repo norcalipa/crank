@@ -24,6 +24,10 @@ from crank.models.publication import PublicationEvent
 from crank.services import operations_readiness as ops
 
 APPROVED = JobSourceCatalog.ApprovalState.APPROVED
+def _fixed(key, status, summary="x", remediation=""):
+    return lambda ctx: ops._result(key, status, summary, remediation)
+
+
 ALL_ON = dict(
     AGENT_RUN_ENABLED=True,
     JOB_PIPELINE_ENABLED=True,
@@ -281,7 +285,7 @@ class StageTests(TestCase):
 
     def test_ready_stages_imply_every_registered_adapter_constructs(self):
         urls = {"usajobs": "https://data.usajobs.gov/api/search", "firecrawl-careers": "https://remoteok.com/jobs"}
-        for key in REGISTRY.keys():
+        for key in REGISTRY.keys():  # noqa: SIM118
             with self.subTest(adapter=key):
                 source = make_source(f"s-{key}", adapter_key=key, base_url=urls[key])
                 result = ops.readiness()
@@ -567,7 +571,7 @@ class StageTests(TestCase):
         def run(overrides):
             merged = {**statuses, **overrides}
             funcs = {
-                key: (lambda k, st: lambda ctx: ops._result(k, st, "x"))(key, st) for key, st in merged.items()
+                key: _fixed(key, st) for key, st in merged.items()
             }
             with patch.dict(ops._STAGE_FUNCS, funcs):
                 return ops.readiness()
@@ -600,7 +604,7 @@ class StageTests(TestCase):
         )
         employers = stage(ops.readiness(), "employers")
         self.assertEqual(employers["status"], ops.ATTENTION)
-        with patch.dict(ops._STAGE_FUNCS, {k: (lambda k: lambda ctx: ops._result(k, ops.MET, "x"))(k) for k in ops.STAGE_KEYS if k != "employers"}):
+        with patch.dict(ops._STAGE_FUNCS, {k: _fixed(k, ops.MET) for k in ops.STAGE_KEYS if k != "employers"}):
             result = ops.readiness()
         self.assertEqual(result["next_step"]["key"], "employers")
         self.assertFalse(result["all_met"])

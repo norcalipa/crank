@@ -1657,6 +1657,12 @@ READINESS_ON = dict(
 QUERY_BOUND = 35
 
 
+def _fixed_stage(key, status, summary="x", remediation=""):
+    from crank.services import operations_readiness as ops
+
+    return lambda ctx: ops._result(key, status, summary, remediation)
+
+
 @override_settings(**READINESS_ON)
 class JobRetrievalReadinessPanelTests(TestCase):
     """Readiness panel, run progress, sources and backlog (issue #481)."""
@@ -1905,9 +1911,9 @@ class JobRetrievalReadinessPanelTests(TestCase):
         from crank.services import operations_readiness as ops
 
         funcs = {
-            k: (lambda k: lambda ctx: ops._result(k, "met", "Fine."))(k) for k in ops.STAGE_KEYS if k != key
+            k: _fixed_stage(k, "met", "Fine.") for k in ops.STAGE_KEYS if k != key
         }
-        funcs[key] = lambda ctx: ops._result(key, status, summary, remediation)
+        funcs[key] = _fixed_stage(key, status, summary, remediation)
         return patch.dict(ops._STAGE_FUNCS, funcs)
 
     def test_attention_stage_is_next_step_not_all_met(self):
@@ -1924,7 +1930,7 @@ class JobRetrievalReadinessPanelTests(TestCase):
     def test_no_attention_and_all_met_shows_collapsed_all_met(self):
         from crank.services import operations_readiness as ops
 
-        funcs = {k: (lambda k: lambda ctx: ops._result(k, "met", "Fine."))(k) for k in ops.STAGE_KEYS}
+        funcs = {k: _fixed_stage(k, "met", "Fine.") for k in ops.STAGE_KEYS}
         with patch.dict(ops._STAGE_FUNCS, funcs):
             content = self._get()
         self.assertIn("All prerequisites met", content)
@@ -2025,7 +2031,7 @@ class JobRetrievalReadinessPanelTests(TestCase):
             self.assertIn(f'<h2 id="{heading}">', content)
         import re
 
-        for summary in re.findall(r"<summary>(.*?)</summary>", content, re.S):
+        for summary in re.findall(r"<summary>(.*?)</summary>", content, re.DOTALL):
             self.assertNotIn("<h2", summary)
         self.assertIn('<ol class="jro-stages" role="list">', content)
 
