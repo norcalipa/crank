@@ -42,6 +42,7 @@ const SCOPE_LEVELS: ReadonlyArray<[string, string]> = [
     ['role', 'A role'],
     ['location', 'A location'],
 ];
+const VALIDATION_SUMMARY = 'Please correct the highlighted fields.';
 const FORM_FIELDS = ['field_key', 'proposed_value', 'evidence_url', 'scope_level', 'scope_value', 'note'];
 
 const getCookie = (name: string): string => {
@@ -118,12 +119,16 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
     const [saved, setSaved] = React.useState<SavedCorrection | null>(null);
     const [duplicate, setDuplicate] = React.useState(false);
     const [rateLimited, setRateLimited] = React.useState(false);
+    const [retryAt, setRetryAt] = React.useState<number | null>(null);
 
     const dialogRef = React.useRef<HTMLDivElement>(null);
     const closeButtonRef = React.useRef<HTMLButtonElement>(null);
     const backButtonRef = React.useRef<HTMLButtonElement>(null);
     const openerRef = React.useRef<HTMLElement | null>(null);
+    const errorRef = React.useRef<HTMLDivElement>(null);
     const submitInFlight = React.useRef(false);
+    const focusInvalidAfterSubmit = React.useRef(false);
+    const focusAlertAfterError = React.useRef(false);
     const idempotencyKey = React.useRef(newIdempotencyKey());
 
     React.useEffect(() => {
@@ -142,7 +147,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                 if (!cancelled) setProvenance({status: 'ready', data});
             })
             .catch(() => {
-                if (!cancelled) setProvenance({status: 'unavailable'});
+                if (!cancelled && !cached) setProvenance({status: 'unavailable'});
             });
         return () => {
             cancelled = true;
@@ -225,11 +230,40 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
     }, [onClose]);
 
     React.useEffect(() => {
+        if (!focusInvalidAfterSubmit.current) return;
+        focusInvalidAfterSubmit.current = false;
         const firstInvalid = FORM_FIELDS.find(name => fieldErrors[name]);
         if (firstInvalid) {
             dialogRef.current?.querySelector<HTMLElement>(`[data-field="${firstInvalid}"]`)?.focus();
         }
     }, [fieldErrors]);
+
+    React.useEffect(() => {
+        if (error === VALIDATION_SUMMARY && Object.keys(fieldErrors).length === 0) setError('');
+    }, [error, fieldErrors]);
+
+    React.useEffect(() => {
+        if (focusAlertAfterError.current && error) {
+            focusAlertAfterError.current = false;
+            errorRef.current?.focus();
+        }
+    }, [error]);
+
+    React.useEffect(() => {
+        if (retryAt === null) return;
+        const timer = window.setTimeout(() => {
+            setRateLimited(false);
+            setError('');
+            setRetryAt(null);
+        }, Math.max(0, retryAt - Date.now()));
+        return () => window.clearTimeout(timer);
+    }, [retryAt]);
+
+    const clearFieldError = (name: string) => setFieldErrors(prev => {
+        if (!prev[name]) return prev;
+        const {[name]: _cleared, ...rest} = prev;
+        return rest;
+    });
 
     const current = describeCurrentValue(provenance, fieldKey);
 
@@ -260,7 +294,8 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
             clientErrors.scope_value = ['Say which one this applies to.'];
         }
         if (Object.keys(clientErrors).length) {
-            setError('Please correct the highlighted fields.');
+            setError(VALIDATION_SUMMARY);
+            focusInvalidAfterSubmit.current = true;
             setFieldErrors(clientErrors);
             return;
         }
@@ -271,6 +306,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         setAuthRequired(false);
         setDuplicate(false);
         setRateLimited(false);
+        setRetryAt(null);
         try {
             const response = await fetch('/api/company-corrections/', {
                 method: 'POST',
@@ -303,13 +339,25 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                 const wait = Number(response.headers.get('Retry-After'));
                 const minutes = Number.isFinite(wait) && wait > 0 ? Math.ceil(wait / 60) : 0;
                 setRateLimited(true);
-                setError(`You've reached the hourly limit for suggestions. Your draft is kept — try again ${
-                    minutes ? `in ${minutes} minute${minutes === 1 ? '' : 's'}` : 'later'}.`);
+                if (minutes) {
+                    setRetryAt(Date.now() + wait * 1000);
+                }
+                focusAlertAfterError.current = true;
+                setError(minutes
+                    ? `Hourly limit reached. Submit again in ${minutes} min — keep this open.`
+                    : 'Hourly limit reached. Please try again later.');
             } else {
+                const serverFieldErrors = data.field_errors || {};
+                if (Object.keys(serverFieldErrors).length) {
+                    focusInvalidAfterSubmit.current = true;
+                } else {
+                    focusAlertAfterError.current = true;
+                }
                 setError(data.error || 'Something went wrong. Please try again.');
-                setFieldErrors(data.field_errors || {});
+                setFieldErrors(serverFieldErrors);
             }
         } catch {
+            focusAlertAfterError.current = true;
             setError('Network error. Your draft is kept; please try again.');
         } finally {
             submitInFlight.current = false;
@@ -336,11 +384,9 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         if (current.kind === 'verified') {
             return (
                 <span data-testid="correction-current-text">
-                    <span className="fw-semibold">{current.value}</span>
-                    {' '}
-                    <span className="small text-body-secondary">
-                        {'· '}
-                        {current.domain && <><span className="text-nowrap">from {current.domain}</span>{' · '}</>}
+                    <span className="fw-semibold me-2">{current.value}</span>
+                    <span className="small text-body-secondary d-inline-block">
+                        {current.domain && <><span className="text-nowrap">{current.domain},</span>{' '}</>}
                         <span className="text-nowrap">last verified {current.date}</span>
                     </span>
                     {current.stale && <>{' '}<span className="badge text-bg-warning">Stale</span></>}
@@ -424,7 +470,10 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     <select id="correction-field" className={`form-select${invalid('field_key')}`} data-testid="correction-field"
                             data-field="field_key" value={fieldKey}
                             aria-invalid={!!fieldErrors.field_key} aria-describedby={describedBy('field_key')}
-                            onChange={e => setFieldKey(e.target.value)}>
+                            onChange={e => {
+                                setFieldKey(e.target.value);
+                                if (e.target.value) clearFieldError('field_key');
+                            }}>
                         {!context.fieldKey && (
                             <option value="" disabled>Choose what to correct…</option>
                         )}
@@ -449,7 +498,10 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                            value={proposedValue} maxLength={500} autoComplete="off"
                            aria-required="true" aria-invalid={!!fieldErrors.proposed_value}
                            aria-describedby={describedBy('proposed_value')}
-                           onChange={e => setProposedValue(e.target.value)}/>
+                           onChange={e => {
+                               setProposedValue(e.target.value);
+                               if (e.target.value.trim()) clearFieldError('proposed_value');
+                           }}/>
                     {errorFor('proposed_value')}
                 </div>
                 <div className="mb-3">
@@ -460,7 +512,10 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                            aria-required="true" aria-invalid={!!fieldErrors.evidence_url}
                            aria-describedby={[describedBy('evidence_url'), 'correction-evidence-help']
                                .filter(Boolean).join(' ')}
-                           onChange={e => setEvidenceUrl(e.target.value)}/>
+                           onChange={e => {
+                               setEvidenceUrl(e.target.value);
+                               if (/^https:\/\/\S+/i.test(e.target.value.trim())) clearFieldError('evidence_url');
+                           }}/>
                     {errorFor('evidence_url')}
                     <div id="correction-evidence-help" className="form-text">
                         A public page that shows the correct value. Must start with https://.
@@ -472,7 +527,10 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     <select id="correction-scope-level" className={`form-select${invalid('scope_level')}`}
                             data-testid="correction-scope-level" data-field="scope_level" value={scopeLevel}
                             aria-invalid={!!fieldErrors.scope_level} aria-describedby={describedBy('scope_level')}
-                            onChange={e => setScopeLevel(e.target.value)}>
+                            onChange={e => {
+                                setScopeLevel(e.target.value);
+                                if (e.target.value === 'company') clearFieldError('scope_value');
+                            }}>
                         {SCOPE_LEVELS.map(([value, label]) => (
                             <option key={value} value={value}>{label}</option>
                         ))}
@@ -487,7 +545,10 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                                value={scopeValue} maxLength={100} autoComplete="off"
                                aria-required="true" aria-invalid={!!fieldErrors.scope_value}
                                aria-describedby={describedBy('scope_value')}
-                               onChange={e => setScopeValue(e.target.value)}/>
+                               onChange={e => {
+                                   setScopeValue(e.target.value);
+                                   if (e.target.value.trim()) clearFieldError('scope_value');
+                               }}/>
                         {errorFor('scope_value')}
                     </div>
                 )}
@@ -523,12 +584,14 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     {showForm && (
                         <div className="modal-footer correction-footer">
                             {error && (
-                                <div className={`alert ${rateLimited ? 'alert-warning' : 'alert-danger'} w-100 py-2 mb-0 small`} role="alert"
-                                     data-testid="correction-error">{error}</div>
+                                <div ref={errorRef} tabIndex={-1}
+                                     className={`alert ${rateLimited ? 'alert-warning' : 'alert-danger'} w-100 py-2 mb-0 small`}
+                                     role="alert" data-testid="correction-error">{error}</div>
                             )}
                             <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
                             <button type="submit" form="correction-form" className="btn btn-primary"
-                                    disabled={submitting || rateLimited} data-testid="correction-submit">
+                                    disabled={retryAt !== null} aria-disabled={submitting || undefined}
+                                    data-testid="correction-submit">
                                 {submitting ? 'Submitting…' : 'Submit suggestion'}
                             </button>
                         </div>

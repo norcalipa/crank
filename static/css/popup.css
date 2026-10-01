@@ -3508,3 +3508,19 @@ body.assistant-open .app-content .table-responsive,
     min-block-size: 0;
     overflow-y: auto;
 }
+
+/* Submit stays focusable while a submit is in flight (aria-disabled) and while
+   rate-limited (disabled); both read as clearly off, not as a dimmed primary. */
+.correction-footer .btn-primary:disabled,
+.correction-footer .btn-primary[aria-disabled="true"] {
+    color: #495057;
+    background-color: #e9ecef;
+    border-color: #ced4da;
+    opacity: 1;
+    cursor: not-allowed;
+}
+
+[data-testid="correction-error"]:focus-visible {
+    outline: 3px solid var(--bs-warning);
+    outline-offset: 2px;
+}
