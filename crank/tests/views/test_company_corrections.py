@@ -258,6 +258,67 @@ class CompanyCorrectionsViewTest(TestCase):
             self.assertEqual(self.post(self.body(field_key="locations")).status_code, 201)
             self.assertEqual(self.post(self.body(field_key="funding_round")).status_code, 429)
 
+    def test_concurrent_submissions_cannot_overshoot_the_limit(self):
+        from crank.views import company_corrections as view
+
+        self.login()
+        other = Client()
+        other.force_login(self.user)
+        inner = {}
+        real = view.resolve_field_evidence
+
+        def interleave(organization):
+            if not inner:
+                inner["response"] = self.post(
+                    self.body(field_key="locations", proposed_value="Berlin"), client=other
+                )
+            return real(organization)
+
+        with override_settings(COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR=1):
+            with patch.object(view, "resolve_field_evidence", side_effect=interleave):
+                first = self.post()
+        statuses = sorted([first.status_code, inner["response"].status_code])
+        self.assertEqual(statuses, [201, 429])
+        self.assertEqual(CompanyCorrection.objects.count(), 1)
+        self.assertEqual(cache.get(f"company-correction-rate:{self.user.pk}"), 1)
+
+    def test_rejected_attempts_have_their_own_larger_cap(self):
+        self.login()
+        with override_settings(COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR=3):
+            self.assertEqual(self.post().status_code, 201)
+            for _ in range(2):
+                self.assertEqual(self.post(self.body(proposed_value="Onsite")).status_code, 409)
+            self.assertEqual(self.post(self.body(organization_id=999999)).status_code, 404)
+            limited = self.post(self.body(proposed_value="Onsite"))
+            self.assertEqual(limited.status_code, 429)
+            self.assertTrue(1 <= int(limited["Retry-After"]) <= 3600)
+        self.assertEqual(CompanyCorrection.objects.count(), 1)
+
+    def test_exception_releases_the_slot(self):
+        from crank.views import company_corrections as view
+
+        self.login()
+        key = f"company-correction-rate:{self.user.pk}"
+        self.client.raise_request_exception = False
+        with patch.object(view, "resolve_field_evidence", side_effect=RuntimeError("boom")):
+            self.assertEqual(self.post().status_code, 500)
+        self.assertEqual(cache.get(key), 0)
+
+    def test_release_tolerates_an_expired_counter(self):
+        from crank.views import company_corrections as view
+
+        view._release("company-correction-missing-key")
+
+    def test_scoped_suggestion_is_refused_while_a_company_wide_fact_exists(self):
+        self.login()
+        response = self.post(self.body(scope={"level": "location", "value": "London"}))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("company-wide", response.json()["field_errors"]["scope_level"][0])
+        self.assertEqual(CompanyCorrection.objects.count(), 0)
+        ok = self.post(self.body(field_key="funding_round", proposed_value="Seed",
+                                 scope={"level": "location", "value": "London"}))
+        self.assertEqual(ok.status_code, 201)
+
     def test_rate_limit_sends_retry_after_from_the_window(self):
         self.login()
         with override_settings(COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR=1):

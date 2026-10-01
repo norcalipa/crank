@@ -154,18 +154,18 @@ test.describe('with the assistant drawer open at 1024px', () => {
 test.describe('opened from the assistant sheet at 375px', () => {
     test.use({viewport: {width: 375, height: 700}});
 
-    async function mockChat(page: import('@playwright/test').Page) {
+    async function mockChat(page: import('@playwright/test').Page, replies = 1) {
         await page.route('**/api/job-matches/status/', (route) => route.fulfill({json: {state: 'ok'}}));
         await page.route('**/api/job-matches/?**', (route) => route.fulfill({json: {count: 1, results: []}}));
         await page.route('**/api/job-matches/ranked/**', (route) => route.fulfill({json: {job_matches: [], organization_matches: []}}));
         await page.route('**/api/agent/conversations/', (route) => route.request().method() !== 'GET' ? route.fallback() : route.fulfill({
             json: {
                 id: 1, active: true, created: '2026-08-20T00:00:00Z', modified: '2026-08-20T00:00:00Z', preferences_changed: false,
-                messages: [{
-                    id: 12, role: 'assistant', content: 'Here are some matches.', preferences_changed: false,
-                    created: '2026-08-20T00:01:01Z',
+                messages: Array.from({length: replies}, (_, index) => ({
+                    id: 12 + index, role: 'assistant', content: `Here are some matches${index ? ` ${index + 1}` : ''}.`, preferences_changed: false,
+                    created: `2026-08-20T00:01:0${index}Z`,
                     results: {jobs: [], organizations: [{id: 2, name: COMPANY, url: 'https://example.com', funding_round: 'B', rto_policy: 'R'}]},
-                }],
+                })),
             },
         }));
     }
@@ -199,6 +199,21 @@ test.describe('opened from the assistant sheet at 375px', () => {
         });
     }
 
+    test('with two replies citing the same company, focus returns to the card that was used', async ({page}) => {
+        await login(page);
+        await mockChat(page, 2);
+        await page.goto('/chat/');
+        const openers = page.getByRole('button', {name: `Suggest a correction for ${COMPANY}`});
+        await expect(openers).toHaveCount(2);
+        await openers.nth(1).click();
+        const form = page.getByRole('dialog', {name: /Suggest a correction/});
+        await expect(form).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(form).toBeHidden();
+        await expect(openers.nth(1)).toBeFocused();
+        await expect(openers.nth(0)).not.toBeFocused();
+    });
+
     test('Back to results on / reopens the sheet and refocuses the invoking control', async ({page}) => {
         await login(page);
         await mockChat(page);
@@ -210,7 +225,19 @@ test.describe('opened from the assistant sheet at 375px', () => {
         await opener.click();
         const form = page.getByRole('dialog', {name: /Suggest a correction/});
         await expect(form).toBeVisible();
-        await form.getByTestId('correction-back').or(form.getByTestId('correction-close')).first().click();
+        await page.route('**/api/company-corrections/', (route) => route.request().method() !== 'POST' ? route.fallback() : route.fulfill({
+            status: 201,
+            json: {
+                id: 77, field_label: 'Company name', proposed_value: 'Renamed', current_value: COMPANY, status: 'pending',
+                status_label: 'Pending review',
+            },
+        }));
+        await form.getByTestId('correction-field').selectOption('company_name');
+        await form.getByRole('textbox', {name: 'Suggested value'}).fill('Renamed');
+        await form.getByRole('textbox', {name: 'Evidence link'}).fill('https://example.com/about');
+        await form.getByRole('button', {name: 'Submit suggestion'}).click();
+        await expect(form.getByTestId('correction-back')).toBeFocused();
+        await form.getByTestId('correction-back').click();
         await expect(form).toBeHidden();
         await expect(page.getByTestId('assistant-panel')).toBeVisible();
         await expect(page.getByTestId('assistant-panel').getByRole('button', {name: `Suggest a correction for ${COMPANY}`}).first()).toBeFocused();

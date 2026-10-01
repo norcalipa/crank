@@ -150,6 +150,7 @@ def accept_observation_fields(
     claimed_domain = _field_value_text(observation.observed_domain)
     scope_json = {"claimed_domain": claimed_domain} if claimed_domain else {}
     created: list[CompanyFieldEvidence] = []
+    conflicted_attributes: list[str] = []
     with transaction.atomic():
         # Lock the organization row, not just its evidence rows: on a first
         # accept there are no evidence rows to lock, so two concurrent
@@ -173,7 +174,28 @@ def accept_observation_fields(
             ):
                 # A staff-accepted manual correction is not overwritten by an
                 # unreviewed crawl; only an operator-accepted observation may
-                # replace it.
+                # replace it. A crawl that agrees refreshes the row's
+                # freshness; one that disagrees flags the observation
+                # CONFLICTED so an operator is told to look.
+                manual = next(
+                    row for row in locked_rows if row.extractor_version == CORRECTION_VERSION
+                )
+                if " ".join(value.split()).casefold() == " ".join(
+                    manual.value_text.split()
+                ).casefold():
+                    manual.last_checked_at = now
+                    manual.last_successful_fetch_at = now
+                    manual.last_verified_at = now
+                    manual.save(
+                        update_fields=[
+                            "last_checked_at",
+                            "last_successful_fetch_at",
+                            "last_verified_at",
+                            "modified",
+                        ]
+                    )
+                else:
+                    conflicted_attributes.append(_OBSERVATION_FIELD_MAP[field_key])
                 continue
             if locked_rows:
                 # Supersede the whole accepted set, not only ``current``: if
@@ -209,6 +231,12 @@ def accept_observation_fields(
                     last_verified_at=now,
                 )
             )
+        if conflicted_attributes:
+            observation.status = ObservationStatus.CONFLICTED
+            observation.conflict_fields = sorted(
+                set(observation.conflict_fields) | set(conflicted_attributes)
+            )
+            observation.save(update_fields=["status", "conflict_fields", "modified"])
         if created:
             publication.record_event(
                 target_type=PublicationEvent.TargetType.ORGANIZATION,
@@ -395,6 +423,18 @@ class CorrectionNotAcceptable(Exception):
     """Raised when a correction cannot be applied as accepted evidence."""
 
 
+def scoped_correction_blocked(scope_level: str, scope_value: str, current) -> bool:
+    """True when a role/location suggestion could never be accepted for ``current``.
+
+    ``current`` is the field's accepted evidence row (or ``None``). Mirrors the
+    refusal in :func:`accept_correction` so the API can say so at submit time.
+    """
+    scope_key = CORRECTION_SCOPE_TO_EVIDENCE_SCOPE.get(scope_level)
+    if not scope_key or current is None:
+        return False
+    return current.scope_json != {scope_key: [scope_value]}
+
+
 def accept_correction(correction, *, reviewer, now: datetime | None = None):
     """Apply a pending correction as the accepted evidence for its field.
 
@@ -500,6 +540,7 @@ __all__ = [
     "FIELD_FRESHNESS_POLICY",
     "EvidenceNotAcceptable",
     "accept_correction",
+    "scoped_correction_blocked",
     "accept_observation_fields",
     "field_evidence_payload",
     "is_stale",

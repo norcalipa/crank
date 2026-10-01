@@ -3,6 +3,7 @@
 from django.contrib import admin, messages
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.core import checks
+from django.core.exceptions import PermissionDenied
 from django.db import models, transaction
 from django.shortcuts import render
 from django.utils import timezone
@@ -576,8 +577,15 @@ class CompanyCorrectionAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, a
     def has_add_permission(self, request):
         return False
 
-    def has_delete_permission(self, request, obj=None):
-        return False
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        actions.pop("delete_selected", None)
+        return actions
+
+    def delete_view(self, request, object_id, extra_context=None):
+        # Only the direct delete is blocked; deleting an Organization or User
+        # still cascades through their corrections.
+        raise PermissionDenied
 
     def save_model(self, request, obj, form, change):
         if not (change and "admin_note" in form.changed_data):

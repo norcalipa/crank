@@ -20,6 +20,7 @@ interface EvidenceRow {
     stale: boolean;
     last_verified_at: string | null;
     source_domain?: string | null;
+    scope?: Record<string, unknown> | null;
 }
 
 interface ProvenanceResult {
@@ -197,6 +198,11 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         // the form, once the dialog closes (issue #477 AC 8).
         const sheetWasOpen = getWorkspaceSnapshot().visibility === 'open';
         const openerTestId = opener?.getAttribute('data-testid') || '';
+        // Cards for one company share a test id, so remember which of them
+        // opened the form rather than refocusing the first.
+        const openerIndex = openerTestId
+            ? Array.from(document.querySelectorAll(`[data-testid="${openerTestId}"]`)).indexOf(opener!)
+            : -1;
         lockBackground();
         return () => {
             unlockBackground();
@@ -205,9 +211,14 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                 if (openerTestId) {
                     let frames = 0;
                     const refocus = () => {
-                        const target = Array.from(document.querySelectorAll<HTMLElement>(
+                        const matches = Array.from(document.querySelectorAll<HTMLElement>(
                             `[data-testid="${openerTestId}"]`
-                        )).find((element) => element.getBoundingClientRect().height > 0);
+                        ));
+                        const visible = (element?: HTMLElement) =>
+                            !!element && element.getBoundingClientRect().height > 0;
+                        const target = visible(matches[openerIndex])
+                            ? matches[openerIndex]
+                            : (frames >= 60 ? matches.find(visible) : undefined);
                         if (target) {
                             target.focus();
                         } else if (frames++ < 120) {
@@ -331,6 +342,16 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
 
     const current = describeCurrentValue(provenance, fieldKey);
     const pendingForField = pending.find(item => item.field_key === fieldKey);
+    const currentRow = provenance.status === 'ready'
+        ? (provenance.data.fields || []).find(item => item.field_key === fieldKey)
+        : undefined;
+    const scopedBlocked = !!currentRow && !currentRow.scope?.countries && !currentRow.scope?.role_families;
+    React.useEffect(() => {
+        if (scopedBlocked) {
+            setScopeLevel('company');
+            clearFieldError('scope_value');
+        }
+    }, [scopedBlocked]);
 
     const handleBack = () => {
         onClose();
@@ -344,7 +365,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
 
     const handleSubmit = async (event: React.FormEvent) => {
         event.preventDefault();
-        if (submitInFlight.current) {
+        if (submitInFlight.current || pendingForField) {
             return;
         }
         const clientErrors: Record<string, string[]> = {};
@@ -493,8 +514,8 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                 <span className="fw-semibold">{current.displayed}</span>
                 {current.kind === 'verified' && current.displayed !== current.value && (
                     <span className="text-body-secondary d-block">
-                        These can differ: the card uses the company profile, the evidence record is
-                        what staff verified.
+                        These can differ: the card uses the company profile, and the evidence record is
+                        the sourced record. Accepting a suggestion updates the evidence record only.
                     </span>
                 )}
             </div>
@@ -524,7 +545,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                                 <p className="fw-semibold mb-1">Suggestion submitted</p>
                                 <p className="small text-body-secondary mb-0">
                                     Staff will review it. Nothing changes until then. If accepted, it updates
-                                    the verified evidence record; the company card may update separately.
+                                    the evidence record only; it does not change the value on the company card.
                                 </p>
                             </div>
                         </div>
@@ -557,7 +578,8 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     Staff review every suggestion. The current value stays until one is approved.
                 </p>
                 {pendingForField && (
-                    <div className="alert alert-info py-2 small" data-testid="correction-pending-notice">
+                    <div id="correction-pending-notice" role="status" className="alert alert-info py-2 small"
+                         data-testid="correction-pending-notice">
                         You already suggested <strong>{pendingForField.proposed_value}</strong> for{' '}
                         {fieldKeyLabel(fieldKey)} — Pending review. Choose another field, or wait for staff.
                     </div>
@@ -626,15 +648,25 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     <label htmlFor="correction-scope-level" className="form-label">Applies to</label>
                     <select id="correction-scope-level" className={`form-select${invalid('scope_level')}`}
                             data-testid="correction-scope-level" data-field="scope_level" value={scopeLevel}
-                            aria-invalid={!!fieldErrors.scope_level} aria-describedby={describedBy('scope_level')}
+                            aria-invalid={!!fieldErrors.scope_level}
+                            aria-describedby={[describedBy('scope_level'), scopedBlocked ? 'correction-scope-help' : '']
+                                .filter(Boolean).join(' ') || undefined}
                             onChange={e => {
                                 setScopeLevel(e.target.value);
                                 if (e.target.value === 'company') clearFieldError('scope_value');
                             }}>
                         {SCOPE_LEVELS.map(([value, label]) => (
-                            <option key={value} value={value}>{label}</option>
+                            <option key={value} value={value} disabled={scopedBlocked && value !== 'company'}>
+                                {label}
+                            </option>
                         ))}
                     </select>
+                    {scopedBlocked && (
+                        <div id="correction-scope-help" className="form-text" data-testid="correction-scope-help">
+                            This field already has a company-wide fact, so staff can only apply a
+                            whole-company change to it.
+                        </div>
+                    )}
                     {errorFor('scope_level')}
                 </div>
                 {scopeLevel !== 'company' && (
@@ -692,8 +724,9 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                             )}
                             <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
                             <button type="submit" form="correction-form" className="btn btn-primary"
-                                    disabled={retryAt !== null || !!pendingForField}
-                                    aria-disabled={submitting || undefined}
+                                    disabled={retryAt !== null}
+                                    aria-disabled={submitting || !!pendingForField || undefined}
+                                    aria-describedby={pendingForField ? 'correction-pending-notice' : undefined}
                                     data-testid="correction-submit">
                                 {submitting ? 'Submitting…' : 'Submit suggestion'}
                             </button>
@@ -702,7 +735,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                     {showBack && (
                         <div className="modal-footer">
                             <button ref={backButtonRef} type="button" className="btn btn-primary" onClick={handleBack}
-                                    aria-describedby="correction-status-text" data-testid="correction-back">
+                                    data-testid="correction-back">
                                 {backToCompany ? `Back to ${companyName}` : 'Back to results'}
                             </button>
                         </div>

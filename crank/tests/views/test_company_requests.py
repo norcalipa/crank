@@ -706,6 +706,25 @@ class CompanyCorrectionAdminTest(TestCase):
             self.admin.accept_corrections(request, queryset)
         self.assertIn("no longer pending", " ".join(str(m) for m in request._messages))
 
+    def test_deleting_an_organization_or_user_cascades_through_corrections(self):
+        from django.urls import reverse
+
+        item = self.make()
+        page = self.client.get(reverse("admin:crank_organization_delete", args=[self.org.pk]))
+        self.assertNotContains(page, "doesn't have permission", status_code=200)
+        self.client.post(reverse("admin:crank_organization_delete", args=[self.org.pk]), {"post": "yes"})
+        self.assertFalse(Organization.objects.filter(pk=self.org.pk).exists())
+        self.assertFalse(self.CompanyCorrection.objects.filter(pk=item.pk).exists())
+        org = Organization.objects.create(name="Beta", status=1)
+        self.org = org
+        item = self.make()
+        self.client.post(reverse("admin:auth_user_delete", args=[self.user.pk]), {"post": "yes"})
+        self.assertFalse(User.objects.filter(pk=self.user.pk).exists())
+        self.assertFalse(self.CompanyCorrection.objects.filter(pk=item.pk).exists())
+
+    def test_bulk_delete_action_is_not_offered(self):
+        self.assertNotIn("delete_selected", self.admin.get_actions(self._post()))
+
     def test_add_and_delete_are_not_offered_and_notes_are_audited(self):
         from django.urls import reverse
 

@@ -724,6 +724,46 @@ class AcceptCorrectionTests(TestCase):
         self.assertEqual((manual.last_checked_at, manual.last_successful_fetch_at), before)
         self.assertIsNone(manual.last_successful_fetch_at)
 
+    def test_crawl_with_a_changed_value_flags_the_observation_conflicted(self):
+        manual = accept_correction(self.correction(proposed_value="Hybrid 3 days"), reviewer=self.user)
+        observation = make_observation(self.org, rto_evidence="Fully onsite")
+        created = accept_observation_fields(observation)
+        self.assertNotIn(FieldKey.RTO_POLICY, {row.field_key for row in created})
+        observation.refresh_from_db()
+        self.assertEqual(observation.status, Status.CONFLICTED)
+        self.assertIn("rto_evidence", observation.conflict_fields)
+        manual.refresh_from_db()
+        self.assertEqual(manual.state, State.ACCEPTED)
+        self.assertEqual(manual.value_text, "Hybrid 3 days")
+
+    def test_crawl_confirming_a_manual_value_refreshes_its_freshness(self):
+        manual = accept_correction(self.correction(proposed_value="Hybrid 3 days"), reviewer=self.user)
+        later = timezone.now() + timedelta(days=80)
+        observation = make_observation(self.org, rto_evidence="  hybrid   3 DAYS ")
+        accept_observation_fields(observation, now=later)
+        observation.refresh_from_db()
+        self.assertEqual(observation.status, Status.AUTO_APPLIED)
+        manual.refresh_from_db()
+        self.assertEqual(manual.state, State.ACCEPTED)
+        self.assertEqual(manual.last_verified_at, later)
+        self.assertEqual(manual.last_checked_at, later)
+        self.assertEqual(manual.last_successful_fetch_at, later)
+
+    def test_scoped_correction_blocked_matches_what_accept_refuses(self):
+        from crank.services.company_evidence import scoped_correction_blocked
+
+        self.assertFalse(scoped_correction_blocked("company", "", self.old))
+        self.assertFalse(scoped_correction_blocked("location", "London", None))
+        self.assertTrue(scoped_correction_blocked("location", "London", self.old))
+        self.assertTrue(scoped_correction_blocked("role", "Engineer", self.old))
+        CompanyFieldEvidence.objects.filter(pk=self.old.pk).update(state=State.SUPERSEDED)
+        london = accept_correction(
+            self.correction(scope_level="location", scope_value="London", proposed_value="Hybrid"),
+            reviewer=self.user,
+        )
+        self.assertFalse(scoped_correction_blocked("location", "London", london))
+        self.assertTrue(scoped_correction_blocked("location", "Paris", london))
+
     def test_operator_accepted_observation_can_replace_a_manual_correction(self):
         manual = accept_correction(self.correction(proposed_value="Hybrid 3 days"), reviewer=self.user)
         observation = make_observation(self.org, status=Status.ACCEPTED, rto_evidence="Remote first")

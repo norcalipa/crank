@@ -83,7 +83,9 @@ class CompanyCorrectionMigrationShapeTests(TransactionTestCase):
         self.assertEqual(len(crank_parents), 1)
         self.assertLess(int(crank_parents[0].split("_")[0]), 47)
         self.assertIn(("crank", crank_parents[0]), loader.disk_migrations)
-        self.assertEqual(loader.graph.leaf_nodes("crank"), [("crank", "0047_companycorrection")])
+        leaves = loader.graph.leaf_nodes("crank")
+        self.assertEqual(len(leaves), 1)
+        self.assertIn(("crank", "0047_companycorrection"), loader.graph.forwards_plan(leaves[0]))
         self.assertEqual([type(op) for op in migration.operations], [CreateModel])
         constraints = migration.operations[0].options["constraints"]
         self.assertEqual(len(constraints), 1)

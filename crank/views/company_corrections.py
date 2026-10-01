@@ -21,10 +21,11 @@ from crank.forms.company_correction import CompanyCorrectionForm
 from crank.models.company_correction import CompanyCorrection
 from crank.models.company_profile import CompanyFieldEvidence
 from crank.models.organization import Organization
-from crank.services.company_evidence import resolve_field_evidence
+from crank.services.company_evidence import resolve_field_evidence, scoped_correction_blocked
 
 RATE_LIMIT_SECONDS = 60 * 60
 DEFAULT_RATE_LIMIT = 10
+DEFAULT_REJECTED_LIMIT = 60
 MAX_BODY_BYTES = 8 * 1024
 MAX_LIST = 50
 _FIELD_LABELS = dict(CompanyFieldEvidence.FieldKey.choices)
@@ -70,32 +71,61 @@ def _rate_keys(request):
     return base, f"{base}:reset"
 
 
-def _retry_after(request):
+def _retry_after(request, reset_key):
     """Seconds until the caller's hourly window ends (at least 1)."""
-    _, reset_key = _rate_keys(request)
     reset_at = cache.get(reset_key)
     if not isinstance(reset_at, (int, float)):
         return RATE_LIMIT_SECONDS
     return max(1, min(RATE_LIMIT_SECONDS, int(reset_at - time.time()) + 1))
 
 
-def _rate_limited(request):
-    """True once the caller has used up the hourly allowance; never counts."""
+def _start_window(reset_key):
+    cache.add(reset_key, time.time() + RATE_LIMIT_SECONDS, RATE_LIMIT_SECONDS)
+
+
+def _bump(key, reset_key):
+    """Atomically add one to a counter and return the new value."""
+    _start_window(reset_key)
+    cache.add(key, 0, RATE_LIMIT_SECONDS)
+    try:
+        return cache.incr(key)
+    except ValueError:
+        cache.set(key, 1, RATE_LIMIT_SECONDS)
+        return 1
+
+
+def _release(key):
+    try:
+        cache.decr(key)
+    except ValueError:
+        pass
+
+
+def _reserve_slot(request):
+    """Take one allowance atomically; False (and nothing held) once over the limit."""
     limit = getattr(settings, "COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR", DEFAULT_RATE_LIMIT)
-    key, _ = _rate_keys(request)
+    key, reset_key = _rate_keys(request)
+    if _bump(key, reset_key) > limit:
+        _release(key)
+        return False
+    return True
+
+
+def _rejection_keys(request):
+    base = f"company-correction-rejected:{request.user.pk}"
+    return base, f"{base}:reset"
+
+
+def _rejections_exhausted(request):
+    limit = getattr(
+        settings, "COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR", DEFAULT_REJECTED_LIMIT
+    )
+    key, _ = _rejection_keys(request)
     return (cache.get(key) or 0) >= limit
 
 
-def _count_submission(request):
-    """Spend one allowance; called only after a correction was stored."""
-    key, reset_key = _rate_keys(request)
-    cache.add(reset_key, time.time() + RATE_LIMIT_SECONDS, RATE_LIMIT_SECONDS)
-    if cache.add(key, 1, RATE_LIMIT_SECONDS):
-        return
-    try:
-        cache.incr(key)
-    except ValueError:
-        cache.set(key, 1, RATE_LIMIT_SECONDS)
+def _count_rejection(request):
+    _bump(*_rejection_keys(request))
 
 
 def _normalized(value):
@@ -155,13 +185,41 @@ def _create(request):
         if replay is not None:
             return JsonResponse(_payload(replay), status=200)
 
-    if _rate_limited(request):
-        response = _error_response(
-            "You have reached the correction limit. Please try again later.", status=429
-        )
-        response["Retry-After"] = str(_retry_after(request))
-        return response
+    return _limited_store(request, payload, idempotency_key)
 
+
+def _too_many(request, reset_key):
+    response = _error_response(
+        "You have reached the correction limit. Please try again later.", status=429
+    )
+    response["Retry-After"] = str(_retry_after(request, reset_key))
+    return response
+
+
+def _limited_store(request, payload, idempotency_key):
+    """Run the store under an atomically reserved slot.
+
+    The slot is held only by a stored (201) correction; every other outcome
+    releases it, and rejected attempts count against a separate, larger cap.
+    """
+    if _rejections_exhausted(request):
+        return _too_many(request, _rejection_keys(request)[1])
+    if not _reserve_slot(request):
+        return _too_many(request, _rate_keys(request)[1])
+    key, _ = _rate_keys(request)
+    try:
+        response = _store(request, payload, idempotency_key)
+    except BaseException:
+        _release(key)
+        raise
+    if response.status_code != 201:
+        _release(key)
+        if response.status_code in (400, 404, 409):
+            _count_rejection(request)
+    return response
+
+
+def _store(request, payload, idempotency_key):
     scope = payload.get("scope")
     if not isinstance(scope, dict):
         scope = {}
@@ -213,6 +271,19 @@ def _create(request):
                         "proposed_value": ["This is already the accepted value."]
                     },
                 )
+            if scoped_correction_blocked(
+                correction.scope_level, correction.scope_value, current
+            ):
+                return _error_response(
+                    "Please correct the highlighted fields.",
+                    field_errors={
+                        "scope_level": [
+                            "This field already has a company-wide fact, so staff "
+                            "can't apply a role- or location-specific change to it. "
+                            "Suggest the change for the whole company instead."
+                        ]
+                    },
+                )
             correction.organization = organization
             correction.current_evidence = current
             correction.current_value = current.value_text if current else ""
@@ -228,7 +299,6 @@ def _create(request):
         if winner is None:
             raise
         return JsonResponse(_payload(winner), status=200)
-    _count_submission(request)
     return JsonResponse(_payload(correction), status=201)
 
 

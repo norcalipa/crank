@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import {act, cleanup, fireEvent, render, screen, waitFor} from '@testing-library/react';
+import {act, cleanup, fireEvent, render, screen, waitFor, within} from '@testing-library/react';
 import * as React from 'react';
 import CompanyCorrectionForm, {describeCurrentValue} from './CompanyCorrectionForm';
 import {clearProvenanceCache, getCachedProvenance, setCachedProvenance} from './provenanceCache';
@@ -440,7 +440,7 @@ describe('CompanyCorrectionForm', () => {
             fireEvent.click(screen.getByTestId('correction-submit'));
             expect(document.getElementById('correction-field_key-error')).toBeInTheDocument();
             expect(document.getElementById('correction-scope_value-error')).toBeInTheDocument();
-            fireEvent.change(screen.getByTestId('correction-field'), {target: {value: 'rto_policy'}});
+            fireEvent.change(screen.getByTestId('correction-field'), {target: {value: 'funding_round'}});
             expect(document.getElementById('correction-field_key-error')).toBeNull();
             fireEvent.change(screen.getByTestId('correction-scope-value'), {target: {value: 'Platform'}});
             expect(document.getElementById('correction-scope_value-error')).toBeNull();
@@ -790,6 +790,51 @@ describe('CompanyCorrectionForm', () => {
             raf.mockRestore();
         });
 
+        describe('with two cards for the same company', () => {
+            const makeCards = () => {
+                const cards = [0, 1].map(() => {
+                    const card = document.createElement('button');
+                    card.setAttribute('data-testid', 'suggest-correction-org-1');
+                    card.getBoundingClientRect = () => ({height: 20} as DOMRect);
+                    document.body.appendChild(card);
+                    return card;
+                });
+                return cards;
+            };
+            let raf: jest.SpyInstance;
+            beforeEach(() => {
+                raf = jest.spyOn(window, 'requestAnimationFrame').mockImplementation(cb => {
+                    cb(0);
+                    return 0;
+                });
+            });
+            afterEach(() => raf.mockRestore());
+
+            test('refocuses the card that opened the form, not the first one', async () => {
+                const cards = makeCards();
+                cards[1].focus();
+                openAssistant();
+                const {unmount} = renderForm();
+                closeAssistant();
+                cards[1].blur();
+                unmount();
+                expect(cards[1]).toHaveFocus();
+                cards.forEach(card => card.remove());
+            });
+
+            test('falls back to the first visible card once the opener cannot be found', async () => {
+                const cards = makeCards();
+                cards[1].focus();
+                openAssistant();
+                const {unmount} = renderForm();
+                closeAssistant();
+                cards[1].remove();
+                unmount();
+                expect(cards[0]).toHaveFocus();
+                cards[0].remove();
+            });
+        });
+
         test('does not reopen a sheet that was not open', async () => {
             const {unmount} = renderForm();
             unmount();
@@ -854,12 +899,12 @@ describe('CompanyCorrectionForm', () => {
             expect(await screen.findByTestId('correction-status')).toHaveTextContent('Your suggestion · Funding stage');
         });
 
-        test('announces the saved state in the live region and links Back to it', async () => {
+        test('announces the saved state once, in the live region', async () => {
             renderForm();
             await fillAndSubmit();
             await screen.findByTestId('correction-status');
             await waitFor(() => expect(screen.getByTestId('correction-live')).toHaveTextContent(/submitted/i));
-            expect(screen.getByTestId('correction-back')).toHaveAttribute('aria-describedby', 'correction-status-text');
+            expect(screen.getByTestId('correction-back')).not.toHaveAttribute('aria-describedby');
         });
 
         test('blocks a second suggestion for a field that already has one pending', async () => {
@@ -878,9 +923,55 @@ describe('CompanyCorrectionForm', () => {
             renderForm({...baseContext, fieldKey: 'rto_policy'});
             const notice = await screen.findByTestId('correction-pending-notice');
             expect(notice).toHaveTextContent('Onsite');
-            expect(screen.getByTestId('correction-submit')).toBeDisabled();
+            const submit = screen.getByTestId('correction-submit');
+            expect(submit).toHaveAttribute('aria-disabled', 'true');
+            expect(submit).not.toBeDisabled();
+            expect(submit).toHaveAttribute('aria-describedby', 'correction-pending-notice');
+            expect(notice).toHaveAttribute('role', 'status');
+            const before = posts().length;
+            fireEvent.click(submit);
+            expect(posts()).toHaveLength(before);
             fireEvent.change(screen.getByTestId('correction-field'), {target: {value: 'locations'}});
             expect(screen.queryByTestId('correction-pending-notice')).toBeNull();
+            expect(screen.getByTestId('correction-submit')).not.toHaveAttribute('aria-describedby');
+        });
+        test('offers role and location only when the field has no company-wide fact', async () => {
+            renderForm({...baseContext, fieldKey: 'rto_policy'});
+            await screen.findByTestId('correction-current-text');
+            const level = screen.getByTestId('correction-scope-level') as HTMLSelectElement;
+            expect(within(level).getByRole('option', {name: 'A role'})).toBeDisabled();
+            expect(within(level).getByRole('option', {name: 'A location'})).toBeDisabled();
+            expect(screen.getByTestId('correction-scope-help')).toHaveTextContent('company-wide fact');
+            expect(level).toHaveAttribute('aria-describedby', 'correction-scope-help');
+            fireEvent.change(screen.getByTestId('correction-field'), {target: {value: 'funding_round'}});
+            expect(within(level).getByRole('option', {name: 'A role'})).not.toBeDisabled();
+            expect(screen.queryByTestId('correction-scope-help')).toBeNull();
+        });
+
+        test('a scoped fact leaves scoped suggestions available and a blocked pick resets to company', async () => {
+            provenanceResponse = () => Promise.resolve(jsonResponse(200, {
+                fields: [{field_key: 'rto_policy', value: 'Hybrid', stale: false, last_verified_at: null,
+                    scope: {countries: ['UK']}}],
+                unverified_fields: ['funding_round'],
+            }));
+            renderForm({...baseContext, fieldKey: 'funding_round'});
+            await screen.findByTestId('correction-current-text');
+            fireEvent.change(screen.getByTestId('correction-scope-level'), {target: {value: 'role'}});
+            fireEvent.change(screen.getByTestId('correction-scope-value'), {target: {value: 'Engineer'}});
+            fireEvent.change(screen.getByTestId('correction-field'), {target: {value: 'rto_policy'}});
+            expect(screen.getByTestId('correction-scope-level')).toHaveValue('role');
+            expect(screen.queryByTestId('correction-scope-help')).toBeNull();
+            provenanceResponse = () => Promise.resolve(jsonResponse(200, PROVENANCE));
+        });
+
+        test('switching to a field with a company-wide fact resets a role scope to company', async () => {
+            renderForm({...baseContext, fieldKey: 'funding_round'});
+            await screen.findByTestId('correction-current-text');
+            fireEvent.change(screen.getByTestId('correction-scope-level'), {target: {value: 'role'}});
+            fireEvent.change(screen.getByTestId('correction-scope-value'), {target: {value: 'Engineer'}});
+            fireEvent.change(screen.getByTestId('correction-field'), {target: {value: 'rto_policy'}});
+            await waitFor(() => expect(screen.getByTestId('correction-scope-level')).toHaveValue('company'));
+            expect(screen.queryByTestId('correction-scope-value')).toBeNull();
         });
     });
 });
