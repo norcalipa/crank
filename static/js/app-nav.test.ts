@@ -431,6 +431,24 @@ describe('app-nav (issue #465 private-state purge)', () => {
         expect(window.localStorage.getItem('crank:account-epoch')).toMatch(/^[0-9a-z]{4,}$/);
     });
 
+    test('the account epoch uses crypto.randomUUID when available', async () => {
+        let user: string | null = 'alice';
+        whoamiAs(() => user);
+        loadAppNav();
+        await flushMicrotasks();
+        user = 'bob';
+        const original = window.crypto.randomUUID;
+        Object.defineProperty(window.crypto, 'randomUUID', {value: () => 'uuid-nonce-1', configurable: true});
+        try {
+            jest.resetModules();
+            loadAppNav();
+            await flushMicrotasks();
+        } finally {
+            Object.defineProperty(window.crypto, 'randomUUID', {value: original, configurable: true});
+        }
+        expect(window.localStorage.getItem('crank:account-epoch')).toBe('uuid-nonce-1');
+    });
+
     function pageshow(persisted: boolean): void {
         const event = new Event('pageshow') as Event & {persisted: boolean};
         Object.defineProperty(event, 'persisted', {value: persisted});

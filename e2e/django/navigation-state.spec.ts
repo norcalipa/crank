@@ -558,6 +558,11 @@ test.describe('navigation state (issue #479)', () => {
             await context.addInitScript(() => {
                 const w = window as unknown as {__pageshows: boolean[]};
                 w.__pageshows = [];
+                // Chromium replays queued storage events after pageshow, which
+                // would purge the page without any app logic; swallow them so
+                // the pageshow re-check is the only thing that can (WebKit is
+                // not known to replay them).
+                window.addEventListener('storage', (e) => e.stopImmediatePropagation(), true);
                 window.addEventListener('pageshow', (e) => w.__pageshows.push(e.persisted));
             });
             const page = await context.newPage();
