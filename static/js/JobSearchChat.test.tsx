@@ -372,7 +372,7 @@ describe('JobSearchChat', () => {
             await renderChat();
             const group = screen.getByRole('group', {name: 'Conversation controls'});
             expect(group).toHaveClass('chat-conversation-actions');
-            expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['Export chat', 'Reset chat', 'Delete conversation']);
+            expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['Export chat', 'New conversation', 'Delete conversation']);
         });
 
         test('renders existing message history', async () => {
@@ -1215,9 +1215,29 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
         await screen.findByText('old');
         window.confirm = jest.fn().mockReturnValue(true);
         (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(7)));
-        fireEvent.click(screen.getByRole('button', {name: 'Reset chat'}));
+        fireEvent.click(screen.getByRole('button', {name: 'New conversation'}));
         await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
         expect(screen.queryByText('old')).not.toBeInTheDocument();
+    });
+
+    test('New conversation never touches a preference endpoint and says priorities are kept (issue #480)', async () => {
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [userMessage('old')])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('old');
+        window.confirm = jest.fn().mockReturnValue(true);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(7)));
+        fireEvent.click(screen.getByRole('button', {name: 'New conversation'}));
+        await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+        expect(window.confirm).toHaveBeenCalledWith(
+            'Start a new conversation? Your current history will be archived. Your saved priorities are not changed.',
+        );
+        const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+        expect(urls.filter((u) => u.includes('/api/agent/preferences/'))).toEqual([]);
+        expect(urls.some((u) => u.includes('/conversations/42/reset/'))).toBe(true);
+        expect(screen.queryByRole('button', {name: 'Reset chat'})).not.toBeInTheDocument();
     });
 
     test('reset surfaces an error when it fails', async () => {
@@ -1229,7 +1249,7 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
         await screen.findByText('keep');
         window.confirm = jest.fn().mockReturnValue(true);
         (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
-        fireEvent.click(screen.getByRole('button', {name: 'Reset chat'}));
+        fireEvent.click(screen.getByRole('button', {name: 'New conversation'}));
         await screen.findByText(/could not reset the conversation/i);
         expect(screen.getByText('keep')).toBeInTheDocument();
     });
@@ -2633,7 +2653,7 @@ describe('durable turn state (issue #458)', () => {
             window.localStorage.setItem('crank:jobsearch:draft:42', 'pending text');
             window.confirm = jest.fn().mockReturnValue(true);
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(43), 201));
-            fireEvent.click(screen.getByRole('button', {name: 'Reset chat'}));
+            fireEvent.click(screen.getByRole('button', {name: 'New conversation'}));
             await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
             // Every marker of THIS conversation is cleared...
             expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).toBeNull();
@@ -2856,7 +2876,7 @@ describe('durable turn state (issue #458)', () => {
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'in flight'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             await screen.findByTestId('stop-button');
-            expect(screen.getByRole('button', {name: 'Reset chat'})).toBeDisabled();
+            expect(screen.getByRole('button', {name: 'New conversation'})).toBeDisabled();
             expect(screen.getByRole('button', {name: 'Delete conversation'})).toBeDisabled();
         });
     });
@@ -3310,6 +3330,7 @@ describe('signed-out visitor and account-switch purge (issue #465)', () => {
 
 describe('preference proposal → apply → undo (issue #466 review)', () => {
     beforeEach(() => {
+        resetWorkspaceForTests();
         global.fetch = jest.fn();
     });
 
@@ -3440,7 +3461,7 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
         const reviewButton = screen.getByTestId('preference-proposal-review-button');
         expect(reviewButton).toHaveTextContent('Review current preferences');
         fireEvent.click(reviewButton);
-        expect(screen.getByLabelText('Message')).toHaveFocus();
+        expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
     });
 
     test('a network failure on apply shows retry copy, not the stale-only review action', async () => {
@@ -3477,6 +3498,46 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
         expect(confirmation).toHaveTextContent(/not saved/i);
         // Nothing persisted: no applied notice with Undo.
         expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+    });
+
+    test('Edit opens the inline editor and drops the proposal without any write (issue #480)', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(20, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: proposal,
+        });
+        const calls = (global.fetch as jest.Mock).mock.calls.length;
+        fireEvent.click(screen.getByTestId('preference-proposal-edit-button'));
+        expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
+        expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument();
+        expect((global.fetch as jest.Mock).mock.calls.length).toBe(calls);
+    });
+
+    test('This search only applies the same patch with scope=search and never saves (issue #480)', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(21, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: proposal,
+        });
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            applied: false, scope: 'search', matches: {job_matches: [], organization_matches: []},
+        }));
+        fireEvent.click(screen.getByTestId('preference-proposal-search-only-button'));
+        await screen.findByTestId('preference-search-applied');
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls.at(-1)[1].body);
+        expect(body.proposal.scope).toBe('search');
+        expect(body.proposal.patch).toEqual(proposal.token.patch);
+        expect(getWorkspaceSnapshot().prioritiesRevision).toBeNull();
+    });
+
+    test('apply and undo publish the new revision to the workspace store (issue #480)', async () => {
+        await submitAndApply({scope: 'account', revision: 3, changes, undo: undoToken});
+        await screen.findByTestId('preference-change-notice');
+        expect(getWorkspaceSnapshot().prioritiesRevision).toBe(3);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({revision: 4}));
+        fireEvent.click(screen.getByRole('button', {name: 'Undo preference update'}));
+        await screen.findByTestId('preference-change-undone');
+        expect(getWorkspaceSnapshot().prioritiesRevision).toBe(4);
     });
 
     test('legacy response without a proposal renders no proposal notice', async () => {
@@ -3600,7 +3661,7 @@ describe('preference change undo (issue #466)', () => {
         const reviewButton = screen.getByTestId('preference-review-button');
         expect(reviewButton).toHaveTextContent('Review current preferences');
         fireEvent.click(reviewButton);
-        expect(screen.getByLabelText('Message')).toHaveFocus();
+        expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
     });
 
     test('error state: a network failure shows retry copy and NOT the stale-only review action', async () => {

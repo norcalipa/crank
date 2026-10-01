@@ -3307,3 +3307,71 @@ body.assistant-open .app-content .table-responsive,
     -webkit-line-clamp: 2;
     line-clamp: 2;
 }
+
+/* issue #480 priorities */
+.priorities-section {
+    margin-bottom: 1rem;
+    color: #e9ecef;
+}
+.priorities-title { margin-bottom: 0.5rem; }
+.priorities-empty { margin: 0 0 0.5rem; color: #ced4da; }
+.priority-chips {
+    list-style: none;
+    margin: 0 0 0.5rem;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+.priority-chip {
+    border: 1px solid #adb5bd;
+    border-radius: 999px;
+    padding: 0.2rem 0.7rem;
+    font-size: 0.85rem;
+    background: #212529;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+.priority-chip-hard { border-color: #3fb27f; border-width: 2px; }
+.priority-chip-unsupported { border-style: dashed; }
+.priority-chip-icon { margin-right: 0.3rem; }
+.priority-chip-skeleton {
+    width: 6rem;
+    min-height: 1.9rem;
+    background: #343a40;
+    border-color: #343a40;
+    animation: priorities-pulse 1.4s ease-in-out infinite;
+}
+@keyframes priorities-pulse { 50% { opacity: 0.5; } }
+@media (prefers-reduced-motion: reduce) {
+    .priority-chip-skeleton { animation: none; }
+}
+.priorities-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.priorities-actions .btn,
+.priorities-section .chat-btn,
+.priorities-toggle { min-height: 44px; }
+.priorities-group { border: 0; padding: 0; margin: 0 0 0.75rem; min-width: 0; }
+.priorities-legend { font-size: 0.95rem; font-weight: 600; margin-bottom: 0.25rem; }
+.priorities-field { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.6rem; }
+.priorities-label { font-size: 0.9rem; }
+.priorities-field-error { color: #ff9d9d; font-size: 0.85rem; }
+.priorities-field-note { color: #ced4da; font-size: 0.85rem; }
+.priorities-importance { display: flex; gap: 0.4rem; }
+.priorities-toggle { border: 1px solid #adb5bd; color: #e9ecef; background: transparent; }
+.priorities-toggle.active { background: #198754; border-color: #3fb27f; color: #fff; font-weight: 600; }
+.priorities-toggle.active::before { content: "\2713\00a0"; }
+.priorities-section input:focus-visible,
+.priorities-section select:focus-visible,
+.priorities-section button:focus-visible,
+.priorities-section [tabindex="-1"]:focus-visible {
+    outline: 3px solid #6ea8fe;
+    outline-offset: 2px;
+}
+.priorities-scroll { max-height: 70vh; overflow-y: auto; }
+.priorities-sidebar { flex: 0 0 auto; padding: 0.5rem 0.75rem; border-bottom: 1px solid #495057; margin-bottom: 0; }
+.priorities-sidebar .priority-chips {
+    flex-wrap: wrap;
+    max-height: 3.6rem;
+    overflow: hidden;
+}
+.priorities-sidebar .priorities-scroll { max-height: 60%; max-height: 60vh; }

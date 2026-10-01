@@ -11,6 +11,7 @@ import {
     getWorkspaceSnapshot,
     normalizeWorkspaceContext,
     replaceWorkspaceState,
+    resetPriorities,
     setWorkspaceAccount,
     subscribeWorkspace,
 } from './store';
@@ -165,6 +166,7 @@ export function installWorkspacePersistence(): () => void {
         restored = false;
         setWorkspaceAccount({status: 'unknown', key: ''});
         resetStore();
+        resetPriorities();
         deleteRecord();
     }
 

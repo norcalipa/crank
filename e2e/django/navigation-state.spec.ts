@@ -231,7 +231,7 @@ test.describe('navigation state (issue #479)', () => {
         await other.locator('textarea[aria-label="Message"]').fill('tab B unsent draft');
 
         page.once('dialog', (dialog) => dialog.accept());
-        await page.getByRole('button', {name: 'Reset chat'}).click();
+        await page.getByRole('button', {name: 'New conversation'}).click();
         await expect(page.locator('article[aria-label="Your message"]')).toHaveCount(0);
 
         await other.reload();

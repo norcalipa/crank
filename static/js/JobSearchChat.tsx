@@ -4,11 +4,14 @@ import * as React from 'react';
 import {createRoot} from 'react-dom/client';
 
 import {purgePrivateClientState} from './authIntent';
+import {preferencePathLabel, preferenceValueLabel} from './priorities/format';
 import {
     describeWorkspaceContext,
     getWorkspaceSnapshot,
     setWorkspaceConversation,
     subscribeWorkspace,
+    setPrioritiesEditorOpen,
+    setPrioritiesRevision,
 } from './workspace/store';
 
 export interface JobResult {
@@ -400,35 +403,7 @@ async function csrfFetch(url: string, init: RequestInit = {}): Promise<Response>
     return fetch(url, {...init, headers});
 }
 
-/** Human label for a preference path (issue #466):
- * "compensation.minimum_salary" → "Compensation › minimum salary". */
-export function preferencePathLabel(path: string): string {
-    return path
-        .split('.')
-        .map((segment, i) => {
-            const words = segment.replace(/_/g, ' ');
-            return i === 0 ? words.charAt(0).toUpperCase() + words.slice(1) : words;
-        })
-        .join(' › ');
-}
-
-/** Human rendering of a preference value (issue #466). */
-export function preferenceValueLabel(value: unknown): string {
-    if (value === null || value === undefined) return 'Not set';
-    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-    if (typeof value === 'string') return value === '' ? 'Not set' : value;
-    if (typeof value === 'number') {
-        return Number.isFinite(value) ? value.toLocaleString('en-US') : String(value);
-    }
-    if (Array.isArray(value)) {
-        return value.length ? value.map(preferenceValueLabel).join(', ') : 'None';
-    }
-    try {
-        return JSON.stringify(value);
-    } catch {
-        return String(value);
-    }
-}
+export {preferencePathLabel, preferenceValueLabel};
 
 /** Preference-change notice (issue #466): the field-level diff of what the
  * assistant just changed, with a one-click Undo. Four rendered states:
@@ -551,13 +526,16 @@ export function PreferenceChangeNotice({changes, undoState, undoError, undoError
  * diff of a model-proposed change with Apply/Dismiss. Nothing is persisted
  * until the user explicitly applies; a this-search-only proposal is labelled
  * as never saved. */
-export function PreferenceProposalNotice({proposal, state, error, errorType, onDecision, onReview}: {
+export function PreferenceProposalNotice({proposal, state, error, errorType, onDecision, onReview, onEdit, onSearchOnly}: {
     proposal: PreferenceProposal;
     state: 'idle' | 'pending' | 'error';
     error: string | null;
     errorType: string | null;
     onDecision: (decision: 'apply' | 'dismiss') => void;
     onReview?: () => void;
+    // Issue #480: open the inline priorities editor / apply to one search only.
+    onEdit?: () => void;
+    onSearchOnly?: () => void;
 }) {
     const pending = state === 'pending';
     const isSearch = proposal.scope === 'search';
@@ -626,6 +604,19 @@ export function PreferenceProposalNotice({proposal, state, error, errorType, onD
                         </>
                     )}
                 </button>
+                {onEdit && (
+                    <button type="button" className="chat-btn chat-btn-secondary chat-focus"
+                            onClick={onEdit} disabled={pending} data-testid="preference-proposal-edit-button">
+                        Edit
+                    </button>
+                )}
+                {onSearchOnly && !isSearch && (
+                    <button type="button" className="chat-btn chat-btn-secondary chat-focus"
+                            onClick={onSearchOnly} disabled={pending}
+                            data-testid="preference-proposal-search-only-button">
+                        This search only
+                    </button>
+                )}
                 <button type="button" className="chat-btn chat-btn-secondary chat-focus pref-dismiss-btn"
                         onClick={() => onDecision('dismiss')} disabled={pending}
                         data-testid="preference-proposal-dismiss-button">
@@ -2111,7 +2102,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 
     const handleReset = async () => {
         if (!conversationId) return;  // # pragma: no cover - button is disabled without a conversation
-        if (!window.confirm('Start a new conversation? Your current history will be archived.')) return;
+        if (!window.confirm('Start a new conversation? Your current history will be archived. Your saved priorities are not changed.')) return;
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/reset/`, {method: 'POST'});
             if (!res.ok) throw new Error('reset-failed');
@@ -2168,6 +2159,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 body: JSON.stringify({undo: prefUndoToken}),
             });
             if (res.ok) {
+                const undone = await res.json().catch(() => null);
+                if (typeof undone?.revision === 'number') setPrioritiesRevision(undone.revision);
                 setPrefUndoState('done');
                 setPrefChanges(null);
                 setPrefUndoToken(null);
@@ -2198,7 +2191,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // Issue #466 review: apply or dismiss the read-only proposal. Only an
     // explicit Apply persists (scope=account) or runs one unsaved search
     // (scope=search); Dismiss discards the client-held token.
-    const handlePreferenceProposalDecision = async (decision: 'apply' | 'dismiss') => {
+    const handlePreferenceProposalDecision = async (
+        decision: 'apply' | 'dismiss', scopeOverride?: 'search',
+    ) => {
         if (!prefProposal || prefProposalState === 'pending') return;
         if (decision === 'dismiss') {
             setPrefProposal(null);
@@ -2214,7 +2209,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             const res = await csrfFetch('/api/agent/preferences/apply/', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({proposal: prefProposal.token, decision}),
+                body: JSON.stringify({
+                    proposal: scopeOverride ? {...prefProposal.token, scope: scopeOverride} : prefProposal.token,
+                    decision,
+                }),
             });
             if (res.ok) {
                 const data = await res.json();
@@ -2232,6 +2230,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     setPrefUndoError(null);
                     setPrefUndoErrorType(null);
                     setPreferencesChanged(true);
+                    if (typeof data.revision === 'number') setPrioritiesRevision(data.revision);
                 }
                 setPrefProposal(null);
                 setPrefProposalState('idle');
@@ -2277,7 +2276,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     <button type="button" className="btn btn-sm btn-outline-light" onClick={handleExport}
                             disabled={!conversationId || !messages.length}>Export chat</button>
                     <button type="button" className="btn btn-sm btn-outline-light" onClick={handleReset}
-                            disabled={!conversationId || pending}>Reset chat</button>
+                            disabled={!conversationId || pending}>New conversation</button>
                     <button type="button" className="btn btn-sm btn-outline-danger" onClick={handleDelete}
                             disabled={!conversationId || pending}>Delete conversation</button>
                 </div>
@@ -2295,7 +2294,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         </button>
                     </div>
                     <div id="job-search-data-note-details" className={dataNoteOpen ? 'chat-note-details' : 'visually-hidden'}>
-                        Your messages and preference updates are saved to your account; use Export, Reset, or Delete
+                        Your messages and preference updates are saved to your account; use Export, New conversation, or Delete
                         above to manage them.
                     </div>
                 </div>
@@ -2309,9 +2308,14 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         onDecision={handlePreferenceProposalDecision}
                         onReview={() => {
                             // Stale-conflict recovery: review the current
-                            // preferences through the assistant.
-                            composerRef.current?.focus();
+                            // priorities in the inline editor (issue #480).
+                            setPrioritiesEditorOpen('sidebar');
                         }}
+                        onEdit={() => {
+                            setPrefProposal(null);
+                            setPrioritiesEditorOpen('sidebar');
+                        }}
+                        onSearchOnly={() => handlePreferenceProposalDecision('apply', 'search')}
                     />
                 )}
 
@@ -2351,10 +2355,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                             setPrefUndoErrorType(null);
                         }}
                         onReview={() => {
-                            // Stale-conflict recovery: the current
-                            // preferences are reviewed through the
-                            // assistant, so focus the composer.
-                            composerRef.current?.focus();
+                            // Stale-conflict recovery: review the current
+                            // priorities in the inline editor (issue #480).
+                            setPrioritiesEditorOpen('sidebar');
                         }}
                     />
                 )}

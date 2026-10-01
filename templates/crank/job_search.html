@@ -52,6 +52,9 @@
         </div>
         <div class="row">
             <div class="col-12">
+                <div id="priorities-main"
+                     data-authenticated="{% if visitor_state == 'authenticated' %}true{% else %}false{% endif %}"
+                     data-sign-in-url="{{ sign_in_url }}"></div>
                 <div id="job-match-panel"
                      data-authenticated="{% if visitor_state == 'authenticated' %}true{% else %}false{% endif %}"
                      data-sign-in-url="{{ sign_in_url }}"></div>

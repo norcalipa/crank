@@ -40,7 +40,14 @@ export interface WorkspaceSnapshot {
     // host opened the panel on this page; false for a panel restored from the
     // per-tab record, which must not take focus from the page (issue #479).
     userOpened: boolean;
+    // Issue #480: last priorities revision written on this page (null until a
+    // write happens); other roots refetch matches when it changes. Never persisted.
+    prioritiesRevision: number | null;
+    // Which surface currently hosts the inline priorities editor, if any.
+    prioritiesEditorOpenIn: PrioritiesEditorHost | null;
 }
+
+export type PrioritiesEditorHost = 'main' | 'sidebar';
 
 // Per-tab sessionStorage record (issue #479).
 export const WORKSPACE_SESSION_KEY = 'crank:workspace:v1';

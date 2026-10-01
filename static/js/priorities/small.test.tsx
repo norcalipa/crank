@@ -1,0 +1,77 @@
+// Copyright (c) 2024 Isaac Adams
+// Licensed under the MIT License. See LICENSE file in the project root for full license information.
+import '@testing-library/jest-dom';
+import * as React from 'react';
+import {fireEvent, render, screen} from '@testing-library/react';
+import ReviewChanges from './ReviewChanges';
+import AppliedChanges from './AppliedChanges';
+import {preferencePathLabel, preferenceValueLabel} from './format';
+
+const changes = [{path: 'compensation.minimum_salary', old: 0, new: 150000}];
+
+describe('ReviewChanges', () => {
+    test('account scope: Apply / Edit / This search only / Cancel, heading focused', () => {
+        const h = {onApply: jest.fn(), onCancel: jest.fn(), onEdit: jest.fn(), onApplySearchOnly: jest.fn()};
+        render(<ReviewChanges changes={changes} {...h}/>);
+        expect(screen.getByRole('heading', {name: 'Review your changes'})).toHaveFocus();
+        expect(screen.getByText('Compensation › minimum salary')).toBeInTheDocument();
+        for (const [name, fn] of [['Apply to account', h.onApply], ['Edit', h.onEdit],
+            ['This search only', h.onApplySearchOnly], ['Cancel', h.onCancel]] as const) {
+            fireEvent.click(screen.getByRole('button', {name}));
+            expect(fn).toHaveBeenCalledTimes(1);
+        }
+    });
+
+    test('search scope, empty diff, pending and stale variants', () => {
+        const base = {onApply: jest.fn(), onCancel: jest.fn(), onApplySearchOnly: jest.fn(), onReviewLatest: jest.fn()};
+        const {rerender} = render(<ReviewChanges changes={[]} scope="search" {...base}/>);
+        expect(screen.getByTestId('priorities-review-empty')).toBeInTheDocument();
+        expect(screen.getByRole('button', {name: 'Apply to this search'})).toBeDisabled();
+        expect(screen.queryByRole('button', {name: 'This search only'})).not.toBeInTheDocument();
+        rerender(<ReviewChanges changes={changes} pending {...base}/>);
+        expect(screen.getByRole('button', {name: /Applying/})).toHaveAttribute('aria-busy', 'true');
+        rerender(<ReviewChanges changes={changes} stale error="old" {...base}/>);
+        expect(screen.getByRole('alert')).toHaveTextContent('old');
+        fireEvent.click(screen.getByRole('button', {name: 'Review latest'}));
+        expect(base.onReviewLatest).toHaveBeenCalled();
+        expect(screen.queryByRole('button', {name: 'Apply to account'})).not.toBeInTheDocument();
+    });
+});
+
+describe('AppliedChanges', () => {
+    test('shows summary, undo and done; undone and no-undo variants', () => {
+        const h = {onUndo: jest.fn(), onDismiss: jest.fn()};
+        const {rerender} = render(<AppliedChanges changes={changes} summary="Saved." canUndo {...h}/>);
+        expect(screen.getByRole('heading', {name: 'Saved.'})).toHaveFocus();
+        fireEvent.click(screen.getByRole('button', {name: 'Undo'}));
+        fireEvent.click(screen.getByRole('button', {name: 'Done'}));
+        expect(h.onUndo).toHaveBeenCalled();
+        expect(h.onDismiss).toHaveBeenCalled();
+        rerender(<AppliedChanges changes={changes} summary="Saved." canUndo undoPending undoError="bad" {...h}/>);
+        expect(screen.getByRole('button', {name: 'Undoing…'})).toBeDisabled();
+        expect(screen.getByRole('alert')).toHaveTextContent('bad');
+        rerender(<AppliedChanges changes={[]} summary="Saved." canUndo={false} {...h}/>);
+        expect(screen.queryByRole('button', {name: 'Undo'})).not.toBeInTheDocument();
+        rerender(<AppliedChanges changes={changes} summary="Saved." canUndo undone {...h}/>);
+        expect(screen.getByRole('heading', {name: 'Change undone.'})).toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Undo'})).not.toBeInTheDocument();
+    });
+});
+
+describe('format', () => {
+    test('labels and values', () => {
+        expect(preferencePathLabel('work_location.modes')).toBe('Work location › modes');
+        expect(preferenceValueLabel(null)).toBe('Not set');
+        expect(preferenceValueLabel(true)).toBe('Yes');
+        expect(preferenceValueLabel('')).toBe('Not set');
+        expect(preferenceValueLabel('x')).toBe('x');
+        expect(preferenceValueLabel(1500)).toBe('1,500');
+        expect(preferenceValueLabel(Infinity)).toBe('Infinity');
+        expect(preferenceValueLabel([])).toBe('None');
+        expect(preferenceValueLabel(['a', 1])).toBe('a, 1');
+        expect(preferenceValueLabel({a: 1})).toBe('{"a":1}');
+        const cyclic: any = {};
+        cyclic.self = cyclic;
+        expect(preferenceValueLabel(cyclic)).toBe('[object Object]');
+    });
+});
