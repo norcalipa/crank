@@ -1190,6 +1190,9 @@ __all__ = [
     "strip_unsafe_characters",
     "resolve_field_evidence",
     "resolve_field_evidence_for_orgs",
+    "retractable_observation_facts",
+    "lock_organizations",
+    "matching_reading",
 ]
 
 
@@ -1208,24 +1211,7 @@ def retract_observation_facts(
     now = now or timezone.now()
     with transaction.atomic():
         _lock_organization(observation.organization_id)
-        rows = list(
-            CompanyFieldEvidence.objects.select_for_update().filter(
-                organization_id=observation.organization_id,
-                observation=observation,
-                state=State.ACCEPTED,
-                field_key__in=sorted(REVIEW_REQUIRED_FIELDS),
-            )
-        )
-        by_target = {str(row.pk): row for row in rows}
-        claim_accepted = set(
-            OperationalChangeAudit.objects.filter(
-                target_type="company_field_evidence",
-                target_id__in=list(by_target),
-                action="claim_accepted",
-                confirmed=True,
-            ).values_list("target_id", flat=True)
-        )
-        retract = [row for tid, row in by_target.items() if tid not in claim_accepted]
+        retract = retractable_observation_facts(observation, lock=True)
         if retract:
             _close_claims(retract, now)
             publication.record_event(
@@ -1235,3 +1221,57 @@ def retract_observation_facts(
                 payload={"status": "retracted"},
             )
     return [row.pk for row in retract]
+
+
+def retractable_observation_facts(
+    observation: CompanyProfileObservation, *, lock: bool = False
+) -> list[CompanyFieldEvidence]:
+    """Accepted review-required rows of ``observation`` no claim re-accepted.
+
+    These are what rejecting the observation withdraws from matching.
+    """
+    rows = CompanyFieldEvidence.objects.filter(
+        organization_id=observation.organization_id,
+        observation=observation,
+        state=State.ACCEPTED,
+        field_key__in=sorted(REVIEW_REQUIRED_FIELDS),
+    ).order_by("field_key", "id")
+    if lock:
+        rows = rows.select_for_update()
+    by_target = {str(row.pk): row for row in rows}
+    claim_accepted = set(
+        OperationalChangeAudit.objects.filter(
+            target_type="company_field_evidence",
+            target_id__in=list(by_target),
+            action="claim_accepted",
+            confirmed=True,
+        ).values_list("target_id", flat=True)
+    )
+    return [row for tid, row in by_target.items() if tid not in claim_accepted]
+
+
+def lock_organizations(organization_ids) -> None:
+    """Take the organization row locks in pk order (so reviewers cannot deadlock)."""
+    for organization_id in sorted({pk for pk in organization_ids if pk is not None}):
+        _lock_organization(organization_id)
+
+
+def matching_reading(field_key: str, value_text: str) -> str:
+    """How matching interprets ``value_text``, for reviewers who approve prose.
+
+    Empty for fields matching does not parse.
+    """
+    from crank.agents.jobs import matching
+
+    if field_key == CompanyFieldEvidence.FieldKey.RTO_POLICY:
+        days = matching._rto_days(value_text)
+        if days is None:
+            return "matching cannot read this (unknown)"
+        label = {0: "remote", 3: "hybrid", 5: "in-office"}[days]
+        return f"matching reads this as: {label} ({days} in-office days)"
+    if field_key == CompanyFieldEvidence.FieldKey.PUBLIC_STATUS:
+        public = matching._public_status(value_text)
+        if public is None:
+            return "matching cannot read this (unknown)"
+        return f"matching reads this as: {'public' if public else 'private'}"
+    return ""

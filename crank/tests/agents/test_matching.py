@@ -604,6 +604,24 @@ def test_rto_evidence_uses_prose_value():
     assert _mode_from_rto("Five days in office, no exceptions") == "in-office"
 
 
+@pytest.mark.parametrize(
+    "value,days",
+    [
+        ("No office required", 0),
+        ("Remote-first; optional office space in SF", 0),
+        ("Remote first, office hubs in NYC", 0),
+        ("Office is optional", 0),
+        ("Not hybrid: in office", 5),
+        ("Five days at the office", 5),
+        ("Onsite", 5),
+    ],
+)
+def test_rto_prose_negations_and_incidental_office_mentions(value, days):
+    from crank.agents.jobs.matching import _rto_days
+
+    assert _rto_days(value) == days
+
+
 def test_scope_country_no_substring_false_positive():
     """Evidence scoped to country ``US`` must not cover a ``Russia`` listing
     (the old substring test matched ``'us' in 'russia'``)."""

@@ -3,6 +3,7 @@
 """Staff review of company evidence claims: admin, audit, scope, and the crawl-to-API path."""
 
 import json
+from unittest import mock
 
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.contrib.auth.models import User
@@ -851,6 +852,206 @@ class ClaimReviewTests(TestCase):
         response = self.client.get(self.url)
         listed = {r.pk: r for r in response.context["cl"].result_list}
         self.assertEqual(listed[twin.pk]._vs_accepted, "matches reviewed value")
+
+    # Security round 1 (#474).
+
+    def _legacy_with_observation(self):
+        legacy = self._make_legacy()
+        CompanyProfileObservation.objects.filter(pk=legacy.observation_id).update(
+            status=CompanyProfileObservation.Status.AUTO_APPLIED
+        )
+        return legacy
+
+    def test_observation_status_cannot_be_edited_on_the_change_form(self):
+        legacy = self._legacy_with_observation()
+        url = reverse(
+            "admin:crank_companyprofileobservation_change", args=[legacy.observation_id]
+        )
+        response = self.client.get(url)
+        self.assertNotIn("status", response.context["adminform"].form.fields)
+        self.client.post(url, {"status": "accepted", "admin_note": "sneaky"})
+        observation = CompanyProfileObservation.objects.get(pk=legacy.observation_id)
+        self.assertEqual(observation.status, CompanyProfileObservation.Status.AUTO_APPLIED)
+        self.assertFalse(company_evidence.is_staff_reviewed(legacy))
+        self.assertTrue(company_evidence.legacy_unreviewed_rows(self.organization))
+
+    def test_audit_admin_is_view_only(self):
+        OperationalChangeAudit.record(
+            actor=self.staff, target_type="company_field_evidence", target_id="1",
+            action="claim_accepted", confirmed=True,
+        )
+        audit_admin = admin_site_registry(OperationalChangeAudit)
+        request = self.client.get(self.url).wsgi_request
+        self.assertFalse(audit_admin.has_add_permission(request))
+        self.assertFalse(audit_admin.has_change_permission(request))
+        self.assertFalse(audit_admin.has_delete_permission(request))
+        self.assertTrue(audit_admin.has_view_permission(request))
+        self.assertNotIn("delete_selected", audit_admin.get_actions(request))
+        changelist = reverse("admin:crank_operationalchangeaudit_changelist")
+        pk = OperationalChangeAudit.objects.get().pk
+        self.client.post(
+            changelist,
+            {"action": "delete_selected", ACTION_CHECKBOX_NAME: [pk], "post": "yes"},
+        )
+        self.client.post(
+            reverse("admin:crank_operationalchangeaudit_delete", args=[pk]), {"post": "yes"}
+        )
+        self.assertTrue(OperationalChangeAudit.objects.filter(pk=pk).exists())
+
+    def test_rejecting_a_legacy_auto_applied_observation_withdraws_its_facts(self):
+        legacy = self._legacy_with_observation()
+        observation = CompanyProfileObservation.objects.get(pk=legacy.observation_id)
+        url = reverse("admin:crank_companyprofileobservation_changelist")
+        preview = self.client.post(
+            url,
+            {"action": "reject_observations", ACTION_CHECKBOX_NAME: [observation.pk], "index": 0},
+        )
+        label = preview.context["objects"][0].confirmation_label
+        self.assertIn("WITHDRAWS", label)
+        self.assertIn("rto_policy=", label)
+        self._post_observation_action("reject_observations", [observation.pk])
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.state, State.SUPERSEDED)
+        self.assertNotIn(
+            FieldKey.RTO_POLICY, company_evidence.resolve_field_evidence(self.organization)
+        )
+        audit = OperationalChangeAudit.objects.get(
+            target_type="company_profile_observation", action="review_rejected"
+        )
+        self.assertIn(legacy.pk, audit.new_value["evidence_retracted"])
+
+    def test_reject_label_for_an_observation_with_nothing_to_withdraw(self):
+        observation = CompanyProfileObservation.objects.filter(
+            organization=self.organization
+        ).latest("id")
+        observation_admin = admin_site_registry(CompanyProfileObservation)
+        CompanyProfileObservation.objects.filter(pk=observation.pk).update(
+            status=CompanyProfileObservation.Status.PENDING
+        )
+        observation.refresh_from_db()
+        pending_label = observation_admin.confirmation_label_for_action(
+            observation, "reject_observations"
+        )
+        self.assertNotIn("WITHDRAWS", pending_label)
+        self.assertNotIn("accepting records", pending_label)
+        CompanyProfileObservation.objects.filter(pk=observation.pk).update(
+            status=CompanyProfileObservation.Status.ACCEPTED
+        )
+        observation.refresh_from_db()
+        CompanyFieldEvidence.objects.filter(observation=observation).update(
+            state=State.SUPERSEDED
+        )
+        self.assertIn(
+            "withdraws no verified facts",
+            observation_admin.confirmation_label_for_action(observation, "reject_observations"),
+        )
+        self.assertNotIn(
+            "accepting records",
+            observation_admin.confirmation_label_for_action(observation, "conflict_observations"),
+        )
+
+    def test_select_across_reject_of_observations_is_refused(self):
+        observation = CompanyProfileObservation.objects.filter(
+            organization=self.organization
+        ).latest("id")
+        CompanyProfileObservation.objects.filter(pk=observation.pk).update(
+            status=CompanyProfileObservation.Status.ACCEPTED
+        )
+        url = reverse("admin:crank_companyprofileobservation_changelist")
+        response = self.client.post(
+            url,
+            {"action": "reject_observations", "select_across": "1",
+             ACTION_CHECKBOX_NAME: [observation.pk], "index": 0, "confirm": "yes"},
+            follow=True,
+        )
+        self.assertTrue(any("select-across" in m for m in self._messages(response)))
+        observation.refresh_from_db()
+        self.assertEqual(observation.status, CompanyProfileObservation.Status.ACCEPTED)
+
+    def test_claim_digest_is_checked_after_the_organization_lock(self):
+        data = {"action": "accept_claims", ACTION_CHECKBOX_NAME: [self.rto.pk], "index": 0}
+        preview = self.client.post(self.url, data)
+        data.update(dict(preview.context["extra_hidden"]))
+        real_lock = company_evidence.lock_organizations
+
+        def lock_after_a_rival_change(ids):
+            CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(value_text="Hybrid")
+            real_lock(ids)
+
+        with mock.patch.object(company_evidence, "lock_organizations", lock_after_a_rival_change):
+            response = self.client.post(self.url, {**data, "confirm": "yes"}, follow=True)
+        self.assertTrue(any("No changes made" in m for m in self._messages(response)))
+        self.rto.refresh_from_db()
+        self.assertEqual(self.rto.state, State.PENDING)
+
+    def test_observation_digest_is_checked_after_the_organization_lock(self):
+        observation = CompanyProfileObservation.objects.filter(
+            organization=self.organization
+        ).latest("id")
+        url = reverse("admin:crank_companyprofileobservation_changelist")
+        data = {"action": "accept_observations", ACTION_CHECKBOX_NAME: [observation.pk], "index": 0}
+        preview = self.client.post(url, data)
+        data.update(dict(preview.context["extra_hidden"]))
+        real_lock = company_evidence.lock_organizations
+
+        def lock_after_a_rival_change(ids):
+            CompanyProfileObservation.objects.filter(pk=observation.pk).update(
+                status=CompanyProfileObservation.Status.CONFLICTED
+            )
+            real_lock(ids)
+
+        with mock.patch.object(company_evidence, "lock_organizations", lock_after_a_rival_change):
+            response = self.client.post(url, {**data, "confirm": "yes"}, follow=True)
+        self.assertTrue(any("No changes made" in m for m in self._messages(response)))
+        observation.refresh_from_db()
+        self.assertEqual(observation.status, CompanyProfileObservation.Status.CONFLICTED)
+
+    def test_claim_views_show_how_matching_reads_the_value(self):
+        CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(value_text="No office required")
+        self.rto.refresh_from_db()
+        claim_admin = admin_site_registry(CompanyFieldEvidence)
+        self.assertIn("remote (0 in-office days)", claim_admin.confirmation_label(self.rto))
+        self.assertIn("remote (0 in-office days)", claim_admin.matching_reading(self.rto))
+        self.assertEqual(
+            company_evidence.matching_reading(FieldKey.PUBLIC_STATUS, "Private company"),
+            "matching reads this as: private",
+        )
+        self.assertEqual(
+            company_evidence.matching_reading(FieldKey.PUBLIC_STATUS, "Public company"),
+            "matching reads this as: public",
+        )
+        self.assertIn(
+            "cannot read", company_evidence.matching_reading(FieldKey.PUBLIC_STATUS, "unclear")
+        )
+        self.assertIn(
+            "cannot read", company_evidence.matching_reading(FieldKey.RTO_POLICY, "TBD")
+        )
+        self.assertEqual(company_evidence.matching_reading(FieldKey.FUNDING_ROUND, "Series B"), "")
+        observation = CompanyProfileObservation.objects.filter(
+            organization=self.organization
+        ).latest("id")
+        label = admin_site_registry(CompanyProfileObservation).confirmation_label(observation)
+        self.assertIn("matching reads this as", label)
+
+    def test_legacy_command_strips_terminal_escapes_and_audits_the_queue(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        legacy = self._make_legacy()
+        CompanyFieldEvidence.objects.filter(pk=legacy.pk).update(
+            value_text="Remote\x1b[2K\r5 days forged row"
+        )
+        Organization.objects.filter(pk=self.organization.pk).update(name="Ex\x1b[1Gample")
+        out = StringIO()
+        call_command("legacy_evidence_review", "--queue", stdout=out)
+        self.assertNotIn("\x1b", out.getvalue())
+        self.assertNotIn("\r", out.getvalue())
+        audit = OperationalChangeAudit.objects.get(action="legacy_queue")
+        self.assertEqual(audit.new_value["claims_queued"], 1)
+        self.assertEqual(len(audit.new_value["claim_ids"]), 1)
+        call_command("legacy_evidence_review", stdout=StringIO())
+        self.assertEqual(OperationalChangeAudit.objects.filter(action="legacy_queue").count(), 1)
 
 
 def admin_site_registry(model):

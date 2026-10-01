@@ -245,6 +245,10 @@ class ConfirmableAdminActionMixin:
         """Text shown for ``obj`` on the confirmation page; empty means ``str(obj)``."""
         return ""
 
+    def confirmation_label_for_action(self, obj, action_name):
+        """Like :meth:`confirmation_label`, for admins whose text depends on the action."""
+        return self.confirmation_label(obj)
+
     def confirmation_hidden_fields(self, request, objects):
         """Extra ``(name, value)`` pairs the confirmation form re-POSTs."""
         return []
@@ -271,7 +275,7 @@ class ConfirmableAdminActionMixin:
             total = len(objects)
             truncated = False
         for obj in objects:
-            obj.confirmation_label = self.confirmation_label(obj)
+            obj.confirmation_label = self.confirmation_label_for_action(obj, action_name)
         return render(
             request,
             "admin/confirm_action.html",
@@ -430,7 +434,7 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
     list_select_related = ["organization", "reviewed_by"]
     search_fields = ["observed_name", "observed_domain", "source_url"]
     readonly_fields = [
-        "organization", "source_url", "observed_domain", "observed_name",
+        "status", "organization", "source_url", "observed_domain", "observed_name",
         "description", "locations", "rto_evidence", "funding_evidence",
         "public_status_evidence", "logo_url", "brand_metadata", "observed_at",
         "extraction_version", "conflict_fields", "fingerprint", "created",
@@ -439,8 +443,37 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
     actions = ["accept_observations", "reject_observations", "conflict_observations"]
     confirmable_actions = ["accept_observations", "reject_observations", "conflict_observations"]
 
+    def confirmation_label_for_action(self, obj, action_name):
+        if action_name == "reject_observations":
+            return self._reject_label(obj)
+        if action_name == "accept_observations":
+            return self.confirmation_label(obj)
+        return self._base_label(obj)
+
+    @staticmethod
+    def _base_label(obj):
+        return f"{obj.observed_name or obj.observed_domain} [{obj.status}] {obj.source_url}"
+
+    def _reject_label(self, obj):
+        label = self._base_label(obj)
+        if obj.status not in self._RETRACTING_STATUSES:
+            return label
+        rows = company_evidence.retractable_observation_facts(obj)
+        if not rows:
+            return label + "; rejecting withdraws no verified facts"
+        facts = "; ".join(f"{row.field_key}={row.value_text!r}" for row in rows)
+        return (
+            label + "; rejecting WITHDRAWS these verified facts from matching "
+            f"(they become superseded): {facts}"
+        )
+
+    _RETRACTING_STATUSES = (
+        CompanyProfileObservation.Status.ACCEPTED,
+        CompanyProfileObservation.Status.AUTO_APPLIED,
+    )
+
     def confirmation_label(self, obj):
-        label = f"{obj.observed_name or obj.observed_domain} [{obj.status}] {obj.source_url}"
+        label = self._base_label(obj)
         if obj.organization_id is None:
             return label
         values = company_evidence.observation_field_values(obj)
@@ -469,6 +502,9 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
                     else "not staff-reviewed"
                 )
                 marker += f" [REPLACES {row.value_text!r} ({kind})]"
+            reading = company_evidence.matching_reading(key, value)
+            if reading:
+                marker += f" [{reading}]"
             parts.append(f"{key}={value!r}{marker}{note}")
         if obj.status != CompanyProfileObservation.Status.ACCEPTED and parts:
             label += "; accepting records as accepted evidence: " + "; ".join(parts)
@@ -511,13 +547,14 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
     def response_action(self, request, queryset, **kwargs):
         if (
             self._select_across_flag(request)
-            and self._requested_action(request) == "accept_observations"
+            and self._requested_action(request)
+            in ("accept_observations", "reject_observations")
         ):
             self.message_user(
                 request,
                 "No changes made: observations must be selected explicitly. A select-across "
-                "accept could verify policy facts for observations you never saw; select the "
-                "rows on the page instead.",
+                "accept could verify, and a select-across reject could withdraw, policy facts "
+                "for observations you never saw; select the rows on the page instead.",
                 level="error",
             )
             return None
@@ -526,23 +563,34 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
     def _review(self, request, queryset, status):
         if not self._require_confirmation(request):
             return
-        if status == CompanyProfileObservation.Status.ACCEPTED:
-            observations = list(queryset)
-            if request.POST.get("observation_digest") != self.observations_digest(observations):
-                self.message_user(
-                    request,
-                    "No changes made: the selected observations (or the values they would "
-                    "replace) changed since you reviewed them. Review the current ones and "
-                    "confirm again.",
-                    level="error",
-                )
-                return
-            queryset = observations
         count = 0
         refused = []
         rejected_values = []
         accepting = status == CompanyProfileObservation.Status.ACCEPTED
         with transaction.atomic():
+            if accepting:
+                # Lock the organizations first, then re-read and compare the
+                # digest in the same transaction, so a concurrent accept that
+                # committed after the reviewer looked is never overwritten.
+                observations = list(queryset)
+                company_evidence.lock_organizations(o.organization_id for o in observations)
+                observations = list(
+                    CompanyProfileObservation.objects.filter(
+                        pk__in=[o.pk for o in observations]
+                    ).order_by("pk")
+                )
+                if request.POST.get("observation_digest") != self.observations_digest(
+                    observations
+                ):
+                    self.message_user(
+                        request,
+                        "No changes made: the selected observations (or the values they would "
+                        "replace) changed since you reviewed them. Review the current ones and "
+                        "confirm again.",
+                        level="error",
+                    )
+                    return
+                queryset = observations
             for observation in queryset:
                 if accepting and company_evidence.scoped_accepted_conflicts(observation):
                     # Accepting whole would replace staff-scoped evidence with
@@ -601,7 +649,7 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
                             claim_ids = company_evidence.resolve_observation_claims(
                                 observation, company_evidence.State.SUPERSEDED
                             )
-                            if old_status == CompanyProfileObservation.Status.ACCEPTED:
+                            if old_status in self._RETRACTING_STATUSES:
                                 retracted = company_evidence.retract_observation_facts(
                                     observation
                                 )
@@ -775,7 +823,7 @@ class LegacyUnreviewedFilter(admin.SimpleListFilter):
 class CompanyFieldEvidenceAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin.ModelAdmin):
     model = CompanyFieldEvidence
     form = CompanyFieldEvidenceScopeForm
-    list_display = ["organization", "field_key", "value_text", "state", "relation_to_accepted", "source_url", "observed_at", "last_verified_at"]
+    list_display = ["organization", "field_key", "value_text", "matching_reading", "state", "relation_to_accepted", "source_url", "observed_at", "last_verified_at"]
     list_filter = [OpenClaimFilter, LegacyUnreviewedFilter, "state", "field_key"]
     list_select_related = ["organization"]
     search_fields = ["organization__name", "value_text", "source_domain"]
@@ -831,9 +879,11 @@ class CompanyFieldEvidenceAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin
             and not company_evidence.is_staff_reviewed(accepted)
         ):
             legacy = " [re-confirms a legacy value already in effect; rejecting retracts it]"
+        reading = company_evidence.matching_reading(obj.field_key, obj.value_text)
+        reading = f"; {reading}" if reading else ""
         return (
             f"{obj.organization.name} / {obj.field_key} [{obj.state}]: "
-            f"proposed {obj.value_text!r}; currently accepted "
+            f"proposed {obj.value_text!r}{reading}; currently accepted "
             f"{repr(accepted.value_text) if accepted is not None else 'none'}{legacy}; "
             f"{scope_text}; source {obj.source_url}"
         )
@@ -862,6 +912,10 @@ class CompanyFieldEvidenceAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin
                 else:
                     row._vs_accepted = "legacy value in effect"
         return cl
+
+    @admin.display(description="matching reads")
+    def matching_reading(self, obj):
+        return company_evidence.matching_reading(obj.field_key, obj.value_text)
 
     @admin.display(description="vs accepted")
     def relation_to_accepted(self, obj):
@@ -949,6 +1003,15 @@ class CompanyFieldEvidenceAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin
                     level="error",
                 )
                 return
+            # Lock the organizations first, then re-read and compare the digest in
+            # this transaction: a decision committed after the reviewer looked
+            # must make this one refuse, not be silently superseded.
+            company_evidence.lock_organizations(c.organization_id for c in claims)
+            claims = list(
+                CompanyFieldEvidence.objects.filter(pk__in=[c.pk for c in claims])
+                .select_related("organization")
+                .order_by("pk")
+            )
             if request.POST.get("claim_digest") != self.claims_digest(claims):
                 self.message_user(
                     request,
@@ -1493,6 +1556,16 @@ class OperationalChangeAuditAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
         "actor", "target_type", "target_id", "action", "old_value", "new_value",
         "confirmed", "created", "modified",
     ]
+
+    # Staff-reviewed evidence is derived from these rows, so staff can only read them.
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 admin.site.register(CapabilitySwitch, CapabilitySwitchAdmin)
