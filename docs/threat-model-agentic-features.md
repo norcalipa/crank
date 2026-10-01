@@ -63,37 +63,48 @@ lands — implemented-before-documented rule, per #463's registry).
 
 ### Typed page context
 
-- **Status: pending** — owner: #477/#478 (typed context and action vocabulary),
-  surface #471 (sidebar shell); preference/background consumers #465/#484/#466/#460.
-- **Asset:** the bounded, typed page-context objects the assistant may read
-  (server-built, schema-validated); never raw DOM or client-controlled JSON.
-- **Planned controls:** server-owned construction and bounds (depth/size caps
-  via the `types.py` bounded-scalar/patch primitives), untrusted-data labels,
-  no model-controlled field names. Until the owning tickets land, the chat
-  context remains the existing deterministic builder
-  (`crank/agents/job_search/context.py`) whose bounds are tested in
-  `crank/tests/agents/test_context.py`.
-- **Evidence:** existing `test_context.py` / `test_types.py`; no new controls
-  claimed here.
+- **Status: implemented (part 484a, server side)** — owner: #484; the client
+  that sends it and the sidebar surface follow in 484b/#471.
+- **Asset:** the bounded, typed page-context object the assistant may read.
+  The client sends only a fixed set of ids, enums and counters; it never sends
+  names, text, DOM or free-form JSON.
+- **Controls:** `PageContextSerializer` is strict (unknown keys, booleans
+  as integers, floats, numeric strings, out-of-range values and payloads over
+  2 KB are rejected with 400 `invalid_context` before anything is persisted or
+  rate-limited). Entities are re-resolved server side under the same
+  visibility rules as the catalog (public active organizations, active
+  listings, active algorithms, caller's own preference/result state);
+  unresolved or invisible ids are dropped and reported, never echoed as data.
+  Names reach the model only as server-resolved, truncated, `!r`-quoted text
+  inside a block labelled untrusted. Stale `preference_revision` /
+  `result_generation` values are flagged. Requests without a context behave
+  exactly as before. Prompt version is 5.
+- **Evidence:** `crank/tests/views/test_page_context_serializer.py`,
+  `crank/tests/views/test_page_context_view.py`,
+  `crank/tests/agents/test_page_context.py`,
+  `crank/tests/agents/test_page_context_orchestration.py`.
 
 ### Allowlisted UI actions
 
-- **Status: pending** — owner: #478 (action vocabulary), surface #471.
-- **Asset:** the fixed, code-owned action/tool allowlist. Today this is the
-  `tools.py` module surface (plain server-wired functions, no registry the
-  model can expand) and the fixed `AssistantCompletion` schema; the future UI
-  action vocabulary must follow the same pattern.
-- **Implemented controls pinned by #487:** hostile model output cannot add
-  actions/tools/policy keys (`AssistantCompletion.from_json` rejects unknown
-  keys and oversized values); malformed action payloads (unknown names, wrong
-  types, oversized values) and patch keys outside the validated spec fail
-  closed (`MalformedActionPayloadTests` in
-  `crank/tests/security/test_phase4_security.py`); prompt-injection fixtures
-  through the provider are carried as inert display text and never expand the
-  tool surface (`test_prompt_injection_fixture_cannot_invoke_tools`);
-  `tools.py` is asserted to stay a fixed, code-owned allowlist.
-- **Pending:** the UI action vocabulary itself and its dispatch boundary are
-  built and validated by #478/#471.
+- **Status: implemented (part 484a, server side)** — owner: #484; rendering
+  and dispatch in the browser are 484b/#471.
+- **Asset:** the fixed, code-owned action vocabulary (`open_company`,
+  `propose_filters`, `compare_companies`) and the fixed `AssistantCompletion`
+  schema. `tools.py` remains a plain server-wired module with no
+  model-expandable registry.
+- **Controls:** `crank/agents/job_search/actions.py` parses actions into
+  canonical dicts (ids and enums only; no URLs, no free text, no `search`
+  filter, at most 3 actions) and checks every referenced organization id
+  against the ids exposed in the turn (catalog rows plus the validated page
+  context). Violations raise `InvalidActionError` and take the existing
+  `invalid_output` path. Providers that do not validate their own actions
+  are re-validated in `JobSearchService.run_turn`. Actions are ephemeral:
+  never persisted and omitted from idempotent replays. Earlier #487 controls
+  remain: unknown keys/names/tools, wrong types and oversized values fail
+  closed, and prompt-injection fixtures never expand the tool surface.
+- **Evidence:** `crank/tests/agents/test_actions.py`,
+  `MalformedActionPayloadTests` in `crank/tests/security/test_phase4_security.py`,
+  `test_prompt_injection_fixture_cannot_invoke_tools`.
 
 ### Proposed preference patches
 

@@ -424,6 +424,24 @@ class MalformedActionPayloadTests(TestCase):
                 }
             )
 
+    def test_ui_actions_cannot_carry_urls_search_or_unexposed_ids(self):
+        base = {
+            "message": "safe",
+            "cited_organization_ids": [],
+            "cited_job_listing_ids": [],
+            "preference_patch": None,
+        }
+        for action in (
+            {"type": "open_company", "organization_id": 1, "url": "https://evil.example"},
+            {"type": "propose_filters", "filters": {"search": "salary 250000"}},
+        ):
+            with pytest.raises(InvalidModelOutputError):
+                AssistantCompletion.from_json({**base, "actions": [action]})
+        self._assert_rejected(
+            {**base, "actions": [{"type": "open_company", "organization_id": 424242}]},
+            InvalidModelOutputError,
+        )
+
     def test_patch_keys_outside_validated_spec_fail_closed(self):
         # Unknown top-level patch operations.
         self._assert_rejected(
