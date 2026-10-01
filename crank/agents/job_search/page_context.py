@@ -14,8 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from crank.agents.job_search import tools
-
-MAX_NAME_CHARS = 120
+from crank.agents.job_search.context import MAX_NAME_CHARS
 MAX_MODEL_TEXT_CHARS = 2000
 
 
@@ -33,7 +32,10 @@ class Loaders:
 def _load_organizations(ids: list[int]) -> list[dict[str, Any]]:
     from crank.models.organization import Organization
 
-    rows = Organization.objects.filter(status=1, public=True, id__in=ids)
+    # Same visibility rule as the rankings page and /api/organization/<id>/:
+    # active (status=1). ``Organization.public`` means "publicly traded", not
+    # "visible", so filtering on it would drop companies the user can open.
+    rows = Organization.objects.filter(status=1, id__in=ids)
     return tools.normalize_organization_rows(list(rows))
 
 
@@ -94,6 +96,8 @@ class PageContext:
     page: int | None = None
     stale: bool = False
     unresolved: tuple[str, ...] = ()
+    preference_revision: int | None = None
+    result_generation: int | None = None
 
     def exposed_organization_ids(self) -> frozenset[int]:
         return frozenset(int(row["id"]) for row in self.organizations)
@@ -135,11 +139,26 @@ class PageContext:
             lines.append(
                 f"ranking_preset id={self.algorithm['id']} name={name(self.algorithm['name'])}"
             )
-        if self.stale:
-            lines.append(
-                "stale=True: the user's view is outdated; avoid result-dependent wording."
-            )
-        return "\n".join(lines)[:MAX_MODEL_TEXT_CHARS]
+        stale_line = (
+            "stale=True: the user's view is outdated; avoid result-dependent wording."
+            if self.stale
+            else None
+        )
+        # Only whole lines are ever dropped (never cut mid-quote), and the
+        # stale line is reserved so it always survives the cap.
+        budget = MAX_MODEL_TEXT_CHARS
+        if stale_line:
+            budget -= len(stale_line) + 1
+        kept: list[str] = []
+        used = 0
+        for line in lines:
+            if used + len(line) + 1 > budget:
+                continue
+            kept.append(line)
+            used += len(line) + 1
+        if stale_line:
+            kept.append(stale_line)
+        return "\n".join(kept)
 
     def echo(self) -> dict[str, Any]:
         return {
@@ -147,6 +166,8 @@ class PageContext:
             "surface": self.surface,
             "stale": self.stale,
             "unresolved": list(self.unresolved),
+            "preference_revision": self.preference_revision,
+            "result_generation": self.result_generation,
         }
 
 
@@ -187,15 +208,16 @@ def resolve(raw: dict[str, Any], *, user: Any, loaders: Loaders = DEFAULT_LOADER
         if algorithm is None:
             unresolved.append(f"algorithm_id:{raw['algorithm_id']}")
 
-    stale = False
+    # Any difference is stale: a server revision that moved backwards (reset,
+    # restore) is as outdated as one that moved forward. The server values are
+    # always read so they can be echoed to the client.
+    current_pref = loaders.preference_revision(user)
+    current_gen = loaders.result_generation(user)
     sent_pref = raw.get("preference_revision")
-    if sent_pref is not None:
-        current = loaders.preference_revision(user)
-        stale = stale or (current is not None and sent_pref < current)
     sent_gen = raw.get("result_generation")
-    if sent_gen is not None:
-        current = loaders.result_generation(user)
-        stale = stale or (current is not None and sent_gen < current)
+    stale = (
+        sent_pref is not None and current_pref is not None and sent_pref != current_pref
+    ) or (sent_gen is not None and current_gen is not None and sent_gen != current_gen)
 
     return PageContext(
         revision=raw["revision"],
@@ -207,4 +229,6 @@ def resolve(raw: dict[str, Any], *, user: Any, loaders: Loaders = DEFAULT_LOADER
         page=raw.get("page"),
         stale=stale,
         unresolved=tuple(unresolved),
+        preference_revision=current_pref,
+        result_generation=current_gen,
     )
