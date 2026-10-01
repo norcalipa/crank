@@ -30,6 +30,7 @@ ALL_ON = dict(
     USAJOBS_AUTH_KEY="usajobs-test-key",
     USAJOBS_USER_AGENT_EMAIL="ops@example.test",
     FIRECRAWL_API_KEY="fc-test-key",
+    FIRECRAWL_ENABLED=True,
 )
 
 
@@ -228,7 +229,75 @@ class StageTests(TestCase):
 
     def test_credentials_wait_when_adapter_unregistered(self):
         make_source(adapter_key="ghost")
-        self.assertEqual(stage(ops.readiness(), "credentials")["status"], ops.MET)
+        credentials = stage(ops.readiness(), "credentials")
+        self.assertEqual(credentials["status"], ops.PENDING)
+        self.assertEqual(credentials["summary"], "Waiting on step 2.")
+
+    def test_credentials_wait_when_only_some_adapter_unregistered(self):
+        make_source("ok")
+        make_source("ghost", adapter_key="ghost")
+        self.assertEqual(stage(ops.readiness(), "credentials")["status"], ops.PENDING)
+
+    def _firecrawl(self, url="https://remoteok.com/jobs"):
+        return make_source("fc", adapter_key="firecrawl-careers", base_url=url)
+
+    def test_adapter_unmet_when_firecrawl_enable_flag_is_off(self):
+        self._firecrawl()
+        for enabled, expected in ((False, ops.UNMET), (True, ops.MET)):
+            with self.subTest(enabled=enabled), override_settings(FIRECRAWL_ENABLED=enabled), patch.dict(
+                os.environ, {"FIRECRAWL_ENABLED": ""}
+            ):
+                result = ops.readiness()
+            adapter = stage(result, "adapter")
+            self.assertEqual(adapter["status"], expected)
+            if not enabled:
+                self.assertIn("FIRECRAWL_ENABLED is off", adapter["summary"])
+                self.assertIn("will not start", adapter["summary"])
+                self.assertEqual(result["next_step"]["key"], "adapter")
+                self.assertEqual(stage(result, "source_policy")["status"], ops.MET)
+
+    def test_adapter_unmet_for_firecrawl_subdomain_the_adapter_refuses(self):
+        self._firecrawl("https://www.remoteok.com/jobs")
+        adapter = stage(ops.readiness(), "adapter")
+        self.assertEqual(adapter["status"], ops.UNMET)
+        self.assertIn("not code-approved", adapter["summary"])
+
+    def test_adapter_unmet_for_usajobs_host_the_adapter_refuses(self):
+        make_source(base_url="https://www.usajobs.gov/api/search")
+        adapter = stage(ops.readiness(), "adapter")
+        self.assertEqual(adapter["status"], ops.UNMET)
+        self.assertIn("USAJOBS API host is not approved", adapter["summary"])
+
+    def test_firecrawl_blocker_for_wrong_adapter_key(self):
+        from crank.agents.jobs.firecrawl import FirecrawlCareersAdapter
+
+        class Src:
+            base_url = "https://remoteok.com/jobs"
+            adapter_key = "usajobs"
+
+        self.assertEqual(
+            FirecrawlCareersAdapter.startup_blockers(Src()), ["source is not cataloged for Firecrawl careers"]
+        )
+
+    def test_ready_stages_imply_every_registered_adapter_constructs(self):
+        urls = {"usajobs": "https://data.usajobs.gov/api/search", "firecrawl-careers": "https://remoteok.com/jobs"}
+        for key in REGISTRY.keys():
+            with self.subTest(adapter=key):
+                source = make_source(f"s-{key}", adapter_key=key, base_url=urls[key])
+                result = ops.readiness()
+                self.assertEqual(stage(result, "adapter")["status"], ops.MET)
+                self.assertEqual(stage(result, "credentials")["status"], ops.MET)
+                REGISTRY.get(key)(source)
+                source.delete()
+
+    def test_adapter_stage_unmet_exactly_when_adapter_refuses_to_start(self):
+        from crank.agents.jobs.errors import JobSourceDisabled
+
+        source = self._firecrawl()
+        with override_settings(FIRECRAWL_ENABLED=False), patch.dict(os.environ, {"FIRECRAWL_ENABLED": ""}):
+            self.assertEqual(stage(ops.readiness(), "adapter")["status"], ops.UNMET)
+            with self.assertRaises(JobSourceDisabled):
+                REGISTRY.get("firecrawl-careers")(source)
 
     def test_capability_parts_each_block(self):
         cases = [
@@ -248,7 +317,6 @@ class StageTests(TestCase):
 
     def test_capability_met_absent_switch_counts_enabled(self):
         self.assertEqual(stage(ops.readiness(), "capability")["status"], ops.MET)
-        self.assertTrue(ops.pipeline_gate_enabled())
 
     def test_capability_report_issue_is_surfaced(self):
         class Status:
@@ -318,6 +386,39 @@ class StageTests(TestCase):
         AgentRun.objects.all().delete()
         make_run(AgentRun.Status.SUCCEEDED)
         self.assertEqual(stage(ops.readiness(), "consumption")["status"], ops.MET)
+
+    def test_consumption_ignores_skipped_rows(self):
+        make_run(AgentRun.Status.SUCCEEDED, age_minutes=240)
+        make_run(AgentRun.Status.PENDING, age_minutes=90, finished=False)
+        make_run(AgentRun.Status.SKIPPED, age_minutes=1)
+        result = ops.readiness()
+        consumption = stage(result, "consumption")
+        self.assertEqual(consumption["status"], ops.UNMET)
+        self.assertIn("past its TTL", consumption["summary"])
+        self.assertFalse(result["all_met"])
+
+    def test_consumption_with_only_skipped_rows_is_pending(self):
+        make_run(AgentRun.Status.SKIPPED, age_minutes=1)
+        self.assertEqual(stage(ops.readiness(), "consumption")["status"], ops.PENDING)
+
+    def test_skipped_row_does_not_replace_a_failed_run(self):
+        make_run(AgentRun.Status.FAILED, age_minutes=30, error="boom")
+        make_run(AgentRun.Status.SKIPPED, age_minutes=1)
+        self.assertEqual(stage(ops.readiness(), "consumption")["status"], ops.UNMET)
+
+    def test_stalled_running_run_is_unmet_and_fresh_one_is_met(self):
+        make_run(AgentRun.Status.RUNNING, age_minutes=600, finished=False)
+        stalled = stage(ops.readiness(), "consumption")
+        self.assertEqual(stalled["status"], ops.UNMET)
+        self.assertIn("stalled", stalled["summary"])
+        AgentRun.objects.all().delete()
+        make_run(AgentRun.Status.RUNNING, age_minutes=5, finished=False)
+        self.assertEqual(stage(ops.readiness(), "consumption")["status"], ops.MET)
+
+    def test_active_run_takes_precedence_over_newer_finished_run(self):
+        make_run(AgentRun.Status.PENDING, age_minutes=90, finished=False)
+        make_run(AgentRun.Status.SUCCEEDED, age_minutes=1)
+        self.assertEqual(stage(ops.readiness(), "consumption")["status"], ops.UNMET)
 
     def test_inventory_states(self):
         source = make_source()
@@ -461,24 +562,6 @@ class StageTests(TestCase):
         self.assertNotIn("abc.def.ghi", "\n".join(logs.output))
 
     def test_next_step_ordering(self):
-        with patch.dict(
-            ops._STAGE_FUNCS,
-            {
-                key: (lambda status: lambda ctx: ops._result("adapter", status, "x"))(status)
-                for key, status in {
-                    "source_policy": ops.MET,
-                    "adapter": ops.PENDING,
-                    "credentials": ops.UNMET,
-                    "capability": ops.UNMET,
-                    "scheduler": ops.MET,
-                    "consumption": ops.MET,
-                    "inventory": ops.MET,
-                    "employers": ops.MET,
-                    "matches": ops.MET,
-                }.items()
-            },
-        ):
-            pass
         statuses = {k: ops.MET for k in ops.STAGE_KEYS}
 
         def run(overrides):
@@ -493,11 +576,35 @@ class StageTests(TestCase):
         self.assertEqual(first_unmet["next_step"]["key"], "credentials")
         only_pending = run({"consumption": ops.PENDING, "matches": ops.PENDING})
         self.assertEqual(only_pending["next_step"]["key"], "consumption")
-        unknown_only = run({"inventory": ops.UNKNOWN, "employers": ops.ATTENTION})
+        attention_beats_unknown = run({"inventory": ops.UNKNOWN, "employers": ops.ATTENTION})
+        self.assertEqual(attention_beats_unknown["next_step"]["key"], "employers")
+        unknown_only = run({"inventory": ops.UNKNOWN})
         self.assertEqual(unknown_only["next_step"]["key"], "inventory")
-        done = run({"employers": ops.ATTENTION})
+        earlier_attention = run({"inventory": ops.ATTENTION, "matches": ops.UNMET})
+        self.assertEqual(earlier_attention["next_step"]["key"], "inventory")
+        attention = run({"employers": ops.ATTENTION})
+        self.assertEqual(attention["next_step"]["key"], "employers")
+        self.assertFalse(attention["all_met"])
+        self.assertEqual((attention["met_count"], attention["attention_count"]), (8, 1))
+        done = run({})
         self.assertIsNone(done["next_step"])
         self.assertTrue(done["all_met"])
+        self.assertEqual((done["met_count"], done["attention_count"]), (9, 0))
+
+    def test_unresolved_employer_attention_becomes_next_step_with_guidance(self):
+        source = make_source()
+        org = Organization.objects.create(name="Org")
+        listing = make_listing(source, organization=org)
+        UnresolvedEmployer.objects.create(
+            listing=listing, employer_name="Other", reason=UnresolvedEmployer.Reason.NO_MATCH
+        )
+        employers = stage(ops.readiness(), "employers")
+        self.assertEqual(employers["status"], ops.ATTENTION)
+        with patch.dict(ops._STAGE_FUNCS, {k: (lambda k: lambda ctx: ops._result(k, ops.MET, "x"))(k) for k in ops.STAGE_KEYS if k != "employers"}):
+            result = ops.readiness()
+        self.assertEqual(result["next_step"]["key"], "employers")
+        self.assertFalse(result["all_met"])
+        self.assertTrue(result["next_step"]["remediation"])
 
 
 @override_settings(**ALL_ON)

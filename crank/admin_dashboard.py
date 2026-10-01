@@ -145,7 +145,7 @@ def _abbrev_id(value):
     return f"{text[:8]}…{text[-5:]}"
 
 
-def _pipeline_ownership_state():
+def _pipeline_ownership_state(ctx=None):
     """Derive the operator-facing pipeline ownership & queue state.
 
     One consolidated, truthful presentation (issue #462 visual critique):
@@ -157,15 +157,12 @@ def _pipeline_ownership_state():
     stale_after = timedelta(
         seconds=int(getattr(settings, "AGENT_RUN_STALE_AFTER_SECONDS", 3600))
     )
+    ctx = ctx or operations_readiness.snapshot()
     runs = AgentRun.objects.filter(run_type=AgentRun.RunType.JOB_PIPELINE)
-    active = runs.filter(
-        status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING]
-    ).order_by("id").first()
-    latest = runs.order_by("-created", "-id").first()
-
-    pending_qs = runs.filter(status=AgentRun.Status.PENDING)
-    pending_count = pending_qs.count()
-    oldest_pending = pending_qs.order_by("created").first()
+    active = ctx.active_run
+    latest = ctx.latest_run
+    pending_count = ctx.pending_count
+    oldest_pending = ctx.oldest_pending
 
     # A skip attempt recorded after the current holder claimed the slot is
     # persisted evidence of an ownership conflict (a second invocation tried
@@ -432,13 +429,9 @@ def _aggregate_counts(ctx=None):
     # queued run is not proof of work: surface the count and the age of the
     # oldest queued row so staff can see missing consumption instead of
     # indefinite pending work.
-    pending_qs = AgentRun.objects.filter(
-        run_type=AgentRun.RunType.JOB_PIPELINE,
-        status=AgentRun.Status.PENDING,
-    ).order_by("created")
-    pending_count = pending_qs.count()
+    pending_count = ctx.pending_count
     pending_run_info = None
-    oldest_pending = pending_qs.first()
+    oldest_pending = ctx.oldest_pending
     if oldest_pending is not None and oldest_pending.created is not None:
         age_seconds = max(
             0, int((timezone.now() - oldest_pending.created).total_seconds())
@@ -480,12 +473,8 @@ def _readiness_gates(ctx=None):
     ]
     sources_missing_credentials = sum(1 for names in missing if names)
 
-    parts = operations_readiness.capability_parts()
-
-    active_run = AgentRun.objects.filter(
-        run_type=AgentRun.RunType.JOB_PIPELINE,
-        status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING],
-    ).order_by("id").first()
+    parts = ctx.capability_parts
+    active_run = ctx.active_run
 
     return {
         "adapter_registered": adapter_count > 0 and unregistered == 0,
@@ -535,8 +524,16 @@ def _readiness_context(ctx, active_run=None):
                 "If it is not claimed within the TTL, confirm the job-pipeline "
                 "CronJob is unsuspended (kubectl)."
             )
-    readiness["met_count"] = sum(1 for s in readiness["stages"] if s["status"] == "met")
     return readiness
+
+
+_FALLBACK_ACTIONS = {
+    "primary": None,
+    "queue_disabled": False,
+    "queue_reason": "",
+    "retry_disabled": False,
+    "retry_reason": "",
+}
 
 
 def _action_state(readiness, pipeline, source_total):
@@ -590,6 +587,15 @@ def _progress_context(ctx):
             run["label"] = "Queued — waiting for a consumer"
         run["tone"] = RUN_STATUS_TONES.get(run["status"], "info")
         run["icon"] = RUN_STATUS_ICONS.get(run["status"], "clock")
+        if run["status"] == "succeeded" and run.get("deadline_reached"):
+            run["label"] = "Stopped at deadline"
+            run["tone"] = "warning"
+            run["icon"] = "alert"
+            run["deadline_note"] = (
+                f"Stopped at its deadline ({run['sources_deferred']} sources deferred); the remainder resumes next run."
+                if run.get("sources_deferred")
+                else "Stopped at its deadline; the remainder resumes next run."
+            )
     return progress
 
 
@@ -764,19 +770,22 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
 
     def dashboard_view(self, request):
         snapshot = operations_readiness.snapshot()
-        pipeline = _pipeline_ownership_state()
+        pipeline = _pipeline_ownership_state(snapshot)
         readiness = _readiness_context(
             snapshot, pipeline["state"] in ("queued", "claimed", "conflict")
         )
         context = {
             **self.admin_site.each_context(request),
             "title": "Job Retrieval Operations",
-            "counts": _aggregate_counts(snapshot),
-            "gates": _readiness_gates(snapshot),
+            "counts": _safe_section("counts", lambda: _aggregate_counts(snapshot)),
+            "gates": _safe_section("gates", lambda: _readiness_gates(snapshot)),
             "pipeline": pipeline,
             "readiness": readiness,
             "error_time": timezone.now().strftime("%H:%M UTC"),
-            "actions": _action_state(readiness, pipeline, snapshot.source_counts["total"]),
+            "actions": _safe_section(
+                "actions", lambda: _action_state(readiness, pipeline, snapshot.source_counts["total"])
+            )
+            or _FALLBACK_ACTIONS,
             "sources": _safe_section("sources", lambda: _sources_context(snapshot)),
             "progress": _safe_section("run progress", lambda: _progress_context(snapshot)),
             "backlog": _safe_section("backlog", lambda: _backlog_context(snapshot)),

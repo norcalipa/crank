@@ -20,6 +20,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db.models import Count, Min, OuterRef, Q, Subquery
+from django.db.models.functions import Coalesce
 from django.urls import reverse
 from django.utils import timezone
 
@@ -35,6 +36,7 @@ from crank.models.preference import UserPreference
 from crank.models.publication import PublicationEvent
 from crank.services import inventory_health, match_recompute, match_results, monitoring, publication
 from crank.services.agent_runs import sanitize_error
+from crank.services.job_pipeline import COUNT_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -57,17 +59,19 @@ STAGES = (
 )
 STAGE_KEYS = tuple(key for key, _label, _anchor in STAGES)
 
-#: ``AgentRun.counts`` keys shown per stage of a completed run, in order.
+#: ``AgentRun.counts`` keys shown per stage of a completed run, derived from the
+#: pipeline's own ``COUNT_KEYS`` so a new counter cannot be silently dropped.
 RUN_COUNT_GROUPS = (
-    ("Sources", ("sources_total", "sources_succeeded", "sources_failed", "sources_skipped", "sources_deferred")),
-    (
-        "Listings",
-        ("listings_ingested", "listings_updated", "listings_closed", "listings_expired", "listings_deleted"),
-    ),
-    ("Employers", ("employers_resolved", "employers_unresolved")),
+    ("Sources", tuple(k for k in COUNT_KEYS if k.startswith("sources_"))),
+    ("Listings", tuple(k for k in COUNT_KEYS if k.startswith("listings_"))),
+    ("Employers", tuple(k for k in COUNT_KEYS if k.startswith("employers_"))),
     (
         "Matches",
-        ("users_total", "users_succeeded", "users_failed", "matches_persisted", "stale_discarded", "duplicate_skipped"),
+        tuple(
+            k
+            for k in COUNT_KEYS
+            if k.startswith(("users_", "matches_")) or k in ("stale_discarded", "duplicate_skipped")
+        ),
     ),
 )
 
@@ -205,11 +209,56 @@ class _Context:
         def build():
             return (
                 AgentRun.objects.filter(run_type=AgentRun.RunType.JOB_PIPELINE)
+                .exclude(status=AgentRun.Status.SKIPPED)
                 .order_by("-created", "-id")
                 .first()
             )
 
         return self._memo("latest_run", build)
+
+    @property
+    def active_run(self):
+        """Oldest RUNNING/PENDING pipeline run: the one that owns the slot."""
+
+        def build():
+            return (
+                AgentRun.objects.filter(
+                    run_type=AgentRun.RunType.JOB_PIPELINE,
+                    status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING],
+                )
+                .order_by("id")
+                .first()
+            )
+
+        return self._memo("active_run", build)
+
+    @property
+    def pending_count(self):
+        return self._memo(
+            "pending_count",
+            lambda: AgentRun.objects.filter(
+                run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.PENDING
+            ).count(),
+        )
+
+    @property
+    def oldest_pending(self):
+        return self._memo(
+            "oldest_pending",
+            lambda: AgentRun.objects.filter(
+                run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.PENDING
+            )
+            .order_by("created")
+            .first(),
+        )
+
+    @property
+    def capability_parts(self):
+        return self._memo("capability_parts", capability_parts)
+
+    @property
+    def match_read_enabled(self):
+        return self._memo("match_read_enabled", lambda: bool(match_results.read_enabled()))
 
     @property
     def health(self):
@@ -285,24 +334,36 @@ def _stage_adapter(ctx):
         return _waiting("adapter", "source_policy")
     unregistered = [s.name for s in ctx.live_sources if REGISTRY.get(s.adapter_key) is None]
     bad_url = []
+    blocked = {}
     for source in ctx.live_sources:
         try:
             validate_job_url(source.base_url)
         except Exception:
             bad_url.append(source.name)
-    if not unregistered and not bad_url:
-        return _result("adapter", MET, "Every live source has a registered adapter and an allowlisted HTTPS URL.")
+            continue
+        adapter_cls = REGISTRY.get(source.adapter_key)
+        if adapter_cls is not None:
+            blockers = adapter_cls.startup_blockers(source)
+            if blockers:
+                blocked[source.name] = blockers
+    if not unregistered and not bad_url and not blocked:
+        return _result("adapter", MET, "Every live source has a registered adapter that can start, and an allowlisted HTTPS URL.")
     parts = []
     if unregistered:
         parts.append(f"no registered adapter: {_names(unregistered)}")
     if bad_url:
         parts.append(f"URL not allowlisted HTTPS: {_names(bad_url)}")
+    if blocked:
+        parts.append(
+            "adapter will not start: "
+            + "; ".join(f"{name} ({', '.join(issues)})" for name, issues in sorted(blocked.items())[:_NAME_LIST_LIMIT])
+        )
     return _result(
         "adapter",
         UNMET,
         "; ".join(parts),
-        "Correct the adapter key or base URL on the source row, or disable the source. "
-        f"Registered adapters: {', '.join(REGISTRY.keys())}.",
+        "Correct the adapter key or base URL on the source row, turn on the named enable setting in deployment config, "
+        f"or disable the source. Registered adapters: {', '.join(REGISTRY.keys())}.",
         SOURCES_LINK,
     )
 
@@ -318,6 +379,8 @@ def missing_settings(adapter_key):
 def _stage_credentials(ctx):
     if not ctx.live_sources:
         return _waiting("credentials", "source_policy")
+    if any(REGISTRY.get(source.adapter_key) is None for source in ctx.live_sources):
+        return _waiting("credentials", "adapter")
     missing = {}
     for source in ctx.live_sources:
         names = missing_settings(source.adapter_key)
@@ -343,14 +406,10 @@ def capability_parts():
     }
 
 
-def pipeline_gate_enabled():
-    return all(capability_parts().values())
-
-
 def _stage_capability(ctx):
     from crank.capability import capability_report
 
-    parts = capability_parts()
+    parts = ctx.capability_parts
     off = []
     if not parts["agent_run_enabled"]:
         off.append("AGENT_RUN_ENABLED is off")
@@ -376,16 +435,36 @@ def _stage_capability(ctx):
     )
 
 
+def _raw_counts(run):
+    return run.counts if isinstance(run.counts, dict) else {}
+
+
+def _hit_deadline(run):
+    return _raw_counts(run).get("deadline_reached") is True
+
+
+def _count(run, key):
+    value = _raw_counts(run).get(key)
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
 def _stage_scheduler(ctx):
     hours = _freshness_hours()
     run = ctx.last_finished_run
     if run is not None and ctx.now - run.finished_at <= timedelta(hours=hours):
-        return _result(
-            "scheduler",
-            MET,
-            f"A pipeline run finished {format_age(_age_seconds(run.finished_at, ctx.now))} ago.",
-            link=("crank_agentrun_changelist", "?run_type__exact=job_pipeline", "Agent Runs"),
-        )
+        age = format_age(_age_seconds(run.finished_at, ctx.now))
+        link = ("crank_agentrun_changelist", "?run_type__exact=job_pipeline", "Agent Runs")
+        if _hit_deadline(run):
+            deferred = _count(run, "sources_deferred")
+            return _result(
+                "scheduler",
+                ATTENTION,
+                f"A pipeline run finished {age} ago but stopped at its deadline"
+                + (f" ({_plural(deferred, 'source')} deferred)." if deferred else "."),
+                "Later sources or users were not processed. Check the run's counts; the next tick resumes the remainder.",
+                link,
+            )
+        return _result("scheduler", MET, f"A pipeline run finished {age} ago.", link=link)
     return _result(
         "scheduler",
         UNMET,
@@ -397,13 +476,11 @@ def _stage_scheduler(ctx):
 
 
 def _stage_consumption(ctx):
-    run = ctx.latest_run
     ttl = timedelta(seconds=int(getattr(settings, "AGENT_RUN_STALE_AFTER_SECONDS", 3600)))
     link = ("crank_agentrun_changelist", "?run_type__exact=job_pipeline", "Agent Runs")
-    if run is None:
-        return _result("consumption", PENDING, "No pipeline run has been queued or consumed yet.", link=link)
-    if run.status == AgentRun.Status.PENDING:
-        if run.created and ctx.now - run.created > ttl:
+    active = ctx.active_run
+    if active is not None and active.status == AgentRun.Status.PENDING:
+        if active.created and ctx.now - active.created > ttl:
             return _result(
                 "consumption",
                 UNMET,
@@ -418,6 +495,20 @@ def _stage_consumption(ctx):
             "No action yet; if it is not consumed before the TTL, check the CronJob.",
             link,
         )
+    if active is not None:
+        started = active.started_at or active.created
+        if started and ctx.now - started > ttl:
+            return _result(
+                "consumption",
+                UNMET,
+                "A running pipeline run has not finished within its TTL and is likely stalled.",
+                "Open the run; the next claim reclaims it as stale. Confirm the CronJob and consumer are healthy.",
+                link,
+            )
+        return _result("consumption", MET, "A run has been claimed and is in progress.", link=link)
+    run = ctx.latest_run
+    if run is None:
+        return _result("consumption", PENDING, "No pipeline run has been queued or consumed yet.", link=link)
     if run.status == AgentRun.Status.FAILED:
         reason = (run.error_summary or "").lower()
         kind = (
@@ -434,8 +525,6 @@ def _stage_consumption(ctx):
             "Inspect the run's sanitized summary, then retry from Actions once the cause is fixed.",
             link,
         )
-    if run.status == AgentRun.Status.RUNNING:
-        return _result("consumption", MET, "A run has been claimed and is in progress.", link=link)
     return _result("consumption", MET, "The most recent run was consumed and finished.", link=link)
 
 
@@ -508,27 +597,42 @@ def _stage_employers(ctx):
 
 def _stage_matches(ctx):
     link = ("crank_jobmatch_changelist", "", "Job Matches")
-    if match_results.read_enabled():
+    if ctx.match_read_enabled:
         counts = match_recompute.pending_counts(0)
         dirty = counts["preference_dirty"]
         lag = ctx.match_lag
-        max_age = max(1, int(getattr(settings, "MATCH_RECOMPUTE_MAX_AGE_HOURS", 24))) * 3600
-        if dirty == 0 and lag <= max_age:
-            return _result("matches", MET, "Every user's committed match generation is current.", link=link)
+        max_hours = max(1, int(getattr(settings, "MATCH_RECOMPUTE_MAX_AGE_HOURS", 24)))
+        tier_names = (
+            "preference_dirty",
+            "generation_dirty_data_stale",
+            "generation_dirty_version_mismatch",
+            "generation_dirty_interrupted",
+            "generation_dirty_age_stale",
+        )
         tiers = ", ".join(
             f"{name.replace('generation_dirty_', '').replace('_', ' ')}: {counts[name]}"
-            for name in (
-                "preference_dirty",
-                "generation_dirty_data_stale",
-                "generation_dirty_version_mismatch",
-                "generation_dirty_interrupted",
-                "generation_dirty_age_stale",
-            )
+            for name in tier_names
+            if counts[name]
         )
+        if dirty == 0 and lag <= max_hours * 3600 and not tiers:
+            return _result(
+                "matches",
+                MET,
+                f"No user has preference changes pending, and no user's committed matches are stale, mismatched or interrupted; publication-to-match lag is within {max_hours}h.",
+                link=link,
+            )
+        if dirty == 0 and lag <= max_hours * 3600:
+            return _result(
+                "matches",
+                ATTENTION,
+                f"Some users' committed matches are not current ({tiers}); publication-to-match lag {format_age(lag)}.",
+                "Run the recompute drain so those users are republished; see the rollout order.",
+                link,
+            )
         return _result(
             "matches",
             UNMET,
-            f"Committed matches are behind ({tiers}); publication-to-match lag {format_age(lag)}.",
+            f"Committed matches are behind ({tiers or 'none pending'}); publication-to-match lag {format_age(lag)}.",
             "Enable MATCH_RECOMPUTE_ENABLED and run the recompute drain; see the rollout order.",
             link,
         )
@@ -582,12 +686,19 @@ def readiness(now=None, ctx=None):
         stage["position"] = len(stages) + 1
         stages.append(stage)
 
-    next_step = None
-    for wanted in (UNMET, PENDING, UNKNOWN):
-        next_step = next((s for s in stages if s["status"] == wanted), None)
-        if next_step:
-            break
-    return {"stages": stages, "next_step": next_step, "all_met": next_step is None}
+    # Attention is never "met": the first unmet-or-attention stage in order is
+    # the next step; pending (waiting on upstream) and unknown only follow.
+    next_step = next((s for s in stages if s["status"] in (UNMET, ATTENTION)), None)
+    for wanted in (PENDING, UNKNOWN):
+        if next_step is None:
+            next_step = next((s for s in stages if s["status"] == wanted), None)
+    return {
+        "stages": stages,
+        "next_step": next_step,
+        "all_met": all(s["status"] == MET for s in stages),
+        "met_count": sum(1 for s in stages if s["status"] == MET),
+        "attention_count": sum(1 for s in stages if s["status"] == ATTENTION),
+    }
 
 
 def publication_match_lag_seconds(now=None):
@@ -600,7 +711,7 @@ def publication_match_lag_seconds(now=None):
     states = MatchResultState.objects.filter(current_generation__isnull=False)
     if not states.exists():
         return 0
-    min_revision = states.aggregate(m=Min("data_revision"))["m"] or 0
+    min_revision = states.aggregate(m=Min(Coalesce("data_revision", 0)))["m"] or 0
     created = (
         PublicationEvent.objects.filter(id__gt=min_revision).order_by("id").values_list("created_at", flat=True).first()
     )
@@ -641,7 +752,7 @@ def backlog(now=None, ctx=None):
             "lag_seconds": ctx.match_lag,
             "users_without_generation": without_generation,
             "recompute_enabled": bool(match_recompute.recompute_enabled()),
-            "read_enabled": bool(match_results.read_enabled()),
+            "read_enabled": ctx.match_read_enabled,
         },
     }
 
@@ -716,7 +827,9 @@ def run_progress(now=None, ctx=None):
     completed_run = ctx.last_finished_run
     completed = _run_summary(completed_run, now)
     if completed is not None:
-        raw = completed_run.counts if isinstance(completed_run.counts, dict) else {}
+        raw = _raw_counts(completed_run)
+        completed["deadline_reached"] = _hit_deadline(completed_run)
+        completed["sources_deferred"] = _count(completed_run, "sources_deferred")
         completed["stages"] = [
             {
                 "label": label,
@@ -748,7 +861,6 @@ __all__ = [
     "format_age",
     "missing_settings",
     "outbox_backlog",
-    "pipeline_gate_enabled",
     "publication_match_lag_seconds",
     "readiness",
     "run_progress",

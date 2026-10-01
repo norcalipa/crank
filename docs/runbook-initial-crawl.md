@@ -177,7 +177,7 @@ is present, never its value.
 | Employers resolved | Step 6: verify listing counts |
 | Current matches | [Match recompute: rollout order](match-recompute.md#rollout-order) |
 
-A queued run is shown as "Queued - not yet consumed" with no counts until the
+A queued run is shown as "Queued — waiting for a consumer" with no counts until the
 pipeline consumer claims it. "Run progress" reports the last completed run's
 counts, and "Backlog" reports unresolved employers, pending company-profile
 review, the publication outbox and match lag.

@@ -328,10 +328,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
   #jro-page .jro-diag > summary::before { content: "\25B8"; color: var(--jro-text-quiet); }
   #jro-page .jro-diag[open] > summary::before { content: "\25BE"; }
   #jro-page .jro-diag[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-  #jro-page .jro-diag > summary h2 {
-    margin: 0; padding: 0; background: none; border: 0;
-    color: var(--jro-text); font-size: 14px; font-weight: 600; text-transform: none; letter-spacing: 0;
-  }
+  #jro-page .jro-diag > summary .jro-diag-label { color: var(--jro-text); font-size: 14px; font-weight: 600; }
   #jro-page .jro-diag-tag { margin-left: auto; font-size: 12px; color: var(--jro-text-quiet); }
   #jro-page .jro-diag > .jro-card { margin-top: 0; border-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
   @media (max-width: 480px) {
@@ -500,7 +497,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     <h2 id="jro-readiness-heading">End-to-end readiness</h2>
     {% if readiness %}
     {% if readiness.next_step %}
-    <p class="jro-summary-line jro-note">{{ readiness.met_count }} of {{ readiness.stages|length }} steps met.</p>
+    <p class="jro-summary-line jro-note">{{ readiness.met_count }} of {{ readiness.stages|length }} steps met{% if readiness.attention_count %} · {{ readiness.attention_count }} needs attention{% endif %}.</p>
     {% include "admin/_job_retrieval_stages.html" %}
     {% else %}
     <details class="jro-details jro-card">
@@ -588,6 +585,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
         <dt>{{ group.label }}</dt>
         <dd>{% for item in group.counts %}{{ item.label }}: <strong>{{ item.value }}</strong>{% if not forloop.last %} · {% endif %}{% empty %}<em>No counters recorded</em>{% endfor %}</dd>
         {% endfor %}
+        {% if completed.deadline_note %}<dt>Deadline</dt><dd>{{ completed.deadline_note }}</dd>{% endif %}
         {% if completed.error_summary %}<dt>Sanitized reason</dt><dd>{{ completed.error_summary }}</dd>{% endif %}
       </dl>
       <ul class="jro-links">
@@ -621,6 +619,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
         <dt>{{ group.label }}</dt>
         <dd>{% for item in group.counts %}{{ item.label }}: <strong>{{ item.value }}</strong>{% if not forloop.last %} · {% endif %}{% empty %}<em>No counters recorded</em>{% endfor %}</dd>
         {% endfor %}
+        {% if completed.deadline_note %}<dt>Deadline</dt><dd>{{ completed.deadline_note }}</dd>{% endif %}
         {% if completed.error_summary %}<dt>Sanitized reason</dt><dd>{{ completed.error_summary }}</dd>{% endif %}
       </dl>
       <ul class="jro-links">
@@ -715,8 +714,11 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
   </section>
 
   {# ── Inventory aggregates ── #}
+  <section class="module jro-section" aria-labelledby="jro-aggregates-heading">
+  <h2 id="jro-aggregates-heading">Inventory aggregates</h2>
+  {% if counts %}
   <details class="jro-diag">
-    <summary><h2 id="jro-aggregates-heading">Inventory aggregates</h2><span class="jro-diag-tag">Diagnostic</span></summary>
+    <summary><span class="jro-diag-label">Show details</span><span class="jro-diag-tag">Diagnostic</span></summary>
     <div class="jro-card">
     <dl class="jro-fields">
       <dt>Configured job sources</dt><dd><strong>{{ counts.configured }}</strong></dd>
@@ -777,10 +779,17 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     </dl>
     </div>
   </details>
+  {% else %}
+  <p class="jro-error" role="alert"><strong>Could not compute inventory aggregates</strong> — see server logs (at {{ error_time }}).</p>
+  {% endif %}
+  </section>
 
   {# ── Readiness Gates ── #}
+  <section class="module jro-section" aria-labelledby="jro-gates-heading">
+  <h2 id="jro-gates-heading">Readiness gates</h2>
+  {% if gates %}
   <details class="jro-diag">
-    <summary><h2 id="jro-gates-heading">Readiness gates</h2><span class="jro-diag-tag">Diagnostic</span></summary>
+    <summary><span class="jro-diag-label">Show details</span><span class="jro-diag-tag">Diagnostic</span></summary>
     <div class="jro-card">
     <dl class="jro-fields">
       <dt>Adapter registered</dt><dd>{% if gates.adapter_registered %}
@@ -819,6 +828,10 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     </dl>
     </div>
   </details>
+  {% else %}
+  <p class="jro-error" role="alert"><strong>Could not compute readiness gates</strong> — see server logs (at {{ error_time }}).</p>
+  {% endif %}
+  </section>
 
   {# ── Admin Links ── #}
   <section class="module jro-section" aria-labelledby="jro-links-heading">

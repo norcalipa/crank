@@ -1,7 +1,7 @@
 {% comment %}
 Copyright (c) 2024 Isaac Adams
 Licensed under the MIT License. See LICENSE file in the project root for full license information.
-{% endcomment %}{% load jro_time %}<ol class="jro-stages">
+{% endcomment %}{% load jro_time %}<ol class="jro-stages" role="list">
   {% for stage in readiness.stages %}
   <li class="jro-stage jro-stage--{{ stage.tone }}{% if stage.key == readiness.next_step.key %} jro-stage--next{% endif %}" data-stage="{{ stage.key }}" data-status="{{ stage.status }}"{% if stage.key == readiness.next_step.key %} aria-current="step"{% endif %}>
     <div class="jro-stage-head">
