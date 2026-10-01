@@ -14,7 +14,7 @@ async function askAboutCompany(page: Page): Promise<void> {
     await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await page.getByTestId('company-chat-cta').click();
-    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.locator('.popup-details')).toHaveCount(0);
     await expect(page.locator(STRIP)).toContainText(`About ${COMPANY}`);
 }
 

@@ -11,8 +11,9 @@ const SALARY = /Minimum base salary/;
 
 async function openEditor(page: Page): Promise<void> {
     await page.goto('/chat/');
-    // /chat/ opens the assistant dialog, whose sidebar variant hosts the editor.
-    const section = page.getByTestId('priorities-sidebar');
+    // Desktop shows the main variant; narrow viewports show the sidebar variant.
+    const desktop = (page.viewportSize()?.width ?? 1280) >= 768;
+    const section = page.getByTestId(desktop ? 'priorities-main' : 'priorities-sidebar');
     await expect(section).toBeVisible();
     await section.getByRole('button', {name: /Edit priorities|Add priorities/}).click();
     await expect(page.getByRole('form', {name: 'Edit priorities'})).toBeVisible();
@@ -34,11 +35,11 @@ test.describe('priorities editor (issue #480)', () => {
         await login(page, PREFS_USER, E2E_PASSWORD);
         // Start every journey from the defaults.
         await page.goto('/chat/');
-        const reset = page.getByTestId('priorities-sidebar').getByRole('button', {name: 'Reset priorities'});
+        const reset = page.getByTestId('priorities-main').getByRole('button', {name: 'Reset priorities'});
         if (await reset.isVisible().catch(() => false)) {
             await reset.click();
-            await page.getByTestId('priorities-sidebar').getByRole('button', {name: 'Reset priorities'}).click();
-            await expect(page.getByTestId('priorities-sidebar').getByRole('group', {name: 'Confirm reset'})).toHaveCount(0);
+            await page.getByTestId('priorities-main').getByRole('button', {name: 'Reset priorities'}).click();
+            await expect(page.getByTestId('priorities-main').getByRole('group', {name: 'Confirm reset'})).toHaveCount(0);
         }
     });
 
@@ -77,7 +78,7 @@ test.describe('priorities editor (issue #480)', () => {
     test('resetting priorities is separate from starting a new conversation', async ({page}) => {
         await applySalary(page, '140000');
         await page.getByRole('button', {name: 'Done'}).click();
-        await page.getByTestId('priorities-sidebar').getByRole('button', {name: 'Reset priorities'}).click();
+        await page.getByTestId('priorities-main').getByRole('button', {name: 'Reset priorities'}).click();
         await expect(page.getByText(/Your conversations are not changed/)).toBeVisible();
         await page.getByRole('button', {name: 'Keep priorities'}).click();
         await expect(page.getByRole('button', {name: 'New conversation'}).first()).toBeVisible();
@@ -96,9 +97,11 @@ test.describe('priorities signed out (issue #480)', () => {
         requireDjangoTier();
     });
 
-    test('the chat page offers sign in instead of the editor', async ({page}) => {
+    test('the chat page offers one sign in instead of the editor', async ({page}) => {
         await page.goto('/chat/');
-        await expect(page.getByTestId('priorities-signed-out')).toBeVisible();
+        await expect(page.getByTestId('job-search-sign-in-cta')).toBeVisible();
+        await expect(page.getByTestId('priorities-main')).toHaveCount(0);
+        await expect(page.getByTestId('priorities-sidebar')).toHaveCount(0);
         await expect(page.getByRole('button', {name: /Edit priorities/})).toHaveCount(0);
     });
 });
