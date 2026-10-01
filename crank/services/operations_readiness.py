@@ -182,6 +182,23 @@ class _Context:
         return self._memo("live_sources", build)
 
     @property
+    def live_adapter_counts(self):
+        """``{adapter_key: live source count}`` over every live source (one query, bounded by adapter count)."""
+
+        def build():
+            rows = (
+                JobSourceCatalog.objects.filter(
+                    approval_state=JobSourceCatalog.ApprovalState.APPROVED, enabled=True
+                )
+                .order_by()
+                .values("adapter_key")
+                .annotate(n=Count("pk"))
+            )
+            return {row["adapter_key"]: row["n"] for row in rows}
+
+        return self._memo("live_adapter_counts", build)
+
+    @property
     def listings(self):
         def build():
             live = Q(
@@ -328,7 +345,7 @@ def _waiting(key, upstream):
 
 def _stage_source_policy(ctx):
     counts = ctx.source_counts
-    live = len(ctx.live_sources)
+    live = counts["live"]
     if live:
         return _result("source_policy", MET, f"{_plural(live, 'source')} approved and enabled in the database.")
     if not counts["total"]:
@@ -352,6 +369,10 @@ def _stage_adapter(ctx):
     if not ctx.live_sources:
         return _waiting("adapter", "source_policy")
     unregistered = [s.name for s in ctx.live_sources if REGISTRY.get(s.adapter_key) is None]
+    unregistered_total = sum(n for key, n in ctx.live_adapter_counts.items() if REGISTRY.get(key) is None)
+    unlisted = unregistered_total - len(unregistered)
+    live_total = ctx.source_counts["live"]
+    partial = live_total > len(ctx.live_sources)
     bad_url = []
     blocked = {}
     for source in ctx.live_sources:
@@ -365,11 +386,23 @@ def _stage_adapter(ctx):
             blockers = adapter_cls.startup_blockers(source)
             if blockers:
                 blocked[source.name] = blockers
-    if not unregistered and not bad_url and not blocked:
+    if not unregistered_total and not bad_url and not blocked:
+        if partial:
+            return _result(
+                "adapter",
+                ATTENTION,
+                f"Every live source has a registered adapter, but URL and startup checks covered only the first "
+                f"{len(ctx.live_sources)} of {live_total} live sources.",
+                "Review the remaining sources in the Job Source Catalog.",
+                SOURCES_LINK,
+            )
         return _result("adapter", MET, "Every live source has a registered adapter that can start, and an allowlisted HTTPS URL.")
     parts = []
-    if unregistered:
-        parts.append(f"no registered adapter: {_names(unregistered)}")
+    if unregistered_total:
+        text = f"no registered adapter: {_names(unregistered)}" if unregistered else "no registered adapter"
+        if unlisted > 0:
+            text += f" ({_plural(unlisted, 'more source')} beyond the first {len(ctx.live_sources)} checked by name)"
+        parts.append(text)
     if bad_url:
         parts.append(f"URL not allowlisted HTTPS: {_names(bad_url)}")
     if blocked:
@@ -398,20 +431,24 @@ def missing_settings(adapter_key):
 def _stage_credentials(ctx):
     if not ctx.live_sources:
         return _waiting("credentials", "source_policy")
-    if any(REGISTRY.get(source.adapter_key) is None for source in ctx.live_sources):
+    counts = ctx.live_adapter_counts
+    if any(REGISTRY.get(key) is None for key in counts):
         return _waiting("credentials", "adapter")
-    missing = {}
-    for source in ctx.live_sources:
-        names = missing_settings(source.adapter_key)
-        if names:
-            missing[source.name] = names
-    if not missing:
+    missing_by_key = {key: names for key in counts if (names := missing_settings(key))}
+    if not missing_by_key:
         return _result("credentials", MET, "Every live source's adapter has its required settings configured.")
-    detail = "; ".join(f"{name}: {', '.join(names)}" for name, names in sorted(missing.items())[:_NAME_LIST_LIMIT])
+    missing_total = sum(counts[key] for key in missing_by_key)
+    missing = {s.name: missing_by_key[s.adapter_key] for s in ctx.live_sources if s.adapter_key in missing_by_key}
+    if missing:
+        detail = "; ".join(f"{name}: {', '.join(names)}" for name, names in sorted(missing.items())[:_NAME_LIST_LIMIT])
+        if missing_total > len(missing):
+            detail += f" (+{missing_total - len(missing)} more)"
+    else:
+        detail = "; ".join(f"{key}: {', '.join(names)}" for key, names in sorted(missing_by_key.items()))
     return _result(
         "credentials",
         UNMET,
-        f"Missing settings for {_plural(len(missing), 'source')} — {detail}.",
+        f"Missing settings for {_plural(missing_total, 'source')} — {detail}.",
         "Set the named environment variables in the deployment config (values are never shown here), then redeploy.",
     )
 

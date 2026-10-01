@@ -414,6 +414,9 @@ class JobSourceAdapter(ABC):
 
         Must mirror the adapter's own enablement and host checks so readiness
         reporting cannot say "ready" for a source that refuses to start.
+
+        Readiness passes rows loaded with ``.only("name", "adapter_key", "base_url")``:
+        read only those fields, since any other one costs a query per live source.
         """
         return []
 

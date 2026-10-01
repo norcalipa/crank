@@ -486,16 +486,14 @@ def _aggregate_counts(ctx=None):
 def _readiness_gates(ctx=None):
     """Compute safe readiness checks without touching the network."""
     ctx = ctx or operations_readiness.snapshot()
-    live_sources = ctx.live_sources
+    live_counts = ctx.live_adapter_counts
+    live_total = sum(live_counts.values())
     adapter_keys = JOB_ADAPTER_REGISTRY.keys()
     adapter_count = len(adapter_keys)
-    unregistered = sum(
-        1 for source in live_sources if JOB_ADAPTER_REGISTRY.get(source.adapter_key) is None
+    unregistered = sum(n for key, n in live_counts.items() if JOB_ADAPTER_REGISTRY.get(key) is None)
+    sources_missing_credentials = sum(
+        n for key, n in live_counts.items() if operations_readiness.missing_settings(key)
     )
-    missing = [
-        operations_readiness.missing_settings(source.adapter_key) for source in live_sources
-    ]
-    sources_missing_credentials = sum(1 for names in missing if names)
 
     parts = ctx.capability_parts
     active_run = ctx.active_run
@@ -504,10 +502,10 @@ def _readiness_gates(ctx=None):
         "adapter_registered": adapter_count > 0 and unregistered == 0,
         "adapter_count": adapter_count,
         "adapter_unregistered_sources": unregistered,
-        "credentials_configured": bool(live_sources)
+        "credentials_configured": bool(live_total)
         and unregistered == 0
         and sources_missing_credentials == 0,
-        "credentials_sources_checked": len(live_sources),
+        "credentials_sources_checked": live_total,
         "credentials_sources_missing": sources_missing_credentials,
         "pipeline_enabled": all(parts.values()),
         "pipeline_parts": parts,

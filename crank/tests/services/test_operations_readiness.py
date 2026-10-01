@@ -10,6 +10,7 @@ from django.contrib.auth.models import User
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
+from crank.admin_dashboard import _readiness_gates
 from crank.agents.jobs.registry import REGISTRY
 from crank.models.agent_run import AgentRun
 from crank.models.company_profile import CompanyProfileObservation
@@ -711,6 +712,69 @@ class StageTests(TestCase):
         from crank.agents.jobs.base import JobSourceAdapter
 
         self.assertEqual(JobSourceAdapter.startup_blockers(None), [])
+
+    def test_sources_beyond_the_page_cap_still_gate_readiness(self):
+        with patch.object(ops, "_SOURCE_LIMIT", 2):
+            for name in ("a1", "a2"):
+                make_source(name)
+            make_source("zz-broken", adapter_key="no-such-adapter")
+            result = ops.readiness()
+            gates = _readiness_gates(ops.snapshot())
+        self.assertEqual(stage(result, "source_policy")["summary"], "3 sources approved and enabled in the database.")
+        adapter = stage(result, "adapter")
+        self.assertEqual(adapter["status"], ops.UNMET)
+        self.assertIn("no registered adapter (1 more source beyond the first 2 checked by name)", adapter["summary"])
+        self.assertEqual(stage(result, "credentials")["status"], ops.PENDING)
+        self.assertFalse(gates["adapter_registered"])
+        self.assertEqual(gates["adapter_unregistered_sources"], 1)
+        self.assertEqual(gates["credentials_sources_checked"], 3)
+
+    def test_partial_url_and_startup_check_is_attention_not_met(self):
+        with patch.object(ops, "_SOURCE_LIMIT", 2):
+            for name in ("a1", "a2", "a3"):
+                make_source(name)
+            result = ops.readiness()
+        adapter = stage(result, "adapter")
+        self.assertEqual(adapter["status"], ops.ATTENTION)
+        self.assertIn("only the first 2 of 3 live sources", adapter["summary"])
+        self.assertEqual(stage(result, "credentials")["status"], ops.MET)
+
+    def test_missing_credentials_beyond_the_page_cap_are_counted(self):
+        with patch.object(ops, "_SOURCE_LIMIT", 2), override_settings(FIRECRAWL_API_KEY=""), patch.dict(
+            os.environ, {"FIRECRAWL_API_KEY": ""}
+        ):
+            make_source("a1")
+            make_source("a2")
+            make_source("zz", adapter_key="firecrawl-careers", base_url="https://remoteok.com/jobs")
+            hidden = stage(ops.readiness(), "credentials")
+            make_source("a0", adapter_key="firecrawl-careers", base_url="https://remoteok.com/jobs")
+            make_source("a00", adapter_key="firecrawl-careers", base_url="https://remoteok.com/jobs")
+            shown = stage(ops.readiness(), "credentials")
+        self.assertEqual(hidden["status"], ops.UNMET)
+        self.assertIn("Missing settings for 1 source — firecrawl-careers: FIRECRAWL_API_KEY", hidden["summary"])
+        self.assertIn("a0: FIRECRAWL_API_KEY", shown["summary"])
+        self.assertIn("(+1 more)", shown["summary"])
+
+    @override_settings(**ALL_ON)
+    def test_startup_blockers_agree_with_constructors(self):
+        valid = {"usajobs": "https://data.usajobs.gov/api/search", "firecrawl-careers": "https://remoteok.com/jobs"}
+        keys = [k for k in REGISTRY.keys() if REGISTRY.get(k).__module__.startswith("crank.agents.jobs.")]
+        for key in keys:
+            self.assertIn(key, valid, f"add a drift fixture URL for adapter {key!r}")
+            cls = REGISTRY.get(key)
+            for adapter_key in (key, "other-key"):
+                for url in (valid[key], "https://evil.example.com/jobs"):
+                    for enabled in (True, False):
+                        with self.subTest(adapter=key, adapter_key=adapter_key, url=url, enabled=enabled), override_settings(
+                            FIRECRAWL_ENABLED=enabled
+                        ), patch.dict(os.environ, {"FIRECRAWL_ENABLED": ""}):
+                            source = JobSourceCatalog(name="drift", adapter_key=adapter_key, base_url=url)
+                            try:
+                                cls(source)
+                                refused = False
+                            except Exception:
+                                refused = True
+                            self.assertEqual(bool(cls.startup_blockers(source)), refused)
 
     def test_stage_failure_is_unknown_and_isolated(self):
         make_source()

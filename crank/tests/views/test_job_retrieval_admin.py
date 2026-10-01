@@ -1654,8 +1654,8 @@ READINESS_ON = dict(
 )
 
 
-QUERY_BOUND = 35
-POPULATED_QUERY_BOUND = 39  # measured: 32 with the match gates off, 39 with all three on
+QUERY_BOUND = 36
+POPULATED_QUERY_BOUND = 40  # measured: 33 with the match gates off, 40 with all three on (incl. the flat per-adapter live-source count)
 
 
 def _fixed_stage(key, status, summary="x", remediation=""):
@@ -1691,6 +1691,16 @@ class JobRetrievalReadinessPanelTests(TestCase):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         return response.content.decode()
+
+    def test_action_copy_is_accurate(self):
+        content = self._get()
+        self.assertIn("as pending and disabled (allowlisted domains only)", content)
+        self.assertNotIn("curated sources. Only allowlisted", content)
+        self.assertIn('identical to "Queue full pipeline run" below', content)
+        self.assertIn('same job pipeline run as "Queue retrieval run" above', content)
+        self.assertEqual(content.count("processes only approved and enabled sources"), 2)
+        self.assertNotIn("not limited to approved sources", content)
+        self.assertNotIn("scoped to approved and enabled job sources first", content)
 
     def test_non_staff_denied(self):
         self.client.force_login(self.non_staff)
@@ -2672,3 +2682,41 @@ class JobRetrievalFinalCopyTests(TestCase):
         waiting = _present_stage({"key": "consumption", "status": "pending", "summary": "No pipeline run yet."})
         self.assertEqual(queued["status_label"], "Queued")
         self.assertEqual(waiting["status_label"], "Pending")
+
+
+class JobRetrievalActionCsrfTests(TestCase):
+    """Action endpoints reject POSTs without a CSRF token; GET never acts."""
+
+    ENDPOINTS = ("seed_preview", "seed_execute", "queue_retrieval", "queue_pipeline", "retry_failed")
+    CONFIRM_GATED = ("seed_execute", "queue_retrieval", "queue_pipeline", "retry_failed")
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.staff = User.objects.create_user(username="csrf-staff", password="pw", is_staff=True)
+
+    def setUp(self):
+        from django.test import Client
+
+        self.client = Client(enforce_csrf_checks=True)
+        self.client.force_login(self.staff)
+
+    def _url(self, name):
+        return reverse(f"admin:crank_jobretrievalops_{name}")
+
+    def test_post_without_csrf_token_is_rejected_and_writes_nothing(self):
+        for name in self.ENDPOINTS:
+            with self.subTest(endpoint=name):
+                response = self.client.post(self._url(name), {"confirm": "yes"})
+                self.assertEqual(response.status_code, 403)
+        self.assertEqual(AgentRun.objects.count(), 0)
+        self.assertEqual(JobSourceCatalog.objects.count(), 0)
+        self.assertEqual(OperationalChangeAudit.objects.count(), 0)
+
+    def test_get_with_confirm_query_renders_interstitial_without_acting(self):
+        for name in self.CONFIRM_GATED:
+            with self.subTest(endpoint=name):
+                response = self.client.get(self._url(name) + "?confirm=yes")
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("Yes, I'm sure", response.content.decode())
+        self.assertEqual(AgentRun.objects.count(), 0)
+        self.assertEqual(JobSourceCatalog.objects.count(), 0)

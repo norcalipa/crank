@@ -529,7 +529,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
 
     <div id="jro-action-seed-execute" class="jro-card jro-action-box">
       <h3>Seed curated job sources</h3>
-      <p>Create or update approved and enabled curated sources. Only allowlisted domains are seeded. Existing operator-set policy (approval/enabled) is preserved.</p>
+      <p>Create or update curated sources as pending and disabled (allowlisted domains only); existing approval and enabled settings are preserved.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_seed_execute' %}">
         {% csrf_token %}
         <input type="submit" value="Seed curated sources" class="jro-btn jro-btn--secondary">
@@ -538,7 +538,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
 
     <div id="jro-action-queue-retrieval" class="jro-card jro-action-box{% if actions.primary == 'queue_retrieval' %} jro-action-box--primary{% endif %}">
       <h3>Queue retrieval for approved sources{% if actions.primary == "queue_retrieval" %} <span class="jro-tag">Recommended</span>{% endif %}</h3>
-      <p>Unlike the full pipeline run, this queues a run scoped to approved and enabled job sources first. The next scheduled pipeline tick (or a manual run) consumes it.</p>
+      <p>Queues a job pipeline run, identical to "Queue full pipeline run" below. The run processes only approved and enabled sources. The next scheduled pipeline tick (or a manual run) consumes it.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_queue_retrieval' %}">
         {% csrf_token %}
         <input type="submit" value="Queue retrieval run"{% if actions.queue_disabled %} disabled aria-describedby="jro-reason-queue-retrieval"{% endif %} class="jro-btn {% if actions.primary == 'queue_retrieval' %}jro-btn--primary{% else %}jro-btn--secondary{% endif %}">
@@ -548,7 +548,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
 
     <div id="jro-action-queue-pipeline" class="jro-card jro-action-box">
       <h3>Queue full pipeline run</h3>
-      <p>Unlike retrieval, this queues a general pipeline run that the next deployed consumer adopts (correlation id preserved), not limited to approved sources.</p>
+      <p>Queues the same job pipeline run as "Queue retrieval run" above (correlation id preserved). The run processes only approved and enabled sources.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_queue_pipeline' %}">
         {% csrf_token %}
         <input type="submit" value="Queue pipeline run"{% if actions.queue_disabled %} disabled aria-describedby="jro-reason-queue-pipeline"{% endif %} class="jro-btn jro-btn--secondary">
