@@ -564,6 +564,7 @@ test.describe('navigation state (issue #479)', () => {
         {name: 'a page of the app', offline: false, away: '/help/'},
         {name: 'a non-app page', offline: false, away: '/static/dist/manifest.json'},
         {name: 'a non-app page, offline at restore', offline: true, away: '/static/dist/manifest.json'},
+        {name: 'a non-app page, offline, with no epoch change (only last-account differs)', offline: true, forgetEpoch: true, away: '/static/dist/manifest.json'},
     ]) {
         test(`a page restored from the back/forward cache is purged after another account signs in: tab on ${variant.name} (real bfcache)`, async () => {
             const browser = await chromium.launch({
@@ -574,8 +575,12 @@ test.describe('navigation state (issue #479)', () => {
             try {
                 const context = await browser.newContext({baseURL: DJANGO_BASE_URL, viewport: {width: 1280, height: 900}});
                 await context.addInitScript(() => {
-                    const w = window as unknown as {__pageshows: boolean[]; __cached: boolean};
+                    const w = window as unknown as {__pageshows: boolean[]; __cached: boolean; __epochEvents: (string | null)[]};
                     w.__pageshows = [];
+                    w.__epochEvents = [];
+                    window.addEventListener('storage', (e) => {
+                        if (e.key === 'crank:account-epoch') w.__epochEvents.push(e.newValue);
+                    });
                     w.__cached = false;
                     window.addEventListener('pagehide', (e) => {
                         if (e.persisted) w.__cached = true;
@@ -590,6 +595,15 @@ test.describe('navigation state (issue #479)', () => {
                 await askAboutCompany(page);
                 const secret = 'PRIVATE MESSAGE FROM ACCOUNT A';
                 await sendMessage(page, secret);
+                const epochBefore = await page.evaluate(() => window.localStorage.getItem('crank:account-epoch'));
+                // The hold must be in place before the page enters the bfcache,
+                // or it never delays the restored page's whoami.
+                if (!variant.offline) {
+                    await page.route('**/api/account/whoami/', async (route) => {
+                        await new Promise((resolve) => setTimeout(resolve, 3000));
+                        await route.continue().catch(() => undefined);
+                    });
+                }
                 await page.goto(variant.away);
                 await expect(page).toHaveURL(new RegExp(`${variant.away.replace(/\./g, '\\.')}$`));
 
@@ -597,15 +611,20 @@ test.describe('navigation state (issue #479)', () => {
                 await other.goto('/chat/');
                 await logout(other);
                 await login(other, 'e2e_user_b', E2E_PASSWORD);
+                if (variant.forgetEpoch) {
+                    // No tab announced the switch: only the shared last-account
+                    // (rewritten for B by the chat mount) can say it happened.
+                    await other.goto('/chat/');
+                    await expect.poll(() => other.evaluate(() => window.localStorage.getItem('crank:last-account'))).toMatch(/^d:/);
+                    await other.evaluate((value) => {
+                        if (value === null) window.localStorage.removeItem('crank:account-epoch');
+                        else window.localStorage.setItem('crank:account-epoch', value);
+                    }, epochBefore);
+                }
+                const announcedBefore = await other.evaluate(() => (window as unknown as {__epochEvents: unknown[]}).__epochEvents.length);
 
                 if (variant.offline) {
                     await context.setOffline(true);
-                } else {
-                    // The re-check must not be what purges: hold whoami back.
-                    await page.route('**/api/account/whoami/', async (route) => {
-                        await new Promise((resolve) => setTimeout(resolve, 3000));
-                        await route.continue().catch(() => undefined);
-                    });
                 }
                 await page.goBack({waitUntil: 'commit'});
                 await expect.poll(() => page.evaluate(() => (window as unknown as {__pageshows?: boolean[]}).__pageshows ?? []),
@@ -622,10 +641,15 @@ test.describe('navigation state (issue #479)', () => {
                 const record = await page.evaluate(() => window.sessionStorage.getItem('crank:workspace:v1') ?? '');
                 expect(record).not.toContain(COMPANY);
                 expect(record).not.toContain('e2e_user');
-                // The restored document never re-announced: the epoch is still
-                // the one the other tab wrote.
-                const epoch = await page.evaluate(() => window.localStorage.getItem('crank:account-epoch'));
-                expect(await other.evaluate(() => window.localStorage.getItem('crank:account-epoch'))).toBe(epoch);
+                // The restored document never re-announced: the live tab saw no
+                // epoch write since before Back (online: after whoami answered).
+                if (!variant.offline) {
+                    await expect(page.locator('#nav-account')).toContainText('e2e_user_b', {timeout: 8000});
+                    await page.waitForTimeout(500);
+                } else {
+                    await page.waitForTimeout(1500);
+                }
+                expect(await other.evaluate(() => (window as unknown as {__epochEvents: unknown[]}).__epochEvents.length)).toBe(announcedBefore);
                 await context.close();
             } finally {
                 await browser.close();
