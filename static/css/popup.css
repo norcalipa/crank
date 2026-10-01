@@ -3473,7 +3473,6 @@ body.assistant-open .app-content .table-responsive,
 .priorities-footer {
     position: sticky;
     bottom: -6px;
-    z-index: 1;
     margin: 0 -6px -6px;
     padding: 0.5rem 6px 0.25rem;
     background: #212529;
