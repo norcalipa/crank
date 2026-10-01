@@ -600,13 +600,20 @@ test.describe('navigation state (issue #479)', () => {
 
                 if (variant.offline) {
                     await context.setOffline(true);
+                } else {
+                    // The re-check must not be what purges: hold whoami back.
+                    await page.route('**/api/account/whoami/', async (route) => {
+                        await new Promise((resolve) => setTimeout(resolve, 3000));
+                        await route.continue().catch(() => undefined);
+                    });
                 }
                 await page.goBack({waitUntil: 'commit'});
                 await expect.poll(() => page.evaluate(() => (window as unknown as {__pageshows?: boolean[]}).__pageshows ?? []),
                     {message: 'the page must come from the back/forward cache'}).toContain(true);
-                // No wait for whoami: the epoch comparison purges synchronously.
-                await expect(page.getByText(secret)).toHaveCount(0);
-                await expect(page.locator(STRIP)).toHaveCount(0);
+                // Well before whoami can answer: the epoch comparison purges
+                // synchronously and needs no network.
+                await expect(page.getByText(secret)).toHaveCount(0, {timeout: 1500});
+                await expect(page.locator(STRIP)).toHaveCount(0, {timeout: 1500});
                 if (variant.offline) {
                     await expect(page.locator('#nav-account')).not.toContainText('e2e_user');
                 } else {
