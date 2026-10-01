@@ -127,6 +127,26 @@ describe('PrioritiesSection', () => {
         expect(await screen.findByTestId('priorities-load-error')).toHaveTextContent('Something went wrong');
     });
 
+    test('a read that settles after unmount is ignored (success and failure)', async () => {
+        let resolveOk!: (r: Response) => void;
+        let rejectLater!: (e: Error) => void;
+        const pending = [
+            new Promise<Response>((res) => { resolveOk = res; }),
+            new Promise<Response>((_res, rej) => { rejectLater = rej; }),
+        ];
+        let call = 0;
+        (global as any).fetch = jest.fn(() => pending[call++]);
+        const first = render(<PrioritiesSection variant="main" authenticated/>);
+        first.unmount();
+        const second = render(<PrioritiesSection variant="main" authenticated/>);
+        second.unmount();
+        await act(async () => {
+            resolveOk(json(snapshotBody(1, [chip])));
+            rejectLater(new Error('late'));
+        });
+        expect(screen.queryByRole('alert')).toBeNull();
+    });
+
     test('nothing takes focus on mount', async () => {
         mockFetch({'/api/agent/preferences/': () => json(snapshotBody(1, [chip]))});
         render(<PrioritiesSection variant="main" authenticated/>);
