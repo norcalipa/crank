@@ -24,6 +24,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     --jro-info-bg: #e3f1f7; --jro-info-fg: #1d4f63; --jro-info-line: #9cc9dc; --jro-info: #1d6f8c;
     --jro-neutral-bg: #f1f3f5; --jro-neutral-fg: #374151; --jro-neutral-line: #c9ced3; --jro-neutral: #adb5bd;
     --jro-key-col: 17rem;
+    --jro-disabled-fg: #6b6b6b;
     --jro-pad: 14px;
     box-sizing: border-box;
     max-width: 100%;
@@ -35,7 +36,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
       --jro-danger-bg: #3b1212; --jro-danger-fg: #fca5a5; --jro-danger-line: #b91c1c; --jro-danger: #f87171;
       --jro-warning-bg: #3a2a05; --jro-warning-fg: #fcd34d; --jro-warning-line: #a16207; --jro-warning: #fbbf24;
       --jro-info-bg: #0f2a36; --jro-info-fg: #7dd3fc; --jro-info-line: #1d6f8c; --jro-info: #38bdf8;
-      --jro-neutral-bg: #262626; --jro-neutral-fg: #e5e7eb; --jro-neutral-line: #4b5563; --jro-neutral: #9ca3af;
+      --jro-neutral-bg: #262626; --jro-neutral-fg: #e5e7eb; --jro-neutral-line: #4b5563; --jro-neutral: #9ca3af; --jro-disabled-fg: #8a8a8a;
     }
   }
   html[data-theme="dark"] #jro-page {
@@ -43,7 +44,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     --jro-danger-bg: #3b1212; --jro-danger-fg: #fca5a5; --jro-danger-line: #b91c1c; --jro-danger: #f87171;
     --jro-warning-bg: #3a2a05; --jro-warning-fg: #fcd34d; --jro-warning-line: #a16207; --jro-warning: #fbbf24;
     --jro-info-bg: #0f2a36; --jro-info-fg: #7dd3fc; --jro-info-line: #1d6f8c; --jro-info: #38bdf8;
-    --jro-neutral-bg: #262626; --jro-neutral-fg: #e5e7eb; --jro-neutral-line: #4b5563; --jro-neutral: #9ca3af;
+    --jro-neutral-bg: #262626; --jro-neutral-fg: #e5e7eb; --jro-neutral-line: #4b5563; --jro-neutral: #9ca3af; --jro-disabled-fg: #8a8a8a;
   }
   #jro-page *, #jro-page *::before, #jro-page *::after { box-sizing: border-box; }
   #jro-page p { margin: 0 0 8px; padding: 0; line-height: 1.45; }
@@ -63,6 +64,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     margin: 8px 0 0;
     width: 100%;
   }
+  #jro-page .jro-card > :last-child { margin-bottom: 0; }
   #jro-page .jro-section > .jro-card:first-of-type { margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
   #jro-page .jro-card--blocking { border-color: var(--jro-warning); box-shadow: 0 0 0 1px var(--jro-warning); }
   #jro-page .jro-alert {
@@ -187,8 +189,9 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
   #jro-page .jro-btn--secondary:hover, #jro-page .jro-btn--secondary:focus { background: var(--jro-surface-muted); color: var(--jro-text); }
   #jro-page .jro-btn:disabled, #jro-page .jro-btn:disabled:hover {
     background: var(--jro-surface-muted);
-    color: var(--jro-text-quiet);
+    color: var(--jro-disabled-fg);
     border-color: var(--jro-border);
+    opacity: 1;
     cursor: not-allowed;
   }
   #jro-page .jro-btn:focus-visible,
@@ -224,11 +227,11 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
       linear-gradient(to left, rgba(0, 0, 0, 0.22), rgba(0, 0, 0, 0)) right center / 10px 100% no-repeat scroll;
   }
   #jro-page .jro-callout { border-left: 6px solid var(--jro-neutral); padding-left: calc(var(--jro-pad) - 5px); }
-  #jro-page .jro-callout--danger, #jro-page .jro-stage--danger { border-left-color: var(--jro-danger); }
-  #jro-page .jro-callout--warning, #jro-page .jro-stage--warning { border-left-color: var(--jro-warning); }
-  #jro-page .jro-callout--info, #jro-page .jro-stage--info { border-left-color: var(--jro-info); }
-  #jro-page .jro-callout--success, #jro-page .jro-stage--success { border-left-color: var(--jro-success); }
-  #jro-page .jro-callout--neutral, #jro-page .jro-stage--neutral { border-left-color: var(--jro-neutral); }
+  #jro-page .jro-callout--danger { border-left-color: var(--jro-danger); }
+  #jro-page .jro-callout--warning { border-left-color: var(--jro-warning); }
+  #jro-page .jro-callout--info { border-left-color: var(--jro-info); }
+  #jro-page .jro-callout--success { border-left-color: var(--jro-success); }
+  #jro-page .jro-callout--neutral { border-left-color: var(--jro-neutral); }
   #jro-page .jro-callout h3 { margin: 6px 0; font-size: 17px; }
   #jro-page .jro-callout form { margin: 4px 0 8px; }
   #jro-page .jro-links { display: flex; flex-wrap: wrap; gap: 0 16px; margin: 4px 0 0; }
@@ -245,6 +248,11 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     font-size: 14px;
     line-height: 1.45;
   }
+  #jro-page .jro-stage--danger { border-left-color: var(--jro-danger); }
+  #jro-page .jro-stage--warning { border-left-color: var(--jro-warning); }
+  #jro-page .jro-stage--info { border-left-color: var(--jro-info); }
+  #jro-page .jro-stage--success { border-left-color: var(--jro-success); }
+  #jro-page .jro-stage--neutral { border-left-color: var(--jro-neutral); }
   #jro-page .jro-stage--next { box-shadow: 0 0 0 1px var(--jro-danger); border-color: var(--jro-danger); }
   #jro-page .jro-stage--next.jro-stage--warning { box-shadow: 0 0 0 1px var(--jro-warning); border-color: var(--jro-warning); }
   #jro-page .jro-stage--next.jro-stage--info { box-shadow: 0 0 0 1px var(--jro-info); border-color: var(--jro-info); }
@@ -301,7 +309,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
   #jro-page .jro-sources td:nth-child(4) { white-space: nowrap; }
   #jro-page .jro-sources .jro-id { white-space: nowrap; overflow-wrap: normal; font-weight: 400; }
   #jro-page .jro-note { color: var(--jro-text); margin: 0 0 8px; }
-  #jro-page .jro-summary-line { margin: 0 0 8px; padding: 0 calc(var(--jro-pad) + 1px); }
+  #jro-page .jro-summary-line { margin: 8px 0; padding: 0 calc(var(--jro-pad) + 1px); }
   #jro-page .jro-diag { margin: 0 0 20px; }
   #jro-page .jro-diag > summary {
     display: flex;
@@ -315,6 +323,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     cursor: pointer;
     list-style: none;
   }
+  #jro-page details[open] > summary .jro-when-closed { display: none; }
   #jro-page .jro-diag > summary::-webkit-details-marker { display: none; }
   #jro-page .jro-diag > summary::before { content: "\25B8"; color: var(--jro-text-quiet); }
   #jro-page .jro-diag[open] > summary::before { content: "\25BE"; }
@@ -441,18 +450,20 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
           <dd>{{ pipeline.owner|default:"Unclaimed — awaiting consumer" }}</dd>
           {% if pipeline.owned_since_relative %}
           <dt>Owned since</dt>
-          <dd>{{ pipeline.owned_since_relative }}{% if pipeline.started_iso %} <time>({{ pipeline.started_iso|jro_time }})</time>{% endif %}</dd>
+          <dd>{{ pipeline.owned_since_relative }}{% if pipeline.started_iso %} <span class="jro-monospace">({{ pipeline.started_iso|jro_time }})</span>{% endif %}</dd>
           {% endif %}
           <dt>Queue</dt>
           <dd>
             {{ pipeline.queue_count }} run{{ pipeline.queue_count|pluralize }}
             {% if pipeline.oldest_wait_relative %}
               — oldest queued {{ pipeline.oldest_wait_relative }} ago
-              {% if pipeline.oldest_reclaim_remaining %}(reclaims in ~{{ pipeline.oldest_reclaim_remaining }} if no consumer arrives){% endif %}
+              {% if pipeline.oldest_reclaim_remaining and pipeline.state != "queued" %}(reclaims in ~{{ pipeline.oldest_reclaim_remaining }} if no consumer arrives){% endif %}
             {% endif %}
           </dd>
+          {% if pipeline.state != "queued" %}
           <dt>Consumption</dt>
           <dd>{{ pipeline.consumption }}{% if pipeline.progress %} — {{ pipeline.progress }}{% endif %}</dd>
+          {% endif %}
           <dt>Next consumer</dt>
           <dd>{{ pipeline.next_consumer }}</dd>
           {% if pipeline.next_action %}
@@ -472,7 +483,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
             <details class="jro-details">
               <summary>Timestamps &amp; IDs</summary>
               <div class="jro-details-secondary">
-                created <time>{{ pipeline.created_iso|jro_time }}</time>{% if pipeline.started_iso %} · started <time>{{ pipeline.started_iso|jro_time }}</time>{% endif %}<br>
+                created {{ pipeline.created_iso|jro_time }}{% if pipeline.started_iso %} · started {{ pipeline.started_iso|jro_time }}{% endif %}<br>
                 correlation <span class="jro-id">{{ pipeline.correlation_id }}</span>
               </div>
             </details>
@@ -493,7 +504,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     {% include "admin/_job_retrieval_stages.html" %}
     {% else %}
     <details class="jro-details jro-card">
-      <summary>All {{ readiness.stages|length }} steps met — show details</summary>
+      <summary>All {{ readiness.stages|length }} steps met<span class="jro-when-closed"> — show details</span></summary>
       {% include "admin/_job_retrieval_stages.html" %}
     </details>
     {% endif %}
@@ -569,9 +580,9 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
       <h3>Latest run (also the last completed run)</h3>
       <p class="jro-status-line"><span class="jro-badge jro-badge--{{ completed.tone }}"><span class="jro-icon jro-icon--{{ completed.icon }}" aria-hidden="true"></span>{{ completed.label }}</span></p>
       <dl class="jro-fields">
-        <dt>Queued</dt><dd>{{ latest.created_age }} ago <time>({{ latest.created_at|jro_time }})</time></dd>
-        <dt>Started</dt><dd>{% if latest.started_at %}{{ latest.started_age }} ago <time>({{ latest.started_at|jro_time }})</time>{% else %}Not started{% endif %}</dd>
-        <dt>Finished</dt><dd>{{ completed.finished_age }} ago <time>({{ completed.finished_at|jro_time }})</time></dd>
+        <dt>Queued</dt><dd>{{ latest.created_age }} ago <span class="jro-monospace">({{ latest.created_at|jro_time }})</span></dd>
+        <dt>Started</dt><dd>{% if latest.started_at %}{{ latest.started_age }} ago <span class="jro-monospace">({{ latest.started_at|jro_time }})</span>{% else %}Not started{% endif %}</dd>
+        <dt>Finished</dt><dd>{{ completed.finished_age }} ago <span class="jro-monospace">({{ completed.finished_at|jro_time }})</span></dd>
         <dt>Duration</dt><dd>{% if completed.duration %}{{ completed.duration }}{% else %}Unknown{% endif %}</dd>
         {% for group in completed.stages %}
         <dt>{{ group.label }}</dt>
@@ -589,9 +600,9 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
       {% if latest %}
       <p class="jro-status-line"><span class="jro-badge jro-badge--{{ latest.tone }}"><span class="jro-icon jro-icon--{{ latest.icon }}" aria-hidden="true"></span>{{ latest.label }}</span></p>
       <dl class="jro-fields">
-        <dt>Queued</dt><dd>{{ latest.created_age }} ago <time>({{ latest.created_at|jro_time }})</time></dd>
-        <dt>Started</dt><dd>{% if latest.started_at %}{{ latest.started_age }} ago <time>({{ latest.started_at|jro_time }})</time>{% else %}Not started{% endif %}</dd>
-        <dt>Finished</dt><dd>{% if latest.finished_at %}{{ latest.finished_age }} ago <time>({{ latest.finished_at|jro_time }})</time>{% else %}Not finished{% endif %}</dd>
+        <dt>Queued</dt><dd>{{ latest.created_age }} ago <span class="jro-monospace">({{ latest.created_at|jro_time }})</span></dd>
+        <dt>Started</dt><dd>{% if latest.started_at %}{{ latest.started_age }} ago <span class="jro-monospace">({{ latest.started_at|jro_time }})</span>{% else %}Not started{% endif %}</dd>
+        <dt>Finished</dt><dd>{% if latest.finished_at %}{{ latest.finished_age }} ago <span class="jro-monospace">({{ latest.finished_at|jro_time }})</span>{% else %}Not finished{% endif %}</dd>
       </dl>
       {% if latest.queued_only %}<p class="jro-explanation">No stage counts exist yet: a queued run has not fetched, accepted or matched anything.</p>{% endif %}
       <ul class="jro-links"><li><a href="{{ latest.run_url }}">Open this agent run</a></li></ul>
@@ -604,7 +615,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
       {% if completed %}
       <p class="jro-status-line"><span class="jro-badge jro-badge--{{ completed.tone }}"><span class="jro-icon jro-icon--{{ completed.icon }}" aria-hidden="true"></span>{{ completed.label }}</span></p>
       <dl class="jro-fields">
-        <dt>Finished</dt><dd>{{ completed.finished_age }} ago <time>({{ completed.finished_at|jro_time }})</time></dd>
+        <dt>Finished</dt><dd>{{ completed.finished_age }} ago <span class="jro-monospace">({{ completed.finished_at|jro_time }})</span></dd>
         <dt>Duration</dt><dd>{% if completed.duration %}{{ completed.duration }}{% else %}Unknown{% endif %}</dd>
         {% for group in completed.stages %}
         <dt>{{ group.label }}</dt>
@@ -733,13 +744,15 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
             {% if counts.latest_run.error_summary %}
               <span class="jro-details-secondary">Sanitized reason: {{ counts.latest_run.error_summary }}</span>
             {% endif %}
+            {% if not pipeline or counts.latest_run.correlation_id != pipeline.correlation_id %}
             <details class="jro-details">
               <summary>Timestamps &amp; IDs</summary>
               <div class="jro-details-secondary">
-                created <time>{{ counts.latest_run.created|jro_time }}</time><br>
+                created {{ counts.latest_run.created|jro_time }}<br>
                 correlation <span class="jro-id">{{ counts.latest_run.correlation_id }}</span>
               </div>
             </details>
+            {% endif %}
           {% else %}
             <em>None</em>
           {% endif %}</dd>
@@ -779,7 +792,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
           {% endif %}</dd>
       <dt>Credentials configured</dt><dd>{% if gates.credentials_configured %}
             <span class="jro-badge jro-badge--success"><span class="jro-icon jro-icon--check" aria-hidden="true"></span>Yes</span>
-            <span class="jro-detail">all {{ gates.credentials_sources_checked }} live source{{ gates.credentials_sources_checked|pluralize }}</span>
+            <span class="jro-detail">{% if gates.credentials_sources_checked == 1 %}1 live source{% else %}all {{ gates.credentials_sources_checked }} live sources{% endif %}</span>
           {% else %}
             <span class="jro-badge jro-badge--danger"><span class="jro-icon jro-icon--x" aria-hidden="true"></span>No</span>
             {% if not gates.credentials_sources_checked %}<span class="jro-detail">no approved and enabled source</span>{% elif gates.credentials_sources_missing %}<span class="jro-detail">{{ gates.credentials_sources_missing }} of {{ gates.credentials_sources_checked }} live source{{ gates.credentials_sources_checked|pluralize }} missing settings</span>{% endif %}
@@ -798,7 +811,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
             <span class="jro-detail">not required for job retrieval</span>
           {% endif %}</dd>
       <dt>Active or queued run / overlap</dt><dd>{% if gates.active_run %}
-            <span class="jro-badge jro-badge--{% if gates.active_run_status == 'pending' %}info{% else %}warning{% endif %}"><span class="jro-icon jro-icon--{% if gates.active_run_status == 'pending' %}clock{% else %}alert{% endif %}" aria-hidden="true"></span>Active — {{ gates.active_run_status|title }}</span>
+            <span class="jro-badge jro-badge--{% if gates.active_run_status == 'pending' %}info{% else %}warning{% endif %}"><span class="jro-icon jro-icon--{% if gates.active_run_status == 'pending' %}clock{% else %}alert{% endif %}" aria-hidden="true"></span>{% if gates.active_run_status == 'pending' %}Queued{% else %}Active — {{ gates.active_run_status|title }}{% endif %}</span>
             <span class="jro-detail">see Pipeline ownership &amp; queue</span>
           {% else %}
             <span class="jro-badge jro-badge--neutral"><span class="jro-icon jro-icon--dash" aria-hidden="true"></span>Idle</span>

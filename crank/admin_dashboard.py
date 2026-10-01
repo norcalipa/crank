@@ -242,11 +242,8 @@ def _pipeline_ownership_state():
                 icon=PIPELINE_STATE_ICONS["queued"],
                 label="Queued — waiting for a consumer",
                 explanation=(
-                    "The run is queued but not yet claimed. It is consumed by "
-                    "the next scheduled pipeline tick or a manual "
-                    "run_job_pipeline invocation. If no consumer adopts it "
-                    f"within the staleness TTL (~{state['oldest_reclaim_remaining']} "
-                    "remaining), it is reclaimed as failed."
+                    "Queued, not yet claimed; reclaimed as failed if no consumer "
+                    f"adopts it within the TTL (~{state['oldest_reclaim_remaining']} left)."
                 ),
                 owner="Unclaimed — awaiting consumer",
                 consumption="Waiting for consumer",
@@ -515,6 +512,8 @@ def _present_stage(stage):
         stage["status_label"] = "Not applicable yet"
         stage["tone"] = "neutral"
         stage["icon"] = "dash"
+    elif stage.get("key") == "consumption" and stage["status"] == "pending" and stage["summary"].startswith("Queued"):
+        stage["status_label"] = "Queued"
     headline, _, rest = stage["summary"].partition(". ")
     stage["headline"] = headline.rstrip(".")
     stage["summary_rest"] = rest.strip()

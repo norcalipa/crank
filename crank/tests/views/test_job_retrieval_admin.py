@@ -2049,3 +2049,101 @@ class JobRetrievalActionStateTests(TestCase):
 
         with patch("crank.admin_dashboard.operations_readiness.readiness", side_effect=RuntimeError("x")):
             self.assertIsNone(_readiness_context(object()))
+
+
+class JobRetrievalFinalCopyTests(TestCase):
+    """Copy, pluralization and cascade-order contracts from the final visual round (issue #481)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.staff = User.objects.create_user(username="copy-staff", password="pw", is_staff=True)
+
+    def setUp(self):
+        self.client.force_login(self.staff)
+        self.url = reverse("admin:crank_jobretrievalops_changelist")
+
+    def _source(self, name="USAJOBS"):
+        return JobSourceCatalog.objects.create(
+            name=name,
+            adapter_key="usajobs",
+            base_url="https://data.usajobs.gov/api/search",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+        )
+
+    def _get(self):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        return response.content.decode()
+
+    def test_stage_color_rules_follow_the_base_stage_rule(self):
+        content = self._get()
+        base = content.index("#jro-page .jro-stage {")
+        for tone in ("danger", "warning", "info", "success", "neutral"):
+            self.assertGreater(content.index(f"#jro-page .jro-stage--{tone} {{"), base)
+        self.assertIn("--jro-disabled-fg", content)
+        self.assertIn("details[open] > summary .jro-when-closed", content)
+
+    def test_queued_run_uses_one_label_and_drops_repeated_text(self):
+        self._source()
+        AgentRun.objects.create(run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.PENDING)
+        content = self._get()
+        self.assertIn("Queued, not yet claimed; reclaimed as failed if no consumer adopts it", content)
+        self.assertNotIn("Active — Pending", content)
+        self.assertNotIn("<dt>Consumption</dt>", content)
+        self.assertNotIn("reclaims in ~", content)
+        self.assertIn('jro-icon--clock" aria-hidden="true"></span>Queued</span>', content)
+        self.assertEqual(content.count("Timestamps &amp; IDs"), 1)
+
+    def test_running_run_keeps_active_label_and_consumption_row(self):
+        self._source()
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.RUNNING,
+            started_at=timezone.now(),
+        )
+        content = self._get()
+        self.assertIn("Active — Running", content)
+        self.assertIn("<dt>Consumption</dt>", content)
+
+    def test_credentials_gate_pluralizes_live_sources(self):
+        self._source()
+        with override_settings(USAJOBS_AUTH_KEY="k", USAJOBS_USER_AGENT_EMAIL="ops@example.test"):
+            one = self._get()
+            self._source("Second")
+            two = self._get()
+        self.assertIn("1 live source<", one)
+        self.assertNotIn("all 1 live source", one)
+        self.assertIn("all 2 live sources<", two)
+
+    def test_run_progress_counters_do_not_repeat_the_group_label(self):
+        self._source()
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.SUCCEEDED,
+            started_at=timezone.now() - timedelta(minutes=3),
+            finished_at=timezone.now() - timedelta(minutes=1),
+            counts={"sources_total": 2, "sources_succeeded": 1, "users_total": 1, "matches_persisted": 4},
+        )
+        content = self._get()
+        self.assertIn("total: <strong>2</strong> · succeeded: <strong>1</strong>", content)
+        self.assertIn("persisted: <strong>4</strong>", content)
+        self.assertNotIn("sources total", content)
+        self.assertNotIn("<time>(", content)
+
+    def test_all_met_disclosure_hides_show_details_when_open(self):
+        fake = {
+            "stages": [{"key": "a", "status": "met", "summary": "ok.", "remediation": "", "runbook_url": "#"}],
+            "next_step": None,
+        }
+        with patch("crank.admin_dashboard.operations_readiness.readiness", return_value=fake):
+            content = self._get()
+        self.assertIn('All 1 steps met<span class="jro-when-closed"> — show details</span>', content)
+
+    def test_consumption_stage_badge_says_queued_only_for_a_queued_run(self):
+        from crank.admin_dashboard import _present_stage
+
+        queued = _present_stage({"key": "consumption", "status": "pending", "summary": "Queued — waiting."})
+        waiting = _present_stage({"key": "consumption", "status": "pending", "summary": "No pipeline run yet."})
+        self.assertEqual(queued["status_label"], "Queued")
+        self.assertEqual(waiting["status_label"], "Pending")

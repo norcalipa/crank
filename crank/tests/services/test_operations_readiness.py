@@ -331,6 +331,23 @@ class StageTests(TestCase):
         JobSourceCatalog.objects.filter(pk=source.pk).update(last_crawl_at=timezone.now())
         self.assertEqual(stage(ops.readiness(), "inventory")["status"], ops.MET)
 
+    def test_inventory_and_source_copy_agree_with_singular_and_plural(self):
+        source = make_source(enabled=False)
+        self.assertIn("1 source exists but none", stage(ops.readiness(), "source_policy")["remediation"])
+        make_source("Second", enabled=False)
+        self.assertIn("2 sources exist but none", stage(ops.readiness(), "source_policy")["remediation"])
+        JobSourceCatalog.objects.update(enabled=True)
+        make_listing(source)
+        self.assertIn("1 active listing exists but", stage(ops.readiness(), "inventory")["summary"])
+        make_listing(source, n=2)
+        self.assertIn("active listings exist but", stage(ops.readiness(), "inventory")["summary"])
+
+    def test_run_progress_labels_drop_the_group_prefix(self):
+        make_run(AgentRun.Status.SUCCEEDED, counts={"sources_total": 1, "users_total": 2, "matches_persisted": 3})
+        groups = {g["label"]: [c["label"] for c in g["counts"]] for g in ops.run_progress()["completed"]["stages"]}
+        self.assertEqual(groups["Sources"], ["total"])
+        self.assertEqual(groups["Matches"], ["users total", "persisted"])
+
     def test_inventory_attention_for_partially_stale_sources(self):
         fresh = make_source("fresh", last_crawl_at=timezone.now())
         make_source("old", last_crawl_at=timezone.now() - timedelta(days=9))

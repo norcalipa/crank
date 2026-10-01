@@ -230,6 +230,10 @@ def _plural(count, noun):
     return f"{count} {noun}{'' if count == 1 else 's'}"
 
 
+def _exist(count):
+    return "exists" if count == 1 else "exist"
+
+
 def _result(key, status, summary, remediation="", link=None, anchor=None, not_applicable=False):
     """Build one stage dict; ``link`` is ``(admin url name, query, label)``."""
     label, default_anchor = next((lbl, a) for k, lbl, a in STAGES if k == key)
@@ -263,7 +267,7 @@ def _stage_source_policy(ctx):
         remediation = "No job sources exist in the database. Preview and run the curated seed, then approve and enable a source."
     else:
         remediation = (
-            f"{_plural(counts['total'], 'source')} exist but none is both approved and enabled "
+            f"{_plural(counts['total'], 'source')} {_exist(counts['total'])} but none is both approved and enabled "
             f"({counts['approved']} approved, {counts['blocked']} blocked, {counts['enabled_any']} enabled). "
             "Approve and enable one in the Job Source Catalog."
         )
@@ -455,7 +459,7 @@ def _stage_inventory(ctx):
         return _result(
             "inventory",
             UNMET,
-            f"{_plural(live_listings, 'active listing')} exist but no source has succeeded within {_freshness_hours()}h.",
+            f"{_plural(live_listings, 'active listing')} {_exist(live_listings)} but no source has succeeded within {_freshness_hours()}h.",
             "Check the per-source last success and failure reasons below; the crawl may be failing or not scheduled.",
             ("crank_crawlrun_changelist", "", "Crawl Runs"),
         )
@@ -717,7 +721,7 @@ def run_progress(now=None, ctx=None):
             {
                 "label": label,
                 "counts": [
-                    {"key": key, "label": key.replace("_", " "), "value": int(raw[key])}
+                    {"key": key, "label": key.removeprefix(label.lower() + "_").replace("_", " "), "value": int(raw[key])}
                     for key in keys
                     if isinstance(raw.get(key), (int, float)) and not isinstance(raw.get(key), bool)
                 ],
