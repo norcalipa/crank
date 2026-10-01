@@ -463,14 +463,81 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
             if row is not None and company_evidence.list_scope(row.scope_json):
                 note = f" (keeps scope {company_evidence.list_scope(row.scope_json)})"
             marker = " [verifies policy fact]" if key in review else ""
+            if row is not None and row.value_text != value:
+                kind = (
+                    "staff-reviewed" if company_evidence.is_staff_reviewed(row)
+                    else "not staff-reviewed"
+                )
+                marker += f" [REPLACES {row.value_text!r} ({kind})]"
             parts.append(f"{key}={value!r}{marker}{note}")
         if obj.status != CompanyProfileObservation.Status.ACCEPTED and parts:
             label += "; accepting records as accepted evidence: " + "; ".join(parts)
         return label
 
+    def observations_digest(self, observations):
+        """Digest of what a reviewer saw: each observation, its carried values and
+        the accepted row each value would replace."""
+        entries = []
+        for obs in sorted(observations, key=lambda o: o.pk):
+            values = company_evidence.observation_field_values(obs)
+            accepted = {}
+            if obs.organization_id is not None:
+                accepted = {
+                    row.field_key: row
+                    for row in CompanyFieldEvidence.objects.filter(
+                        organization_id=obs.organization_id,
+                        state=CompanyFieldEvidence.State.ACCEPTED,
+                        field_key__in=list(values),
+                    ).order_by("-observed_at", "-id")
+                }
+            entries.append(
+                [
+                    obs.pk,
+                    obs.status,
+                    {k: company_evidence.value_digest(v) for k, v in sorted(values.items())},
+                    {
+                        k: [row.pk, company_evidence.value_digest(row.value_text), row.scope_json]
+                        for k, row in sorted(accepted.items())
+                    },
+                ]
+            )
+        return hashlib.sha256(
+            json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    def confirmation_hidden_fields(self, request, objects):
+        return [("observation_digest", self.observations_digest(objects))]
+
+    def response_action(self, request, queryset, **kwargs):
+        if (
+            self._select_across_flag(request)
+            and self._requested_action(request) == "accept_observations"
+        ):
+            self.message_user(
+                request,
+                "No changes made: observations must be selected explicitly. A select-across "
+                "accept could verify policy facts for observations you never saw; select the "
+                "rows on the page instead.",
+                level="error",
+            )
+            return None
+        return super().response_action(request, queryset, **kwargs)
+
     def _review(self, request, queryset, status):
         if not self._require_confirmation(request):
             return
+        if status == CompanyProfileObservation.Status.ACCEPTED:
+            observations = list(queryset)
+            if request.POST.get("observation_digest") != self.observations_digest(observations):
+                self.message_user(
+                    request,
+                    "No changes made: the selected observations (or the values they would "
+                    "replace) changed since you reviewed them. Review the current ones and "
+                    "confirm again.",
+                    level="error",
+                )
+                return
+            queryset = observations
         count = 0
         refused = []
         rejected_values = []
@@ -514,6 +581,7 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
                                     raise _ScopedRefusal from None
                             superseded = sorted(before - self._accepted_ids(observation))
                         claim_ids = []
+                        retracted = []
                         restated_closed, restated_conflicted = [], []
                         if accepting:
                             claim_ids = company_evidence.resolve_observation_claims(
@@ -533,6 +601,10 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
                             claim_ids = company_evidence.resolve_observation_claims(
                                 observation, company_evidence.State.SUPERSEDED
                             )
+                            if old_status == CompanyProfileObservation.Status.ACCEPTED:
+                                retracted = company_evidence.retract_observation_facts(
+                                    observation
+                                )
                         OperationalChangeAudit.record(
                             actor=request.user,
                             target_type="company_profile_observation",
@@ -546,6 +618,7 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
                                 "claims_resolved": claim_ids,
                                 "claims_closed": restated_closed,
                                 "claims_conflicted": restated_conflicted,
+                                "evidence_retracted": retracted,
                             },
                             confirmed=True,
                         )
@@ -663,7 +736,7 @@ class OpenClaimFilter(admin.SimpleListFilter):
     parameter_name = "queue"
 
     def __init__(self, request, params, model, model_admin):
-        self._explicit_state = "state__exact" in request.GET
+        self._explicit_state = "state__exact" in request.GET or "legacy" in request.GET
         super().__init__(request, params, model, model_admin)
 
     def lookups(self, request, model_admin):
@@ -702,7 +775,7 @@ class LegacyUnreviewedFilter(admin.SimpleListFilter):
 class CompanyFieldEvidenceAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin.ModelAdmin):
     model = CompanyFieldEvidence
     form = CompanyFieldEvidenceScopeForm
-    list_display = ["organization", "field_key", "value_text", "state", "relation_to_accepted", "source_domain", "observed_at", "last_verified_at"]
+    list_display = ["organization", "field_key", "value_text", "state", "relation_to_accepted", "source_url", "observed_at", "last_verified_at"]
     list_filter = [OpenClaimFilter, LegacyUnreviewedFilter, "state", "field_key"]
     list_select_related = ["organization"]
     search_fields = ["organization__name", "value_text", "source_domain"]
@@ -765,10 +838,37 @@ class CompanyFieldEvidenceAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin
             f"{scope_text}; source {obj.source_url}"
         )
 
+    def get_changelist_instance(self, request):
+        """Resolve the "vs accepted" column for the whole page in two queries."""
+        cl = super().get_changelist_instance(request)
+        rows = [row for row in cl.result_list if row.state in company_evidence.OPEN_CLAIM_STATES]
+        if rows:
+            accepted = {}
+            for row in CompanyFieldEvidence.objects.filter(
+                organization_id__in={r.organization_id for r in rows},
+                field_key__in={r.field_key for r in rows},
+                state=CompanyFieldEvidence.State.ACCEPTED,
+            ).select_related("observation").order_by("observed_at", "id"):
+                accepted[(row.organization_id, row.field_key)] = row
+            reviewed = company_evidence.staff_reviewed_ids(accepted.values())
+            for row in rows:
+                current = accepted.get((row.organization_id, row.field_key))
+                if current is None:
+                    row._vs_accepted = "no accepted value"
+                elif current.value_text != row.value_text:
+                    row._vs_accepted = "differs from accepted"
+                elif current.pk in reviewed:
+                    row._vs_accepted = "matches reviewed value"
+                else:
+                    row._vs_accepted = "legacy value in effect"
+        return cl
+
     @admin.display(description="vs accepted")
     def relation_to_accepted(self, obj):
         if obj.state not in company_evidence.OPEN_CLAIM_STATES:
             return ""
+        if hasattr(obj, "_vs_accepted"):
+            return obj._vs_accepted
         accepted = self._accepted_row(obj)
         if accepted is None:
             return "no accepted value"
@@ -862,13 +962,14 @@ class CompanyFieldEvidenceAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin
                 for claim in claims:
                     if claim.state in company_evidence.OPEN_CLAIM_STATES:
                         seen.setdefault((claim.organization_id, claim.field_key), set()).add(
-                            claim.value_text
+                            (claim.value_text, json.dumps(company_evidence.list_scope(claim.scope_json), sort_keys=True))
                         )
                 if any(len(values) > 1 for values in seen.values()):
                     self.message_user(
                         request,
                         "No changes made: the selection has claims with different values for "
-                        "the same organization and field. Accept one value per field; the "
+                        "the same organization and field (or the same value with different scopes). "
+                        "Accept one claim per field; the "
                         "others become conflicted or superseded.",
                         level="error",
                     )

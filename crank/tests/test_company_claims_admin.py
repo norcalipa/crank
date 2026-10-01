@@ -345,13 +345,17 @@ class ClaimReviewTests(TestCase):
         observation = CompanyProfileObservation.objects.filter(
             organization=self.organization
         ).latest("id")
-        url = reverse("admin:crank_companyprofileobservation_changelist")
-        self.client.post(
-            url,
-            {"action": action, ACTION_CHECKBOX_NAME: [observation.pk], "index": 0, "confirm": "yes"},
-        )
+        self._post_observation_action(action, [observation.pk])
         observation.refresh_from_db()
         return observation
+
+    def _post_observation_action(self, action, pks, **extra):
+        url = reverse("admin:crank_companyprofileobservation_changelist")
+        data = {"action": action, ACTION_CHECKBOX_NAME: pks, "index": 0, **extra}
+        preview = self.client.post(url, data)
+        data.update(dict(preview.context["extra_hidden"]))
+        data["confirm"] = "yes"
+        return self.client.post(url, data, follow=True)
 
     def test_rejecting_an_observation_supersedes_its_open_claims(self):
         self._post_action("accept_claims", [self.rto.pk])
@@ -724,6 +728,117 @@ class ClaimReviewTests(TestCase):
             ).count(),
             1,
         )
+
+    # Adversarial-review round 3 (#474): observation admin, legacy filter, bulk scope.
+
+    def test_select_across_accept_of_observations_is_refused(self):
+        observation = CompanyProfileObservation.objects.filter(
+            organization=self.organization
+        ).latest("id")
+        CompanyProfileObservation.objects.filter(pk=observation.pk).update(
+            status=CompanyProfileObservation.Status.CONFLICTED
+        )
+        url = reverse("admin:crank_companyprofileobservation_changelist")
+        response = self.client.post(
+            url,
+            {"action": "accept_observations", "select_across": "1",
+             ACTION_CHECKBOX_NAME: [observation.pk], "index": 0, "confirm": "yes"},
+            follow=True,
+        )
+        self.assertTrue(any("select" in m.lower() for m in self._messages(response)))
+        observation.refresh_from_db()
+        self.assertEqual(observation.status, CompanyProfileObservation.Status.CONFLICTED)
+        self.assertFalse(OperationalChangeAudit.objects.exists())
+
+    def test_observation_accept_is_bound_to_the_values_it_replaces(self):
+        self._post_action("accept_claims", [self.rto.pk])
+        crawl_company_profile(
+            self.source, client=FakeClient([profile(rto_evidence="Five days, no exceptions")])
+        )
+        observation = CompanyProfileObservation.objects.filter(
+            organization=self.organization
+        ).latest("id")
+        url = reverse("admin:crank_companyprofileobservation_changelist")
+        data = {"action": "accept_observations", ACTION_CHECKBOX_NAME: [observation.pk], "index": 0}
+        preview = self.client.post(url, data)
+        label = preview.context["objects"][0].confirmation_label
+        self.assertIn("REPLACES 'Remote first' (staff-reviewed)", label)
+        digest = dict(preview.context["extra_hidden"])["observation_digest"]
+        # The reviewed value changes between preview and confirm.
+        CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(value_text="Hybrid")
+        response = self.client.post(
+            url, {**data, "confirm": "yes", "observation_digest": digest}, follow=True
+        )
+        self.assertTrue(any("No changes made" in m for m in self._messages(response)))
+        observation.refresh_from_db()
+        self.assertNotEqual(observation.status, CompanyProfileObservation.Status.ACCEPTED)
+        # No digest at all is refused the same way.
+        response = self.client.post(url, {**data, "confirm": "yes"}, follow=True)
+        self.assertTrue(any("No changes made" in m for m in self._messages(response)))
+
+    def test_rejecting_an_accepted_observation_withdraws_the_facts_it_verified(self):
+        observation = self._new_observation_review("accept_observations", value="Five days")
+        self.assertEqual(observation.status, CompanyProfileObservation.Status.ACCEPTED)
+        rto = CompanyFieldEvidence.objects.get(
+            organization=self.organization, field_key=FieldKey.RTO_POLICY, state=State.ACCEPTED
+        )
+        self.assertTrue(company_evidence.is_staff_reviewed(rto))
+        self._post_observation_action("reject_observations", [observation.pk])
+        rto.refresh_from_db()
+        self.assertEqual(rto.state, State.SUPERSEDED)
+        audit = OperationalChangeAudit.objects.get(
+            target_type="company_profile_observation", action="review_rejected"
+        )
+        self.assertIn(rto.pk, audit.new_value["evidence_retracted"])
+
+    def test_bare_legacy_link_lists_the_rows_with_a_bounded_query_count(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        legacy = self._make_legacy()
+        response = self.client.get(self.url, {"legacy": "unreviewed"})
+        self.assertEqual({r.pk for r in response.context["cl"].result_list}, {legacy.pk})
+        for index in range(8):
+            CompanyFieldEvidence.objects.create(
+                organization=self.organization, field_key=FieldKey.FUNDING_ROUND,
+                value_text=f"Series {index}", source_url=f"https://o.example.test/{index}",
+                source_domain="o.example.test", observed_at=legacy.observed_at,
+                state=State.PENDING,
+            )
+        with CaptureQueriesContext(connection) as few:
+            self.client.get(self.url, {"queue": "all"})
+        for index in range(8, 30):
+            CompanyFieldEvidence.objects.create(
+                organization=self.organization, field_key=FieldKey.FUNDING_ROUND,
+                value_text=f"Series {index}", source_url=f"https://o.example.test/{index}",
+                source_domain="o.example.test", observed_at=legacy.observed_at,
+                state=State.PENDING,
+            )
+        with CaptureQueriesContext(connection) as many:
+            response = self.client.get(self.url, {"queue": "all"})
+        self.assertEqual(len(many), len(few))
+        self.assertIn(
+            "no accepted value",
+            [
+                admin_site_registry(CompanyFieldEvidence).relation_to_accepted(r)
+                for r in response.context["cl"].result_list
+            ],
+        )
+
+    def test_bulk_accept_of_one_value_with_different_scopes_is_refused(self):
+        other = self._second_rto_claim(self.rto.value_text, source="https://jobs.example.test/b")
+        CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(
+            scope_json={"countries": ["Germany"], "claimed_domain": "example.test"}
+        )
+        data = {"action": "accept_claims", ACTION_CHECKBOX_NAME: [self.rto.pk, other.pk], "index": 0}
+        preview = self.client.post(self.url, data)
+        data.update(dict(preview.context["extra_hidden"]))
+        response = self.client.post(self.url, {**data, "confirm": "yes"}, follow=True)
+        self.assertTrue(any("different scopes" in m for m in self._messages(response)))
+        self.rto.refresh_from_db()
+        self.assertEqual(self.rto.state, State.PENDING)
+        other.refresh_from_db()
+        self.assertIn(other.state, company_evidence.OPEN_CLAIM_STATES)
 
 
 def admin_site_registry(model):

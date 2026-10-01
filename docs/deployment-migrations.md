@@ -412,17 +412,30 @@ numbered merge migration if a head split remains, keeping
   ("legacy value in effect", "matches reviewed value", "differs from
   accepted"). Accepting a queued claim makes the value reviewed and keeps its
   existing country/role scope; rejecting it retracts the legacy row (it becomes
-  superseded, the field is unverified and stops driving matching) and is audited.
+  superseded, the field is unverified and stops driving matching) and is
+  audited; the field's other open claims are reconciled in the same step
+  (same-value claims from other pages are closed, conflicted ones become
+  pending). Only review-required fields are ever legacy: identity fields (name,
+  domain, locations) are auto-applied, open no legacy claim and are never
+  retracted by a rejection. A queued claim keeps the reading's own fetch time,
+  so accepting it does not make an old reading look freshly verified, and a
+  page that already has an open claim for the field is not queued again.
 - **Rejections are not permanent.** A rejected value is suppressed for the same
-  organization, field, source and value for 30 days after the rejection or the
-  last time the crawl saw it (`REJECTION_SUPPRESSION_DAYS`); afterwards the
-  page may reopen it for review. Rejecting an observation supersedes its claims
+  organization, field, source and value for a fixed 30 days from the rejection
+  (`REJECTION_SUPPRESSION_DAYS`; seeing the value again does not extend it);
+  afterwards the page may reopen it for review. Rejecting an observation supersedes its claims
   instead of rejecting them, so it never blocks other pages' values. Accepting
   an observation is refused for a recently rejected value or over a
   scope-narrowed row with a different value, and its confirmation lists the
   values it carries and the scope it keeps.
+- **Bulk observation review.** `select across all pages` is refused for the
+  observation accept; the confirmation is bound to the selected observations'
+  ids and value hashes and to the accepted rows they would replace (shown as
+  "REPLACES <value> (staff-reviewed)"), and the accept is refused if any changed.
+  Rejecting an observation that staff accepted withdraws the review-required
+  facts that accept wrote (unless a claim re-accepted them).
 - **Bulk claim review.** `select across all pages` is refused for claim actions;
   the confirmation is bound to the selected claims' ids, value hashes and
   states, and the accept is refused if any changed before confirming.
   Selecting several claims with the same value for one field is allowed;
-  different values for one field are refused.
+  different values (or different scopes) for one field are refused.

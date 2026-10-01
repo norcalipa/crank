@@ -169,6 +169,24 @@ class ClaimToMatchingTests(TestCase):
         accepted.refresh_from_db()
         self.assertEqual(accepted.last_verified_at, much_later)
 
+    def test_a_company_name_variant_on_another_page_does_not_block_reverification(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        crawl_company_profile(self.source, client=self._two_pages())
+        first = CompanyFieldEvidence.objects.get(
+            field_key=FieldKey.RTO_POLICY, source_url="https://jobs.example.test/about"
+        )
+        accepted = company_evidence.accept_claim(first, reviewer=self.staff)
+        later = timezone.now() + timedelta(days=3)
+        client = self._two_pages()
+        client.data[1]["extract"]["company_name"] = "Example Labs, Inc."
+        crawl_company_profile(self.source, client=client, now=later)
+        accepted.refresh_from_db()
+        self.assertEqual(accepted.last_verified_at, later)
+        self.assertFalse(self._open_rto().exists())
+
     def _open_rto(self):
         return CompanyFieldEvidence.objects.filter(
             organization=self.organization,

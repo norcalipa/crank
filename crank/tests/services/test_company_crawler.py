@@ -745,9 +745,12 @@ class CompanyProfileAdminTests(TestCase):
             extraction_version=EXTRACTION_VERSION,
             fingerprint="admin-fingerprint",
         )
-        request = RequestFactory().post("/admin/crank/companyprofileobservation/", {"confirm": "yes"})
-        request.user = user
         model_admin = CompanyProfileObservationAdmin(CompanyProfileObservation, AdminSite())
+        request = RequestFactory().post(
+            "/admin/crank/companyprofileobservation/",
+            {"confirm": "yes", "observation_digest": model_admin.observations_digest([observation])},
+        )
+        request.user = user
 
         model_admin.message_user = lambda *_args, **_kwargs: None
         model_admin.accept_observations(request, CompanyProfileObservation.objects.filter(pk=observation.pk))
@@ -778,9 +781,12 @@ class CompanyProfileAdminTests(TestCase):
             extraction_version=EXTRACTION_VERSION,
             fingerprint="admin-fingerprint-accept",
         )
-        request = RequestFactory().post("/admin/crank/companyprofileobservation/", {"confirm": "yes"})
-        request.user = user
         model_admin = CompanyProfileObservationAdmin(CompanyProfileObservation, AdminSite())
+        request = RequestFactory().post(
+            "/admin/crank/companyprofileobservation/",
+            {"confirm": "yes", "observation_digest": model_admin.observations_digest([observation])},
+        )
+        request.user = user
         model_admin.message_user = lambda *_args, **_kwargs: None
 
         model_admin.accept_observations(

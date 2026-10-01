@@ -16,9 +16,11 @@ from crank.models.monitoring import OperationalChangeAudit
 from crank.models.organization import Organization
 from crank.models.publication import PublicationEvent
 from crank.services.company_evidence import (
+    AUTO_APPLY_FIELDS,
     DEFAULT_FRESHNESS_DAYS,
     FIELD_FRESHNESS_POLICY,
     OPEN_CLAIM_STATES,
+    REVIEW_REQUIRED_FIELDS,
     EvidenceNotAcceptable,
     accept_observation_fields,
     field_evidence_payload,
@@ -1143,7 +1145,7 @@ class RoundTwoReviewTests(TestCase):
         self.assertIn(legacy.pk, [r.pk for r in self._legacy_rows()])
         claim = queue_legacy_claim(legacy)
         self.assertEqual(claim.state, State.PENDING)
-        self.assertEqual(claim.scope_json, {})
+        self.assertEqual(claim.scope_json, {"claimed_domain": "example.test"})
         self.assertIsNone(queue_legacy_claim(legacy))
         claim.refresh_from_db()
         self.assertEqual(self._open().count(), 1)
@@ -1194,3 +1196,185 @@ class RoundTwoReviewTests(TestCase):
                 observation=observation,
             )
         )
+
+
+class RoundThreeReviewTests(TestCase):
+    """Adversarial-review round 3 fixes for #474."""
+
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        self.organization = Organization.objects.create(
+            name="Example Labs", url="https://example.test"
+        )
+        self.reviewer = User.objects.create(username="r3-staff")
+
+    def _page(self, path, **fields):
+        return make_observation(
+            self.organization,
+            source_url=f"https://jobs.example.test/{path}",
+            fingerprint=f"r3-{path}-{timezone.now().timestamp()}",
+            **fields,
+        )
+
+    def _open(self, field_key=FieldKey.RTO_POLICY):
+        return CompanyFieldEvidence.objects.filter(
+            organization=self.organization, field_key=field_key, state__in=OPEN_CLAIM_STATES
+        )
+
+    def test_identity_fields_open_no_legacy_claim_and_a_reject_never_retracts_them(self):
+        from crank.services.company_evidence import (
+            observe_review_field,
+            observation_field_values,
+            reject_claim,
+            resolve_field_evidence,
+        )
+
+        about = self._page("about", locations=["Remote"])
+        accept_observation_fields(about, field_keys=AUTO_APPLY_FIELDS)
+        accepted = CompanyFieldEvidence.objects.get(
+            organization=self.organization, field_key=FieldKey.LOCATIONS, state=State.ACCEPTED
+        )
+        team = self._page("team", locations=["Berlin, Germany"], status=Status.CONFLICTED)
+        # A conflicting page repeating the accepted value opens nothing.
+        outcome = observe_review_field(
+            self.organization, FieldKey.LOCATIONS,
+            value=observation_field_values(about)[FieldKey.LOCATIONS],
+            observation=self._page("again", locations=["Remote"], status=Status.CONFLICTED),
+            conflicted=True,
+        )
+        self.assertEqual(outcome, "none")
+        self.assertFalse(self._open(FieldKey.LOCATIONS).exists())
+        # A different value is still a (conflicted) claim, as AC7 intends.
+        observe_review_field(
+            self.organization, FieldKey.LOCATIONS,
+            value=observation_field_values(team)[FieldKey.LOCATIONS],
+            observation=team, conflicted=True,
+        )
+        claim = self._open(FieldKey.LOCATIONS).get()
+        self.assertEqual(claim.state, State.CONFLICTED)
+        # Even a claim repeating the accepted identity value cannot retract it.
+        twin = CompanyFieldEvidence.objects.create(
+            organization=self.organization, field_key=FieldKey.LOCATIONS,
+            value_text=accepted.value_text, source_url="https://jobs.example.test/x",
+            source_domain="jobs.example.test", observed_at=timezone.now(),
+            state=State.PENDING,
+        )
+        reject_claim(twin, reviewer=self.reviewer)
+        reject_claim(claim, reviewer=self.reviewer)
+        accepted.refresh_from_db()
+        self.assertEqual(accepted.state, State.ACCEPTED)
+        # Country matching reads this key.
+        self.assertIn(FieldKey.LOCATIONS, resolve_field_evidence(self.organization))
+
+    def test_rejecting_a_legacy_claim_reconciles_the_fields_other_claims(self):
+        from crank.services.company_evidence import (
+            accept_observation_fields as accept_fields,
+            queue_legacy_claim,
+            record_claim,
+            reject_claim,
+        )
+
+        legacy_obs = self._page("legacy", rto_evidence="Five days")
+        accept_fields(legacy_obs)
+        legacy = CompanyFieldEvidence.objects.get(
+            organization=self.organization, field_key=FieldKey.RTO_POLICY, state=State.ACCEPTED
+        )
+        claim = queue_legacy_claim(legacy)
+        twin = record_claim(
+            self.organization, FieldKey.RTO_POLICY, value="Five days",
+            observation=self._page("b", rto_evidence="Five days"),
+        )
+        other = record_claim(
+            self.organization, FieldKey.RTO_POLICY, value="Remote first",
+            observation=self._page("c", rto_evidence="Remote first"), conflicted=True,
+        )
+        self.assertEqual(other.state, State.CONFLICTED)
+
+        reject_claim(claim, reviewer=self.reviewer)
+
+        twin.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual(twin.state, State.SUPERSEDED)
+        self.assertEqual(other.state, State.PENDING)
+        audit = OperationalChangeAudit.objects.get(
+            action="claim_rejected", target_id=str(claim.pk)
+        )
+        self.assertEqual(audit.new_value["claims_closed"], [twin.pk])
+        self.assertEqual(audit.new_value["claims_pending"], [other.pk])
+
+    def test_legacy_queueing_skips_a_page_with_an_open_claim_and_keeps_provenance(self):
+        from crank.services.company_evidence import (
+            accept_claim,
+            accept_observation_fields as accept_fields,
+            queue_legacy_claim,
+            record_claim,
+        )
+
+        observation = self._page("about", rto_evidence="Remote first")
+        accept_fields(observation)
+        legacy = CompanyFieldEvidence.objects.get(
+            organization=self.organization, field_key=FieldKey.RTO_POLICY, state=State.ACCEPTED
+        )
+        old = timezone.now() - timedelta(days=700)
+        CompanyFieldEvidence.objects.filter(pk=legacy.pk).update(
+            last_successful_fetch_at=old, scope_json={"claimed_domain": "example.test"}
+        )
+        legacy.refresh_from_db()
+        record_claim(
+            self.organization, FieldKey.RTO_POLICY, value="Hybrid, 3 days",
+            observation=observation, conflicted=True,
+        )
+        self.assertIsNone(queue_legacy_claim(legacy))
+        self._open().delete()
+
+        claim = queue_legacy_claim(legacy)
+        self.assertEqual(claim.scope_json, {"claimed_domain": "example.test"})
+        accepted = accept_claim(claim, reviewer=self.reviewer)
+        self.assertEqual(accepted.last_verified_at, old)
+
+    def test_rejecting_an_accepted_observation_withdraws_its_review_required_facts(self):
+        from crank.services.company_evidence import (
+            is_staff_reviewed,
+            resolve_field_evidence,
+            retract_observation_facts,
+        )
+
+        observation = self._page("about", rto_evidence="Five days, no exceptions")
+        rows = accept_observation_fields(observation)
+        rto = next(r for r in rows if r.field_key == FieldKey.RTO_POLICY)
+        OperationalChangeAudit.objects.create(
+            target_type="company_field_evidence", target_id=str(rto.pk),
+            action="observation_accepted", old_value={}, new_value={}, confirmed=True,
+        )
+        observation.status = Status.REJECTED
+        observation.save()
+        rto = CompanyFieldEvidence.objects.get(pk=rto.pk)
+        self.assertFalse(is_staff_reviewed(rto))
+
+        review_ids = {r.pk for r in rows if r.field_key in REVIEW_REQUIRED_FIELDS}
+        self.assertEqual(set(retract_observation_facts(observation)), review_ids)
+        rto.refresh_from_db()
+        self.assertEqual(rto.state, State.SUPERSEDED)
+        self.assertNotIn(FieldKey.RTO_POLICY, resolve_field_evidence(self.organization))
+        identity = CompanyFieldEvidence.objects.filter(
+            observation=observation, field_key__in=AUTO_APPLY_FIELDS, state=State.ACCEPTED
+        )
+        self.assertTrue(identity.exists())
+
+    def test_retracting_facts_leaves_rows_a_claim_accepted_and_orgless_observations(self):
+        from crank.services.company_evidence import accept_claim, retract_observation_facts
+
+        observation = self._page("about", rto_evidence="Remote first")
+        claim = CompanyFieldEvidence.objects.create(
+            organization=self.organization, field_key=FieldKey.RTO_POLICY,
+            value_text="Remote first", source_url=observation.source_url,
+            source_domain="jobs.example.test", observation=observation,
+            observed_at=timezone.now(), state=State.PENDING,
+        )
+        accepted = accept_claim(claim, reviewer=self.reviewer)
+        self.assertEqual(retract_observation_facts(observation), [])
+        accepted.refresh_from_db()
+        self.assertEqual(accepted.state, State.ACCEPTED)
+        observation.organization = None
+        self.assertEqual(retract_observation_facts(observation), [])

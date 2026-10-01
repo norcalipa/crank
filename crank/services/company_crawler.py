@@ -190,10 +190,10 @@ def _organization_for(domain: str, name: str) -> tuple[Organization | None, list
 # re-verification.
 COSMETIC_CONFLICT_FIELDS = frozenset({"description", "logo_url", "brand_metadata"})
 
-# Identity conflicts (against any page) make a page an unreliable witness.
-IDENTITY_CONFLICT_FIELDS = frozenset(
-    {"organization_identity", "stale_observation", "observed_domain", "observed_name"}
-)
+# Identity conflicts make a page an unreliable witness. A name or domain
+# variant is not one (the organization was resolved unambiguously);
+# ``_may_reverify`` still blocks a real change on the page itself.
+IDENTITY_CONFLICT_FIELDS = frozenset({"organization_identity", "stale_observation"})
 
 _COMPARED_FIELDS = (
     "source_url", "observed_domain", "observed_name", "description", "locations",

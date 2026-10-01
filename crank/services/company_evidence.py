@@ -445,28 +445,49 @@ def record_claim(
     ).first()
 
 
-def is_staff_reviewed(row: CompanyFieldEvidence) -> bool:
-    """True when a person accepted this evidence row.
+def staff_reviewed_ids(rows) -> set[int]:
+    """Primary keys of ``rows`` a person accepted (one audit query for all).
 
     Rows from an operator-accepted observation, an accepted claim or a staff
     correction (#477 writes ``validation_version`` ``manual-correction.v1``
-    with no observation) are staff-reviewed. A row whose observation was ``AUTO_APPLIED`` and has no
-    ``claim_accepted`` / ``observation_accepted`` audit is a legacy crawl
-    acceptance from before review-required fields existed (#474).
+    with no observation) are staff-reviewed. A row whose observation was
+    ``AUTO_APPLIED`` and has no ``claim_accepted`` / ``observation_accepted``
+    audit is a legacy crawl acceptance from before review-required fields
+    existed (#474). An ``observation_accepted`` audit stops counting once that
+    observation was rejected afterwards; a ``claim_accepted`` audit always does.
     """
-    observation = row.observation
-    if observation is not None and observation.status == ObservationStatus.ACCEPTED:
-        return True
-    if observation is None and (row.validation_version or "").startswith(
-        STAFF_VALIDATION_PREFIXES
-    ):
-        return True
-    return OperationalChangeAudit.objects.filter(
-        target_type="company_field_evidence",
-        target_id=str(row.pk),
-        action__in=("claim_accepted", "observation_accepted"),
-        confirmed=True,
-    ).exists()
+    reviewed, undecided = set(), []
+    for row in rows:
+        observation = row.observation
+        if observation is not None and observation.status == ObservationStatus.ACCEPTED:
+            reviewed.add(row.pk)
+        elif observation is None and (row.validation_version or "").startswith(
+            STAFF_VALIDATION_PREFIXES
+        ):
+            reviewed.add(row.pk)
+        else:
+            undecided.append(row)
+    if undecided:
+        by_target = {str(row.pk): row for row in undecided}
+        for target_id, action in OperationalChangeAudit.objects.filter(
+            target_type="company_field_evidence",
+            target_id__in=list(by_target),
+            action__in=("claim_accepted", "observation_accepted"),
+            confirmed=True,
+        ).values_list("target_id", "action"):
+            row = by_target[target_id]
+            observation_rejected = (
+                row.observation is not None
+                and row.observation.status == ObservationStatus.REJECTED
+            )
+            if action == "claim_accepted" or not observation_rejected:
+                reviewed.add(row.pk)
+    return reviewed
+
+
+def is_staff_reviewed(row: CompanyFieldEvidence) -> bool:
+    """True when a person accepted this evidence row (see :func:`staff_reviewed_ids`)."""
+    return row.pk in staff_reviewed_ids([row])
 
 
 def observe_review_field(
@@ -515,6 +536,19 @@ def observe_review_field(
             return "none"
         accepted = _accepted_row_locked(organization_id, field_key)
         equal = accepted is not None and accepted.value_text == value_text
+        if equal and field_key not in REVIEW_REQUIRED_FIELDS:
+            # Identity fields are auto-applied by design: an accepted value this
+            # page repeats needs no review, so it opens no (legacy) claim.
+            _close_claims(
+                CompanyFieldEvidence.objects.filter(
+                    organization_id=organization_id,
+                    field_key=field_key,
+                    source_url=observation.source_url,
+                    state__in=OPEN_CLAIM_STATES,
+                ),
+                now,
+            )
+            return "none"
         if equal and is_staff_reviewed(accepted):
             _close_claims(
                 CompanyFieldEvidence.objects.filter(
@@ -712,7 +746,9 @@ def accept_claim(
             fresh.last_changed_at = previous[0].last_changed_at
         fresh.state = State.ACCEPTED
         fresh.last_checked_at = now
-        fresh.last_verified_at = now
+        # Verified as of the reading the reviewer accepted, never later: a
+        # re-queued legacy reading must not look freshly read.
+        fresh.last_verified_at = min(now, fresh.last_successful_fetch_at or now)
         fresh.save()
         closed, conflicted = restate_open_claims(
             fresh.organization_id, fresh.field_key, fresh.value_text, now
@@ -750,6 +786,30 @@ def accept_claim(
     return fresh
 
 
+def _restate_after_retraction(
+    organization_id, field_key: str, value_text: str, now: datetime, *, exclude_pk
+) -> dict:
+    """After staff retracted ``value_text``, reconcile the field's other open claims.
+
+    Same-value claims from other pages are closed (the value was just rejected);
+    conflicted claims have no accepted row to conflict with any more, so they
+    become pending. The caller holds the organization lock.
+    """
+    others = CompanyFieldEvidence.objects.select_for_update().filter(
+        organization_id=organization_id,
+        field_key=field_key,
+        state__in=OPEN_CLAIM_STATES,
+    ).exclude(pk=exclude_pk)
+    closed = list(others.filter(value_text=value_text))
+    _close_claims(closed, now)
+    reopened = list(others.filter(state=State.CONFLICTED).exclude(value_text=value_text))
+    if reopened:
+        CompanyFieldEvidence.objects.filter(
+            pk__in=[row.pk for row in reopened]
+        ).update(state=State.PENDING, modified=now)
+    return {"closed": [r.pk for r in closed], "pending": [r.pk for r in reopened]}
+
+
 def reject_claim(
     claim: CompanyFieldEvidence, *, reviewer, now: datetime | None = None
 ) -> CompanyFieldEvidence:
@@ -767,13 +827,19 @@ def reject_claim(
         previous_state = fresh.state
         retracted = []
         accepted = _accepted_row_locked(fresh.organization_id, fresh.field_key)
+        reconciled = {"closed": [], "pending": []}
         if (
-            accepted is not None
+            fresh.field_key in REVIEW_REQUIRED_FIELDS
+            and accepted is not None
             and accepted.value_text == fresh.value_text
             and not is_staff_reviewed(accepted)
         ):
             _close_claims([accepted], now)
             retracted = [accepted.pk]
+            reconciled = _restate_after_retraction(
+                fresh.organization_id, fresh.field_key, fresh.value_text, now,
+                exclude_pk=fresh.pk,
+            )
             publication.record_event(
                 target_type=PublicationEvent.TargetType.ORGANIZATION,
                 target_id=fresh.organization_id,
@@ -799,6 +865,8 @@ def reject_claim(
                 "value_sha256": value_digest(fresh.value_text),
                 "value_length": len(fresh.value_text),
                 "retracted": retracted,
+                "claims_closed": reconciled["closed"],
+                "claims_pending": reconciled["pending"],
             },
             confirmed=True,
         )
@@ -883,8 +951,9 @@ def legacy_unreviewed_rows(organization=None) -> list[CompanyFieldEvidence]:
     ).select_related("organization", "observation")
     if organization is not None:
         rows = rows.filter(organization=organization)
-    return [row for row in rows.order_by("organization_id", "field_key", "id")
-            if not is_staff_reviewed(row)]
+    rows = list(rows.order_by("organization_id", "field_key", "id"))
+    reviewed = staff_reviewed_ids(rows)
+    return [row for row in rows if row.pk not in reviewed]
 
 
 def queue_legacy_claim(row: CompanyFieldEvidence, *, now: datetime | None = None):
@@ -894,7 +963,7 @@ def queue_legacy_claim(row: CompanyFieldEvidence, *, now: datetime | None = None
     repeats the row's value and source, so accepting it makes the value
     reviewed (scope carries over) and rejecting it retracts the legacy row.
     Returns the claim, or ``None`` when the row is not a legacy unreviewed
-    accepted row or a claim for it is already open.
+    accepted row or the page already has an open claim for the field.
     """
     now = now or timezone.now()
     with transaction.atomic():
@@ -906,9 +975,10 @@ def queue_legacy_claim(row: CompanyFieldEvidence, *, now: datetime | None = None
             organization_id=fresh.organization_id,
             field_key=fresh.field_key,
             source_url=fresh.source_url,
-            value_text=fresh.value_text,
             state__in=OPEN_CLAIM_STATES,
         ).exists():
+            # One open claim per (organization, field, page): a page that
+            # already has one (for this value or another) is not re-stated.
             return None
         return CompanyFieldEvidence.objects.create(
             organization_id=fresh.organization_id,
@@ -917,7 +987,11 @@ def queue_legacy_claim(row: CompanyFieldEvidence, *, now: datetime | None = None
             source_url=fresh.source_url,
             source_domain=fresh.source_domain,
             observation=fresh.observation,
-            scope_json={},
+            scope_json=(
+                {"claimed_domain": fresh.scope_json["claimed_domain"]}
+                if (fresh.scope_json or {}).get("claimed_domain")
+                else {}
+            ),
             observed_at=fresh.observed_at,
             validation_version=fresh.validation_version,
             extractor_version=fresh.extractor_version,
@@ -1117,3 +1191,47 @@ __all__ = [
     "resolve_field_evidence",
     "resolve_field_evidence_for_orgs",
 ]
+
+
+def retract_observation_facts(
+    observation: CompanyProfileObservation, *, now: datetime | None = None
+) -> list[int]:
+    """Withdraw the review-required facts a whole-observation accept wrote.
+
+    Rejecting an observation staff had accepted undoes that accept: the
+    accepted review-required rows it created (and nobody re-accepted through a
+    claim) become ``superseded``, so they stop driving matching and stop being
+    re-verified. Returns the retracted ids.
+    """
+    if observation.organization_id is None:
+        return []
+    now = now or timezone.now()
+    with transaction.atomic():
+        _lock_organization(observation.organization_id)
+        rows = list(
+            CompanyFieldEvidence.objects.select_for_update().filter(
+                organization_id=observation.organization_id,
+                observation=observation,
+                state=State.ACCEPTED,
+                field_key__in=sorted(REVIEW_REQUIRED_FIELDS),
+            )
+        )
+        by_target = {str(row.pk): row for row in rows}
+        claim_accepted = set(
+            OperationalChangeAudit.objects.filter(
+                target_type="company_field_evidence",
+                target_id__in=list(by_target),
+                action="claim_accepted",
+                confirmed=True,
+            ).values_list("target_id", flat=True)
+        )
+        retract = [row for tid, row in by_target.items() if tid not in claim_accepted]
+        if retract:
+            _close_claims(retract, now)
+            publication.record_event(
+                target_type=PublicationEvent.TargetType.ORGANIZATION,
+                target_id=observation.organization_id,
+                event_kind=PublicationEvent.EventKind.CHANGED,
+                payload={"status": "retracted"},
+            )
+    return [row.pk for row in retract]
