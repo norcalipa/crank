@@ -65,6 +65,9 @@ DEFAULT_E2E_PASSWORD = "e2e-throwaway-password"
 E2E_USERNAME = "e2e_user"
 #: Second throwaway account for account-isolation journeys (issue #479).
 E2E_USERNAME_B = "e2e_user_b"
+#: Dedicated account for the priorities editor journeys (issue #480): they
+#: mutate the saved document, so they must not share state with other specs.
+E2E_USERNAME_PREFS = "e2e_prefs_user"
 
 #: Fixture names are unique keys, which makes re-runs idempotent and keeps
 #: the dataset obviously synthetic ("E2E " prefix everywhere).
@@ -408,7 +411,7 @@ class Command(BaseCommand):
 
         # -- Password test account with a non-default preference document ----
         user_model = get_user_model()
-        for username in (E2E_USERNAME, E2E_USERNAME_B):
+        for username in (E2E_USERNAME, E2E_USERNAME_B, E2E_USERNAME_PREFS):
             user, _ = user_model.objects.get_or_create(
                 username=username,
                 defaults={"email": f"{username}@example.test", "first_name": "E2E"},
@@ -437,5 +440,5 @@ class Command(BaseCommand):
                 defaults={"preferences": preferences},
             )
             _sync_fields(preference, {"preferences": preferences})
-        created["users"] = 2
+        created["users"] = 3
         return created
