@@ -72,13 +72,16 @@ lands — implemented-before-documented rule, per #463's registry).
   as integers, floats, numeric strings, out-of-range values and payloads over
   2 KB are rejected with 400 `invalid_context` before anything is persisted or
   rate-limited). Entities are re-resolved server side under the same
-  visibility rules as the rankings page and `/api/organization/<id>/` (active
-  organizations: `status=1`; `Organization.public` only means publicly traded
-  and is not a visibility flag), active listings, active algorithms, and the
+  visibility rules as the assistant catalog, match generation and employer
+  resolution (active organizations with `Organization.public=True`; publicly
+  traded is the separate `funding_round == "P"`, so a non-public organization
+  is never pinned, citable, saved as a result card or openable), active
+  listings, active algorithms, and the
   caller's own preference/result state;
   unresolved or invisible ids are dropped and reported, never echoed as data.
   Names reach the model only as server-resolved, `!r`-quoted text bounded to
-  120 characters (in the page-context, catalog and listing blocks alike);
+  120 characters of rendered (escaped) text (in the page-context, catalog and
+  listing blocks alike), so non-printable code points cannot expand them;
   the block is capped at 2000 characters by dropping whole lines, never by
   cutting mid-quote, and the stale line is always kept. Any `preference_revision` /
   `result_generation` that differs from the server's (forward or backward) is
@@ -101,14 +104,16 @@ lands — implemented-before-documented rule, per #463's registry).
   canonical dicts (ids and enums only; no URLs, no free text, no `search`
   filter, at most 3 actions) and checks every referenced organization id
   against the ids exposed in the turn (catalog rows plus the validated page
-  context). Actions are advisory, so a violating action is dropped rather
+  context; the service gate uses the full set the orchestrator reports, not
+  only the page-context ids). Turns without page context return no actions
+  (`no_context`). Actions are advisory, so a violating action is dropped rather
   than failing the turn: the rest of the reply is delivered and the drop is
   counted (`actions_dropped`, `action_drop_reasons`) and logged with a
   specific reason (`unknown_type`, `bad_schema`, `unexposed_id`,
-  `over_limit`, `stale_context`). Every provider's actions pass the same
+  `over_limit`, `stale_context`, `no_context`). Every provider's actions pass the same
   unconditional check in `JobSearchService.run_turn`, and actions are
   suppressed while the page context is stale. The actions section of the
-  prompt is only sent on turns that carry page context. Actions are ephemeral:
+  prompt is only sent on turns that carry fresh page context (not stale, not absent). Actions are ephemeral:
   never persisted and omitted from idempotent replays. Earlier #487 controls
   remain: unknown keys/names/tools, wrong types and oversized values fail
   closed, and prompt-injection fixtures never expand the tool surface.
