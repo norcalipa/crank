@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 import * as React from 'react';
 
@@ -850,6 +850,20 @@ describe('OrganizationDetailsPopup', () => {
             return Promise.reject(new Error('not mocked'));
         });
     };
+
+    test('separates the source from the verified date with a comma and a space, and names a missing source', async () => {
+        provenanceWithEvidence();
+        render(<OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}}/>);
+        const meta = await screen.findByTestId('field-evidence-rto_policy');
+        expect(meta).toHaveTextContent('example.com, last verified');
+        cleanup();
+        provenanceWithEvidence({fields: [{
+            field_key: 'rto_policy', state: 'accepted', value: 'Remote first', source_domain: '',
+            last_verified_at: '2025-01-10T12:00:00Z', stale: false, scope: {},
+        }]});
+        render(<OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}}/>);
+        expect(await screen.findByTestId('field-evidence-rto_policy')).toHaveTextContent('unknown source, last verified');
+    });
 
     test('renders verified field rows with value, source domain and observed date', async () => {
         provenanceWithEvidence();

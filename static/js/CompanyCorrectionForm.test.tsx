@@ -833,6 +833,20 @@ describe('CompanyCorrectionForm', () => {
             expect(keys[2]).not.toBe(keys[0]);
         });
 
+        test('falls back to the field name when the response has no field_label', async () => {
+            postResponse = () => Promise.resolve(jsonResponse(201, {...SAVED, field_label: ''}));
+            renderForm();
+            await fillAndSubmit();
+            expect(await screen.findByTestId('correction-status')).toHaveTextContent('Your suggestion · RTO Policy');
+        });
+
+        test('mounting with no focused element still unmounts cleanly', async () => {
+            const spy = jest.spyOn(document, 'activeElement', 'get').mockReturnValue(null);
+            const {unmount} = renderForm();
+            expect(() => unmount()).not.toThrow();
+            spy.mockRestore();
+        });
+
         test('labels the saved suggestion from the response field_label', async () => {
             postResponse = () => Promise.resolve(jsonResponse(201, {...SAVED, field_label: 'Funding stage'}));
             renderForm();
