@@ -4,6 +4,7 @@ import '@testing-library/jest-dom';
 import * as React from 'react';
 import {act, fireEvent, render, screen, waitFor, within} from '@testing-library/react';
 import PrioritiesSection, {SidebarPriorities} from './PrioritiesSection';
+import {prioritiesSurface, subscribeDesktop} from './surface';
 import {
     getWorkspaceSnapshot, resetWorkspaceForTests, setPrioritiesEditorOpen, setPrioritiesRevision,
     setWorkspaceAccount,
@@ -75,18 +76,13 @@ async function openEditor(variant: 'main' | 'sidebar' = 'main') {
 }
 
 describe('PrioritiesSection', () => {
-    test('signed out: main shows sign-in, sidebar renders nothing, nothing is fetched', () => {
+    test('signed out renders nothing and fetches nothing', () => {
         const f = mockFetch({});
-        const {container, rerender} = render(<PrioritiesSection variant="main" authenticated={false} signInUrl="/login/"/>);
-        expect(screen.getByRole('link', {name: 'Sign in'})).toHaveAttribute('href', '/login/');
+        const {container, rerender} = render(<PrioritiesSection variant="main" authenticated={false}/>);
+        expect(container).toBeEmptyDOMElement();
         rerender(<PrioritiesSection variant="sidebar" authenticated={false}/>);
         expect(container).toBeEmptyDOMElement();
         expect(f).not.toHaveBeenCalled();
-    });
-
-    test('signed out main without sign-in url renders no link', () => {
-        render(<PrioritiesSection variant="main" authenticated={false}/>);
-        expect(screen.queryByRole('link')).not.toBeInTheDocument();
     });
 
     test('loading skeleton, then populated chips with non-color cues', async () => {
@@ -217,18 +213,17 @@ describe('PrioritiesSection', () => {
         expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBeNull();
     });
 
-    test('an error on an unsupported field opens its group; review names fields as the editor does', async () => {
+    test('a field error names the field in the footer summary', async () => {
         mockFetch({
             '/api/agent/preferences/propose/': () => json({error: {type: 'invalid_request', message: 'bad',
-                field_errors: {'compensation.equity_liquidity_required': ['Nope.']}}}, 400),
+                field_errors: {'compensation.minimum_salary': ['Nope.']}}}, 400),
             '/api/agent/preferences/': () => json(snapshotBody(2, [chip])),
         });
         render(<PrioritiesSection variant="main" authenticated/>);
         const form = await openEditor();
-        fireEvent.click(within(form).getByLabelText('Equity liquidity required'));
+        fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '5'}});
         fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
-        expect(await screen.findByTestId('priorities-form-error')).toHaveTextContent('Fix 1 field: Equity liquidity required');
-        expect(form.querySelector('details')).toHaveAttribute('open');
+        expect(await screen.findByTestId('priorities-form-error')).toHaveTextContent('Fix 1 field: Minimum base salary');
     });
 
     test('review step announces its change count and uses editor labels', async () => {
@@ -281,7 +276,6 @@ describe('PrioritiesSection', () => {
         fireEvent.change(within(form).getByLabelText('Currency'), {target: {value: 'EUR'}});
         fireEvent.change(within(form).getByLabelText('Culture'), {target: {value: 'kind, curious'}});
         fireEvent.change(within(form).getByLabelText('Minimum equity'), {target: {value: '2.5'}});
-        fireEvent.click(within(form).getByLabelText('Equity liquidity required'));
         expect(within(form).getByText('Ask the assistant to change these.')).toBeInTheDocument();
         fireEvent.submit(form);
         await screen.findByRole('heading', {name: 'Review your changes'});
@@ -290,7 +284,6 @@ describe('PrioritiesSection', () => {
         expect(body.patch.set).toMatchObject({
             'work_location.modes': ['remote'], 'compensation.currency': 'EUR',
             culture: ['kind', 'curious'], 'compensation.equity_minimum_percent': 2.5,
-            'compensation.equity_liquidity_required': true,
         });
     });
 
@@ -441,6 +434,57 @@ describe('PrioritiesSection', () => {
         await waitFor(() => expect(screen.queryByRole('form', {name: 'Edit priorities'})).not.toBeInTheDocument());
     });
 
+    test('editor maps server messages to field labels, hides importance on empty fields, lists unsupported read-only', async () => {
+        mockFetch({
+            '/api/agent/preferences/propose/': () => json({error: {type: 'invalid_request', message: 'bad',
+                field_errors: {
+                    'compensation.minimum_salary': ["Field 'compensation.minimum_salary' must be non-negative"],
+                    'compensation.equity_minimum_percent': ["Field 'compensation.equity_minimum_percent' is required"],
+                }}}, 400),
+            '/api/agent/preferences/': () => {
+                const body = snapshotBody(2, [chip]);
+                body.fields.push(field({path: 'compensation.minimum_total_compensation', label: 'Minimum total compensation',
+                                        type: 'int', value: 250000, set: true, supported: false}));
+                return json(body);
+            },
+        });
+        render(<PrioritiesSection variant="main" authenticated/>);
+        const form = await openEditor();
+        const salaryRow = within(form).getByLabelText('Minimum base salary').closest('[data-testid="priorities-field"]') as HTMLElement;
+        expect(within(salaryRow).queryByRole('group', {name: /importance/})).not.toBeInTheDocument();
+        fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '-5'}});
+        expect(within(salaryRow).getByRole('group', {name: /importance/})).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+        expect(await screen.findByText('Minimum base salary can\u2019t be negative.')).toBeInTheDocument();
+        expect(screen.getByText('Minimum equity is required')).toBeInTheDocument();
+        const group = within(form).getByText('Not used for matching yet (', {exact: false}).closest('details') as HTMLElement;
+        expect(within(group).queryByRole('textbox')).not.toBeInTheDocument();
+        expect(group.querySelector('#priority-main-compensation-minimum_total_compensation')).toHaveTextContent('$250,000');
+        expect(group.querySelector('#priority-main-compensation-minimum_total_compensation')).toHaveClass('is-set');
+        expect(group.querySelector('#priority-main-compensation-equity_liquidity_required')).toHaveTextContent('Not set');
+    });
+
+    test('scrolling the editor marks the scroll region', async () => {
+        mockFetch({'/api/agent/preferences/': () => json(snapshotBody(2, [chip]))});
+        render(<PrioritiesSection variant="main" authenticated/>);
+        const form = await openEditor();
+        const region = form.closest('.priorities-scroll') as HTMLElement;
+        expect(region).not.toHaveClass('is-scrolled');
+        region.scrollTop = 20;
+        fireEvent.scroll(region);
+        expect(region).toHaveClass('is-scrolled');
+        region.scrollTop = 0;
+        fireEvent.scroll(region);
+        expect(region).not.toHaveClass('is-scrolled');
+    });
+
+    test('reset confirmation has its own heading', async () => {
+        mockFetch({'/api/agent/preferences/': () => json(snapshotBody(2, [chip]))});
+        render(<PrioritiesSection variant="main" authenticated/>);
+        fireEvent.click(await screen.findByRole('button', {name: 'Reset priorities'}));
+        expect(screen.getByText('Reset priorities?')).toBeInTheDocument();
+    });
+
     test('account switch and private-state purge drop the shown priorities', async () => {
         let body = snapshotBody(1, [chip]);
         mockFetch({'/api/agent/preferences/': () => json(body)});
@@ -455,6 +499,46 @@ describe('PrioritiesSection', () => {
         act(() => { document.dispatchEvent(new Event('crank:private-state-purged')); });
         expect(screen.getByTestId('priority-chips-skeleton')).toBeInTheDocument();
         release(json(snapshotBody(1, [chip])));
+    });
+
+    test('SidebarPriorities yields to the main block on desktop', async () => {
+        mockFetch({'/api/agent/preferences/': () => json(snapshotBody(1, [chip]))});
+        const main = document.createElement('div');
+        main.id = 'priorities-main';
+        document.body.appendChild(main);
+        let matches = true;
+        const listeners = new Set<() => void>();
+        window.matchMedia = jest.fn(() => ({
+            get matches() { return matches; },
+            addEventListener: (_: string, fn: () => void) => listeners.add(fn),
+            removeEventListener: (_: string, fn: () => void) => listeners.delete(fn),
+        })) as unknown as typeof window.matchMedia;
+        try {
+            act(() => setWorkspaceAccount({status: 'authenticated', key: 'u'}));
+            const {container, unmount} = render(<SidebarPriorities/>);
+            expect(container).toBeEmptyDOMElement();
+            expect(prioritiesSurface()).toBe('main');
+            matches = false;
+            act(() => listeners.forEach((fn) => fn()));
+            expect(await screen.findAllByTestId('priority-chip')).toHaveLength(1);
+            expect(prioritiesSurface()).toBe('sidebar');
+            unmount();
+            expect(listeners.size).toBe(0);
+        } finally {
+            main.remove();
+            delete (window as {matchMedia?: unknown}).matchMedia;
+        }
+    });
+
+    test('surface falls back to the sidebar without matchMedia or a main block', () => {
+        expect(prioritiesSurface()).toBe('sidebar');
+        const main = document.createElement('div');
+        main.id = 'priorities-main';
+        document.body.appendChild(main);
+        expect(prioritiesSurface()).toBe('sidebar');
+        const stop = subscribeDesktop(() => undefined);
+        stop();
+        main.remove();
     });
 
     test('SidebarPriorities follows the store account and stays hidden until authenticated', async () => {

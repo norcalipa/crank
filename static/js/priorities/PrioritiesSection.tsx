@@ -18,6 +18,7 @@ import PriorityEditor from './PriorityEditor';
 import ReviewChanges from './ReviewChanges';
 import {preferencePathLabel} from './format';
 import {Draft, DraftValue, buildPatch, emptyDraft, isDirty} from './patch';
+import {prioritiesSurface, subscribeDesktop} from './surface';
 import {useWorkspace} from './useWorkspace';
 import {createLatestGuard} from '../workspace/requests';
 import {setPrioritiesEditorOpen, setPrioritiesRevision} from '../workspace/store';
@@ -28,15 +29,26 @@ interface Props {
     variant: PrioritiesVariant;
     // false/undefined-unknown: signed out. The sidebar renders nothing unless true.
     authenticated: boolean;
-    signInUrl?: string;
 }
 
 type Phase = 'loading' | 'ready' | 'error';
 type Step = 'view' | 'edit' | 'review' | 'applied' | 'confirm-reset';
 
+// Scroll region for the editor / review. The border appears once scrolled so
+// content can never be sliced under the title without a visible edge.
+const ScrollRegion: React.FC<{children: React.ReactNode}> = ({children}) => {
+    const [scrolled, setScrolled] = React.useState(false);
+    return (
+        <div className={`priorities-scroll${scrolled ? ' is-scrolled' : ''}`}
+             onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}>
+            {children}
+        </div>
+    );
+};
+
 const STALE_COPY = 'Your priorities changed elsewhere. Review the latest before applying.';
 
-const PrioritiesSection: React.FC<Props> = ({variant, authenticated, signInUrl}) => {
+const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const workspace = useWorkspace();
     const accountKey = workspace.account.key;
     const [phase, setPhase] = React.useState<Phase>('loading');
@@ -260,16 +272,8 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated, signInUrl})
 
     const className = `priorities-section priorities-${variant}`;
 
-    if (!authenticated) {
-        if (variant === 'sidebar') return null;
-        return (
-            <section className={className} aria-labelledby="priorities-title-main" data-testid="priorities-signed-out">
-                <h2 id="priorities-title-main" className="h6 priorities-title">Your priorities</h2>
-                <p className="priorities-empty">Sign in to save your priorities.</p>
-                {signInUrl && <a className="btn btn-sm btn-primary" href={signInUrl}>Sign in</a>}
-            </section>
-        );
-    }
+    // Signed out: the page's own sign-in prompt is the call to action.
+    if (!authenticated) return null;
 
     const titleId = `priorities-title-${variant}`;
     let body: React.ReactNode;
@@ -278,14 +282,17 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated, signInUrl})
     } else if (phase === 'error' && !snapshot) {
         body = (
             <div className="priorities-load-error" role="alert" data-testid="priorities-load-error">
-                <i className="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
-                <span className="flex-grow-1">{loadError || 'Couldn\u2019t load your priorities.'}</span>
-                <button type="button" className="btn btn-sm btn-outline-light ms-auto" onClick={() => void load()}>Try again</button>
+                <i className="fa-solid fa-triangle-exclamation priorities-load-error-icon" aria-hidden="true"></i>
+                <div className="priorities-load-error-text">
+                    <strong>Couldn\u2019t load your priorities.</strong>
+                    {loadError && <span className="d-block small">{loadError}</span>}
+                </div>
+                <button type="button" className="btn btn-sm btn-outline-light priorities-load-error-retry" onClick={() => void load()}>Try again</button>
             </div>
         );
     } else if (step === 'edit' && snapshot) {
         body = (
-            <div className="priorities-scroll">
+            <ScrollRegion>
                 <PriorityEditor fields={fields} draft={draft} fieldErrors={fieldErrors} dirty={dirty}
                                 pending={busy} formError={formError} idPrefix={`priority-${variant}`}
                                 onChange={(path: string, value: DraftValue) =>
@@ -293,17 +300,17 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated, signInUrl})
                                 onToggleHard={(path, hard) =>
                                     setDraft((d) => ({...d, hard: {...d.hard, [path]: hard}}))}
                                 onReview={() => void startReview()} onCancel={close}/>
-            </div>
+            </ScrollRegion>
         );
     } else if (step === 'review' && proposal) {
         body = (
-            <div className="priorities-scroll">
+            <ScrollRegion>
                 <ReviewChanges changes={proposal.changes} labels={labels} pending={busy} error={reviewError} stale={stale}
                                onApply={() => void apply('account')}
                                onApplySearchOnly={() => void apply('search')}
                                onEdit={() => setStep('edit')} onCancel={close}
                                onReviewLatest={() => void reviewLatest()}/>
-            </div>
+            </ScrollRegion>
         );
     } else if (step === 'applied' && applied) {
         body = (
@@ -315,6 +322,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated, signInUrl})
     } else if (step === 'confirm-reset') {
         body = (
             <div className="priorities-card priorities-confirm" role="group" aria-label="Confirm reset">
+                <p className="priorities-heading mb-1">Reset priorities?</p>
                 <p>Reset all saved priorities to their defaults? Your conversations are not changed. Job matches will update.</p>
                 <div className="chat-actions" role="group" aria-label="Reset actions">
                     <button type="button" className="btn btn-sm btn-danger"
@@ -332,8 +340,8 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated, signInUrl})
             <>
                 {formError && (
                     <div className="priorities-load-error" role="alert" data-testid="priorities-view-error">
-                        <i className="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
-                        <span className="flex-grow-1">{formError}</span>
+                        <i className="fa-solid fa-triangle-exclamation priorities-load-error-icon" aria-hidden="true"></i>
+                        <div className="priorities-load-error-text">{formError}</div>
                     </div>
                 )}
                 {chips.length > 0 ? (
@@ -367,6 +375,8 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated, signInUrl})
 
 export const SidebarPriorities: React.FC = () => {
     const workspace = useWorkspace();
+    const surface = React.useSyncExternalStore(subscribeDesktop, prioritiesSurface, () => 'sidebar' as const);
+    if (surface === 'main') return null;
     return <PrioritiesSection variant="sidebar" authenticated={workspace.account.status === 'authenticated'}/>;
 };
 

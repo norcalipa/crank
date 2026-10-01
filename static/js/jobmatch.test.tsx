@@ -31,13 +31,13 @@ beforeEach(() => {
 });
 
 describe('jobmatch entry (issue #480 / #472 regression)', () => {
-    test('a signed-out page shows the sign-in state in both the job panel and priorities, without fetching', async () => {
+    test('a signed-out page shows one sign-in state in the job panel and no priorities, without fetching', async () => {
         mountPage(false);
         await boot();
         const cta = await screen.findByTestId('job-match-sign-in-cta');
         expect(cta).toHaveAttribute('href', '/accounts/login/?next=/chat/');
-        expect(screen.getByTestId('priorities-signed-out')).toBeInTheDocument();
-        expect(screen.getByRole('link', {name: 'Sign in'})).toHaveAttribute('href', '/accounts/login/?next=/chat/');
+        expect(screen.queryByTestId('priorities-signed-out')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('priorities-section')).not.toBeInTheDocument();
         expect((global as any).fetch).not.toHaveBeenCalled();
     });
 

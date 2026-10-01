@@ -8,6 +8,7 @@
 import * as React from 'react';
 import type {EditorField} from './api';
 import {Draft, DraftValue, toDraftValue} from './patch';
+import {preferenceValueLabel} from './format';
 
 export interface PriorityEditorProps {
     fields: EditorField[];
@@ -104,6 +105,10 @@ function FieldRow({field, draft, fieldErrors, inputId, onChange, onToggleHard, c
     const hard = draft.hard[field.path] ?? field.hard;
     const describedBy = errors.length ? `${inputId}-error` : undefined;
     const isBool = field.type === 'bool';
+    const hasValue = Array.isArray(value) ? value.length > 0 : value !== '' && value !== null && value !== undefined;
+    const message = errors.join(' ')
+        .replace(/^Field '[^']+' must be non-negative$/, `${field.label} can\u2019t be negative.`)
+        .replace(/^Field '[^']+' /, `${field.label} `);
     const control = (
         <FieldControl field={field} value={value} inputId={inputId} describedBy={describedBy}
                       invalid={errors.length > 0} currency={currency}
@@ -117,13 +122,18 @@ function FieldRow({field, draft, fieldErrors, inputId, onChange, onToggleHard, c
     );
     return (
         <div className="priorities-field" data-testid="priorities-field">
-            {isBool ? <div className="form-check">{control}{label}</div> : <>{label}{control}</>}
+            {isBool ? (
+                <div className="form-check">
+                    {control}{label}
+                    {field.hard_locked && <div className="form-text priorities-field-note mt-0">Always a requirement</div>}
+                </div>
+            ) : <>{label}{control}</>}
             {errors.length > 0 && (
                 <div id={`${inputId}-error`} className="invalid-feedback d-block priorities-field-error">
-                    {errors.join(' ')}
+                    {message}
                 </div>
             )}
-            {field.supported && (
+            {field.supported && (isBool || hasValue || hard) && !(isBool && field.hard_locked) && (
                 field.hard_locked ? (
                     <span className="priorities-field-note">Always a requirement</span>
                 ) : (
@@ -189,21 +199,16 @@ export default function PriorityEditor({
                 </fieldset>
             ))}
             {unsupported.length > 0 && (
-                <details className="priorities-unsupported"
-                         open={unsupported.some((f) => (fieldErrors[f.path] || []).length > 0) || undefined}>
+                <details className="priorities-unsupported">
                     <summary>Not used for matching yet ({unsupported.length})</summary>
                     <p className="priorities-field-note">Ask the assistant to change these.</p>
                     {unsupported.map((field) => (
-                        field.editable ? (
-                            <FieldRow key={field.path} field={field} inputId={idFor(field)} {...rowProps}/>
-                        ) : (
-                            <div key={field.path} className="priorities-readonly-row" data-testid="priorities-field">
-                                <span id={`${idFor(field)}-label`} className="priorities-label">{field.label}</span>
-                                <span id={idFor(field)} className="priorities-readonly">
-                                    {field.set ? String(field.value) : 'Not set'}
-                                </span>
-                            </div>
-                        )
+                        <div key={field.path} className="priorities-readonly-row" data-testid="priorities-field">
+                            <span id={`${idFor(field)}-label`} className="priorities-label">{field.label}</span>
+                            <span id={idFor(field)} className={`priorities-readonly${field.set ? ' is-set' : ''}`}>
+                                {field.set ? preferenceValueLabel(field.value, field.path) : 'Not set'}
+                            </span>
+                        </div>
                     ))}
                 </details>
             )}

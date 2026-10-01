@@ -16,7 +16,6 @@ export function mountPriorities(): void {
     }
     const authenticated = container.dataset.authenticated === 'true';
     createRoot(container).render(
-        <PrioritiesSection variant="main" authenticated={authenticated}
-                           signInUrl={container.dataset.signInUrl}/>,
+        <PrioritiesSection variant="main" authenticated={authenticated}/>,
     );
 }
