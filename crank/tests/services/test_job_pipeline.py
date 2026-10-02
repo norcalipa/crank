@@ -41,9 +41,12 @@ from crank.services.job_pipeline import (
 )
 
 
-def _outcome(status, *, generation=1, persisted=0):
+def _outcome(status, *, generation=1, persisted=0, lag=None):
     return match_recompute.RecomputeOutcome(
-        status=status, generation=generation, persisted=persisted
+        status=status,
+        generation=generation,
+        persisted=persisted,
+        publication_lag_seconds=lag,
     )
 
 
@@ -150,6 +153,32 @@ class JobPipelineServiceTests(TestCase):
         self.assertEqual(counts["employers_resolved"], 2)
         self.assertEqual(counts["users_succeeded"], 1)
         self.assertEqual(counts["matches_persisted"], 3)
+
+    def test_matching_batch_event_carries_publication_lag(self):
+        self.source("good")
+        self.preference("alice")
+        self.preference("bob")
+        outcomes = [
+            _outcome(match_recompute.RecomputeStatus.PUBLISHED, persisted=1, lag=42),
+            _outcome(match_recompute.RecomputeStatus.PUBLISHED, persisted=1, lag=7),
+        ]
+        with patch(
+            "crank.services.job_pipeline.ingest_job_source",
+            return_value=ingestion(JobIngestResult(ingested=1)),
+        ), patch(
+            "crank.services.job_pipeline._resolve_source_listings", return_value=(1, 0)
+        ), patch(
+            "crank.services.job_pipeline._run_user", side_effect=outcomes
+        ), patch(
+            "crank.services.job_pipeline.agent_runs.record_agent_event"
+        ), patch(
+            "crank.services.job_pipeline.agent_runs.monitoring.record_event"
+        ) as record:
+            counts = run_job_pipeline(self.run)
+        batch = [c.args[1] for c in record.call_args_list if c.args[0] == "matching_batch"][0]
+        self.assertEqual(batch["publication_lag_max_seconds"], 42)
+        self.assertEqual(batch["publication_lag_count"], 2)
+        self.assertNotIn("publication_lag_max_seconds", counts)
 
     def test_source_exception_does_not_stop_other_sources(self):
         self.source("raised")
