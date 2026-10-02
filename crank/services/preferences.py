@@ -621,6 +621,11 @@ def _is_always_hard(path):
     return is_hard_requirement(path, {})
 
 
+# The matcher only evaluates this requirement when the value is True, so a
+# saved False must not render as a locked requirement.
+_HARD_ONLY_WHEN_TRUE = ("compensation.require_public_company",)
+
+
 def editor_fields(document):
     """Describe every editable/visible leaf for the priorities editor.
 
@@ -643,7 +648,8 @@ def editor_fields(document):
             "value": copy.deepcopy(value if value is not None else default),
             "set": _criterion_is_set(leaf, value, default),
             "supported": CRITERION_SUPPORT.get(path) == SUPPORTED,
-            "hard": _is_hard(path, document),
+            "hard": _is_hard(path, document)
+            and (path not in _HARD_ONLY_WHEN_TRUE or value is True),
             "hard_locked": _is_always_hard(path),
             "editable": path not in _READ_ONLY_FIELDS,
         }

@@ -465,3 +465,38 @@ class TestListEntriesWithCommasMatchIntact:
             if c["path"] == "exclusions.locations"
         )
         assert chip["items"] == ["San Francisco, CA", "Austin"]
+
+
+class TestClearingListsEndToEnd:
+    """Emptying a list is `set: []` through propose, apply and undo (review round 2)."""
+
+    @pytest.mark.parametrize("path, saved", [
+        ("exclusions.locations", ["San Francisco, CA"]),
+        ("work_location.modes", ["remote"]),
+        ("roles.titles", ["Staff Engineer"]),
+    ])
+    def test_set_empty_list_clears_and_remove_null_is_rejected(self, alice, client_a, path, saved):
+        prefs.apply_patch_to_user(alice, {"set": {path: saved}})
+
+        def stored():
+            node = prefs.read(alice)["preferences"]
+            for part in path.split("."):
+                node = node[part]
+            return node
+
+        assert stored() == saved
+        rejected = post(client_a, "agent-preference-propose", {"patch": {"remove": {path: None}}})
+        assert rejected.status_code == 400
+        assert stored() == saved
+
+        proposal = post(client_a, "agent-preference-propose", {"patch": {"set": {path: []}}})
+        assert proposal.status_code == 200
+        assert proposal.json()["changes"][0]["new"] == []
+        applied = post(
+            client_a, "agent-preference-apply",
+            {"decision": "apply", "proposal": proposal.json()["token"]},
+        )
+        assert applied.status_code == 200
+        assert stored() == []
+        assert post(client_a, "agent-preference-undo", {"undo": applied.json()["undo"]}).status_code == 200
+        assert stored() == saved

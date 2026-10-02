@@ -1932,6 +1932,17 @@ class TestEditorMetadata:
         assert chips["compensation.minimum_total_compensation"]["supported"] is False
         assert "culture" not in chips
 
+    def test_saved_false_public_company_is_not_a_requirement(self):
+        doc = self._doc()
+        doc["compensation"]["require_public_company"] = False
+        field = self._by_path(doc)["compensation.require_public_company"]
+        assert field["hard"] is False
+        chip = {c["path"]: c for c in prefs.criteria_chips(doc)}["compensation.require_public_company"]
+        assert chip["hard"] is False
+        doc["compensation"]["require_public_company"] = True
+        field = self._by_path(doc)["compensation.require_public_company"]
+        assert field["hard"] is True
+
     def test_patch_field_errors(self):
         errors = prefs.patch_field_errors({"set": {
             "work_location.max_in_office_days": 9,
