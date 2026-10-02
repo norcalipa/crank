@@ -117,6 +117,7 @@
     function purgePrivateClientState() {
         try {
             window.sessionStorage.removeItem("crank:auth-intent");
+            window.sessionStorage.removeItem("crank:workspace:v1");
         } catch (e) {
             // Storage unavailable; nothing durable to clear.
         }
@@ -153,6 +154,218 @@
         document.dispatchEvent(new CustomEvent("crank:private-state-purged"));
     }
 
+    // Cross-tab signal (issue #479): private state lives in each tab's memory
+    // and sessionStorage, so a logout, login or account switch here must reach
+    // every other open tab. It is sent only from a hydration that has observed
+    // the changed account (i.e. after the server processed the logout/login),
+    // never from the submit handler: a receiving tab re-hydrates immediately
+    // and would otherwise still be told the old account is signed in.
+    // localStorage writes raise a `storage` event in the *other* tabs; the
+    // value is an opaque nonce, never account data. Storage keys owned here:
+    //   crank:account-epoch    localStorage, shared; a random nonce (no
+    //                          timestamp) that is only ever overwritten,
+    //                          never read for its value and never removed
+    //                          by any purge.
+    //   crank:nav-account-seen sessionStorage, per tab; "u:<digest>" or
+    //                          "anon", where <digest> is a short one-way
+    //                          hash of the username (equality checks only).
+    //                          Deliberately not cleared by either purge: it
+    //                          is what detects the next change. A legacy
+    //                          raw "u:<username>" value is read as the same
+    //                          account once and rewritten as a digest.
+    function randomNonce() {
+        var cryptoApi = window.crypto;
+        if (cryptoApi && typeof cryptoApi.randomUUID === "function") {
+            return cryptoApi.randomUUID();
+        }
+        return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+    }
+
+    // Synchronous 64-bit cyrb53-style digest: stable across loads and
+    // available in non-secure contexts, where crypto.subtle is not.
+    function accountDigest(text) {
+        var h1 = 0xdeadbeef;
+        var h2 = 0x41c6ce57;
+        for (var i = 0; i < text.length; i++) {
+            var ch = text.charCodeAt(i);
+            h1 = Math.imul(h1 ^ ch, 2654435761);
+            h2 = Math.imul(h2 ^ ch, 1597334677);
+        }
+        h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+        h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+        return ("00000000" + (h2 >>> 0).toString(16)).slice(-8)
+            + ("00000000" + (h1 >>> 0).toString(16)).slice(-8);
+    }
+
+    function announceAccountChange() {
+        try {
+            var nonce = randomNonce();
+            window.localStorage.setItem("crank:account-epoch", nonce);
+            lastSeenEpoch = nonce;
+        } catch (e) {
+            // Storage unavailable; other tabs cannot be signalled.
+        }
+    }
+
+    // This tab's last hydrated account, tab-local. A hydration that differs
+    // from it is the moment the account change is known to have happened.
+    var ACCOUNT_SEEN_KEY = "crank:nav-account-seen";
+    var quietNextHydration = false;
+
+    // Both stay null until this document has observed an account through
+    // readable storage; null means "unknown", never "changed".
+    var lastObservedAccount = null;
+    var lastObservedUsername = null;
+    // True once a tab-local purge ran that the next observed hydration need
+    // not repeat.
+    var tabPurgedSinceObservation = false;
+
+    // The shared epoch nonce this document last saw (at load, after its own
+    // announcement, or from a storage event). undefined = storage unreadable.
+    function readAccountEpoch() {
+        try {
+            return window.localStorage.getItem("crank:account-epoch");
+        } catch (e) {
+            return undefined;
+        }
+    }
+    var lastSeenEpoch = readAccountEpoch();
+
+    // True when the shared `crank:last-account` (a "d:" digest, or a legacy
+    // raw username) names a different account than `username`. Absent or
+    // unreadable is no evidence.
+    function lastAccountDiffers(username) {
+        try {
+            var stored = window.localStorage.getItem("crank:last-account");
+            return stored !== null && stored !== "d:" + accountDigest(username)
+                && stored !== username;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    function noteHydratedAccount(authenticated, username) {
+        var current = authenticated ? "u:" + accountDigest(username) : "anon";
+        var previous = null;
+        var readable = true;
+        try {
+            previous = window.sessionStorage.getItem(ACCOUNT_SEEN_KEY);
+            window.sessionStorage.setItem(ACCOUNT_SEEN_KEY, current);
+        } catch (e) {
+            // Storage unavailable; the account change cannot be detected.
+            readable = false;
+        }
+        var observedBefore = lastObservedAccount;
+        lastObservedAccount = readable ? current : null;
+        lastObservedUsername = authenticated ? username : null;
+        var purged = tabPurgedSinceObservation;
+        tabPurgedSinceObservation = false;
+        if (observedBefore !== null && observedBefore !== current && !purged) {
+            // This document itself saw another account (or signed-out) answer
+            // after it observed a different one: its transcript and drafts
+            // belong to the previous account, whatever `quiet` says.
+            purgeTabLocalState();
+            tabPurgedSinceObservation = false;
+        }
+        if (authenticated && previous === "u:" + username) {
+            // Pre-digest value for the same account: not a change.
+            previous = current;
+        }
+        // The first observation in a tab has no previous value; the shared
+        // last-account shows whether another account was signed in before.
+        var switched = previous !== null
+            ? previous !== current
+            : authenticated && lastAccountDiffers(username);
+        var quiet = quietNextHydration;
+        quietNextHydration = false;
+        if (!quiet && switched) {
+            announceAccountChange();
+        }
+        if (previous === null && authenticated && switched) {
+            // First observation against another account's leftovers: clear
+            // them and adopt this account so later tabs do not repeat.
+            purgePrivateClientState();
+            try {
+                window.localStorage.setItem("crank:last-account", "d:" + accountDigest(username));
+            } catch (e) {
+                // Storage unavailable; nothing durable to reconcile.
+            }
+        }
+    }
+
+    // Another tab changed the account: discard this tab's own state, then
+    // re-hydrate so the nav and workspace pick up the account the cookie now
+    // belongs to. The signal is only sent after the change completed, so the
+    // whoami below already sees the new account. The next hydration is quiet
+    // so tabs cannot ping-pong.
+    function purgeTabLocalState() {
+        // Only tab-local state: localStorage is shared, and the tab that
+        // changed the account has already purged (sign-out) or reconciled
+        // (account switch) it. Deleting it here would destroy the #465
+        // sign-in handoff draft and same-account recovery markers.
+        try {
+            window.sessionStorage.removeItem("crank:auth-intent");
+            window.sessionStorage.removeItem("crank:workspace:v1");
+        } catch (e) {
+            // Storage unavailable; nothing tab-local to clear.
+        }
+        // The previous account's name must not outlive the purge if the
+        // re-check cannot confirm the new one (e.g. offline).
+        document.querySelectorAll("[data-nav-user-label]").forEach(function (label) {
+            label.textContent = "Account";
+        });
+        document.dispatchEvent(new CustomEvent("crank:private-state-purged"));
+        tabPurgedSinceObservation = true;
+    }
+
+    function handleAccountEpoch(event) {
+        if (event.key !== "crank:account-epoch") {
+            return;
+        }
+        lastSeenEpoch = event.newValue;
+        purgeTabLocalState();
+        quietNextHydration = true;
+        fetchWhoami();
+    }
+    window.addEventListener("storage", handleAccountEpoch);
+
+    // A page restored from the back/forward cache never re-runs its scripts
+    // and may not receive the `storage` events it missed while cached. Three
+    // synchronous, network-free signals say the account changed meanwhile:
+    // the shared epoch nonce differs from the one this document last saw,
+    // this tab's recorded account differs from the one this document
+    // observed, or the shared last-account names another account (covers a
+    // switch no tab saw as a transition). Any of them purges tab-local state
+    // at once; an unknown account or unreadable storage is no evidence.
+    // Whoami is then re-checked quietly: purging here is tab-local only and
+    // never re-announces. If that re-check shows an account other than the one
+    // this document last observed, noteHydratedAccount purges as well.
+    window.addEventListener("pageshow", function (event) {
+        if (!event.persisted) {
+            return;
+        }
+        var epoch = readAccountEpoch();
+        var epochChanged = epoch !== undefined && lastSeenEpoch !== undefined
+            && epoch !== lastSeenEpoch;
+        var seen = null;
+        try {
+            seen = window.sessionStorage.getItem(ACCOUNT_SEEN_KEY);
+        } catch (e) {
+            // Storage unavailable; the change cannot be compared.
+        }
+        var seenChanged = seen !== null && lastObservedAccount !== null
+            && seen !== lastObservedAccount
+            && seen !== "u:" + lastObservedUsername;
+        var lastAccountChanged = lastObservedUsername !== null
+            && lastAccountDiffers(lastObservedUsername);
+        if (epochChanged || seenChanged || lastAccountChanged) {
+            handleAccountEpoch({ key: "crank:account-epoch", newValue: epoch });
+        } else {
+            quietNextHydration = true;
+            fetchWhoami();
+        }
+    });
+
     function handleLogoutSubmit(event) {
         var form = event.currentTarget;
         // Purge before the request settles: sign-out must discard every
@@ -184,6 +397,10 @@
 
     function applyAuthState(data) {
         var authenticated = !!(data && data.authenticated);
+        // A failed whoami (null / fallback) says nothing about the account.
+        if (data && typeof data.authenticated === "boolean" && !data.unobserved) {
+            noteHydratedAccount(authenticated, authenticated ? data.username : null);
+        }
         setVisible("[data-nav-auth-only]", authenticated);
         setVisible("[data-nav-anon-only]", !authenticated);
         if (authenticated) {
@@ -207,11 +424,18 @@
         // compare-and-purge decision lives there, not here, since it is the
         // one place that can act on both the old and new value together.
         document.dispatchEvent(new CustomEvent("crank:auth-hydrated", {
-            detail: { authenticated: authenticated, username: authenticated ? data.username : null },
+            // `unobserved`: the whoami request failed, so `authenticated` is only
+            // the anonymous fallback for the nav controls, not a fact about the
+            // account; listeners that persist state must ignore it.
+            detail: {
+                authenticated: authenticated,
+                username: authenticated ? data.username : null,
+                unobserved: !data || !!data.unobserved,
+            },
         }));
     }
 
-    function hydrateAccountState() {
+    function fetchWhoami() {
         fetch("/api/account/whoami/", {
             headers: { Accept: "application/json" },
             credentials: "same-origin",
@@ -225,8 +449,12 @@
             .catch(function () {
                 // Hydration must never break the nav: fall back to the
                 // anonymous controls so Login stays reachable.
-                applyAuthState({ authenticated: false });
+                applyAuthState({ authenticated: false, unobserved: true });
             });
+    }
+
+    function hydrateAccountState() {
+        fetchWhoami();
         // Every logout form, not just the cached shell's JS-submitted one.
         document.querySelectorAll("form[data-nav-logout-form]").forEach(function (form) {
             form.addEventListener("submit", handleLogoutSubmit);

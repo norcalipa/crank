@@ -29,6 +29,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any, TypeAlias, Union
 
+from crank.agents.job_search import actions
 from crank.agents.job_search.errors import (
     ConversationClosedError,
     CostLimitError,
@@ -627,7 +628,9 @@ class OrchestratorJobSearchProvider:
 
         return _guard
 
-    def generate_reply(self, *, conversation, user_message, persist_reply=None):
+    def generate_reply(
+        self, *, conversation, user_message, persist_reply=None, page_context=None
+    ):
         """Return ``(reply_text, preferences_changed, results)`` for a turn.
 
         Passes ``conversation.owner`` through to the orchestrator so saved
@@ -659,6 +662,7 @@ class OrchestratorJobSearchProvider:
                 preference_markdown=preference_markdown,
                 lifecycle_guard=self._make_lifecycle_guard(conversation),
                 persist_reply=persist_reply,
+                page_context=page_context,
             )
         except (ProviderError, ProviderTimeoutError, CostLimitError) as exc:
             logger.error(
@@ -693,12 +697,20 @@ class OrchestratorJobSearchProvider:
                 ) from exc
             raise
 
-        extras = None
+        extras: dict | None = {}
         if result.preference_proposal is not None:
             # Issue #466 review: the turn surfaces a read-only preference
             # proposal (field-level diff + scope + client-held token); the
             # user applies or dismisses it through the apply endpoint.
-            extras = {"proposal": result.preference_proposal}
+            extras["proposal"] = result.preference_proposal
+        if result.actions:
+            # Issue #484: already schema- and reference-validated by the
+            # orchestrator; the transport re-serialises only typed fields.
+            extras["actions"] = actions.to_wire(result.actions)
+            # Lets the service gate re-check against the full exposed set
+            # (catalog + page context), not just the page-context ids.
+            extras["actions_exposed_ids"] = result.exposed_organization_ids
+        extras = extras or None
         return result.message, result.preferences_changed, result.results, extras
 
     # -- helpers -----------------------------------------------------------

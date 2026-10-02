@@ -12,8 +12,17 @@ export interface WorkspaceContext {
     surface: 'rankings' | 'company' | 'jobs' | 'comparison' | 'help' | 'chat';
     organizationId?: number;
     organizationName?: string;
+    jobId?: number;
+    // At most 4 unique positive integers (contract-only until #490).
+    comparisonIds?: number[];
     searchTerm?: string;
     page?: number;
+}
+
+export type AccountStatus = 'unknown' | 'anonymous' | 'authenticated';
+export interface WorkspaceAccount {
+    status: AccountStatus;
+    key: string;
 }
 
 export interface WorkspaceSnapshot {
@@ -22,7 +31,19 @@ export interface WorkspaceSnapshot {
     context: WorkspaceContext | null;
     // True once the lazy chat chunk has resolved.
     loaded: boolean;
+    // Bumped exactly once per effective context change (issue #479).
+    contextRevision: number;
+    account: WorkspaceAccount;
+    // Mirror of the chat's active server conversation; never persisted.
+    conversationId: number | null;
+    // True when the user (launcher, Ask, restore pill) or the pinned /chat/
+    // host opened the panel on this page; false for a panel restored from the
+    // per-tab record, which must not take focus from the page (issue #479).
+    userOpened: boolean;
 }
+
+// Per-tab sessionStorage record (issue #479).
+export const WORKSPACE_SESSION_KEY = 'crank:workspace:v1';
 
 export const WORKSPACE_OPEN_EVENT = 'crank:assistant-open';       // detail?: Partial<WorkspaceContext>
 export const WORKSPACE_CONTEXT_EVENT = 'crank:workspace-context'; // detail: Partial<WorkspaceContext>

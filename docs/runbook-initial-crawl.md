@@ -157,6 +157,32 @@ emits a degraded `inventory_health` event with `healthy = false` and a
 evidence. Keep Kubernetes-level alerting on CronJob failures enabled so
 infrastructure outages surface even when the event pipeline is down.
 
+## Verify with the readiness panel
+
+Open **Job Retrieval Operations** in Django admin (staff only). The
+"Next step" callout names the first unmet prerequisite (a blocker is never
+displaced by a warning); only when nothing is unmet does it name the first stage
+that needs attention. The "End-to-end readiness" list shows every stage with a text status. The panel
+is read-only: it never calls a provider and only reports whether a credential
+is present, never its value.
+
+| Panel stage | Runbook step |
+| --- | --- |
+| Approved and enabled source | Step 1: seed job sources |
+| Registered adapter and allowlisted URL | Step 1: seed job sources |
+| Source credentials present | Step 3: set the Firecrawl API key |
+| Job pipeline capability enabled | Step 4: enable capability switches |
+| Recent pipeline run finished | Step 7: unsuspend CronJobs |
+| Queued run consumed | [Crawl scheduling: queued runs are consumed](runbook-crawl-scheduling.md#queued-runs-are-consumed-issue-462) |
+| Committed listing inventory | Step 6: verify listing counts |
+| Employers resolved | Step 6: verify listing counts |
+| Current matches | [Match recompute: rollout order](match-recompute.md#rollout-order) |
+
+A queued run is shown as "Queued — waiting for a consumer" with no counts until the
+pipeline consumer claims it. "Run progress" reports the last completed run's
+counts, and "Backlog" reports unresolved employers, pending company-profile
+review, the publication outbox and match lag.
+
 ## Rollback
 
 If something goes wrong:

@@ -26,11 +26,11 @@ from crank.admin import StaffOnlyAdminMixin
 from crank.agents.jobs.base import APPROVED_JOB_SOURCE_DOMAINS
 from crank.management.commands.seed_job_sources import SEED_SOURCES
 from crank.models.agent_run import AgentRun
-from crank.models.employer import UnresolvedEmployer
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.monitoring import OperationalChangeAudit
-from crank.services import agent_runs, monitoring
+from crank.agents.jobs.registry import REGISTRY as JOB_ADAPTER_REGISTRY
+from crank.services import agent_runs, monitoring, operations_readiness
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +55,14 @@ RUN_STATUS_TONES = {
     "skipped": "warning",
 }
 RUN_STATUS_ICONS = {
-    "pending": "⏳",
-    "running": "▶",
-    "succeeded": "✓",
-    "failed": "✖",
-    "skipped": "↻",
+    "pending": "clock",
+    "running": "play",
+    "succeeded": "check",
+    "failed": "x",
+    "skipped": "alert",
 }
 PIPELINE_STATE_TONES = {
-    "idle": "success",
+    "idle": "neutral",
     "queued": "info",
     "claimed": "info",
     "conflict": "warning",
@@ -71,14 +71,54 @@ PIPELINE_STATE_TONES = {
     "failed": "danger",
 }
 PIPELINE_STATE_ICONS = {
-    "idle": "✓",
-    "queued": "⏳",
-    "claimed": "▶",
-    "conflict": "⚠",
-    "reclaimed": "↻",
-    "expired": "✖",
-    "failed": "✖",
+    "idle": "dash",
+    "queued": "clock",
+    "claimed": "play",
+    "conflict": "alert",
+    "reclaimed": "alert",
+    "expired": "x",
+    "failed": "x",
 }
+
+
+STAGE_STATUS_LABELS = {
+    "met": "Met",
+    "unmet": "Unmet",
+    "pending": "Pending",
+    "attention": "Needs attention",
+    "unknown": "Unknown",
+}
+STAGE_STATUS_TONES = {
+    "met": "success",
+    "unmet": "danger",
+    "pending": "info",
+    "attention": "warning",
+    "unknown": "warning",
+}
+STAGE_STATUS_ICONS = {
+    "met": "check",
+    "unmet": "x",
+    "pending": "clock",
+    "attention": "alert",
+    "unknown": "unknown",
+}
+OUTCOME_TONES = {
+    "success": "success",
+    "failure": "danger",
+    "timeout": "danger",
+    "partial": "warning",
+    "pending": "info",
+    "running": "info",
+}
+OUTCOME_ICONS = {
+    "success": "check",
+    "failure": "x",
+    "timeout": "x",
+    "partial": "alert",
+    "pending": "clock",
+    "running": "play",
+}
+QUEUE_STEPS = ("scheduler", "consumption", "inventory")
 
 
 def _relative_time(dt, now=None):
@@ -89,26 +129,12 @@ def _relative_time(dt, now=None):
     seconds = max(0, int((now - dt).total_seconds()))
     if seconds < 45:
         return "just now"
-    minutes, sec = divmod(seconds, 60)
-    if minutes < 60:
-        return f"{minutes}m ago"
-    hours, minutes = divmod(minutes, 60)
-    if hours < 24:
-        return f"{hours}h {minutes}m ago"
-    days, hours = divmod(hours, 24)
-    return f"{days}d {hours}h ago"
+    return f"{operations_readiness.format_age(seconds)} ago"
 
 
 def _duration(seconds):
-    """Compact duration like ``2h 59m`` for countdown/age display."""
-    seconds = max(0, int(seconds))
-    minutes, sec = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"{hours}h {minutes}m"
-    if minutes:
-        return f"{minutes}m {sec}s"
-    return f"{sec}s"
+    """Compact duration like ``2h`` for countdown/age display."""
+    return operations_readiness.format_age(seconds)
 
 
 def _abbrev_id(value):
@@ -119,7 +145,7 @@ def _abbrev_id(value):
     return f"{text[:8]}…{text[-5:]}"
 
 
-def _pipeline_ownership_state():
+def _pipeline_ownership_state(ctx=None):
     """Derive the operator-facing pipeline ownership & queue state.
 
     One consolidated, truthful presentation (issue #462 visual critique):
@@ -131,15 +157,12 @@ def _pipeline_ownership_state():
     stale_after = timedelta(
         seconds=int(getattr(settings, "AGENT_RUN_STALE_AFTER_SECONDS", 3600))
     )
+    ctx = ctx or operations_readiness.snapshot()
     runs = AgentRun.objects.filter(run_type=AgentRun.RunType.JOB_PIPELINE)
-    active = runs.filter(
-        status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING]
-    ).order_by("id").first()
-    latest = runs.order_by("-created", "-id").first()
-
-    pending_qs = runs.filter(status=AgentRun.Status.PENDING)
-    pending_count = pending_qs.count()
-    oldest_pending = pending_qs.order_by("created").first()
+    active = ctx.active_run
+    latest = ctx.latest_run
+    pending_count = ctx.pending_count
+    oldest_pending = ctx.oldest_pending
 
     # A skip attempt recorded after the current holder claimed the slot is
     # persisted evidence of an ownership conflict (a second invocation tried
@@ -158,10 +181,10 @@ def _pipeline_ownership_state():
         "state": "idle",
         "tone": PIPELINE_STATE_TONES["idle"],
         "icon": PIPELINE_STATE_ICONS["idle"],
-        "label": "Idle — no active or queued pipeline run",
+        "label": "Idle — nothing queued",
         "explanation": (
             "Nothing is claimed or queued. The next scheduled pipeline tick "
-            "(or a manual run) will pick up approved+enabled sources."
+            "(or a manual run) will pick up approved and enabled sources."
         ),
         "blocking": False,
         "owner": None,
@@ -170,6 +193,7 @@ def _pipeline_ownership_state():
         "queue_count": pending_count,
         "oldest_wait_relative": None,
         "oldest_reclaim_remaining": None,
+        "overdue": False,
         "oldest_correlation_id": None,
         "oldest_correlation_abbrev": None,
         "consumption": "Not running",
@@ -209,18 +233,38 @@ def _pipeline_ownership_state():
         state["started_iso"] = (
             active.started_at.isoformat() if active.started_at else None
         )
-        if active.status == AgentRun.Status.PENDING:
+        if active.status == AgentRun.Status.PENDING and active.created and now - active.created >= stale_after:
+            state.update(
+                state="queued",
+                overdue=True,
+                tone=PIPELINE_STATE_TONES["queued"],
+                icon=PIPELINE_STATE_ICONS["queued"],
+                label="Queued — past TTL, awaiting reclaim",
+                explanation=(
+                    "Queued, not yet claimed, and past its TTL. The next consumer "
+                    "reclaims this run as failed and starts a fresh one."
+                ),
+                owner="Unclaimed — awaiting consumer",
+                consumption="Waiting for consumer",
+                next_consumer=(
+                    "Next scheduled pipeline tick or a manual run_job_pipeline "
+                    "invocation"
+                ),
+                next_action=(
+                    "Confirm the job-pipeline CronJob is unsuspended (kubectl); "
+                    "the next tick reclaims this run and starts a fresh one. "
+                    "Queueing again is not needed."
+                ),
+            )
+        elif active.status == AgentRun.Status.PENDING:
             state.update(
                 state="queued",
                 tone=PIPELINE_STATE_TONES["queued"],
                 icon=PIPELINE_STATE_ICONS["queued"],
-                label="Queued — waiting for pipeline consumer",
+                label="Queued — waiting for a consumer",
                 explanation=(
-                    "The run is queued but not yet claimed. It is consumed by "
-                    "the next scheduled pipeline tick or a manual "
-                    "run_job_pipeline invocation. If no consumer adopts it "
-                    f"within the staleness TTL (~{state['oldest_reclaim_remaining']} "
-                    "remaining), it is reclaimed as failed."
+                    "Queued, not yet claimed; reclaimed as failed if no consumer "
+                    f"adopts it within the TTL (~{state['oldest_reclaim_remaining']} left)."
                 ),
                 owner="Unclaimed — awaiting consumer",
                 consumption="Waiting for consumer",
@@ -350,7 +394,7 @@ def _pipeline_ownership_state():
                     ),
                     next_action="Inspect the sanitized summary below, then retry from Actions.",
                     consumption="Last run failed",
-                    progress=reclaim_summary[:300] or None,
+                    progress=agent_runs.sanitize_error(reclaim_summary, 300) or None,
                 )
 
     return state
@@ -367,36 +411,29 @@ def _is_allowed(host: str) -> bool:
     )
 
 
-def _aggregate_counts():
+def _aggregate_counts(ctx=None):
     """Compute dashboard aggregate counts in a single pass."""
-    sources_qs = JobSourceCatalog.objects.all()
-    configured = sources_qs.count()
-    approved = sources_qs.filter(
-        approval_state=JobSourceCatalog.ApprovalState.APPROVED
-    ).count()
-    enabled = sources_qs.filter(
-        approval_state=JobSourceCatalog.ApprovalState.APPROVED, enabled=True
-    ).count()
+    ctx = ctx or operations_readiness.snapshot()
+    source_counts = ctx.source_counts
+    configured = source_counts["total"]
+    approved = source_counts["approved"]
+    enabled = source_counts["live"]
 
     # Active listings
-    active_count = JobListing.objects.count()
+    active_count = ctx.listings["active"]
     stale_threshold = timezone.now() - timezone.timedelta(hours=_STALE_HOURS)
     stale_count = JobListing.objects.filter(
         last_seen_at__lt=stale_threshold
     ).count()
 
     # Unresolved employers
-    unresolved_count = UnresolvedEmployer.objects.filter(resolved=False).count()
+    unresolved_count = ctx.unresolved_employers
 
     # Matches
     match_count = JobMatch.objects.count()
 
     # Latest pipeline run
-    latest_run = (
-        AgentRun.objects.filter(run_type=AgentRun.RunType.JOB_PIPELINE)
-        .order_by("-created", "-id")
-        .first()
-    )
+    latest_run = ctx.latest_run
 
     latest_run_info = None
     if latest_run is not None:
@@ -409,32 +446,21 @@ def _aggregate_counts():
             "created_relative": _relative_time(latest_run.created),
             "correlation_id": str(latest_run.correlation_id),
             "correlation_abbrev": _abbrev_id(latest_run.correlation_id),
-            "error_summary": (latest_run.error_summary or "")[:300],
+            "error_summary": agent_runs.sanitize_error(latest_run.error_summary, 300),
         }
 
     # Queued (PENDING) pipeline runs awaiting a consumer (issue #462). A
     # queued run is not proof of work: surface the count and the age of the
     # oldest queued row so staff can see missing consumption instead of
     # indefinite pending work.
-    pending_qs = AgentRun.objects.filter(
-        run_type=AgentRun.RunType.JOB_PIPELINE,
-        status=AgentRun.Status.PENDING,
-    ).order_by("created")
-    pending_count = pending_qs.count()
+    pending_count = ctx.pending_count
     pending_run_info = None
-    oldest_pending = pending_qs.first()
+    oldest_pending = ctx.oldest_pending
     if oldest_pending is not None and oldest_pending.created is not None:
         age_seconds = max(
             0, int((timezone.now() - oldest_pending.created).total_seconds())
         )
-        hours, remainder = divmod(age_seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        if hours:
-            age_display = f"{hours}h {minutes}m"
-        elif minutes:
-            age_display = f"{minutes}m {seconds}s"
-        else:
-            age_display = f"{seconds}s"
+        age_display = operations_readiness.format_age(age_seconds)
         pending_run_info = {
             "count": pending_count,
             "oldest_age_seconds": age_seconds,
@@ -457,35 +483,178 @@ def _aggregate_counts():
     }
 
 
-def _readiness_gates():
+def _readiness_gates(ctx=None):
     """Compute safe readiness checks without touching the network."""
-    from crank.agents.sources.registry import REGISTRY
-
-    adapter_count = len(REGISTRY)
-
-    # Credentials check: at least one job-source environment variable is set
-    credentials_configured = bool(
-        getattr(settings, "USAJOBS_AUTH_KEY", "").strip()
-        or getattr(settings, "FIRECRAWL_API_KEY", "").strip()
+    ctx = ctx or operations_readiness.snapshot()
+    live_counts = ctx.live_adapter_counts
+    live_total = sum(live_counts.values())
+    adapter_keys = JOB_ADAPTER_REGISTRY.keys()
+    adapter_count = len(adapter_keys)
+    unregistered = sum(n for key, n in live_counts.items() if JOB_ADAPTER_REGISTRY.get(key) is None)
+    sources_missing_credentials = sum(
+        n for key, n in live_counts.items() if operations_readiness.missing_settings(key)
     )
 
-    pipeline_enabled = bool(getattr(settings, "JOB_PIPELINE_ENABLED", False))
-    scheduler_enabled = bool(getattr(settings, "CRAWL_CRON_ENABLED", False))
-
-    active_run = AgentRun.objects.filter(
-        run_type=AgentRun.RunType.JOB_PIPELINE,
-        status__in=[AgentRun.Status.RUNNING, AgentRun.Status.PENDING],
-    ).order_by("id").first()
+    parts = ctx.capability_parts
+    active_run = ctx.active_run
 
     return {
-        "adapter_registered": adapter_count > 0,
+        "adapter_registered": adapter_count > 0 and unregistered == 0,
         "adapter_count": adapter_count,
-        "credentials_configured": credentials_configured,
-        "pipeline_enabled": pipeline_enabled,
-        "scheduler_enabled": scheduler_enabled,
+        "adapter_unregistered_sources": unregistered,
+        "credentials_configured": bool(live_total)
+        and unregistered == 0
+        and sources_missing_credentials == 0,
+        "credentials_sources_checked": live_total,
+        "credentials_sources_missing": sources_missing_credentials,
+        "pipeline_enabled": all(parts.values()),
+        "pipeline_parts": parts,
+        "scheduler_enabled": bool(getattr(settings, "CRAWL_CRON_ENABLED", False)),
         "active_run": active_run is not None,
         "active_run_status": active_run.status if active_run else None,
     }
+
+
+def _present_stage(stage):
+    stage["status_label"] = STAGE_STATUS_LABELS[stage["status"]]
+    stage["tone"] = STAGE_STATUS_TONES[stage["status"]]
+    stage["icon"] = STAGE_STATUS_ICONS[stage["status"]]
+    if stage.get("not_applicable"):
+        stage["status_label"] = "Not applicable yet"
+        stage["tone"] = "neutral"
+        stage["icon"] = "dash"
+    elif stage.get("key") == "consumption" and stage["status"] == "pending" and stage["summary"].startswith("Queued"):
+        stage["status_label"] = "Queued"
+    headline, _, rest = stage["summary"].partition(". ")
+    stage["headline"] = headline.rstrip(".")
+    stage["summary_rest"] = rest.strip()
+    return stage
+
+
+def _readiness_context(ctx, active_run=None, overdue=False):
+    """End-to-end readiness with presentation fields, or ``None`` on failure."""
+    try:
+        readiness = operations_readiness.readiness(ctx=ctx)
+    except Exception as exc:
+        operations_readiness.log_failure("operations readiness", exc)
+        return None
+    for stage in readiness["stages"]:
+        _present_stage(stage)
+        if stage["key"] == "scheduler" and stage["status"] == "unmet" and active_run:
+            if overdue:
+                stage["remediation"] = (
+                    "A run is already queued and past its TTL, so do not queue another. "
+                    "Confirm the job-pipeline CronJob is unsuspended (kubectl); "
+                    "the next tick reclaims it and starts a fresh run."
+                )
+            else:
+                stage["remediation"] = (
+                    "A run is already queued or running, so do not queue another. "
+                    "If it is not claimed within the TTL, confirm the job-pipeline "
+                    "CronJob is unsuspended (kubectl)."
+                )
+    return readiness
+
+
+_FALLBACK_ACTIONS = {
+    "primary": None,
+    "queue_disabled": False,
+    "queue_reason": "",
+    "retry_disabled": False,
+    "retry_reason": "",
+}
+
+
+def _action_state(readiness, pipeline, source_total, latest_run=None):
+    """Which Actions button is primary, and which are disabled (with reasons).
+
+    Queue or Retry is only recommended for an UNMET next step (an attention
+    step's own guidance applies); Retry only when the latest finished run failed.
+
+    Presentation only: the POST endpoints keep their own overlap and
+    eligibility guards.
+    """
+    pipeline = pipeline or {"state": "idle"}
+    active = pipeline["state"] in ("queued", "claimed", "conflict")
+    active_reason = ""
+    if active:
+        active_reason = (
+            f"Run {pipeline['correlation_abbrev']} is already "
+            f"{'queued' if pipeline['state'] == 'queued' else 'running'}."
+        )
+    failed_exists = AgentRun.objects.filter(
+        run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.FAILED
+    ).exists()
+    step = readiness["next_step"] if readiness else None
+    next_key = step["key"] if step else None
+    latest_failed = latest_run is not None and latest_run.status == AgentRun.Status.FAILED
+    primary = None
+    if not active:
+        if next_key == "source_policy" and source_total == 0:
+            primary = "seed_preview"
+        elif next_key in QUEUE_STEPS and step["status"] == "unmet":
+            primary = "retry" if failed_exists and latest_failed else "queue_retrieval"
+    return {
+        "primary": primary,
+        "queue_disabled": active,
+        "queue_reason": active_reason,
+        "retry_disabled": active or not failed_exists,
+        "retry_reason": active_reason if active else "No failed run to retry.",
+    }
+
+
+def _sources_context(ctx):
+    sources = operations_readiness.source_rows(ctx=ctx)
+    for row in sources["rows"]:
+        row["outcome_tone"] = OUTCOME_TONES.get(row["latest_outcome"], "info")
+        row["outcome_icon"] = OUTCOME_ICONS.get(row["latest_outcome"], "clock")
+    return sources
+
+
+def _progress_context(ctx):
+    progress = operations_readiness.run_progress(ctx=ctx)
+    for key in ("latest", "completed"):
+        run = progress[key]
+        if run is None:
+            continue
+        run["label"] = RUN_STATUS_LABELS.get(run["status"], run["status"])
+        if run["queued_only"]:
+            run["label"] = "Queued — waiting for a consumer"
+        run["tone"] = RUN_STATUS_TONES.get(run["status"], "info")
+        run["icon"] = RUN_STATUS_ICONS.get(run["status"], "clock")
+        if run["status"] == "succeeded" and run.get("deadline_reached"):
+            run["label"] = "Stopped at deadline"
+            run["tone"] = "warning"
+            run["icon"] = "alert"
+            run["deadline_note"] = (
+                f"Stopped at its deadline ({run['sources_deferred']} sources deferred); the remainder is handled by the next run that is consumed."
+                if run.get("sources_deferred")
+                else "Stopped at its deadline; the remainder is handled by the next run that is consumed."
+            )
+    return progress
+
+
+def _backlog_context(ctx):
+    backlog = operations_readiness.backlog(ctx=ctx)
+    outbox = backlog["outbox"]
+    outbox["oldest_pending_age"] = (
+        operations_readiness.format_age(outbox["oldest_pending_age_seconds"])
+        if outbox["oldest_pending_age_seconds"] is not None
+        else ""
+    )
+    backlog["matches"]["lag_display"] = operations_readiness.format_age(
+        backlog["matches"]["lag_seconds"]
+    )
+    return backlog
+
+
+def _safe_section(name, factory):
+    """One failing section renders an inline error instead of a 500."""
+    try:
+        return factory()
+    except Exception as exc:
+        operations_readiness.log_failure(f"operations {name}", exc)
+        return None
 
 
 def _confirm(request):
@@ -610,20 +779,57 @@ class JobRetrievalOperationsAdmin(StaffOnlyAdminMixin, admin.ModelAdmin):
                 "url": reverse("admin:crank_jobmatch_changelist"),
             },
             {
+                "label": "Company Profile Observations",
+                "url": reverse("admin:crank_companyprofileobservation_changelist"),
+            },
+            {
+                "label": "Capability Switches",
+                "url": reverse("admin:crank_capabilityswitch_changelist"),
+            },
+            {
                 "label": "Operational Change Audit",
                 "url": reverse("admin:crank_operationalchangeaudit_changelist"),
             },
         ]
 
+    def _backlog_links(self):
+        observations = reverse("admin:crank_companyprofileobservation_changelist")
+        return {
+            "unresolved": reverse("admin:crank_unresolvedemployer_changelist")
+            + "?resolved__exact=0",
+            "observations_pending": observations + "?status__exact=pending",
+            "observations_conflicted": observations + "?status__exact=conflicted",
+        }
+
     # ── Views ──
 
     def dashboard_view(self, request):
+        snapshot = operations_readiness.snapshot()
+        pipeline = _safe_section("ownership", lambda: _pipeline_ownership_state(snapshot))
+        readiness = _readiness_context(
+            snapshot,
+            bool(pipeline) and pipeline["state"] in ("queued", "claimed", "conflict"),
+            bool(pipeline) and bool(pipeline.get("overdue")),
+        )
         context = {
             **self.admin_site.each_context(request),
             "title": "Job Retrieval Operations",
-            "counts": _aggregate_counts(),
-            "gates": _readiness_gates(),
-            "pipeline": _pipeline_ownership_state(),
+            "counts": _safe_section("counts", lambda: _aggregate_counts(snapshot)),
+            "gates": _safe_section("gates", lambda: _readiness_gates(snapshot)),
+            "pipeline": pipeline,
+            "readiness": readiness,
+            "error_time": timezone.now().strftime("%H:%M UTC"),
+            "actions": _safe_section(
+                "actions",
+                lambda: _action_state(
+                    readiness, pipeline, snapshot.source_counts["total"], snapshot.latest_run
+                )
+            )
+            or _FALLBACK_ACTIONS,
+            "sources": _safe_section("sources", lambda: _sources_context(snapshot)),
+            "progress": _safe_section("run progress", lambda: _progress_context(snapshot)),
+            "backlog": _safe_section("backlog", lambda: _backlog_context(snapshot)),
+            "links": self._backlog_links(),
             "opts": self.model._meta,
             "admin_links": self._admin_links(),
         }

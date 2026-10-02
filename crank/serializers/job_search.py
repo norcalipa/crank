@@ -22,11 +22,86 @@ from django.utils import timezone
 logger = logging.getLogger("crank.serializers.job_search")
 
 
+MAX_CONTEXT_BYTES = 2048
+CONTEXT_SURFACES = ("rankings", "company", "jobs", "comparison", "help", "chat")
+
+
+class _StrictIntegerField(serializers.IntegerField):
+    """Integer field that rejects bools, floats and numeric strings."""
+
+    def to_internal_value(self, data):  # noqa: D102
+        if isinstance(data, bool) or not isinstance(data, int):
+            self.fail("invalid")
+        return super().to_internal_value(data)
+
+
+class _StrictBooleanField(serializers.BooleanField):
+    """Boolean field that rejects 0/1 and truthy strings."""
+
+    def to_internal_value(self, data):  # noqa: D102
+        if not isinstance(data, bool):
+            self.fail("invalid", input=data)
+        return data
+
+
+class _StrictSerializer(serializers.Serializer):
+    """Rejects unknown keys instead of silently dropping them."""
+
+    def to_internal_value(self, data):  # noqa: D102
+        if isinstance(data, dict):
+            unknown = set(data) - set(self.fields)
+            if unknown:
+                raise serializers.ValidationError(
+                    {"non_field_errors": ["Unknown keys are not allowed."]}
+                )
+        return super().to_internal_value(data)
+
+
+class PageFiltersSerializer(_StrictSerializer):
+    rto_policy = serializers.ChoiceField(choices=("R", "H", "O"), required=False)
+    accelerated_vesting = _StrictBooleanField(required=False)
+
+
+class PageContextSerializer(_StrictSerializer):
+    """Typed, bounded page context; ids and enums only, never names or URLs."""
+
+    revision = _StrictIntegerField(min_value=0, max_value=2**31 - 1)
+    surface = serializers.ChoiceField(choices=CONTEXT_SURFACES, required=False)
+    organization_id = _StrictIntegerField(min_value=1, max_value=2**31 - 1, required=False)
+    job_id = _StrictIntegerField(min_value=1, max_value=2**31 - 1, required=False)
+    algorithm_id = _StrictIntegerField(min_value=1, max_value=2**31 - 1, required=False)
+    comparison_ids = serializers.ListField(
+        child=_StrictIntegerField(min_value=1, max_value=2**31 - 1),
+        min_length=1,
+        max_length=4,
+        required=False,
+    )
+    page = _StrictIntegerField(min_value=1, max_value=10000, required=False)
+    filters = PageFiltersSerializer(required=False)
+    preference_revision = _StrictIntegerField(min_value=0, max_value=2**63 - 1, required=False)
+    result_generation = _StrictIntegerField(min_value=0, max_value=2**63 - 1, required=False)
+
+    def to_internal_value(self, data):  # noqa: D102
+        if isinstance(data, dict):
+            size = len(json.dumps(data, separators=(",", ":"), default=str).encode("utf-8"))
+            if size > MAX_CONTEXT_BYTES:
+                raise serializers.ValidationError(
+                    {"non_field_errors": ["Context is too large."]}
+                )
+        return super().to_internal_value(data)
+
+    def validate_comparison_ids(self, value):  # noqa: D102
+        if len(set(value)) != len(value):
+            raise serializers.ValidationError("Comparison ids must be unique.")
+        return value
+
+
 class MessageSubmitSerializer(serializers.Serializer):
     """Validates a client submission of a new user turn."""
 
     content = serializers.CharField(allow_blank=False, trim_whitespace=True)
     idempotency_key = serializers.UUIDField(format="hex_verbose")
+    context = PageContextSerializer(required=False)
 
     def validate_content(self, value):  # noqa: D102
         max_len = getattr(settings, "JOB_SEARCH_MESSAGE_MAX_LEN", 4000)

@@ -1,7 +1,9 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
-import {getWorkspaceSnapshot, subscribeWorkspace} from './workspace/store';
+import {installPositionTracking, restoreResultPosition} from './workspace/position';
+import {createLatestGuard} from './workspace/requests';
+import {getWorkspaceSnapshot, setWorkspaceContext, subscribeWorkspace} from './workspace/store';
 
 /**
  * JobMatchPanel displays the user's job-match status with distinct empty-state
@@ -40,6 +42,10 @@ interface RevisionBlock {
     data_revision?: number | null;
     generated_at?: string | null;
     stale?: boolean;
+    // Monotonic result-list generation (issue #475): a lower value than the
+    // one on screen is a late response and never replaces it (issue #479).
+    // Null for pre-generation users, which are never guarded.
+    result_generation?: number | null;
 }
 
 interface RankedJobMatch {
@@ -80,6 +86,55 @@ interface RankedOrgMatch {
 interface RankedMatchesPayload {
     job_matches: RankedJobMatch[];
     organization_matches: RankedOrgMatch[];
+}
+
+// Generations carried by the JOB entries of the payload that will be
+// displayed. Organization entries never carry one (OrgMatchResult.revision()
+// has no result_generation) and live job results carry null, so only the
+// generations that are actually present guard anything.
+function jobGenerations(payload: RankedMatchesPayload | null): number[] {
+    return Array.from(new Set(
+        (payload?.job_matches ?? [])
+            .map((entry) => entry.revision?.result_generation)
+            .filter((value): value is number => typeof value === 'number'),
+    ));
+}
+
+// Generation of the list actually shown: the ranked job entries' own when
+// present, else (no job entries at all) the `/api/job-matches/` page's.
+// Null when the payload carries none (org-only, live results).
+function displayedGeneration(payload: RankedMatchesPayload | null, matchGeneration: number | null): number | null {
+    const values = jobGenerations(payload);
+    if (values.length > 0) {
+        return Math.max(...values);
+    }
+    return (payload?.job_matches?.length ?? 0) === 0 ? matchGeneration : null;
+}
+
+// A refresh may replace the displayed list unless it is provably older: a
+// failed ranked fetch, job entries that disagree with each other or carry a
+// lower generation, a zero-job payload whose matches page is older, or a
+// ranked/matches endpoint mismatch keep the list on screen. Payloads that
+// carry no generation (org-only, live) are unguarded.
+function acceptsGeneration(
+    shown: number | null,
+    payload: RankedMatchesPayload | null,
+    matchGeneration: number | null,
+): boolean {
+    if (shown === null) {
+        return true;
+    }
+    if (payload === null) {
+        return false;
+    }
+    const values = jobGenerations(payload);
+    if (values.length > 1) {
+        return false;
+    }
+    if (values.length === 1) {
+        return values[0] >= shown && (matchGeneration === null || matchGeneration === values[0]);
+    }
+    return matchGeneration === null || matchGeneration >= shown;
 }
 
 type PanelPhase = 'loading' | 'error' | 'ready';
@@ -548,15 +603,30 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         setAssistantOpen(getWorkspaceSnapshot().visibility === 'open');
     }), []);
 
+    // Latest-request guard (issue #479): overlapping refreshes must never let
+    // an older response overwrite a newer one, and a response whose
+    // result_generation is lower than the one on screen is discarded.
+    const guardRef = React.useRef(createLatestGuard());
+    const shownGenerationRef = React.useRef<number | null>(null);
+
+    // Account this panel fetches for. Starts at the server-rendered value and
+    // is re-resolved from the next `crank:auth-hydrated` after a cross-tab
+    // private-state purge, so a tab whose session another tab just ended shows
+    // the signed-out state instead of a job-match error that can never clear.
+    const [authed, setAuthed] = React.useState(isAuthenticated);
+    React.useEffect(() => setAuthed(isAuthenticated), [isAuthenticated]);
+    const awaitingHydrationRef = React.useRef(false);
+
     const fetchStatus = React.useCallback(async () => {
-        if (!isAuthenticated) return;
+        if (!authed) return;
+        const request = guardRef.current.begin();
         setPhase('loading');
         setErrorMsg(null);
         try {
             const [statusRes, matchRes, rankedRes] = await Promise.all([
-                fetch('/api/job-matches/status/'),
-                fetch('/api/job-matches/?page=1&page_size=1'),
-                fetch('/api/job-matches/ranked/?limit=10'),
+                fetch('/api/job-matches/status/', {signal: request.signal}),
+                fetch('/api/job-matches/?page=1&page_size=1', {signal: request.signal}),
+                fetch('/api/job-matches/ranked/?limit=10', {signal: request.signal}),
             ]);
             if (!statusRes.ok) {
                 // Never expose raw implementation details (issue #467 round-2):
@@ -565,29 +635,97 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 throw new Error('We couldn’t load your job matches. Please try again.');
             }
             const statusData: EmptyStatePayload = await parseJson(statusRes);
-            setEmptyState(statusData);
-
+            let matchData: {count?: number; results?: RankedJobMatch[]} | null = null;
             if (matchRes.ok) {
-                const matchData = await parseJson<{count?: number; results?: RankedJobMatch[]}>(matchRes);
+                matchData = await parseJson<{count?: number; results?: RankedJobMatch[]}>(matchRes);
+            }
+            const rankedData: RankedMatchesPayload | null = rankedRes.ok
+                ? await parseJson<RankedMatchesPayload>(rankedRes)
+                : null;
+            if (!request.isLatest()) {
+                return;
+            }
+            const revision = matchData?.results?.[0]?.revision ?? null;
+            if (!acceptsGeneration(shownGenerationRef.current, rankedData, revision?.result_generation ?? null)) {
+                // Older, unverifiable or endpoint-mismatched result set:
+                // keep what is shown.
+                setPhase('ready');
+                return;
+            }
+            const generation = displayedGeneration(rankedData, revision?.result_generation ?? null);
+            setEmptyState(statusData);
+            if (matchData) {
                 setMatchCount(matchData.count || 0);
-                setStoredRevision(matchData.results?.[0]?.revision ?? null);
+                setStoredRevision(revision);
             }
-            if (rankedRes.ok) {
-                const rankedData: RankedMatchesPayload = await parseJson<RankedMatchesPayload>(rankedRes);
-                setRankedMatches(rankedData);
-            } else {
-                setRankedMatches(null);
+            if (generation !== null) {
+                shownGenerationRef.current = generation;
             }
+            setRankedMatches(rankedData);
             setPhase('ready');
         } catch (e) {
+            if (!request.isLatest()) {
+                return;
+            }
             setErrorMsg(e instanceof Error ? e.message : 'Could not load job match status.');
             setPhase('error');
         }
-    }, [isAuthenticated]);
+    }, [authed]);
 
     React.useEffect(() => {
         fetchStatus();
     }, [fetchStatus]);
+
+    React.useEffect(() => () => guardRef.current.cancel(), []);
+
+    // Issue #479: report the jobs surface, track/restore the Back-navigation
+    // scroll position, and drop everything on a private-state purge (sign-out
+    // or account switch) so no match data outlives the account.
+    React.useEffect(() => {
+        setWorkspaceContext({surface: 'jobs'});
+        return installPositionTracking(() => null);
+    }, []);
+    const restoredPositionRef = React.useRef(false);
+    React.useEffect(() => {
+        if (phase === 'ready' && !restoredPositionRef.current) {
+            restoredPositionRef.current = true;
+            restoreResultPosition(() => null);
+        }
+    }, [phase]);
+    React.useEffect(() => {
+        const handlePurged = () => {
+            guardRef.current.cancel();
+            shownGenerationRef.current = null;
+            setEmptyState(null);
+            setMatchCount(0);
+            setRankedMatches(null);
+            setStoredRevision(null);
+            setPhase('loading');
+            // Private re-fetches wait for the post-change hydration, which is
+            // the first point the account the cookie belongs to is known.
+            awaitingHydrationRef.current = true;
+        };
+        const handleHydrated = (event: Event) => {
+            if (!awaitingHydrationRef.current) return;
+            awaitingHydrationRef.current = false;
+            const detail = (event as CustomEvent).detail as
+                {authenticated?: boolean; unobserved?: boolean} | undefined;
+            // A failed whoami says nothing about the account: keep the last
+            // known one and retry the fetch.
+            const next = detail && !detail.unobserved ? !!detail.authenticated : authed;
+            if (next === authed) {
+                void fetchStatus();
+            } else {
+                setAuthed(next);
+            }
+        };
+        document.addEventListener('crank:private-state-purged', handlePurged);
+        document.addEventListener('crank:auth-hydrated', handleHydrated);
+        return () => {
+            document.removeEventListener('crank:private-state-purged', handlePurged);
+            document.removeEventListener('crank:auth-hydrated', handleHydrated);
+        };
+    }, [fetchStatus, authed]);
 
     const handleAction = React.useCallback((action: string) => {
         switch (action) {
@@ -627,7 +765,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         }
     }, [fetchStatus]);
 
-    if (!isAuthenticated) {
+    if (!authed) {
         return (
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
@@ -924,4 +1062,3 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
 };
 
 export default JobMatchPanel;
-

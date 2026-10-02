@@ -50,9 +50,11 @@ test.describe('company handoff through sign-in (issue #465 AC-7)', () => {
         // The post-sign-in landing state offers the company conversation.
         const chatCta = page.getByTestId('company-chat-cta');
         await expect(chatCta).toBeVisible();
+        // Issue #479: the CTA opens the assistant in place with the company
+        // as shared context instead of forcing a full navigation.
         await chatCta.click();
-        await page.waitForURL((url) => url.pathname === '/chat/' && url.searchParams.has('company'));
         await expect(page.getByTestId('job-search-chat')).toBeVisible();
+        await expect(page.getByTestId('assistant-context-strip')).toContainText('About E2E Alpha Corp');
     });
 });
 
@@ -94,7 +96,7 @@ test.describe('logout purge on an authenticated page (issue #465 AC-9)', () => {
         await expect.poll(() => privateStorageKeys(page)).not.toEqual([]);
         await expect
             .poll(() => page.evaluate(() => window.localStorage.getItem('crank:last-account')))
-            .toBe(E2E_USERNAME);
+            .toMatch(/^d:[0-9a-f]{16}$/);
 
         await page.locator('.app-nav-rail form.app-nav-logout-form button[type="submit"]').click();
         await page.waitForURL((url) => url.pathname !== '/chat/');
