@@ -854,14 +854,22 @@ class CompanyProfileAdminTests(TestCase):
             extraction_version=EXTRACTION_VERSION,
             fingerprint="admin-fingerprint-2",
         )
-        request = RequestFactory().post("/admin/crank/companyprofileobservation/", {"confirm": "yes"})
-        request.user = user
         model_admin = CompanyProfileObservationAdmin(CompanyProfileObservation, AdminSite())
         model_admin.message_user = lambda *_args, **_kwargs: None
-        model_admin.reject_observations(request, CompanyProfileObservation.objects.filter(pk=observation.pk))
+
+        def confirmed_request():
+            digest = model_admin.observations_digest([CompanyProfileObservation.objects.get(pk=observation.pk)])
+            request = RequestFactory().post(
+                "/admin/crank/companyprofileobservation/",
+                {"confirm": "yes", "observation_digest": digest},
+            )
+            request.user = user
+            return request
+
+        model_admin.reject_observations(confirmed_request(), CompanyProfileObservation.objects.filter(pk=observation.pk))
         observation.refresh_from_db()
         self.assertEqual(observation.status, CompanyProfileObservation.Status.REJECTED)
-        model_admin.conflict_observations(request, CompanyProfileObservation.objects.filter(pk=observation.pk))
+        model_admin.conflict_observations(confirmed_request(), CompanyProfileObservation.objects.filter(pk=observation.pk))
         observation.refresh_from_db()
         self.assertEqual(observation.status, CompanyProfileObservation.Status.CONFLICTED)
 

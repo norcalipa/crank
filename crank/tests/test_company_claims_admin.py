@@ -242,9 +242,11 @@ class ClaimReviewTests(TestCase):
         observation = CompanyProfileObservation.objects.filter(organization=self.organization).get()
         url = reverse("admin:crank_companyprofileobservation_changelist")
         data = {"action": "reject_observations", ACTION_CHECKBOX_NAME: [observation.pk], "index": 0}
-        self.assertTemplateUsed(self.client.post(url, data), "admin/confirm_action.html")
+        preview = self.client.post(url, data)
+        self.assertTemplateUsed(preview, "admin/confirm_action.html")
         observation.refresh_from_db()
         self.assertEqual(observation.status, CompanyProfileObservation.Status.AUTO_APPLIED)
+        data.update(dict(preview.context["extra_hidden"]))
         self.client.post(url, {**data, "confirm": "yes"})
         observation.refresh_from_db()
         self.assertEqual(observation.status, CompanyProfileObservation.Status.REJECTED)
@@ -1006,8 +1008,110 @@ class ClaimReviewTests(TestCase):
         observation.refresh_from_db()
         self.assertEqual(observation.status, CompanyProfileObservation.Status.CONFLICTED)
 
+    def _observation_post(self, action, pks):
+        url = reverse("admin:crank_companyprofileobservation_changelist")
+        data = {"action": action, ACTION_CHECKBOX_NAME: pks, "index": 0}
+        preview = self.client.post(url, data)
+        data.update(dict(preview.context["extra_hidden"]))
+        return url, {**data, "confirm": "yes"}
+
+    def _rival_accept_at_lock(self, observation):
+        real_lock = company_evidence.lock_organizations
+
+        def lock_after_a_rival_accept(ids):
+            real_lock(ids)
+            CompanyProfileObservation.objects.filter(pk=observation.pk).update(
+                status=CompanyProfileObservation.Status.ACCEPTED
+            )
+            observation.refresh_from_db()
+            company_evidence.accept_observation_fields(observation)
+
+        return mock.patch.object(company_evidence, "lock_organizations", lock_after_a_rival_accept)
+
+    def _pending_observation(self):
+        observation = CompanyProfileObservation.objects.filter(
+            organization=self.organization
+        ).latest("id")
+        CompanyFieldEvidence.objects.filter(observation=observation).update(
+            state=State.PENDING
+        )
+        CompanyProfileObservation.objects.filter(pk=observation.pk).update(
+            status=CompanyProfileObservation.Status.PENDING
+        )
+        observation.refresh_from_db()
+        return observation
+
+    def test_reject_refuses_when_a_rival_accept_lands_after_the_preview(self):
+        observation = self._pending_observation()
+        url, data = self._observation_post("reject_observations", [observation.pk])
+        with self._rival_accept_at_lock(observation):
+            response = self.client.post(url, data, follow=True)
+        self.assertTrue(any("No changes made" in m for m in self._messages(response)))
+        observation.refresh_from_db()
+        self.assertEqual(observation.status, CompanyProfileObservation.Status.ACCEPTED)
+        accepted = CompanyFieldEvidence.objects.filter(
+            observation=observation, state=State.ACCEPTED
+        )
+        self.assertTrue(accepted.exists())
+        self.assertFalse(
+            OperationalChangeAudit.objects.filter(
+                target_type="company_profile_observation", action="review_rejected"
+            ).exists()
+        )
+
+    def test_mark_conflicted_refuses_when_a_rival_accept_lands_after_the_preview(self):
+        observation = self._pending_observation()
+        url, data = self._observation_post("conflict_observations", [observation.pk])
+        with self._rival_accept_at_lock(observation):
+            response = self.client.post(url, data, follow=True)
+        self.assertTrue(any("No changes made" in m for m in self._messages(response)))
+        observation.refresh_from_db()
+        self.assertEqual(observation.status, CompanyProfileObservation.Status.ACCEPTED)
+
+    def test_decisions_lock_organizations_in_pk_order_whatever_the_page_order(self):
+        first = CompanyProfileObservation.objects.filter(
+            organization=self.organization
+        ).latest("id")
+        other = Organization.objects.create(name="Other Labs", url="https://other.test")
+        second = CompanyProfileObservation.objects.get(pk=first.pk)
+        second.pk = None
+        second.organization = other
+        second.fingerprint = "other-fingerprint"
+        second.save()
+        self.assertLess(self.organization.pk, other.pk)
+        for action in ("reject_observations", "conflict_observations", "accept_observations"):
+            url, data = self._observation_post(action, [second.pk, first.pk])
+            locked = []
+            with mock.patch.object(
+                company_evidence, "_lock_organization", side_effect=locked.append
+            ):
+                self.client.post(url, data, follow=True)
+            self.assertEqual(locked[:2], [self.organization.pk, other.pk], action)
+
+    def test_confirmation_labels_neutralise_bidi_and_zero_width_characters(self):
+        observation = CompanyProfileObservation.objects.filter(
+            organization=self.organization
+        ).latest("id")
+        CompanyProfileObservation.objects.filter(pk=observation.pk).update(
+            observed_name="Ex\u202eample\u200b Labs", source_url="https://x.test/\u2066a"
+        )
+        Organization.objects.filter(pk=self.organization.pk).update(name="Ex\u202eample Labs")
+        observation.refresh_from_db()
+        self.rto.refresh_from_db()
+        labels = [
+            admin_site_registry(CompanyProfileObservation).confirmation_label(observation),
+            admin_site_registry(CompanyProfileObservation).confirmation_label_for_action(
+                observation, "reject_observations"
+            ),
+            admin_site_registry(CompanyFieldEvidence).confirmation_label(self.rto),
+        ]
+        for label in labels:
+            for char in ("\u202e", "\u200b", "\u2066"):
+                self.assertNotIn(char, label)
+        self.assertIn("Example Labs", labels[0])
+
     def test_claim_views_show_how_matching_reads_the_value(self):
-        CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(value_text="No office required")
+        CompanyFieldEvidence.objects.filter(pk=self.rto.pk).update(value_text="Remote first")
         self.rto.refresh_from_db()
         claim_admin = admin_site_registry(CompanyFieldEvidence)
         self.assertIn("remote (0 in-office days)", claim_admin.confirmation_label(self.rto))

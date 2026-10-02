@@ -583,12 +583,6 @@ def _evidence_in_scope(evidence_row: Any, listing: Any) -> bool:
     return True
 
 
-_NEGATED_OFFICE = re.compile(
-    r"\b(?:no|without|optional|optionally)\s+(?:in[- ]?office|on-?site|office)\b"
-    r"|\b(?:in[- ]?office|on-?site|office)\s+(?:is\s+)?optional\b"
-)
-
-
 def _rto_days(value: Any) -> int | None:
     """Map an RTO policy (code, label, or producer prose) to in-office days."""
     normalized = _normalized(value).replace("_", " ")
@@ -602,17 +596,11 @@ def _rto_days(value: Any) -> int | None:
     # CompanyFieldEvidence stores prose (e.g. "Remote first", "Hybrid 3 days",
     # "Five days in office, no exceptions"). Match the strongest explicit
     # signal; an explicit office term wins, then hybrid, then remote.
-    negated = _NEGATED_OFFICE.search(normalized) is not None
-    if not negated and any(token in normalized for token in ("in-office", "in office", "onsite")):
-        return 5
-    # A bare "office" mention ("optional office space", "office hubs") is not an
-    # in-office requirement when the prose also names a remote or hybrid policy.
-    bare_office = "office" in normalized and "remote" not in normalized and "hybrid" not in normalized
-    if not negated and bare_office:
+    if any(token in normalized for token in ("in-office", "in office", "onsite", "office")):
         return 5
     if "hybrid" in normalized:
         return 3
-    if "remote" in normalized or negated:
+    if "remote" in normalized:
         return 0
     return None
 

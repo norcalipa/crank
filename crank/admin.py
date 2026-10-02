@@ -452,7 +452,10 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
 
     @staticmethod
     def _base_label(obj):
-        return f"{obj.observed_name or obj.observed_domain} [{obj.status}] {obj.source_url}"
+        name = company_evidence.strip_unsafe_characters(
+            obj.observed_name or obj.observed_domain or ""
+        )
+        return f"{name} [{obj.status}] {company_evidence.strip_unsafe_characters(obj.source_url)}"
 
     def _reject_label(self, obj):
         label = self._base_label(obj)
@@ -568,29 +571,27 @@ class CompanyProfileObservationAdmin(ConfirmableAdminActionMixin, StaffOnlyAdmin
         rejected_values = []
         accepting = status == CompanyProfileObservation.Status.ACCEPTED
         with transaction.atomic():
-            if accepting:
-                # Lock the organizations first, then re-read and compare the
-                # digest in the same transaction, so a concurrent accept that
-                # committed after the reviewer looked is never overwritten.
-                observations = list(queryset)
-                company_evidence.lock_organizations(o.organization_id for o in observations)
-                observations = list(
-                    CompanyProfileObservation.objects.filter(
-                        pk__in=[o.pk for o in observations]
-                    ).order_by("pk")
+            # Every decision locks the organizations in pk order first, then
+            # re-reads and compares the digest in the same transaction, so a
+            # concurrent decision that committed after the reviewer looked is
+            # never overwritten and lock order matches claim decisions.
+            observations = list(queryset)
+            company_evidence.lock_organizations(o.organization_id for o in observations)
+            observations = list(
+                CompanyProfileObservation.objects.filter(
+                    pk__in=[o.pk for o in observations]
+                ).order_by("pk")
+            )
+            if request.POST.get("observation_digest") != self.observations_digest(observations):
+                self.message_user(
+                    request,
+                    "No changes made: the selected observations (or the values they would "
+                    "replace) changed since you reviewed them. Review the current ones and "
+                    "confirm again.",
+                    level="error",
                 )
-                if request.POST.get("observation_digest") != self.observations_digest(
-                    observations
-                ):
-                    self.message_user(
-                        request,
-                        "No changes made: the selected observations (or the values they would "
-                        "replace) changed since you reviewed them. Review the current ones and "
-                        "confirm again.",
-                        level="error",
-                    )
-                    return
-                queryset = observations
+                return
+            queryset = observations
             for observation in queryset:
                 if accepting and company_evidence.scoped_accepted_conflicts(observation):
                     # Accepting whole would replace staff-scoped evidence with
@@ -882,10 +883,11 @@ class CompanyFieldEvidenceAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin
         reading = company_evidence.matching_reading(obj.field_key, obj.value_text)
         reading = f"; {reading}" if reading else ""
         return (
-            f"{obj.organization.name} / {obj.field_key} [{obj.state}]: "
+            f"{company_evidence.strip_unsafe_characters(obj.organization.name)} / "
+            f"{obj.field_key} [{obj.state}]: "
             f"proposed {obj.value_text!r}{reading}; currently accepted "
             f"{repr(accepted.value_text) if accepted is not None else 'none'}{legacy}; "
-            f"{scope_text}; source {obj.source_url}"
+            f"{scope_text}; source {company_evidence.strip_unsafe_characters(obj.source_url)}"
         )
 
     def get_changelist_instance(self, request):

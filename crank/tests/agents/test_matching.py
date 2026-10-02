@@ -607,16 +607,21 @@ def test_rto_evidence_uses_prose_value():
 @pytest.mark.parametrize(
     "value,days",
     [
-        ("No office required", 0),
-        ("Remote-first; optional office space in SF", 0),
-        ("Remote first, office hubs in NYC", 0),
-        ("Office is optional", 0),
-        ("Not hybrid: in office", 5),
-        ("Five days at the office", 5),
-        ("Onsite", 5),
+        ("Office-first; remote by exception", 5),
+        ("No remote work. Office attendance required 5 days a week", 5),
+        ("Return to office 5 days a week; remote not permitted", 5),
+        ("Five days in office; no office in Europe", 5),
+        ("In office Monday-Friday; no in-office exceptions", 5),
+        ("Return-to-office 4 days a week, remote Fridays", 5),
+        ("Not remote", 0),
+        ("No remote", 0),
+        ("Remote first", 0),
+        ("Hybrid 3 days", 3),
     ],
 )
-def test_rto_prose_negations_and_incidental_office_mentions(value, days):
+def test_rto_prose_reads_in_office_when_office_is_named(value, days):
+    """Pins ``_rto_days`` to its reviewed behaviour: explicit office wording is never
+    resolved to the more permissive remote reading (parser changes are tracked in #537)."""
     from crank.agents.jobs.matching import _rto_days
 
     assert _rto_days(value) == days
