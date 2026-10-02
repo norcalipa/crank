@@ -702,5 +702,61 @@ describe('PrioritiesSection', () => {
             fireEvent.click(screen.getByRole('button', {name: 'This search only'}));
             expect(await screen.findByText(/25\+ jobs match these priorities/)).toBeInTheDocument();
         });
+
+        test('Add button commits on mouse down without stealing focus', async () => {
+            mockFetch({'/api/agent/preferences/': () => json(snapshotBody(2, [chip]))});
+            render(<PrioritiesSection variant="main" authenticated/>);
+            const form = await openEditor();
+            fireEvent.change(within(form).getByLabelText('Culture'), {target: {value: 'open'}});
+            const add = within(form).getByRole('button', {name: /^Add/});
+            expect(fireEvent.mouseDown(add)).toBe(false);
+            fireEvent.click(add);
+            expect(within(form).getByText('open')).toBeInTheDocument();
+        });
+
+        test('a 200 that is not JSON is treated as an expired session', async () => {
+            mockFetch({'/api/agent/preferences/': () => new Response('<html>login</html>', {status: 200})});
+            render(<PrioritiesSection variant="main" authenticated/>);
+            expect(await screen.findByTestId('priorities-session-expired')).toBeInTheDocument();
+        });
+
+        test('Review latest says so when the latest document already holds the edit', async () => {
+            let current = snapshotBody(2, [chip]);
+            mockFetch({
+                '/api/agent/preferences/propose/': () => json(proposal),
+                '/api/agent/preferences/apply/': () => json({error: {type: 'preference_stale', message: 's', current_revision: 5}}, 409),
+                '/api/agent/preferences/': () => json(current),
+            });
+            render(<PrioritiesSection variant="main" authenticated/>);
+            const form = await openEditor();
+            fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '150000'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            await screen.findByRole('heading', {name: 'Review your changes'});
+            fireEvent.click(screen.getByRole('button', {name: 'Apply to account'}));
+            await screen.findByTestId('priorities-review-error');
+            current = snapshotBody(5, [chip]);
+            current.fields[0] = field({value: 150000, set: true});
+            fireEvent.click(screen.getByRole('button', {name: 'Review latest'}));
+            expect(await screen.findByText(/Nothing left to change/)).toBeInTheDocument();
+        });
+
+        test('Review latest keeps the review and says so when the reload fails', async () => {
+            let reload = false;
+            mockFetch({
+                '/api/agent/preferences/propose/': () => json(proposal),
+                '/api/agent/preferences/apply/': () => json({error: {type: 'preference_stale', message: 's', current_revision: 5}}, 409),
+                '/api/agent/preferences/': () => (reload ? json({error: {message: 'down'}}, 500) : json(snapshotBody(2, [chip]))),
+            });
+            render(<PrioritiesSection variant="main" authenticated/>);
+            const form = await openEditor();
+            fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '150000'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            await screen.findByRole('heading', {name: 'Review your changes'});
+            fireEvent.click(screen.getByRole('button', {name: 'Apply to account'}));
+            await screen.findByTestId('priorities-review-error');
+            reload = true;
+            fireEvent.click(screen.getByRole('button', {name: 'Review latest'}));
+            expect(await screen.findByText(/Could not load your latest priorities/)).toBeInTheDocument();
+        });
     });
 });

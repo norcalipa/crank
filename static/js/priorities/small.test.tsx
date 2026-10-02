@@ -188,4 +188,8 @@ describe('review wording (issue #480 round 1)', () => {
         expect(chipValueLabel('compensation.minimum_salary', '150000', 'USD')).toContain('$');
         expect(preferenceValueLabel(null)).toBeDefined();
     });
+
+    test('values outside the known shapes fall back to String()', () => {
+        expect(preferenceValueLabel(BigInt(7))).toBe('7');
+    });
 });
