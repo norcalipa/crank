@@ -3561,6 +3561,17 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
         expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(proposal.token.patch);
     });
 
+    test('a 403 on apply shows neutral copy, disables Apply and offers review', async () => {
+        await submitAndApply({
+            error: {type: 'forbidden', message: 'This change expired. Reload to review it again.', request_id: 'req-1'},
+        }, 403);
+        const errorPanel = await screen.findByTestId('preference-proposal-error');
+        expect(errorPanel).toHaveTextContent('This change expired. Reload to review it again.');
+        expect(errorPanel).not.toHaveTextContent(/different account/i);
+        expect(screen.getByTestId('preference-apply-button')).toBeDisabled();
+        expect(screen.getByTestId('preference-proposal-review-button')).toBeInTheDocument();
+    });
+
     test('a network failure on apply shows retry copy, not the stale-only review action', async () => {
         await submitTurnWithProposal({
             message: assistantMessage(14, 'I suggest these updates.', false),
@@ -3967,6 +3978,18 @@ describe('preference change undo (issue #466)', () => {
         expect(reviewButton).toHaveTextContent('Review current preferences');
         fireEvent.click(reviewButton);
         expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
+    });
+
+    test('error state: a 403 on undo disables Undo and offers review', async () => {
+        await applyProposalThen();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            error: {type: 'forbidden', message: 'This change expired. Reload to review it again.', request_id: 'req-1'},
+        }, 403));
+        fireEvent.click(screen.getByRole('button', {name: 'Undo preference update'}));
+        const errorPanel = await screen.findByTestId('preference-undo-error');
+        expect(errorPanel).toHaveTextContent('This change expired.');
+        expect(screen.getByRole('button', {name: 'Undo preference update'})).toBeDisabled();
+        expect(screen.getByTestId('preference-review-button')).toBeInTheDocument();
     });
 
     test('error state: a network failure shows retry copy and NOT the stale-only review action', async () => {

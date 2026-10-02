@@ -338,6 +338,25 @@ describe('PrioritiesSection', () => {
         expect(await screen.findByRole('button', {name: 'Apply to account'})).toBeInTheDocument();
     });
 
+    test('forbidden apply (403) is treated as expired: review latest, no retry loop', async () => {
+        let proposals = 0;
+        mockFetch({
+            '/api/agent/preferences/propose/': () => { proposals += 1; return json(proposal); },
+            '/api/agent/preferences/apply/': () => json({error: {type: 'forbidden',
+                message: 'This change expired. Reload to review it again.'}}, 403),
+            '/api/agent/preferences/': () => json(snapshotBody(5, [chip])),
+        });
+        render(<PrioritiesSection variant="main" authenticated/>);
+        const form = await openEditor();
+        fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '150000'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+        await screen.findByRole('heading', {name: 'Review your changes'});
+        fireEvent.click(screen.getByRole('button', {name: 'Apply to account'}));
+        expect(await screen.findByTestId('priorities-review-error')).toHaveTextContent('Review the latest before applying');
+        fireEvent.click(screen.getByRole('button', {name: 'Review latest'}));
+        await waitFor(() => expect(proposals).toBe(2));
+    });
+
     test('apply network error is retryable; This search only applies without saving', async () => {
         let attempt = 0;
         const fetchFn = mockFetch({

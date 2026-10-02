@@ -99,7 +99,7 @@ export class ApiFailure extends Error {
     }
 
     get stale(): boolean {
-        return this.status === 409 || this.type === 'preference_stale';
+        return this.status === 409 || this.type === 'preference_stale' || this.type === 'forbidden';
     }
 
     get authRequired(): boolean {

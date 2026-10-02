@@ -455,7 +455,7 @@ export function PreferenceChangeNotice({changes, undoState, undoError, undoError
     // Only a server-confirmed stale revision renders the stale-only review
     // action (issue #466 review): connectivity/5xx failures keep the
     // retry-oriented Undo path instead.
-    const staleConflict = undoState === 'error' && undoErrorType === 'preference_stale';
+    const staleConflict = undoState === 'error' && (undoErrorType === 'preference_stale' || undoErrorType === 'forbidden');
     const emptyDiff = changes.length === 0;
     return (
         <div className="alert alert-success pref-change-notice" role="status"
@@ -495,7 +495,7 @@ export function PreferenceChangeNotice({changes, undoState, undoError, undoError
                     </button>
                 )}
                 <button type="button" className="chat-btn chat-btn-secondary chat-focus pref-undo-btn"
-                        onClick={onUndo} disabled={pending}
+                        onClick={onUndo} disabled={pending || (undoState === 'error' && undoErrorType === 'forbidden')}
                         aria-label={pending ? 'Undoing preference update' : 'Undo preference update'}
                         aria-busy={pending} data-testid="preference-undo-button">
                     {pending ? (
@@ -538,7 +538,8 @@ export function PreferenceProposalNotice({proposal, state, error, errorType, onD
 }) {
     const pending = state === 'pending';
     const isSearch = proposal.scope === 'search';
-    const staleConflict = state === 'error' && errorType === 'preference_stale';
+    const staleConflict = state === 'error' && (errorType === 'preference_stale' || errorType === 'forbidden');
+    const tokenExpired = state === 'error' && errorType === 'forbidden';
     return (
         <div className="alert alert-warning pref-change-notice" role="status"
              aria-label="Proposed preference change" data-testid="preference-proposal-notice">
@@ -576,7 +577,7 @@ export function PreferenceProposalNotice({proposal, state, error, errorType, onD
                     </button>
                 )}
                 <button type="button" className="chat-btn chat-btn-primary chat-focus pref-apply-btn"
-                        onClick={() => onDecision('apply')} disabled={pending}
+                        onClick={() => onDecision('apply')} disabled={pending || tokenExpired}
                         aria-label={pending ? 'Applying preference proposal' : 'Apply preference proposal'}
                         aria-busy={pending} data-testid="preference-apply-button">
                     {pending ? (
