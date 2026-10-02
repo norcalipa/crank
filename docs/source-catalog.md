@@ -63,7 +63,8 @@ All rows below come from `seeds/crank.organization.yaml` with `gives_ratings: tr
 
 **Why.** Google is the only seeded `gives_ratings: true` organization whose data is reachable through a
 currently-documented official web-service API with a usable free usage tier. Its aggregate star rating
-maps naturally to the seeded **Reputation** `ScoreType` (and secondarily **Culture**).
+maps to the seeded **Reputation** `ScoreType` only. It is a consumer/business rating, not an
+employee-culture or hiring measure (see the quality mapping below).
 
 **Access (what is confirmed).**
 
@@ -81,7 +82,8 @@ maps naturally to the seeded **Reputation** `ScoreType` (and secondarily **Cultu
 - `rating` (0.0–5.0 aggregate float) → normalized `Score.value` on a 0–5 scale, matching the existing
   `Score` default `low_threshold=0.0` / `high_threshold=5.0`.
 - `user_ratings_total` (integer count) → optional secondary signal (vote weight).
-- Mapped `ScoreType`: **Reputation** (primary), **Culture** (candidate second).
+- Mapped `ScoreType`: **Reputation** only. Culture was removed as a candidate in #474: a star rating of a
+  business is not a valid measurement of employee culture.
 
 **Limits, retention, cadence, geography.**
 
@@ -132,7 +134,38 @@ content and any incidental personal information.
    budget/commercial licence is approved.
 6. Re-check BBB for an official licensee data channel if accreditation data is desired.
 
+## 5b. Quality measurement mapping (#474)
+
+Approval to access a source does not make its numbers a valid measure of every quality. Each source
+in `docs/source-catalog.yaml` declares `measurement:` (kinds from `crank/agents/sources/semantics.py`),
+and `ScoreNormalizer` refuses to persist a score whose source measurement cannot feed the mapped
+score type (`type_semantic_mismatch`, counted as unresolved). `consumer_business_rating` feeds
+**Reputation** only; a type that is unlisted or mentions "hiring" accepts no automated measurement.
+Fixtures and adapters never constitute approval: an adapter for a `blocked` source (Yelp) stays
+unregistered.
+
+| Quality | Target | Valid measurements | Status | Live | Notes |
+|---|---|---|---|---|---|
+| Culture | `Culture` | employee_survey, curated_review | `unsupported` | no | No approved source |
+| Leadership | `Leadership` | employee_survey, curated_review | `unsupported` | no | No approved source |
+| Compensation | `Total Compensation` | compensation_benchmark, curated_review | `unsupported` | no | Levels.fyi needs a budget decision |
+| Office policy | `rto_policy` | employer_policy_statement, curated_review | `review_required` | no | Crawled statements become pending claims; staff accept with scope |
+| Vesting | `accelerated_vesting` | curated_review | `manual_only` | no | Corrections via #477 |
+| Reputation | `Reputation` | consumer_business_rating, curated_review | `supported` | no | Google approved; no adapter or key yet |
+
+**Behavior change.** The company-profile crawler auto-applies only identity fields (company name,
+domain, locations). RTO, funding round and public status from new crawls become pending or conflicted
+claims (`CompanyFieldEvidence` states `pending`/`conflicted`) that never count as verified until staff
+accept them in the admin. Existing accepted evidence is unchanged.
+
 ## 6. Change log
 
 - **2026-08-07** — Initial catalog and approval record for #310. Approved Google as the fixture-backed
   MVP source (`live_enabled: false`); marked all other seeded rating sources blocked/pending/excluded.
+- **2026-09-29** — #474: added per-source `measurement:` and `quality_mapping:`; removed Culture as a
+  candidate for Google and Yelp and dropped candidates a source's measurement cannot validly feed
+  (Glassdoor/Comparably/Indeed Reputation, Comparably Product and Mission, Simply Wall Street
+  Reputation). Simply Wall Street and Stackshare now declare the honest kinds `financial_data` and
+  `tech_stack_listing` (Lifecycle and Financials / Tech Stack only) instead of `curated_review`.
+  Levels.fyi and Salary.com no longer list Lifecycle and Financials: a salary
+  benchmark does not measure lifecycle stage or financial health. No approval state changed.

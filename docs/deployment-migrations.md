@@ -379,3 +379,63 @@ numbered merge migration if a head split remains, keeping
     rows for both catalogs); until it completes, sources with a NULL
     `last_crawl_at` sort as "never crawled" in the due ordering. A release is
     not complete until this step has run and verified.
+
+## Allocation: 0046 (issue #474)
+
+- **0046 → #474**, parent `0045_jobsourcecatalog_consecutive_failures`
+  (batch controller override: #477 had not started, so numbers follow the
+  actual start order; #477 later takes 0047 with parent 0046).
+- **`0046_alter_companyfieldevidence_state`** is a choices-only `AlterField`
+  adding the `pending` and `rejected` states to
+  `CompanyFieldEvidence.state`. Django treats `choices` as a non-DB
+  attribute, so it emits no SQL on MySQL or SQLite. There is no DDL to
+  interrupt, no backfill, and nothing to recover; rerunning `migrate` is
+  safe. Existing accepted rows are unchanged.
+- **Rollback** is a code redeploy: old code filters `state=accepted`, so it
+  ignores pending, rejected and conflicted rows.
+- **Legacy auto-verified rows.** Accepted RTO, funding, public-status and
+  accelerated-vesting rows written before this change carry no staff review.
+  "Staff-reviewed" is derived, not stored: an accepted row counts as reviewed
+  when a confirmed `claim_accepted` or `observation_accepted` audit row exists
+  for it, its observation is `accepted`, or it is a staff correction (no
+  observation and a `manual-` validation version, such as #528's
+  `manual-correction.v1`) - the rule is source-agnostic. Until staff decide,
+  a legacy row stays accepted and in effect (it still drives matching).
+  Only reviewed rows are re-verified by later crawls that read the same value.
+- **Backfill for organizations that are never recrawled.** A crawl reading the
+  same value opens a `pending` claim for a legacy row, but an organization no
+  crawl revisits would never reach the queue. Triage is therefore explicit:
+  `python manage.py legacy_evidence_review` lists every legacy unreviewed row
+  (org, field, row id, value); add `--queue` to open a `pending` claim for each
+  (idempotent, no DDL). In the admin, `Company field evidence` has a
+  `legacy rows` filter (`?legacy=unreviewed`) and a "vs accepted" column
+  ("legacy value in effect", "matches reviewed value", "differs from
+  accepted"). Accepting a queued claim makes the value reviewed and keeps its
+  existing country/role scope; rejecting it retracts the legacy row (it becomes
+  superseded, the field is unverified and stops driving matching) and is
+  audited; the field's other open claims are reconciled in the same step
+  (same-value claims from other pages are closed, conflicted ones become
+  pending). Only review-required fields are ever legacy: identity fields (name,
+  domain, locations) are auto-applied, open no legacy claim and are never
+  retracted by a rejection. A queued claim keeps the reading's own fetch time,
+  so accepting it does not make an old reading look freshly verified, and a
+  page that already has an open claim for the field is not queued again.
+- **Rejections are not permanent.** A rejected value is suppressed for the same
+  organization, field, source and value for a fixed 30 days from the rejection
+  (`REJECTION_SUPPRESSION_DAYS`; seeing the value again does not extend it);
+  afterwards the page may reopen it for review. Rejecting an observation supersedes its claims
+  instead of rejecting them, so it never blocks other pages' values. Accepting
+  an observation is refused for a recently rejected value or over a
+  scope-narrowed row with a different value, and its confirmation lists the
+  values it carries and the scope it keeps.
+- **Bulk observation review.** `select across all pages` is refused for the
+  observation accept; the confirmation is bound to the selected observations'
+  ids and value hashes and to the accepted rows they would replace (shown as
+  "REPLACES <value> (staff-reviewed)"), and the accept is refused if any changed.
+  Rejecting an observation that staff accepted withdraws the review-required
+  facts that accept wrote (unless a claim re-accepted them).
+- **Bulk claim review.** `select across all pages` is refused for claim actions;
+  the confirmation is bound to the selected claims' ids, value hashes and
+  states, and the accept is refused if any changed before confirming.
+  Selecting several claims with the same value for one field is allowed;
+  different values (or different scopes) for one field are refused.

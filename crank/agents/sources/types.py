@@ -54,6 +54,7 @@ class ResolutionReason(str, Enum):
     # Unresolved - score type ----------------------------------------------
     TYPE_UNKNOWN = "type_unknown"
     TYPE_INACTIVE = "type_inactive"
+    TYPE_SEMANTIC_MISMATCH = "type_semantic_mismatch"
 
     # Unresolved - target ---------------------------------------------------
     TARGET_UNKNOWN = "target_unknown"
@@ -78,6 +79,7 @@ class ResolutionReason(str, Enum):
             ResolutionReason.SOURCE_NOT_RATING,
             ResolutionReason.TYPE_UNKNOWN,
             ResolutionReason.TYPE_INACTIVE,
+            ResolutionReason.TYPE_SEMANTIC_MISMATCH,
             ResolutionReason.TARGET_UNKNOWN,
             ResolutionReason.TARGET_AMBIGUOUS,
             ResolutionReason.TARGET_INACTIVE,
@@ -306,12 +308,13 @@ def normalize_domain(value: str, max_len: int = 512) -> str:
 def sanitize_label(value: str, max_len: int = 512) -> str:
     """Make an untrusted label safe to embed in logs/detail text.
 
-    Strips any HTML-ish tags (``<...>``), removes control characters, and
-    collapses whitespace so the result cannot render as markup or smuggle
-    control sequences, and is length-bounded.
+    Strips any HTML-ish tags (``<...>``), removes control and format characters
+    (zero-width, bidi overrides), and collapses whitespace so the result
+    cannot render as markup or smuggle control sequences, and is
+    length-bounded.
     """
     text = (value or "").replace("<", "").replace(">", "")
-    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cc")
+    text = "".join(ch for ch in text if unicodedata.category(ch) not in ("Cc", "Cf"))
     text = " ".join(text.split())
     return text[:max_len]
 

@@ -76,7 +76,7 @@ def _text(value: Any, field_name: str, maximum: int, *, required: bool = False) 
         value = ""
     if not isinstance(value, str):
         raise SchemaDriftError(f"{field_name} must be a string")
-    value = " ".join(strip_tags(value).split())
+    value = " ".join(company_evidence.strip_unsafe_characters(strip_tags(value)).split())
     if len(value) > maximum:
         raise SchemaDriftError(f"{field_name} exceeds configured limit")
     if required and not value:
@@ -185,6 +185,89 @@ def _organization_for(domain: str, name: str) -> tuple[Organization | None, list
     return organization, []
 
 
+# A difference only in these fields says nothing about whether a policy
+# statement the page still repeats is current, so it does not block
+# re-verification.
+COSMETIC_CONFLICT_FIELDS = frozenset({"description", "logo_url", "brand_metadata"})
+
+# Identity conflicts make a page an unreliable witness. A name or domain
+# variant is not one (the organization was resolved unambiguously);
+# ``_may_reverify`` still blocks a real change on the page itself.
+IDENTITY_CONFLICT_FIELDS = frozenset({"organization_identity", "stale_observation"})
+
+_COMPARED_FIELDS = (
+    "source_url", "observed_domain", "observed_name", "description", "locations",
+    "rto_evidence", "funding_evidence", "public_status_evidence", "logo_url",
+    "brand_metadata",
+)
+
+
+def _may_reverify(organization, observation, conflict_fields) -> bool:
+    """Whether a page that repeats a reviewed statement re-verifies it.
+
+    ``conflict_fields`` is computed against the organization's latest
+    observation from *any* page, so for a multi-page crawl every page after the
+    first differs in ``source_url`` and more; that alone must not stop
+    re-verification. The decision is per page: an identity conflict blocks, and
+    so does a non-cosmetic change against the previous reading of the *same*
+    page (``source_url``).
+    """
+    if set(conflict_fields) & IDENTITY_CONFLICT_FIELDS:
+        return False
+    earlier = (
+        CompanyProfileObservation.objects.filter(
+            organization=organization, source_url=observation.source_url
+        )
+        .exclude(status=CompanyProfileObservation.Status.REJECTED)
+        .exclude(pk=observation.pk)
+        .filter(observed_at__lte=observation.observed_at)
+        .order_by("-observed_at", "-id")
+        .first()
+    )
+    if earlier is None:
+        return True
+    changed = {
+        field for field in _COMPARED_FIELDS
+        if getattr(observation, field) and getattr(earlier, field)
+        and getattr(observation, field) != getattr(earlier, field)
+    }
+    return changed <= COSMETIC_CONFLICT_FIELDS
+
+
+def _reconcile_review_fields(
+    organization: Organization,
+    observation: CompanyProfileObservation,
+    *,
+    conflict_fields,
+    reverify: bool,
+    now: datetime,
+) -> dict[str, str]:
+    """Reconcile the review-required fields (and any conflicting mapped field).
+
+    ``conflicted`` is decided per field: an accepted row with a different
+    value, or the field's own attribute being in ``conflict_fields`` (AC6/AC7),
+    never the observation-level diff alone.
+    """
+    values = company_evidence.observation_field_values(observation)
+    conflicted_keys = {
+        company_evidence.field_key_for_observation_attribute(attribute)
+        for attribute in conflict_fields
+    } - {None}
+    keys = set(company_evidence.REVIEW_REQUIRED_FIELDS) | (conflicted_keys & set(values))
+    return {
+        field_key: company_evidence.observe_review_field(
+            organization,
+            field_key,
+            value=values.get(field_key),
+            observation=observation,
+            conflicted=field_key in conflicted_keys,
+            reverify=reverify,
+            now=now,
+        )
+        for field_key in sorted(keys)
+    }
+
+
 def _fingerprint(data: Mapping[str, Any]) -> str:
     encoded = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(encoded.encode()).hexdigest()
@@ -267,8 +350,30 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
             data = _extract(item, host, source_url)
             organization, identity_conflicts = _organization_for(data["observed_domain"], data["observed_name"])
             fp = _fingerprint(data)
-            if CompanyProfileObservation.objects.filter(fingerprint=fp).exists():
+            existing = CompanyProfileObservation.objects.filter(fingerprint=fp).first()
+            if existing is not None:
                 counts["duplicates"] += 1
+                # An unchanged (or reverted) page is still a successful read:
+                # re-verify reviewed facts it repeats and close claims for
+                # values it no longer carries.
+                if existing.organization_id is not None and existing.status in (
+                    CompanyProfileObservation.Status.AUTO_APPLIED,
+                    CompanyProfileObservation.Status.ACCEPTED,
+                    CompanyProfileObservation.Status.CONFLICTED,
+                ):
+                    stored_conflicts = (
+                        existing.conflict_fields
+                        if existing.status == CompanyProfileObservation.Status.CONFLICTED
+                        else ()
+                    )
+                    _reconcile_review_fields(
+                        existing.organization, existing,
+                        conflict_fields=stored_conflicts,
+                        reverify=_may_reverify(
+                            existing.organization, existing, stored_conflicts
+                        ),
+                        now=observed_at,
+                    )
                 continue
             prior = (CompanyProfileObservation.objects.filter(organization=organization)
                      .exclude(status=CompanyProfileObservation.Status.REJECTED)
@@ -305,10 +410,25 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
                     CompanyProfileObservation.Status.AUTO_APPLIED,
                     CompanyProfileObservation.Status.ACCEPTED,
                 ):
+                    # Only allowlisted identity fields are accepted without
+                    # review. RTO, funding, and public status become pending
+                    # claims for staff (issue #474): a crawl must not
+                    # auto-verify facts that gate an employment decision.
                     evidence_rows = company_evidence.accept_observation_fields(
-                        observation, now=observed_at
+                        observation,
+                        now=observed_at,
+                        field_keys=company_evidence.AUTO_APPLY_FIELDS,
+                        scoped_conflict="skip",
                     )
                     counts["evidence_accepted"] += len(evidence_rows)
+                    outcomes = _reconcile_review_fields(
+                        organization, observation, conflict_fields=(),
+                        reverify=True, now=observed_at,
+                    )
+                    claimed_keys = {
+                        key for key, outcome in outcomes.items()
+                        if outcome in ("claimed", "verified")
+                    }
                     # The fetch succeeded for the whole page, so every
                     # registered field was checked — including any the page
                     # stopped carrying. Recording the attempt on those keeps
@@ -318,7 +438,7 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
                     # and no verification: this fetch carried neither.
                     accepted_keys = {row.field_key for row in evidence_rows}
                     for field_key in company_evidence.FieldKey.values:
-                        if field_key in accepted_keys:
+                        if field_key in accepted_keys or field_key in claimed_keys:
                             continue
                         company_evidence.record_check(
                             organization,
@@ -338,9 +458,13 @@ def crawl_company_profile(source: Any, *, client: Any | None = None, now: dateti
                     # is passed and ``accept_value`` stays False, so
                     # record_check can only move last_checked_at /
                     # last_successful_fetch_at.
-                    for field_key in company_evidence.observation_field_values(
-                        observation
-                    ):
+                    carried = company_evidence.observation_field_values(observation)
+                    _reconcile_review_fields(
+                        organization, observation, conflict_fields=conflict_fields,
+                        reverify=_may_reverify(organization, observation, conflict_fields),
+                        now=observed_at,
+                    )
+                    for field_key in carried:
                         company_evidence.record_check(
                             organization,
                             field_key,

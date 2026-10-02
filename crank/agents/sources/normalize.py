@@ -24,6 +24,7 @@ import logging
 from decimal import Decimal, InvalidOperation
 from typing import Iterable, List, Optional, Sequence
 
+from crank.agents.sources.semantics import coerce_kind, measurement_allows
 from crank.agents.sources.types import (
     NormalizedScoreObservation,
     ObservationOutcome,
@@ -63,9 +64,10 @@ class ScoreNormalizer:
     """
 
     def __init__(self, config: ResolutionConfig, *, organization_model=None,
-                 score_type_model=None):
+                 score_type_model=None, measurement_kind=None):
         from crank.models import Organization, ScoreType  # deferred import
         self.config = config
+        self._measurement_kind = measurement_kind
         self._org_model = organization_model or Organization
         self._type_model = score_type_model or ScoreType
         self._active_orgs = {}  # name -> model instance (active only)
@@ -147,7 +149,17 @@ class ScoreNormalizer:
                     f"score type '{sanitize_label(mapping.score_type)}' is inactive")
             return None, ResolutionReason.TYPE_UNKNOWN, (
                 f"no active score type '{sanitize_label(mapping.score_type)}'")
+        if (self._measurement_kind is not None
+                and not measurement_allows(self._measurement_kind, st.name)):
+            return None, ResolutionReason.TYPE_SEMANTIC_MISMATCH, (
+                f"source measurement "
+                f"'{sanitize_label(self._kind_label())}' "
+                f"cannot feed score type '{sanitize_label(st.name)}'")
         return st, None, ""
+
+    def _kind_label(self) -> str:
+        kind = coerce_kind(self._measurement_kind)
+        return kind.value if kind is not None else str(self._measurement_kind)
 
     # -- target resolution -------------------------------------------------------
 

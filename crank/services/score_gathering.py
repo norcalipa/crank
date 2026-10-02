@@ -269,7 +269,10 @@ def gather_scores(run, **options):
             )
             raw_observations = _result_observations(fetched.result)
             source_counts["observations_fetched"] = len(raw_observations)
-            normalizer = ScoreNormalizer(config)
+            normalizer = ScoreNormalizer(
+                config,
+                measurement_kind=getattr(fetched.adapter, "measurement_kind", None),
+            )
             normalized_input = [
                 _as_normalizer_observation(
                     observation, source=source, config=config, run=run
