@@ -601,8 +601,10 @@ describe('JobSearchChat', () => {
             );
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            // The pill clears and the transcript is pinned right after the
+            // optimistic bubble commits, before any reply lands.
             await screen.findByText('reply');
-            expect(scrollTo).toHaveBeenCalledWith({top: 1000, behavior: 'auto'});
+            expect(history.scrollTop).toBe(1000);
             expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
         });
 

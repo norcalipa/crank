@@ -136,6 +136,7 @@ export function Composer({
                     </button>
                 )}
             </div>
+            <p className="chat-disclaimer mb-0" role="note">AI can be wrong. Check important details.</p>
         </form>
     );
 }

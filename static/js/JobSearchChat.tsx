@@ -241,6 +241,16 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             initErrorActionRef.current?.focus();
         }
     }, [initError]);
+    const headingRef = React.useRef<HTMLHeadingElement>(null);
+    // After load the focus belongs in the chat. The sheet keeps the keyboard
+    // down, so it lands on the Conversation heading instead of the composer.
+    const focusAfterLoad = () => {
+        if (!autoFocusRef.current) return;
+        window.setTimeout(() => {
+            if (props.workspaceMode === 'sheet') headingRef.current?.focus({preventScroll: true});
+            else composerRef.current?.focus();
+        }, 0);
+    };
     const autoFocusRef = React.useRef(true);
     autoFocusRef.current = props.workspaceMode === undefined || !!props.autoFocusComposer;
     // Shared floor for the measured card height; must stay in sync with the
@@ -397,7 +407,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         return {minHeight: '20rem'};
     }, [cardHeight, panelScroll]);
 
-    const {historyRef, showJumpToLatest, unreadCount, scrollToLatest} = useTranscriptScroll({
+    const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend} = useTranscriptScroll({
         messagesLength: messages.length,
         assistantCount: messages.filter((m) => m.role === 'assistant').length,
         scrollOwner: panelScroll ? 'panel' : 'transcript',
@@ -527,9 +537,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         // conversationId/loading commit) and is silently
                         // dropped, leaving the composer unfocused (CI: 400%
                         // zoom composer-focus race).
-                        if (props.workspaceMode !== 'sheet' && autoFocusRef.current) {
-                            window.setTimeout(() => composerRef.current?.focus(), 0);
-                        }
+                        focusAfterLoad();
                     } catch {
                         if (stale()) return;
                         setInitError('Could not start a conversation. Please try again.');
@@ -549,12 +557,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 adoptPendingDraft(data.id);
                 setLoading(false);
                 // Defer focus past the React commit (see above): the textarea
-                // is disabled until conversationId/loading land. The mobile
-                // sheet keeps focus on its Back control instead of raising
-                // the keyboard.
-                if (props.workspaceMode !== 'sheet' && autoFocusRef.current) {
-                    window.setTimeout(() => composerRef.current?.focus(), 0);
-                }
+                // is disabled until conversationId/loading land.
+                focusAfterLoad();
             })
             .catch(() => {
                 if (stale()) return;
@@ -812,8 +816,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setRetryKey(key);
         } else {
             setMessages((prev) => [...prev, optimisticUser]);
-            // Sending is explicit intent to follow the conversation.
-            scrollToLatest('auto');
+            followNextAppend();
         }
 
         const controller = new AbortController();
@@ -1410,7 +1413,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                  style={chatCardStyle}>
             <div className="card-header d-flex flex-wrap align-items-center">
                 <ConversationMenu
-                    title={<h2 id="job-search-chat-title" className="h6 mb-0">Conversation</h2>}
+                    title={<h2 id="job-search-chat-title" className="h6 mb-0" tabIndex={-1} ref={headingRef}>Conversation</h2>}
                     hasConversation={!!conversationId}
                     hasMessages={messages.length > 0}
                     pending={pending}
@@ -1535,6 +1538,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 )}
 
                 {!initError && (
+                <div className="chat-transcript-wrap">
                 <Transcript
                     historyRef={historyRef}
                     messages={messages}
@@ -1552,14 +1556,14 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     onRetryMessage={(m) => handleRetryMessage(m)}
                     onEditAsNew={handleEditAsNew}
                 />
+                {showJumpToLatest && (
+                    <JumpToLatest unreadCount={unreadCount} onJump={handleJumpToLatest}/>
+                )}
+                </div>
                 )}
 
                 {!initError && (
                 <div className="chat-footer flex-shrink-0">
-                    {showJumpToLatest && (
-                        <JumpToLatest unreadCount={unreadCount} onJump={handleJumpToLatest}/>
-                    )}
-
                     {assistantStatus && (
                         <AssistantStatusNotice
                             status={assistantStatus}
@@ -1594,7 +1598,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         onEnter={handleSend}
                         onStop={handleStopWaiting}
                     />
-                    <p className="chat-disclaimer mb-0" role="note">AI can be wrong. Check important details.</p>
                 </div>
                 )}
 

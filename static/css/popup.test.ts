@@ -95,6 +95,7 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         // order themselves inside the assistant card only (issue #483).
         {selector: /^#job-search-chat \.card-header$/, value: '4'},
         {selector: /^\.chat-panel-stack$/, value: '6'},
+        {selector: /^#job-search-chat \.chat-jump-row$/, value: '2'},
         {selector: /^#job-search-chat > \[data-scroll-owner='panel'\] \.chat-footer$/, value: '3'},
     ];
 

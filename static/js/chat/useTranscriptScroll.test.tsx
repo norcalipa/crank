@@ -6,9 +6,9 @@ import * as React from 'react';
 
 import {ScrollOwner, useTranscriptScroll} from './useTranscriptScroll';
 
-function Harness({assistantCount, owner}: {assistantCount: number; owner: ScrollOwner}) {
-    const {historyRef, showJumpToLatest, unreadCount, scrollToLatest} = useTranscriptScroll({
-        messagesLength: assistantCount,
+function Harness({assistantCount, owner, extra = 0}: {assistantCount: number; owner: ScrollOwner; extra?: number}) {
+    const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend} = useTranscriptScroll({
+        messagesLength: assistantCount + extra,
         assistantCount,
         pending: false,
         loading: false,
@@ -19,6 +19,7 @@ function Harness({assistantCount, owner}: {assistantCount: number; owner: Scroll
             <div ref={historyRef} data-testid="log"/>
             <span data-testid="state">{`${showJumpToLatest}:${unreadCount}`}</span>
             <button onClick={() => scrollToLatest('auto')}>latest</button>
+            <button onClick={() => followNextAppend()}>follow</button>
         </div>
     );
 }
@@ -45,6 +46,28 @@ describe('useTranscriptScroll', () => {
         metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 200});
         fireEvent.scroll(log);
         expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+    });
+
+    test('following the next append clears the pill now and pins the bottom after the commit', () => {
+        const {rerender} = render(<Harness assistantCount={2} owner="transcript"/>);
+        const log = screen.getByTestId('log');
+        fireEvent.wheel(log);
+        metrics(log, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+
+        fireEvent.click(screen.getByText('follow'));
+        expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+        // The new bubble grows the content; scroll lands after that commit.
+        metrics(log, {scrollHeight: 1300, scrollTop: 100, clientHeight: 200});
+        rerender(<Harness assistantCount={2} extra={1} owner="transcript"/>);
+        expect(log.scrollTop).toBe(1300);
+        expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+
+        // One-shot: a later append does not force the scroll again.
+        metrics(log, {scrollHeight: 1600, scrollTop: 1300, clientHeight: 200});
+        rerender(<Harness assistantCount={2} extra={2} owner="transcript"/>);
+        expect(log.scrollTop).toBe(1300);
     });
 
     test('content growing during a follow-scroll does not disarm following; only an upward move does', () => {

@@ -67,6 +67,22 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         settleAtBottom();
     };
 
+    // Sending is explicit intent to follow the conversation. The new bubble is
+    // not in the DOM yet, so clear the stale "new messages" state now and
+    // scroll in a layout effect once React has committed it (issue #483).
+    const followNextAppendRef = React.useRef(false);
+    const followNextAppend = () => {
+        followNextAppendRef.current = true;
+        settleAtBottom();
+    };
+
+    React.useLayoutEffect(() => {
+        if (!followNextAppendRef.current) return;
+        followNextAppendRef.current = false;
+        const scroller = getScroller();
+        if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    }, [messagesLength, pending]);
+
     // Keep the latest content visible only while the reader is already at the bottom.
     React.useEffect(() => {
         const scroller = getScroller();
@@ -185,5 +201,5 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         };
     }, [scrollOwner, assistantCount]);
 
-    return {historyRef, nearBottomRef, showJumpToLatest, unreadCount, scrollToLatest};
+    return {historyRef, nearBottomRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend};
 }

@@ -3401,8 +3401,29 @@ body.assistant-open .app-content .table-responsive,
     margin-bottom: .5rem;
 }
 
-.chat-jump-row {
-    margin-bottom: .5rem;
+#job-search-chat .chat-transcript-wrap {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* The jump pill floats over the transcript so showing it never takes layout
+   height from a short sheet. */
+#job-search-chat .chat-jump-row {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 1.5rem;
+    margin: 0;
+    pointer-events: none;
+    z-index: 2;
+}
+
+#job-search-chat .chat-jump-row .btn {
+    pointer-events: auto;
+    box-shadow: 0 .25rem .75rem rgba(0, 0, 0, .5);
 }
 
 /* Panel-scroll mode: pin the header (with More) and the jump row + composer
@@ -3449,9 +3470,27 @@ body.assistant-open .app-content .table-responsive,
 }
 
 @media (max-width: 575.98px) {
+    .chat-confirm-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+    }
+
     .chat-confirm-actions .btn {
-        flex: 1 1 100%;
         min-height: 2.75rem;
+    }
+
+    .chat-confirm-actions > :first-child:nth-last-child(n + 3) {
+        grid-column: 1 / -1;
+    }
+
+    .chat-confirm-actions > :only-child {
+        grid-column: 1 / -1;
+    }
+
+    .chat-confirm-actions .btn-link {
+        border: 1px solid #adb5bd;
+        color: #f8f9fa;
+        text-decoration: none;
     }
 }
 
@@ -4003,4 +4042,100 @@ span.priority-chip-button { cursor: default; }
 }
 @media (min-width: 768px) {
     #job-search-chat-title { font-size: 1rem; font-weight: 600; color: #f8f9fa; }
+}
+
+/* Conversation heading: one weight everywhere, including the sheet. */
+#job-search-chat .card-header h2#job-search-chat-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #f8f9fa;
+}
+
+/* Retry on an error panel reads as a button, not a field. */
+.chat-confirm-actions .btn-outline-light {
+    background: transparent;
+    border-color: #adb5bd;
+    color: #f8f9fa;
+}
+
+/* Overlay stack aligns to the transcript inset. */
+@media (min-width: 768px) {
+    .chat-panel-stack {
+        left: 1rem;
+        right: 1rem;
+    }
+}
+
+@media (max-width: 767.98px) {
+    .chat-panel-stack {
+        left: .75rem;
+        right: .75rem;
+    }
+}
+
+/* Drawer gets the same anchored composer band as the docked layout. */
+@media (min-width: 768px) and (max-width: 1279.98px) {
+    .assistant-panel--drawer #job-search-chat form {
+        margin: 0 0 -1rem;
+        border-radius: 0 0 .375rem .375rem;
+        padding: .875rem 1rem;
+        background: #111722;
+        border-top: 1px solid rgba(255, 255, 255, .10);
+    }
+}
+
+#job-search-chat form {
+    container: chat-composer / inline-size;
+}
+
+@container chat-composer (max-width: 26rem) {
+    .chat-composer-pending .chat-send > span {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    .chat-composer-pending .chat-send {
+        width: 2.75rem;
+        padding-inline: 0;
+    }
+}
+
+#job-search-chat form .chat-disclaimer {
+    margin: .5rem 0 0;
+    padding-inline: .25rem;
+}
+
+/* Shortest sheets (320x640): win back transcript height and keep panels
+   above the composer band. */
+@media (max-width: 340px) {
+    .assistant-panel--sheet #job-search-chat .chat-pref-alert {
+        padding: .25rem .5rem;
+        margin-bottom: .25rem;
+    }
+
+    .assistant-panel--sheet .priorities-sidebar {
+        padding-block: .25rem .5rem;
+    }
+
+    .assistant-panel--sheet #job-search-chat .card-header {
+        padding-block: .25rem;
+    }
+
+    .assistant-panel--sheet #job-search-chat .chat-transcript {
+        margin-bottom: .5rem !important;
+        padding: .5rem !important;
+    }
+
+    .chat-panel-stack {
+        max-height: 40vh;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
 }
