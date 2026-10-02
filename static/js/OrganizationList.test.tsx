@@ -8,7 +8,7 @@ import * as React from 'react';
 import OrganizationList from './OrganizationList';
 import SuggestCompanyHost from './suggestCompany/SuggestCompanyHost';
 import * as suggestCompanyController from './suggestCompany/controller';
-import {clearWorkspaceContext, getWorkspaceSnapshot, resetWorkspaceForTests, setWorkspaceAccount, setWorkspaceContext} from './workspace/store';
+import {applyWorkspaceFilters, clearWorkspaceContext, getWorkspaceSnapshot, resetWorkspaceForTests, setWorkspaceAccount, setWorkspaceContext} from './workspace/store';
 
 interface Organization {
     id: number;
@@ -1056,7 +1056,7 @@ describe('OrganizationList', () => {
             fireEvent.click(screen.getAllByText('Organization 1')[0]);
             await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
             const keys = Array.from(new URLSearchParams(window.location.search).keys());
-            const allowed = ['search', 'accelerated_vesting', 'page', 'company'];
+            const allowed = ['search', 'accelerated_vesting', 'page', 'company', 'rto'];
             expect(keys.length).toBeGreaterThan(0);
             keys.forEach((key) => expect(allowed).toContain(key));
             expect(window.history.state?.crankPosition ?? {scrollY: 0}).not.toHaveProperty('search');
@@ -1362,6 +1362,115 @@ describe('OrganizationList', () => {
 
         addSpy.mockRestore();
         removeSpy.mockRestore();
+    });
+
+    describe('RTO filter and assistant filter target (issue #484)', () => {
+        const rowNames = () => screen.getAllByRole('button', {name: /View details for/})
+            .map((el) => el.getAttribute('aria-label'));
+
+        test('rto=R in the URL filters rows and cards, shows the chip and reports the filter', async () => {
+            window.history.replaceState({}, '', '/?rto=R');
+            render(<OrganizationList organizations={organizations} currentAlgorithmId={3} />);
+            // One row and one card for the single remote organization.
+            expect(rowNames()).toEqual(['View details for Organization 1', 'View details for Organization 1']);
+            expect(screen.getByText(/Showing 1-1 of 1 organizations/)).toBeInTheDocument();
+            await waitFor(() => expect(screen.getByTestId('filter-chip-rto')).toHaveTextContent('RTO: Remote'));
+            expect(screen.getByRole('button', {name: 'Remove filter: RTO Remote'})).toBeInTheDocument();
+            expect(getWorkspaceSnapshot().context).toMatchObject({
+                surface: 'rankings', algorithmId: 3, filters: {rtoPolicy: 'R'},
+            });
+        });
+
+        test('an unknown rto value is ignored', () => {
+            window.history.replaceState({}, '', '/?rto=Z');
+            render(<OrganizationList organizations={organizations} />);
+            expect(screen.queryByTestId('filter-chip-rto')).not.toBeInTheDocument();
+            expect(screen.getByText(/Showing 1-2 of 2 organizations/)).toBeInTheDocument();
+        });
+
+        test('the chip falls back to a built-in label while choices are missing and removing it restores the list', async () => {
+            window.history.replaceState({}, '', '/?rto=H');
+            (global.fetch as jest.Mock).mockImplementation(() => Promise.reject(new Error('down')));
+            render(<OrganizationList organizations={organizations} />);
+            expect(screen.getByTestId('filter-chip-rto')).toHaveTextContent('RTO: Hybrid');
+            jest.spyOn(console, 'error').mockImplementation(() => undefined);
+            fireEvent.click(screen.getByRole('button', {name: 'Remove filter: RTO Hybrid'}));
+            expect(screen.queryByTestId('filter-chip-rto')).not.toBeInTheDocument();
+            expect(screen.getByText(/Showing 1-2 of 2 organizations/)).toBeInTheDocument();
+            expect(window.history.pushState).toHaveBeenLastCalledWith({}, '', expect.not.stringContaining('rto'));
+        });
+
+        test('the registered target applies filters, pushes one history entry and returns true', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            const pushSpy = window.history.pushState as jest.Mock;
+            pushSpy.mockClear();
+            let applied = false;
+            act(() => {
+                applied = applyWorkspaceFilters({rtoPolicy: 'R'});
+            });
+            expect(applied).toBe(true);
+            expect(pushSpy).toHaveBeenCalledTimes(1);
+            expect(pushSpy).toHaveBeenCalledWith({}, '', expect.stringMatching(/[?&]rto=R(&|$)/));
+            expect(rowNames()).toEqual(['View details for Organization 1', 'View details for Organization 1']);
+            expect(screen.getByRole('button', {name: 'Remove filter: RTO Remote'})).toBeInTheDocument();
+            await waitFor(() => expect(getWorkspaceSnapshot().context?.filters).toEqual({rtoPolicy: 'R'}));
+            // Re-applying the same filter changes nothing and adds no entry.
+            pushSpy.mockClear();
+            act(() => {
+                expect(applyWorkspaceFilters({rtoPolicy: 'R'})).toBe(true);
+            });
+            expect(pushSpy).not.toHaveBeenCalled();
+        });
+
+        test('accelerated vesting can be applied by the target and the push carries only allowlisted keys', () => {
+            render(<OrganizationList organizations={organizations} />);
+            const pushSpy = window.history.pushState as jest.Mock;
+            pushSpy.mockClear();
+            act(() => {
+                applyWorkspaceFilters({rtoPolicy: 'H', acceleratedVesting: true});
+            });
+            const url = String(pushSpy.mock.calls[0][2]);
+            const keys = Array.from(new URLSearchParams(url.split('?')[1]).keys()).sort();
+            expect(keys).toEqual(['accelerated_vesting', 'page', 'rto']);
+            expect(screen.getByText(/Showing 0 organizations/)).toBeInTheDocument();
+            // Empty state offers the clear action, which also removes the RTO filter.
+            fireEvent.click(screen.getByRole('button', {name: 'Clear search and filters'}));
+            expect(screen.getByText(/Showing 1-2 of 2 organizations/)).toBeInTheDocument();
+            expect(screen.queryByTestId('filter-chip-rto')).not.toBeInTheDocument();
+        });
+
+        test('Back restores the unfiltered list and chip set; the target is released on unmount', async () => {
+            const {unmount} = render(<OrganizationList organizations={organizations} />);
+            act(() => {
+                applyWorkspaceFilters({rtoPolicy: 'R'});
+            });
+            expect(screen.getByTestId('filter-chip-rto')).toBeInTheDocument();
+            window.history.replaceState({}, '', '/');
+            act(() => {
+                window.dispatchEvent(new PopStateEvent('popstate'));
+            });
+            expect(screen.queryByTestId('filter-chip-rto')).not.toBeInTheDocument();
+            expect(screen.getByText(/Showing 1-2 of 2 organizations/)).toBeInTheDocument();
+            await waitFor(() => expect(getWorkspaceSnapshot().context?.filters).toEqual({}));
+            unmount();
+            expect(applyWorkspaceFilters({rtoPolicy: 'R'})).toBe(false);
+        });
+
+        test('popstate to ?rto=H restores the RTO filter and the preset URL keeps rto', () => {
+            const assign = jest.fn();
+            const originalLocation = window.location;
+            window.history.replaceState({}, '', '/?rto=H');
+            render(<OrganizationList organizations={organizations}
+                                     rankingPresets={[{id: 1, name: 'A'}, {id: 2, name: 'B'}]} currentAlgorithmId={1} />);
+            expect(rowNames()).toEqual(['View details for Organization 2', 'View details for Organization 2']);
+            Object.defineProperty(window, 'location', {
+                value: {...originalLocation, pathname: '/', search: '?rto=H', hash: '', assign},
+                writable: true, configurable: true,
+            });
+            fireEvent.change(screen.getByTestId('ranking-preset-select'), {target: {value: '2'}});
+            Object.defineProperty(window, 'location', {value: originalLocation, writable: true, configurable: true});
+            expect(assign).toHaveBeenCalledWith('/algo/2/?rto=H');
+        });
     });
 
     describe('stale details-response guard (issue #464 review)', () => {
