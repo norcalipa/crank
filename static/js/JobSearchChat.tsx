@@ -1490,7 +1490,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                          role="status" aria-label="Preference update" aria-describedby="preference-update-help">
                         <span>
                             <i className="fa-solid fa-circle-check me-1"></i>
-                            Preferences updated from this chat.
+                            Preferences updated.
                         </span>
                         <span id="preference-update-help" className="visually-hidden">
                             You can correct or remove a preference by telling the assistant what to change.
@@ -1594,7 +1594,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         onEnter={handleSend}
                         onStop={handleStopWaiting}
                     />
-                    <p className="chat-disclaimer mb-0" role="note">The assistant is automated and can be wrong. Check important details.</p>
+                    <p className="chat-disclaimer mb-0" role="note">AI can be wrong. Check important details.</p>
                 </div>
                 )}
 

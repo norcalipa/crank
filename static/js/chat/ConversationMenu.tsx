@@ -351,7 +351,7 @@ export function ConversationMenu({
                                 onClick={() => void runExport()}>
                             Try export again
                         </button>
-                        <button type="button" className="btn btn-sm btn-outline-secondary chat-focus"
+                        <button type="button" className="btn btn-sm btn-link chat-focus"
                                 data-testid="export-error-dismiss"
                                 onClick={() => { setExportError(null); moreRef.current?.focus(); }}>
                             Dismiss

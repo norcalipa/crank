@@ -366,7 +366,7 @@ describe('JobSearchChat', () => {
             expect(screen.getByRole('button', {name: 'Send message'})).toHaveClass('chat-send');
             expect(screen.getByRole('button', {name: 'Send message'})).toHaveTextContent('Send');
             expect(screen.getByRole('region', {name: 'Conversation'})).toBeInTheDocument();
-            expect(screen.getByRole('note')).toHaveTextContent(/automated and can be wrong/i);
+            expect(screen.getByRole('note')).toHaveTextContent(/AI can be wrong/i);
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-live', 'polite');
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-busy', 'false');
             expect(screen.getByTestId('empty-history')).toBeInTheDocument();
@@ -484,7 +484,7 @@ describe('JobSearchChat', () => {
 
         test('keeps the automation note visible and moves history details into the More menu', async () => {
             await renderChat();
-            expect(screen.getByRole('note')).toHaveTextContent(/automated and can be wrong/i);
+            expect(screen.getByRole('note')).toHaveTextContent(/AI can be wrong/i);
             expect(screen.queryByTestId('data-note-toggle')).not.toBeInTheDocument();
             chooseMenuItem('conversation-about-history');
             expect(screen.getByTestId('about-history-panel')).toHaveTextContent(/saved to your account/i);
@@ -681,7 +681,7 @@ describe('JobSearchChat', () => {
             expect(screen.getByText('I need remote')).toBeInTheDocument();
 
             // Preference-change disclosure is announced.
-            expect(await screen.findByText(/preferences updated from this chat/i)).toBeInTheDocument();
+            expect(await screen.findByText(/preferences updated/i)).toBeInTheDocument();
             expect(screen.getByRole('status', {name: 'Preference update'})).toHaveAttribute('aria-describedby', 'preference-update-help');
             expect(screen.getByText(/correct or remove a preference/i)).toBeInTheDocument();
 
@@ -1148,7 +1148,7 @@ describe('additional JobSearchChat coverage', () => {
             );
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'prefs'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            const notice = await screen.findByText(/preferences updated from this chat/i);
+            const notice = await screen.findByText(/preferences updated/i);
             fireEvent.click(screen.getByLabelText('Dismiss preference notice'));
             await waitFor(() => expect(notice).not.toBeInTheDocument());
         });
