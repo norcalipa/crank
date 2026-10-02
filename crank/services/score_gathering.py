@@ -360,6 +360,7 @@ def gather_scores(run, **options):
                 "source_stage",
                 {
                     "status": "failed",
+                    "failure_stage": "source",
                     "stage": "score_gathering",
                     "source_key": source.adapter_key,
                     "freshness_seconds": freshness_seconds,

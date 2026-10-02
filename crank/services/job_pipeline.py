@@ -453,6 +453,7 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                         "stage": "job_ingest",
                         "source_key": source.adapter_key,
                         "status": "failed",
+                        "failure_stage": "source",
                         "reason_code": "rejected",
                     },
                 )
@@ -490,6 +491,7 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                     "stage": "job_ingest",
                     "source_key": source.adapter_key,
                     "status": "failed",
+                    "failure_stage": "source",
                     "reason_code": agent_runs.monitoring.failure_reason(exc),
                 },
             )
@@ -563,6 +565,7 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
             "stage": "job_pipeline_matching",
             "status": "deadline" if counts["deadline_reached"] else "completed",
             "reason_code": "deadline" if counts["deadline_reached"] else "none",
+            **({"failure_stage": "matching"} if counts["users_failed"] else {}),
         },
     )
     if not counts["deadline_reached"]:

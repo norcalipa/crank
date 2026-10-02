@@ -91,6 +91,27 @@ class RecomputeMatchesCommandTests(TestCase):
         self.assertEqual(drain.call_args.args[0], 7)
 
     @override_settings(AGENT_RUN_ENABLED=True, MATCH_RECOMPUTE_ENABLED=True)
+    def test_matching_batch_carries_failure_stage_only_with_user_failures(self):
+        base = {
+            "users_total": 2, "users_succeeded": 1, "matches_persisted": 0,
+            "stale_discarded": 0, "duplicate_skipped": 0, "deadline_reached": False,
+        }
+        seen = []
+        for failed in (1, 0):
+            with patch(
+                "crank.management.commands.recompute_matches.match_recompute.drain",
+                return_value={**base, "users_failed": failed},
+            ), patch("newrelic.agent.record_custom_event") as vendor:
+                self.call()
+            (batch,) = [
+                c.args[1] for c in vendor.call_args_list
+                if c.args[1].get("event_name") == "matching_batch"
+            ]
+            seen.append(batch.get("failure_stage"))
+            AgentRun.objects.all().delete()
+        self.assertEqual(seen, ["matching", None])
+
+    @override_settings(AGENT_RUN_ENABLED=True, MATCH_RECOMPUTE_ENABLED=True)
     def test_failure_raises_command_error_and_records_failed_run(self):
         with patch(
             "crank.management.commands.recompute_matches.match_recompute.drain",
