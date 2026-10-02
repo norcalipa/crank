@@ -1224,6 +1224,13 @@ class TestPropose:
         assert result["changes"][0]["new"] == 200000
         assert "unsupported_criteria" in result
 
+    def test_propose_reports_the_saved_currency(self, user):
+        prefs.apply_patch_to_user(user, {"set": {"compensation.currency": "EUR"}})
+        result = prefs.propose_patch_for_user(
+            user, {"set": {"compensation.minimum_salary": 200000}}
+        )
+        assert result["currency"] == "EUR"
+
     def test_propose_writes_nothing_and_no_row_created(self, user):
         before = self._snapshot(user)
         result = prefs.propose_patch_for_user(user, {"set": {"notes": "hi"}})
@@ -1937,8 +1944,7 @@ class TestEditorMetadata:
         doc["compensation"]["require_public_company"] = False
         field = self._by_path(doc)["compensation.require_public_company"]
         assert field["hard"] is False
-        chip = {c["path"]: c for c in prefs.criteria_chips(doc)}["compensation.require_public_company"]
-        assert chip["hard"] is False
+        assert "compensation.require_public_company" not in {c["path"] for c in prefs.criteria_chips(doc)}
         doc["compensation"]["require_public_company"] = True
         field = self._by_path(doc)["compensation.require_public_company"]
         assert field["hard"] is True

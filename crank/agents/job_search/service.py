@@ -549,6 +549,7 @@ class JobSearchOrchestrator:
             "change_count": proposal.get("change_count", 0),
             "base_revision": proposal.get("base_revision"),
             "unsupported_criteria": proposal.get("unsupported_criteria") or [],
+            "currency": proposal.get("currency"),
             "token": token,
         }
         if scope == "search":

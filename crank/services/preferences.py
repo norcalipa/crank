@@ -678,6 +678,9 @@ def criteria_chips(document):
     for field in editor_fields(document):
         if not field["set"]:
             continue
+        # Matching ignores a saved False here, so it is not shown as a preference.
+        if field["path"] in _HARD_ONLY_WHEN_TRUE and field["value"] is not True:
+            continue
         chip = {
             "path": field["path"],
             "label": field["label"],
@@ -1038,6 +1041,7 @@ def propose_patch_for_user(user, patch, *, scope="account"):
         "change_count": change_count,
         "scope": scope,
         "unsupported_criteria": unsupported_criteria(new_doc),
+        "currency": _get_optional(document, "compensation.currency"),
     }
     if scope == "search":
         result["effective_document"] = new_doc

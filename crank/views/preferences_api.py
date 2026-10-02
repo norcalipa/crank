@@ -87,6 +87,7 @@ def agent_preference_propose(request):
             "change_count": proposal["change_count"],
             "base_revision": proposal["base_revision"],
             "unsupported_criteria": proposal["unsupported_criteria"],
+            "currency": proposal["currency"],
             "token": {
                 "patch": patch,
                 "scope": scope,

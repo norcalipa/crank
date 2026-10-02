@@ -146,8 +146,9 @@ class TestPropose:
         body = response.json()
         assert set(body) == {
             "id", "scope", "changes", "change_count", "base_revision",
-            "unsupported_criteria", "token",
+            "unsupported_criteria", "currency", "token",
         }
+        assert body["currency"] == "USD"
         assert body["scope"] == "account" and body["change_count"] == 2
         assert body["token"] == {
             "patch": EDIT_PATCH, "scope": "account",
