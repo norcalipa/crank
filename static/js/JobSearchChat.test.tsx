@@ -239,6 +239,29 @@ describe('JobSearchChat', () => {
             panelBody.remove();
         });
 
+        test('observes the priorities block when it appears after the first paint (slow whoami)', async () => {
+            const observe = jest.fn();
+            class MockResizeObserver {
+                observe = observe;
+                disconnect = jest.fn();
+            }
+            (globalThis as {ResizeObserver?: unknown}).ResizeObserver = MockResizeObserver;
+            const panelBody = document.createElement('div');
+            panelBody.className = 'assistant-panel-body';
+            const container = document.createElement('div');
+            panelBody.append(container);
+            document.body.appendChild(panelBody);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
+            render(<JobSearchChat/>, {container});
+            await screen.findByLabelText('Message');
+            const priorities = document.createElement('section');
+            priorities.setAttribute('data-testid', 'priorities-sidebar');
+            panelBody.prepend(priorities);
+            await waitFor(() => expect(observe).toHaveBeenCalledWith(priorities));
+            panelBody.remove();
+        });
+
         test('re-measures the card height when the viewport resizes', async () => {
             await renderChat();
             const chat = screen.getByTestId('job-search-chat');
@@ -3535,6 +3558,7 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
         expect(reviewButton).toHaveTextContent('Review current preferences');
         fireEvent.click(reviewButton);
         expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(proposal.token.patch);
     });
 
     test('a network failure on apply shows retry copy, not the stale-only review action', async () => {
@@ -3582,6 +3606,8 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
         const calls = (global.fetch as jest.Mock).mock.calls.length;
         fireEvent.click(screen.getByTestId('preference-proposal-edit-button'));
         expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
+        // The proposed patch seeds the editor so Edit never opens empty.
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(proposal.token.patch);
         expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument();
         expect((global.fetch as jest.Mock).mock.calls.length).toBe(calls);
     });
@@ -3776,7 +3802,7 @@ describe('preference diff formatting helpers (issue #466)', () => {
         expect(preferenceValueLabel('remote')).toBe('remote');
         expect(preferenceValueLabel([])).toBe('None');
         expect(preferenceValueLabel(['remote', 'hybrid'])).toBe('remote, hybrid');
-        expect(preferenceValueLabel({channel: 'email'})).toBe('{"channel":"email"}');
+        expect(preferenceValueLabel({channel: 'email'})).toBe('Channel: email');
     });
 });
 

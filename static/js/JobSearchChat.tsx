@@ -411,6 +411,9 @@ async function csrfFetch(url: string, init: RequestInit = {}): Promise<Response>
 
 export {preferencePathLabel, preferenceValueLabel};
 
+// Whole-map diffs (importance weights) read as words, not JSON; other paths keep their plain rendering.
+const mapPath = (path: string) => (path === 'importance' ? path : undefined);
+
 /** Preference-change notice (issue #466): the field-level diff of what the
  * assistant just changed, with a one-click Undo. Four rendered states:
  * populated (diff list + Undo), loading (undo request in flight), empty
@@ -471,10 +474,10 @@ export function PreferenceChangeNotice({changes, undoState, undoError, undoError
                         <li key={change.path} className="pref-change-item">
                             <span className="pref-change-path">{preferencePathLabel(change.path)}</span>
                             <span className="pref-change-values">
-                                <span className="pref-change-old">{preferenceValueLabel(change.old)}</span>
+                                <span className="pref-change-old">{preferenceValueLabel(change.old, mapPath(change.path))}</span>
                                 <i className="fa-solid fa-arrow-right pref-change-arrow" aria-hidden="true"></i>
                                 <span className="visually-hidden">changed to</span>
-                                <span className="pref-change-new">{preferenceValueLabel(change.new)}</span>
+                                <span className="pref-change-new">{preferenceValueLabel(change.new, mapPath(change.path))}</span>
                             </span>
                         </li>
                     ))}
@@ -567,10 +570,10 @@ export function PreferenceProposalNotice({proposal, state, error, errorType, onD
                         <li key={change.path} className="pref-change-item">
                             <span className="pref-change-path">{preferencePathLabel(change.path)}</span>
                             <span className="pref-change-values">
-                                <span className="pref-change-old">{preferenceValueLabel(change.old)}</span>
+                                <span className="pref-change-old">{preferenceValueLabel(change.old, mapPath(change.path))}</span>
                                 <i className="fa-solid fa-arrow-right pref-change-arrow" aria-hidden="true"></i>
                                 <span className="visually-hidden">changed to</span>
-                                <span className="pref-change-new">{preferenceValueLabel(change.new)}</span>
+                                <span className="pref-change-new">{preferenceValueLabel(change.new, mapPath(change.path))}</span>
                             </span>
                         </li>
                     ))}
@@ -1204,16 +1207,32 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         // Watch the card's offset parent so a match-panel resize above the chat
         // (e.g. empty -> results) re-measures the available height.
         let observer: ResizeObserver | null = null;
+        let mutationObserver: MutationObserver | null = null;
         if (typeof ResizeObserver !== 'undefined' && cardRef.current?.parentElement) {
             observer = new ResizeObserver(scheduleMeasure);
             observer.observe(cardRef.current.parentElement);
             // The priorities block above the chat (assistant panel) resizes as
             // its steps change; the card height depends on its offset.
-            const priorities = cardRef.current.closest('.assistant-panel-body')
-                ?.querySelector('[data-testid="priorities-sidebar"]');
-            if (priorities) observer.observe(priorities);
+            // The block can mount after the chat (it waits for sign-in
+            // confirmation), so keep looking until it appears.
+            const body = cardRef.current.closest('.assistant-panel-body');
+            let watched: Element | null = null;
+            const watch = () => {
+                const priorities = body?.querySelector('[data-testid="priorities-sidebar"]') ?? null;
+                if (priorities && priorities !== watched) {
+                    if (watched) observer?.unobserve(watched);
+                    watched = priorities;
+                    observer?.observe(priorities);
+                }
+            };
+            watch();
+            if (body && typeof MutationObserver !== 'undefined') {
+                mutationObserver = new MutationObserver(watch);
+                mutationObserver.observe(body, {childList: true, subtree: true});
+            }
         }
         return () => {
+            mutationObserver?.disconnect();
             if (rafIdRef.current !== null) {
                 window.cancelAnimationFrame(rafIdRef.current);
             }
@@ -2239,9 +2258,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 if (data.scope === 'search') {
                     // This-search-only: never saved; show the confirmation
                     // with the number of matches the temporary filter found.
-                    const matchCount =
-                        (data.matches?.job_matches?.length || 0) +
-                        (data.matches?.organization_matches?.length || 0);
+                    const matchCount = data.matches?.job_matches?.length || 0;
                     setPrefSearchApplied(matchCount);
                 } else {
                     setPrefChanges(data.changes || []);
@@ -2327,13 +2344,13 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         errorType={prefProposalErrorType}
                         onDecision={handlePreferenceProposalDecision}
                         onReview={() => {
-                            // Stale-conflict recovery: review the current
-                            // priorities in the inline editor (issue #480).
-                            setPrioritiesEditorOpen(prioritiesSurface());
+                            // Stale-conflict recovery: reopen the proposal in the
+                            // inline editor, to re-review against the latest (issue #480).
+                            setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
                         }}
                         onEdit={() => {
+                            setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
                             setPrefProposal(null);
-                            setPrioritiesEditorOpen(prioritiesSurface());
                         }}
                         onSearchOnly={() => handlePreferenceProposalDecision('apply', 'search')}
                     />
