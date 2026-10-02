@@ -24,7 +24,6 @@ from crank.agents.job_search.demo import (
 )
 from crank.agents.job_search.types import JobResult, StructuredResults
 from crank.models import JobSearchConversation, JobSearchTurn
-from crank.services import monitoring
 from crank.services.preferences import apply_patch_to_user, token_owner
 
 RECORD = "crank.views.job_search.monitoring.record_event"
