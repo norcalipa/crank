@@ -184,6 +184,11 @@ describe('patchToDraft', () => {
         expect(patchToDraft(fields, {set: {'x.text': null}}).values['x.text']).toBe('');
     });
 
+    test('a proposed value of the wrong shape reads as empty', () => {
+        expect(patchToDraft(fields, {set: {'x.list': 'nope', 'x.text': undefined as any}}).values)
+            .toEqual({'x.list': [], 'x.text': ''});
+    });
+
     test('a one-item removal keeps the rest of the saved list', () => {
         const list = field({path: 'culture', type: 'str_list', set: true, value: ['kind', 'open']});
         expect(patchToDraft([list], {remove: {culture: ['kind']}}).values.culture).toEqual(['open']);

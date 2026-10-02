@@ -243,6 +243,18 @@ describe('review wording (issue #480 round 1)', () => {
         expect(text).toContain('Minimum base salary importance');
     });
 
+    test('a map that appears or disappears whole expands to one row per key, named without labels', () => {
+        const {expandChanges} = require('./format');
+        const rows = expandChanges([
+            {path: 'priorities', old: null, new: {culture: 0.5}},
+            {path: 'importance', old: {'work_location.modes': 1}, new: null},
+        ]);
+        expect(rows.map((r: {label: string}) => r.label)).toEqual([
+            expect.stringContaining('culture'.charAt(0).toUpperCase() + 'ulture'),
+            expect.stringContaining('importance'),
+        ]);
+    });
+
     test('a weight that is no longer saved reads as a preference, not as "Default"', () => {
         render(<ChangeList label="Changes"
             changes={[{path: 'importance', old: {'compensation.minimum_salary': 1}, new: {}}]}
