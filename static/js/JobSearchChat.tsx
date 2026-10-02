@@ -15,6 +15,7 @@ import {
 } from './workspace/store';
 import {Transcript} from './chat/Transcript';
 import {Composer} from './chat/Composer';
+import {JumpToLatest} from './chat/JumpToLatest';
 import {useTranscriptScroll} from './chat/useTranscriptScroll';
 import {useAccountGate} from './chat/useAccountGate';
 import {ConversationMenu} from './chat/ConversationMenu';
@@ -811,6 +812,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setRetryKey(key);
         } else {
             setMessages((prev) => [...prev, optimisticUser]);
+            // Sending is explicit intent to follow the conversation.
+            scrollToLatest('auto');
         }
 
         const controller = new AbortController();
@@ -1084,6 +1087,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 window.setTimeout(() => composerRef.current?.focus(), 0);
             }
         }
+    };
+
+    const handleJumpToLatest = () => {
+        scrollToLatest('auto');
+        composerRef.current?.focus({preventScroll: true});
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -1413,13 +1421,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             </div>
 
             <div className="card-body d-flex flex-column" style={{minHeight: 0}}>
-                <div className="chat-note" role="note">
-                    <div className="chat-note-row">
-                        <i className="fa-solid fa-circle-info chat-status-icon" aria-hidden="true"></i>
-                        <span className="chat-note-text">The assistant is automated and can be wrong. Check important details yourself. Your messages are saved to your account; manage them in More.</span>
-                    </div>
-                </div>
-
                 {prefProposal && !prefDismissed && (
                     <PreferenceProposalNotice
                         proposal={prefProposal}
@@ -1485,11 +1486,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 )}
 
                 {!revealingPrefChanges && revealingPrefs && (
-                    <div className="alert alert-success d-flex justify-content-between align-items-center"
+                    <div className="alert alert-success chat-pref-alert d-flex justify-content-between align-items-center"
                          role="status" aria-label="Preference update" aria-describedby="preference-update-help">
                         <span>
                             <i className="fa-solid fa-circle-check me-1"></i>
-                            Your saved preferences were updated based on this conversation.
+                            Preferences updated from this chat.
                         </span>
                         <span id="preference-update-help" className="visually-hidden">
                             You can correct or remove a preference by telling the assistant what to change.
@@ -1545,10 +1546,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     loading={loading}
                     authenticated={effectiveAuthenticated}
                     workspaceMode={props.workspaceMode}
-                    showJumpToLatest={showJumpToLatest}
-                    unreadCount={unreadCount}
                     scrollOwner={panelScroll ? 'panel' : 'transcript'}
-                    onJumpToLatest={() => scrollToLatest('auto')}
                     onAskFirstQuestion={() => composerRef.current?.focus()}
                     onCheckResponse={(m) => void handleCheckResponse(m)}
                     onRetryMessage={(m) => handleRetryMessage(m)}
@@ -1557,7 +1555,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 )}
 
                 {!initError && (
-                <div className="flex-shrink-0" style={{paddingBottom: 'calc(0.25rem + env(safe-area-inset-bottom))'}}>
+                <div className="chat-footer flex-shrink-0">
+                    {showJumpToLatest && (
+                        <JumpToLatest unreadCount={unreadCount} onJump={handleJumpToLatest}/>
+                    )}
+
                     {assistantStatus && (
                         <AssistantStatusNotice
                             status={assistantStatus}
@@ -1592,6 +1594,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         onEnter={handleSend}
                         onStop={handleStopWaiting}
                     />
+                    <p className="chat-disclaimer mb-0" role="note">The assistant is automated and can be wrong. Check important details.</p>
                 </div>
                 )}
 

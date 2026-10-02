@@ -18,10 +18,7 @@ export interface TranscriptProps {
     loading: boolean;
     authenticated: boolean;
     workspaceMode: 'docked' | 'drawer' | 'sheet' | undefined;
-    showJumpToLatest: boolean;
-    unreadCount: number;
     scrollOwner: ScrollOwner;
-    onJumpToLatest: () => void;
     onAskFirstQuestion: () => void;
     onCheckResponse: (message: ChatMessage) => void;
     onRetryMessage: (message: ChatMessage) => void;
@@ -30,7 +27,7 @@ export interface TranscriptProps {
 
 export function Transcript({
     historyRef, messages, staleNotes, lastAssistantId, availability, retryKey, pending, loading,
-    authenticated, workspaceMode, showJumpToLatest, unreadCount, scrollOwner, onJumpToLatest, onAskFirstQuestion,
+    authenticated, workspaceMode, scrollOwner, onAskFirstQuestion,
     onCheckResponse, onRetryMessage, onEditAsNew,
 }: TranscriptProps) {
     return (
@@ -160,23 +157,6 @@ export function Transcript({
                     </div>
                 )}
             </div>
-            {showJumpToLatest && (
-                /* Reserved footer slot (round-2 critique): the control
-                   sits in its own row below the history instead of
-                   floating over message content. */
-                <div className="flex-shrink-0 text-end mb-2">
-                    <button type="button" className="btn btn-sm btn-primary"
-                            onClick={onJumpToLatest}
-                            aria-label={unreadCount > 0
-                                ? `Jump to latest message, ${unreadCount} new ${unreadCount === 1 ? 'message' : 'messages'}`
-                                : 'Jump to latest message'}
-                            data-testid="jump-to-latest">
-                        {unreadCount > 0
-                            ? `${unreadCount} new ${unreadCount === 1 ? 'message' : 'messages'} · Jump to latest`
-                            : 'Jump to latest'}
-                    </button>
-                </div>
-            )}
         </div>
     );
 }

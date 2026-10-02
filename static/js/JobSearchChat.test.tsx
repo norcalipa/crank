@@ -367,7 +367,6 @@ describe('JobSearchChat', () => {
             expect(screen.getByRole('button', {name: 'Send message'})).toHaveTextContent('Send');
             expect(screen.getByRole('region', {name: 'Conversation'})).toBeInTheDocument();
             expect(screen.getByRole('note')).toHaveTextContent(/automated and can be wrong/i);
-            expect(screen.getByRole('note')).toHaveTextContent(/saved to your account/i);
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-live', 'polite');
             expect(screen.getByLabelText('Message history')).toHaveAttribute('aria-busy', 'false');
             expect(screen.getByTestId('empty-history')).toBeInTheDocument();
@@ -462,7 +461,7 @@ describe('JobSearchChat', () => {
             expect(more).toHaveAttribute('aria-expanded', 'true');
             const menu = screen.getByRole('menu', {name: 'Conversation options'});
             expect(within(menu).getAllByRole('menuitem').map((b) => b.textContent)).toEqual([
-                'New conversation', 'Export conversation', 'Delete conversation…', 'About saved history',
+                'New conversation…', 'Export conversation', 'About saved history', 'Delete conversation…',
             ]);
         });
 
@@ -567,6 +566,7 @@ describe('JobSearchChat', () => {
             fireEvent.click(screen.getByTestId('jump-to-latest'));
             expect(scrollTo).toHaveBeenCalledWith({top: 1000, behavior: 'auto'});
             expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+            expect(screen.getByLabelText('Message')).toHaveFocus();
         });
 
         test('auto-scrolls new pending content only when already near the bottom', async () => {
@@ -586,12 +586,13 @@ describe('JobSearchChat', () => {
             expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
         });
 
-        test('does not auto-scroll newly appended content while reading older messages', async () => {
+        test('sending while scrolled up follows your own message to the bottom', async () => {
             await renderChat([assistantMessage(1, 'ready')]);
             const history = screen.getByLabelText('Message history');
             fireEvent.wheel(history);
             setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
             fireEvent.scroll(history);
+            expect(screen.getByTestId('jump-to-latest')).toBeInTheDocument();
             scrollTo.mockClear();
 
             (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
@@ -601,27 +602,38 @@ describe('JobSearchChat', () => {
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             await screen.findByText('reply');
+            expect(scrollTo).toHaveBeenCalledWith({top: 1000, behavior: 'auto'});
+            expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+        });
+
+        const sendAndScrollUpDuringReply = async () => {
+            await renderChat([assistantMessage(1, 'ready')]);
+            const history = screen.getByLabelText('Message history');
+            let resolveReply: (r: unknown) => void = () => undefined;
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockReturnValueOnce(new Promise((r) => { resolveReply = r; }));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByTestId('pending-status');
+            fireEvent.wheel(history);
+            setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
+            fireEvent.scroll(history);
+            scrollTo.mockClear();
+            resolveReply(jsonResponse({message: assistantMessage(3, 'reply'), preferences_changed: false}, 201));
+            await screen.findByText('reply');
+            return history;
+        };
+
+        test('does not auto-scroll a reply that lands while reading older messages', async () => {
+            await sendAndScrollUpDuringReply();
             expect(scrollTo).not.toHaveBeenCalled();
             expect(screen.getByTestId('jump-to-latest')).toBeInTheDocument();
         });
 
         test('counts replies that arrive while scrolled up and clears the count on return', async () => {
-            await renderChat([assistantMessage(1, 'ready')]);
-            const history = screen.getByLabelText('Message history');
-            fireEvent.wheel(history);
-            setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
-            fireEvent.scroll(history);
-
-            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
-            (global.fetch as jest.Mock).mockResolvedValueOnce(
-                jsonResponse({message: assistantMessage(3, 'reply'), preferences_changed: false}, 201),
-            );
-            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
-            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            await screen.findByText('reply');
-            // The reader's own message is not "unread"; the one reply is.
+            const history = await sendAndScrollUpDuringReply();
             const jump = screen.getByTestId('jump-to-latest');
-            expect(jump).toHaveTextContent('1 new message · Jump to latest');
+            expect(jump).toHaveTextContent(/Jump to latest\s*1 new/);
             expect(jump).toHaveAccessibleName('Jump to latest message, 1 new message');
 
             setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 790, clientHeight: 200});
@@ -669,7 +681,7 @@ describe('JobSearchChat', () => {
             expect(screen.getByText('I need remote')).toBeInTheDocument();
 
             // Preference-change disclosure is announced.
-            expect(await screen.findByText(/preferences were updated/i)).toBeInTheDocument();
+            expect(await screen.findByText(/preferences updated from this chat/i)).toBeInTheDocument();
             expect(screen.getByRole('status', {name: 'Preference update'})).toHaveAttribute('aria-describedby', 'preference-update-help');
             expect(screen.getByText(/correct or remove a preference/i)).toBeInTheDocument();
 
@@ -1136,7 +1148,7 @@ describe('additional JobSearchChat coverage', () => {
             );
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'prefs'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            const notice = await screen.findByText(/preferences were updated/i);
+            const notice = await screen.findByText(/preferences updated from this chat/i);
             fireEvent.click(screen.getByLabelText('Dismiss preference notice'));
             await waitFor(() => expect(notice).not.toBeInTheDocument());
         });

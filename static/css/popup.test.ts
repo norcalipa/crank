@@ -91,6 +91,11 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         // The chat More menu floats over the transcript inside the assistant
         // card only; it never competes with the page-level layers (issue #483).
         {selector: /^\.chat-more-menu$/, value: '5'},
+        // Chat card-local stacking: header, panel overlay and pinned footer
+        // order themselves inside the assistant card only (issue #483).
+        {selector: /^#job-search-chat \.card-header$/, value: '4'},
+        {selector: /^\.chat-panel-stack$/, value: '6'},
+        {selector: /^#job-search-chat > \[data-scroll-owner='panel'\] \.chat-footer$/, value: '3'},
     ];
 
     // Splits a stylesheet into (selector, declarations) rules. Pairing both
