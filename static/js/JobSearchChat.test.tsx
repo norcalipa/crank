@@ -197,9 +197,9 @@ describe('JobSearchChat', () => {
         });
 
         test.each([
-            ['inside the assistant panel', true, '928px'],
-            ['on the page', false, '752px'],
-        ])('transcript floor %s', async (_name, inPanel, expected) => {
+            ['inside the assistant panel', true, 'auto', 'panel'],
+            ['on the page', false, '752px', 'transcript'],
+        ])('transcript floor %s', async (_name, inPanel, expected, owner) => {
             await renderChat();
             const chat = screen.getByTestId('job-search-chat');
             const log = screen.getByRole('log');
@@ -212,8 +212,13 @@ describe('JobSearchChat', () => {
                 fireEvent(window, new Event('resize'));
                 await flushRaf();
             });
-            // In the panel: chrome 800 + 128px floor beats the 752px fit; on the page the history yields.
+            // In the panel: chrome 800 + 128px floor beats the 752px fit, so the panel
+            // body becomes the single scroller and the card keeps its natural height
+            // (issue #483); on the page the history yields.
             expect(chat).toHaveStyle({height: expected});
+            expect(chat).toHaveAttribute('data-scroll-owner', owner);
+            expect(log).toHaveAttribute('data-scroll-owner', owner);
+            expect(log).toHaveStyle({overflowY: inPanel ? 'visible' : 'auto'});
         });
 
         test('observes the parent for match-panel resizes when ResizeObserver is available', async () => {
@@ -551,7 +556,11 @@ describe('JobSearchChat', () => {
             const history = screen.getByLabelText('Message history');
             setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
             fireEvent.scroll(history);
-            expect(await screen.findByTestId('jump-to-latest')).toHaveTextContent('New messages');
+            const jump = await screen.findByTestId('jump-to-latest');
+            // Scrolling up alone is not "new messages" (issue #483).
+            expect(jump).toHaveTextContent('Jump to latest');
+            expect(jump).not.toHaveTextContent(/new message/i);
+            expect(jump).toHaveAccessibleName('Jump to latest message');
 
             scrollTo.mockClear();
             fireEvent.click(screen.getByTestId('jump-to-latest'));
@@ -592,6 +601,29 @@ describe('JobSearchChat', () => {
             await screen.findByText('reply');
             expect(scrollTo).not.toHaveBeenCalled();
             expect(screen.getByTestId('jump-to-latest')).toBeInTheDocument();
+        });
+
+        test('counts replies that arrive while scrolled up and clears the count on return', async () => {
+            await renderChat([assistantMessage(1, 'ready')]);
+            const history = screen.getByLabelText('Message history');
+            setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
+            fireEvent.scroll(history);
+
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse({message: assistantMessage(3, 'reply'), preferences_changed: false}, 201),
+            );
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('reply');
+            // The reader's own message is not "unread"; the one reply is.
+            const jump = screen.getByTestId('jump-to-latest');
+            expect(jump).toHaveTextContent('1 new message · Jump to latest');
+            expect(jump).toHaveAccessibleName('Jump to latest message, 1 new message');
+
+            setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 790, clientHeight: 200});
+            fireEvent.scroll(history);
+            expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
         });
 
         test('rechecks the bottom after viewport resize without moving older history', async () => {

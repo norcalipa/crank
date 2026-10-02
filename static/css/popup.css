@@ -2302,6 +2302,13 @@ body.app-nav-drawer-open {
     min-height: 0;
 }
 
+/* Panel-scroll mode (issue #483): the panel body is the one scroller, so the
+   chat keeps its natural height instead of shrinking inside it. */
+.assistant-panel-body #job-search-chat:has(> [data-scroll-owner='panel']) {
+    flex: 0 0 auto;
+    min-height: auto;
+}
+
 /* Shape-matched loading skeleton for the lazy chat chunk: mirrors the
    header/history/composer stack the real chat renders. */
 .assistant-loading {

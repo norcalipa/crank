@@ -280,6 +280,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     }, [messages]);
 
     const cardRef = React.useRef<HTMLElement>(null);
+    const [panelScroll, setPanelScroll] = React.useState(false);
     const [cardHeight, setCardHeight] = React.useState<number | null>(null);
     // rAF bookkeeping so resize/orientation/keyboard bursts coalesce into at most
     // one measure per frame instead of thrashing layout on every event.
@@ -316,6 +317,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         // the history. On the page the history alone yields (no page scroll).
         const log = historyRef.current;
         const floor = log && card.closest('.assistant-panel-body') ? card.offsetHeight - log.offsetHeight + MIN_TRANSCRIPT_PX : 0;
+        // When the panel is too short to give the transcript a usable height the
+        // panel body becomes the one scroller and the transcript grows to its
+        // content, instead of nesting two scrollbars (issue #483).
+        setPanelScroll(floor > 0 && computed < floor);
         setCardHeight(Math.max(computed, MIN_CARD_PX, floor));
     }, []);
 
@@ -376,14 +381,17 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     }, [scheduleMeasure]);
 
     const chatCardStyle = React.useMemo<React.CSSProperties>(() => {
+        if (panelScroll) return {height: 'auto'};
         if (cardHeight !== null) {
             return {height: `${cardHeight}px`, minHeight: '20rem'};
         }
         return {minHeight: '20rem'};
-    }, [cardHeight]);
+    }, [cardHeight, panelScroll]);
 
-    const {historyRef, showJumpToLatest, scrollToLatest} = useTranscriptScroll({
+    const {historyRef, showJumpToLatest, unreadCount, scrollToLatest} = useTranscriptScroll({
         messagesLength: messages.length,
+        assistantCount: messages.filter((m) => m.role === 'assistant').length,
+        scrollOwner: panelScroll ? 'panel' : 'transcript',
         pending,
         loading,
     });
@@ -1382,6 +1390,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         <section className="card bg-dark d-flex flex-column" data-testid="job-search-chat"
                  aria-labelledby="job-search-chat-title"
                  ref={cardRef}
+                 data-scroll-owner={panelScroll ? 'panel' : 'transcript'}
                  style={chatCardStyle}>
             <div className="card-header d-flex flex-wrap align-items-center">
                 <ConversationMenu
@@ -1529,6 +1538,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     authenticated={effectiveAuthenticated}
                     workspaceMode={props.workspaceMode}
                     showJumpToLatest={showJumpToLatest}
+                    unreadCount={unreadCount}
+                    scrollOwner={panelScroll ? 'panel' : 'transcript'}
                     onJumpToLatest={() => scrollToLatest('auto')}
                     onAskFirstQuestion={() => composerRef.current?.focus()}
                     onCheckResponse={(m) => void handleCheckResponse(m)}

@@ -4,6 +4,7 @@ import * as React from 'react';
 
 import {AvailabilityNotice} from './notices';
 import {hasResults, ResultCards} from './ResultCards';
+import type {ScrollOwner} from './useTranscriptScroll';
 import type {AvailabilityPayload, ChatMessage} from './types';
 
 export interface TranscriptProps {
@@ -18,6 +19,8 @@ export interface TranscriptProps {
     authenticated: boolean;
     workspaceMode: 'docked' | 'drawer' | 'sheet' | undefined;
     showJumpToLatest: boolean;
+    unreadCount: number;
+    scrollOwner: ScrollOwner;
     onJumpToLatest: () => void;
     onAskFirstQuestion: () => void;
     onCheckResponse: (message: ChatMessage) => void;
@@ -27,12 +30,13 @@ export interface TranscriptProps {
 
 export function Transcript({
     historyRef, messages, staleNotes, lastAssistantId, availability, retryKey, pending, loading,
-    authenticated, workspaceMode, showJumpToLatest, onJumpToLatest, onAskFirstQuestion,
+    authenticated, workspaceMode, showJumpToLatest, unreadCount, scrollOwner, onJumpToLatest, onAskFirstQuestion,
     onCheckResponse, onRetryMessage, onEditAsNew,
 }: TranscriptProps) {
     return (
         <div className="d-flex flex-column flex-grow-1" style={{minHeight: 0}}>
-            <div className="bg-dark chat-transcript rounded p-3 mb-3 flex-grow-1" style={{minHeight: 0, overflowY: 'auto'}}
+            <div className="bg-dark chat-transcript rounded p-3 mb-3 flex-grow-1" style={scrollOwner === 'panel' ? {minHeight: '8rem', overflowY: 'visible'} : {minHeight: 0, overflowY: 'auto'}}
+                 data-scroll-owner={scrollOwner}
                  ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
                 {authenticated && loading && (
                     <div className="text-muted chat-loading-status" role="status" aria-live="polite"
@@ -162,9 +166,14 @@ export function Transcript({
                    floating over message content. */
                 <div className="flex-shrink-0 text-end mb-2">
                     <button type="button" className="btn btn-sm btn-primary"
-                            onClick={onJumpToLatest} aria-label="Jump to latest message"
+                            onClick={onJumpToLatest}
+                            aria-label={unreadCount > 0
+                                ? `Jump to latest message, ${unreadCount} new ${unreadCount === 1 ? 'message' : 'messages'}`
+                                : 'Jump to latest message'}
                             data-testid="jump-to-latest">
-                        New messages · Jump to latest
+                        {unreadCount > 0
+                            ? `${unreadCount} new ${unreadCount === 1 ? 'message' : 'messages'} · Jump to latest`
+                            : 'Jump to latest'}
                     </button>
                 </div>
             )}
