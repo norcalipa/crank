@@ -353,6 +353,15 @@ def _release_failed_turn(turn_id, failure_code=""):
         )
 
 
+def _turn_interrupted(turns=1):
+    _turn_event(
+        "failed",
+        reason_code="worker_interrupted",
+        failure_stage=monitoring.failure_stage_for("worker_interrupted"),
+        turns=turns,
+    )
+
+
 def _reap_stale_turns(conversation):
     """Recover turns whose worker lease expired (issue #458).
 
@@ -373,12 +382,7 @@ def _reap_stale_turns(conversation):
         modified=timezone.now(),
     )
     if reaped:
-        _turn_event(
-            "failed",
-            reason_code="worker_interrupted",
-            failure_stage=monitoring.failure_stage_for("worker_interrupted"),
-            turns=reaped,
-        )
+        _turn_interrupted(reaped)
 
 
 def _claim_turn(conversation, turn_key):
@@ -452,9 +456,13 @@ def _claim_turn(conversation, turn_key):
                 locked.save(update_fields=[
                     "delivery_state", "failure_code", "lease_expires_at", "modified",
                 ])
+                _turn_interrupted()
             return locked, "retry_limited", None
         # Failed or stale-pending claim: take over the turn for a new bounded
         # provider attempt (each takeover is a real provider execution).
+        # A takeover of a still-PENDING claim is a crashed worker's turn
+        # recovered by the client's same-key retry: count it as interrupted.
+        was_interrupted = locked.delivery_state == JobSearchTurn.DeliveryState.PENDING
         locked.delivery_state = JobSearchTurn.DeliveryState.PENDING
         locked.failure_code = ""
         locked.attempt_count += 1
@@ -463,6 +471,8 @@ def _claim_turn(conversation, turn_key):
             "delivery_state", "failure_code", "attempt_count",
             "lease_expires_at", "modified",
         ])
+        if was_interrupted:
+            _turn_interrupted()
         return locked, "claimed", None
 
 
@@ -582,6 +592,7 @@ def agent_conversation_detail(request, conversation_id):
             request_id,
         )
     turn_started = time.monotonic()
+    turn_started_at = timezone.now()
     message_text = serializer.validated_data["content"]
     idempotency_key = serializer.validated_data["idempotency_key"]
     raw_context = serializer.validated_data.get("context")
@@ -1021,10 +1032,21 @@ def agent_conversation_detail(request, conversation_id):
 
     # Time to first useful result (issue #482): exactly one emission per
     # conversation, claimed with a conditional update like the gap above.
+    # ``first_result_at`` has no backfill, so a conversation that already had
+    # result replies before deployment claims the marker silently: only a
+    # reply with no result-bearing predecessor from before this request
+    # emits (concurrent same-conversation turns are not predecessors).
     now = timezone.now()
-    if has_results and JobSearchConversation.objects.filter(
-        pk=conversation.pk, first_result_at__isnull=True
-    ).update(first_result_at=now):
+    if (
+        has_results
+        and conversation.first_result_at is None
+        and JobSearchConversation.objects.filter(
+            pk=conversation.pk, first_result_at__isnull=True
+        ).update(first_result_at=now)
+        and not assistant_qs.exclude(results_json="")
+        .filter(pk__lt=assistant_message.pk, created__lt=turn_started_at)
+        .exists()
+    ):
         monitoring.record_event(
             "assistant_first_result",
             {

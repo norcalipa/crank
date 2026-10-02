@@ -110,6 +110,25 @@ class AssistantTurnEventTests(_Base):
         self.assertEqual(_phases(record).count("replied"), 2)
 
     @patch(RECORD)
+    def test_pre_existing_results_claim_marker_without_emitting(self, record):
+        from crank.models import JobSearchMessage
+
+        conv = self.start()
+        for _ in range(3):
+            JobSearchMessage.objects.create(
+                conversation_id=conv, role=JobSearchMessage.Role.ASSISTANT,
+                content="earlier", results_json='[{"id": 1}]', idempotency_key=str(uuid.uuid4()),
+            )
+        JobSearchConversation.objects.filter(pk=conv).update(
+            created=timezone.now() - timedelta(days=20)
+        )
+        with self.run_with(_reply(results=_results())):
+            self.assertEqual(self.submit(conv).status_code, 201)
+            self.assertEqual(self.submit(conv).status_code, 201)
+        self.assertEqual(_events(record, "assistant_first_result"), [])
+        self.assertIsNotNone(JobSearchConversation.objects.get(pk=conv).first_result_at)
+
+    @patch(RECORD)
     def test_first_result_on_second_turn_counts_turns(self, record):
         conv = self.start()
         with self.run_with(_reply()):
@@ -238,6 +257,65 @@ class AssistantTurnEventTests(_Base):
         self.assertEqual(len(reaped), 1)
         self.assertEqual(reaped[0]["reason_code"], "worker_interrupted")
         self.assertEqual(reaped[0]["turns"], 1)
+
+    @patch(RECORD)
+    def test_stale_pending_takeover_emits_worker_interrupted(self, record):
+        conv = self.start()
+        key = str(uuid.uuid4())
+        JobSearchTurn.objects.create(
+            conversation_id=conv, turn_key=key,
+            delivery_state=JobSearchTurn.DeliveryState.PENDING, attempt_count=1,
+            lease_expires_at=timezone.now() - timedelta(minutes=5),
+        )
+        with self.run_with(_reply()):
+            self.assertEqual(self.submit(conv, key).status_code, 201)
+        self.assertEqual(_phases(record), ["failed", "attempted", "saved", "replied"])
+        failed, attempted = _events(record)[:2]
+        self.assertEqual(failed["reason_code"], "worker_interrupted")
+        self.assertEqual(failed["failure_stage"], "internal")
+        self.assertEqual(failed["turns"], 1)
+        self.assertEqual((attempted["attempt"], attempted["retry"]), (2, True))
+
+    @patch(RECORD)
+    def test_failed_turn_retry_is_not_counted_as_interrupted(self, record):
+        conv = self.start()
+        key = str(uuid.uuid4())
+        with patch.object(JobSearchService, "run_turn", side_effect=ServiceTimeout("x")):
+            self.submit(conv, key)
+        record.reset_mock()
+        with self.run_with(_reply()):
+            self.assertEqual(self.submit(conv, key).status_code, 201)
+        self.assertEqual(_phases(record), ["attempted", "replied"])
+
+    @patch(RECORD)
+    @override_settings(JOB_SEARCH_TURN_MAX_ATTEMPTS=2)
+    def test_stale_pending_at_attempt_cap_emits_worker_interrupted(self, record):
+        conv = self.start()
+        key = str(uuid.uuid4())
+        JobSearchTurn.objects.create(
+            conversation_id=conv, turn_key=key,
+            delivery_state=JobSearchTurn.DeliveryState.PENDING, attempt_count=2,
+            lease_expires_at=timezone.now() - timedelta(minutes=5),
+        )
+        self.assertEqual(self.submit(conv, key).status_code, 429)
+        self.assertEqual(_phases(record), ["failed", "rejected"])
+        failed, rejected = _events(record)
+        self.assertEqual((failed["reason_code"], failed["turns"]), ("worker_interrupted", 1))
+        self.assertEqual(rejected["reason_code"], "retry_limited")
+        turn = JobSearchTurn.objects.get(turn_key=key)
+        self.assertEqual(turn.failure_code, JobSearchTurn.FailureCode.WORKER_INTERRUPTED)
+
+    @patch(RECORD)
+    @override_settings(JOB_SEARCH_TURN_MAX_ATTEMPTS=2)
+    def test_failed_turn_at_attempt_cap_only_rejects(self, record):
+        conv = self.start()
+        key = str(uuid.uuid4())
+        JobSearchTurn.objects.create(
+            conversation_id=conv, turn_key=key,
+            delivery_state=JobSearchTurn.DeliveryState.FAILED, attempt_count=2,
+        )
+        self.assertEqual(self.submit(conv, key).status_code, 429)
+        self.assertEqual(_phases(record), ["rejected"])
 
     @patch(RECORD)
     def test_midturn_reset_emits_conversation_gone(self, record):
