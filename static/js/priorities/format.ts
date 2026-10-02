@@ -23,7 +23,7 @@ export function preferencePathLabel(path: string): string {
 const MONEY_PATH = /salary|compensation$/;
 const PERCENT_PATH = /_percent$/;
 
-function humanizeToken(token: string): string {
+export function humanizeToken(token: string): string {
     if (/[A-Z]/.test(token)) return token;
     return token.replace(/_/g, ' ').replace(/\b[a-z]/g, (c) => c.toUpperCase());
 }

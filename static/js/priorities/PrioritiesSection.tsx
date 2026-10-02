@@ -9,7 +9,7 @@
 
 import * as React from 'react';
 import {
-    ApiFailure, AppliedResult, EditorField, PrioritiesSnapshot, Proposal,
+    ApiFailure, AppliedResult, EditorField, GENERIC_ERROR_MESSAGE, PrioritiesSnapshot, Proposal,
     applyProposal, proposePriorities, readPriorities, resetPriorities, undoApplied,
 } from './api';
 import AppliedChanges from './AppliedChanges';
@@ -284,8 +284,8 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             <div className="priorities-load-error" role="alert" data-testid="priorities-load-error">
                 <i className="fa-solid fa-triangle-exclamation priorities-load-error-icon" aria-hidden="true"></i>
                 <div className="priorities-load-error-text">
-                    <strong>Couldn\u2019t load your priorities.</strong>
-                    {loadError && <span className="d-block small">{loadError}</span>}
+                    <strong>Couldn’t load your priorities.</strong>
+                    {loadError && loadError !== GENERIC_ERROR_MESSAGE && <span className="d-block small">{loadError}</span>}
                 </div>
                 <button type="button" className="btn btn-sm btn-outline-light priorities-load-error-retry" onClick={() => void load()}>Try again</button>
             </div>
@@ -345,7 +345,8 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                     </div>
                 )}
                 {chips.length > 0 ? (
-                    <PriorityChips chips={chips} onEdit={() => setPrioritiesEditorOpen(variant)}/>
+                    <PriorityChips chips={chips} collapsedCount={variant === 'sidebar' ? 3 : 5}
+                                   onEdit={() => setPrioritiesEditorOpen(variant)}/>
                 ) : (
                     <p className="priorities-empty" data-testid="priorities-empty">
                         No priorities saved yet. Add a few so job matches fit what you want.

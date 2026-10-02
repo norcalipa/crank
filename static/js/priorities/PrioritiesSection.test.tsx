@@ -114,6 +114,8 @@ describe('PrioritiesSection', () => {
         mockFetch({'/api/agent/preferences/': () => (ok ? json(snapshotBody(1, [chip])) : json({error: {message: 'boom'}}, 500))});
         render(<PrioritiesSection variant="main" authenticated/>);
         expect(await screen.findByTestId('priorities-load-error')).toHaveTextContent('boom');
+        expect(screen.getByTestId('priorities-load-error')).toHaveTextContent('Couldn’t load your priorities.');
+        expect(screen.getByTestId('priorities-load-error').textContent).not.toMatch(/\\u[0-9a-f]{4}/i);
         ok = true;
         fireEvent.click(screen.getByRole('button', {name: 'Try again'}));
         expect(await screen.findAllByTestId('priority-chip')).toHaveLength(1);
@@ -126,7 +128,8 @@ describe('PrioritiesSection', () => {
         unmount();
         (global as any).fetch = jest.fn(() => Promise.resolve(new Response('<html>', {status: 502})));
         render(<PrioritiesSection variant="main" authenticated/>);
-        expect(await screen.findByTestId('priorities-load-error')).toHaveTextContent('Something went wrong');
+        expect(await screen.findByTestId('priorities-load-error')).toHaveTextContent('Couldn’t load your priorities.');
+        expect(screen.getByTestId('priorities-load-error')).not.toHaveTextContent('Something went wrong');
     });
 
     test('a read that settles after unmount is ignored (success and failure)', async () => {
@@ -270,9 +273,9 @@ describe('PrioritiesSection', () => {
         });
         render(<PrioritiesSection variant="sidebar" authenticated/>);
         const form = await openEditor('sidebar');
-        fireEvent.click(within(form).getByLabelText('hybrid'));
-        fireEvent.click(within(form).getByLabelText('hybrid'));
-        fireEvent.click(within(form).getByLabelText('remote'));
+        fireEvent.click(within(form).getByLabelText('Hybrid'));
+        fireEvent.click(within(form).getByLabelText('Hybrid'));
+        fireEvent.click(within(form).getByLabelText('Remote'));
         fireEvent.change(within(form).getByLabelText('Currency'), {target: {value: 'EUR'}});
         fireEvent.change(within(form).getByLabelText('Culture'), {target: {value: 'kind, curious'}});
         fireEvent.change(within(form).getByLabelText('Minimum equity'), {target: {value: '2.5'}});
@@ -432,6 +435,23 @@ describe('PrioritiesSection', () => {
         await screen.findByRole('form', {name: 'Edit priorities'});
         act(() => setPrioritiesEditorOpen('sidebar'));
         await waitFor(() => expect(screen.queryByRole('form', {name: 'Edit priorities'})).not.toBeInTheDocument());
+    });
+
+    test('an unchecked supported checkbox shows no importance toggle until it is checked', async () => {
+        mockFetch({
+            '/api/agent/preferences/': () => {
+                const body = snapshotBody(2, [chip]);
+                body.fields.push(field({path: 'compensation.accelerated_vesting', label: 'Prefer accelerated vesting',
+                                        type: 'bool', value: false}));
+                return json(body);
+            },
+        });
+        render(<PrioritiesSection variant="main" authenticated/>);
+        const form = await openEditor();
+        const row = within(form).getByLabelText('Prefer accelerated vesting').closest('[data-testid="priorities-field"]') as HTMLElement;
+        expect(within(row).queryByRole('group', {name: /importance/})).not.toBeInTheDocument();
+        fireEvent.click(within(form).getByLabelText('Prefer accelerated vesting'));
+        expect(within(row).getByRole('group', {name: /importance/})).toBeInTheDocument();
     });
 
     test('editor maps server messages to field labels, hides importance on empty fields, lists unsupported read-only', async () => {

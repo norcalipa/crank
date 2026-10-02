@@ -8,7 +8,7 @@
 import * as React from 'react';
 import type {EditorField} from './api';
 import {Draft, DraftValue, toDraftValue} from './patch';
-import {preferenceValueLabel} from './format';
+import {humanizeToken, preferenceValueLabel} from './format';
 
 export interface PriorityEditorProps {
     fields: EditorField[];
@@ -59,7 +59,7 @@ function FieldControl({field, value, inputId, describedBy, invalid, currency, on
                                onChange={(e) => onChange(
                                    e.target.checked ? [...chosen, choice] : chosen.filter((c) => c !== choice),
                                )}/>
-                        {' '}{choice}
+                        {humanizeToken(choice)}
                     </label>
                 ))}
             </div>
@@ -70,7 +70,7 @@ function FieldControl({field, value, inputId, describedBy, invalid, currency, on
             <select className={`form-select form-select-sm${invalid ? ' is-invalid' : ''}`} {...common}
                     value={String(value)} onChange={(e) => onChange(e.target.value)}>
                 <option value="">Not set</option>
-                {field.choices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}
+                {field.choices.map((choice) => <option key={choice} value={choice}>{humanizeToken(choice)}</option>)}
             </select>
         );
     }
@@ -133,7 +133,7 @@ function FieldRow({field, draft, fieldErrors, inputId, onChange, onToggleHard, c
                     {message}
                 </div>
             )}
-            {field.supported && (isBool || hasValue || hard) && !(isBool && field.hard_locked) && (
+            {field.supported && ((isBool ? value === true : hasValue) || hard) && !(isBool && field.hard_locked) && (
                 field.hard_locked ? (
                     <span className="priorities-field-note">Always a requirement</span>
                 ) : (

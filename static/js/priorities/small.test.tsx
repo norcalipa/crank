@@ -104,6 +104,20 @@ describe('PriorityChips', () => {
         expect(screen.getAllByTestId('priority-chip')).toHaveLength(5);
     });
 
+    test('a smaller collapsed count and requirement-first ordering; unsupported chips sort last', () => {
+        const chips = [
+            ...make(2, {supported: false}).map((c, i) => ({...c, path: `u${i}`, label: `Unused ${i}`})),
+            ...make(4).map((c, i) => ({...c, path: `s${i}`, label: `Soft ${i}`})),
+            {path: 'h', label: 'Hard one', display: 'v', hard: true, supported: true},
+        ];
+        render(<PriorityChips chips={chips} collapsedCount={3} onEdit={jest.fn()}/>);
+        const shown = screen.getAllByTestId('priority-chip').map((li) => li.textContent);
+        expect(shown).toHaveLength(3);
+        expect(shown[0]).toContain('Hard one');
+        expect(shown.join(' ')).not.toContain('Unused');
+        expect(screen.getByRole('button', {name: '+4 more'})).toBeInTheDocument();
+    });
+
     test('short list has no toggle; the legend shows only for requirement or unsupported chips', () => {
         const {rerender} = render(<PriorityChips chips={make(5)} onEdit={jest.fn()}/>);
         expect(screen.queryByRole('button', {name: /more|Show less/})).not.toBeInTheDocument();

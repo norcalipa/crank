@@ -98,6 +98,8 @@ export class ApiFailure extends Error {
     }
 }
 
+export const GENERIC_ERROR_MESSAGE = 'Something went wrong. Please try again.';
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
     let res: Response;
     try {
@@ -109,7 +111,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
         return (await res.json()) as T;
     }
     let type: string | null = null;
-    let message = 'Something went wrong. Please try again.';
+    let message = GENERIC_ERROR_MESSAGE;
     let fieldErrors: Record<string, string[]> = {};
     let currentRevision: number | null = null;
     try {

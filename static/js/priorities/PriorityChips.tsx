@@ -19,12 +19,19 @@ export function PriorityChipsSkeleton({count = 3}: {count?: number}) {
     );
 }
 
-const COLLAPSED_COUNT = 5;
+function byImportance(a: PriorityChip, b: PriorityChip): number {
+    return Number(!a.supported) - Number(!b.supported) || Number(b.hard) - Number(a.hard);
+}
 
-export default function PriorityChips({chips, onEdit}: {chips: PriorityChip[]; onEdit: () => void}) {
+export default function PriorityChips({chips: unsorted, collapsedCount = 5, onEdit}: {
+    chips: PriorityChip[];
+    collapsedCount?: number;
+    onEdit: () => void;
+}) {
+    const chips = React.useMemo(() => [...unsorted].sort(byImportance), [unsorted]);
     const [expanded, setExpanded] = React.useState(false);
-    const hidden = chips.length - COLLAPSED_COUNT;
-    const shown = expanded || hidden <= 0 ? chips : chips.slice(0, COLLAPSED_COUNT);
+    const hidden = chips.length - collapsedCount;
+    const shown = expanded || hidden <= 0 ? chips : chips.slice(0, collapsedCount);
     const listId = `priority-chips-${React.useId()}`;
     return (
         <>
@@ -35,8 +42,10 @@ export default function PriorityChips({chips, onEdit}: {chips: PriorityChip[]; o
                         <button type="button" className="priority-chip-button" onClick={onEdit}
                                 aria-label={`Edit ${chip.label}`}>
                             {chip.hard && <i className="fa-solid fa-lock priority-chip-lock" aria-hidden="true"></i>}
-                            <span className="priority-chip-label">{chip.label}:</span>
-                            <span className="priority-chip-value">{chipValueLabel(chip.path, chip.display)}</span>
+                            <span className="priority-chip-text">
+                                <span className="priority-chip-label">{chip.label}:</span>
+                                <span className="priority-chip-value">{chipValueLabel(chip.path, chip.display)}</span>
+                            </span>
                             <i className="fa-solid fa-pen priority-chip-icon" aria-hidden="true"></i>
                         </button>
                         {chip.hard && <span className="visually-hidden">(required)</span>}
@@ -44,19 +53,25 @@ export default function PriorityChips({chips, onEdit}: {chips: PriorityChip[]; o
                     </li>
                 ))}
             </ul>
-            {hidden > 0 && (
-                <button type="button" className="btn btn-sm btn-link text-light priority-chips-more"
-                        aria-expanded={expanded} aria-controls={listId}
-                        onClick={() => setExpanded((open) => !open)}>
-                    {expanded ? 'Show less' : `+${hidden} more`}
-                </button>
-            )}
-            {chips.some((chip) => chip.hard || !chip.supported) && (
-                <p className="priority-chip-legend" data-testid="priority-chip-legend">
-                    <i className="fa-solid fa-lock" aria-hidden="true"></i> Requirement
-                    <span className="priority-chip-legend-dashed" aria-hidden="true"></span> Not used for matching yet
-                </p>
-            )}
+            <div className="priority-chips-meta">
+                {hidden > 0 && (
+                    <button type="button" className="btn btn-sm btn-link text-light priority-chips-more"
+                            aria-expanded={expanded} aria-controls={listId}
+                            onClick={() => setExpanded((open) => !open)}>
+                        {expanded ? 'Show less' : `+${hidden} more`}
+                    </button>
+                )}
+                {chips.some((chip) => chip.hard || !chip.supported) && (
+                    <p className="priority-chip-legend" data-testid="priority-chip-legend">
+                        <span className="priority-chip-legend-item">
+                            <i className="fa-solid fa-lock" aria-hidden="true"></i>Requirement
+                        </span>
+                        <span className="priority-chip-legend-item" title="Not used for matching yet">
+                            <span className="priority-chip-legend-dashed" aria-hidden="true"></span>Not used yet
+                        </span>
+                    </p>
+                )}
+            </div>
         </>
     );
 }

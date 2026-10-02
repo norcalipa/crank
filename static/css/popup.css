@@ -2133,6 +2133,7 @@ body.app-nav-drawer-open {
     justify-content: space-between;
     gap: .5rem;
     min-height: 56px;
+    flex-shrink: 0;
     padding: .75rem 1rem;
     border-bottom: 1px solid var(--bs-border-color);
 }
@@ -2219,6 +2220,7 @@ body.app-nav-drawer-open {
 .assistant-back-to-results {
     margin: .5rem 1rem 0;
     min-height: 44px;
+    flex-shrink: 0;
 }
 
 /* Empty state: the primary next action is a real, prominent button instead
@@ -3337,9 +3339,7 @@ body.assistant-open .app-content .table-responsive,
     display: inline-flex;
     align-items: center;
     gap: 0.375rem;
-    flex-wrap: wrap;
-    column-gap: 0.375rem;
-    row-gap: 0;
+    flex-wrap: nowrap;
     min-height: 2rem;
     padding: 0.2rem 0.75rem;
     border: 0;
@@ -3353,25 +3353,32 @@ body.assistant-open .app-content .table-responsive,
 .priority-chip:hover { background: #3d444b; border-color: #adb5bd; }
 .priority-chip-hard { border-color: #6c757d; }
 .priority-chip-unsupported { border-style: dashed; border-color: #6c757d; }
+.priority-chip-text { display: inline-flex; flex-wrap: wrap; column-gap: 0.375rem; min-width: 0; }
 .priority-chip-label { color: #adb5bd; overflow-wrap: normal; min-width: 0; }
 .priority-chip-value { font-weight: 600; white-space: nowrap; flex-shrink: 0; }
 .priority-chip-icon { font-size: 0.75rem; margin: 0; color: #adb5bd; }
 .priority-chip-lock { font-size: 0.75rem; }
+.priority-chip-lock, .priority-chip-icon { flex: 0 0 auto; }
 @media (hover: hover) {
     .priority-chip-icon { opacity: 0; }
     .priority-chip:hover .priority-chip-icon,
     .priority-chip-button:focus-visible .priority-chip-icon { opacity: 1; }
 }
-.priority-chips-more { padding-left: 0; min-height: 2rem; }
+.priority-chips-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 1rem; margin: 0 0 0.5rem; }
+.priorities-section .priority-chips-more { min-height: 2rem; padding: 0; }
+@media (pointer: coarse) {
+    .priorities-section .priority-chips-more { min-height: 44px; }
+}
 .priority-chip-legend {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 0.375rem 0.75rem;
-    margin: 0.25rem 0 0.5rem;
+    margin: 0;
     font-size: 0.8125rem;
     color: #adb5bd;
 }
+.priority-chip-legend-item { display: inline-flex; align-items: center; gap: 0.375rem; white-space: nowrap; }
 .priority-chip-legend-dashed { display: inline-block; width: 1.25rem; height: 0.75rem; border: 1px dashed #6c757d; border-radius: 999px; }
 .priority-chip-skeleton {
     display: block;
@@ -3409,6 +3416,9 @@ body.assistant-open .app-content .table-responsive,
     color: #adb5bd;
     margin-bottom: 0.25rem;
 }
+.priority-choices { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; }
+.priority-choice { display: inline-flex; align-items: center; gap: 0.5rem; min-height: 2rem; margin: 0; }
+.priority-choice .form-check-input { margin: 0; flex-shrink: 0; }
 .priorities-field { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.6rem; }
 .priorities-label { font-size: 0.875rem; font-weight: 500; color: #dee2e6; }
 .priorities-field-note { color: #adb5bd; font-size: 0.8125rem; }
@@ -3423,6 +3433,10 @@ body.assistant-open .app-content .table-responsive,
 .priorities-toggle { min-height: 2rem; padding: 0.125rem 0.75rem; font-size: 0.8125rem; border: 1px solid #adb5bd; color: #e9ecef; background: transparent; }
 @media (pointer: coarse) {
     .priorities-toggle { min-height: 44px; }
+}
+.priorities-section .priorities-toggle { min-height: 2rem; }
+@media (pointer: coarse) {
+    .priorities-section .priorities-toggle { min-height: 44px; }
 }
 .priorities-toggle.active { background: rgba(13, 110, 253, 0.18); border-color: #6ea8fe; color: #fff; font-weight: 600; }
 .priorities-section input:focus-visible,
@@ -3445,9 +3459,12 @@ body.assistant-open .app-content .table-responsive,
         radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.55), transparent) top / 100% 8px no-repeat scroll,
         radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.55), transparent) bottom / 100% 8px no-repeat scroll;
 }
-.priorities-sidebar { flex: 0 0 auto; padding: 0.5rem 0.75rem 1rem; border-bottom: 1px solid #495057; margin-bottom: 0; }
+.priorities-sidebar { flex: 0 0 auto; padding: 0.5rem 0.75rem 0.75rem; border-bottom: 1px solid #495057; margin-bottom: 0; }
 @media (min-width: 768px) {
     .priorities-sidebar { padding-inline: 1rem; }
+}
+@media (pointer: fine) {
+    .priorities-sidebar .priorities-actions .btn { min-height: 2.25rem; }
 }
 .priorities-sidebar .priorities-scroll { max-height: 60%; max-height: 60vh; }
 .assistant-panel-body #job-search-chat { flex: 0 0 auto; }
@@ -3498,6 +3515,7 @@ body.assistant-open .app-content .table-responsive,
     .priorities-section .chat-actions { justify-content: flex-start; }
     .priorities-section .chat-actions > .btn,
     .priorities-review .chat-actions > :first-child { flex: 0 0 auto; min-width: 8rem; }
+    .priorities-section .chat-actions > .btn-link { min-width: 0; }
 }
 .priorities-section .pref-change-error,
 .priorities-load-error {
@@ -3513,8 +3531,9 @@ body.assistant-open .app-content .table-responsive,
     color: #ea868f;
 }
 .priorities-load-error-icon { margin-top: 0.2rem; }
+.priorities-load-error-text .small { color: #dee2e6; }
 .priorities-load-error-retry { grid-column: 2; justify-self: start; }
-@container (min-width: 24rem) {
+@container (min-width: 18rem) {
     .priorities-load-error:has(.priorities-load-error-retry) { grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; }
     .priorities-load-error-retry { grid-column: 3; }
 }
@@ -3539,4 +3558,20 @@ body.assistant-open .app-content .table-responsive,
 }
 @media (max-width: 400px) {
     .assistant-panel-body #job-search-chat .empty-history-note { display: none; }
+}
+
+/* issue #480 final fixes: the empty state adapts to the log height. */
+.assistant-panel-body #job-search-chat [role='log']:has([data-testid='empty-history']) {
+    container: chat-log / size;
+}
+@container chat-log (max-height: 15rem) {
+    #job-search-chat .empty-history-note { display: none; }
+}
+@container chat-log (max-height: 11.75rem) {
+    #job-search-chat [data-testid='empty-history'] { padding-block: 0; }
+    #job-search-chat .empty-history-lead { margin-bottom: 0; }
+    #job-search-chat .empty-history-cta { display: none; }
+}
+@media (min-width: 768px) {
+    #job-search-chat-title { font-size: 1rem; font-weight: 600; color: #f8f9fa; }
 }
