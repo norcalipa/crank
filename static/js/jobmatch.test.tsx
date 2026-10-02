@@ -31,12 +31,12 @@ beforeEach(() => {
 });
 
 describe('jobmatch entry (issue #480 / #472 regression)', () => {
-    test('a signed-out page shows one sign-in state in the job panel and no priorities, without fetching', async () => {
+    test('a signed-out page shows one sign-in state in the job panel and the priorities copy only, without fetching', async () => {
         mountPage(false);
         await boot();
         const cta = await screen.findByTestId('job-match-sign-in-cta');
         expect(cta).toHaveAttribute('href', '/accounts/login/?next=/chat/');
-        expect(screen.queryByTestId('priorities-signed-out')).not.toBeInTheDocument();
+        expect(screen.getByTestId('priorities-signed-out')).toHaveTextContent('Sign in to save your priorities.');
         expect(screen.queryByTestId('priorities-section')).not.toBeInTheDocument();
         expect((global as any).fetch).not.toHaveBeenCalled();
     });

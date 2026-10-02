@@ -8,7 +8,7 @@
 // mounts because it only mounts as the result of a user action.
 
 import * as React from 'react';
-import {PreferenceChange, preferencePathLabel, preferenceValueLabel} from './format';
+import {PreferenceChange, expandChanges, humanizeToken, importanceLabel, preferenceValueLabel} from './format';
 
 export interface ReviewChangesProps {
     changes: PreferenceChange[];
@@ -23,6 +23,10 @@ export interface ReviewChangesProps {
     onEdit?: () => void;
     onApplySearchOnly?: () => void;
     onReviewLatest?: () => void;
+    // Criteria the draft edited that also changed elsewhere since it was loaded (labels).
+    conflicts?: string[];
+    currency?: unknown;
+    choicePaths?: ReadonlySet<string>;
     // Editor field labels by path, so the diff names a field as the editor does.
     labels?: Record<string, string>;
     testId?: string;
@@ -30,21 +34,48 @@ export interface ReviewChangesProps {
 
 const isEmptyValue = (v: unknown) => v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0);
 
-export function ChangeList({changes, label, labels}: {
+// A list is shown one token per saved entry, so exactly what will be saved is visible.
+function ChangeValue({value, path, currency, importance, choice}: {
+    value: unknown; path: string; currency?: unknown; importance?: boolean; choice?: boolean;
+}) {
+    if (importance) return <>{importanceLabel(value)}</>;
+    if (Array.isArray(value) && value.length > 0) {
+        return (
+            <>
+                {value.map((item, i) => (
+                    <span key={`${i}-${String(item)}`} className="pref-change-token">
+                        {typeof item !== 'string' ? preferenceValueLabel(item, path, currency) : choice ? humanizeToken(item) : item}
+                    </span>
+                ))}
+            </>
+        );
+    }
+    return <>{preferenceValueLabel(value, path, currency)}</>;
+}
+
+export function ChangeList({changes, label, labels, currency, choicePaths}: {
     changes: PreferenceChange[];
     label: string;
     labels?: Record<string, string>;
+    currency?: unknown;
+    choicePaths?: ReadonlySet<string>;
 }) {
     return (
         <ul className="pref-change-list" aria-label={label}>
-            {changes.map((change) => (
-                <li key={change.path} className="pref-change-item">
-                    <span className="pref-change-path">{labels?.[change.path] || preferencePathLabel(change.path)}</span>
+            {expandChanges(changes, labels).map((change) => (
+                <li key={change.key} className="pref-change-item">
+                    <span className="pref-change-path">{change.label}</span>
                     <span className="pref-change-values">
-                        <span className={`pref-change-old${isEmptyValue(change.old) ? ' is-empty' : ''}`}>{preferenceValueLabel(change.old, change.path)}</span>
+                        <span className={`pref-change-old${isEmptyValue(change.old) ? ' is-empty' : ''}`}>
+                            <ChangeValue value={change.old} path={change.path} currency={currency} importance={change.importance}
+                                         choice={choicePaths?.has(change.path)}/>
+                        </span>
                         <i className="fa-solid fa-arrow-right pref-change-arrow" aria-hidden="true"></i>
                         <span className="visually-hidden">changed to</span>
-                        <span className="pref-change-new">{preferenceValueLabel(change.new, change.path)}</span>
+                        <span className="pref-change-new">
+                            <ChangeValue value={change.new} path={change.path} currency={currency} importance={change.importance}
+                                         choice={choicePaths?.has(change.path)}/>
+                        </span>
                     </span>
                 </li>
             ))}
@@ -55,7 +86,7 @@ export function ChangeList({changes, label, labels}: {
 export default function ReviewChanges({
     changes, scope = 'account', pending = false, error = null, stale = false,
     heading = 'Review your changes', onApply, onCancel, onEdit, onApplySearchOnly, onReviewLatest,
-    labels, testId = 'priorities-review',
+    labels, currency, choicePaths, conflicts = [], testId = 'priorities-review',
 }: ReviewChangesProps) {
     const headingId = `priorities-review-${React.useId()}`;
     const headingRef = React.useRef<HTMLHeadingElement>(null);
@@ -79,8 +110,14 @@ export default function ReviewChanges({
                         ? 'Save these to your account, or use them for this search only.'
                         : 'These changes will be saved to your account and used for matching.'}
             </p>
+            {conflicts.length > 0 && (
+                <p className="pref-change-conflict" role="status" data-testid="priorities-review-conflicts">
+                    <i className="fa-solid fa-code-merge me-1" aria-hidden="true"></i>
+                    Also changed elsewhere: {conflicts.join(', ')}. Your edit replaces the newer value.
+                </p>
+            )}
             {changes.length > 0 ? (
-                <ChangeList changes={changes} label="Proposed changes" labels={labels}/>
+                <ChangeList changes={changes} label="Proposed changes" labels={labels} currency={currency} choicePaths={choicePaths}/>
             ) : (
                 <p className="pref-change-empty" data-testid="priorities-review-empty">
                     Nothing would change. Edit a priority to continue.

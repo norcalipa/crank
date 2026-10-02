@@ -10,14 +10,14 @@
 import * as React from 'react';
 import {
     ApiFailure, AppliedResult, EditorField, GENERIC_ERROR_MESSAGE, PrioritiesSnapshot, Proposal,
-    applyProposal, proposePriorities, readPriorities, resetPriorities, undoApplied,
+    SESSION_EXPIRED_MESSAGE, applyProposal, proposePriorities, readPriorities, resetPriorities, undoApplied,
 } from './api';
 import AppliedChanges from './AppliedChanges';
 import PriorityChips, {PriorityChipsSkeleton} from './PriorityChips';
 import PriorityEditor from './PriorityEditor';
 import ReviewChanges from './ReviewChanges';
 import {preferencePathLabel} from './format';
-import {Draft, DraftValue, buildPatch, emptyDraft, isDirty} from './patch';
+import {Draft, DraftValue, buildPatch, conflictingPaths, emptyDraft, isDirty, patchToDraft} from './patch';
 import {prioritiesSurface, subscribeDesktop} from './surface';
 import {useWorkspace} from './useWorkspace';
 import {createLatestGuard} from '../workspace/requests';
@@ -48,6 +48,16 @@ const ScrollRegion: React.FC<{children: React.ReactNode}> = ({children}) => {
 
 const STALE_COPY = 'Your priorities changed elsewhere. Review the latest before applying.';
 
+function signInHref(): string {
+    return document.getElementById('priorities-main')?.dataset.signInUrl || window.location.href;
+}
+
+function searchOnlyCopy(result: AppliedResult): string {
+    const count = result.matchCount ?? 0;
+    const jobs = `${count}${result.matchCapped ? '+' : ''} ${count === 1 && !result.matchCapped ? 'job matches' : 'jobs match'}`;
+    return `This search only \u2014 not saved. ${jobs} these priorities. The list below still reflects your saved priorities.`;
+}
+
 const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const workspace = useWorkspace();
     const accountKey = workspace.account.key;
@@ -66,37 +76,80 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const [undoPending, setUndoPending] = React.useState(false);
     const [undoError, setUndoError] = React.useState<string | null>(null);
     const [undone, setUndone] = React.useState(false);
+    const [conflicts, setConflicts] = React.useState<string[]>([]);
+    const [sessionExpired, setSessionExpired] = React.useState(false);
     const guard = React.useMemo(createLatestGuard, []);
     const mounted = React.useRef(true);
     const revisionRef = React.useRef<number | null>(null);
+    // Writes (propose / apply / undo / reset) belong to the account that started them: a purge or
+    // account switch bumps the epoch and aborts them, so a late answer is never shown to, or
+    // undone under, a different login.
+    const epoch = React.useRef(0);
+    const writes = React.useRef(new Set<AbortController>());
+    const seeded = React.useRef<unknown>(null);
+    const focusAfter = React.useRef<'edit' | 'reset' | null>(null);
+    const editButton = React.useRef<HTMLButtonElement>(null);
+    const resetButton = React.useRef<HTMLButtonElement>(null);
+    const confirmHeading = React.useRef<HTMLParagraphElement>(null);
 
-    const load = React.useCallback(async () => {
+    const beginWrite = () => {
+        const controller = new AbortController();
+        writes.current.add(controller);
+        const owner = epoch.current;
+        return {
+            signal: controller.signal,
+            live: () => mounted.current && epoch.current === owner && !controller.signal.aborted,
+            done: () => { writes.current.delete(controller); },
+        };
+    };
+    const dropWrites = () => {
+        epoch.current += 1;
+        writes.current.forEach((controller) => controller.abort());
+        writes.current.clear();
+    };
+
+    const load = React.useCallback(async (): Promise<PrioritiesSnapshot | null> => {
         const request = guard.begin();
         setPhase((p) => (p === 'ready' ? p : 'loading'));
         try {
             const data = await readPriorities(request.signal);
-            if (!request.isLatest() || !mounted.current) return;
+            if (!request.isLatest() || !mounted.current) return null;
             revisionRef.current = data.revision;
             setSnapshot(data);
             setLoadError(null);
             setPhase('ready');
+            return data;
         } catch (err) {
-            if (!request.isLatest() || !mounted.current) return;
+            if (!request.isLatest() || !mounted.current) return null;
+            setSessionExpired(err instanceof ApiFailure && err.authRequired);
             setLoadError(err instanceof ApiFailure ? err.message : 'Could not load your priorities.');
             setPhase('error');
+            return null;
         }
     }, [guard]);
 
     const clearAll = React.useCallback(() => {
         guard.cancel();
+        epoch.current += 1;
+        writes.current.forEach((controller) => controller.abort());
+        writes.current.clear();
         revisionRef.current = null;
+        seeded.current = null;
         setSnapshot(null);
         setStep('view');
         setDraft(emptyDraft());
         setFieldErrors({});
         setFormError(null);
         setProposal(null);
+        setReviewError(null);
+        setStale(false);
+        setConflicts([]);
         setApplied(null);
+        setUndone(false);
+        setUndoError(null);
+        setUndoPending(false);
+        setBusy(false);
+        setSessionExpired(false);
         setPhase('loading');
     }, [guard]);
 
@@ -105,7 +158,9 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         return () => {
             mounted.current = false;
             guard.cancel();
+            dropWrites();
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [guard]);
 
     // Load for the current account; drop everything when the account changes
@@ -132,9 +187,12 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     // The store names which surface hosts the editor: open it here, close it
     // here when another surface takes over or the store is purged.
     const hostsEditor = workspace.prioritiesEditorOpenIn === variant;
+    const editorSeed = workspace.prioritiesEditorSeed;
     React.useEffect(() => {
-        if (hostsEditor && step === 'view' && snapshot) {
-            setDraft(emptyDraft());
+        if (hostsEditor && snapshot && (step === 'view' || (editorSeed && editorSeed !== seeded.current))) {
+            // A seed (the assistant's proposal) fills the editor instead of the saved values.
+            seeded.current = editorSeed;
+            setDraft(patchToDraft(snapshot.fields, editorSeed));
             setFieldErrors({});
             setFormError(null);
             setStep('edit');
@@ -142,9 +200,21 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             // Functional: a write may have just moved the step to 'applied'.
             setStep((current) => (current === 'edit' || current === 'review' ? 'view' : current));
         }
-    }, [hostsEditor, step, snapshot]);
+    }, [hostsEditor, editorSeed, step, snapshot]);
+
+    // Focus follows the user's action: back to the control that opened the step they left.
+    React.useEffect(() => {
+        if (step === 'confirm-reset') {
+            confirmHeading.current?.focus();
+        } else if (step === 'view' && focusAfter.current) {
+            const target = focusAfter.current === 'reset' ? resetButton.current || editButton.current : editButton.current;
+            focusAfter.current = null;
+            target?.focus();
+        }
+    }, [step]);
 
     const close = () => {
+        focusAfter.current = 'edit';
         setStep('view');
         setPrioritiesEditorOpen(null);
     };
@@ -159,29 +229,41 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         [fields],
     );
 
-    const startReview = async (rebaseFrom?: Draft) => {
-        if (!snapshot || busy) return;
-        const patch = buildPatch(snapshot.fields, snapshot.preferences, rebaseFrom || draft);
-        if (!patch) return;
+    // `base` is the document the patch is built against: the reload after a conflict, not the
+    // snapshot the draft was started from, so another tab's changes are kept, not overwritten.
+    const startReview = async (base: PrioritiesSnapshot | null = snapshot, found: string[] = []) => {
+        if (!base || busy) return;
+        const patch = buildPatch(base.fields, base.preferences, draft);
+        if (!patch) {
+            setFormError('Nothing left to change: the latest saved priorities already match your edit.');
+            setStep('edit');
+            return;
+        }
+        const write = beginWrite();
         setBusy(true);
         setFormError(null);
         setFieldErrors({});
         try {
-            const next = await proposePriorities(patch, 'account');
+            const next = await proposePriorities(patch, 'account', write.signal);
+            if (!write.live()) return;
             setProposal(next);
             setReviewError(null);
             setStale(false);
+            setConflicts(found);
             setStep('review');
         } catch (err) {
+            if (!write.live()) return;
             if (err instanceof ApiFailure && Object.keys(err.fieldErrors).length > 0) {
                 setFieldErrors(err.fieldErrors);
                 setFormError('Some values are not valid. Fix them and review again.');
             } else {
+                setSessionExpired(err instanceof ApiFailure && err.authRequired);
                 setFormError(err instanceof ApiFailure ? err.message : 'Could not check your changes.');
             }
             setStep('edit');
         } finally {
-            setBusy(false);
+            if (write.live()) setBusy(false);
+            write.done();
         }
     };
 
@@ -200,41 +282,52 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
 
     const apply = async (scope: 'account' | 'search') => {
         if (!proposal || busy) return;
+        const write = beginWrite();
         setBusy(true);
         setReviewError(null);
         try {
-            const result = await applyProposal({...proposal.token, scope});
+            const result = await applyProposal({...proposal.token, scope}, write.signal);
+            if (!write.live()) return;
             finishWrite(
                 result,
-                scope === 'search'
-                    ? `This search only \u2014 not saved. ${result.matchCount ?? 0} matches.`
-                    : 'Priorities saved. Job matches will update.',
+                scope === 'search' ? searchOnlyCopy(result) : 'Priorities saved. Job matches will update.',
             );
         } catch (err) {
+            if (!write.live()) return;
             const failure = err instanceof ApiFailure ? err : null;
             if (failure?.stale) {
                 setStale(true);
                 setReviewError(STALE_COPY);
             } else {
+                setSessionExpired(!!failure?.authRequired);
                 setReviewError(failure?.message || 'Could not apply your changes. Try again.');
             }
         } finally {
-            setBusy(false);
+            if (write.live()) setBusy(false);
+            write.done();
         }
     };
 
     const reviewLatest = async () => {
-        await load();
-        await startReview();
+        const before = snapshot;
+        const fresh = await load();
+        if (!fresh) {
+            if (mounted.current) setReviewError('Could not load your latest priorities. Try again.');
+            return;
+        }
+        const found = before ? conflictingPaths(before.fields, fresh.fields, draft).map((path) => labels[path] || path) : [];
+        await startReview(fresh, found);
     };
 
     const undo = async () => {
         const token = applied?.result.undo;
         if (!token || undoPending) return;
+        const write = beginWrite();
         setUndoPending(true);
         setUndoError(null);
         try {
-            const revision = await undoApplied(token);
+            const revision = await undoApplied(token, write.signal);
+            if (!write.live()) return;
             setUndone(true);
             if (revision !== null) {
                 revisionRef.current = revision;
@@ -242,40 +335,61 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             }
             void load();
         } catch (err) {
+            if (!write.live()) return;
             const failure = err instanceof ApiFailure ? err : null;
+            setSessionExpired(!!failure?.authRequired);
             setUndoError(failure?.stale
                 ? 'Your priorities changed since this update, so it can no longer be undone.'
                 : (failure?.message || 'Could not undo. Try again.'));
         } finally {
-            setUndoPending(false);
+            if (write.live()) setUndoPending(false);
+            write.done();
         }
     };
 
     const reset = async () => {
         if (!snapshot || busy) return;
+        const write = beginWrite();
         setBusy(true);
         setFormError(null);
         try {
-            const result = await resetPriorities(snapshot.revision);
+            const result = await resetPriorities(snapshot.revision, write.signal);
+            if (!write.live()) return;
             finishWrite(result, 'Priorities reset to defaults. Job matches will update.');
         } catch (err) {
+            if (!write.live()) return;
             const failure = err instanceof ApiFailure ? err : null;
+            setSessionExpired(!!failure?.authRequired);
             setFormError(failure?.stale
                 ? 'Your priorities changed elsewhere. Reload to see the latest, then try again.'
                 : (failure?.message || 'Could not reset priorities. Try again.'));
+            focusAfter.current = 'reset';
             setStep('view');
             if (failure?.stale) void load();
         } finally {
-            setBusy(false);
+            if (write.live()) setBusy(false);
+            write.done();
         }
     };
 
     const className = `priorities-section priorities-${variant}`;
-
-    // Signed out: the page's own sign-in prompt is the call to action.
-    if (!authenticated) return null;
-
+    const compensation = snapshot?.preferences.compensation as {currency?: unknown} | undefined;
+    const currency = compensation?.currency;
+    const choicePaths = new Set(fields.filter((f) => f.choices).map((f) => f.path));
+    const readOnlyPaths = new Set(fields.filter((f) => f.type === 'float_map').map((f) => f.path));
     const titleId = `priorities-title-${variant}`;
+
+    // Signed out: the page's own sign-in prompt is the call to action; the main block says what signing in is for.
+    if (!authenticated) {
+        if (variant !== 'main') return null;
+        return (
+            <section className={className} aria-labelledby={titleId} data-testid="priorities-main">
+                <h2 id={titleId} className="h6 priorities-title">Your priorities</h2>
+                <p className="priorities-empty" data-testid="priorities-signed-out">Sign in to save your priorities.</p>
+            </section>
+        );
+    }
+
     let body: React.ReactNode;
     if (phase === 'loading' && !snapshot) {
         body = <div aria-busy="true"><PriorityChipsSkeleton/><span className="visually-hidden" role="status">Loading your priorities</span></div>;
@@ -299,13 +413,19 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                                     setDraft((d) => ({...d, values: {...d.values, [path]: value}}))}
                                 onToggleHard={(path, hard) =>
                                     setDraft((d) => ({...d, hard: {...d.hard, [path]: hard}}))}
+                                onUndoClear={(path) => setDraft((d) => {
+                                    const values = {...d.values};
+                                    delete values[path];
+                                    return {...d, values};
+                                })}
                                 onReview={() => void startReview()} onCancel={close}/>
             </ScrollRegion>
         );
     } else if (step === 'review' && proposal) {
         body = (
             <ScrollRegion>
-                <ReviewChanges changes={proposal.changes} labels={labels} pending={busy} error={reviewError} stale={stale}
+                <ReviewChanges changes={proposal.changes} labels={labels} currency={currency} choicePaths={choicePaths}
+                               conflicts={conflicts} pending={busy} error={reviewError} stale={stale}
                                onApply={() => void apply('account')}
                                onApplySearchOnly={() => void apply('search')}
                                onEdit={() => setStep('edit')} onCancel={close}
@@ -314,15 +434,16 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         );
     } else if (step === 'applied' && applied) {
         body = (
-            <AppliedChanges changes={applied.result.changes} labels={labels} summary={applied.summary}
+            <AppliedChanges changes={applied.result.changes} labels={labels} currency={currency}
+                            choicePaths={choicePaths} summary={applied.summary}
                             canUndo={applied.result.undo !== null} undoPending={undoPending}
                             undoError={undoError} undone={undone} onUndo={() => void undo()}
-                            onDismiss={() => setStep('view')}/>
+                            onDismiss={() => { focusAfter.current = 'edit'; setStep('view'); }}/>
         );
     } else if (step === 'confirm-reset') {
         body = (
             <div className="priorities-card priorities-confirm" role="group" aria-label="Confirm reset">
-                <p className="priorities-heading mb-1">Reset priorities?</p>
+                <p className="priorities-heading mb-1" tabIndex={-1} ref={confirmHeading}>Reset priorities?</p>
                 <p>Reset all saved priorities to their defaults? Your conversations are not changed. Job matches will update.</p>
                 <div className="chat-actions" role="group" aria-label="Reset actions">
                     <button type="button" className="btn btn-sm btn-danger"
@@ -330,7 +451,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                         {busy ? 'Resetting…' : 'Reset priorities'}
                     </button>
                     <button type="button" className="btn btn-sm btn-outline-light"
-                            onClick={() => setStep('view')} disabled={busy}>Keep priorities</button>
+                            onClick={() => { focusAfter.current = 'reset'; setStep('view'); }} disabled={busy}>Keep priorities</button>
                 </div>
             </div>
         );
@@ -346,6 +467,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                 )}
                 {chips.length > 0 ? (
                     <PriorityChips chips={chips} collapsedCount={variant === 'sidebar' ? 3 : 5}
+                                   currency={currency} readOnlyPaths={readOnlyPaths} choicePaths={choicePaths}
                                    onEdit={() => setPrioritiesEditorOpen(variant)}/>
                 ) : (
                     <p className="priorities-empty" data-testid="priorities-empty">
@@ -353,12 +475,12 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                     </p>
                 )}
                 <div className="priorities-actions" role="group" aria-label="Priorities actions">
-                    <button type="button" className="btn btn-sm btn-outline-primary priorities-edit"
+                    <button type="button" className="btn btn-sm btn-outline-primary priorities-edit" ref={editButton}
                             onClick={() => setPrioritiesEditorOpen(variant)}>
                         {chips.length > 0 ? 'Edit priorities' : 'Add priorities'}
                     </button>
                     {chips.length > 0 && (
-                        <button type="button" className="btn btn-sm btn-link link-danger priorities-reset"
+                        <button type="button" className="btn btn-sm btn-link link-danger priorities-reset" ref={resetButton}
                                 onClick={() => setStep('confirm-reset')}>Reset priorities</button>
                     )}
                 </div>
@@ -369,6 +491,11 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     return (
         <section className={className} aria-labelledby={titleId} data-testid={`priorities-${variant}`}>
             <h2 id={titleId} className="h6 priorities-title">Your priorities</h2>
+            {sessionExpired && (
+                <p className="priorities-session-expired" role="alert" data-testid="priorities-session-expired">
+                    {SESSION_EXPIRED_MESSAGE} <a href={signInHref()}>Sign in</a>
+                </p>
+            )}
             {body}
         </section>
     );

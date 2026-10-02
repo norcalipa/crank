@@ -100,7 +100,7 @@ test.describe('priorities signed out (issue #480)', () => {
     test('the chat page offers one sign in instead of the editor', async ({page}) => {
         await page.goto('/chat/');
         await expect(page.getByTestId('job-search-sign-in-cta')).toBeVisible();
-        await expect(page.getByTestId('priorities-main')).toHaveCount(0);
+        await expect(page.getByTestId('priorities-main')).toContainText('Sign in to save your priorities.');
         await expect(page.getByTestId('priorities-sidebar')).toHaveCount(0);
         await expect(page.getByRole('button', {name: /Edit priorities/})).toHaveCount(0);
     });

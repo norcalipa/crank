@@ -23,9 +23,14 @@ function byImportance(a: PriorityChip, b: PriorityChip): number {
     return Number(!a.supported) - Number(!b.supported) || Number(b.hard) - Number(a.hard);
 }
 
-export default function PriorityChips({chips: unsorted, collapsedCount = 5, onEdit}: {
+export default function PriorityChips({chips: unsorted, collapsedCount = 5, currency, readOnlyPaths, choicePaths, onEdit}: {
     chips: PriorityChip[];
     collapsedCount?: number;
+    currency?: unknown;
+    // Chips with no matching editor field are shown as plain text, not as edit buttons.
+    readOnlyPaths?: ReadonlySet<string>;
+    // Enumerated fields read as labels; free-text entries are shown exactly as saved.
+    choicePaths?: ReadonlySet<string>;
     onEdit: () => void;
 }) {
     const chips = React.useMemo(() => [...unsorted].sort(byImportance), [unsorted]);
@@ -36,22 +41,38 @@ export default function PriorityChips({chips: unsorted, collapsedCount = 5, onEd
     return (
         <>
             <ul className="priority-chips" id={listId} aria-label="Your saved priorities">
-                {shown.map((chip) => (
-                    <li key={chip.path} data-testid="priority-chip"
-                        className={`priority-chip${chip.hard ? ' priority-chip-hard' : ''}${chip.supported ? '' : ' priority-chip-unsupported'}`}>
-                        <button type="button" className="priority-chip-button" onClick={onEdit}
-                                aria-label={`Edit ${chip.label}`}>
+                {shown.map((chip) => {
+                    const value = chipValueLabel(chip.path, chip.display, currency, chip.items, choicePaths?.has(chip.path));
+                    const status = [chip.hard ? 'requirement' : 'preference',
+                        ...(chip.supported ? [] : ['not used for matching yet'])].join(', ');
+                    const content = (
+                        <>
                             {chip.hard && <i className="fa-solid fa-lock priority-chip-lock" aria-hidden="true"></i>}
                             <span className="priority-chip-text">
                                 <span className="priority-chip-label">{chip.label}:</span>
-                                <span className="priority-chip-value">{chipValueLabel(chip.path, chip.display)}</span>
+                                <span className="priority-chip-value">{value}</span>
                             </span>
-                            <i className="fa-solid fa-pen priority-chip-icon" aria-hidden="true"></i>
-                        </button>
-                        {chip.hard && <span className="visually-hidden">(required)</span>}
-                        {!chip.supported && <span className="visually-hidden">(not used for matching yet)</span>}
-                    </li>
-                ))}
+                        </>
+                    );
+                    return (
+                        <li key={chip.path} data-testid="priority-chip"
+                            className={`priority-chip${chip.hard ? ' priority-chip-hard' : ''}${chip.supported ? '' : ' priority-chip-unsupported'}`}>
+                            {readOnlyPaths?.has(chip.path) ? (
+                                <span className="priority-chip-button">
+                                    {content}
+                                    <span className="visually-hidden">, {status}</span>
+                                </span>
+                            ) : (
+                                <button type="button" className="priority-chip-button" onClick={onEdit}>
+                                    <span className="visually-hidden">Edit </span>
+                                    {content}
+                                    <span className="visually-hidden">, {status}</span>
+                                    <i className="fa-solid fa-pen priority-chip-icon" aria-hidden="true"></i>
+                                </button>
+                            )}
+                        </li>
+                    );
+                })}
             </ul>
             <div className="priority-chips-meta">
                 {hidden > 0 && (

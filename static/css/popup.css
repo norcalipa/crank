@@ -3426,6 +3426,16 @@ body.assistant-open .app-content .table-responsive,
 .priorities-readonly.is-set { color: #dee2e6; }
 .priorities-readonly-row { display: flex; justify-content: space-between; gap: 0.5rem; padding: 0.25rem 0; }
 .priorities-unsupported { margin-bottom: 0.75rem; }
+.priorities-clear { padding: 0 0.25rem; min-height: 2rem; white-space: nowrap; }
+.priority-list-items { display: flex; flex-wrap: wrap; gap: 0.25rem; list-style: none; margin: 0 0 0.375rem; padding: 0; }
+.priority-list-item { display: inline-flex; align-items: center; gap: 0.25rem; max-width: 100%; padding: 0 0.25rem 0 0.625rem; min-height: 2rem; border: 1px solid #adb5bd; border-radius: 1rem; color: #e9ecef; font-size: 0.8125rem; }
+.priority-list-text { overflow-wrap: anywhere; }
+.priority-list-remove { display: inline-flex; align-items: center; justify-content: center; width: 1.75rem; height: 1.75rem; padding: 0; border: 0; background: transparent; color: inherit; border-radius: 50%; }
+@media (pointer: coarse) {
+    .priority-list-remove { width: 44px; height: 44px; }
+}
+.pref-change-token { display: inline-block; margin: 0 0.25rem 0.125rem 0; padding: 0 0.5rem; border: 1px solid currentColor; border-radius: 1rem; }
+span.priority-chip-button { cursor: default; }
 .priorities-unsupported summary { cursor: pointer; font-size: 0.875rem; color: #adb5bd; min-height: 2rem; }
 .priorities-importance { display: flex; gap: 0; margin-top: 0.375rem; }
 .priorities-importance .priorities-toggle:first-child { border-radius: 0.375rem 0 0 0.375rem; }

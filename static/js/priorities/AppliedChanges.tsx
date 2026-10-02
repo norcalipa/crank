@@ -16,6 +16,8 @@ export interface AppliedChangesProps {
     undoError?: string | null;
     undone?: boolean;
     labels?: Record<string, string>;
+    currency?: unknown;
+    choicePaths?: ReadonlySet<string>;
     onUndo: () => void;
     onDismiss: () => void;
     testId?: string;
@@ -23,7 +25,7 @@ export interface AppliedChangesProps {
 
 export default function AppliedChanges({
     changes, summary, canUndo, undoPending = false, undoError = null, undone = false,
-    labels, onUndo, onDismiss, testId = 'priorities-applied',
+    labels, currency, choicePaths, onUndo, onDismiss, testId = 'priorities-applied',
 }: AppliedChangesProps) {
     const headingId = `priorities-applied-${React.useId()}`;
     const headingRef = React.useRef<HTMLHeadingElement>(null);
@@ -37,7 +39,7 @@ export default function AppliedChanges({
                 <i className={`fa-solid ${undone ? 'fa-rotate-left' : 'fa-circle-check'} me-1`} aria-hidden="true"></i>
                 <span>{undone ? 'Change undone.' : summary}</span>
             </h3>
-            {!undone && changes.length > 0 && <ChangeList changes={changes} label="Changed priorities" labels={labels}/>}
+            {!undone && changes.length > 0 && <ChangeList changes={changes} label="Changed priorities" labels={labels} currency={currency} choicePaths={choicePaths}/>}
             {undoError && (
                 <div className="pref-change-error" role="alert" data-testid="priorities-undo-error">
                     <i className="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>
