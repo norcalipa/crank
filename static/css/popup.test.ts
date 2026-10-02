@@ -88,6 +88,9 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         // The sticky dialog header's z-index: 1 stacks the header above the
         // card body content inside the dialog's own stacking context only.
         {selector: /^\.popup-details \.card-header$/, value: '1'},
+        // The chat More menu floats over the transcript inside the assistant
+        // card only; it never competes with the page-level layers (issue #483).
+        {selector: /^\.chat-more-menu$/, value: '5'},
     ];
 
     // Splits a stylesheet into (selector, declarations) rules. Pairing both

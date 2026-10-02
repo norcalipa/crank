@@ -17,6 +17,7 @@ import {Transcript} from './chat/Transcript';
 import {Composer} from './chat/Composer';
 import {useTranscriptScroll} from './chat/useTranscriptScroll';
 import {useAccountGate} from './chat/useAccountGate';
+import {ConversationMenu} from './chat/ConversationMenu';
 import {
     csrfFetch,
     newId,
@@ -153,7 +154,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // Data note is collapsed by default so the conversation owns the viewport;
     // the details stay available to sighted users via the toggle and to screen
     // readers via the visually-hidden fallback.
-    const [dataNoteOpen, setDataNoteOpen] = React.useState(false);
     const [preferencesChanged, setPreferencesChanged] = React.useState(false);
     const [prefDismissed, setPrefDismissed] = React.useState(false);
     // Issue #466: the latest applied field-level diff and its undo token.
@@ -1186,8 +1186,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
     };
 
-    const handleExport = async () => {
-        if (!conversationId) return;
+    const handleExport = async (): Promise<string | null> => {
+        if (!conversationId) return null;
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/export/`);
             if (!res.ok) throw new Error('export-failed');
@@ -1197,14 +1197,14 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             a.download = `job-search-${conversationId}.json`;
             a.click();
             URL.revokeObjectURL(a.href);
+            return null;
         } catch {
-            setError('Could not export your conversation.');
+            return 'Could not export your conversation.';
         }
     };
 
-    const handleReset = async () => {
-        if (!conversationId) return;  // # pragma: no cover - button is disabled without a conversation
-        if (!window.confirm('Start a new conversation? Your current history will be archived. Your saved priorities are not changed.')) return;
+    const handleReset = async (): Promise<string | null> => {
+        if (!conversationId) return null;  // # pragma: no cover - menu item is disabled without a conversation
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/reset/`, {method: 'POST'});
             if (!res.ok) throw new Error('reset-failed');
@@ -1221,14 +1221,14 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setPrefDismissed(false);
             setError(null);
             composerRef.current?.focus();
+            return null;
         } catch {
-            setError('Could not reset the conversation.');
+            return 'Could not reset the conversation.';
         }
     };
 
-    const handleDelete = async () => {
-        if (!conversationId) return;
-        if (!window.confirm('Delete this conversation permanently? This cannot be undone.')) return;
+    const handleDelete = async (): Promise<string | null> => {
+        if (!conversationId) return null;
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/delete/`, {method: 'POST'});
             if (!res.ok) throw new Error('delete-failed');
@@ -1241,8 +1241,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setPrefDismissed(false);
             setError(null);
             composerRef.current?.focus();
+            return null;
         } catch {
-            setError('Could not delete the conversation.');
+            return 'Could not delete the conversation.';
         }
     };
 
@@ -1382,32 +1383,23 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                  aria-labelledby="job-search-chat-title"
                  ref={cardRef}
                  style={chatCardStyle}>
-            <div className="card-header d-flex justify-content-between align-items-center">
-                <h2 id="job-search-chat-title" className="h6 mb-0">Conversation</h2>
-                <div className="chat-conversation-actions" role="group" aria-label="Conversation controls">
-                    <button type="button" className="btn btn-sm btn-outline-light" onClick={handleExport}
-                            disabled={!conversationId || !messages.length}>Export chat</button>
-                    <button type="button" className="btn btn-sm btn-outline-light" onClick={handleReset}
-                            disabled={!conversationId || pending}>New conversation</button>
-                    <button type="button" className="btn btn-sm btn-outline-danger" onClick={handleDelete}
-                            disabled={!conversationId || pending}>Delete conversation</button>
-                </div>
+            <div className="card-header d-flex flex-wrap align-items-center">
+                <ConversationMenu
+                    title={<h2 id="job-search-chat-title" className="h6 mb-0">Conversation</h2>}
+                    hasConversation={!!conversationId}
+                    hasMessages={messages.length > 0}
+                    pending={pending}
+                    onExport={handleExport}
+                    onNewConversation={handleReset}
+                    onDeleteConversation={handleDelete}
+                />
             </div>
 
             <div className="card-body d-flex flex-column" style={{minHeight: 0}}>
-                <div id="job-search-data-note" className="chat-note" role="note">
+                <div className="chat-note" role="note">
                     <div className="chat-note-row">
                         <i className="fa-solid fa-circle-info chat-status-icon" aria-hidden="true"></i>
-                        <span className="chat-note-text">The assistant is automated and can be wrong. Check important details yourself.</span>
-                        <button type="button" className="chat-note-toggle chat-focus" aria-expanded={dataNoteOpen}
-                                aria-controls="job-search-data-note-details" onClick={() => setDataNoteOpen((o) => !o)}
-                                data-testid="data-note-toggle">
-                            {dataNoteOpen ? 'Hide details' : 'Details'}
-                        </button>
-                    </div>
-                    <div id="job-search-data-note-details" className={dataNoteOpen ? 'chat-note-details' : 'visually-hidden'}>
-                        Your messages and preference updates are saved to your account; use Export, New conversation, or Delete
-                        above to manage them.
+                        <span className="chat-note-text">The assistant is automated and can be wrong. Check important details yourself. Your messages are saved to your account; manage them in More.</span>
                     </div>
                 </div>
 

@@ -3253,15 +3253,123 @@ body.assistant-open .app-content .table-responsive,
     gap: .5rem;
 }
 
-.chat-conversation-actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
+.chat-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     gap: .5rem;
     flex: 1 1 100%;
+    position: relative;
 }
 
-.chat-conversation-actions .btn-outline-danger {
-    grid-column: 1 / -1;
+.chat-more {
+    position: relative;
+}
+
+.chat-more-button {
+    min-height: 2.25rem;
+    display: inline-flex;
+    align-items: center;
+    gap: .375rem;
+}
+
+.chat-more-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + .25rem);
+    z-index: 5;
+    min-width: 14rem;
+    max-width: calc(100vw - 2rem);
+    display: flex;
+    flex-direction: column;
+    padding: .25rem;
+    border: 1px solid rgba(148, 163, 184, 0.45);
+    border-radius: .5rem;
+    background-color: #0f172a;
+    box-shadow: 0 .5rem 1rem rgba(0, 0, 0, .45);
+}
+
+.chat-more-item {
+    min-height: 2.5rem;
+    padding: .375rem .75rem;
+    border: 0;
+    border-radius: .375rem;
+    background: transparent;
+    color: #e2e8f0;
+    text-align: left;
+}
+
+.chat-more-item:hover:not(:disabled),
+.chat-more-item:focus-visible {
+    background-color: rgba(148, 163, 184, 0.22);
+}
+
+.chat-more-item:disabled {
+    color: #94a3b8;
+    cursor: not-allowed;
+}
+
+.chat-more-item-danger:not(:disabled) {
+    color: #fca5a5;
+}
+
+.chat-confirm-panel {
+    flex: 1 1 100%;
+    margin-top: .5rem;
+    padding: .75rem;
+    border: 1px solid rgba(148, 163, 184, 0.45);
+    border-radius: .5rem;
+    background-color: rgba(15, 23, 42, 0.85);
+    color: #e2e8f0;
+}
+
+.chat-confirm-panel-danger {
+    border-color: #f87171;
+}
+
+.chat-confirm-heading {
+    font-size: .95rem;
+    margin: 0 0 .25rem;
+}
+
+.chat-confirm-heading:focus {
+    outline: none;
+}
+
+.chat-confirm-copy {
+    margin: 0 0 .5rem;
+    font-size: .875rem;
+    color: #cbd5e1;
+}
+
+.chat-confirm-error {
+    margin: 0 0 .5rem;
+    font-size: .875rem;
+    color: #fecaca;
+}
+
+.chat-confirm-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+}
+
+@media (max-width: 575.98px) {
+    .chat-confirm-actions .btn {
+        flex: 1 1 100%;
+        min-height: 2.75rem;
+    }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .chat-more-menu {
+        animation: chat-more-in .12s ease-out;
+    }
+}
+
+@keyframes chat-more-in {
+    from { opacity: 0; transform: translateY(-.25rem); }
+    to { opacity: 1; transform: none; }
 }
 
 /* One focus ring on the composer: the outline from .chat-focus; Bootstrap's

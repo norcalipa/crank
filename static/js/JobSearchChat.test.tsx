@@ -14,6 +14,19 @@ import {
 import {accountDigest} from './workspace/persistence';
 import JobSearchChat, {AssistantState, AssistantStatus, ChatMessage} from './JobSearchChat';
 
+// The conversation controls live in the More menu (issue #483).
+const openMore = () => {
+    const more = screen.getByTestId('conversation-more');
+    if (more.getAttribute('aria-expanded') !== 'true') fireEvent.click(more);
+};
+const chooseMenuItem = (testId: string) => {
+    openMore();
+    fireEvent.click(screen.getByTestId(testId));
+};
+const confirmPanelAction = () => fireEvent.click(screen.getByTestId('confirm-action'));
+const startNewConversation = () => { chooseMenuItem('conversation-new'); confirmPanelAction(); };
+const deleteConversation = () => { chooseMenuItem('conversation-delete'); confirmPanelAction(); };
+
 function jsonResponse(payload: unknown, status = 200): Response {
     return new Response(JSON.stringify(payload), {
         status,
@@ -434,11 +447,18 @@ describe('JobSearchChat', () => {
             expect(screen.getByRole('group', {name: 'Failed turn actions'})).toBeInTheDocument();
         });
 
-        test('conversation actions render as a grid group with Delete last (issue #479)', async () => {
+        test('conversation actions live in a More menu with Delete last (issues #479, #483)', async () => {
             await renderChat();
-            const group = screen.getByRole('group', {name: 'Conversation controls'});
-            expect(group).toHaveClass('chat-conversation-actions');
-            expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['Export chat', 'New conversation', 'Delete conversation']);
+            const more = screen.getByRole('button', {name: 'More'});
+            expect(more).toHaveAttribute('aria-haspopup', 'menu');
+            expect(more).toHaveAttribute('aria-expanded', 'false');
+            expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+            fireEvent.click(more);
+            expect(more).toHaveAttribute('aria-expanded', 'true');
+            const menu = screen.getByRole('menu', {name: 'Conversation options'});
+            expect(within(menu).getAllByRole('menuitem').map((b) => b.textContent)).toEqual([
+                'New conversation', 'Export conversation', 'Delete conversation…', 'About saved history',
+            ]);
         });
 
         test('renders existing message history', async () => {
@@ -458,21 +478,12 @@ describe('JobSearchChat', () => {
             expect(assistantBubble).toHaveClass('chat-bubble', 'chat-bubble-assistant');
         });
 
-        test('compacts the data note behind a details toggle', async () => {
+        test('keeps the automation note visible and moves history details into the More menu', async () => {
             await renderChat();
-            const toggle = screen.getByTestId('data-note-toggle');
-            expect(toggle).toHaveAttribute('aria-expanded', 'false');
-            const note = screen.getByRole('note');
-            // Collapsed: the details are still available to assistive tech.
-            expect(note).toHaveTextContent(/saved to your account/i);
-            const details = document.getElementById('job-search-data-note-details')!;
-            expect(details).toHaveClass('visually-hidden');
-            fireEvent.click(toggle);
-            expect(toggle).toHaveAttribute('aria-expanded', 'true');
-            expect(toggle).toHaveTextContent('Hide details');
-            expect(document.getElementById('job-search-data-note-details')!).not.toHaveClass('visually-hidden');
-            fireEvent.click(toggle);
-            expect(toggle).toHaveAttribute('aria-expanded', 'false');
+            expect(screen.getByRole('note')).toHaveTextContent(/automated and can be wrong/i);
+            expect(screen.queryByTestId('data-note-toggle')).not.toBeInTheDocument();
+            chooseMenuItem('conversation-about-history');
+            expect(screen.getByTestId('about-history-panel')).toHaveTextContent(/saved to your account/i);
         });
 
         test('exposes a consistent keyboard-focus ring class on chat controls', async () => {
@@ -480,7 +491,7 @@ describe('JobSearchChat', () => {
             expect(screen.getByTestId('retry-response-button')).toHaveClass('chat-focus');
             expect(screen.getByTestId('edit-as-new-button')).toHaveClass('chat-focus');
             expect(screen.getByRole('button', {name: 'Send message'})).toHaveClass('chat-focus');
-            expect(screen.getByTestId('data-note-toggle')).toHaveClass('chat-focus');
+            expect(screen.getByTestId('conversation-more')).toHaveClass('chat-focus');
         });
 
         test('submit is gated on a conversation and non-empty input', async () => {
@@ -895,12 +906,11 @@ describe('JobSearchChat', () => {
     describe('reset / delete controls', () => {
         test('delete removes the conversation and resets the UI', async () => {
             await renderChat([userMessage('done with this')]);
-            window.confirm = jest.fn().mockReturnValue(true);
             (global.fetch as jest.Mock).mockResolvedValueOnce(
                 jsonResponse({deleted: true}),
             );
 
-            fireEvent.click(screen.getByRole('button', {name: 'Delete conversation'}));
+            deleteConversation();
             await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
             expect(screen.queryByText('done with this')).not.toBeInTheDocument();
         });
@@ -1111,7 +1121,7 @@ describe('additional JobSearchChat coverage', () => {
             const click = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
             (global.fetch as jest.Mock).mockResolvedValueOnce(new Response(new Blob(['{}'], {type: 'application/json'})));
 
-            fireEvent.click(screen.getByRole('button', {name: 'Export chat'}));
+            chooseMenuItem('conversation-export');
             await waitFor(() => expect(click).toHaveBeenCalled());
             expect(createUrl).toHaveBeenCalled();
             expect(revoke).toHaveBeenCalled();
@@ -1126,7 +1136,7 @@ describe('additional JobSearchChat coverage', () => {
             render(<JobSearchChat/>);
             await screen.findByText('x');
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
-            fireEvent.click(screen.getByRole('button', {name: 'Export chat'}));
+            chooseMenuItem('conversation-export');
             expect(await screen.findByText(/could not export your conversation/i)).toBeInTheDocument();
         });
     });
@@ -1279,9 +1289,8 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
         );
         render(<JobSearchChat/>);
         await screen.findByText('old');
-        window.confirm = jest.fn().mockReturnValue(true);
         (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(7)));
-        fireEvent.click(screen.getByRole('button', {name: 'New conversation'}));
+        startNewConversation();
         await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
         expect(screen.queryByText('old')).not.toBeInTheDocument();
     });
@@ -1293,13 +1302,9 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
         );
         render(<JobSearchChat/>);
         await screen.findByText('old');
-        window.confirm = jest.fn().mockReturnValue(true);
         (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(7)));
-        fireEvent.click(screen.getByRole('button', {name: 'New conversation'}));
+        startNewConversation();
         await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
-        expect(window.confirm).toHaveBeenCalledWith(
-            'Start a new conversation? Your current history will be archived. Your saved priorities are not changed.',
-        );
         const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
         expect(urls.filter((u) => u.includes('/api/agent/preferences/'))).toEqual([]);
         expect(urls.some((u) => u.includes('/conversations/42/reset/'))).toBe(true);
@@ -1313,9 +1318,8 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
         );
         render(<JobSearchChat/>);
         await screen.findByText('keep');
-        window.confirm = jest.fn().mockReturnValue(true);
         (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
-        fireEvent.click(screen.getByRole('button', {name: 'New conversation'}));
+        startNewConversation();
         await screen.findByText(/could not reset the conversation/i);
         expect(screen.getByText('keep')).toBeInTheDocument();
     });
@@ -1327,9 +1331,8 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
         );
         render(<JobSearchChat/>);
         await screen.findByText('del');
-        window.confirm = jest.fn().mockReturnValue(true);
         (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
-        fireEvent.click(screen.getByRole('button', {name: 'Delete conversation'}));
+        deleteConversation();
         await screen.findByText(/could not delete the conversation/i);
     });
 });
@@ -2734,9 +2737,8 @@ describe('durable turn state (issue #458)', () => {
                 }),
             );
             window.localStorage.setItem('crank:jobsearch:draft:42', 'pending text');
-            window.confirm = jest.fn().mockReturnValue(true);
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(43), 201));
-            fireEvent.click(screen.getByRole('button', {name: 'New conversation'}));
+            startNewConversation();
             await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
             // Every marker of THIS conversation is cleared...
             expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).toBeNull();
@@ -2756,9 +2758,8 @@ describe('durable turn state (issue #458)', () => {
                 JSON.stringify({conversationId: 42, content: 'x', key: KEY_A, ts: Date.now()}),
             );
             window.localStorage.setItem('crank:jobsearch:draft:42', 'pending text');
-            window.confirm = jest.fn().mockReturnValue(true);
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({deleted: true}));
-            fireEvent.click(screen.getByRole('button', {name: 'Delete conversation'}));
+            deleteConversation();
             await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
             expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).toBeNull();
             expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBeNull();
@@ -2959,8 +2960,9 @@ describe('durable turn state (issue #458)', () => {
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'in flight'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             await screen.findByTestId('stop-button');
-            expect(screen.getByRole('button', {name: 'New conversation'})).toBeDisabled();
-            expect(screen.getByRole('button', {name: 'Delete conversation'})).toBeDisabled();
+            openMore();
+            expect(screen.getByTestId('conversation-new')).toBeDisabled();
+            expect(screen.getByTestId('conversation-delete')).toBeDisabled();
         });
     });
 
