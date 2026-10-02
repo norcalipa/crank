@@ -6,7 +6,10 @@ import * as React from 'react';
 
 import JobMatchPanel from './JobMatchPanel';
 import {act} from '@testing-library/react';
-import {closeAssistant, getWorkspaceSnapshot, openAssistant, resetWorkspaceForTests} from './workspace/store';
+import {
+    closeAssistant, getWorkspaceSnapshot, openAssistant, resetPriorities, resetWorkspaceForTests,
+    setPrioritiesRevision,
+} from './workspace/store';
 
 function jsonResponse(payload: unknown, status = 200): Response {
     return new Response(JSON.stringify(payload), {
@@ -1516,5 +1519,37 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
         const {unmount} = render(<JobMatchPanel/>);
         unmount();
         expect(() => act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); })).not.toThrow();
+    });
+});
+
+describe('JobMatchPanel priorities integration (issue #480)', () => {
+    beforeEach(() => {
+        resetWorkspaceForTests();
+        global.fetch = jest.fn();
+    });
+
+    const statusCalls = () =>
+        (global.fetch as jest.Mock).mock.calls.filter((c) => String(c[0]).includes('/api/job-matches/status/')).length;
+
+    test('edit_priorities opens the main editor through the store', async () => {
+        await renderPanel('no_preferences', {statusOverrides: {actions: ['edit_priorities', 'chat']}});
+        const button = screen.getByTestId('action-edit_priorities');
+        expect(button).toHaveTextContent('Edit your priorities');
+        expect(button).toHaveClass('btn-primary');
+        fireEvent.click(button);
+        expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('main');
+    });
+
+    test('a priorities revision change refetches once; repeats and purge resets do not', async () => {
+        await renderPanel('ok');
+        const base = statusCalls();
+        act(() => setPrioritiesRevision(4));
+        await waitFor(() => expect(statusCalls()).toBe(base + 1));
+        act(() => setPrioritiesRevision(4));
+        act(() => resetPriorities());
+        act(() => setPrioritiesRevision(4));
+        await waitFor(() => expect(statusCalls()).toBe(base + 2));
+        act(() => setPrioritiesRevision(5));
+        await waitFor(() => expect(statusCalls()).toBe(base + 3));
     });
 });

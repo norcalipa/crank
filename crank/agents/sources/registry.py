@@ -15,6 +15,8 @@ from typing import Generic, TypeVar
 
 from django.db.models import Model
 
+from crank.agents.sources.semantics import coerce_kind
+
 from crank.agents.sources.base import (
     SourceAdapter,
     SourceBlocked,
@@ -42,6 +44,11 @@ class SourceRegistry(Generic[AdapterT]):
         if not key or not isinstance(key, str):
             raise ValueError(
                 f"Adapter {adapter_cls.__name__} must define a non-empty `key`"
+            )
+        if coerce_kind(getattr(adapter_cls, "measurement_kind", None)) is None:
+            raise ValueError(
+                f"Adapter {adapter_cls.__name__} must declare a valid "
+                "`measurement_kind` (see crank.agents.sources.semantics)"
             )
         if key in self._adapters:
             raise ValueError(f"Adapter key {key!r} is already registered")

@@ -297,6 +297,23 @@ class PreferenceSchemaCompatTests(TestCase):
         reread = preferences_service.read(user=self.user)
         self.assertEqual(reread["preferences"]["notifications"], {"channel": "email"})
 
+    def test_reset_with_undo_restores_document_including_additive_fields(self):
+        doc = default_preferences()
+        doc["compensation"]["minimum_salary"] = 250000
+        doc["notifications"] = {"channel": "email"}
+        UserPreference.objects.create(user=self.user, preferences=doc)
+        revision = preferences_service.read_for_editor(self.user)["revision"]
+
+        result = preferences_service.reset(user=self.user, expected_revision=revision)
+        self.assertTrue(result["changed"])
+        self.assertIsNotNone(result["undo"])
+        self.assertTrue(result["changes"])
+
+        preferences_service.undo_preference_change(self.user, result["undo"])
+        restored = preferences_service.read(user=self.user)["preferences"]
+        self.assertEqual(restored["compensation"]["minimum_salary"], 250000)
+        self.assertEqual(restored["notifications"], {"channel": "email"})
+
     def test_v3_document_with_additive_field_round_trips_through_propose_apply_and_undo(self):
         """Issue #466: the propose/apply/undo lifecycle is safe on a v3
         document carrying an unknown additive field — the proposal writes

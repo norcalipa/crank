@@ -38,6 +38,7 @@ from crank.models import (
     UserPreference,
 )
 from crank.services import preferences
+from crank.services.preferences import token_owner
 from crank.views import job_search as job_search_views
 
 
@@ -1753,7 +1754,7 @@ class StalePreferenceAndLateReplyTests(TestCase):
         from crank.services import preferences as pref_service
 
         patch = {"set": {"notes": "v-proposed"}}
-        token = {"patch": patch, "scope": "account", "base_revision": 0}
+        token = {"patch": patch, "scope": "account", "base_revision": 0, "owner": token_owner(self.user)}
 
         # Tampered / null / missing preconditions are rejected outright.
         for bad in (None, True, "0", -1):
@@ -1764,7 +1765,7 @@ class StalePreferenceAndLateReplyTests(TestCase):
                 content_type="application/json",
             )
             self.assertEqual(resp.status_code, 400, bad)
-        missing = {"patch": patch, "scope": "account"}
+        missing = {"patch": patch, "scope": "account", "owner": token_owner(self.user)}
         resp = self.client.post(
             reverse("agent-preference-apply"),
             data=json.dumps({"proposal": missing, "decision": "apply"}),
@@ -1842,6 +1843,7 @@ class StalePreferenceAndLateReplyTests(TestCase):
             "patch": {"set": {"notes": "x"}},
             "scope": "everywhere",
             "base_revision": 0,
+            "owner": token_owner(self.user),
         }
         resp = self.client.post(
             reverse("agent-preference-apply"),
@@ -1880,11 +1882,13 @@ class StalePreferenceAndLateReplyTests(TestCase):
             "patch": {"set": {"notes": "apply A"}},
             "scope": "account",
             "base_revision": base,
+            "owner": token_owner(self.user),
         }
         token_b = {
             "patch": {"set": {"notes": "apply B"}},
             "scope": "account",
             "base_revision": base,
+            "owner": token_owner(self.user),
         }
         first = self.client.post(
             reverse("agent-preference-apply"),
@@ -1918,7 +1922,7 @@ class StalePreferenceAndLateReplyTests(TestCase):
         from crank.services import preferences as pref_service
 
         proposal_patch = {"set": {"notes": "remote only"}}
-        token = {"patch": proposal_patch, "scope": "search", "base_revision": 0}
+        token = {"patch": proposal_patch, "scope": "search", "base_revision": 0, "owner": token_owner(self.user)}
         stored = UserPreference.objects.get(user=self.user)
         before_modified = stored.modified
         audits_before = UserPreferenceAudit.objects.filter(user=self.user).count()
@@ -1974,6 +1978,7 @@ class StalePreferenceAndLateReplyTests(TestCase):
             "patch": {"set": {"notes": "remote only"}},
             "scope": "search",
             "base_revision": 0,
+            "owner": token_owner(self.user),
         }
         resp = self.client.post(
             reverse("agent-preference-apply"),
@@ -2000,6 +2005,7 @@ class StalePreferenceAndLateReplyTests(TestCase):
             "patch": {"set": {"notes": "x"}},
             "scope": "search",
             "base_revision": 0,
+            "owner": token_owner(self.user),
         }
         with patch(
             "crank.services.preferences.effective_document",
@@ -2021,6 +2027,7 @@ class StalePreferenceAndLateReplyTests(TestCase):
             "patch": {"set": {"notes": "x"}},
             "scope": "account",
             "base_revision": 0,
+            "owner": token_owner(self.user),
         }
         with patch(
             "crank.services.preferences.apply_patch_to_user",
@@ -2465,6 +2472,7 @@ class GuardedTurnCommitTests(TestCase):
             "patch": {"set": {"notes": "contended patch"}},
             "scope": "account",
             "base_revision": 0,
+            "owner": token_owner(self.user),
         }
         with patch(
             "crank.services.preferences.apply_patch_to_user",
@@ -2541,6 +2549,7 @@ class GuardedTurnCommitTests(TestCase):
             "patch": {"set": {"notes": "unrelated failure"}},
             "scope": "account",
             "base_revision": 0,
+            "owner": token_owner(self.user),
         }
         with patch(
             "crank.services.preferences.apply_patch_to_user",

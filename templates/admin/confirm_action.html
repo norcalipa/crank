@@ -46,6 +46,9 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     <input type="hidden" name="select_across" value="{{ select_across }}">
     <input type="hidden" name="confirmed_total" value="{{ total_count }}">
     <input type="hidden" name="confirm" value="yes">
+    {% for name, value in extra_hidden %}
+      <input type="hidden" name="{{ name }}" value="{{ value }}">
+    {% endfor %}
     {% for pk in selected_pks %}
       <input type="hidden" name="{{ action_checkbox_name }}" value="{{ pk }}">
     {% endfor %}
@@ -56,7 +59,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
         <div class="form-row">
           <div>
             <label>Selected item:</label>
-            <p>{{ obj }}</p>
+            <p>{{ obj.confirmation_label|default:obj }}</p>
           </div>
         </div>
       {% empty %}

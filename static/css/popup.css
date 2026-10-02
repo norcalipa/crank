@@ -2152,6 +2152,7 @@ body.app-nav-drawer-open {
     justify-content: space-between;
     gap: .5rem;
     min-height: 56px;
+    flex-shrink: 0;
     padding: .75rem 1rem;
     border-bottom: 1px solid var(--bs-border-color);
 }
@@ -2238,6 +2239,7 @@ body.app-nav-drawer-open {
 .assistant-back-to-results {
     margin: .5rem 1rem 0;
     min-height: 44px;
+    flex-shrink: 0;
 }
 
 /* Empty state: the primary next action is a real, prominent button instead
@@ -3523,4 +3525,280 @@ body.assistant-open .app-content .table-responsive,
 [data-testid="correction-error"]:focus-visible {
     outline: 3px solid var(--bs-warning);
     outline-offset: 2px;
+}
+
+/* issue #480 priorities */
+.priorities-section {
+    margin-bottom: 1rem;
+    color: #e9ecef;
+    container-type: inline-size;
+}
+.priorities-title { font-size: 1rem; font-weight: 600; color: #f8f9fa; margin-bottom: 0.5rem; }
+.priorities-empty { margin: 0 0 0.5rem; font-size: 0.875rem; color: #adb5bd; }
+.priority-chips {
+    list-style: none;
+    margin: 0 0 0.5rem;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+.priority-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border-radius: 1rem;
+    background: #343a40;
+    border: 1px solid transparent;
+    max-width: 100%;
+}
+.priority-chip-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    flex-wrap: nowrap;
+    min-height: 2rem;
+    padding: 0.2rem 0.75rem;
+    border: 0;
+    border-radius: 1rem;
+    background: transparent;
+    color: #e9ecef;
+    font-size: 0.85rem;
+    text-align: left;
+    cursor: pointer;
+}
+.priority-chip:hover { background: #3d444b; border-color: #adb5bd; }
+.priority-chip-hard { border-color: #6c757d; }
+.priority-chip-unsupported { border-style: dashed; border-color: #6c757d; }
+.priority-chip-text { display: inline-flex; flex-wrap: wrap; column-gap: 0.375rem; min-width: 0; }
+.priority-chip-label { color: #adb5bd; overflow-wrap: normal; min-width: 0; }
+.priority-chip-value { font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+.priority-chip-icon { font-size: 0.75rem; margin: 0; color: #adb5bd; }
+.priority-chip-lock { font-size: 0.75rem; }
+.priority-chip-lock, .priority-chip-icon { flex: 0 0 auto; }
+@media (hover: hover) {
+    .priority-chip-icon { opacity: 0; }
+    .priority-chip:hover .priority-chip-icon,
+    .priority-chip-button:focus-visible .priority-chip-icon { opacity: 1; }
+}
+.priority-chips-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 1rem; margin: 0 0 0.25rem; }
+.priorities-section .priority-chips-more { min-height: 2rem; padding: 0; }
+@media (pointer: coarse) {
+    .priorities-section .priority-chips-more { min-height: 44px; }
+}
+.priority-chip-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.375rem 0.75rem;
+    margin: 0;
+    font-size: 0.8125rem;
+    color: #adb5bd;
+}
+.priority-chip-legend-item { display: inline-flex; align-items: center; gap: 0.375rem; white-space: nowrap; }
+.priority-chip-legend-dashed { display: inline-block; width: 1.25rem; height: 0.75rem; border: 1px dashed #6c757d; border-radius: 999px; }
+.priority-chip-skeleton {
+    display: block;
+    width: 6rem;
+    min-height: 2rem;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.08) 25%, rgba(255, 255, 255, 0.16) 50%, rgba(255, 255, 255, 0.08) 75%);
+    background-size: 200% 100%;
+    animation: assistant-loading-shimmer 1.4s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+    .priority-chip-skeleton { animation: none; }
+}
+.priorities-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.priorities-section .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; }
+.priorities-section .btn-outline-primary {
+    --bs-btn-color: #6ea8fe;
+    --bs-btn-border-color: #6ea8fe;
+    --bs-btn-hover-color: #fff;
+    --bs-btn-hover-bg: #0d6efd;
+    --bs-btn-hover-border-color: #0d6efd;
+    --bs-btn-active-color: #fff;
+    --bs-btn-active-bg: #0a58ca;
+    --bs-btn-active-border-color: #0a58ca;
+}
+.priorities-section .link-danger { color: #ea868f !important; text-decoration-color: rgba(234, 134, 143, 0.5) !important; }
+.priorities-section .link-danger:hover,
+.priorities-section .link-danger:focus-visible { color: #f1aeb5 !important; }
+.priorities-section .btn-link.text-light { text-decoration: none; }
+.priorities-group { border: 0; padding: 0; margin: 0 0 0.75rem; min-width: 0; }
+.priorities-legend {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #adb5bd;
+    margin-bottom: 0.25rem;
+}
+.priority-choices { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; }
+.priority-choice { display: inline-flex; align-items: center; gap: 0.5rem; min-height: 2rem; margin: 0; }
+.priority-choice .form-check-input { margin: 0; flex-shrink: 0; }
+.priorities-field { display: flex; flex-direction: column; gap: 0.25rem; margin-bottom: 0.6rem; }
+.priorities-label { font-size: 0.875rem; font-weight: 500; color: #dee2e6; }
+.priorities-field-note { color: #adb5bd; font-size: 0.8125rem; }
+.priorities-readonly { font-size: 0.875rem; color: #adb5bd; }
+.priorities-readonly.is-set { color: #dee2e6; }
+.priorities-readonly-row { display: flex; justify-content: space-between; gap: 0.5rem; padding: 0.25rem 0; }
+.priorities-unsupported { margin-bottom: 0.75rem; }
+.priorities-clear { padding: 0 0.25rem; min-height: 2rem; white-space: nowrap; }
+.priority-list-items { display: flex; flex-wrap: wrap; gap: 0.25rem; list-style: none; margin: 0 0 0.375rem; padding: 0; }
+.priority-list-item { display: inline-flex; align-items: center; gap: 0.25rem; max-width: 100%; padding: 0 0.25rem 0 0.625rem; min-height: 2rem; border: 1px solid #adb5bd; border-radius: 1rem; color: #e9ecef; font-size: 0.8125rem; }
+.priority-list-text { overflow-wrap: anywhere; }
+.priority-list-remove { display: inline-flex; align-items: center; justify-content: center; width: 1.75rem; height: 1.75rem; padding: 0; border: 0; background: transparent; color: inherit; border-radius: 50%; }
+@media (pointer: coarse) {
+    .priority-list-remove { width: 44px; height: 44px; }
+}
+.pref-change-token { display: inline-block; margin: 0 0.25rem 0.125rem 0; padding: 0 0.5rem; border: 1px solid currentColor; border-radius: 1rem; }
+span.priority-chip-button { cursor: default; }
+.priorities-unsupported summary { cursor: pointer; font-size: 0.875rem; color: #adb5bd; min-height: 2rem; }
+.priorities-importance { display: flex; gap: 0; margin-top: 0.375rem; }
+.priorities-importance .priorities-toggle:first-child { border-radius: 0.375rem 0 0 0.375rem; }
+.priorities-importance .priorities-toggle:last-child { border-radius: 0 0.375rem 0.375rem 0; margin-left: -1px; }
+.priorities-toggle { min-height: 2rem; padding: 0.125rem 0.75rem; font-size: 0.8125rem; border: 1px solid #adb5bd; color: #e9ecef; background: transparent; }
+@media (pointer: coarse) {
+    .priorities-toggle { min-height: 44px; }
+}
+.priorities-section .priorities-toggle { min-height: 2rem; }
+@media (pointer: coarse) {
+    .priorities-section .priorities-toggle { min-height: 44px; }
+}
+.priorities-toggle.active { background: rgba(13, 110, 253, 0.18); border-color: #6ea8fe; color: #fff; font-weight: 600; }
+.priorities-section input:focus-visible,
+.priorities-section select:focus-visible,
+.priorities-section button:focus-visible,
+.priorities-section summary:focus-visible,
+.priorities-section [tabindex="-1"]:focus-visible {
+    outline: 3px solid #6ea8fe;
+    outline-offset: 2px;
+}
+.priorities-scroll {
+    max-height: 70vh;
+    overflow-y: auto;
+    padding: 6px;
+    margin-inline: -6px;
+    scroll-padding: 8px;
+    background:
+        linear-gradient(#212529 30%, rgba(33, 37, 41, 0)) top / 100% 24px no-repeat local,
+        linear-gradient(rgba(33, 37, 41, 0), #212529 70%) bottom / 100% 24px no-repeat local,
+        radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.55), transparent) top / 100% 8px no-repeat scroll,
+        radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.55), transparent) bottom / 100% 8px no-repeat scroll;
+}
+.priorities-sidebar { flex: 0 0 auto; padding: 0.5rem 0.75rem 0.75rem; border-bottom: 1px solid #495057; margin-bottom: 0; }
+@media (min-width: 768px) {
+    .priorities-sidebar { padding-inline: 1rem; }
+}
+@media (pointer: fine) {
+    .priorities-sidebar .priorities-actions .btn { min-height: 2.25rem; }
+}
+.priorities-sidebar .priorities-scroll { max-height: 60%; max-height: 60vh; }
+.assistant-panel-body #job-search-chat { flex: 0 0 auto; }
+.priorities-main .priorities-scroll,
+.priorities-main .priorities-review,
+.priorities-main .priorities-applied,
+.priorities-main .priorities-confirm { max-width: 40rem; }
+
+/* Cards: neutral surface for review / confirm; success only for applied. */
+.priorities-card {
+    background: #2b3035;
+    border: 1px solid #495057;
+    border-radius: 0.5rem;
+    padding: 0.75rem;
+    color: #dee2e6;
+}
+.priorities-section .priorities-heading {
+    display: flex;
+    gap: 0.375rem;
+    align-items: baseline;
+    font-weight: 600;
+}
+.priorities-section .pref-change-list { max-inline-size: none; }
+.priorities-section .pref-change-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+}
+.priorities-review .pref-change-item { border-top-color: #495057; }
+.priorities-review .pref-change-path { color: #dee2e6; }
+.priorities-section .pref-change-new { color: #f8f9fa; font-weight: 600; }
+.priorities-section .pref-change-old.is-empty { text-decoration: none; font-style: italic; }
+.priorities-section .pref-change-values { flex-wrap: wrap; min-width: 0; }
+.priorities-section .pref-change-old,
+.priorities-section .pref-change-new { white-space: nowrap; }
+@container (min-width: 32rem) {
+    .priorities-section .pref-change-item {
+        display: grid;
+        grid-template-columns: max-content minmax(0, 1fr);
+        column-gap: 1rem;
+        align-items: baseline;
+    }
+}
+.priorities-section .chat-actions { flex-direction: row; flex-wrap: wrap; align-items: center; margin-top: 0.5rem; }
+.priorities-section .chat-actions > .btn { white-space: nowrap; flex: 1 1 auto; }
+.priorities-review .chat-actions > :first-child { flex-basis: 100%; }
+@container (min-width: 32rem) {
+    .priorities-section .chat-actions { justify-content: flex-start; }
+    .priorities-section .chat-actions > .btn,
+    .priorities-review .chat-actions > :first-child { flex: 0 0 auto; min-width: 8rem; }
+    .priorities-section .chat-actions > .btn-link { min-width: 0; }
+}
+.priorities-section .pref-change-error,
+.priorities-load-error {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #842029;
+    border-radius: 0.375rem;
+    background: #2c0b0e;
+    color: #ea868f;
+}
+.priorities-load-error-icon { margin-top: 0.2rem; }
+.priorities-load-error-text .small { color: #dee2e6; }
+.priorities-load-error-retry { grid-column: 2; justify-self: start; }
+@container (min-width: 18rem) {
+    .priorities-load-error:has(.priorities-load-error-retry) { grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; }
+    .priorities-load-error-retry { grid-column: 3; }
+}
+.priorities-scroll.is-scrolled { border-top: 1px solid #495057; }
+.assistant-panel-body #job-search-chat [data-testid='empty-history'] .fa-circle-info { display: none; }
+.priorities-form-error { color: #ea868f; font-size: 0.875rem; padding-bottom: 0.25rem; }
+.priorities-footer {
+    position: sticky;
+    bottom: -6px;
+    margin: 0 -6px -6px;
+    padding: 0.5rem 6px 0.25rem;
+    background: #212529;
+    border-top: 1px solid #495057;
+    box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.8);
+}
+.priorities-footer .chat-actions { margin-top: 0; }
+.priorities-review > .chat-actions {
+    position: sticky;
+    bottom: -6px;
+    background: #2b3035;
+    padding-top: 0.5rem;
+}
+@media (max-width: 400px) {
+    .assistant-panel-body #job-search-chat .empty-history-note { display: none; }
+}
+
+/* issue #480 final fixes: the empty state adapts to the log height. */
+.assistant-panel-body #job-search-chat [role='log']:has([data-testid='empty-history']) {
+    container: chat-log / size;
+}
+@container chat-log (max-height: 15rem) {
+    #job-search-chat .empty-history-note { display: none; }
+}
+@container chat-log (max-height: 11.75rem) {
+    #job-search-chat [data-testid='empty-history'] { padding-block: 0; }
+    #job-search-chat .empty-history-lead { margin-bottom: 0; }
+    #job-search-chat .empty-history-cta { display: none; }
+}
+@media (min-width: 768px) {
+    #job-search-chat-title { font-size: 1rem; font-weight: 600; color: #f8f9fa; }
 }

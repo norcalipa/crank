@@ -25,6 +25,7 @@ from crank.agents.sources.registry import (
     validate_observation_for_source,
 )
 
+from crank.agents.sources.semantics import MeasurementKind
 from crank.models.organization import Organization
 from crank.models.score import ScoreType
 from crank.models.source import ApprovalState, SourceCatalog
@@ -33,6 +34,7 @@ from crank.models.source import ApprovalState, SourceCatalog
 class _FakeAdapter:
     key = "fake.v1"
     version = "1.0.0"
+    measurement_kind = MeasurementKind.CONSUMER_BUSINESS_RATING
 
     def __init__(self, source):
         self.source = source
@@ -73,6 +75,7 @@ class RegistryTests(TestCase):
         @register_source_adapter
         class DecoratedAdapter:
             key = "decorated.v1"
+            measurement_kind = MeasurementKind.CURATED_REVIEW
             version = "1.0"
 
         self.assertIn("decorated.v1", REGISTRY)

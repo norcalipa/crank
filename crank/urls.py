@@ -54,6 +54,11 @@ from crank.views.job_search import (
     agent_preference_undo,
 )
 from crank.views.job_search_page import job_search_page
+from crank.views.preferences_api import (
+    agent_preference_propose,
+    agent_preference_read,
+    agent_preference_reset,
+)
 from crank.views.logout import CustomLogoutView
 from crank.views.release_diagnostics import release_diagnostics
 from crank.views.rtopolicy import RTOPolicyChoicesView
@@ -91,6 +96,9 @@ urlpatterns = [
     path('api/agent/conversations/<int:conversation_id>/delete/', agent_conversation_delete, name='agent-conversation-delete'),
     path('api/agent/preferences/apply/', agent_preference_apply, name='agent-preference-apply'),
     path('api/agent/preferences/undo/', agent_preference_undo, name='agent-preference-undo'),
+    path('api/agent/preferences/', agent_preference_read, name='agent-preference-read'),
+    path('api/agent/preferences/propose/', agent_preference_propose, name='agent-preference-propose'),
+    path('api/agent/preferences/reset/', agent_preference_reset, name='agent-preference-reset'),
     path('api/job-matches/', job_match_list, name='job-match-list'),
     path('api/job-matches/<int:match_id>/', job_match_detail, name='job-match-detail'),
     path('api/job-matches/<int:match_id>/seen/', job_match_seen, name='job-match-seen'),

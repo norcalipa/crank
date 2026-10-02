@@ -11,7 +11,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('crank', '0045_jobsourcecatalog_consecutive_failures'),
+        ('crank', '0046_alter_companyfieldevidence_state'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

@@ -123,6 +123,8 @@ class CompanyFieldEvidence(TimeStampedModel):
         ACCEPTED = "accepted", _("Accepted")
         SUPERSEDED = "superseded", _("Superseded")
         CONFLICTED = "conflicted", _("Conflicted")
+        PENDING = "pending", _("Pending review")
+        REJECTED = "rejected", _("Rejected")
 
     organization = models.ForeignKey(
         Organization,

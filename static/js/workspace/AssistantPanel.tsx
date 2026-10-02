@@ -17,6 +17,7 @@ import {
     minimizeAssistant,
 } from './store';
 import {WorkspaceContext, WorkspaceMode} from './types';
+import {SidebarPriorities} from '../priorities/PrioritiesSection';
 
 const LazyJobSearchChat = React.lazy(() => import('../JobSearchChat'));
 
@@ -118,6 +119,7 @@ const AssistantPanel: React.FC<AssistantPanelProps> = ({mode, context, authProps
                 </div>
             </div>
             <div className="assistant-panel-body">
+                <SidebarPriorities/>
                 <React.Suspense
                     fallback={(
                         <div className="assistant-loading" role="status" aria-live="polite"

@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Protocol, Sequence
 
 from crank.agents.sources.errors import SchemaDriftError
+from crank.agents.sources.semantics import MeasurementKind
 
 
 @dataclass(frozen=True)
@@ -173,6 +174,7 @@ class SourceAdapter(Protocol):
 
     key: str
     version: str
+    measurement_kind: MeasurementKind
 
     def fetch(self, query: SourceQuery) -> SourceResult:
         """Fetch and parse raw observations for ``query``."""
