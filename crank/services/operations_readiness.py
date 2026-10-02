@@ -953,15 +953,20 @@ def evidence_freshness(now=None):
     """
     from crank.models.company_profile import CompanyFieldEvidence
     from crank.models.organization import Organization
-    from crank.services.company_evidence import FIELD_FRESHNESS_POLICY
+    from crank.services.company_evidence import DEFAULT_FRESHNESS_DAYS, FIELD_FRESHNESS_POLICY
 
     now = now or timezone.now()
-    stale = Q()
+    stale = Q(last_verified_at__isnull=True) | Q(
+        last_verified_at__lt=now - timedelta(days=DEFAULT_FRESHNESS_DAYS)
+    )
     for field_key, days in FIELD_FRESHNESS_POLICY.items():
-        stale |= Q(field_key=field_key) & (
-            Q(last_verified_at__isnull=True)
-            | Q(last_verified_at__lt=now - timedelta(days=days))
-        )
+        stale = (
+            Q(field_key=field_key)
+            & (
+                Q(last_verified_at__isnull=True)
+                | Q(last_verified_at__lt=now - timedelta(days=days))
+            )
+        ) | (~Q(field_key=field_key) & stale)
     aggregate = CompanyFieldEvidence.objects.filter(
         state=CompanyFieldEvidence.State.ACCEPTED
     ).aggregate(
