@@ -3883,6 +3883,12 @@ span.priority-chip-button { cursor: default; }
 .assistant-action .priorities-review {
     width: 100%;
 }
+/* The field reads as a caption under the 15px/600 heading instead of out-sizing it. */
+.assistant-action .priorities-review .pref-change-path {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: #cbd5e1;
+}
 /* The #480 sticky footer belongs to the scrolling priorities sidebar; inside a
    chat bubble it would cover the card's own text. */
 .assistant-action .priorities-review > .chat-actions {
