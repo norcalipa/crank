@@ -228,6 +228,45 @@ describe('AssistantActions', () => {
         expect(target).not.toHaveBeenCalled();
     });
 
+    describe('a suggestion turning stale scrolls its note into view', () => {
+        const mountInLog = (bubbles: number, buttonBottom: number) => {
+            registerFilterTarget(() => true);
+            const log = document.createElement('div');
+            log.setAttribute('role', 'log');
+            log.innerHTML = '<div class="chat-bubble-assistant"></div>'.repeat(bubbles);
+            document.body.appendChild(log);
+            const bubble = log.firstElementChild as HTMLElement;
+            const spy = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+                if (this === log) return {top: 0, bottom: 100} as DOMRect;
+                if (this.classList.contains('assistant-action-btn')) return {top: 0, bottom: buttonBottom} as DOMRect;
+                return {top: 50, bottom: 180} as DOMRect;
+            });
+            render(<AssistantActions turn={turn([remote])} />, {container: bubble.appendChild(document.createElement('div'))});
+            act(() => {
+                setWorkspaceContext({surface: 'rankings', page: 2});
+            });
+            return {log, done: () => { spy.mockRestore(); log.remove(); }};
+        };
+
+        test('follows the newest bubble when its action row was in view', () => {
+            const {log, done} = mountInLog(1, 60);
+            expect(log.scrollTop).toBe(88);
+            done();
+        });
+
+        test('leaves a reader who scrolled up alone', () => {
+            const {log, done} = mountInLog(1, 160);
+            expect(log.scrollTop).toBe(0);
+            done();
+        });
+
+        test('leaves an older bubble alone', () => {
+            const {log, done} = mountInLog(2, 60);
+            expect(log.scrollTop).toBe(0);
+            done();
+        });
+    });
+
     test('applied actions never show the stale message', () => {
         registerFilterTarget(() => true);
         render(<AssistantActions turn={turn([remote])} />);
@@ -268,6 +307,15 @@ describe('AssistantActions', () => {
             expect(await screen.findByTestId('assistant-action-saved')).toHaveTextContent('Saved to your account.');
             expect(applyProposal).toHaveBeenCalledWith(proposal.token, expect.any(AbortSignal));
             expect(getWorkspaceSnapshot().prioritiesRevision).toBe(5);
+        });
+
+        test('the review card names the field as the chip does', async () => {
+            await applyFilter();
+            proposePriorities.mockResolvedValue(proposal);
+            fireEvent.click(screen.getByTestId('assistant-action-save'));
+            const review = await screen.findByTestId('assistant-action-review');
+            expect(review).toHaveTextContent('Work arrangement');
+            expect(review).not.toHaveTextContent('Work location');
         });
 
         test('a null revision from the server leaves the stored one alone', async () => {

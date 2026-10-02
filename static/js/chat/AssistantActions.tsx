@@ -37,6 +37,12 @@ const RTO_CODES: readonly string[] = ['R', 'H', 'O'];
 const RTO_WORDS: Record<RtoPolicyCode, string> = {R: 'remote', H: 'hybrid', O: 'in-office'};
 const RTO_PATCH_MODE: Record<RtoPolicyCode, string> = {R: 'remote', H: 'hybrid', O: 'in-office'};
 export const STALE_MESSAGE = 'This suggestion was for an earlier view.';
+// The server's editor labels, so the review card names a field as the chips do.
+const REVIEW_LABELS: Record<string, string> = {
+    'work_location.modes': 'Work arrangement',
+    'vesting.prefer_accelerated': 'Prefer accelerated vesting',
+};
+const REVIEW_CHOICES: ReadonlySet<string> = new Set(['work_location.modes']);
 
 const isId = (value: unknown): value is number =>
     typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 2 ** 31 - 1;
@@ -183,7 +189,12 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
     // After a user-driven state change, bring the bubble's bottom edge into the
     // log without pushing a review card's heading above the log's top.
     const mounted = React.useRef(false);
+    const staleShown = !!turn && turn.revision !== liveRevision
+        && turn.actions.some((_, index) => !applied[index]);
+    const prevStale = React.useRef(staleShown);
     React.useLayoutEffect(() => {
+        const staleFlip = staleShown && !prevStale.current;
+        prevStale.current = staleShown;
         if (!mounted.current) {
             mounted.current = true;
             return;
@@ -194,6 +205,17 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
             return;
         }
         const bubble = host.closest('.chat-bubble-assistant') ?? host;
+        if (staleFlip) {
+            // A view change makes every turn stale at once: follow it only for the newest
+            // bubble, and only if its action row was already in view, so a reader who
+            // scrolled up is left alone.
+            const bubbles = log.querySelectorAll('.chat-bubble-assistant');
+            const btn = host.querySelector('.assistant-action-btn') as Element;
+            if (bubbles[bubbles.length - 1] !== bubble
+                || btn.getBoundingClientRect().bottom > log.getBoundingClientRect().bottom) {
+                return;
+            }
+        }
         const card = host.querySelector('[data-testid="assistant-action-review"]');
         const logRect = log.getBoundingClientRect();
         const overflow = bubble.getBoundingClientRect().bottom - logRect.bottom + 8;
@@ -203,13 +225,12 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
         if (overflow > 0) {
             log.scrollTop += Math.min(overflow, headroom);
         }
-    }, [applied, requirement, saveable]);
+    }, [applied, requirement, saveable, staleShown]);
     if (!turn || turn.actions.length === 0) {
         return null;
     }
     const names = turn.names ?? {};
     const stale = turn.revision !== liveRevision;
-    const anyPending = turn.actions.some((_, index) => !applied[index]);
 
     const setReq = (index: number, state: RequirementState) =>
         setRequirement((prev) => ({...prev, [index]: state}));
@@ -355,6 +376,8 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
                                 error={state.error}
                                 stale={state.stale}
                                 heading="Save as a requirement?"
+                                labels={REVIEW_LABELS}
+                                choicePaths={REVIEW_CHOICES}
                                 applyLabel="Save"
                                 testId="assistant-action-review"
                                 onApply={() => void save(index, state)}
@@ -372,8 +395,8 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
                 );
             })}
             <div className="assistant-actions-status small" role="status" data-testid="assistant-actions-stale">
-                {stale && anyPending && <i className="fa-solid fa-clock-rotate-left" aria-hidden="true"></i>}
-                {stale && anyPending ? <span>{STALE_MESSAGE}</span> : ''}
+                {staleShown && <i className="fa-solid fa-clock-rotate-left" aria-hidden="true"></i>}
+                {staleShown ? <span>{STALE_MESSAGE}</span> : ''}
             </div>
         </div>
     );

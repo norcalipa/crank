@@ -101,6 +101,7 @@ test.describe('assistant actions (issue #484)', () => {
         const button = applyRemote(page);
         await expect(button).toBeDisabled();
         await expect(page.getByTestId('assistant-actions-stale')).toHaveText('This suggestion was for an earlier view.');
+        await expect(page.getByTestId('assistant-actions-stale')).toBeInViewport({ratio: 1});
         await button.click({force: true});
         expect(new URL(page.url()).searchParams.has('rto')).toBe(false);
     });
@@ -172,6 +173,7 @@ test.describe('assistant actions (issue #484)', () => {
         await page.getByRole('button', {name: 'Save as a requirement'}).click();
         const review = page.getByTestId('assistant-action-review');
         await expect(review).toBeVisible();
+        await expect(review).toContainText('Work arrangement');
         const save = review.getByRole('button', {name: 'Save', exact: true});
         await expect(save).toBeInViewport({ratio: 1});
         const log = await page.getByRole('log').boundingBox();
