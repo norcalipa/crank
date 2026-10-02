@@ -45,7 +45,7 @@ test.describe('assistant actions (issue #484)', () => {
         await button.focus();
         await button.press('Enter');
         await expect(page.getByText(/Showing 1-1 of 1 organizations/)).toBeVisible();
-        await expect(page.getByTestId('filter-chip-rto')).toContainText('RTO: Remote');
+        await expect(page.getByTestId('filter-chip-rto')).toContainText('Office policy: Remote');
         expect(new URL(page.url()).searchParams.get('rto')).toBe('R');
         // Keyboard focus stays on the button, which reports the outcome.
         const applied = page.getByRole('button', {name: 'Remote filter applied'});
@@ -65,7 +65,7 @@ test.describe('assistant actions (issue #484)', () => {
         await login(page);
         await page.goto('/?rto=R');
         await expect(page.getByText(/Showing 1-1 of 1 organizations/)).toBeVisible();
-        await page.getByRole('button', {name: 'Remove filter: RTO Remote'}).click();
+        await page.getByRole('button', {name: 'Remove filter: office policy Remote'}).click();
         await expect(page.getByText('Showing 1-4 of 4 organizations')).toBeVisible();
         expect(new URL(page.url()).searchParams.has('rto')).toBe(false);
     });
@@ -149,7 +149,7 @@ test.describe('assistant actions (issue #484)', () => {
         await openAssistant(page);
         await ask(page, 'Show only remote companies');
         await applyRemote(page).click();
-        await page.getByRole('button', {name: 'Also save as a lasting requirement'}).click();
+        await page.getByRole('button', {name: 'Save as a requirement'}).click();
         const review = page.getByTestId('assistant-action-review');
         await expect(review).toBeVisible();
         // The seeded account already prefers remote work, so the honest

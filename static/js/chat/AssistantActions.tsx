@@ -159,6 +159,21 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
     React.useEffect(() => () => {
         controllers.current.forEach((controller) => controller.abort());
     }, []);
+    const root = React.useRef<HTMLDivElement>(null);
+    const reviewing = Object.values(requirement).some((state) => state.status === 'review');
+    const failing = Object.values(requirement).some((state) => state.status === 'error');
+    // Scroll the transcript only (never the panel around it) so a card or
+    // message that appears below the fold is brought into view.
+    React.useEffect(() => {
+        const target = reviewing ? 'assistant-action-review' : failing ? 'assistant-action-error' : null;
+        const el = target ? root.current?.querySelector(`[data-testid="${target}"]`) : null;
+        const log = el?.closest('[role="log"]');
+        if (el && log) {
+            const gap = el.getBoundingClientRect().top - log.getBoundingClientRect().top;
+            const overflow = el.getBoundingClientRect().bottom - log.getBoundingClientRect().bottom;
+            log.scrollTop += reviewing ? gap : Math.max(0, overflow);
+        }
+    }, [reviewing, failing]);
     if (!turn || turn.actions.length === 0) {
         return null;
     }
@@ -240,7 +255,7 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
     };
 
     return (
-        <div className="assistant-actions mt-2" data-testid="assistant-actions" role="group" aria-label="Suggested actions">
+        <div className="assistant-actions mt-2" ref={root} data-testid="assistant-actions" role="group" aria-label="Suggested actions">
             {turn.actions.map((action, index) => {
                 const done = applied[index] === true;
                 const disabled = stale && !done;
@@ -262,7 +277,7 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
                             <button type="button" className="chat-btn chat-btn-secondary chat-focus assistant-action-save"
                                     data-testid="assistant-action-save"
                                     onClick={() => void propose(index, action)}>
-                                Also save as a lasting requirement
+                                Save as a requirement
                             </button>
                         )}
                         {state.status === 'proposing' && (
@@ -270,15 +285,21 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
                         )}
                         {state.status === 'error' && (
                             <div className="small assistant-action-note assistant-action-error" role="alert" data-testid="assistant-action-error">
-                                <i className="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>
-                                {state.message}{' '}
+                                <i className="fa-solid fa-circle-exclamation" aria-hidden="true"></i>
+                                <span>{state.message === GENERIC_ERROR_MESSAGE ? "Couldn't prepare the change for review." : state.message}</span>
                                 {action.type === 'propose_filters' && (
-                                    <button type="button" className="btn btn-link btn-sm p-0 align-baseline chat-focus"
+                                    <button type="button" className="chat-btn chat-btn-secondary chat-focus assistant-action-retry"
                                             onClick={() => void propose(index, action)}>Try again</button>
                                 )}
                             </div>
                         )}
-                        {action.type === 'propose_filters' && state.status === 'review' && (
+                        {action.type === 'propose_filters' && state.status === 'review' && state.proposal.changes.length === 0 && (
+                            <div className="small assistant-action-note" role="status" data-testid="assistant-action-already">
+                                <i className="fa-solid fa-circle-check me-1" aria-hidden="true"></i>
+                                Already one of your requirements.
+                            </div>
+                        )}
+                        {action.type === 'propose_filters' && state.status === 'review' && state.proposal.changes.length > 0 && (
                             <ReviewChanges
                                 changes={state.proposal.changes}
                                 scope="account"
@@ -302,6 +323,7 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
                 );
             })}
             <div className="assistant-actions-status small" role="status" data-testid="assistant-actions-stale">
+                {stale && anyPending && <i className="fa-solid fa-clock-rotate-left me-1" aria-hidden="true"></i>}
                 {stale && anyPending ? STALE_MESSAGE : ''}
             </div>
         </div>

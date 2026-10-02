@@ -300,10 +300,38 @@ describe('AssistantActions', () => {
             proposePriorities.mockRejectedValueOnce(new Error('network'));
             fireEvent.click(screen.getByRole('button', {name: 'Try again'}));
             await waitFor(() => expect(screen.getByTestId('assistant-action-error'))
-                .toHaveTextContent(prioritiesApi.GENERIC_ERROR_MESSAGE));
+                .toHaveTextContent("Couldn't prepare the change for review."));
             proposePriorities.mockResolvedValueOnce(proposal);
             fireEvent.click(screen.getByRole('button', {name: 'Try again'}));
             expect(await screen.findByTestId('assistant-action-review')).toBeInTheDocument();
+        });
+
+        test('opening the review or an error scrolls the transcript, not the page', async () => {
+            await applyFilter();
+            const log = screen.getByTestId('assistant-actions').parentElement as HTMLElement;
+            log.setAttribute('role', 'log');
+            const rect = (top: number, bottom: number) => () => ({top, bottom} as DOMRect);
+            const spy = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+                if (this === log) return rect(100, 300)();
+                return this.getAttribute('data-testid') === 'assistant-action-review' ? rect(400, 700)() : rect(350, 380)();
+            });
+            proposePriorities.mockRejectedValueOnce(new Error('network'));
+            fireEvent.click(screen.getByTestId('assistant-action-save'));
+            await screen.findByTestId('assistant-action-error');
+            expect(log.scrollTop).toBe(80);
+            proposePriorities.mockResolvedValueOnce(proposal);
+            fireEvent.click(screen.getByRole('button', {name: 'Try again'}));
+            await screen.findByTestId('assistant-action-review');
+            expect(log.scrollTop).toBe(80 + 300);
+            spy.mockRestore();
+        });
+
+        test('a proposal with no changes says it is already a requirement', async () => {
+            await applyFilter();
+            proposePriorities.mockResolvedValueOnce({...proposal, changes: []});
+            fireEvent.click(screen.getByTestId('assistant-action-save'));
+            expect(await screen.findByTestId('assistant-action-already')).toHaveTextContent('Already one of your requirements.');
+            expect(screen.queryByTestId('assistant-action-review')).not.toBeInTheDocument();
         });
 
         test('an apply failure stays in the review, and a stale one offers Review latest', async () => {
