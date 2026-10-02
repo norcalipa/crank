@@ -3597,6 +3597,127 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
         expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
     });
 
+    const probeProposal = {
+        ...proposal,
+        changes: [{path: 'compensation.minimum_salary', old: 271828, new: 300000}],
+        change_count: 1,
+        token: {patch: {set: {'compensation.minimum_salary': 300000}}, scope: 'account', base_revision: 2},
+    };
+
+    const purgePaths: Array<[string, () => void]> = [
+        ['sign-out', () => document.dispatchEvent(new CustomEvent('crank:private-state-purged'))],
+        ['bfcache restore (pageshow purge)', () => document.dispatchEvent(new CustomEvent('crank:private-state-purged'))],
+        ['cross-tab account switch', () => {
+            window.localStorage.setItem('crank:last-account', 'alice');
+            document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: true, username: 'bob'}}));
+        }],
+    ];
+
+    test.each(purgePaths)('a pending proposal and its editor seed are cleared on %s', async (_name, purge) => {
+        window.localStorage.setItem('crank:last-account', 'alice');
+        await submitTurnWithProposal({
+            message: assistantMessage(30, 'I suggest this.', false),
+            preferences_changed: false,
+            preference_proposal: probeProposal,
+        });
+        expect(screen.getByTestId('preference-proposal-notice')).toHaveTextContent('271,828');
+        (global.fetch as jest.Mock).mockResolvedValue(jsonResponse(emptyConversation(55)));
+        act(() => setPrioritiesEditorOpen('sidebar', probeProposal.token.patch));
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).not.toBeNull();
+        act(() => purge());
+        await waitFor(() => expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument());
+        expect(screen.queryByText(/271,828/)).not.toBeInTheDocument();
+        expect(screen.queryByTestId('preference-search-applied')).not.toBeInTheDocument();
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toBeNull();
+        expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBeNull();
+    });
+
+    test('an apply response that lands after a purge is dropped (no diff, no Undo, no revision)', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(32, 'I suggest this.', false),
+            preferences_changed: false,
+            preference_proposal: probeProposal,
+        });
+        const settle = holdNextFetch(global.fetch as jest.Mock);
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        (global.fetch as jest.Mock).mockResolvedValue(jsonResponse(emptyConversation(55)));
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await act(async () => {
+            settle(jsonResponse({applied: true, scope: 'account', revision: 3, changes, undo: undoToken}));
+        });
+        expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('preference-undo-button')).not.toBeInTheDocument();
+        expect(getWorkspaceSnapshot().prioritiesRevision).toBeNull();
+    });
+
+    test('a failed or non-JSON apply that lands after a purge shows nothing', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(33, 'I suggest this.', false),
+            preferences_changed: false,
+            preference_proposal: probeProposal,
+        });
+        const settle = holdNextFetch(global.fetch as jest.Mock);
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        (global.fetch as jest.Mock).mockResolvedValue(jsonResponse(emptyConversation(55)));
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await act(async () => { settle(jsonResponse({error: {type: 'preference_stale', message: 'x'}}, 409)); });
+        expect(screen.queryByTestId('preference-proposal-error')).not.toBeInTheDocument();
+    });
+
+    test('a network failure on apply after a purge shows nothing', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(34, 'I suggest this.', false),
+            preferences_changed: false,
+            preference_proposal: probeProposal,
+        });
+        const settle = holdNextFetch(global.fetch as jest.Mock);
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        (global.fetch as jest.Mock).mockResolvedValue(jsonResponse(emptyConversation(55)));
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await act(async () => { settle(new Error('offline')); });
+        expect(screen.queryByTestId('preference-proposal-error')).not.toBeInTheDocument();
+    });
+
+    describe('undo across a purge', () => {
+        async function applied() {
+            await submitAndApply({applied: true, scope: 'account', revision: 3, changes, undo: undoToken});
+            await screen.findByTestId('preference-change-notice');
+            return screen.getByTestId('preference-undo-button');
+        }
+        const purgeNow = () => {
+            (global.fetch as jest.Mock).mockResolvedValue(jsonResponse(emptyConversation(55)));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        };
+
+        test('a successful undo that lands after a purge is dropped', async () => {
+            const button = await applied();
+            const settle = holdNextFetch(global.fetch as jest.Mock);
+            fireEvent.click(button);
+            purgeNow();
+            await act(async () => { settle(jsonResponse({undone: true, revision: 4, changes: []})); });
+            expect(getWorkspaceSnapshot().prioritiesRevision).not.toBe(4);
+            expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+        });
+
+        test('a failed undo that lands after a purge is dropped', async () => {
+            const button = await applied();
+            const settle = holdNextFetch(global.fetch as jest.Mock);
+            fireEvent.click(button);
+            purgeNow();
+            await act(async () => { settle(jsonResponse({error: {type: 'preference_stale', message: 'x'}}, 409)); });
+            expect(screen.queryByTestId('preference-undo-error')).not.toBeInTheDocument();
+        });
+
+        test('a network failure on undo after a purge is dropped', async () => {
+            const button = await applied();
+            const settle = holdNextFetch(global.fetch as jest.Mock);
+            fireEvent.click(button);
+            purgeNow();
+            await act(async () => { settle(new Error('offline')); });
+            expect(screen.queryByTestId('preference-undo-error')).not.toBeInTheDocument();
+        });
+    });
+
     test('Edit opens the inline editor and drops the proposal without any write (issue #480)', async () => {
         await submitTurnWithProposal({
             message: assistantMessage(20, 'I suggest these updates.', false),

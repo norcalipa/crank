@@ -1495,6 +1495,13 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         setPrefUndoToken(null);
         setPrefUndoState('idle');
         setPrefUndoError(null);
+        setPrefUndoErrorType(null);
+        setPrefProposal(null);
+        setPrefProposalState('idle');
+        setPrefProposalError(null);
+        setPrefProposalErrorType(null);
+        setPrefSearchApplied(null);
+        setPrioritiesEditorOpen(null);
         if (effectiveAuthenticated) {
             // Force the resume effect to re-run so the (possibly different)
             // account's own conversation loads fresh — never the stale
@@ -2169,14 +2176,18 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         setPrefUndoState('pending');
         setPrefUndoError(null);
         setPrefUndoErrorType(null);
+        const epoch = purgeEpochRef.current;
+        const purged = () => purgeEpochRef.current !== epoch;
         try {
             const res = await csrfFetch('/api/agent/preferences/undo/', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({undo: prefUndoToken}),
             });
+            if (purged()) return;
             if (res.ok) {
                 const undone = await res.json().catch(() => null);
+                if (purged()) return;
                 if (typeof undone?.revision === 'number') setPrioritiesRevision(undone.revision);
                 setPrefUndoState('done');
                 setPrefChanges(null);
@@ -2191,6 +2202,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 serverType = parsed?.error?.type || null;
                 serverMsg = parsed?.error?.message || '';
             } catch { /* non-JSON body: fall through to generic copy */ }
+            if (purged()) return;
             setPrefUndoState('error');
             setPrefUndoErrorType(serverType);
             setPrefUndoError(
@@ -2199,6 +2211,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     : (serverMsg || 'The undo request is no longer valid. Please try again.'),
             );
         } catch {
+            if (purged()) return;
             setPrefUndoState('error');
             setPrefUndoErrorType(null);
             setPrefUndoError('Could not undo the preference update. Please check your connection and try again.');
@@ -2222,6 +2235,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         setPrefProposalState('pending');
         setPrefProposalError(null);
         setPrefProposalErrorType(null);
+        const epoch = purgeEpochRef.current;
+        const purged = () => purgeEpochRef.current !== epoch;
         try {
             const res = await csrfFetch('/api/agent/preferences/apply/', {
                 method: 'POST',
@@ -2231,8 +2246,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     decision,
                 }),
             });
+            if (purged()) return;
             if (res.ok) {
                 const data = await res.json();
+                if (purged()) return;
                 if (data.scope === 'search') {
                     // This-search-only: never saved; show the confirmation
                     // with the number of matches the temporary filter found.
@@ -2259,6 +2276,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 serverType = parsed?.error?.type || null;
                 serverMsg = parsed?.error?.message || '';
             } catch { /* non-JSON body: fall through to generic copy */ }
+            if (purged()) return;
             setPrefProposalState('error');
             setPrefProposalErrorType(serverType);
             setPrefProposalError(
@@ -2267,6 +2285,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     : (serverMsg || 'The proposal could not be applied. Please try again.'),
             );
         } catch {
+            if (purged()) return;
             setPrefProposalState('error');
             setPrefProposalErrorType(null);
             setPrefProposalError('Could not apply the preference proposal. Please check your connection and try again.');
