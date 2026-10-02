@@ -3,137 +3,349 @@
 Copyright (c) 2024 Isaac Adams
 Licensed under the MIT License. See LICENSE file in the project root for full license information.
 {% endcomment %}
-{% load i18n admin_urls %}
+{% load i18n admin_urls jro_time static %}
 
 {% block extrahead %}{{ block.super }}
 <style>
-  /* Scoped operator-dashboard styles (issue #462). Admin shell has no
-     Bootstrap bundle; every var() carries an AA-contrast fallback token. */
-  :root {
-    --jro-warning: var(--bs-warning, #ffc107);
+  /* Scoped operator-dashboard styles (issues #462, #481). Every rule is
+     rooted at #jro-page so it out-specifies Django admin's generic
+     .module / form .button / ul > li rules through specificity alone.
+     Surfaces and text use the admin's own theme variables so the page follows
+     the light/dark toggle; status colours come from one token set below. */
+  #jro-page {
+    --jro-surface: var(--body-bg);
+    --jro-surface-muted: var(--darkened-bg);
+    --jro-text: var(--body-fg);
+    --jro-text-quiet: var(--body-quiet-color);
+    --jro-border: var(--border-color);
+    --jro-success-bg: #dcfce7; --jro-success-fg: #14532d; --jro-success-line: #86efac; --jro-success: #2f7d4a;
+    --jro-danger-bg: #fee2e2; --jro-danger-fg: #991b1b; --jro-danger-line: #fca5a5; --jro-danger: #ba2121;
+    --jro-warning-bg: #fef3c7; --jro-warning-fg: #713f12; --jro-warning-line: #d9a400; --jro-warning: #d9a400;
+    --jro-info-bg: #e3f1f7; --jro-info-fg: #1d4f63; --jro-info-line: #9cc9dc; --jro-info: #1d6f8c;
+    --jro-neutral-bg: #f1f3f5; --jro-neutral-fg: #374151; --jro-neutral-line: #c9ced3; --jro-neutral: #adb5bd;
+    --jro-key-col: 17rem;
+    --jro-disabled-fg: #6b6b6b;
+    --jro-pad: 14px;
+    box-sizing: border-box;
+    max-width: 100%;
+    color: var(--jro-text);
   }
-  .jro-section { margin: 0 0 1.5rem; }
-  .jro-card {
-    background: #fff;
-    border: 1px solid var(--jro-border, #d0d0d0);
+  @media (prefers-color-scheme: dark) {
+    html:not([data-theme="light"]) #jro-page {
+      --jro-success-bg: #152b1c; --jro-success-fg: #86efac; --jro-success-line: #2f7d4a; --jro-success: #4ade80;
+      --jro-danger-bg: #3b1212; --jro-danger-fg: #fca5a5; --jro-danger-line: #b91c1c; --jro-danger: #f87171;
+      --jro-warning-bg: #3a2a05; --jro-warning-fg: #fcd34d; --jro-warning-line: #a16207; --jro-warning: #fbbf24;
+      --jro-info-bg: #0f2a36; --jro-info-fg: #7dd3fc; --jro-info-line: #1d6f8c; --jro-info: #38bdf8;
+      --jro-neutral-bg: #262626; --jro-neutral-fg: #e5e7eb; --jro-neutral-line: #4b5563; --jro-neutral: #9ca3af; --jro-disabled-fg: #8a8a8a;
+    }
+  }
+  html[data-theme="dark"] #jro-page {
+    --jro-success-bg: #152b1c; --jro-success-fg: #86efac; --jro-success-line: #2f7d4a; --jro-success: #4ade80;
+    --jro-danger-bg: #3b1212; --jro-danger-fg: #fca5a5; --jro-danger-line: #b91c1c; --jro-danger: #f87171;
+    --jro-warning-bg: #3a2a05; --jro-warning-fg: #fcd34d; --jro-warning-line: #a16207; --jro-warning: #fbbf24;
+    --jro-info-bg: #0f2a36; --jro-info-fg: #7dd3fc; --jro-info-line: #1d6f8c; --jro-info: #38bdf8;
+    --jro-neutral-bg: #262626; --jro-neutral-fg: #e5e7eb; --jro-neutral-line: #4b5563; --jro-neutral: #9ca3af; --jro-disabled-fg: #8a8a8a;
+  }
+  #jro-page *, #jro-page *::before, #jro-page *::after { box-sizing: border-box; }
+  #jro-page p { margin: 0 0 8px; padding: 0; line-height: 1.45; }
+  #jro-page ul, #jro-page ol { margin: 0; padding: 0; list-style: none; }
+  #jro-page li { list-style: none; margin: 0; padding: 0; background: none; }
+  #jro-page h3 { margin: 0 0 6px; padding: 0; font-size: 15px; font-weight: 700; color: var(--jro-text); text-transform: none; }
+  #jro-page dl { margin: 0; padding: 0; }
+  #jro-page dt, #jro-page dd { margin: 0; padding: 0; }
+  #jro-page button, #jro-page input { font-family: inherit; }
+  #jro-page .jro-section { margin: 0 0 20px; padding: 0; border: 0; background: none; }
+  #jro-page .jro-section > h2 { margin: 0; }
+  #jro-page .jro-card {
+    background: var(--jro-surface);
+    border: 1px solid var(--jro-border);
     border-radius: 4px;
-    padding: 12px 14px;
+    padding: 12px var(--jro-pad);
     margin: 8px 0 0;
+    width: 100%;
   }
-  .jro-card--blocking { border-color: var(--jro-warning); box-shadow: 0 0 0 1px var(--jro-warning); }
-  .jro-alert {
+  #jro-page .jro-card > :last-child { margin-bottom: 0; }
+  #jro-page .jro-section > .jro-card:first-of-type { margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
+  #jro-page .jro-card--blocking { border-color: var(--jro-warning); box-shadow: 0 0 0 1px var(--jro-warning); }
+  #jro-page .jro-alert {
     display: flex;
     align-items: baseline;
     gap: 8px;
     flex-wrap: wrap;
-    border: 1px solid #d9a400;
-    border-left: 4px solid #d9a400;
-    background: #fff8e1;
-    color: #6a4b00;
+    border: 1px solid var(--jro-warning-line);
+    border-left: 4px solid var(--jro-warning);
+    background: var(--jro-warning-bg);
+    color: var(--jro-warning-fg);
     border-radius: 4px;
     padding: 10px 12px;
     margin: 0 0 10px;
   }
-  .jro-status-line { margin: 0 0 6px; }
-  .jro-badge {
+  #jro-page .jro-status-line { margin: 0 0 8px; }
+  #jro-page .jro-badge {
     display: inline-flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 6px;
-    padding: 4px 10px;
+    padding: 3px 10px;
     border-radius: 4px;
     font-weight: 600;
+    line-height: 1.35;
     border: 1px solid transparent;
     max-width: 100%;
   }
-  .jro-badge--success { background: #dcfce7; color: #14532d; border-color: #86efac; }
-  .jro-badge--warning { background: #fef3c7; color: #713f12; border-color: #d9a400; }
-  .jro-badge--danger { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
-  .jro-badge--info { background: #dbeafe; color: #1e3a8a; border-color: #93c5fd; }
-  .jro-icon { font-style: normal; line-height: 1; }
-  .jro-explanation { margin: 0 0 10px; color: #333; }
-  .jro-fields {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    gap: 6px 18px;
-    margin: 0 0 10px;
+  #jro-page .jro-badge--success { background: var(--jro-success-bg); color: var(--jro-success-fg); border-color: var(--jro-success-line); }
+  #jro-page .jro-badge--danger { background: var(--jro-danger-bg); color: var(--jro-danger-fg); border-color: var(--jro-danger-line); }
+  #jro-page .jro-badge--warning { background: var(--jro-warning-bg); color: var(--jro-warning-fg); border-color: var(--jro-warning-line); }
+  #jro-page .jro-badge--info { background: var(--jro-info-bg); color: var(--jro-info-fg); border-color: var(--jro-info-line); }
+  #jro-page .jro-badge--neutral { background: var(--jro-neutral-bg); color: var(--jro-neutral-fg); border-color: var(--jro-neutral-line); }
+  #jro-page .jro-badge > .jro-icon { margin-top: 2px; }
+  #jro-page .jro-detail { margin-left: 8px; color: var(--jro-text-quiet); }
+  #jro-page .jro-detail--block { display: block; margin: 2px 0 0; font-size: 12px; }
+  #jro-page .jro-icon {
+    display: inline-block;
+    flex: none;
+    width: 14px;
+    height: 14px;
+    background-color: currentColor;
+    -webkit-mask: var(--jro-icon) center / contain no-repeat;
+            mask: var(--jro-icon) center / contain no-repeat;
   }
-  .jro-fields dt { font-weight: 600; color: #444; margin: 0; }
-  .jro-fields dd { margin: 0; min-width: 0; }
-  .jro-meta {
+  #jro-page .jro-icon--check { --jro-icon: url("{% static 'admin/img/icon-yes.svg' %}"); }
+  #jro-page .jro-icon--x { --jro-icon: url("{% static 'admin/img/icon-no.svg' %}"); }
+  #jro-page .jro-icon--alert { --jro-icon: url("{% static 'admin/img/icon-alert.svg' %}"); }
+  #jro-page .jro-icon--unknown { --jro-icon: url("{% static 'admin/img/icon-unknown.svg' %}"); }
+  #jro-page .jro-icon--clock {
+    --jro-icon: url("{% static 'admin/img/icon-clock.svg' %}");
+    -webkit-mask-size: 100% 200%;
+            mask-size: 100% 200%;
+    -webkit-mask-position: top;
+            mask-position: top;
+  }
+  #jro-page .jro-icon--play { -webkit-mask: none; mask: none; clip-path: polygon(15% 0, 100% 50%, 15% 100%); }
+  #jro-page .jro-icon--dash { -webkit-mask: none; mask: none; clip-path: inset(6px 1px 6px 1px); }
+  #jro-page .jro-sources td .jro-icon { vertical-align: -2px; margin-right: 4px; }
+  #jro-page .jro-explanation { margin: 0 0 10px; color: var(--jro-text); }
+  #jro-page .jro-fields {
+    display: grid;
+    grid-template-columns: var(--jro-key-col) minmax(0, 1fr);
+    align-items: baseline;
+    gap: 8px 18px;
+    margin: 0 0 4px;
+  }
+  #jro-page .jro-fields dt { font-weight: 600; font-size: 13px; color: var(--jro-text); }
+  #jro-page .jro-fields dd { min-width: 0; overflow-wrap: anywhere; }
+  #jro-page .jro-fields + p, #jro-page .jro-fields + ul { margin-top: 10px; }
+  #jro-page .jro-meta {
     display: inline-flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 4px 12px;
     vertical-align: middle;
   }
-  .jro-relative { color: #333; }
-  .jro-monospace {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  #jro-page .jro-badge + .jro-meta { margin-left: 8px; }
+  #jro-page .jro-id-group { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  #jro-page .jro-relative { color: var(--jro-text); }
+  #jro-page .jro-monospace, #jro-page .jro-id, #jro-page time {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Cascadia Mono", "DejaVu Sans Mono", "Liberation Mono", monospace;
     font-size: 12px;
-    color: #555;
-    overflow-wrap: anywhere; /* fallback only; metadata is abbreviated first */
+    font-weight: 400;
+    color: var(--jro-text-quiet);
   }
-  .jro-details-secondary {
-    display: block;
-    margin: 6px 0 0;
-    color: #555;
-  }
-  details.jro-details > summary {
-    cursor: pointer;
-    color: #417690;
-  }
-  details.jro-details > summary:focus-visible {
-    outline: 3px solid var(--jro-warning);
-    outline-offset: 2px;
-  }
-  .jro-copy {
-    min-height: 44px;
+  #jro-page time { white-space: nowrap; }
+  #jro-page .jro-id { overflow-wrap: anywhere; }
+  #jro-page .jro-details-secondary { display: block; margin: 6px 0 0; color: var(--jro-text-quiet); }
+  #jro-page details.jro-details > summary { cursor: pointer; color: var(--link-fg); }
+  #jro-page .jro-copy {
+    min-height: 28px;
     min-width: 44px;
-    padding: 8px 10px;
-    border: 1px solid #b0b6bb;
+    margin: 0;
+    padding: 3px 10px;
+    border: 1px solid var(--jro-border);
     border-radius: 4px;
-    background: #f1f3f5;
-    color: #1f2933;
-    font-size: 13px;
+    background: var(--jro-surface);
+    color: var(--link-fg);
+    font-size: 12px;
+    font-weight: 600;
     cursor: pointer;
   }
-  .jro-copy:hover { background: #e4e8eb; }
-  .jro-btn {
+  #jro-page .jro-copy:hover { background: var(--jro-surface-muted); }
+  @media (pointer: coarse) { #jro-page .jro-copy { min-height: 44px; } }
+  #jro-page .jro-btn {
+    display: inline-block;
     min-height: 44px;
     min-width: 44px;
+    margin: 0;
     padding: 10px 16px;
     border: 1px solid transparent;
     border-radius: 4px;
     font-size: 14px;
     font-weight: 600;
+    line-height: 1.2;
+    text-align: center;
     cursor: pointer;
   }
-  .jro-btn--primary { background: #1d6f8c; color: #fff; border-color: #155a72; }
-  .jro-btn--primary:hover { background: #175a72; }
-  .jro-btn--secondary { background: #f1f3f5; color: #1f2933; border-color: #adb5bd; }
-  .jro-btn--secondary:hover { background: #e4e8eb; }
-  .jro-btn--warning { background: #ffc107; color: #4a3200; border-color: #d9a400; }
-  .jro-btn--warning:hover { background: #e6ae06; }
-  .jro-btn--danger { background: #b02a37; color: #fff; border-color: #8c2230; }
-  .jro-btn--danger:hover { background: #98242f; }
-  .jro-btn:focus-visible,
-  .jro-copy:focus-visible,
-  .jro-card a:focus-visible {
-    outline: 3px solid var(--jro-warning);
+  #jro-page .jro-btn--primary { background: var(--default-button-bg); border-color: var(--default-button-bg); color: var(--button-fg); }
+  #jro-page .jro-btn--primary:hover, #jro-page .jro-btn--primary:focus { background: var(--default-button-hover-bg); color: var(--button-fg); }
+  #jro-page .jro-btn--secondary { background: var(--jro-surface); color: var(--jro-text); border-color: var(--body-quiet-color); }
+  #jro-page .jro-btn--secondary:hover, #jro-page .jro-btn--secondary:focus { background: var(--jro-surface-muted); color: var(--jro-text); }
+  #jro-page .jro-btn:disabled, #jro-page .jro-btn:disabled:hover {
+    background: var(--jro-surface-muted);
+    color: var(--jro-disabled-fg);
+    border-color: var(--jro-border);
+    opacity: 1;
+    cursor: not-allowed;
+  }
+  #jro-page .jro-btn:focus-visible,
+  #jro-page .jro-copy:focus-visible,
+  #jro-page .jro-card a:focus-visible,
+  #jro-page .jro-stage a:focus-visible,
+  #jro-page details.jro-details > summary:focus-visible,
+  #jro-page .jro-diag > summary:focus-visible,
+  #jro-page .jro-table-wrap:focus-visible {
+    outline: 3px solid var(--secondary);
     outline-offset: 2px;
   }
-  .jro-action-box {
-    border: 1px solid #ccc;
-    border-radius: 4px;
-    padding: 12px;
-    margin-bottom: 1rem;
+  #jro-page .jro-actions-intro { margin: 8px 0; padding: 0 calc(var(--jro-pad) + 1px); }
+  #jro-page .jro-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+    gap: 12px;
+    margin: 0;
   }
-  .jro-table-wrap { overflow-x: auto; }
+  #jro-page .jro-actions > .jro-action-box:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  #jro-page .jro-action-box { display: flex; flex-direction: column; margin: 0; }
+  #jro-page .jro-action-box--primary { border-color: var(--secondary); box-shadow: 0 0 0 1px var(--secondary); }
+  #jro-page .jro-action-box p { flex: 1 1 auto; color: var(--jro-text); }
+  #jro-page .jro-action-box form { margin: 8px 0 0; padding: 0; }
+  #jro-page .jro-action-box .jro-action-reason { flex: none; margin: 6px 0 0; font-size: 12px; color: var(--jro-text-quiet); }
+  #jro-page .jro-table-wrap {
+    overflow-x: auto;
+    max-width: 100%;
+    background:
+      linear-gradient(to right, var(--jro-surface) 30%, transparent) left center / 24px 100% no-repeat local,
+      linear-gradient(to left, var(--jro-surface) 30%, transparent) right center / 24px 100% no-repeat local,
+      linear-gradient(to right, rgba(0, 0, 0, 0.22), rgba(0, 0, 0, 0)) left center / 10px 100% no-repeat scroll,
+      linear-gradient(to left, rgba(0, 0, 0, 0.22), rgba(0, 0, 0, 0)) right center / 10px 100% no-repeat scroll;
+  }
+  #jro-page .jro-callout { border-left: 6px solid var(--jro-neutral); padding-left: calc(var(--jro-pad) - 5px); }
+  #jro-page .jro-callout--danger { border-left-color: var(--jro-danger); }
+  #jro-page .jro-callout--warning { border-left-color: var(--jro-warning); }
+  #jro-page .jro-callout--info { border-left-color: var(--jro-info); }
+  #jro-page .jro-callout--success { border-left-color: var(--jro-success); }
+  #jro-page .jro-callout--neutral { border-left-color: var(--jro-neutral); }
+  #jro-page .jro-callout h3 { margin: 6px 0; font-size: 17px; }
+  #jro-page .jro-callout form { margin: 4px 0 8px; }
+  #jro-page .jro-links { display: flex; flex-wrap: wrap; gap: 0 16px; margin: 4px 0 0; }
+  #jro-page .jro-links a { display: inline-block; min-height: 32px; line-height: 32px; overflow-wrap: anywhere; }
+  #jro-page .jro-stages { margin: 0; display: grid; gap: 8px; counter-reset: jro-stage; }
+  #jro-page .jro-stage {
+    counter-increment: jro-stage;
+    background: var(--jro-surface);
+    border: 1px solid var(--jro-border);
+    border-left: 6px solid var(--jro-neutral);
+    border-radius: 4px;
+    padding: 10px var(--jro-pad) 10px calc(var(--jro-pad) - 5px);
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  #jro-page .jro-stage--danger { border-left-color: var(--jro-danger); }
+  #jro-page .jro-stage--warning { border-left-color: var(--jro-warning); }
+  #jro-page .jro-stage--info { border-left-color: var(--jro-info); }
+  #jro-page .jro-stage--success { border-left-color: var(--jro-success); }
+  #jro-page .jro-stage--neutral { border-left-color: var(--jro-neutral); }
+  #jro-page .jro-stage--next { box-shadow: 0 0 0 1px var(--jro-danger); border-color: var(--jro-danger); }
+  #jro-page .jro-stage--next.jro-stage--warning { box-shadow: 0 0 0 1px var(--jro-warning); border-color: var(--jro-warning); }
+  #jro-page .jro-stage--next.jro-stage--info { box-shadow: 0 0 0 1px var(--jro-info); border-color: var(--jro-info); }
+  #jro-page .jro-stage-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 6px; }
+  #jro-page .jro-stage-head::before { content: counter(jro-stage) "."; font-weight: 700; order: -2; min-width: 1.25em; }
+  #jro-page .jro-stage-head > .jro-badge { order: -1; min-width: 6.25rem; justify-content: center; font-size: 13px; }
+  #jro-page .jro-stage-name { font-weight: 700; overflow-wrap: anywhere; }
+  #jro-page .jro-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--secondary);
+    color: var(--primary-fg);
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+  }
+  #jro-page .jro-stage p { margin: 0 0 4px; overflow-wrap: anywhere; }
+  #jro-page .jro-stage[data-status="met"]:not(.jro-stage--next) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px 16px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+  #jro-page .jro-stage[data-status="met"] > .jro-stage-head { margin: 0; }
+  #jro-page .jro-stage[data-status="met"] > p { flex: 1 1 18rem; margin: 0; color: var(--jro-text-quiet); }
+  #jro-page .jro-stage[data-status="met"] > .jro-links { margin: 0 0 0 auto; }
+  #jro-page .jro-stage[data-status="met"] .jro-links a { min-height: 24px; line-height: 24px; }
+  #jro-page .jro-empty { color: var(--jro-text); font-style: italic; margin: 0; }
+  #jro-page .jro-error {
+    border: 1px solid var(--jro-danger-line);
+    background: var(--jro-danger-bg);
+    color: var(--jro-danger-fg);
+    border-radius: 4px;
+    padding: 10px 12px;
+    margin: 0;
+  }
+  #jro-page .jro-section > h2 + .jro-error { border-top: 0; border-radius: 0 0 4px 4px; }
+  #jro-page .jro-sources { border-collapse: collapse; width: 100%; }
+  #jro-page .jro-sources th, #jro-page .jro-sources td {
+    text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--jro-border);
+    background: transparent; font-size: 13px; overflow-wrap: break-word;
+  }
+  #jro-page .jro-sources thead th {
+    font-size: 11px; font-weight: 600; letter-spacing: .02em; text-transform: uppercase;
+    color: var(--jro-text-quiet); background: var(--jro-surface-muted); white-space: normal;
+  }
+  #jro-page .jro-sources tbody th { font-weight: 600; }
+  #jro-page .jro-sources tbody tr { background: transparent; }
+  #jro-page .jro-sources td:nth-child(3),
+  #jro-page .jro-sources td:nth-child(4) { white-space: nowrap; }
+  #jro-page .jro-sources .jro-id { white-space: nowrap; overflow-wrap: normal; font-weight: 400; }
+  #jro-page .jro-note { color: var(--jro-text); margin: 0 0 8px; }
+  #jro-page .jro-summary-line { margin: 8px 0; padding: 0 calc(var(--jro-pad) + 1px); }
+  #jro-page .jro-diag { margin: 0 0 20px; }
+  #jro-page .jro-diag > summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 12px;
+    border: 1px solid var(--jro-border);
+    border-radius: 4px;
+    background: var(--jro-surface-muted);
+    cursor: pointer;
+    list-style: none;
+  }
+  #jro-page details[open] > summary .jro-when-closed { display: none; }
+  #jro-page .jro-diag > summary::-webkit-details-marker { display: none; }
+  #jro-page .jro-diag > summary::before { content: "\25B8"; color: var(--jro-text-quiet); }
+  #jro-page .jro-diag[open] > summary::before { content: "\25BE"; }
+  #jro-page .jro-diag[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+  #jro-page .jro-diag > summary .jro-diag-label { color: var(--jro-text); font-size: 14px; font-weight: 600; }
+  #jro-page .jro-diag-tag { margin-left: auto; font-size: 12px; color: var(--jro-text-quiet); }
+  #jro-page .jro-diag > .jro-card { margin-top: 0; border-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; }
   @media (max-width: 480px) {
-    .jro-fields { grid-template-columns: 1fr; gap: 2px 0; }
-    .jro-fields dd { margin-bottom: 8px; }
-    .jro-action-box { padding: 10px; }
-    .jro-action-box form { margin-top: 8px; }
+    #jro-page .jro-fields { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
+    #jro-page .jro-fields dd { margin-bottom: 8px; }
+    #jro-page .jro-btn { width: 100%; }
+    #jro-page { --jro-pad: 10px; }
+    #jro-page .jro-table-wrap { overflow: visible; background: none; }
+    #jro-page .jro-sources thead {
+      position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+    }
+    #jro-page .jro-sources, #jro-page .jro-sources tbody, #jro-page .jro-sources tr { display: block; }
+    #jro-page .jro-sources tbody tr { padding: 8px 0; border-bottom: 1px solid var(--jro-border); }
+    #jro-page .jro-sources tbody th { display: block; padding: 0 0 4px; border: 0; }
+    #jro-page .jro-sources td { display: grid; grid-template-columns: 8rem minmax(0, 1fr); gap: 12px; padding: 2px 0; border: 0; }
+    #jro-page .jro-sources td::before { content: attr(data-label); font-weight: 600; }
+    #jro-page .jro-sources td > .jro-badge { justify-self: start; }
+    #jro-page .jro-sources td > .jro-detail--block { grid-column: 2; margin: 0; }
   }
 </style>
 <script>
@@ -174,6 +386,40 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
 
 {% block content %}
 <div id="content-main">
+<div id="jro-page">
+
+  {# ── Next unmet prerequisite (first section after the page h1) ── #}
+  <section class="module jro-section" aria-labelledby="jro-next-heading">
+    <h2 id="jro-next-heading">Next step</h2>
+    {% if readiness %}
+      {% with step=readiness.next_step %}
+      {% if step %}
+      <div class="jro-card jro-callout jro-callout--{{ step.tone }}" role="status" data-next-stage="{{ step.key }}" data-status="{{ step.status }}">
+        <p class="jro-status-line">
+          <span class="jro-badge jro-badge--{{ step.tone }}"><span class="jro-icon jro-icon--{{ step.icon }}" aria-hidden="true"></span>{{ step.status_label }}</span>
+        </p>
+        <h3>Step {{ step.position }} of {{ readiness.stages|length }}: {{ step.headline }}</h3>
+        {% if step.summary_rest %}<p class="jro-explanation">{{ step.summary_rest }}</p>{% endif %}
+        {% if step.remediation %}<p class="jro-explanation"><strong>What to do:</strong> {{ step.remediation }}</p>{% endif %}
+        <ul class="jro-links">
+          {% if actions.primary == "seed_preview" %}<li><a href="#jro-action-seed-preview">Go to Preview seed</a></li>
+          {% elif actions.primary == "retry" %}<li><a href="#jro-action-retry">Go to Retry failed run</a></li>
+          {% elif actions.primary == "queue_retrieval" %}<li><a href="#jro-action-queue-retrieval">Go to Queue retrieval</a></li>{% endif %}
+          {% if step.admin_url %}<li><a href="{{ step.admin_url }}">Open {{ step.admin_label }}</a></li>{% endif %}
+          <li><a href="{{ step.runbook_url }}" rel="noopener">Runbook for this step</a></li>
+        </ul>
+      </div>
+      {% else %}
+      <div class="jro-card jro-callout jro-callout--success" role="status" data-next-stage="" data-status="met">
+        <p class="jro-status-line"><span class="jro-badge jro-badge--success"><span class="jro-icon jro-icon--check" aria-hidden="true"></span>All prerequisites met</span></p>
+        <p class="jro-explanation">Every stage is met. Watch Run progress and Backlog for ongoing health.</p>
+      </div>
+      {% endif %}
+      {% endwith %}
+    {% else %}
+      <p class="jro-error" role="alert"><strong>Could not compute readiness</strong> — see server logs (at {{ error_time }}). The rest of this page is unaffected.</p>
+    {% endif %}
+  </section>
 
   {# ── Pipeline ownership & queue (primary operator status) ── #}
   <section class="module jro-section" aria-labelledby="jro-ownership-heading">
@@ -182,7 +428,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
     <div class="jro-card{% if pipeline.blocking %} jro-card--blocking{% endif %}" data-state="{{ pipeline.state }}">
       {% if pipeline.blocking %}
       <div class="jro-alert" role="alert">
-        <span class="jro-icon" aria-hidden="true">{{ pipeline.icon }}</span>
+        <span class="jro-icon jro-icon--{{ pipeline.icon }}" aria-hidden="true"></span>
         <strong>{{ pipeline.label }}</strong>
         <span>{{ pipeline.alert_short }}</span>
       </div>
@@ -190,7 +436,7 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
       <div role="status" aria-live="polite" aria-atomic="true" aria-labelledby="jro-state-label" aria-describedby="jro-state-explanation">
         <p class="jro-status-line">
           <span class="jro-badge jro-badge--{{ pipeline.tone }}">
-            <span class="jro-icon" aria-hidden="true">{{ pipeline.icon }}</span>
+            <span class="jro-icon jro-icon--{{ pipeline.icon }}" aria-hidden="true"></span>
             <span id="jro-state-label">{{ pipeline.label }}</span>
           </span>
         </p>
@@ -200,228 +446,405 @@ Licensed under the MIT License. See LICENSE file in the project root for full li
           <dd>{{ pipeline.owner|default:"Unclaimed — awaiting consumer" }}</dd>
           {% if pipeline.owned_since_relative %}
           <dt>Owned since</dt>
-          <dd>{{ pipeline.owned_since_relative }}{% if pipeline.started_iso %} <span class="jro-monospace">({{ pipeline.started_iso }})</span>{% endif %}</dd>
+          <dd>{{ pipeline.owned_since_relative }}{% if pipeline.started_iso %} <span class="jro-monospace">({{ pipeline.started_iso|jro_time }})</span>{% endif %}</dd>
           {% endif %}
           <dt>Queue</dt>
           <dd>
             {{ pipeline.queue_count }} run{{ pipeline.queue_count|pluralize }}
             {% if pipeline.oldest_wait_relative %}
               — oldest queued {{ pipeline.oldest_wait_relative }} ago
-              {% if pipeline.oldest_reclaim_remaining %}(reclaims in ~{{ pipeline.oldest_reclaim_remaining }} if no consumer arrives){% endif %}
+              {% if pipeline.oldest_reclaim_remaining and pipeline.state != "queued" %}(reclaims in ~{{ pipeline.oldest_reclaim_remaining }} if no consumer arrives){% endif %}
             {% endif %}
           </dd>
+          {% if pipeline.state != "queued" %}
           <dt>Consumption</dt>
           <dd>{{ pipeline.consumption }}{% if pipeline.progress %} — {{ pipeline.progress }}{% endif %}</dd>
+          {% endif %}
           <dt>Next consumer</dt>
           <dd>{{ pipeline.next_consumer }}</dd>
           {% if pipeline.next_action %}
-          <dt>Next step</dt>
+          <dt>Queue guidance</dt>
           <dd>{{ pipeline.next_action }}</dd>
           {% endif %}
+          {% if pipeline.correlation_id %}
+          <dt>Run</dt>
+          <dd>
+            <span class="jro-id-group">
+              {% if pipeline.correlation_abbrev %}<span class="jro-id">{{ pipeline.correlation_abbrev }}</span>{% endif %}
+              <button type="button" class="jro-copy" data-copy="{{ pipeline.correlation_id }}" data-aria-label="Copy correlation ID {{ pipeline.correlation_id }}" title="Copy correlation ID {{ pipeline.correlation_id }}" aria-label="Copy correlation ID {{ pipeline.correlation_id }}">Copy ID</button>
+            </span>
+          </dd>
+          <dt>Details</dt>
+          <dd>
+            <details class="jro-details">
+              <summary>Timestamps &amp; IDs</summary>
+              <div class="jro-details-secondary">
+                created {{ pipeline.created_iso|jro_time }}{% if pipeline.started_iso %} · started {{ pipeline.started_iso|jro_time }}{% endif %}<br>
+                correlation <span class="jro-id">{{ pipeline.correlation_id }}</span>
+              </div>
+            </details>
+          </dd>
+          {% endif %}
         </dl>
-        {% if pipeline.correlation_id %}
-        <div class="jro-meta">
-          <span class="jro-relative">{{ pipeline.owned_since_relative|default:"" }}{% if pipeline.correlation_abbrev %} · run {{ pipeline.correlation_abbrev }}{% endif %}</span>
-          <button type="button" class="jro-copy" data-copy="{{ pipeline.correlation_id }}" data-aria-label="Copy correlation ID {{ pipeline.correlation_id }}" title="Copy correlation ID {{ pipeline.correlation_id }}" aria-label="Copy correlation ID {{ pipeline.correlation_id }}">Copy ID</button>
-        </div>
-        <details class="jro-details">
-          <summary>Timestamps &amp; IDs</summary>
-          <div class="jro-details-secondary jro-monospace">
-            created {{ pipeline.created_iso|default:"—" }}{% if pipeline.started_iso %} · started {{ pipeline.started_iso }}{% endif %}<br>
-            correlation {{ pipeline.correlation_id }}
-          </div>
-        </details>
-        {% endif %}
       </div>
     </div>
+    {% else %}
+    <p class="jro-error" role="alert"><strong>Could not compute pipeline ownership</strong> — see server logs (at {{ error_time }}). The action buttons below still work.</p>
     {% endif %}
   </section>
 
-  {# ── Inventory aggregates ── #}
-  <section class="module jro-section" aria-labelledby="jro-aggregates-heading">
-    <h2 id="jro-aggregates-heading">Inventory aggregates</h2>
-    <div class="jro-table-wrap">
-    <table>
-      <tr><th scope="row">Configured job sources</th><td><strong>{{ counts.configured }}</strong></td></tr>
-      <tr><th scope="row">Approved job sources</th><td><strong>{{ counts.approved }}</strong></td></tr>
-      <tr><th scope="row">Enabled job sources</th><td><strong>{{ counts.enabled }}</strong></td></tr>
-      <tr><th scope="row">Active listings</th><td><strong>{{ counts.active_listings }}</strong></td></tr>
-      <tr><th scope="row">Stale listings (&gt;7d)</th><td><strong>{{ counts.stale_listings }}</strong></td></tr>
-      <tr><th scope="row">Unresolved employers</th><td><strong>{{ counts.unresolved_employers }}</strong></td></tr>
-      <tr><th scope="row">Job matches</th><td><strong>{{ counts.matches }}</strong></td></tr>
-      <tr>
-        <th scope="row">Latest pipeline run</th>
-        <td>
-          {% if counts.latest_run %}
-            <span class="jro-badge jro-badge--{{ counts.latest_run.tone }}" data-state-class="run-{{ counts.latest_run.status }}">
-              <span class="jro-icon" aria-hidden="true">{{ counts.latest_run.icon }}</span>
-              {{ counts.latest_run.label }}
-            </span>
-            <span class="jro-meta">
-              <span class="jro-relative">{{ counts.latest_run.created_relative }}</span>
-              <span class="jro-monospace">{{ counts.latest_run.correlation_abbrev }}</span>
-              <button type="button" class="jro-copy" data-copy="{{ counts.latest_run.correlation_id }}" data-aria-label="Copy correlation ID {{ counts.latest_run.correlation_id }}" title="Copy correlation ID {{ counts.latest_run.correlation_id }}" aria-label="Copy correlation ID {{ counts.latest_run.correlation_id }}">Copy ID</button>
-            </span>
-            {% if counts.latest_run.error_summary %}
-              <span class="jro-details-secondary">Sanitized reason: {{ counts.latest_run.error_summary }}</span>
-            {% endif %}
-            <details class="jro-details">
-              <summary>Timestamps &amp; IDs</summary>
-              <div class="jro-details-secondary jro-monospace">
-                created {{ counts.latest_run.created }}<br>
-                correlation {{ counts.latest_run.correlation_id }}
-              </div>
-            </details>
-          {% else %}
-            <em>None</em>
-          {% endif %}
-        </td>
-      </tr>
-      <tr>
-        <th scope="row">Queued runs awaiting consumer</th>
-        <td>
-          {% if counts.pending_run %}
-            <span class="jro-badge jro-badge--info">
-              <span class="jro-icon" aria-hidden="true">⏳</span>
-              {{ counts.pending_run.count }} queued
-            </span>
-            <span class="jro-meta">
-              <span class="jro-relative">oldest queued {{ counts.pending_run.oldest_age_display }} ago</span>
-              <span class="jro-monospace">{{ counts.pending_run.oldest_correlation_abbrev }}</span>
-              <button type="button" class="jro-copy" data-copy="{{ counts.pending_run.oldest_correlation_id }}" data-aria-label="Copy correlation ID {{ counts.pending_run.oldest_correlation_id }}" title="Copy correlation ID {{ counts.pending_run.oldest_correlation_id }}" aria-label="Copy correlation ID {{ counts.pending_run.oldest_correlation_id }}">Copy ID</button>
-            </span>
-            <details class="jro-details">
-              <summary>Timestamps &amp; IDs</summary>
-              <div class="jro-details-secondary jro-monospace">correlation {{ counts.pending_run.oldest_correlation_id }}</div>
-            </details>
-          {% else %}
-            <em>None</em>
-          {% endif %}
-        </td>
-      </tr>
-    </table>
-    </div>
-  </section>
-
-  {# ── Readiness Gates ── #}
-  <section class="module jro-section" aria-labelledby="jro-gates-heading">
-    <h2 id="jro-gates-heading">Readiness gates</h2>
-    <div class="jro-table-wrap">
-    <table>
-      <tr>
-        <th scope="row">Adapter registered</th>
-        <td>
-          {% if gates.adapter_registered %}
-            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes ({{ gates.adapter_count }} registered)</span>
-          {% else %}
-            <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No</span>
-          {% endif %}
-        </td>
-      </tr>
-      <tr>
-        <th scope="row">Credentials configured</th>
-        <td>
-          {% if gates.credentials_configured %}
-            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes</span>
-          {% else %}
-            <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No</span>
-          {% endif %}
-        </td>
-      </tr>
-      <tr>
-        <th scope="row">Pipeline enabled</th>
-        <td>
-          {% if gates.pipeline_enabled %}
-            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes</span>
-          {% else %}
-            <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No</span>
-          {% endif %}
-        </td>
-      </tr>
-      <tr>
-        <th scope="row">Scheduler enabled</th>
-        <td>
-          {% if gates.scheduler_enabled %}
-            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Yes</span>
-          {% else %}
-            <span class="jro-badge jro-badge--danger"><span class="jro-icon" aria-hidden="true">✖</span> No</span>
-          {% endif %}
-        </td>
-      </tr>
-      <tr>
-        <th scope="row">Active or queued run / overlap</th>
-        <td>
-          {% if gates.active_run %}
-            <span class="jro-badge jro-badge--warning"><span class="jro-icon" aria-hidden="true">⚠</span> Active — {{ gates.active_run_status|title }}; see Pipeline ownership &amp; queue</span>
-          {% else %}
-            <span class="jro-badge jro-badge--success"><span class="jro-icon" aria-hidden="true">✓</span> Idle</span>
-          {% endif %}
-        </td>
-      </tr>
-    </table>
-    </div>
-  </section>
-
-  {# ── Admin Links ── #}
-  <section class="module jro-section" aria-labelledby="jro-links-heading">
-    <h2 id="jro-links-heading">Related admin sections</h2>
-    <ul>
-      {% for link in admin_links %}
-        <li><a href="{{ link.url }}">{{ link.label }}</a></li>
-      {% endfor %}
-    </ul>
+  {# ── End-to-end readiness (ordered prerequisites) ── #}
+  <section class="module jro-section" aria-labelledby="jro-readiness-heading">
+    <h2 id="jro-readiness-heading">End-to-end readiness</h2>
+    {% if readiness %}
+    {% if readiness.next_step %}
+    <p class="jro-summary-line jro-note">{{ readiness.met_count }} of {{ readiness.stages|length }} steps met{% if readiness.unmet_count %} · {{ readiness.unmet_count }} unmet{% endif %}{% if readiness.attention_count %} · {{ readiness.attention_count }} need{{ readiness.attention_count|pluralize:"s," }} attention{% endif %}{% if readiness.pending_count %} · {{ readiness.pending_count }} pending{% endif %}{% if readiness.unknown_count %} · {{ readiness.unknown_count }} unknown{% endif %}.</p>
+    {% include "admin/_job_retrieval_stages.html" %}
+    {% else %}
+    <details class="jro-details jro-card">
+      <summary>All {{ readiness.stages|length }} steps met<span class="jro-when-closed"> — show details</span></summary>
+      {% include "admin/_job_retrieval_stages.html" %}
+    </details>
+    {% endif %}
+    {% else %}
+    <p class="jro-error" role="alert"><strong>Readiness stages are unavailable</strong> — see server logs (at {{ error_time }}).</p>
+    {% endif %}
   </section>
 
   {# ── Bounded Audited Actions ── #}
   <section class="module jro-section" aria-labelledby="jro-actions-heading">
     <h2 id="jro-actions-heading">Actions</h2>
 
-    <p class="jro-explanation">All actions require explicit confirmation on a dedicated page before execution.</p>
+    <p class="jro-explanation jro-actions-intro">All actions require explicit confirmation on a dedicated page before execution.</p>
+    <div class="jro-actions">
 
-    <div class="jro-action-box">
-      <h3>Seed Curated Job Sources (dry-run)</h3>
+    <div id="jro-action-seed-preview" class="jro-card jro-action-box{% if actions.primary == 'seed_preview' %} jro-action-box--primary{% endif %}">
+      <h3>Preview curated source seed{% if actions.primary == "seed_preview" %} <span class="jro-tag">Recommended</span>{% endif %}</h3>
       <p>Preview seed_job_sources without writing to the database.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_seed_preview' %}">
         {% csrf_token %}
-        <input type="submit" value="Preview Seed" class="button jro-btn jro-btn--secondary">
+        <input type="submit" value="Preview seed (dry run)" class="jro-btn {% if actions.primary == 'seed_preview' %}jro-btn--primary{% else %}jro-btn--secondary{% endif %}">
       </form>
     </div>
 
-    <div class="jro-action-box">
-      <h3>Seed Curated Job Sources</h3>
-      <p>Create/update approved+enabled curated sources. Only allowlisted domains are seeded. Existing operator-set policy (approval/enabled) is preserved.</p>
+    <div id="jro-action-seed-execute" class="jro-card jro-action-box">
+      <h3>Seed curated job sources</h3>
+      <p>Create or update curated sources as pending and disabled (allowlisted domains only); existing approval and enabled settings are preserved.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_seed_execute' %}">
         {% csrf_token %}
-        <input type="submit" value="Execute Seed" class="button jro-btn jro-btn--danger">
+        <input type="submit" value="Seed curated sources" class="jro-btn jro-btn--secondary">
       </form>
     </div>
 
-    <div class="jro-action-box">
-      <h3>Queue Retrieval for Approved+Enabled Sources</h3>
-      <p>Creates a pending pipeline run for all approved+enabled job sources. Work is consumed by the next scheduled pipeline tick (or a manual run). Skipped if a run is already active or queued.</p>
+    <div id="jro-action-queue-retrieval" class="jro-card jro-action-box{% if actions.primary == 'queue_retrieval' %} jro-action-box--primary{% endif %}">
+      <h3>Queue retrieval for approved sources{% if actions.primary == "queue_retrieval" %} <span class="jro-tag">Recommended</span>{% endif %}</h3>
+      <p>Queues a job pipeline run, identical to "Queue full pipeline run" below. The run processes only approved and enabled sources. The next scheduled pipeline tick (or a manual run) consumes it.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_queue_retrieval' %}">
         {% csrf_token %}
-        <input type="submit" value="Queue Retrieval" class="button jro-btn jro-btn--primary">
+        <input type="submit" value="Queue retrieval run"{% if actions.queue_disabled %} disabled aria-describedby="jro-reason-queue-retrieval"{% endif %} class="jro-btn {% if actions.primary == 'queue_retrieval' %}jro-btn--primary{% else %}jro-btn--secondary{% endif %}">
       </form>
+      {% if actions.queue_disabled %}<p id="jro-reason-queue-retrieval" class="jro-action-reason">{{ actions.queue_reason }}</p>{% endif %}
     </div>
 
-    <div class="jro-action-box">
-      <h3>Queue Job Pipeline Run</h3>
-      <p>Creates a pending pipeline run that the next deployed consumer adopts (correlation id preserved). Skipped if a run is already active or queued.</p>
+    <div id="jro-action-queue-pipeline" class="jro-card jro-action-box">
+      <h3>Queue full pipeline run</h3>
+      <p>Queues the same job pipeline run as "Queue retrieval run" above (correlation id preserved). The run processes only approved and enabled sources.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_queue_pipeline' %}">
         {% csrf_token %}
-        <input type="submit" value="Queue Pipeline Run" class="button jro-btn jro-btn--primary">
+        <input type="submit" value="Queue pipeline run"{% if actions.queue_disabled %} disabled aria-describedby="jro-reason-queue-pipeline"{% endif %} class="jro-btn jro-btn--secondary">
       </form>
+      {% if actions.queue_disabled %}<p id="jro-reason-queue-pipeline" class="jro-action-reason">{{ actions.queue_reason }}</p>{% endif %}
     </div>
 
-    <div class="jro-action-box">
-      <h3>Retry Eligible Failed Run</h3>
-      <p>Retries the most recent failed pipeline run by creating a new pending run. Skipped if a run is already active or queued.</p>
+    <div id="jro-action-retry" class="jro-card jro-action-box{% if actions.primary == 'retry' %} jro-action-box--primary{% endif %}">
+      <h3>Retry failed run{% if actions.primary == "retry" %} <span class="jro-tag">Recommended</span>{% endif %}</h3>
+      <p>Retries the most recent failed pipeline run by creating a new pending run.</p>
       <form method="post" action="{% url 'admin:crank_jobretrievalops_retry_failed' %}">
         {% csrf_token %}
-        <input type="submit" value="Retry Failed Run" class="button jro-btn jro-btn--warning">
+        <input type="submit" value="Retry last failed run"{% if actions.retry_disabled %} disabled aria-describedby="jro-reason-retry"{% endif %} class="jro-btn {% if actions.primary == 'retry' %}jro-btn--primary{% else %}jro-btn--secondary{% endif %}">
       </form>
+      {% if actions.retry_disabled %}<p id="jro-reason-retry" class="jro-action-reason">{{ actions.retry_reason }}</p>{% endif %}
+    </div>
     </div>
   </section>
+
+  {# ── Run progress (queued is not completed) ── #}
+  <section class="module jro-section" aria-labelledby="jro-progress-heading">
+    <h2 id="jro-progress-heading">Run progress</h2>
+    {% if progress %}
+    {% with latest=progress.latest completed=progress.completed %}
+    {% if latest and completed and latest.id == completed.id %}
+    <div class="jro-card" data-latest-run="{{ latest.status }}" data-completed-run="{{ completed.status }}">
+      <h3>Latest run (also the last completed run)</h3>
+      <p class="jro-status-line"><span class="jro-badge jro-badge--{{ completed.tone }}"><span class="jro-icon jro-icon--{{ completed.icon }}" aria-hidden="true"></span>{{ completed.label }}</span></p>
+      <dl class="jro-fields">
+        <dt>Queued</dt><dd>{{ latest.created_age }} ago <span class="jro-monospace">({{ latest.created_at|jro_time }})</span></dd>
+        <dt>Started</dt><dd>{% if latest.started_at %}{{ latest.started_age }} ago <span class="jro-monospace">({{ latest.started_at|jro_time }})</span>{% else %}Not started{% endif %}</dd>
+        <dt>Finished</dt><dd>{{ completed.finished_age }} ago <span class="jro-monospace">({{ completed.finished_at|jro_time }})</span></dd>
+        <dt>Duration</dt><dd>{% if completed.duration %}{{ completed.duration }}{% else %}Unknown{% endif %}</dd>
+        {% for group in completed.stages %}
+        <dt>{{ group.label }}</dt>
+        <dd>{% for item in group.counts %}{{ item.label }}: <strong>{{ item.value }}</strong>{% if not forloop.last %} · {% endif %}{% empty %}<em>No counters recorded</em>{% endfor %}</dd>
+        {% endfor %}
+        {% if completed.deadline_note %}<dt>Deadline</dt><dd>{{ completed.deadline_note }}</dd>{% endif %}
+        {% if completed.error_summary %}<dt>Sanitized reason</dt><dd>{{ completed.error_summary }}</dd>{% endif %}
+      </dl>
+      <ul class="jro-links">
+        {% for link in completed.links %}<li><a href="{{ link.url }}">{{ link.label }}</a></li>{% endfor %}
+      </ul>
+    </div>
+    {% else %}
+    <div class="jro-card" data-latest-run="{% if latest %}{{ latest.status }}{% else %}none{% endif %}">
+      <h3>Latest run</h3>
+      {% if latest %}
+      <p class="jro-status-line"><span class="jro-badge jro-badge--{{ latest.tone }}"><span class="jro-icon jro-icon--{{ latest.icon }}" aria-hidden="true"></span>{{ latest.label }}</span></p>
+      <dl class="jro-fields">
+        <dt>Queued</dt><dd>{{ latest.created_age }} ago <span class="jro-monospace">({{ latest.created_at|jro_time }})</span></dd>
+        <dt>Started</dt><dd>{% if latest.started_at %}{{ latest.started_age }} ago <span class="jro-monospace">({{ latest.started_at|jro_time }})</span>{% else %}Not started{% endif %}</dd>
+        <dt>Finished</dt><dd>{% if latest.finished_at %}{{ latest.finished_age }} ago <span class="jro-monospace">({{ latest.finished_at|jro_time }})</span>{% else %}Not finished{% endif %}</dd>
+      </dl>
+      {% if latest.queued_only %}<p class="jro-explanation">No stage counts exist yet: a queued run has not fetched, accepted or matched anything.</p>{% endif %}
+      <ul class="jro-links"><li><a href="{{ latest.run_url }}">Open this agent run</a></li></ul>
+      {% else %}
+      <p class="jro-empty">No job-pipeline run has been recorded yet. Queue one from Actions once the prerequisites above are met.</p>
+      {% endif %}
+    </div>
+    <div class="jro-card" data-completed-run="{% if completed %}{{ completed.status }}{% else %}none{% endif %}">
+      <h3>Last completed run</h3>
+      {% if completed %}
+      <p class="jro-status-line"><span class="jro-badge jro-badge--{{ completed.tone }}"><span class="jro-icon jro-icon--{{ completed.icon }}" aria-hidden="true"></span>{{ completed.label }}</span></p>
+      <dl class="jro-fields">
+        <dt>Finished</dt><dd>{{ completed.finished_age }} ago <span class="jro-monospace">({{ completed.finished_at|jro_time }})</span></dd>
+        <dt>Duration</dt><dd>{% if completed.duration %}{{ completed.duration }}{% else %}Unknown{% endif %}</dd>
+        {% for group in completed.stages %}
+        <dt>{{ group.label }}</dt>
+        <dd>{% for item in group.counts %}{{ item.label }}: <strong>{{ item.value }}</strong>{% if not forloop.last %} · {% endif %}{% empty %}<em>No counters recorded</em>{% endfor %}</dd>
+        {% endfor %}
+        {% if completed.deadline_note %}<dt>Deadline</dt><dd>{{ completed.deadline_note }}</dd>{% endif %}
+        {% if completed.error_summary %}<dt>Sanitized reason</dt><dd>{{ completed.error_summary }}</dd>{% endif %}
+      </dl>
+      <ul class="jro-links">
+        {% for link in completed.links %}<li><a href="{{ link.url }}">{{ link.label }}</a></li>{% endfor %}
+      </ul>
+      {% else %}
+      <p class="jro-empty">No pipeline run has finished yet, so there are no stage counts to show.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% endwith %}
+    {% else %}
+    <p class="jro-error" role="alert"><strong>Could not compute run progress</strong> — see server logs (at {{ error_time }}).</p>
+    {% endif %}
+  </section>
+
+  {# ── Per-source table ── #}
+  <section class="module jro-section" aria-labelledby="jro-sources-heading">
+    <h2 id="jro-sources-heading">Sources</h2>
+    {% if sources %}
+    <div class="jro-card">
+    <p class="jro-note">Checked-in catalog approval (docs/job-source-catalog.yaml) is policy only; only the database row enables retrieval.</p>
+      {% if sources.rows %}
+      <div class="jro-table-wrap" tabindex="0" role="region" aria-labelledby="jro-sources-heading">
+      <table class="jro-sources" role="table">
+        <thead role="rowgroup">
+          <tr role="row">
+            <th scope="col" role="columnheader">Source</th>
+            <th scope="col" role="columnheader">Database state</th>
+            <th scope="col" role="columnheader">Adapter</th>
+            <th scope="col" role="columnheader">Credentials</th>
+            <th scope="col" role="columnheader">Last success</th>
+            <th scope="col" role="columnheader">Last attempt</th>
+            <th scope="col" role="columnheader">Failures</th>
+            <th scope="col" role="columnheader">Latest crawl</th>
+          </tr>
+        </thead>
+        <tbody role="rowgroup">
+          {% for row in sources.rows %}
+          <tr role="row" data-source-row>
+            <th scope="row" role="rowheader"><a href="{{ row.admin_url }}">{{ row.name }}</a><br><span class="jro-id">{{ row.adapter_key }}</span></th>
+            <td role="cell" data-label="Database state">{{ row.approval_state|title }} · {% if row.enabled %}enabled{% else %}disabled{% endif %}</td>
+            <td role="cell" data-label="Adapter">{% if row.adapter_registered %}<span class="jro-badge jro-badge--success"><span class="jro-icon jro-icon--check" aria-hidden="true"></span>Registered</span>{% else %}<span class="jro-badge jro-badge--danger"><span class="jro-icon jro-icon--x" aria-hidden="true"></span>Not registered</span>{% endif %}</td>
+            <td role="cell" data-label="Credentials">{% if row.credentials_present is None %}<span class="jro-badge jro-badge--neutral"><span class="jro-icon jro-icon--unknown" aria-hidden="true"></span>Unknown</span> <span class="jro-detail jro-detail--block">no adapter</span>{% elif row.credentials_present %}<span class="jro-badge jro-badge--success"><span class="jro-icon jro-icon--check" aria-hidden="true"></span>Present</span>{% elif row.enabled %}<span class="jro-badge jro-badge--danger"><span class="jro-icon jro-icon--x" aria-hidden="true"></span>Missing</span>{% else %}<span class="jro-badge jro-badge--neutral"><span class="jro-icon jro-icon--dash" aria-hidden="true"></span>Missing</span> <span class="jro-detail jro-detail--block">source disabled</span>{% endif %}</td>
+            <td role="cell" data-label="Last success">{% if row.last_success_at %}{{ row.last_success_age }} ago{% else %}Never{% endif %}</td>
+            <td role="cell" data-label="Last attempt">{% if row.last_attempt_at %}{{ row.last_attempt_age }} ago{% else %}Never{% endif %}</td>
+            <td role="cell" data-label="Failures">{{ row.consecutive_failures }}</td>
+            <td role="cell" data-label="Latest crawl">{% if row.latest_outcome %}<span class="jro-badge jro-badge--{{ row.outcome_tone }}"><span class="jro-icon jro-icon--{{ row.outcome_icon }}" aria-hidden="true"></span>{{ row.latest_outcome|title }}</span>{% if row.latest_error %}<br>Sanitized reason: {{ row.latest_error }}{% endif %}{% else %}No crawl run{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% if sources.truncated %}<p class="jro-note">Showing {{ sources.shown }} of {{ sources.total }} sources. Open the Job Source Catalog for the rest.</p>{% endif %}
+      {% else %}
+      <p class="jro-empty">No job sources exist in the database. Use “Preview seed” under Actions, then approve and enable a source in the Job Source Catalog.</p>
+      {% endif %}
+    </div>
+    {% else %}
+    <p class="jro-error" role="alert"><strong>Could not compute the source table</strong> — see server logs (at {{ error_time }}).</p>
+    {% endif %}
+  </section>
+
+  {# ── Backlog ── #}
+  <section class="module jro-section" aria-labelledby="jro-backlog-heading">
+    <h2 id="jro-backlog-heading">Backlog</h2>
+    {% if backlog %}
+    <div class="jro-card">
+    <dl class="jro-fields jro-backlog">
+      <dt>Unresolved employers</dt>
+      <dd><strong>{{ backlog.employers.unresolved }}</strong>{% if backlog.employers.unresolved %} · <a href="{{ links.unresolved }}">Review</a>{% endif %}</dd>
+      <dt>Observation review</dt>
+      <dd>{% if backlog.review.observations_pending %}<a href="{{ links.observations_pending }}"><strong>{{ backlog.review.observations_pending }}</strong> pending</a>{% else %}<strong>0</strong> pending{% endif %} · {% if backlog.review.observations_conflicted %}<a href="{{ links.observations_conflicted }}"><strong>{{ backlog.review.observations_conflicted }}</strong> conflicted</a>{% else %}<strong>0</strong> conflicted{% endif %}</dd>
+      <dt>Publication outbox</dt>
+      <dd>
+        <strong>{{ backlog.outbox.pending }}</strong> pending{% if backlog.outbox.oldest_pending_at %}, oldest {{ backlog.outbox.oldest_pending_age }} old{% endif %} ·
+        consumer {% if backlog.outbox.consumer_enabled %}enabled{% else %}disabled{% endif %}
+      </dd>
+      <dt>Publication → match lag</dt>
+      <dd><strong>{{ backlog.matches.lag_display }}</strong>{% if not backlog.matches.lag_seconds %} (every generation reflects the watermark){% endif %} · <a href="https://github.com/norcalipa/crank/blob/main/docs/match-recompute.md#watermark-gap-g8" rel="noopener">How lag is measured</a></dd>
+      <dt>Users without a current generation</dt>
+      <dd><strong>{{ backlog.matches.users_without_generation }}</strong></dd>
+      <dt>Recompute</dt>
+      <dd>{% if backlog.matches.recompute_enabled %}enabled{% else %}disabled{% endif %}</dd>
+      <dt>Committed reads</dt>
+      <dd>{% if backlog.matches.read_enabled %}enabled{% else %}disabled{% endif %}</dd>
+    </dl>
+    </div>
+    {% else %}
+    <p class="jro-error" role="alert"><strong>Could not compute backlog</strong> — see server logs (at {{ error_time }}).</p>
+    {% endif %}
+  </section>
+
+  {# ── Inventory aggregates ── #}
+  <section class="module jro-section" aria-labelledby="jro-aggregates-heading">
+  <h2 id="jro-aggregates-heading">Inventory aggregates</h2>
+  {% if counts %}
+  <details class="jro-diag">
+    <summary><span class="jro-diag-label">Show details</span><span class="jro-diag-tag">Diagnostic</span></summary>
+    <div class="jro-card">
+    <dl class="jro-fields">
+      <dt>Configured job sources</dt><dd><strong>{{ counts.configured }}</strong></dd>
+      <dt>Approved job sources</dt><dd><strong>{{ counts.approved }}</strong></dd>
+      <dt>Enabled job sources</dt><dd><strong>{{ counts.enabled }}</strong></dd>
+      <dt>Active listings</dt><dd><strong>{{ counts.active_listings }}</strong></dd>
+      <dt>Stale listings (&gt;7d)</dt><dd><strong>{{ counts.stale_listings }}</strong></dd>
+      <dt>Unresolved employers</dt><dd><strong>{{ counts.unresolved_employers }}</strong></dd>
+      <dt>Job matches</dt><dd><strong>{{ counts.matches }}</strong></dd>
+      <dt>Latest pipeline run</dt><dd>{% if counts.latest_run %}
+            <span class="jro-badge jro-badge--{{ counts.latest_run.tone }}" data-state-class="run-{{ counts.latest_run.status }}">
+              <span class="jro-icon jro-icon--{{ counts.latest_run.icon }}" aria-hidden="true"></span>{{ counts.latest_run.label }}
+            </span>
+            <span class="jro-meta">
+              <span class="jro-relative">{{ counts.latest_run.created_relative }}</span>
+              {% if pipeline and counts.latest_run.correlation_id == pipeline.correlation_id %}
+              <span class="jro-relative">same run as above</span>
+              {% else %}
+              <span class="jro-id-group">
+                <span class="jro-id">{{ counts.latest_run.correlation_abbrev }}</span>
+                <button type="button" class="jro-copy" data-copy="{{ counts.latest_run.correlation_id }}" data-aria-label="Copy correlation ID {{ counts.latest_run.correlation_id }}" title="Copy correlation ID {{ counts.latest_run.correlation_id }}" aria-label="Copy correlation ID {{ counts.latest_run.correlation_id }}">Copy ID</button>
+              </span>
+              {% endif %}
+            </span>
+            {% if counts.latest_run.error_summary %}
+              <span class="jro-details-secondary">Sanitized reason: {{ counts.latest_run.error_summary }}</span>
+            {% endif %}
+            {% if not pipeline or counts.latest_run.correlation_id != pipeline.correlation_id %}
+            <details class="jro-details">
+              <summary>Timestamps &amp; IDs</summary>
+              <div class="jro-details-secondary">
+                created {{ counts.latest_run.created|jro_time }}<br>
+                correlation <span class="jro-id">{{ counts.latest_run.correlation_id }}</span>
+              </div>
+            </details>
+            {% endif %}
+          {% else %}
+            <em>None</em>
+          {% endif %}</dd>
+      <dt>Queued runs awaiting consumer</dt><dd>{% if counts.pending_run %}
+            <span class="jro-badge jro-badge--info">
+              <span class="jro-icon jro-icon--clock" aria-hidden="true"></span>{{ counts.pending_run.count }} queued
+            </span>
+            <span class="jro-meta">
+              <span class="jro-relative">oldest queued {{ counts.pending_run.oldest_age_display }} ago</span>
+              {% if pipeline and counts.pending_run.oldest_correlation_id == pipeline.correlation_id %}
+              <span class="jro-relative">same run as above</span>
+              {% else %}
+              <span class="jro-id-group">
+                <span class="jro-id">{{ counts.pending_run.oldest_correlation_abbrev }}</span>
+                <button type="button" class="jro-copy" data-copy="{{ counts.pending_run.oldest_correlation_id }}" data-aria-label="Copy correlation ID {{ counts.pending_run.oldest_correlation_id }}" title="Copy correlation ID {{ counts.pending_run.oldest_correlation_id }}" aria-label="Copy correlation ID {{ counts.pending_run.oldest_correlation_id }}">Copy ID</button>
+              </span>
+              {% endif %}
+            </span>
+          {% else %}
+            <em>None</em>
+          {% endif %}</dd>
+    </dl>
+    </div>
+  </details>
+  {% else %}
+  <p class="jro-error" role="alert"><strong>Could not compute inventory aggregates</strong> — see server logs (at {{ error_time }}).</p>
+  {% endif %}
+  </section>
+
+  {# ── Readiness Gates ── #}
+  <section class="module jro-section" aria-labelledby="jro-gates-heading">
+  <h2 id="jro-gates-heading">Readiness gates</h2>
+  {% if gates %}
+  <details class="jro-diag">
+    <summary><span class="jro-diag-label">Show details</span><span class="jro-diag-tag">Diagnostic</span></summary>
+    <div class="jro-card">
+    <dl class="jro-fields">
+      <dt>Adapter registered</dt><dd>{% if gates.adapter_registered %}
+            <span class="jro-badge jro-badge--success"><span class="jro-icon jro-icon--check" aria-hidden="true"></span>Yes</span>
+            <span class="jro-detail">{{ gates.adapter_count }} job adapter{{ gates.adapter_count|pluralize }} registered</span>
+          {% else %}
+            <span class="jro-badge jro-badge--danger"><span class="jro-icon jro-icon--x" aria-hidden="true"></span>No</span>
+            {% if gates.adapter_unregistered_sources %}<span class="jro-detail">{{ gates.adapter_unregistered_sources }} live source{{ gates.adapter_unregistered_sources|pluralize }} without an adapter</span>{% endif %}
+          {% endif %}</dd>
+      <dt>Credentials configured</dt><dd>{% if gates.credentials_configured %}
+            <span class="jro-badge jro-badge--success"><span class="jro-icon jro-icon--check" aria-hidden="true"></span>Yes</span>
+            <span class="jro-detail">{% if gates.credentials_sources_checked == 1 %}1 live source{% else %}all {{ gates.credentials_sources_checked }} live sources{% endif %}</span>
+          {% else %}
+            <span class="jro-badge jro-badge--danger"><span class="jro-icon jro-icon--x" aria-hidden="true"></span>No</span>
+            {% if not gates.credentials_sources_checked %}<span class="jro-detail">no approved and enabled source</span>{% elif gates.credentials_sources_missing %}<span class="jro-detail">{{ gates.credentials_sources_missing }} of {{ gates.credentials_sources_checked }} live source{{ gates.credentials_sources_checked|pluralize }} missing settings</span>{% endif %}
+          {% endif %}</dd>
+      <dt>Pipeline enabled</dt><dd>{% if gates.pipeline_enabled %}
+            <span class="jro-badge jro-badge--success"><span class="jro-icon jro-icon--check" aria-hidden="true"></span>Yes</span>
+            <span class="jro-detail">AGENT_RUN_ENABLED, JOB_PIPELINE_ENABLED, switch</span>
+          {% else %}
+            <span class="jro-badge jro-badge--danger"><span class="jro-icon jro-icon--x" aria-hidden="true"></span>No</span>
+            <span class="jro-detail">{% if not gates.pipeline_parts.agent_run_enabled %}AGENT_RUN_ENABLED off{% endif %}{% if not gates.pipeline_parts.job_pipeline_enabled %}{% if not gates.pipeline_parts.agent_run_enabled %} · {% endif %}JOB_PIPELINE_ENABLED off{% endif %}{% if not gates.pipeline_parts.switch_enabled %}{% if not gates.pipeline_parts.agent_run_enabled or not gates.pipeline_parts.job_pipeline_enabled %} · {% endif %}job_pipeline switch disabled{% endif %}</span>
+          {% endif %}</dd>
+      <dt>Organization crawl scheduling (CRAWL_CRON_ENABLED)</dt><dd>{% if gates.scheduler_enabled %}
+            <span class="jro-badge jro-badge--success"><span class="jro-icon jro-icon--check" aria-hidden="true"></span>On</span>
+          {% else %}
+            <span class="jro-badge jro-badge--neutral"><span class="jro-icon jro-icon--dash" aria-hidden="true"></span>Off</span>
+            <span class="jro-detail">not required for job retrieval</span>
+          {% endif %}</dd>
+      <dt>Active or queued run / overlap</dt><dd>{% if gates.active_run %}
+            <span class="jro-badge jro-badge--{% if gates.active_run_status == 'pending' %}info{% else %}warning{% endif %}"><span class="jro-icon jro-icon--{% if gates.active_run_status == 'pending' %}clock{% else %}alert{% endif %}" aria-hidden="true"></span>{% if gates.active_run_status == 'pending' %}Queued{% else %}Active — {{ gates.active_run_status|title }}{% endif %}</span>
+            <span class="jro-detail">see Pipeline ownership &amp; queue</span>
+          {% else %}
+            <span class="jro-badge jro-badge--neutral"><span class="jro-icon jro-icon--dash" aria-hidden="true"></span>Idle</span>
+          {% endif %}</dd>
+    </dl>
+    </div>
+  </details>
+  {% else %}
+  <p class="jro-error" role="alert"><strong>Could not compute readiness gates</strong> — see server logs (at {{ error_time }}).</p>
+  {% endif %}
+  </section>
+
+  {# ── Admin Links ── #}
+  <section class="module jro-section" aria-labelledby="jro-links-heading">
+    <h2 id="jro-links-heading">Related admin sections</h2>
+    <div class="jro-card">
+    <ul class="jro-links">
+      {% for link in admin_links %}
+        <li><a href="{{ link.url }}">{{ link.label }}</a></li>
+      {% endfor %}
+    </ul>
+    </div>
+  </section>
+</div>
 </div>
 {% endblock %}

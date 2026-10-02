@@ -404,6 +404,21 @@ class JobSourceAdapter(ABC):
 
     key: str
     version: str
+    #: Setting/env names that must be non-empty for the adapter to start.
+    #: Read-only readiness checks report presence only, never the values.
+    required_settings: tuple[str, ...] = ()
+
+    @classmethod
+    def startup_blockers(cls, source) -> list[str]:
+        """No-network reasons ``__init__`` would refuse this source, excluding credentials.
+
+        Must mirror the adapter's own enablement and host checks so readiness
+        reporting cannot say "ready" for a source that refuses to start.
+
+        Readiness passes rows loaded with ``.only("name", "adapter_key", "base_url")``:
+        read only those fields, since any other one costs a query per live source.
+        """
+        return []
 
     def __init__(self, source) -> None:
         self.source = source
