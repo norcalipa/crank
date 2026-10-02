@@ -113,4 +113,52 @@ describe('useTranscriptScroll', () => {
         rerender(<Harness assistantCount={1} owner="transcript"/>);
         expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({behavior: 'auto'}));
     });
+
+    test('a scrollbar drag counts as the reader moving; a press on a child does not', () => {
+        render(<Harness assistantCount={1} owner="transcript"/>);
+        const log = screen.getByTestId('log');
+        const child = document.createElement('button');
+        log.appendChild(child);
+        // A button press inside the log is not a drag, so nothing ends following.
+        fireEvent.pointerDown(child);
+        fireEvent.pointerUp(window);
+        metrics(log, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+        // Dragging the scrollbar (a press on the scroller itself) does.
+        fireEvent.pointerDown(log);
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+        fireEvent.pointerUp(window);
+    });
+
+    test('a resized transcript stays at the end while following and is left alone otherwise', () => {
+        const callbacks: Array<() => void> = [];
+        const original = (window as unknown as {ResizeObserver?: unknown}).ResizeObserver;
+        (window as unknown as {ResizeObserver: unknown}).ResizeObserver = class {
+            constructor(cb: () => void) { callbacks.push(cb); }
+            observe() { /* noop */ }
+            disconnect() { /* noop */ }
+        };
+        try {
+            render(<Harness assistantCount={1} owner="transcript"/>);
+            const log = screen.getByTestId('log');
+            const scrollTo = jest.fn();
+            log.scrollTo = scrollTo;
+            metrics(log, {scrollHeight: 1000, scrollTop: 0, clientHeight: 100});
+            callbacks.forEach((cb) => cb());
+            expect(scrollTo).toHaveBeenCalledWith({top: 1000, behavior: 'auto'});
+            scrollTo.mockClear();
+            callbacks.forEach((cb) => cb());
+            expect(scrollTo).not.toHaveBeenCalled();
+            fireEvent.wheel(log);
+            metrics(log, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
+            fireEvent.scroll(log);
+            metrics(log, {scrollHeight: 1000, scrollTop: 100, clientHeight: 150});
+            callbacks.forEach((cb) => cb());
+            expect(scrollTo).not.toHaveBeenCalled();
+        } finally {
+            (window as unknown as {ResizeObserver?: unknown}).ResizeObserver = original;
+        }
+    });
 });

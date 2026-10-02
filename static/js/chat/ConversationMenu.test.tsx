@@ -53,6 +53,10 @@ describe('ConversationMenu', () => {
         expect(screen.getByRole('menuitem', {name: 'About saved history'})).toHaveFocus();
         fireEvent.keyDown(menu, {key: 'Home'});
         expect(screen.getByRole('menuitem', {name: 'New conversation'})).toHaveFocus();
+        // Unrelated keys leave focus and the menu alone.
+        fireEvent.keyDown(menu, {key: 'a'});
+        expect(screen.getByRole('menuitem', {name: 'New conversation'})).toHaveFocus();
+        expect(screen.getByRole('menu')).toBeInTheDocument();
     });
 
     test('ArrowUp on More opens the menu on the last item; Tab closes it', () => {
