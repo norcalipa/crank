@@ -80,7 +80,7 @@ export function preferenceValueLabel(value: unknown, path?: string, currency?: u
 
 /** A criterion's weight as the user sets it: 1.0 is a requirement, anything lower a preference. */
 export function importanceLabel(value: unknown): string {
-    if (typeof value !== 'number') return 'Default';
+    if (typeof value !== 'number') return 'Preference';
     return value >= 1 ? 'Requirement' : 'Preference';
 }
 
@@ -115,7 +115,7 @@ export function expandChanges(changes: PreferenceChange[], labels?: Record<strin
             const name = labels?.[key] || preferencePathLabel(key);
             rows.push({
                 key: `${change.path}.${key}`, path: change.path, old: before[key], new: after[key],
-                label: isImportance ? name : `${group} \u203a ${name}`, importance: isImportance,
+                label: isImportance ? `${name} importance` : `${group} \u203a ${name}`, importance: isImportance,
             });
         }
     }

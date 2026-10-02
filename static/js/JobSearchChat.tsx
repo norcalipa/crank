@@ -113,6 +113,8 @@ export interface PreferenceProposal {
     change_count: number;
     base_revision: number;
     unsupported_criteria: string[];
+    // The saved currency the proposal's money values are shown in.
+    currency?: string | null;
     token: PreferenceProposalToken;
 }
 
@@ -553,7 +555,7 @@ export function PreferenceProposalNotice({proposal, state, error, errorType, onD
                 </button>
             </div>
             {proposal.changes.length > 0 ? (
-                <ChangeList changes={proposal.changes} label="Proposed preference changes"/>
+                <ChangeList changes={proposal.changes} currency={proposal.currency} label="Proposed preference changes"/>
             ) : (
                 <p className="pref-change-empty" data-testid="preference-proposal-empty">
                     The suggestion does not change any individual preference fields.

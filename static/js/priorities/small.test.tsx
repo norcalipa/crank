@@ -187,14 +187,14 @@ describe('money in one edit that changes the currency', () => {
 describe('Review latest while it runs', () => {
     test('is announced as busy, ignores a second activation and keeps focusability', () => {
         const onReviewLatest = jest.fn();
-        render(<ReviewChanges changes={changes} stale pending announcement="Updated. " onApply={jest.fn()}
+        render(<ReviewChanges changes={changes} stale pending onApply={jest.fn()}
                               onCancel={jest.fn()} onReviewLatest={onReviewLatest}/>);
         const button = screen.getByRole('button', {name: 'Checking…'});
         expect(button).toHaveAttribute('aria-disabled', 'true');
         expect(button).not.toBeDisabled();
         fireEvent.click(button);
         expect(onReviewLatest).not.toHaveBeenCalled();
-        expect(screen.getByRole('status')).toHaveTextContent('Updated. 1 change to review');
+        expect(screen.getByRole('status')).toHaveTextContent('1 change to review');
     });
 });
 
@@ -240,6 +240,17 @@ describe('review wording (issue #480 round 1)', () => {
         expect(text).toContain('Minimum base salary');
         expect(text).toContain('Requirement');
         expect(text).not.toContain('{');
+        expect(text).toContain('Minimum base salary importance');
+    });
+
+    test('a weight that is no longer saved reads as a preference, not as "Default"', () => {
+        render(<ChangeList label="Changes"
+            changes={[{path: 'importance', old: {'compensation.minimum_salary': 1}, new: {}}]}
+            labels={{'compensation.minimum_salary': 'Minimum base salary'}}/>);
+        const row = screen.getByText('Minimum base salary importance').closest('li') as HTMLElement;
+        expect(row).toHaveTextContent('Requirement');
+        expect(row).toHaveTextContent('Preference');
+        expect(row).not.toHaveTextContent('Default');
     });
 
     test('currency prefixes follow the saved currency', () => {

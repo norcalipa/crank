@@ -25,8 +25,6 @@ export interface ReviewChangesProps {
     onReviewLatest?: () => void;
     // Criteria the draft edited that also changed elsewhere since it was loaded (labels).
     conflicts?: string[];
-    // Spoken (not shown) when a proposal replaces an earlier one, e.g. after "Review latest".
-    announcement?: string;
     currency?: unknown;
     choicePaths?: ReadonlySet<string>;
     // Editor field labels by path, so the diff names a field as the editor does.
@@ -94,7 +92,7 @@ export function ChangeList({changes, label, labels, currency, choicePaths}: {
 export default function ReviewChanges({
     changes, scope = 'account', pending = false, error = null, stale = false,
     heading = 'Review your changes', onApply, onCancel, onEdit, onApplySearchOnly, onReviewLatest,
-    labels, currency, choicePaths, conflicts = [], announcement = '', testId = 'priorities-review',
+    labels, currency, choicePaths, conflicts = [], testId = 'priorities-review',
 }: ReviewChangesProps) {
     const headingId = `priorities-review-${React.useId()}`;
     const headingRef = React.useRef<HTMLHeadingElement>(null);
@@ -109,7 +107,7 @@ export default function ReviewChanges({
                 {heading}
             </h3>
             <span className="visually-hidden" role="status">
-                {announcement}{changes.length === 1 ? '1 change to review' : `${changes.length} changes to review`}
+                {changes.length === 1 ? '1 change to review' : `${changes.length} changes to review`}
             </span>
             <p className="priorities-scope-note">
                 {isSearch

@@ -75,6 +75,65 @@ describe('patch conversion', () => {
     });
 });
 
+describe('clearing a criterion drops its importance (issue #480 review)', () => {
+    const modes = field({path: 'work_location.modes', type: 'str_list', set: true, value: ['remote'], hard: true});
+    const salary = field({set: true, value: 150000, hard: true});
+    const flag = field({path: 'c.flag', type: 'bool', set: true, value: true, hard: true});
+    const saved = {importance: {'work_location.modes': 1, 'compensation.minimum_salary': 1, 'c.flag': 1, other: 0}};
+
+    test('an emptied list, scalar and flag each lose their key in the same patch', () => {
+        const draft = {values: {'work_location.modes': [], 'compensation.minimum_salary': ' ', 'c.flag': ''}, hard: {}};
+        expect(buildPatch([modes, salary, flag], saved, draft)).toEqual({
+            set: {'work_location.modes': [], importance: {other: 0}},
+            remove: {'compensation.minimum_salary': null, 'c.flag': null},
+        });
+    });
+
+    test('a non-array draft counts as emptied, a changed list keeps its weight', () => {
+        expect(buildPatch([modes], saved, {values: {'work_location.modes': 'x' as any}, hard: {}}))
+            .toEqual({set: {'work_location.modes': [], importance: {'compensation.minimum_salary': 1, 'c.flag': 1, other: 0}}});
+        expect(buildPatch([modes], saved, {values: {'work_location.modes': ['onsite']}, hard: {}}))
+            .toEqual({set: {'work_location.modes': ['onsite']}});
+    });
+
+    test('a field without a saved weight, and a toggle on a cleared field, add no importance', () => {
+        expect(buildPatch([modes], {}, {values: {'work_location.modes': []}, hard: {}}))
+            .toEqual({set: {'work_location.modes': []}});
+        expect(buildPatch([salary], saved, {values: {'compensation.minimum_salary': ''}, hard: {'compensation.minimum_salary': false}}))
+            .toEqual({remove: {'compensation.minimum_salary': null}, set: {importance: {'work_location.modes': 1, 'c.flag': 1, other: 0}}});
+    });
+});
+
+describe('importance in a proposed patch (issue #480 review)', () => {
+    const fields = [
+        field({set: true, value: 1, hard: true}),
+        field({path: 'culture', type: 'str_list', set: true, value: ['kind', 'open'], hard: true}),
+        field({path: 'locked', hard: true, hard_locked: true}),
+        field({path: 'work_location.modes', type: 'str_list', hard: false}),
+        field({path: 'priorities', type: 'float_map', hard: true}),
+    ];
+
+    test('removing an importance key turns that requirement into a preference', () => {
+        expect(patchToDraft(fields, {remove: {importance: ['compensation.minimum_salary', 'locked', 'bogus', 'work_location.modes']}}).hard)
+            .toEqual({'compensation.minimum_salary': false});
+        expect(patchFitsEditor({remove: {importance: ['compensation.minimum_salary']}})).toBe(true);
+    });
+
+    test('a whole importance map replaces the saved one: requirements it leaves out become preferences', () => {
+        const draft = patchToDraft(fields, {set: {importance: {culture: 1, 'work_location.modes': 1, locked: 0.2, priorities: 0}}});
+        expect(draft.hard).toEqual({'compensation.minimum_salary': false, 'work_location.modes': true});
+        expect(patchToDraft(fields, {set: {importance: {'compensation.minimum_salary': 0.5, culture: 1}}}).hard)
+            .toEqual({'compensation.minimum_salary': false});
+    });
+
+    test('list removals start from what is typed, not the saved list', () => {
+        const typed = {values: {culture: ['open', 'typed']}, hard: {}};
+        expect(patchToDraft(fields, {remove: {culture: ['kind']}}, typed).values.culture).toEqual(['open', 'typed']);
+        expect(patchToDraft(fields, {remove: {culture: ['open']}}, typed).values.culture).toEqual(['typed']);
+        expect(patchToDraft(fields, {remove: {culture: ['kind']}}, emptyDraft()).values.culture).toEqual(['open']);
+    });
+});
+
 describe('list entries keep their commas (issue #480 review)', () => {
     const list = field({path: 'exclusions.locations', type: 'str_list', set: true, value: ['New York, NY']});
 

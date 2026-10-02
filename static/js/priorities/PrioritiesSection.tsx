@@ -94,6 +94,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const epoch = React.useRef(0);
     const writes = React.useRef(new Set<AbortController>());
     const seeded = React.useRef<unknown>(null);
+    const appliedRef = React.useRef<unknown>(null);
     const focusAfter = React.useRef<'edit' | 'reset' | null>(null);
     const editButton = React.useRef<HTMLButtonElement>(null);
     const resetButton = React.useRef<HTMLButtonElement>(null);
@@ -205,16 +206,20 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             // applied summary or the reset prompt leaves that step; a seed arriving while editing or reviewing merges
             // into the draft, so typed values the proposal does not touch are kept.
             seeded.current = editorSeed;
-            const fromSeed = newSeed ? patchToDraft(snapshot.fields, editorSeed) : emptyDraft();
-            setDraft((current) => (working
-                ? {values: {...current.values, ...fromSeed.values}, hard: {...current.hard, ...fromSeed.hard}}
-                : fromSeed));
+            setDraft((current) => {
+                const fromSeed = newSeed ? patchToDraft(snapshot.fields, editorSeed, working ? current : undefined) : emptyDraft();
+                return working
+                    ? {values: {...current.values, ...fromSeed.values}, hard: {...current.hard, ...fromSeed.hard}}
+                    : fromSeed;
+            });
             setFieldErrors({});
             setFormError(null);
             setStep('edit');
         } else if (!hostsEditor) {
-            // Functional: a write may have just moved the step to 'applied'.
-            setStep((current) => (current === 'edit' || current === 'review' ? 'view' : current));
+            // The next open request is a new one, even when it carries the same seed object.
+            seeded.current = null;
+            // Functional: a write may have just moved the step to 'applied'. A summary not yet dismissed returns, with its Undo.
+            setStep((current) => (current === 'edit' || current === 'review' ? (appliedRef.current ? 'applied' : 'view') : current));
         }
     }, [hostsEditor, editorSeed, step, snapshot]);
 
@@ -229,9 +234,15 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         }
     }, [step]);
 
+    appliedRef.current = applied;
+
     const close = () => {
-        focusAfter.current = 'edit';
-        setStep('view');
+        if (applied) {
+            setStep('applied');
+        } else {
+            focusAfter.current = 'edit';
+            setStep('view');
+        }
         setPrioritiesEditorOpen(null);
     };
 
@@ -331,6 +342,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const reviewLatest = async () => {
         if (rebasing) return;
         const before = snapshot;
+        setRefreshed(false);
         setRebasing(true);
         try {
             const fresh = await load();
@@ -455,7 +467,6 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                 <ReviewChanges key={proposal.id} changes={proposal.changes} labels={labels} currency={currency}
                                choicePaths={choicePaths} conflicts={conflicts} pending={busy || rebasing}
                                error={reviewError} stale={stale}
-                               announcement={refreshed ? 'Updated against your latest priorities. ' : ''}
                                onApply={() => void apply('account')}
                                onApplySearchOnly={() => void apply('search')}
                                onEdit={() => setStep('edit')} onCancel={close}
@@ -468,7 +479,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                             choicePaths={choicePaths} summary={applied.summary}
                             canUndo={applied.result.undo !== null} undoPending={undoPending}
                             undoError={undoError} undone={undone} onUndo={() => void undo()}
-                            onDismiss={() => { focusAfter.current = 'edit'; setStep('view'); }}/>
+                            onDismiss={() => { focusAfter.current = 'edit'; setApplied(null); setStep('view'); }}/>
         );
     } else if (step === 'confirm-reset') {
         body = (
@@ -526,6 +537,9 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                     {SESSION_EXPIRED_MESSAGE} <a href={signInHref()}>Sign in</a>
                 </p>
             )}
+            <span className="visually-hidden" role="status" data-testid="priorities-announcement">
+                {step === 'review' && refreshed ? 'Updated against your latest priorities.' : ''}
+            </span>
             {body}
         </section>
     );

@@ -62,6 +62,7 @@ export function buildPatch(
 ): PreferencePatch | null {
     const set: Record<string, unknown> = {};
     const remove: Record<string, unknown> = {};
+    const cleared = new Set<string>();
     for (const field of fields) {
         const edited = draft.values[field.path];
         if (edited === undefined || sameDraft(edited, toDraftValue(field))) {
@@ -70,6 +71,7 @@ export function buildPatch(
         if (field.type === 'bool') {
             if (edited === '') {
                 remove[field.path] = null;
+                cleared.add(field.path);
             } else {
                 set[field.path] = edited === 'true';
             }
@@ -77,13 +79,15 @@ export function buildPatch(
             // Each entry is saved exactly as entered: commas inside an entry are never split.
             // An emptied list is a `set` of []: the server's `remove` for a list must name items.
             set[field.path] = Array.isArray(edited) ? edited : [];
+            if (!Array.isArray(edited) || edited.length === 0) cleared.add(field.path);
         } else if (String(edited).trim() === '') {
             remove[field.path] = null;
+            cleared.add(field.path);
         } else {
             set[field.path] = parseScalar(field, String(edited));
         }
     }
-    const importance = importanceFor(fields, preferences, draft);
+    const importance = importanceFor(fields, preferences, draft, cleared);
     if (importance) {
         set.importance = importance;
     }
@@ -94,13 +98,21 @@ export function buildPatch(
 }
 
 function importanceFor(
-    fields: EditorField[], preferences: Record<string, unknown>, draft: Draft,
+    fields: EditorField[], preferences: Record<string, unknown>, draft: Draft, cleared: ReadonlySet<string>,
 ): Record<string, number> | null {
     const current = (preferences.importance && typeof preferences.importance === 'object'
         ? preferences.importance : {}) as Record<string, number>;
     const importance = {...current};
     let importanceChanged = false;
+    // An emptied criterion keeps no weight: otherwise its next value would silently become a requirement.
+    for (const path of cleared) {
+        if (path in importance) {
+            delete importance[path];
+            importanceChanged = true;
+        }
+    }
     for (const field of fields) {
+        if (cleared.has(field.path)) continue;
         const hard = draft.hard[field.path];
         if (hard === undefined || hard === field.hard || field.hard_locked) {
             continue;
@@ -123,7 +135,9 @@ function editableField(byPath: Map<string, EditorField>, path: string): EditorFi
 }
 
 /** Loads a proposed patch (the assistant's) into editor values, so Edit starts from the proposal. */
-export function patchToDraft(fields: EditorField[], patch: PreferencePatch | null | undefined): Draft {
+export function patchToDraft(
+    fields: EditorField[], patch: PreferencePatch | null | undefined, typed?: Draft,
+): Draft {
     const draft = emptyDraft();
     if (!patch) return draft;
     const byPath = new Map(fields.map((field) => [field.path, field]));
@@ -132,21 +146,34 @@ export function patchToDraft(fields: EditorField[], patch: PreferencePatch | nul
         if (field) {
             draft.values[path] = asDraftText(field, value);
         } else if (path === 'importance' && value && typeof value === 'object') {
-            for (const [key, weight] of Object.entries(value as Record<string, unknown>)) {
-                const target = byPath.get(key);
-                if (target && typeof weight === 'number' && (weight >= 1) !== target.hard) {
-                    draft.hard[key] = weight >= 1;
+            // The server replaces the whole map, so a saved requirement the map leaves out is dropped.
+            const weights = value as Record<string, unknown>;
+            for (const target of fields) {
+                const weight = weights[target.path];
+                if (target.hard_locked || target.type === 'float_map') continue;
+                const hard = typeof weight === 'number' ? weight >= 1 : false;
+                if (hard !== target.hard) {
+                    draft.hard[target.path] = hard;
                 }
             }
         }
     }
     for (const [path, value] of Object.entries(patch.remove || {})) {
+        if (path === 'importance' && Array.isArray(value)) {
+            for (const key of value.map(String)) {
+                const target = byPath.get(key);
+                if (target && target.hard && !target.hard_locked) draft.hard[key] = false;
+            }
+            continue;
+        }
         const field = editableField(byPath, path);
         if (!field) continue;
         if (field.type === 'str_list' && Array.isArray(value)) {
-            // Dropping named entries keeps the rest of the saved list.
+            // Dropping named entries keeps what is typed, or else the rest of the saved list.
             const dropped = new Set(value.map(String));
-            const saved = Array.isArray(field.value) ? field.value.map(String) : [];
+            const typedList = typed?.values[path];
+            const saved = Array.isArray(typedList) ? typedList
+                : Array.isArray(field.value) ? field.value.map(String) : [];
             draft.values[path] = saved.filter((item) => !dropped.has(item));
         } else {
             draft.values[path] = field.type === 'str_list' ? [] : '';

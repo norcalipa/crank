@@ -6,7 +6,7 @@ import * as React from 'react';
 
 import {
     clearWorkspaceContext,
-    getWorkspaceSnapshot,
+    getWorkspaceSnapshot, setPrioritiesEditorOpen,
     resetWorkspaceForTests,
     setWorkspaceAccount,
     setWorkspaceContext,
@@ -3631,16 +3631,55 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
         expect(within(notice).getByText('$150,000')).toBeInTheDocument();
     });
 
-    test('Edit keeps the proposal when part of it cannot be shown in the editor (issue #480 review)', async () => {
-        const mapProposal = {...proposal, token: {...proposal.token, patch: {set: {'priorities.culture': 0.5}}}};
+    test.each([
+        ['a whole priorities map', {set: {priorities: {culture: 0.5}}}],
+        ['a priorities subtree', {remove: {priorities: ['culture']}}],
+    ])('Edit keeps the proposal when it carries %s, and a second Edit re-sends the same seed (issue #480 review)', async (_name, patch) => {
+        const keptProposal = {...proposal, token: {...proposal.token, patch}};
         await submitTurnWithProposal({
             message: assistantMessage(23, 'I suggest these updates.', false),
             preferences_changed: false,
-            preference_proposal: mapProposal,
+            preference_proposal: keptProposal,
         });
         fireEvent.click(screen.getByTestId('preference-proposal-edit-button'));
-        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(mapProposal.token.patch);
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(keptProposal.token.patch);
         expect(screen.getByTestId('preference-proposal-notice')).toBeInTheDocument();
+        act(() => setPrioritiesEditorOpen(null));
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toBeNull();
+        fireEvent.click(screen.getByTestId('preference-proposal-edit-button'));
+        expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(keptProposal.token.patch);
+    });
+
+    test('Edit drops a proposal that only removes an importance weight, since the editor can show it (issue #480 review)', async () => {
+        const weightProposal = {
+            ...proposal,
+            token: {...proposal.token, patch: {remove: {importance: ['compensation.minimum_salary']}}},
+        };
+        await submitTurnWithProposal({
+            message: assistantMessage(25, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: weightProposal,
+        });
+        fireEvent.click(screen.getByTestId('preference-proposal-edit-button'));
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(weightProposal.token.patch);
+        expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument();
+    });
+
+    test('the proposal shows money in the saved currency the server names (issue #480 review)', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(26, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: {
+                ...proposal,
+                currency: 'EUR',
+                changes: [{path: 'compensation.minimum_salary', old: 150000, new: 160000}],
+            },
+        });
+        const notice = screen.getByTestId('preference-proposal-notice');
+        expect(notice).toHaveTextContent('EUR 150,000');
+        expect(notice).toHaveTextContent('EUR 160,000');
+        expect(notice).not.toHaveTextContent('$');
     });
 
     test('a search-only confirmation marks a capped match count (issue #480 review)', async () => {

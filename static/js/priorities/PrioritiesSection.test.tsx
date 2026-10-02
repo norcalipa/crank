@@ -243,7 +243,7 @@ describe('PrioritiesSection', () => {
         fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '150000'}});
         fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
         await screen.findByRole('heading', {name: 'Review your changes'});
-        expect(screen.getByRole('status')).toHaveTextContent('1 change to review');
+        expect(screen.getByText('1 change to review')).toHaveAttribute('role', 'status');
         expect(screen.getByText('Compensation › Minimum base salary', {exact: false})).toBeInTheDocument();
     });
 
@@ -887,6 +887,63 @@ describe('PrioritiesSection', () => {
             expect(bodies[0].patch.set).toEqual({'compensation.minimum_salary': 123456, 'compensation.currency': 'EUR'});
         });
 
+        test('opening the editor with the same seed object again shows the proposal, not the saved values', async () => {
+            mockFetch({'/api/agent/preferences/': () => json(snapshotBody(2, [chip]))});
+            render(<PrioritiesSection variant="main" authenticated/>);
+            await screen.findByRole('button', {name: /Edit priorities/});
+            const seed = {set: {'compensation.minimum_salary': 175000}};
+            act(() => setPrioritiesEditorOpen('main', seed));
+            let form = await screen.findByRole('form', {name: 'Edit priorities'});
+            expect(within(form).getByLabelText('Minimum base salary')).toHaveValue(175000);
+            fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
+            await screen.findByRole('button', {name: 'Edit priorities'});
+            act(() => setPrioritiesEditorOpen('main', seed));
+            form = await screen.findByRole('form', {name: 'Edit priorities'});
+            expect(within(form).getByLabelText('Minimum base salary')).toHaveValue(175000);
+        });
+
+        test('Edit then Cancel from the applied summary brings the summary and its Undo back until Done', async () => {
+            mockFetch({
+                '/api/agent/preferences/propose/': () => json(proposal),
+                '/api/agent/preferences/apply/': () => json({scope: 'account', revision: 3, changes: proposal.changes,
+                    undo: {expected_revision: 3, document: {}}}),
+                '/api/agent/preferences/': () => json(snapshotBody(2, [chip])),
+            });
+            render(<PrioritiesSection variant="main" authenticated/>);
+            const form = await openEditor();
+            fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '150000'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            await screen.findByRole('heading', {name: 'Review your changes'});
+            fireEvent.click(screen.getByRole('button', {name: 'Apply to account'}));
+            await screen.findByTestId('priorities-applied');
+            act(() => setPrioritiesEditorOpen('main'));
+            await screen.findByRole('form', {name: 'Edit priorities'});
+            fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
+            expect(await screen.findByRole('button', {name: 'Undo'})).toBeInTheDocument();
+            act(() => setPrioritiesEditorOpen('main'));
+            await screen.findByRole('form', {name: 'Edit priorities'});
+            act(() => setPrioritiesEditorOpen(null));
+            expect(await screen.findByRole('button', {name: 'Undo'})).toBeInTheDocument();
+            fireEvent.click(screen.getByRole('button', {name: 'Done'}));
+            await screen.findByRole('button', {name: 'Edit priorities'});
+            act(() => setPrioritiesEditorOpen('main'));
+            await screen.findByRole('form', {name: 'Edit priorities'});
+            fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
+            expect(await screen.findByRole('button', {name: 'Edit priorities'})).toBeInTheDocument();
+            expect(screen.queryByRole('button', {name: 'Undo'})).not.toBeInTheDocument();
+        });
+
+        test('a seed that removes a list entry keeps what was typed into that list', async () => {
+            mockFetch({'/api/agent/preferences/': () => json(snapshotBody(2, [chip]))});
+            render(<PrioritiesSection variant="main" authenticated/>);
+            const form = await openEditor();
+            fireEvent.change(within(form).getByLabelText('Culture'), {target: {value: 'open'}});
+            fireEvent.click(within(form).getByRole('button', {name: /^Add/}));
+            act(() => setPrioritiesEditorOpen('main', {remove: {culture: ['kind']}}));
+            await waitFor(() => expect(within(screen.getByRole('form', {name: 'Edit priorities'})).queryByRole('button', {name: /Remove kind/})).toBeNull());
+            expect(within(screen.getByRole('form', {name: 'Edit priorities'})).getByRole('button', {name: /Remove open/})).toBeInTheDocument();
+        });
+
         test('the expired-session link returns to the current page when the page renders no sign-in link', async () => {
             const redirected = new Response('<html>login</html>', {status: 200, headers: {'Content-Type': 'text/html'}});
             Object.defineProperty(redirected, 'redirected', {value: true});
@@ -927,7 +984,7 @@ describe('PrioritiesSection', () => {
             await waitFor(() => expect(bodies.length).toBe(first + 1));
             const heading = await screen.findByRole('heading', {name: 'Review your changes'});
             await waitFor(() => expect(heading).toHaveFocus());
-            expect(screen.getAllByRole('status')[0]).toHaveTextContent('Updated against your latest priorities.');
+            expect(screen.getByTestId('priorities-announcement')).toHaveTextContent('Updated against your latest priorities.');
         });
     });
 });
