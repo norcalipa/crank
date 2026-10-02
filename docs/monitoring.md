@@ -15,8 +15,11 @@ Only stable operational attributes are accepted: run type, status, stage,
 registered adapter key, reason code, bounded counters, latency/duration,
 freshness, token counters, and estimated cost. Prompts, model responses, source
 bodies, credentials, arbitrary URLs, and user IDs are never event attributes.
-Reason codes are the finite set `none`, `timeout`, `cost_limit`, `rejected`,
-`authorization`, `upstream`, and `internal`.
+Reason codes are a finite per-event set: the pipeline codes `none`, `timeout`,
+`cost_limit`, `rejected`, `authorization`, `upstream`, and `internal`, plus the
+assistant codes listed under [Assistant and data-freshness
+metrics](#assistant-and-data-freshness-metrics). Unknown values are recorded as
+`other`.
 
 ## Dashboard and alert queries
 
@@ -128,6 +131,51 @@ is ever an event attribute.
 `JOB_SEARCH_PROVIDER=demo` in a non-dev environment (`ENV` of `prod`/`staging`).
 Run `python manage.py check --deploy` in CI: a demo provider
 in a production config must never silently serve simulated replies.
+
+## Assistant and data-freshness metrics
+
+Issue #482 adds bounded, allowlisted `CrankOperation` events. Values are
+enums, integers, booleans or UUIDs only; prompts, URLs, user ids and free text
+are never recorded, and a client `X-Request-ID` that is not a UUID is dropped
+(`correlation_id` is omitted).
+
+- `assistant_turn`: `phase` attempted/saved/replied/failed/rejected/replayed;
+  failures carry `reason_code` (provider_timeout, cost_limit, invalid_output,
+  assistant_unavailable, conversation_gone, preference_stale,
+  preference_version_unavailable, service_error, unexpected_error, worker_interrupted) and a
+  `failure_stage`. `worker_interrupted` is emitted when a stale claim is reaped
+  or taken over (a plain failed retry is not counted); rejections use rate_limited, turn_in_progress, retry_limited.
+- `assistant_first_result`: once per conversation (conditional update on
+  `JobSearchConversation.first_result_at`). `seconds_to_first_result` counts from
+  the start of the current chat session (the earliest user message reachable
+  without an idle gap over 30 minutes), not from conversation creation, so
+  resumed and pre-deploy conversations do not report weeks.
+  `turns_to_first_result` counts assistant turns across the whole conversation.
+- `availability_state`: assistant status and job-matches surfaces.
+- `preference_decision`: apply/dismiss/undo/reset with `status` applied/dismissed/undone/stale/invalid/failed
+  and `origin` proposal (chat), direct (priorities editor) or reset. Apply and
+  dismiss take the origin from the allowlisted label on the proposal token;
+  undo takes it from the label stamped on the undo token. A reset records
+  `decision=reset`, `origin=reset` itself. Tokens issued before deploy have no
+  label and default to `proposal`.
+- `matching_batch` gains `publication_lag_max_seconds` / `publication_lag_count`.
+  Lag is measured only for users with a previous generation, matching the
+  `publication_match_lag_seconds` gauge, so first generations are excluded. Failed
+  `source_stage` events carry `failure_stage=source`; `matching_batch` carries
+  `failure_stage=matching` when any user failed.
+- The `repeated-failure` alert excludes `publication_sweep` and
+  `preference_decision`; those failures are inspected via their own events.
+- `pipeline_health` (emitted by `crawl_healthcheck`): queue, outbox, review and
+  evidence-freshness gauges. `publication_sweep`: per-run sweep outcome.
+
+Recovery: a failing `pipeline_health` emits `healthy=false` with a
+`reason_code`; run `python manage.py crawl_status` and the admin readiness page.
+
+### Baselines
+
+The `metrics:` block in `monitoring.yaml` is `baseline_only`. No alert
+threshold is added; thresholds are chosen after a 14-day baseline and feed
+issue #492.
 
 ## Admin controls and recovery
 

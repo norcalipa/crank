@@ -453,6 +453,7 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                         "stage": "job_ingest",
                         "source_key": source.adapter_key,
                         "status": "failed",
+                        "failure_stage": "source",
                         "reason_code": "rejected",
                     },
                 )
@@ -490,6 +491,7 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                     "stage": "job_ingest",
                     "source_key": source.adapter_key,
                     "status": "failed",
+                    "failure_stage": "source",
                     "reason_code": agent_runs.monitoring.failure_reason(exc),
                 },
             )
@@ -506,6 +508,8 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
     preferences = _eligible_preferences()[:max_users]
     counts["users_total"] = len(preferences)
     successful_users = 0
+    lag_max = 0
+    lag_count = 0
     if deadline.reached():
         counts["deadline_reached"] = True
     for preference in preferences:
@@ -519,6 +523,9 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
                 counts["matches_persisted"] += outcome.persisted
                 counts["users_succeeded"] += 1
                 successful_users += 1
+                if outcome.publication_lag_seconds is not None:
+                    lag_count += 1
+                    lag_max = max(lag_max, outcome.publication_lag_seconds)
             elif status == match_recompute.RecomputeStatus.CURRENT:
                 counts["duplicate_skipped"] += 1
                 counts["users_succeeded"] += 1
@@ -553,9 +560,12 @@ def run_job_pipeline(run: AgentRun, **options) -> dict[str, int | bool]:
         "matching_batch",
         {
             **counts,
+            "publication_lag_max_seconds": lag_max,
+            "publication_lag_count": lag_count,
             "stage": "job_pipeline_matching",
             "status": "deadline" if counts["deadline_reached"] else "completed",
             "reason_code": "deadline" if counts["deadline_reached"] else "none",
+            **({"failure_stage": "matching"} if counts["users_failed"] else {}),
         },
     )
     if not counts["deadline_reached"]:

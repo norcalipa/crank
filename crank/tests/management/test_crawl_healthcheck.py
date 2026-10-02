@@ -64,8 +64,8 @@ class CrawlHealthcheckCommandTests(TestCase):
         out = StringIO()
         with self.assertRaises(SystemExit):
             call_command("crawl_healthcheck", stdout=out)
-        record.assert_called_once()
-        event_name, payload = record.call_args.args
+        self.assertEqual([c.args[0] for c in record.call_args_list], ["inventory_health", "pipeline_health"])
+        event_name, payload = record.call_args_list[0].args
         self.assertEqual(event_name, "inventory_health")
         self.assertEqual(payload["sources_total"], 0)
         self.assertEqual(payload["enabled_sources"], 0)
@@ -78,8 +78,8 @@ class CrawlHealthcheckCommandTests(TestCase):
         out = StringIO()
         with self.assertRaises(SystemExit):
             call_command("crawl_healthcheck", stdout=out)
-        record.assert_called_once()
-        event_type, payload = record.call_args.args
+        self.assertEqual(record.call_count, 2)
+        event_type, payload = record.call_args_list[0].args
         self.assertEqual(event_type, "CrankOperation")
         self.assertNotIn("violations", payload)
         self.assertFalse(payload["healthy"])
@@ -138,3 +138,40 @@ class CrawlHealthcheckCommandTests(TestCase):
                 )
         self.assertEqual(ctx.exception.code, 1)
         record.assert_not_called()
+
+    @patch("crank.management.commands.crawl_healthcheck.monitoring.record_event")
+    def test_pipeline_health_event_is_flat_ints_and_bool(self, record):
+        with self.assertRaises(SystemExit):
+            call_command("crawl_healthcheck", stdout=StringIO())
+        name, payload = record.call_args_list[1].args
+        self.assertEqual(name, "pipeline_health")
+        self.assertIs(payload["healthy"], True)
+        for key, value in payload.items():
+            self.assertIsInstance(value, (int, bool), key)
+        for key in ("queued_runs", "outbox_pending", "accepted_evidence_rows", "evidence_stale_rows"):
+            self.assertEqual(payload[key], 0)
+
+    @patch("crank.management.commands.crawl_healthcheck.monitoring.record_event")
+    def test_pipeline_health_failure_does_not_change_exit_code(self, record):
+        with patch(
+            "crank.management.commands.crawl_healthcheck.operations_readiness.health_gauges",
+            side_effect=OperationalError("db down"),
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                call_command("crawl_healthcheck", stdout=StringIO())
+        self.assertEqual(ctx.exception.code, 1)
+        name, payload = record.call_args_list[1].args
+        self.assertEqual(name, "pipeline_health")
+        self.assertEqual(payload["healthy"], False)
+        self.assertEqual(payload["reason_code"], "internal")
+
+    @patch("crank.management.commands.crawl_healthcheck.monitoring.record_event")
+    def test_healthy_inventory_with_failed_gauges_stays_healthy(self, record):
+        source = make_source("Healthy", last_crawl_at=timezone.now())
+        make_listing(source)
+        with patch(
+            "crank.management.commands.crawl_healthcheck.operations_readiness.health_gauges",
+            side_effect=RuntimeError("boom"),
+        ):
+            self.assertIsNone(call_command("crawl_healthcheck", stdout=StringIO()))
+        self.assertEqual(record.call_args_list[1].args[1]["healthy"], False)

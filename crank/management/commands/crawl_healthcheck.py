@@ -15,7 +15,7 @@ import sys
 
 from django.core.management.base import BaseCommand
 
-from crank.services import inventory_health, monitoring
+from crank.services import inventory_health, monitoring, operations_readiness
 
 
 class Command(BaseCommand):
@@ -27,6 +27,15 @@ class Command(BaseCommand):
             action="store_true",
             help="Skip the New Relic telemetry event (useful for local checks).",
         )
+
+    def _emit_pipeline_health(self):
+        """Emit data-freshness and backlog gauges; never alters the exit code."""
+        try:
+            gauges = operations_readiness.health_gauges()
+            gauges["healthy"] = True
+        except Exception as exc:  # noqa: BLE001 - gauges are best-effort
+            gauges = {"healthy": False, "reason_code": monitoring.failure_reason(exc)}
+        monitoring.record_event("pipeline_health", gauges)
 
     def handle(self, *args, **options):
         try:
@@ -64,6 +73,7 @@ class Command(BaseCommand):
 
         if not options["no_emit"]:
             monitoring.record_event("inventory_health", result)
+            self._emit_pipeline_health()
 
         if result["healthy"]:
             return

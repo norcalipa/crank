@@ -12,7 +12,7 @@ wired while the consumer is off, and pending events simply accumulate.
 
 from django.core.management.base import BaseCommand
 
-from crank.services import publication
+from crank.services import monitoring, operations_readiness, publication
 
 
 class Command(BaseCommand):
@@ -34,9 +34,29 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         if not publication.consumer_enabled():
+            monitoring.record_event("publication_sweep", {"status": "disabled"})
             self.stdout.write("publication consumer disabled; sweep skipped")
             return 0
-        counts = publication.sweep_pending(limit=options["limit"])
+        try:
+            counts = publication.sweep_pending(limit=options["limit"])
+        except Exception as exc:
+            monitoring.record_event(
+                "publication_sweep",
+                {
+                    "status": "failed",
+                    "reason_code": monitoring.failure_reason(exc),
+                    "failure_stage": "publication",
+                },
+            )
+            raise
+        event = {"status": "completed", **counts}
+        try:
+            event["outbox_oldest_age_seconds"] = (
+                operations_readiness.outbox_backlog()["oldest_pending_age_seconds"] or 0
+            )
+        except Exception:
+            pass
+        monitoring.record_event("publication_sweep", event)
         self.stdout.write(
             self.style.SUCCESS(
                 "publication sweep: scanned={scanned} processed={processed} "
