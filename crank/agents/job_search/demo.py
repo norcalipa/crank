@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 from django.conf import settings
 
+from crank.agents.job_search import actions as ui_actions
 from crank.agents.job_search import quality
 from crank.agents.job_search.errors import (
     ConversationClosedError as _OrchestratorConversationClosed,
@@ -135,9 +137,38 @@ class DemoJobSearchProvider:
     )
     ASSISTANT_NAME = "CRank Career Assistant"
 
-    def generate_reply(self, *, conversation, user_message):
-        """Return ``(reply_text, preferences_changed, results)`` for a single turn."""
+    _ONLY_REMOTE = re.compile(r"\bonly remote\b", re.IGNORECASE)
+    _OPEN_THIS = re.compile(r"\bopen (it|this company)\b", re.IGNORECASE)
+
+    def generate_reply(self, *, conversation, user_message, page_context=None):
+        """Return ``(reply_text, preferences_changed, results[, extras])`` for a turn.
+
+        Deterministic actions (issue #484), for the dev/e2e tier only and only
+        on turns that carry page context (context-less turns behave exactly as
+        before): "only remote" proposes the remote filter and "open it"/"open
+        this company" opens the context organization.
+        """
         text = (user_message or "").strip()
+        proposed = []
+        if page_context is not None and self._ONLY_REMOTE.search(text):
+            proposed.append(
+                {"type": "propose_filters", "target": "rankings", "filters": {"rto_policy": "R"}}
+            )
+        if (
+            page_context is not None
+            and self._OPEN_THIS.search(text)
+            and page_context.organizations
+        ):
+            proposed.append(
+                {"type": "open_company", "organization_id": page_context.organizations[0]["id"]}
+            )
+        if proposed:
+            return (
+                "Here is a suggestion you can apply or ignore.",
+                False,
+                None,
+                {"actions": proposed},
+            )
         turn_number = conversation.messages.filter(role="user").count()
         changed = any(hint in text.lower() for hint in self.PREFERENCE_HINTS)
 
@@ -227,7 +258,9 @@ class JobSearchService:
     def __init__(self, provider=None):
         self.provider = provider or _build_provider()
 
-    def run_turn(self, *, conversation, user_message, persist_reply=None):
+    def run_turn(
+        self, *, conversation, user_message, persist_reply=None, page_context=None
+    ):
         """Run one turn; returns ``(reply_text, preferences_changed, results)``.
 
         ``results`` is an optional :class:`StructuredResults` (or ``None``).
@@ -249,17 +282,26 @@ class JobSearchService:
             accepts_hook = "persist_reply" in params or any(
                 p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
             )
+            extra_kwargs = {}
+            if page_context is not None and (
+                "page_context" in params
+                or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+            ):
+                extra_kwargs["page_context"] = page_context
             if accepts_hook:
                 outcome = self.provider.generate_reply(
                     conversation=conversation,
                     user_message=user_message,
                     persist_reply=self._bound_persist_hook(persist_reply),
+                    **extra_kwargs,
                 )
             else:
                 # Legacy provider signature: no guarded persistence hook; the
                 # view's post-turn transaction handles the reply.
                 outcome = self.provider.generate_reply(
-                    conversation=conversation, user_message=user_message
+                    conversation=conversation,
+                    user_message=user_message,
+                    **extra_kwargs,
                 )
             # Issue #466: orchestrator-backed providers also return an
             # ``extras`` payload (applied preference ``changes``/``undo``);
@@ -269,6 +311,31 @@ class JobSearchService:
             else:
                 reply_text, changed, results = outcome
                 extras = None
+            if extras:
+                # Every provider's actions pass this one gate (issue #484):
+                # bad, unexposed, stale-context or no-context actions are
+                # dropped (and counted), never fatal. The exposed set is the
+                # provider's full set (catalog + page context) when it reports
+                # one, else the page-context ids.
+                provider_ids = extras.get("actions_exposed_ids")
+                extras = {k: v for k, v in extras.items() if k != "actions_exposed_ids"}
+                if extras.get("actions"):
+                    exposed = set(provider_ids or ())
+                    if page_context is not None:
+                        exposed |= page_context.exposed_organization_ids()
+                    valid, dropped = ui_actions.sanitize_actions(
+                        extras["actions"],
+                        exposed,
+                        stale=page_context is not None and page_context.stale,
+                        has_context=page_context is not None,
+                    )
+                    if dropped:
+                        logger.warning(
+                            "job_search_actions_dropped count=%d reasons=%s",
+                            len(dropped),
+                            sorted(set(dropped)),
+                        )
+                    extras["actions"] = ui_actions.to_wire(valid)
         except JobSearchServiceError:
             # Already a typed service error (e.g. from generate_reply);
             # let it propagate without re-wrapping.

@@ -11,11 +11,13 @@ to run in CI, from a CronJob, or from the Django shell.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 
 from django.conf import settings
-from django.db.models import Count, Exists, OuterRef, Prefetch, Q
+from django.db.models import Count, Exists, F, OuterRef, Q, Window
+from django.db.models.functions import RowNumber
 from django.utils import timezone
 
 from crank.agents.jobs.registry import REGISTRY
@@ -66,9 +68,13 @@ def check_inventory_health(*, now: datetime | None = None) -> dict[str, Any]:
     reference = now or timezone.now()
     sources_total = JobSourceCatalog.objects.count()
     # Single bounded query set: per-source active-listing counts and the
-    # "ever produced listings" signal are resolved in SQL, and crawl runs are
-    # prefetched once (ordered) so the per-source loop issues no additional
-    # queries and only inspects the first min_failures outcomes.
+    # "ever produced listings" signal are resolved in SQL, and only the newest
+    # ``min_failures`` outcomes per source are ranked in one SQL window query,
+    # so Python-side work does not grow with crawl history.
+    min_failures = max(
+        1,
+        _setting_int("CRAWL_REPEATED_FAILURE_THRESHOLD", DEFAULT_MIN_CONSECUTIVE_FAILURES),
+    )
     approved_enabled = list(
         JobSourceCatalog.objects.filter(
             approval_state=JobSourceCatalog.ApprovalState.APPROVED,
@@ -90,18 +96,28 @@ def check_inventory_health(*, now: datetime | None = None) -> dict[str, Any]:
                 )
             ),
         )
-        .prefetch_related(
-            Prefetch(
-                "crawl_runs",
-                queryset=CrawlRun.objects.order_by("-started_at", "-id"),
+    )
+    recent_outcomes_by_source = defaultdict(list)
+    if approved_enabled:
+        ranked = (
+            CrawlRun.objects.filter(
+                job_source__approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+                job_source__enabled=True,
             )
+            .annotate(
+                recency=Window(
+                    RowNumber(),
+                    partition_by=[F("job_source_id")],
+                    order_by=[F("started_at").desc(), F("id").desc()],
+                )
+            )
+            .filter(recency__lte=min_failures)
+            .order_by("job_source_id", "recency")
+            .values_list("job_source_id", "outcome")
         )
-    )
+        for source_id, outcome in ranked:
+            recent_outcomes_by_source[source_id].append(outcome)
     active_listings = JobListing.objects.count()
-    min_failures = max(
-        1,
-        _setting_int("CRAWL_REPEATED_FAILURE_THRESHOLD", DEFAULT_MIN_CONSECUTIVE_FAILURES),
-    )
 
     stale_sources = 0
     repeated_failure_sources = 0
@@ -115,8 +131,7 @@ def check_inventory_health(*, now: datetime | None = None) -> dict[str, Any]:
         if not adapter_registered(source.adapter_key):
             unregistered_adapter_sources += 1
 
-        runs = source.crawl_runs.all()
-        recent_outcomes = [run.outcome for run in runs[:min_failures]]
+        recent_outcomes = recent_outcomes_by_source.get(source.pk, [])
         if len(recent_outcomes) >= min_failures and all(
             outcome in FAILURE_OUTCOMES for outcome in recent_outcomes
         ):

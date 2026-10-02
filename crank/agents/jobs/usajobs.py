@@ -149,6 +149,13 @@ class USAJobsAdapter(JobSourceAdapter):
 
     key = "usajobs"
     version = "1.0.0"
+    required_settings = ("USAJOBS_AUTH_KEY", "USAJOBS_USER_AGENT_EMAIL")
+
+    @classmethod
+    def startup_blockers(cls, source) -> list[str]:
+        if urlsplit(str(source.base_url).rstrip("/")).hostname != API_HOST:
+            return ["USAJOBS API host is not approved"]
+        return []
 
     def __init__(
         self,

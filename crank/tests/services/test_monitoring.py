@@ -169,6 +169,7 @@ class MonitoringContractTests(TestCase):
                 "cited_ids_count": 0,
                 "empty_result": True,
                 "inventory_nonempty": True,
+                "page_context": "fresh",
                 "latency_bucket": monitoring.latency_bucket(250),
                 "latency_ms": 250,
                 "provider_error_class": "ProviderTimeoutError",
@@ -178,6 +179,7 @@ class MonitoringContractTests(TestCase):
         self.assertEqual(payload["event_name"], "job_search_turn")
         self.assertEqual(payload["tools_called"], 4)
         self.assertTrue(payload["empty_result"])
+        self.assertEqual(payload["page_context"], "fresh")
         self.assertEqual(payload["latency_bucket"], "100-300")
 
     def test_job_search_tool_invocation_is_registered(self):
