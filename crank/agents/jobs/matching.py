@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -13,6 +14,7 @@ from functools import lru_cache
 from typing import Any
 
 from crank.agents.jobs.ranking_config import DEFAULT_CONFIG, RankingConfig
+from crank.services.hidden_characters import is_hidden_character
 
 _WS = re.compile(r"\s+")
 _NON_WORD = re.compile(r"[^\w\s-]+", re.UNICODE)
@@ -23,9 +25,16 @@ def _text_cached(value: str) -> str:
     return _WS.sub(" ", value.strip()).casefold()
 
 
+def _strip_hidden(value: str) -> str:
+    """NFKC-normalize and drop control/format (zero-width, bidi) characters so
+    hidden marks cannot split a word or hide a policy term from matching."""
+    value = unicodedata.normalize("NFKC", value)
+    return "".join(c for c in value if c in "\t\n\r" or not is_hidden_character(c))
+
+
 @lru_cache(maxsize=8192)
 def _normalized_cached(value: str) -> str:
-    return _text_cached(_NON_WORD.sub(" ", value))
+    return _text_cached(_NON_WORD.sub(" ", _strip_hidden(value)))
 
 
 def _text(value: Any) -> str:
@@ -41,7 +50,7 @@ def _normalized(value: Any) -> str:
         return ""
     if isinstance(value, str):
         return _normalized_cached(value)
-    return _text(_NON_WORD.sub(" ", str(value)))
+    return _text(_NON_WORD.sub(" ", _strip_hidden(str(value))))
 
 
 def _canonical_stage(value: Any) -> str:

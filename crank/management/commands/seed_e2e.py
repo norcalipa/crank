@@ -51,7 +51,7 @@ from django.utils import timezone
 
 from crank.checks import is_non_dev_environment
 from crank.management.commands.seed_job_sources import SEED_SOURCES
-from crank.models.company_profile import CompanyProfileObservation
+from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference, default_preferences
@@ -334,6 +334,39 @@ class Command(BaseCommand):
                 "extraction_version": "e2e-seed-1",
                 "status": CompanyProfileObservation.Status.ACCEPTED,
                 "description": "Fresh accepted E2E profile evidence.",
+            },
+        )
+        # One fresh accepted field claim so the correction form has a current
+        # value to show. Written directly (never through
+        # ``accept_observation_fields``, which supersedes and recreates rows
+        # on every run) to keep reruns identical.
+        evidence, _ = CompanyFieldEvidence.objects.get_or_create(
+            organization=alpha,
+            field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
+            observation=observation,
+            defaults={
+                "value_text": "Remote-first",
+                "source_url": "https://e2e.example.test/alpha/profile",
+                "source_domain": "e2e.example.test",
+                "observed_at": now,
+                "validation_version": "e2e-seed-1",
+                "extractor_version": "e2e-seed-1",
+                "state": CompanyFieldEvidence.State.ACCEPTED,
+                "last_checked_at": now,
+                "last_successful_fetch_at": now,
+                "last_changed_at": now,
+                "last_verified_at": now,
+            },
+        )
+        _sync_fields(
+            evidence,
+            {
+                "value_text": "Remote-first",
+                "source_url": "https://e2e.example.test/alpha/profile",
+                "source_domain": "e2e.example.test",
+                "validation_version": "e2e-seed-1",
+                "extractor_version": "e2e-seed-1",
+                "state": CompanyFieldEvidence.State.ACCEPTED,
             },
         )
         # Key the canonical listing on its own synthetic (source, external_id)

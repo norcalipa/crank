@@ -53,6 +53,21 @@ interface RevisionBlock {
     result_generation?: number | null;
 }
 
+// Opens the contextual correction form (issue #477) through the cross-bundle
+// `crank:suggest-company` channel: this bundle has no host of its own.
+function SuggestCorrectionButton({organizationId, companyName}: {organizationId: number; companyName: string}) {
+    return (
+        <button type="button" className="btn btn-link p-0 correction-action job-match-correction"
+                data-testid={`suggest-correction-org-${organizationId}`}
+                onClick={() => window.dispatchEvent(new CustomEvent('crank:suggest-company', {
+                    detail: {kind: 'correction', source: 'job_results', organizationId, companyName},
+                }))}>
+            <i className="fa-solid fa-pen-to-square" aria-hidden="true"></i>
+            Suggest a correction<span className="visually-hidden"> for {companyName}</span>
+        </button>
+    );
+}
+
 interface RankedJobMatch {
     listing_id: number;
     title: string;
@@ -915,6 +930,10 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                     )}
                                     <ThreeFigures scope={`job-${match.listing_id}`} fit={match.fit_score ?? match.score} company={match.company_score} coverage={match.coverage} />
                                     <RequirementChips requirements={match.requirements} />
+                                    {match.organization_id != null && (
+                                        <SuggestCorrectionButton organizationId={match.organization_id}
+                                                                 companyName={match.organization_name || match.employer_name} />
+                                    )}
                                 </div>
                             ))}
                         </div>
@@ -952,6 +971,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                     )}
                                     <ThreeFigures scope={`org-${org.organization_id}`} fit={org.fit_score ?? org.score} company={org.company_score} coverage={org.coverage} />
                                     <RequirementChips requirements={org.requirements} />
+                                    <SuggestCorrectionButton organizationId={org.organization_id} companyName={org.name} />
                                 </div>
                             ))}
                         </div>

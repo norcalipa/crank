@@ -20,7 +20,7 @@ from crank.management.commands.seed_e2e import (
     RATING_SOURCE_ORG_NAME,
     TARGET_ORGS,
 )
-from crank.models.company_profile import CompanyProfileObservation
+from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
 from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference
@@ -116,12 +116,23 @@ class SeedE2ECommandTests(TestCase):
             JobSourceCatalog.objects.filter(name=FIXTURE_SOURCE_NAME),
             JobListing.all_objects.filter(source__name=FIXTURE_SOURCE_NAME).order_by("pk"),
             CompanyProfileObservation.objects.filter(fingerprint="e2e-accepted"),
+            CompanyFieldEvidence.objects.filter(organization__name__startswith="E2E "),
             get_user_model().objects.filter(username=E2E_USERNAME),
             UserPreference.objects.filter(user__username=E2E_USERNAME),
         ]
         return "\n".join(
             serializers.serialize("json", qs, ensure_ascii=False) for qs in querysets
         )
+
+    def test_seeds_one_accepted_rto_policy_claim_for_alpha(self):
+        call_command("seed_e2e", stdout=StringIO())
+        call_command("seed_e2e", stdout=StringIO())
+        row = CompanyFieldEvidence.objects.get()
+        self.assertEqual(row.organization.name, "E2E Alpha Corp")
+        self.assertEqual(row.field_key, "rto_policy")
+        self.assertEqual(row.value_text, "Remote-first")
+        self.assertEqual(row.state, CompanyFieldEvidence.State.ACCEPTED)
+        self.assertEqual(row.source_domain, "e2e.example.test")
 
     def test_rerun_twice_produces_identical_state(self):
         """MAJOR-5: a re-run over already-seeded data is a true no-op — every
@@ -216,6 +227,9 @@ class SeedE2ECommandTests(TestCase):
         observation = CompanyProfileObservation.objects.get(fingerprint="e2e-accepted")
         observation.status = CompanyProfileObservation.Status.REJECTED
         observation.save()
+        CompanyFieldEvidence.objects.filter(organization__name="E2E Alpha Corp").update(
+            value_text="Drifted", state=CompanyFieldEvidence.State.SUPERSEDED
+        )
         preference = UserPreference.objects.get(user__username=E2E_USERNAME)
         preference.preferences = {}
         preference.save()
@@ -229,6 +243,10 @@ class SeedE2ECommandTests(TestCase):
         call_command("seed_e2e", stdout=StringIO())
 
         # -- Everything is reconciled to canonical fixture state. --
+        evidence = CompanyFieldEvidence.objects.get(organization__name="E2E Alpha Corp")
+        self.assertEqual(
+            (evidence.value_text, evidence.state), ("Remote-first", "accepted")
+        )
         algorithm.refresh_from_db()
         self.assertEqual(algorithm.description_content, "culture-focused.md")
         self.assertEqual(

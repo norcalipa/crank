@@ -184,6 +184,19 @@ class ApiViewsTest(TestCase):
         )
         self.assertIsNone(data['latest_observation'])
 
+    def test_provenance_includes_the_values_the_card_displays(self):
+        organization = Organization.objects.create(
+            name='Detail Org', url='https://www.example.test/about', status=1,
+            rto_policy=Organization.RTOPolicy.HYBRID,
+            funding_round=Organization.FundingRound.PUBLIC,
+        )
+
+        data = self._provenance(organization)
+
+        self.assertEqual(data['displayed_values']['rto_policy'], 'Hybrid')
+        self.assertEqual(data['displayed_values']['funding_round'], 'Public')
+        self.assertEqual(data['displayed_values']['company_domain'], 'www.example.test')
+
     def test_provenance_with_accepted_evidence_includes_field_details(self):
         organization = Organization.objects.create(
             name='Detail Org', url='https://example.test', status=1

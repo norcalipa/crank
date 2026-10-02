@@ -206,6 +206,30 @@ describe('JobMatchPanel', () => {
             expect(reasons).toHaveTextContent('Score 4.2');
         });
 
+        test('org cards and org-linked job cards open the correction form via the cross-bundle event', async () => {
+            await renderPanel('ok', { count: 2, rankedJobs: [sampleJobMatch], rankedOrgs: [sampleOrgMatch] });
+            const handler = jest.fn();
+            window.addEventListener('crank:suggest-company', handler);
+            const buttons = screen.getAllByRole('button', {name: 'Suggest a correction for Acme Corp'});
+            expect(buttons).toHaveLength(2);
+            buttons.forEach(button => fireEvent.click(button));
+            expect(handler).toHaveBeenCalledTimes(2);
+            expect((handler.mock.calls[0][0] as CustomEvent).detail).toEqual({
+                kind: 'correction', source: 'job_results', organizationId: 7, companyName: 'Acme Corp',
+            });
+            window.removeEventListener('crank:suggest-company', handler);
+        });
+
+        test('job cards without an organization have no correction button and fall back to the employer name', async () => {
+            await renderPanel('ok', { count: 2, rankedJobs: [
+                {...sampleJobMatch, listing_id: 43, organization_id: null},
+                {...sampleJobMatch, listing_id: 44, organization_id: 9, organization_name: ''},
+            ] });
+            expect(screen.queryByTestId('suggest-correction-org-7')).toBeNull();
+            expect(screen.getByRole('button', {name: 'Suggest a correction for Acme Corp'}))
+                .toHaveAttribute('data-testid', 'suggest-correction-org-9');
+        });
+
         test('renders ranked organization matches with reasons and links', async () => {
             await renderPanel('ok', { count: 1, rankedOrgs: [sampleOrgMatch] });
             const orgEl = screen.getByTestId('ranked-org-7');

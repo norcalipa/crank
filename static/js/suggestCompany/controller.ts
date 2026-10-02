@@ -12,8 +12,12 @@
 // the single host in the `main` bundle — is the one listener that turns the
 // event into controller state.
 
+import {isCorrectableFieldKey} from '../labels';
+
 export type SuggestCompanySource =
-    'rankings' | 'rankings_empty' | 'company_details' | 'job_results' | 'assistant';
+    'rankings' | 'rankings_empty' | 'company_details' | 'company_evidence' | 'job_results' | 'assistant';
+
+export type SuggestCompanyKind = 'company' | 'correction';
 
 export interface SuggestCompanyContext {
     source: SuggestCompanySource;
@@ -21,6 +25,10 @@ export interface SuggestCompanyContext {
     searchTerm?: string;
     page?: number;
     organizationId?: number;
+    // 'correction' opens the contextual correction form (issue #477) instead
+    // of the "Suggest a company" form; anything else is 'company'.
+    kind?: SuggestCompanyKind;
+    fieldKey?: string;
 }
 
 export interface SuggestCompanyState {
@@ -29,6 +37,9 @@ export interface SuggestCompanyState {
 }
 
 export const SUGGEST_COMPANY_EVENT = 'crank:suggest-company';
+// Asks the company list to reopen a company's details dialog (issue #477
+// "Back to <Company>").
+export const COMPANY_OPEN_EVENT = 'crank:company-open';
 
 // Caps a hostile or malformed `CustomEvent.detail` from inflating the
 // prefilled form; the API itself never sees these values (they are not part
@@ -36,7 +47,7 @@ export const SUGGEST_COMPANY_EVENT = 'crank:suggest-company';
 const MAX_STRING_LENGTH = 200;
 
 const VALID_SOURCES: readonly SuggestCompanySource[] = [
-    'rankings', 'rankings_empty', 'company_details', 'job_results', 'assistant',
+    'rankings', 'rankings_empty', 'company_details', 'company_evidence', 'job_results', 'assistant',
 ];
 
 let state: SuggestCompanyState = {open: false, context: null};
@@ -91,6 +102,12 @@ export function normalizeSuggestCompanyContext(detail: unknown): SuggestCompanyC
     const organizationId = normalizeInteger(raw.organizationId);
     if (organizationId !== undefined) {
         context.organizationId = organizationId;
+    }
+    if (raw.kind === 'correction') {
+        context.kind = 'correction';
+        if (isCorrectableFieldKey(raw.fieldKey)) {
+            context.fieldKey = raw.fieldKey;
+        }
     }
     return context;
 }

@@ -3,6 +3,8 @@
 import * as React from 'react';
 import {createPortal} from 'react-dom';
 import {lockBackground, unlockBackground} from './modalIsolation';
+import {fieldKeyLabel} from './labels';
+import {setCachedProvenance} from './provenanceCache';
 import {openSuggestCompany} from './suggestCompany/controller';
 import {openAssistant} from './workspace/store';
 import {WORKSPACE_FOCUS_EVENT} from './workspace/types';
@@ -42,6 +44,15 @@ interface ProvenanceData {
     latest_observation: ProvenanceObservation | null;
     fields?: ProvenanceFieldEvidence[];
     unverified_fields?: string[];
+}
+
+interface PendingCorrection {
+    id: number;
+    field_key: string;
+    field_label: string;
+    proposed_value: string;
+    status: string;
+    status_label: string;
 }
 
 interface Organization {
@@ -95,17 +106,6 @@ export function companyChatUrl(companyId: number): string {
 }
 
 // Display labels for accepted field-level evidence keys (issue #460).
-const fieldKeyMap: Record<string, string> = {
-    rto_policy: 'RTO Policy',
-    funding_round: 'Funding Round',
-    public_status: 'Public Status',
-    accelerated_vesting: 'Accelerated Vesting',
-    locations: 'Locations',
-    company_name: 'Company Name',
-    company_domain: 'Company Domain',
-};
-
-const fieldKeyLabel = (key: string): string => fieldKeyMap[key] || key;
 
 // Render an evidence scope (e.g. {"countries": [...], "roles": [...]}) as a
 // short human-readable suffix; empty scope renders nothing.
@@ -157,6 +157,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     const [loading, setLoading] = React.useState(false);
     const [provenance, setProvenance] = React.useState<ProvenanceData | null>(null);
     const [provenanceLoading, setProvenanceLoading] = React.useState(false);
+    const [pendingCorrections, setPendingCorrections] = React.useState<PendingCorrection[]>([]);
     const closeButtonRef = React.useRef<HTMLButtonElement>(null);
     const dialogRef = React.useRef<HTMLDivElement>(null);
     // Element that had focus when the dialog opened (the trigger). Restored on
@@ -186,6 +187,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                 .then(response => response.json())
                 .then(data => {
                     setProvenance(data);
+                    setCachedProvenance(organization.id, data);
                     setProvenanceLoading(false);
                 })
                 .catch(error => {
@@ -196,6 +198,29 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
             setProvenance(null);
         }
     }, [organization, visible]);
+
+    // The requester's own pending suggestions (issue #477). Only fetched when
+    // signed in; a failure simply hides the list.
+    React.useEffect(() => {
+        if (!organization || !visible || !isAuthenticated) {
+            setPendingCorrections([]);
+            return;
+        }
+        let cancelled = false;
+        fetch(`/api/company-corrections/?organization=${organization.id}`)
+            .then(response => (response.ok ? response.json() : {corrections: []}))
+            .then(data => {
+                if (cancelled) return;
+                const items: PendingCorrection[] = Array.isArray(data.corrections) ? data.corrections : [];
+                setPendingCorrections(items.filter(item => item.status === 'pending'));
+            })
+            .catch(() => {
+                if (!cancelled) setPendingCorrections([]);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [organization, visible, isAuthenticated]);
 
     // Restore focus to the opener on close (WAI-ARIA dialog pattern). If the
     // opener is no longer in the document, defensively blur the active element
@@ -311,6 +336,30 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     if (!organization || !visible) {
         return null;
     }
+
+    // Only one blocking dialog is open at a time (issue #464/#471/#477):
+    // opening the correction form closes this details dialog.
+    const openCorrection = (source: 'company_details' | 'company_evidence', fieldKey?: string) => {
+        openSuggestCompany({
+            kind: 'correction',
+            source,
+            companyName: organization.name,
+            organizationId: organization.id,
+            fieldKey,
+        });
+        onClose();
+    };
+
+    const fieldCorrectionButton = (
+        fieldKey: string, verb = 'Suggest a correction', joiner = 'to'
+    ) => isAuthenticated && (
+        <button type="button" className="btn btn-link p-0 suggest-correction-field correction-action"
+                data-testid={`suggest-correction-field-${fieldKey}`}
+                onClick={() => openCorrection('company_evidence', fieldKey)}>
+            <i className="fa-solid fa-pen-to-square" aria-hidden="true"></i>
+            {verb}<span className="visually-hidden"> {joiner} {fieldKeyLabel(fieldKey)}</span>
+        </button>
+    );
 
     // Map funding round codes to display names
     const fundingRoundMap: Record<string, string> = {
@@ -496,7 +545,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                     <hr className="my-3" />
                     <div className="row">
                         <div className="col-12">
-                            <h3 className="h6 mb-2">Data Freshness & Sources</h3>
+                            <h3 className="h5 mt-3 mb-2">Data Freshness & Sources</h3>
                             {provenanceLoading ? (
                                 <p data-testid="provenance-loading">Loading provenance…</p>
                             ) : provenance ? (
@@ -526,7 +575,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                             <div className="row mb-2">
                                                 <div className="col-5 text-end fw-bold">Last Observed:</div>
                                                 <div className="col-7">
-                                                    {formatRelativeTime(provenance.latest_observation.observed_at)}
+                                                    {formatRelativeTime(provenance.latest_observation.observed_at)}{' '}
                                                     ({formatDate(provenance.latest_observation.observed_at)})
                                                 </div>
                                             </div>
@@ -552,27 +601,31 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                     )}
                                     {provenance.fields && provenance.fields.length > 0 && (
                                         <div className="mt-2" data-testid="field-evidence">
+                                            <h4 className="h6 fw-semibold mt-3 mb-2">Field evidence</h4>
                                             {provenance.fields.map(fieldEvidence => (
-                                                <div className="row mb-2" key={fieldEvidence.field_key}
+                                                <div className="row mb-1 align-items-baseline evidence-row" key={fieldEvidence.field_key}
                                                      data-testid={`field-evidence-${fieldEvidence.field_key}`}>
                                                     <div className="col-5 text-end fw-bold">
                                                         {fieldKeyLabel(fieldEvidence.field_key)}:
                                                     </div>
-                                                    <div className="col-7">
-                                                        <span data-testid={`field-value-${fieldEvidence.field_key}`}>
-                                                            {fieldEvidence.value}
-                                                        </span>
-                                                        <span className="text-muted small">
-                                                            {' '}— {fieldEvidence.source_domain || 'unknown source'},
-                                                            observed {formatDate(fieldEvidence.observed_at)}
-                                                            {formatScope(fieldEvidence.scope)}
-                                                        </span>
-                                                        {fieldEvidence.stale && (
-                                                            <span className="badge bg-warning text-dark ms-1"
-                                                                  data-testid={`field-stale-${fieldEvidence.field_key}`}>
-                                                                Stale — last verified {formatDate(fieldEvidence.last_verified_at)}
+                                                    <div className="col-7 evidence-row-value">
+                                                        <span>
+                                                            <span data-testid={`field-value-${fieldEvidence.field_key}`}>
+                                                                {fieldEvidence.value}
                                                             </span>
-                                                        )}
+                                                            {fieldEvidence.stale && (
+                                                                <span className="badge bg-warning text-dark ms-1"
+                                                                      data-testid={`field-stale-${fieldEvidence.field_key}`}>
+                                                                    Stale
+                                                                </span>
+                                                            )}
+                                                            <span className="text-muted small evidence-meta">
+                                                                {fieldEvidence.source_domain || 'unknown source'},{' '}
+                                                                <span className="text-nowrap">last verified {formatDate(fieldEvidence.last_verified_at)}</span>
+                                                                {formatScope(fieldEvidence.scope)}
+                                                            </span>
+                                                        </span>
+                                                        {fieldCorrectionButton(fieldEvidence.field_key)}
                                                     </div>
                                                 </div>
                                             ))}
@@ -581,12 +634,15 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                     {provenance.unverified_fields && provenance.unverified_fields.length > 0 && (
                                         <div className="mt-2" data-testid="unverified-fields">
                                             {provenance.unverified_fields.map(fieldKey => (
-                                                <div className="row mb-2" key={fieldKey}
+                                                <div className="row mb-1 align-items-baseline evidence-row" key={fieldKey}
                                                      data-testid={`field-unverified-${fieldKey}`}>
                                                     <div className="col-5 text-end fw-bold">
                                                         {fieldKeyLabel(fieldKey)}:
                                                     </div>
-                                                    <div className="col-7 text-muted">No accepted evidence</div>
+                                                    <div className="col-7 evidence-row-value">
+                                                        <span className="text-muted">No accepted evidence</span>
+                                                        {fieldCorrectionButton(fieldKey, 'Suggest a value', 'for')}
+                                                    </div>
                                                 </div>
                                             ))}
                                         </div>
@@ -596,19 +652,28 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                             <button type="button"
                                                     className="btn btn-sm btn-outline-light"
                                                     data-testid="suggest-correction-link"
-                                                    onClick={() => {
-                                                        // Only one blocking dialog is open at a time
-                                                        // (issue #464/#471): opening the suggestion
-                                                        // form closes this details dialog.
-                                                        openSuggestCompany({
-                                                            source: 'company_details',
-                                                            companyName: organization.name,
-                                                            organizationId: organization.id,
-                                                        });
-                                                        onClose();
-                                                    }}>
-                                                Suggest a Correction
+                                                    onClick={() => openCorrection('company_details')}>
+                                                <i className="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>
+                                                Suggest a correction
                                             </button>
+                                        </div>
+                                    )}
+                                    {isAuthenticated && pendingCorrections.length > 0 && (
+                                        <div className="mt-3" data-testid="your-pending-corrections">
+                                            <h4 className="h6 fw-semibold mb-2">Your pending suggestions</h4>
+                                            <ul className="list-unstyled small mb-0">
+                                                {pendingCorrections.map(item => (
+                                                    <li key={item.id} className="d-flex flex-wrap align-items-center gap-2 mb-1"
+                                                        data-testid={`your-pending-correction-${item.id}`}>
+                                                        <span className="fw-bold">{fieldKeyLabel(item.field_key)}:</span>
+                                                        <span>{item.proposed_value}</span>
+                                                        <span className="badge text-bg-warning badge-pending">
+                                                            <i className="fa-solid fa-hourglass-half me-1" aria-hidden="true"></i>
+                                                            Pending review
+                                                        </span>
+                                                    </li>
+                                                ))}
+                                            </ul>
                                         </div>
                                     )}
                                 </div>

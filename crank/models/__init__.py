@@ -8,6 +8,7 @@ from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.organization import Organization
 from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
+from crank.models.company_correction import CompanyCorrection
 from crank.models.company_request import (
     CompanyRequest,
     normalize_company_name,
@@ -51,6 +52,7 @@ __all__ = [
     "Organization",
     "CompanyFieldEvidence",
     "CompanyProfileObservation",
+    "CompanyCorrection",
     "CompanyRequest",
     "normalize_company_name",
     "normalize_domain",

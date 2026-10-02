@@ -31,6 +31,7 @@ from crank.views.api import (
 )
 from crank.views.assistant_status import assistant_status
 from crank.views.company_requests import company_requests
+from crank.views.company_corrections import company_corrections
 from crank.views.fundinground import FundingRoundChoicesView
 from crank.views.health import readiness
 from crank.views.help import HelpView, PrivacyView
@@ -84,6 +85,8 @@ urlpatterns = [
     path('api/organizations/<int:pk>/scores/', organization_scores, name='organization-scores'),
     path('api/company-requests/', company_requests, name='company-request-list'),
     path('api/company-requests/<int:pk>/', company_requests, name='company-request-detail'),
+    path('api/company-corrections/', company_corrections, name='company-correction-list'),
+    path('api/company-corrections/<int:pk>/', company_corrections, name='company-correction-detail'),
     path('chat/', job_search_page, name='job_search'),
     path('api/agent/assistant-status/', assistant_status, name='agent-assistant-status'),
     path('api/agent/conversations/', agent_conversation_list, name='agent-conversation-list'),

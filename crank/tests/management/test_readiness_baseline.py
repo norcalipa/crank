@@ -232,9 +232,10 @@ class ReadinessBaselineCommandTests(TestCase):
         # (#460) stacks on top of 0035, 0037 (#466) stacks on top of 0036,
         # 0038 (#467) stacks on top of 0037, 0039 (#475) stacks on top
         # of 0038, and 0040-0045 (#468, one DDL statement each) stack on top
-        # of 0039, and 0046 (#474, choices-only AlterField) stacks on 0045.
+        # of 0039, 0046 (#474, choices-only AlterField) stacks on 0045, and
+        # 0047 (#477, one CreateModel) stacks on 0046.
         self.assertIn(
-            "crank.0046_alter_companyfieldevidence_state",
+            "crank.0047_companycorrection",
             leaves["applied"],
         )
         self.assertEqual(leaves["applied_count"], len(leaves["applied"]))

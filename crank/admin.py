@@ -3,10 +3,11 @@
 import hashlib
 import json
 
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.contrib.admin.helpers import ACTION_CHECKBOX_NAME
 from django.core import checks
 from django import forms
+from django.core.exceptions import PermissionDenied
 from django.db import models, transaction
 from django.http import HttpResponseRedirect
 from django.shortcuts import render
@@ -20,6 +21,7 @@ from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.organization import Organization
 from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
+from crank.models.company_correction import CompanyCorrection
 from crank.models.company_request import CompanyRequest
 from crank.models.preference import UserPreference, UserPreferenceAudit
 from crank.models.score import Score, ScoreType, ScoreAlgorithm, ScoreAlgorithmWeight
@@ -1159,6 +1161,158 @@ class CompanyRequestAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admi
 
 
 admin.site.register(CompanyRequest, CompanyRequestAdmin)
+
+
+class CompanyCorrectionAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, admin.ModelAdmin):
+    model = CompanyCorrection
+    list_display = ["organization", "field_key", "proposed_value", "scope_level", "requester", "status", "created"]
+    list_filter = ["status", "field_key", "scope_level"]
+    search_fields = ["organization__name", "requester__username", "requester__email"]
+    list_select_related = ["requester", "organization"]
+    readonly_fields = [
+        "requester", "organization", "field_key", "current_value", "current_evidence",
+        "live_accepted_value", "proposed_value", "evidence_url", "scope_level", "scope_value", "note", "status",
+        "reviewed_by", "reviewed_at", "idempotency_key", "created", "modified",
+    ]
+    fields = readonly_fields + ["admin_note"]
+    actions = [
+        "accept_corrections", "accept_corrections_over_changed_value",
+        "reject_corrections", "mark_corrections_duplicate",
+    ]
+    confirmable_actions = [
+        "accept_corrections", "accept_corrections_over_changed_value",
+        "reject_corrections", "mark_corrections_duplicate",
+    ]
+
+    def _audit(self, request, item, action, old, new):
+        OperationalChangeAudit.record(actor=request.user, target_type="company_correction", target_id=item.pk, action=action, old_value=old, new_value=new, confirmed=True)
+
+    @admin.display(description="Accepted value now")
+    def live_accepted_value(self, obj):
+        if obj is None or not obj.pk:
+            return "-"
+        current = company_evidence.resolve_field_evidence(obj.organization).get(obj.field_key)
+        live = current.value_text if current else "(none)"
+        if company_evidence.accepted_fact_changed(obj, current):
+            return f"{live} (changed since submission; was: {obj.current_value or '(none)'})"
+        return live
+
+    def has_add_permission(self, request):
+        return False
+
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        actions.pop("delete_selected", None)
+        return actions
+
+    def delete_view(self, request, object_id, extra_context=None):
+        # Only the direct delete is blocked; deleting an Organization or User
+        # still cascades through their corrections.
+        raise PermissionDenied
+
+    def save_model(self, request, obj, form, change):
+        if not (change and "admin_note" in form.changed_data):
+            super().save_model(request, obj, form, change)
+            return
+        with transaction.atomic():
+            old = {"admin_note": CompanyCorrection.objects.get(pk=obj.pk).admin_note}
+            super().save_model(request, obj, form, change)
+            self._audit(request, obj, "note", old, {"admin_note": obj.admin_note})
+
+    def _close(self, request, queryset, status, action):
+        updated = 0
+        with transaction.atomic():
+            pks = list(
+                queryset.filter(status=CompanyCorrection.Status.PENDING).values_list("pk", flat=True)
+            )
+            locked = CompanyCorrection.objects.select_for_update().filter(
+                pk__in=pks, status=CompanyCorrection.Status.PENDING
+            ).order_by("pk")
+            for item in locked:
+                old = {"status": item.status}
+                item.status = status
+                item.reviewed_by = request.user
+                item.reviewed_at = timezone.now()
+                item.save(update_fields=["status", "reviewed_by", "reviewed_at", "modified"])
+                self._audit(request, item, action, old, {"status": item.status})
+                updated += 1
+        return updated
+
+    def _accept(self, request, queryset, *, allow_stale):
+        pending = list(
+            queryset.filter(status=CompanyCorrection.Status.PENDING).order_by("organization_id", "created", "pk")
+        )
+        seen = {}
+        for item in pending:
+            seen.setdefault((item.organization_id, item.field_key), []).append(item.pk)
+        conflicts = [pks for pks in seen.values() if len(pks) > 1]
+        if conflicts:
+            self.message_user(
+                request,
+                "Nothing was accepted: several selected corrections target the same company field "
+                "(ids " + "; ".join(", ".join(map(str, pks)) for pks in conflicts)
+                + "). Accept one per company field and reject or mark the others as duplicates.",
+                level=messages.ERROR,
+            )
+            return
+        if not self._require_confirmation(request):
+            return
+        accepted = 0
+        refused = []
+        with transaction.atomic():
+            for item in pending:
+                old = {"status": item.status}
+                try:
+                    evidence = company_evidence.accept_correction(
+                        item, reviewer=request.user, allow_stale=allow_stale
+                    )
+                except company_evidence.CorrectionNotAcceptable as exc:
+                    refused.append(f"#{item.pk}: {exc}")
+                    continue
+                self._audit(
+                    request, item, "accept", old,
+                    {
+                        "status": item.status,
+                        "evidence_id": evidence.pk,
+                        "superseded_ids": evidence.superseded_ids,
+                        "value": evidence.value_text,
+                        "overrode_changed_value": evidence.overrode_changed_value,
+                    },
+                )
+                accepted += 1
+        self.message_user(request, f"{accepted} correction(s) accepted and audited.")
+        if refused:
+            hint = "" if allow_stale else " Use 'Accept even if the accepted value changed' to override a changed value."
+            self.message_user(
+                request,
+                f"{len(refused)} correction(s) were left unchanged — " + "; ".join(refused) + "." + hint,
+                level=messages.WARNING,
+            )
+
+    @admin.action(description="Accept selected corrections as accepted evidence")
+    def accept_corrections(self, request, queryset):
+        self._accept(request, queryset, allow_stale=False)
+
+    @admin.action(description="Accept even if the accepted value changed since submission")
+    def accept_corrections_over_changed_value(self, request, queryset):
+        self._accept(request, queryset, allow_stale=True)
+
+    @admin.action(description="Reject selected corrections")
+    def reject_corrections(self, request, queryset):
+        if not self._require_confirmation(request):
+            return
+        updated = self._close(request, queryset, CompanyCorrection.Status.REJECTED, "reject")
+        self.message_user(request, f"{updated} correction(s) rejected and audited.")
+
+    @admin.action(description="Mark selected corrections as duplicates")
+    def mark_corrections_duplicate(self, request, queryset):
+        if not self._require_confirmation(request):
+            return
+        updated = self._close(request, queryset, CompanyCorrection.Status.DUPLICATE, "duplicate")
+        self.message_user(request, f"{updated} correction(s) marked as duplicates and audited.")
+
+
+admin.site.register(CompanyCorrection, CompanyCorrectionAdmin)
 
 admin.site.register(ScoreType, ScoreTypeAdmin)
 admin.site.register(ScoreAlgorithm, ScoreAlgorithmAdmin)

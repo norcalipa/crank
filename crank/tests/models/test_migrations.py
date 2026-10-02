@@ -68,3 +68,26 @@ class SilencedChecksTests(TransactionTestCase):
     def test_w036_is_silenced(self):
         from django.conf import settings
         self.assertIn("models.W036", settings.SILENCED_SYSTEM_CHECKS)
+
+
+class CompanyCorrectionMigrationShapeTests(TransactionTestCase):
+    """0047 is one CreateModel with an unconditioned unique constraint (MySQL W036)."""
+
+    def test_single_create_model_is_the_leaf_with_one_earlier_parent(self):
+        from django.db.migrations import CreateModel
+        from django.db.models import UniqueConstraint
+
+        loader = MigrationLoader(connection, ignore_no_migrations=True)
+        migration = loader.disk_migrations[("crank", "0047_companycorrection")]
+        crank_parents = [name for app, name in migration.dependencies if app == "crank"]
+        self.assertEqual(len(crank_parents), 1)
+        self.assertLess(int(crank_parents[0].split("_")[0]), 47)
+        self.assertIn(("crank", crank_parents[0]), loader.disk_migrations)
+        leaves = loader.graph.leaf_nodes("crank")
+        self.assertEqual(len(leaves), 1)
+        self.assertIn(("crank", "0047_companycorrection"), loader.graph.forwards_plan(leaves[0]))
+        self.assertEqual([type(op) for op in migration.operations], [CreateModel])
+        constraints = migration.operations[0].options["constraints"]
+        self.assertEqual(len(constraints), 1)
+        self.assertIsInstance(constraints[0], UniqueConstraint)
+        self.assertIsNone(constraints[0].condition)

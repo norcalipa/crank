@@ -1388,6 +1388,23 @@ describe('JobSearchChat result cards (issue #396)', () => {
         expect(jobLink).toHaveAttribute('target', '_blank');
     });
 
+    test('assistant org cards open the correction form via the cross-bundle event', async () => {
+        const msg = assistantMessage(5, 'Check these out.', false, makeResults());
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [msg])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('Check these out.');
+        const handler = jest.fn();
+        window.addEventListener('crank:suggest-company', handler);
+        fireEvent.click(screen.getByRole('button', {name: 'Suggest a correction for Acme Inc'}));
+        expect((handler.mock.calls[0][0] as CustomEvent).detail).toEqual({
+            kind: 'correction', source: 'assistant', organizationId: 1, companyName: 'Acme Inc',
+        });
+        window.removeEventListener('crank:suggest-company', handler);
+    });
+
     test('no result cards when results is null', async () => {
         const msg = assistantMessage(5, 'Just text, no cards.', false, null);
         (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));

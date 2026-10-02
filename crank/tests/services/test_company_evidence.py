@@ -3,6 +3,7 @@
 """Tests for accepted field-level evidence (issue #460)."""
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -19,9 +20,11 @@ from crank.services.company_evidence import (
     AUTO_APPLY_FIELDS,
     DEFAULT_FRESHNESS_DAYS,
     FIELD_FRESHNESS_POLICY,
+    CorrectionNotAcceptable,
     OPEN_CLAIM_STATES,
     REVIEW_REQUIRED_FIELDS,
     EvidenceNotAcceptable,
+    accept_correction,
     accept_observation_fields,
     field_evidence_payload,
     is_stale,
@@ -585,6 +588,333 @@ class ResolveFieldEvidenceForOrgsTests(TestCase):
 
     def test_bulk_empty_for_no_ids(self):
         assert resolve_field_evidence_for_orgs([]) == {}
+
+
+class AcceptCorrectionTests(TestCase):
+    def setUp(self):
+        from django.contrib.auth.models import User
+
+        self.org = Organization.objects.create(name="Acme", status=1)
+        self.user = User.objects.create_user(username="rev", password="pw-477-xyz")
+        self.now = timezone.now()
+        self.old = CompanyFieldEvidence.objects.create(
+            organization=self.org,
+            field_key="rto_policy",
+            value_text="Remote-first",
+            source_url="https://acme.example.com/old",
+            observed_at=self.now - timedelta(days=30),
+            validation_version="v",
+            extractor_version="v",
+            last_changed_at=self.now - timedelta(days=30),
+        )
+
+    def correction(self, **overrides):
+        import uuid
+
+        from crank.models.company_correction import CompanyCorrection
+
+        live = resolve_field_evidence(self.org).get(overrides.get("field_key", "rto_policy"))
+        values = dict(
+            requester=self.user,
+            organization=self.org,
+            field_key="rto_policy",
+            proposed_value="Hybrid",
+            evidence_url="https://Careers.Acme.example.com/rto",
+            idempotency_key=uuid.uuid4(),
+            current_evidence=live,
+            current_value=live.value_text if live else "",
+        )
+        values.update(overrides)
+        return CompanyCorrection.objects.create(**values)
+
+    def test_company_scope_supersedes_and_creates_accepted_row(self):
+        item = self.correction()
+        evidence = accept_correction(item, reviewer=self.user, now=self.now)
+        self.old.refresh_from_db()
+        self.assertEqual(self.old.state, State.SUPERSEDED)
+        self.assertEqual(evidence.state, State.ACCEPTED)
+        self.assertEqual(evidence.value_text, "Hybrid")
+        self.assertEqual(evidence.source_domain, "careers.acme.example.com")
+        self.assertEqual(evidence.scope_json, {})
+        self.assertIsNone(evidence.observation)
+        self.assertIsNone(evidence.last_successful_fetch_at)
+        self.assertEqual(evidence.last_changed_at, self.now)
+        self.assertEqual(evidence.last_verified_at, self.now)
+        self.assertEqual(evidence.validation_version, "manual-correction.v1")
+        item.refresh_from_db()
+        self.assertEqual(item.status, "accepted")
+        self.assertEqual(item.reviewed_by, self.user)
+        self.assertEqual(resolve_field_evidence(self.org)["rto_policy"], evidence)
+        event = PublicationEvent.objects.get()
+        self.assertEqual(event.event_kind, PublicationEvent.EventKind.CHANGED)
+        self.assertEqual(event.payload, {"status": "accepted"})
+
+    def test_scope_mapping(self):
+        CompanyFieldEvidence.objects.filter(pk=self.old.pk).update(state=State.SUPERSEDED)
+        location = accept_correction(
+            self.correction(scope_level="location", scope_value="Germany"), reviewer=self.user
+        )
+        self.assertEqual(location.scope_json, {"countries": ["Germany"]})
+        role = accept_correction(
+            self.correction(field_key="funding_round", scope_level="role", scope_value="engineering"),
+            reviewer=self.user,
+        )
+        self.assertEqual(role.scope_json, {"role_families": ["engineering"]})
+
+    def test_scoped_accept_never_replaces_the_company_wide_fact(self):
+        from types import SimpleNamespace
+
+        from crank.agents.jobs.matching import _evidence_in_scope
+
+        for level, value, listing in (
+            ("location", "London", SimpleNamespace(location_text="New York, NY", title="Engineer")),
+            ("role", "design", SimpleNamespace(location_text="London", title="Staff Engineer")),
+        ):
+            item = self.correction(scope_level=level, scope_value=value)
+            with self.assertRaises(CorrectionNotAcceptable) as raised:
+                accept_correction(item, reviewer=self.user)
+            self.assertIn("scoped correction", str(raised.exception))
+            item.refresh_from_db()
+            self.assertEqual(item.status, "pending")
+            self.old.refresh_from_db()
+            self.assertEqual(self.old.state, State.ACCEPTED)
+            self.assertTrue(_evidence_in_scope(resolve_field_evidence(self.org)["rto_policy"], listing))
+        self.assertEqual(PublicationEvent.objects.count(), 0)
+
+    def test_scoped_accept_without_company_wide_fact_matches_only_in_scope(self):
+        from types import SimpleNamespace
+
+        from crank.agents.jobs.matching import _evidence_in_scope
+
+        CompanyFieldEvidence.objects.filter(pk=self.old.pk).update(state=State.SUPERSEDED)
+        london = accept_correction(
+            self.correction(scope_level="location", scope_value="London"), reviewer=self.user
+        )
+        self.assertTrue(_evidence_in_scope(london, SimpleNamespace(location_text="London, UK", title="x")))
+        self.assertFalse(_evidence_in_scope(london, SimpleNamespace(location_text="New York, NY", title="x")))
+        role = accept_correction(
+            self.correction(field_key="funding_round", scope_level="role", scope_value="engineer"),
+            reviewer=self.user,
+        )
+        self.assertTrue(_evidence_in_scope(role, SimpleNamespace(location_text="", title="Staff Engineer")))
+        self.assertFalse(_evidence_in_scope(role, SimpleNamespace(location_text="", title="Designer")))
+
+    def test_scoped_accept_supersedes_only_the_same_scope(self):
+        CompanyFieldEvidence.objects.filter(pk=self.old.pk).update(state=State.SUPERSEDED)
+        first = accept_correction(
+            self.correction(scope_level="location", scope_value="London", proposed_value="Hybrid"),
+            reviewer=self.user,
+        )
+        second = accept_correction(
+            self.correction(scope_level="location", scope_value="London", proposed_value="Remote"),
+            reviewer=self.user,
+        )
+        first.refresh_from_db()
+        self.assertEqual(first.state, State.SUPERSEDED)
+        self.assertEqual(resolve_field_evidence(self.org)["rto_policy"], second)
+        other = self.correction(scope_level="location", scope_value="Paris", proposed_value="Onsite")
+        with self.assertRaises(CorrectionNotAcceptable):
+            accept_correction(other, reviewer=self.user)
+
+    def test_auto_applied_crawl_does_not_overwrite_a_manual_correction(self):
+        manual = accept_correction(self.correction(proposed_value="Hybrid 3 days"), reviewer=self.user)
+        observation = make_observation(self.org, rto_evidence="Remote first", funding_evidence="Series A")
+        created = accept_observation_fields(observation)
+        self.assertNotIn(FieldKey.RTO_POLICY, {row.field_key for row in created})
+        self.assertIn(FieldKey.FUNDING_ROUND, {row.field_key for row in created})
+        manual.refresh_from_db()
+        self.assertEqual(manual.state, State.ACCEPTED)
+        self.assertEqual(resolve_field_evidence(self.org)["rto_policy"].value_text, "Hybrid 3 days")
+        before = (manual.last_checked_at, manual.last_successful_fetch_at)
+        record_check(self.org, "rto_policy", success=True, verified=True)
+        manual.refresh_from_db()
+        self.assertEqual((manual.last_checked_at, manual.last_successful_fetch_at), before)
+        self.assertIsNone(manual.last_successful_fetch_at)
+
+    def test_crawl_with_a_changed_value_flags_the_observation_conflicted(self):
+        manual = accept_correction(self.correction(proposed_value="Hybrid 3 days"), reviewer=self.user)
+        observation = make_observation(self.org, rto_evidence="Fully onsite")
+        created = accept_observation_fields(observation)
+        self.assertNotIn(FieldKey.RTO_POLICY, {row.field_key for row in created})
+        observation.refresh_from_db()
+        self.assertEqual(observation.status, Status.CONFLICTED)
+        self.assertIn("rto_evidence", observation.conflict_fields)
+        manual.refresh_from_db()
+        self.assertEqual(manual.state, State.ACCEPTED)
+        self.assertEqual(manual.value_text, "Hybrid 3 days")
+
+    def test_crawl_confirming_a_manual_value_refreshes_its_freshness(self):
+        manual = accept_correction(self.correction(proposed_value="Hybrid 3 days"), reviewer=self.user)
+        manual_verified = manual.last_verified_at
+        later = timezone.now() + timedelta(days=80)
+        observation = make_observation(self.org, rto_evidence="  hybrid   3 DAYS ")
+        accept_observation_fields(observation, now=later)
+        observation.refresh_from_db()
+        self.assertEqual(observation.status, Status.AUTO_APPLIED)
+        manual.refresh_from_db()
+        self.assertEqual(manual.state, State.ACCEPTED)
+        self.assertEqual(manual.last_checked_at, later)
+        self.assertEqual(manual.last_verified_at, manual_verified)
+        self.assertIsNone(manual.last_successful_fetch_at)
+
+    def test_scoped_correction_blocked_matches_what_accept_refuses(self):
+        from crank.services.company_evidence import scoped_correction_blocked
+
+        self.assertFalse(scoped_correction_blocked("company", "", self.old))
+        self.assertFalse(scoped_correction_blocked("location", "London", None))
+        self.assertTrue(scoped_correction_blocked("location", "London", self.old))
+        self.assertTrue(scoped_correction_blocked("role", "Engineer", self.old))
+        CompanyFieldEvidence.objects.filter(pk=self.old.pk).update(state=State.SUPERSEDED)
+        london = accept_correction(
+            self.correction(scope_level="location", scope_value="London", proposed_value="Hybrid"),
+            reviewer=self.user,
+        )
+        self.assertFalse(scoped_correction_blocked("location", "London", london))
+        self.assertTrue(scoped_correction_blocked("location", "Paris", london))
+
+    def test_operator_accepted_observation_can_replace_a_manual_correction(self):
+        manual = accept_correction(self.correction(proposed_value="Hybrid 3 days"), reviewer=self.user)
+        observation = make_observation(self.org, status=Status.ACCEPTED, rto_evidence="Remote first")
+        created = accept_observation_fields(observation)
+        self.assertIn(FieldKey.RTO_POLICY, {row.field_key for row in created})
+        manual.refresh_from_db()
+        self.assertEqual(manual.state, State.SUPERSEDED)
+
+    def test_displayed_field_values_mirror_the_organization_columns(self):
+        from crank.services.company_evidence import displayed_field_values
+
+        self.org.url = "https://www.Acme.example.com/about"
+        self.org.rto_policy = Organization.RTOPolicy.HYBRID
+        self.org.funding_round = Organization.FundingRound.PUBLIC
+        self.org.accelerated_vesting = True
+        self.org.save()
+        values = displayed_field_values(self.org)
+        self.assertEqual(
+            values,
+            {
+                "rto_policy": "Hybrid",
+                "funding_round": "Public",
+                "accelerated_vesting": "Yes",
+                "company_name": "Acme",
+                "company_domain": "www.acme.example.com",
+            },
+        )
+        self.org.url = ""
+        self.assertNotIn("company_domain", displayed_field_values(self.org))
+
+    def test_first_accept_without_prior_row(self):
+        evidence = accept_correction(
+            self.correction(field_key="funding_round", proposed_value="Series B"),
+            reviewer=self.user,
+            now=self.now,
+        )
+        self.assertEqual(evidence.last_changed_at, self.now)
+
+    def test_equal_value_keeps_last_changed_at(self):
+        evidence = accept_correction(
+            self.correction(proposed_value="Remote-first"), reviewer=self.user, now=self.now
+        )
+        self.assertEqual(evidence.last_changed_at, self.old.last_changed_at)
+
+    def test_supersedes_every_accepted_duplicate(self):
+        dup = CompanyFieldEvidence.objects.create(
+            organization=self.org,
+            field_key="rto_policy",
+            value_text="Dup",
+            source_url="https://acme.example.com/dup",
+            observed_at=self.now - timedelta(days=60),
+            validation_version="v",
+            extractor_version="v",
+        )
+        accept_correction(self.correction(), reviewer=self.user)
+        dup.refresh_from_db()
+        self.assertEqual(dup.state, State.SUPERSEDED)
+        self.assertEqual(
+            CompanyFieldEvidence.objects.filter(
+                organization=self.org, field_key="rto_policy", state=State.ACCEPTED
+            ).count(),
+            1,
+        )
+
+    def test_team_scope_refused_and_stays_pending(self):
+        item = self.correction(scope_level="team", scope_value="Platform")
+        with self.assertRaises(CorrectionNotAcceptable):
+            accept_correction(item, reviewer=self.user)
+        item.refresh_from_db()
+        self.assertEqual(item.status, "pending")
+        self.assertEqual(PublicationEvent.objects.count(), 0)
+
+    def test_second_accept_of_same_correction_refused(self):
+        item = self.correction()
+        accept_correction(item, reviewer=self.user)
+        with self.assertRaises(CorrectionNotAcceptable):
+            accept_correction(item, reviewer=self.user)
+
+    def test_publication_failure_rolls_back_everything(self):
+        item = self.correction()
+        with patch(
+            "crank.services.company_evidence.publication.record_event",
+            side_effect=RuntimeError("outbox down"),
+        ):
+            with self.assertRaises(RuntimeError):
+                accept_correction(item, reviewer=self.user)
+        self.old.refresh_from_db()
+        self.assertEqual(self.old.state, State.ACCEPTED)
+        item.refresh_from_db()
+        self.assertEqual(item.status, "pending")
+        self.assertEqual(CompanyFieldEvidence.objects.count(), 1)
+
+    def test_stale_snapshot_is_refused_unless_overridden(self):
+        first = self.correction(proposed_value="Fully in office")
+        stale = self.correction(proposed_value="Hybrid")
+        accept_correction(first, reviewer=self.user)
+        with self.assertRaises(CorrectionNotAcceptable) as ctx:
+            accept_correction(stale, reviewer=self.user)
+        self.assertIn("changed since", str(ctx.exception))
+        stale.refresh_from_db()
+        self.assertEqual(stale.status, "pending")
+        evidence = accept_correction(stale, reviewer=self.user, allow_stale=True)
+        self.assertEqual(evidence.value_text, "Hybrid")
+        self.assertEqual(len(evidence.superseded_ids), 1)
+
+    def test_removed_accepted_fact_is_refused_as_stale(self):
+        item = self.correction()
+        CompanyFieldEvidence.objects.filter(pk=self.old.pk).update(state=State.SUPERSEDED)
+        with self.assertRaises(CorrectionNotAcceptable) as ctx:
+            accept_correction(item, reviewer=self.user)
+        self.assertIn("removed", str(ctx.exception))
+
+    def test_correction_for_first_fact_has_no_snapshot(self):
+        CompanyFieldEvidence.objects.all().delete()
+        item = self.correction(current_evidence=None, current_value="")
+        evidence = accept_correction(item, reviewer=self.user)
+        self.assertEqual(evidence.superseded_ids, [])
+
+    def test_inactive_company_is_refused(self):
+        item = self.correction()
+        type(self.org).objects.filter(pk=self.org.pk).update(status=0)
+        with self.assertRaises(CorrectionNotAcceptable) as ctx:
+            accept_correction(item, reviewer=self.user)
+        self.assertIn("no longer active", str(ctx.exception))
+
+    def test_hidden_characters_stored_before_validation_are_refused(self):
+        for overrides in (
+            {"proposed_value": "Hy\u200bbrid"},
+            {"evidence_url": "https://exa\u200bmple.com/p"},
+            {"scope_level": "role", "scope_value": "Eng\u202e"},
+        ):
+            item = self.correction(**overrides)
+            with self.assertRaises(CorrectionNotAcceptable, msg=str(overrides)):
+                accept_correction(item, reviewer=self.user)
+
+    def test_accepted_fact_changed_helper(self):
+        from crank.services.company_evidence import accepted_fact_changed
+
+        item = self.correction()
+        self.assertFalse(accepted_fact_changed(item, self.old))
+        self.assertTrue(accepted_fact_changed(item, None))
+        empty = self.correction(current_evidence=None, current_value="")
+        self.assertFalse(accepted_fact_changed(empty, None))
 
 
 class ClaimTests(TestCase):
