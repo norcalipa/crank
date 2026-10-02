@@ -75,12 +75,8 @@ export function buildPatch(
             }
         } else if (field.type === 'str_list') {
             // Each entry is saved exactly as entered: commas inside an entry are never split.
-            const list = Array.isArray(edited) ? edited : [];
-            if (list.length === 0) {
-                remove[field.path] = null;
-            } else {
-                set[field.path] = list;
-            }
+            // An emptied list is a `set` of []: the server's `remove` for a list must name items.
+            set[field.path] = Array.isArray(edited) ? edited : [];
         } else if (String(edited).trim() === '') {
             remove[field.path] = null;
         } else {
@@ -121,14 +117,19 @@ const asDraftText = (field: EditorField, value: unknown): DraftValue => {
     return value === null || value === undefined ? '' : String(value);
 };
 
+function editableField(byPath: Map<string, EditorField>, path: string): EditorField | undefined {
+    const field = byPath.get(path);
+    return field && field.type !== 'float_map' ? field : undefined;
+}
+
 /** Loads a proposed patch (the assistant's) into editor values, so Edit starts from the proposal. */
 export function patchToDraft(fields: EditorField[], patch: PreferencePatch | null | undefined): Draft {
     const draft = emptyDraft();
     if (!patch) return draft;
     const byPath = new Map(fields.map((field) => [field.path, field]));
     for (const [path, value] of Object.entries(patch.set || {})) {
-        const field = byPath.get(path);
-        if (field && field.type !== 'float_map') {
+        const field = editableField(byPath, path);
+        if (field) {
             draft.values[path] = asDraftText(field, value);
         } else if (path === 'importance' && value && typeof value === 'object') {
             for (const [key, weight] of Object.entries(value as Record<string, unknown>)) {
@@ -139,13 +140,31 @@ export function patchToDraft(fields: EditorField[], patch: PreferencePatch | nul
             }
         }
     }
-    for (const path of Object.keys(patch.remove || {})) {
-        const field = byPath.get(path);
-        if (field && field.type !== 'float_map') {
+    for (const [path, value] of Object.entries(patch.remove || {})) {
+        const field = editableField(byPath, path);
+        if (!field) continue;
+        if (field.type === 'str_list' && Array.isArray(value)) {
+            // Dropping named entries keeps the rest of the saved list.
+            const dropped = new Set(value.map(String));
+            const saved = Array.isArray(field.value) ? field.value.map(String) : [];
+            draft.values[path] = saved.filter((item) => !dropped.has(item));
+        } else {
             draft.values[path] = field.type === 'str_list' ? [] : '';
         }
     }
     return draft;
+}
+
+const isMap = (value: unknown) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const isPriorityKey = (path: string) => path === 'priorities' || path.startsWith('priorities.');
+
+/** Whether the editor can show every part of a proposed patch: whole-subtree values and priority weights it cannot. */
+export function patchFitsEditor(patch: PreferencePatch | null | undefined): boolean {
+    if (!patch) return true;
+    const setFits = Object.entries(patch.set || {}).every(
+        ([path, value]) => path === 'importance' || (!isMap(value) && !isPriorityKey(path)),
+    );
+    return setFits && Object.keys(patch.remove || {}).every((path) => !isPriorityKey(path));
 }
 
 /** Paths the draft edits whose saved value or importance differs between two snapshots of the document. */

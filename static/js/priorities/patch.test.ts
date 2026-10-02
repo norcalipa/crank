@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import type {EditorField} from './api';
-import {buildPatch, conflictingPaths, emptyDraft, isDirty, patchToDraft, toDraftValue} from './patch';
+import {buildPatch, patchFitsEditor, conflictingPaths, emptyDraft, isDirty, patchToDraft, toDraftValue} from './patch';
 
 const field = (over: Partial<EditorField>): EditorField => ({
     path: 'compensation.minimum_salary', label: 'Minimum base salary', type: 'int', value: 0, set: false,
@@ -55,10 +55,12 @@ describe('patch conversion', () => {
                 'c.flag': true,
                 'd.list': ['one', 'San Francisco, CA'],
                 'e.picks': ['x', 'y'],
+                'f.list2': [],
             },
-            remove: {'b.text': null, 'f.list2': null},
+            remove: {'b.text': null},
         });
-        expect(buildPatch([fields[5]], {}, {values: {'e.picks': []}, hard: {}})).toEqual({remove: {'e.picks': null}});
+        // An emptied list is a set of [] (the server's list `remove` must name items).
+        expect(buildPatch([fields[5]], {}, {values: {'e.picks': []}, hard: {}})).toEqual({set: {'e.picks': []}});
     });
 
     test('requirement toggle builds a whole importance map and skips locked fields', () => {
@@ -119,7 +121,27 @@ describe('patchToDraft', () => {
         });
         expect(patchToDraft(fields, null)).toEqual(emptyDraft());
         expect(patchToDraft(fields, {remove: {'x.list': null}}).values['x.list']).toEqual([]);
+        expect(patchToDraft(fields, {remove: {'x.list': ['a']}}).values['x.list']).toEqual([]);
         expect(patchToDraft(fields, {set: {'x.text': null}}).values['x.text']).toBe('');
+    });
+
+    test('a one-item removal keeps the rest of the saved list', () => {
+        const list = field({path: 'culture', type: 'str_list', set: true, value: ['kind', 'open']});
+        expect(patchToDraft([list], {remove: {culture: ['kind']}}).values.culture).toEqual(['open']);
+        expect(patchToDraft([list], {remove: {culture: ['kind', 'open']}}).values.culture).toEqual([]);
+        const unset = field({path: 'culture', type: 'str_list'});
+        expect(patchToDraft([unset], {remove: {culture: ['kind']}}).values.culture).toEqual([]);
+        const odd = field({path: 'culture', type: 'str_list', value: 'nope'});
+        expect(patchToDraft([odd], {remove: {culture: ['kind']}}).values.culture).toEqual([]);
+    });
+
+    test('patchFitsEditor is false when part of a proposal cannot be shown', () => {
+        expect(patchFitsEditor(null)).toBe(true);
+        expect(patchFitsEditor({set: {'x.text': 'a', importance: {'x.text': 1}}, remove: {'x.list': ['a']}})).toBe(true);
+        expect(patchFitsEditor({set: {'priorities.culture': 0.5}})).toBe(false);
+        expect(patchFitsEditor({set: {work_location: {modes: []}}})).toBe(false);
+        expect(patchFitsEditor({remove: {'priorities.culture': null}})).toBe(false);
+        expect(patchFitsEditor({remove: {priorities: null}})).toBe(false);
     });
 
     test('conflictingPaths names edited criteria that changed in the latest document', () => {
