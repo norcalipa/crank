@@ -632,9 +632,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                 <span className="filter-chip-text">Search: {searchTerm}</span> <span aria-hidden="true">×</span>
             </button></li>}
             {rtoPolicy && <li><button type="button" className="filter-chip" data-testid="filter-chip-rto"
-                                      aria-label={`Remove filter: RTO ${rtoLabel}`}
+                                      aria-label={`Remove filter: office policy ${rtoLabel}`}
                                       onClick={this.handleRemoveRtoPolicy}>
-                <span className="filter-chip-text">RTO: {rtoLabel}</span> <span aria-hidden="true">×</span>
+                <span className="filter-chip-text">Office policy: {rtoLabel}</span> <span aria-hidden="true">×</span>
             </button></li>}
             {acceleratedVesting && <li><button type="button" className="filter-chip" data-testid="filter-chip-accelerated-vesting"
                                                aria-label="Remove filter: first vesting in under 1 year"

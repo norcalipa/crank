@@ -1374,8 +1374,8 @@ describe('OrganizationList', () => {
             // One row and one card for the single remote organization.
             expect(rowNames()).toEqual(['View details for Organization 1', 'View details for Organization 1']);
             expect(screen.getByText(/Showing 1-1 of 1 organizations/)).toBeInTheDocument();
-            await waitFor(() => expect(screen.getByTestId('filter-chip-rto')).toHaveTextContent('RTO: Remote'));
-            expect(screen.getByRole('button', {name: 'Remove filter: RTO Remote'})).toBeInTheDocument();
+            await waitFor(() => expect(screen.getByTestId('filter-chip-rto')).toHaveTextContent('Office policy: Remote'));
+            expect(screen.getByRole('button', {name: 'Remove filter: office policy Remote'})).toBeInTheDocument();
             expect(getWorkspaceSnapshot().context).toMatchObject({
                 surface: 'rankings', algorithmId: 3, filters: {rtoPolicy: 'R'},
             });
@@ -1392,9 +1392,9 @@ describe('OrganizationList', () => {
             window.history.replaceState({}, '', '/?rto=H');
             (global.fetch as jest.Mock).mockImplementation(() => Promise.reject(new Error('down')));
             render(<OrganizationList organizations={organizations} />);
-            expect(screen.getByTestId('filter-chip-rto')).toHaveTextContent('RTO: Hybrid');
+            expect(screen.getByTestId('filter-chip-rto')).toHaveTextContent('Office policy: Hybrid');
             jest.spyOn(console, 'error').mockImplementation(() => undefined);
-            fireEvent.click(screen.getByRole('button', {name: 'Remove filter: RTO Hybrid'}));
+            fireEvent.click(screen.getByRole('button', {name: 'Remove filter: office policy Hybrid'}));
             expect(screen.queryByTestId('filter-chip-rto')).not.toBeInTheDocument();
             expect(screen.getByText(/Showing 1-2 of 2 organizations/)).toBeInTheDocument();
             expect(window.history.pushState).toHaveBeenLastCalledWith({}, '', expect.not.stringContaining('rto'));
@@ -1412,7 +1412,7 @@ describe('OrganizationList', () => {
             expect(pushSpy).toHaveBeenCalledTimes(1);
             expect(pushSpy).toHaveBeenCalledWith({}, '', expect.stringMatching(/[?&]rto=R(&|$)/));
             expect(rowNames()).toEqual(['View details for Organization 1', 'View details for Organization 1']);
-            expect(screen.getByRole('button', {name: 'Remove filter: RTO Remote'})).toBeInTheDocument();
+            expect(screen.getByRole('button', {name: 'Remove filter: office policy Remote'})).toBeInTheDocument();
             await waitFor(() => expect(getWorkspaceSnapshot().context?.filters).toEqual({rtoPolicy: 'R'}));
             // Re-applying the same filter changes nothing and adds no entry.
             pushSpy.mockClear();
