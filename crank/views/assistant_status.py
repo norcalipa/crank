@@ -50,6 +50,7 @@ from django.views.decorators.http import require_GET
 from crank.agents.job_search.demo import AssistantUnavailable, _build_provider
 from crank.checks import is_non_dev_environment
 from crank.models import AgentRun, JobListing, JobSourceCatalog
+from crank.services import monitoring
 
 logger = logging.getLogger("crank.assistant_status")
 
@@ -193,7 +194,7 @@ def _classification(request) -> dict:
     if seconds > 0:
         cached = cache.get(key)
         if cached is not None:
-            return cached
+            return {**cached, "cached": True}
     if auth_key == "anon":
         state = SIGNED_OUT
     else:
@@ -201,7 +202,7 @@ def _classification(request) -> dict:
     result = {"state": state, "checked_at": timezone.now().isoformat()}
     if seconds > 0:
         cache.set(key, result, timeout=seconds)
-    return result
+    return {**result, "cached": False}
 
 
 @require_GET
@@ -216,6 +217,14 @@ def assistant_status(request):
     staff-only — this endpoint never carries them.
     """
     classification = _classification(request)
+    monitoring.record_event(
+        "availability_state",
+        {
+            "surface": "assistant_status",
+            "state": classification["state"],
+            "cached": classification["cached"],
+        },
+    )
     return JsonResponse(
         {
             "state": classification["state"],

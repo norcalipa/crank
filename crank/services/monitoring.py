@@ -316,7 +316,7 @@ EVENT_SCHEMAS = {
          "reason_code", "failure_stage", "turns"}
     ),
     "assistant_first_result": frozenset(
-        {"seconds_to_first_result", "turns_to_first_result", "latency_bucket"}
+        {"seconds_to_first_result", "turns_to_first_result"}
     ),
     "availability_state": frozenset({"surface", "state", "cached"}),
     "preference_decision": frozenset({"decision", "scope", "status", "origin"}),
