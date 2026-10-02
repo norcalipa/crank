@@ -307,7 +307,7 @@ describe('CompanyCorrectionForm', () => {
             expect(status).toHaveTextContent('Suggestion submitted');
             expect(status).toHaveTextContent('Your suggestion · RTO policy');
             expect(status.querySelector('.fa-circle-check')).not.toBeNull();
-            expect(status.querySelector('.badge-pending')).toHaveTextContent('Pending review');
+            expect(status.querySelector('.evidence-badge-pending')).toHaveTextContent('Pending review');
 
             const [url, init] = posts()[0];
             expect(url).toBe('/api/company-corrections/');

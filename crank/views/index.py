@@ -8,7 +8,8 @@ from django.views import generic
 from django.core.cache import cache
 from django.conf import settings
 from crank.auth import sign_in_url
-from crank.models.score import ScoreAlgorithm
+from crank.models.score import ScoreAlgorithm, ScoreType
+from crank.services.company_evidence import evidence_summaries_for_orgs
 from crank.services.scores import algorithm_results_cache_key
 from crank.settings.base import CONTENT_DIR, DEFAULT_ALGORITHM_ID
 from crank.forms.organization_filter import OrganizationFilterForm
@@ -129,6 +130,18 @@ class IndexView(generic.ListView):
                 cursor.execute(query, [self.algorithm_id])
                 columns = [col[0] for col in cursor.description]
                 object_list = [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+            # Trust signals ride the cached page payload: three extra queries
+            # per uncached build (active score types, accepted evidence, open
+            # claims), never one per row.
+            total_dimensions = ScoreType.objects.filter(status=1).count()
+            summaries = evidence_summaries_for_orgs([row['id'] for row in object_list])
+            for row in object_list:
+                row['rating_dimensions_total'] = total_dimensions
+                row['rating_dimensions_covered'] = round(
+                    (row['profile_completeness'] or 0) * total_dimensions / 100
+                )
+                row['evidence'] = summaries[row['id']]
 
             return object_list
 

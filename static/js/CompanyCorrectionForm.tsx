@@ -2,6 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
 import {createPortal} from 'react-dom';
+import EvidenceBadge from './evidence/EvidenceBadge';
 import {CORRECTABLE_FIELD_LABELS, fieldKeyLabel} from './labels';
 import {lockBackground, unlockBackground} from './modalIsolation';
 import {getCachedProvenance, setCachedProvenance} from './provenanceCache';
@@ -482,7 +483,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                         {current.domain && <><span className="text-nowrap">{current.domain},</span>{' '}</>}
                         <span className="text-nowrap">last verified {current.date}</span>
                     </span>
-                    {current.stale && <>{' '}<span className="badge text-bg-warning">Stale</span></>}
+                    {current.stale && <>{' '}<EvidenceBadge status="stale"/></>}
                 </span>
             );
         }
@@ -553,10 +554,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                             <dt>Your suggestion · {saved?.field_label}</dt>
                             <dd className="d-flex flex-wrap align-items-center gap-2">
                                 <span data-testid="correction-saved-proposed">{saved?.proposed_value}</span>
-                                <span className="badge text-bg-warning badge-pending">
-                                    <i className="fa-solid fa-hourglass-half me-1" aria-hidden="true"></i>
-                                    Pending review
-                                </span>
+                                <EvidenceBadge status="pending"/>
                             </dd>
                             <dt>Verified evidence</dt>
                             <dd className="mb-0">

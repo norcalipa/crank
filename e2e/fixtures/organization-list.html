@@ -50,8 +50,23 @@
                                 <dd>The preset-weighted average of the rating dimensions. It is the same for everyone.</dd>
                                 <dt>Personal fit</dt>
                                 <dd>Shown only in Job Search matches. It is computed from your saved priorities and is never mixed into the company score.</dd>
-                                <dt>Profile completeness</dt>
-                                <dd>How many rating dimensions have at least one score for the company.</dd>
+                        <dt>Rating coverage</dt>
+                        <dd>How many of the active rating dimensions have at least one score for the company, shown as "N of M". A dimension with no score counts as missing, never as zero.</dd>
+                        <dt>Fact coverage</dt>
+                        <dd>How many of the 7 tracked facts (RTO policy, funding round, public status, accelerated vesting, locations, company name and company domain) have accepted evidence.</dd>
+                        <dt>Freshness</dt>
+                        <dd>"Last verified" is the most recent date a source was re-checked and still supported an accepted fact. Editing the company record does not re-verify facts. Each fact has its own re-check window: RTO policy 90 days, funding round, public status and locations 180 days, accelerated vesting, company name and company domain 365 days.</dd>
+                        <dt>Evidence status</dt>
+                        <dd>
+                            <ul class="evidence-legend list-unstyled mb-0" data-testid="evidence-legend">
+                                <li><strong>&#10003; Verified</strong>: accepted and re-checked within its window.</li>
+                                <li><strong>! Stale</strong>: accepted, but not re-checked within its window.</li>
+                                <li><strong>? Unknown</strong>: no accepted evidence yet.</li>
+                                <li><strong>&bull; Profile data</strong>: a curated profile value without field-level evidence.</li>
+                                <li><strong>&hellip; Pending review</strong>: an observation is waiting for review and is not verified.</li>
+                                <li><strong>&#9888; Conflicting observation</strong>: a later observation disagrees and is not verified.</li>
+                            </ul>
+                        </dd>
                             </dl>
                         </div>
                     </details>
@@ -64,12 +79,12 @@
     </main>
     <script id="organization-data" type="application/json">
     [
-        {"id": 1, "name": "Acme Robotics", "ranking": 1, "avg_score": 4.82, "funding_round": "C", "rto_policy": "H", "profile_completeness": 96, "accelerated_vesting": true, "url": "https://acme.example", "type": "C"},
-        {"id": 2, "name": "Beacon Health", "ranking": 2, "avg_score": 4.71, "funding_round": "B", "rto_policy": "R", "profile_completeness": 91, "accelerated_vesting": false, "url": "https://beacon.example", "type": "C"},
-        {"id": 3, "name": "Civic Data Trust", "ranking": 3, "avg_score": 4.60, "funding_round": "A", "rto_policy": "O", "profile_completeness": 84, "accelerated_vesting": false, "url": "https://civic.example", "type": "N"},
-        {"id": 4, "name": "Dune Analytics Group", "ranking": 4, "avg_score": 4.55, "funding_round": "D", "rto_policy": "H", "profile_completeness": 88, "accelerated_vesting": true, "url": "https://dune.example", "type": "C"},
-        {"id": 5, "name": "Evergreen Bio", "ranking": 5, "avg_score": 4.43, "funding_round": "B", "rto_policy": "R", "profile_completeness": 79, "accelerated_vesting": false, "url": "https://evergreen.example", "type": "C"},
-        {"id": 6, "name": "Zephyr Quintessence NanotechnologicalBiopharmaceuticalResearchLaboratoriesInternationalHoldingsConsortium Limited", "ranking": 6, "avg_score": 4.31, "funding_round": "A", "rto_policy": "R", "profile_completeness": 72, "accelerated_vesting": false, "url": "https://zephyr.example", "type": "C"}
+        {"id": 1, "name": "Acme Robotics", "ranking": 1, "avg_score": 4.82, "funding_round": "C", "rto_policy": "H", "profile_completeness": 96, "rating_dimensions_total": 5, "rating_dimensions_covered": 5, "evidence": {"verified": 4, "stale": 0, "unknown": 3, "total": 7, "fact_coverage": 4, "last_verified_at": "2026-08-20T00:00:00Z", "pending_review": 0}, "accelerated_vesting": true, "url": "https://acme.example", "type": "C"},
+        {"id": 2, "name": "Beacon Health", "ranking": 2, "avg_score": 4.71, "funding_round": "B", "rto_policy": "R", "profile_completeness": 91, "rating_dimensions_total": 5, "rating_dimensions_covered": 5, "evidence": {"verified": 1, "stale": 2, "unknown": 4, "total": 7, "fact_coverage": 3, "last_verified_at": "2025-06-02T00:00:00Z", "pending_review": 1}, "accelerated_vesting": false, "url": "https://beacon.example", "type": "C"},
+        {"id": 3, "name": "Civic Data Trust", "ranking": 3, "avg_score": 4.60, "funding_round": "A", "rto_policy": "O", "profile_completeness": 84, "rating_dimensions_total": 5, "rating_dimensions_covered": 4, "evidence": {"verified": 0, "stale": 0, "unknown": 7, "total": 7, "fact_coverage": 0, "last_verified_at": null, "pending_review": 0}, "accelerated_vesting": false, "url": "https://civic.example", "type": "N"},
+        {"id": 4, "name": "Dune Analytics Group", "ranking": 4, "avg_score": 4.55, "funding_round": "D", "rto_policy": "H", "profile_completeness": 88, "rating_dimensions_total": 5, "rating_dimensions_covered": 4, "evidence": {"verified": 2, "stale": 0, "unknown": 5, "total": 7, "fact_coverage": 2, "last_verified_at": "2026-09-01T00:00:00Z", "pending_review": 0}, "accelerated_vesting": true, "url": "https://dune.example", "type": "C"},
+        {"id": 5, "name": "Evergreen Bio", "ranking": 5, "avg_score": 4.43, "funding_round": "B", "rto_policy": "R", "profile_completeness": 79, "rating_dimensions_total": 5, "rating_dimensions_covered": 4, "evidence": {"verified": 4, "stale": 0, "unknown": 3, "total": 7, "fact_coverage": 4, "last_verified_at": "2026-08-20T00:00:00Z", "pending_review": 0}, "accelerated_vesting": false, "url": "https://evergreen.example", "type": "C"},
+        {"id": 6, "name": "Zephyr Quintessence NanotechnologicalBiopharmaceuticalResearchLaboratoriesInternationalHoldingsConsortium Limited", "ranking": 6, "avg_score": 4.31, "funding_round": "A", "rto_policy": "R", "profile_completeness": 72, "rating_dimensions_total": 5, "rating_dimensions_covered": 4, "evidence": {"verified": 1, "stale": 2, "unknown": 4, "total": 7, "fact_coverage": 3, "last_verified_at": "2025-06-02T00:00:00Z", "pending_review": 1}, "accelerated_vesting": false, "url": "https://zephyr.example", "type": "C"}
     ]
     </script>
     <!-- Single shared "Suggest a company" host (issue #471): outside .app-shell/main.app-content per the modal isolation contract -->

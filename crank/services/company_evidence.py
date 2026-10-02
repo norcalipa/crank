@@ -47,9 +47,12 @@ import unicodedata
 from datetime import datetime, timedelta
 from urllib.parse import urlsplit
 
+from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Count, Q
 from django.utils import timezone
 
+from crank.models.company_request import normalize_public_url
 from crank.models.company_profile import (
     CompanyFieldEvidence,
     CompanyProfileObservation,
@@ -1150,25 +1153,148 @@ def is_stale(
     return now - last_verified_at > timedelta(days=policy_days)
 
 
+TRACKED_FIELD_COUNT = len(FieldKey.values)
+EVIDENCE_SCHEMA_VERSION = 2
+
+
+def field_status(row: CompanyFieldEvidence, *, now: datetime | None = None) -> str:
+    """``verified`` (accepted, within policy) or ``stale`` for an accepted row."""
+    if is_stale(row.last_verified_at, now=now, field_key=row.field_key):
+        return "stale"
+    return "verified"
+
+
+def safe_source_url(row: CompanyFieldEvidence) -> str | None:
+    """The row's source URL only when it is a public HTTPS URL on its own domain.
+
+    A link is shown only for a validated destination: the URL must pass
+    ``normalize_public_url`` and its host must equal ``source_domain`` or be a
+    subdomain of it, so a stored URL can never send the reader somewhere other
+    than the domain the dialog names.
+    """
+    domain = (row.source_domain or "").strip().rstrip(".").casefold()
+    if not domain or not row.source_url:
+        return None
+    try:
+        url = normalize_public_url(row.source_url)
+    except ValidationError:
+        return None
+    host = (urlsplit(url).hostname or "").casefold()
+    if host == domain or host.endswith("." + domain):
+        return url
+    return None
+
+
+def _open_claim_rows(organization_ids) -> list[CompanyFieldEvidence]:
+    return list(
+        CompanyFieldEvidence.objects.filter(
+            organization_id__in=organization_ids, state__in=OPEN_CLAIM_STATES
+        ).order_by("-observed_at", "-id")
+    )
+
+
+def open_claims_by_org(organization_ids) -> dict[int, dict[str, str]]:
+    """``{org_id: {field_key: "pending"|"conflicted"}}`` in one aggregate query."""
+    if not organization_ids:
+        return {}
+    rows = (
+        CompanyFieldEvidence.objects.filter(
+            organization_id__in=organization_ids, state__in=OPEN_CLAIM_STATES
+        )
+        .values("organization_id", "field_key")
+        .annotate(
+            conflicted=Count("id", filter=Q(state=State.CONFLICTED)),
+        )
+    )
+    claims: dict[int, dict[str, str]] = {}
+    for row in rows:
+        claims.setdefault(row["organization_id"], {})[row["field_key"]] = (
+            "conflicted" if row["conflicted"] else "pending"
+        )
+    return claims
+
+
+def _summary(resolved: dict[str, CompanyFieldEvidence], review: dict[str, str], now) -> dict:
+    verified = stale = 0
+    last_verified: datetime | None = None
+    for row in resolved.values():
+        if field_status(row, now=now) == "verified":
+            verified += 1
+        else:
+            stale += 1
+        if row.last_verified_at and (last_verified is None or row.last_verified_at > last_verified):
+            last_verified = row.last_verified_at
+    return {
+        "verified": verified,
+        "stale": stale,
+        "unknown": TRACKED_FIELD_COUNT - verified - stale,
+        "total": TRACKED_FIELD_COUNT,
+        "fact_coverage": verified + stale,
+        "last_verified_at": last_verified.isoformat() if last_verified else None,
+        "pending_review": len(review),
+    }
+
+
+def evidence_summaries_for_orgs(organization_ids, *, now: datetime | None = None) -> dict[int, dict]:
+    """Per-organization fact counts, last verified date and open-claim count.
+
+    Two queries for any number of organizations: accepted rows and an
+    aggregate of open claims. Every id gets a summary, so an organization with
+    no evidence reads as all-unknown rather than missing.
+    """
+    now = now or timezone.now()
+    organization_ids = list(organization_ids)
+    resolved = resolve_field_evidence_for_orgs(organization_ids)
+    claims = open_claims_by_org(organization_ids)
+    return {
+        org_id: _summary(resolved.get(org_id, {}), claims.get(org_id, {}), now)
+        for org_id in organization_ids
+    }
+
+
 def field_evidence_payload(organization, *, now: datetime | None = None) -> dict:
     """Build the serialized ``fields`` / ``unverified_fields`` arrays.
 
     ``stale`` is computed per call from the stored timestamps and the policy
     table (never frozen into a cached flag), and every registered field key
     with no accepted evidence is named in ``unverified_fields`` — missing
-    evidence is explicit.
+    evidence is explicit. ``status`` (verified/stale) and ``review``
+    (none/pending/conflicted) are separate axes: an accepted fact can be
+    verified while a conflicting observation awaits review. ``pending_review``
+    lists open claims for inspection only; they never carry a verified status.
     """
     now = now or timezone.now()
     resolved = resolve_field_evidence(organization)
+    claim_rows = _open_claim_rows([organization.id])
+    review: dict[str, str] = {}
+    newest_claim: dict[str, CompanyFieldEvidence] = {}
+    for claim in claim_rows:
+        newest_claim.setdefault(claim.field_key, claim)
+        if claim.state == State.CONFLICTED:
+            review[claim.field_key] = "conflicted"
+        else:
+            review.setdefault(claim.field_key, "pending")
+    pending_review = [
+        {
+            "field_key": key,
+            "review": review[key],
+            "observed_at": claim.observed_at.isoformat(),
+            "source_domain": claim.source_domain,
+            "observed_value": claim.value_text[:_MAX_VALUE_TEXT],
+        }
+        for key, claim in sorted(newest_claim.items())
+    ]
     fields = []
     for field_key in sorted(resolved):
         row = resolved[field_key]
+        stale = is_stale(row.last_verified_at, now=now, field_key=row.field_key)
         fields.append(
             {
                 "field_key": row.field_key,
                 "state": row.state,
                 "value": row.value_text,
                 "source_domain": row.source_domain,
+                "source_url": safe_source_url(row),
                 "observed_at": row.observed_at.isoformat(),
                 "scope": row.scope_json,
                 "last_checked_at": (
@@ -1185,11 +1311,21 @@ def field_evidence_payload(organization, *, now: datetime | None = None) -> dict
                 "last_verified_at": (
                     row.last_verified_at.isoformat() if row.last_verified_at else None
                 ),
-                "stale": is_stale(row.last_verified_at, now=now, field_key=row.field_key),
+                "stale": stale,
+                "status": "stale" if stale else "verified",
+                "review": review.get(row.field_key, "none"),
+                "policy_days": FIELD_FRESHNESS_POLICY.get(
+                    row.field_key, DEFAULT_FRESHNESS_DAYS
+                ),
             }
         )
     unverified_fields = [key for key in FieldKey.values if key not in resolved]
-    return {"fields": fields, "unverified_fields": unverified_fields}
+    return {
+        "fields": fields,
+        "unverified_fields": unverified_fields,
+        "summary": _summary(resolved, review, now),
+        "pending_review": pending_review,
+    }
 
 
 CORRECTION_VERSION = "manual-correction.v1"
@@ -1367,6 +1503,12 @@ __all__ = [
     "accept_claim",
     "accept_observation_fields",
     "field_evidence_payload",
+    "field_status",
+    "safe_source_url",
+    "open_claims_by_org",
+    "evidence_summaries_for_orgs",
+    "EVIDENCE_SCHEMA_VERSION",
+    "TRACKED_FIELD_COUNT",
     "field_key_for_observation_attribute",
     "is_stale",
     "observation_field_values",
