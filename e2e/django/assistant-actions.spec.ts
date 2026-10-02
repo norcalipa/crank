@@ -83,13 +83,18 @@ test.describe('assistant actions (issue #484)', () => {
         // Hold the reply until the page has changed.
         let release: () => void = () => undefined;
         const gate = new Promise<void>((resolve) => { release = resolve; });
+        let held: () => void = () => undefined;
+        const reachedServer = new Promise<void>((resolve) => { held = resolve; });
         await page.route('**/api/agent/conversations/*/', async (route) => {
             if (route.request().method() === 'POST') {
+                held();
                 await gate;
             }
             await route.continue();
         });
         await ask(page, 'Show only remote companies');
+        // The turn is sent under the context at this moment; change it after.
+        await reachedServer;
         await page.getByTestId('accelerated-vesting-checkbox').check();
         await expect.poll(() => new URL(page.url()).searchParams.get('accelerated_vesting')).toBe('1');
         release();
