@@ -664,18 +664,25 @@ def _display_value(leaf, value):
 
 
 def criteria_chips(document):
-    """Compact chips for every set field: ``{path, label, display, hard, supported}``."""
-    return [
-        {
+    """Compact chips for every set field: ``{path, label, display, hard, supported}``.
+
+    List fields also carry ``items`` so an entry containing a comma stays whole.
+    """
+    chips = []
+    for field in editor_fields(document):
+        if not field["set"]:
+            continue
+        chip = {
             "path": field["path"],
             "label": field["label"],
             "display": _display_value(field["type"], field["value"]),
             "hard": field["hard"],
             "supported": field["supported"],
         }
-        for field in editor_fields(document)
-        if field["set"]
-    ]
+        if field["type"] == "str_list":
+            chip["items"] = [str(item) for item in field["value"]]
+        chips.append(chip)
+    return chips
 
 
 def patch_field_errors(patch):

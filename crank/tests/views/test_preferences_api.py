@@ -365,15 +365,18 @@ class TestChatAndEditorPathsYieldIdenticalDocuments:
             status=JobListing.Status.ACTIVE, organization=org,
         )
 
+    @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
     def test_identical_proposals_documents_and_match_reasons(self, db):
         users = get_user_model()
         chat_user = users.objects.create_user("chat", password="pw")
         edit_user = users.objects.create_user("edit", password="pw")
-        org = Organization.objects.create(name="Acme")
+        org = Organization.objects.create(name="Acme", rto_policy="R")
         source = JobSourceCatalog.objects.create(
             name="Synthetic", adapter_key="synthetic.v1", base_url="https://jobs.example.test",
         )
-        self._listing(org, source, "Engineer", "Remote")
+        self._listing(org, source, "Engineer", "Remote").__class__.all_objects.filter(
+            title="Engineer",
+        ).update(is_remote=True)
         for user in (chat_user, edit_user):
             prefs.apply_patch_to_user(user, {"set": BASE_DOC})
         snapshots = {u: UserPreference.objects.get(user=u) for u in (chat_user, edit_user)}
@@ -423,3 +426,42 @@ class TestChatAndEditorPathsYieldIdenticalDocuments:
             for u in (chat_user, edit_user)
         }
         assert reasons[chat_user] == reasons[edit_user]
+        assert reasons[edit_user], "the comparison must cover at least one real match"
+
+
+class TestListEntriesWithCommasMatchIntact:
+    """A list entry such as "San Francisco, CA" is one entry end to end (review round 1)."""
+
+    @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+    def test_comma_location_exclusion_only_excludes_that_place(self, db):
+        user = get_user_model().objects.create_user("commas", password="pw")
+        org = Organization.objects.create(name="Acme")
+        source = JobSourceCatalog.objects.create(
+            name="Synthetic", adapter_key="synthetic.v1", base_url="https://jobs.example.test",
+        )
+        now = timezone.now()
+        for title, location in (
+            ("sf", "San Francisco, CA"), ("chi", "Chicago, IL"),
+            ("tor", "Toronto, Canada"), ("rem", "Remote - Americas"),
+        ):
+            JobListing.all_objects.create(
+                source=source, external_id=title, canonical_url="https://jobs.example.test/" + title,
+                employer_name=org.name, title=title, location_text=location,
+                first_seen_at=now - timedelta(days=1), last_seen_at=now,
+                status=JobListing.Status.ACTIVE, organization=org,
+            )
+        prefs.apply_patch_to_user(user, {"set": {"exclusions.locations": ["San Francisco, CA"]}})
+        document = prefs.read(user)["preferences"]
+        assert document["exclusions"]["locations"] == ["San Francisco, CA"]
+        titles = {m.title for m in job_matching.match_jobs(user)}
+        assert {"chi", "tor", "rem"} <= titles
+        assert "sf" not in titles
+
+    def test_chip_items_keep_comma_entries_whole(self, db):
+        user = get_user_model().objects.create_user("chips", password="pw")
+        prefs.apply_patch_to_user(user, {"set": {"exclusions.locations": ["San Francisco, CA", "Austin"]}})
+        chip = next(
+            c for c in prefs.criteria_chips(prefs.read(user)["preferences"])
+            if c["path"] == "exclusions.locations"
+        )
+        assert chip["items"] == ["San Francisco, CA", "Austin"]
