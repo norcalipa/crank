@@ -96,6 +96,7 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         {selector: /^#job-search-chat \.card-header$/, value: '4'},
         {selector: /^\.chat-panel-stack$/, value: '6'},
         {selector: /^#job-search-chat \.chat-jump-row$/, value: '2'},
+        {selector: /^\.assistant-panel #job-search-chat > section\[data-scroll-owner='panel'\] > \.card-header$/, value: '4'},
         {selector: /^#job-search-chat > \[data-scroll-owner='panel'\] \.chat-footer$/, value: '3'},
     ];
 

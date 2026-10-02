@@ -196,6 +196,33 @@ describe('JobSearchChat', () => {
             expect(chat).toHaveStyle({height: '752px', minHeight: '20rem'});
         });
 
+        test('caps the inline panel stack to the room between header and composer', async () => {
+            await renderChat();
+            const chat = screen.getByTestId('job-search-chat');
+            await act(async () => { await flushRaf(); });
+            // Unmeasured layout (all rects zero) keeps the floor.
+            expect(chat.style.getPropertyValue('--chat-stack-max')).toBe('96px');
+
+            const header = chat.querySelector('.card-header') as HTMLElement;
+            const form = chat.querySelector('form') as HTMLElement;
+            jest.spyOn(header, 'getBoundingClientRect').mockReturnValue({bottom: 100} as DOMRect);
+            jest.spyOn(form, 'getBoundingClientRect').mockReturnValue({top: 400} as DOMRect);
+            await act(async () => {
+                fireEvent(window, new Event('resize'));
+                await flushRaf();
+            });
+            expect(chat.style.getPropertyValue('--chat-stack-max')).toBe('288px');
+        });
+
+        test('measures the stack cap without a composer (init error state)', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({detail: 'boom'}, 500));
+            render(<JobSearchChat/>);
+            await screen.findByText(/restore your previous conversation/i);
+            await act(async () => { await flushRaf(); });
+            expect(screen.getByTestId('job-search-chat').style.getPropertyValue('--chat-stack-max')).toBe('96px');
+        });
+
         test.each([
             ['inside the assistant panel', true, 'auto', 'panel'],
             ['on the page', false, '752px', 'transcript'],
@@ -406,6 +433,8 @@ describe('JobSearchChat', () => {
             };
             let view = await mountWith(<JobSearchChat workspaceMode="sheet" autoFocusComposer/>);
             expect(screen.getByLabelText('Message')).not.toHaveFocus();
+            // The sheet keeps the keyboard down but still lands in the chat.
+            await waitFor(() => expect(screen.getByRole('heading', {name: 'Conversation'})).toHaveFocus());
             view.unmount();
             view = await mountWith(<JobSearchChat workspaceMode="drawer"/>);
             expect(screen.getByLabelText('Message')).not.toHaveFocus();

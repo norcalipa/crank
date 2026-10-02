@@ -3315,6 +3315,9 @@ body.assistant-open .app-content .table-responsive,
 }
 
 .chat-panel-stack {
+    max-height: var(--chat-stack-max, none);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     position: absolute;
     top: calc(100% + .25rem);
     left: 0;
@@ -3428,9 +3431,10 @@ body.assistant-open .app-content .table-responsive,
 
 /* Panel-scroll mode: pin the header (with More) and the jump row + composer
    so they stay reachable whatever the reader has scrolled to. */
-#job-search-chat > [data-scroll-owner='panel'] .card-header {
+.assistant-panel #job-search-chat > section[data-scroll-owner='panel'] > .card-header {
     position: sticky;
     top: 0;
+    z-index: 4;
     background: #212529;
 }
 
@@ -4107,6 +4111,26 @@ span.priority-chip-button { cursor: default; }
     }
 }
 
+@container chat-composer (max-width: 21rem) {
+    .chat-composer-pending .chat-stop > span {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    .chat-composer-pending .chat-stop {
+        width: 2.75rem;
+        padding-inline: 0;
+        justify-content: center;
+    }
+}
+
 #job-search-chat form .chat-disclaimer {
     margin: .5rem 0 0;
     padding-inline: .25rem;
@@ -4128,14 +4152,16 @@ span.priority-chip-button { cursor: default; }
         padding-block: .25rem;
     }
 
+    .assistant-panel--sheet #job-search-chat form {
+        padding-top: .5rem;
+    }
+
+    .assistant-panel--sheet #job-search-chat .chat-footer {
+        padding-bottom: 0;
+    }
+
     .assistant-panel--sheet #job-search-chat .chat-transcript {
         margin-bottom: .5rem !important;
         padding: .5rem !important;
-    }
-
-    .chat-panel-stack {
-        max-height: 40vh;
-        overflow-y: auto;
-        overscroll-behavior: contain;
     }
 }
