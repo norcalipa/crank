@@ -685,6 +685,7 @@ describe('PrioritiesSection', () => {
             render(<PrioritiesSection variant="main" authenticated/>);
             const banner = await screen.findByTestId('priorities-session-expired');
             expect(within(banner).getByRole('link', {name: /sign in/i})).toBeInTheDocument();
+            expect(screen.queryByRole('button', {name: /try again/i})).not.toBeInTheDocument();
         });
 
         test('This search only counts jobs only and marks a capped count', async () => {

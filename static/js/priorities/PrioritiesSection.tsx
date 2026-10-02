@@ -401,7 +401,9 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                     <strong>Couldn’t load your priorities.</strong>
                     {loadError && loadError !== GENERIC_ERROR_MESSAGE && <span className="d-block small">{loadError}</span>}
                 </div>
-                <button type="button" className="btn btn-sm btn-outline-light priorities-load-error-retry" onClick={() => void load()}>Try again</button>
+                {!sessionExpired && (
+                    <button type="button" className="btn btn-sm btn-outline-light priorities-load-error-retry" onClick={() => void load()}>Try again</button>
+                )}
             </div>
         );
     } else if (step === 'edit' && snapshot) {
