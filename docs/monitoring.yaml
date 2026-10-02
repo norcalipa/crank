@@ -33,6 +33,7 @@ facets:
   - surface
   - failure_stage
   - decision
+  - status
 widgets:
   - name: Last successful scheduled run
     nrql: >-
@@ -104,7 +105,7 @@ widgets:
   - name: Preference decisions
     nrql: >-
       SELECT count(*) FROM CrankOperation WHERE event_name = 'preference_decision'
-      FACET decision, state SINCE 7 days ago
+      FACET decision, status SINCE 7 days ago
   - name: Publication-to-match lag
     nrql: >-
       SELECT max(publication_lag_max_seconds), sum(publication_lag_count)
@@ -147,7 +148,7 @@ metrics:
   - name: preference_decision_outcomes
     event: preference_decision
     definition: proposal apply, dismiss and undo outcomes including stale and invalid
-    dimensions: [decision, state]
+    dimensions: [decision, status]
     owner: maintainer (crank.fyi)
     runbook: docs/monitoring.md#assistant-and-data-freshness-metrics
     baseline_only: true

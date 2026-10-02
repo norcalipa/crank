@@ -251,3 +251,170 @@ class ListingLifecycleAttributeTests(TestCase):
         self.assertEqual(payload["listings_closed"], 3)
         self.assertEqual(payload["listings_expired"], 1)
         self.assertEqual(payload["listings_deleted"], 2)
+
+
+HOSTILE_VALUES = (
+    "https://x/y",
+    "a@b.c",
+    "remote jobs in sf",
+    "q" * 1000,
+    '{"patch": {"remote": true}}',
+    "user:42",
+)
+
+
+class AssistantTelemetryPolicyTests(TestCase):
+    def test_enum_keys_map_hostile_values_to_other(self):
+        for key in sorted(monitoring._ENUM_KEYS):
+            for value in HOSTILE_VALUES:
+                self.assertEqual(monitoring._safe_value(key, value), "other", (key, value))
+            self.assertEqual(monitoring._safe_value(key, 7), "other")
+
+    def test_registered_enum_value_passes(self):
+        self.assertEqual(monitoring._safe_value("phase", "replied"), "replied")
+        self.assertEqual(monitoring._safe_value("state", "ready"), "ready")
+
+    def test_slug_keys_other_for_non_slug(self):
+        self.assertEqual(monitoring._safe_value("source_key", "usajobs"), "usajobs")
+        for value in HOSTILE_VALUES:
+            if value == "user:42":
+                continue  # slug-shaped identifiers (provider:model) are allowed
+            self.assertEqual(monitoring._safe_value("source_key", value), "other")
+
+    def test_action_drop_reasons_slugged_and_bounded(self):
+        self.assertEqual(monitoring._safe_value("action_drop_reasons", "a,b"), "a,b")
+        self.assertEqual(monitoring._safe_value("action_drop_reasons", ""), "")
+        self.assertEqual(monitoring._safe_value("action_drop_reasons", "x y,https://a"), "other,other")
+
+    def test_correlation_id_must_be_uuid(self):
+        good = "0f8fad5bd9cb469fa16570867728950e"
+        self.assertEqual(monitoring._safe_value("correlation_id", good), good)
+        canonical = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        self.assertEqual(monitoring._safe_value("correlation_id", canonical), canonical)
+        for value in HOSTILE_VALUES:
+            self.assertIsNone(monitoring._safe_value("correlation_id", value))
+
+    def test_run_id_must_be_int(self):
+        self.assertEqual(monitoring._safe_value("run_id", 5), 5)
+        self.assertIsNone(monitoring._safe_value("run_id", True))
+        self.assertIsNone(monitoring._safe_value("run_id", "5"))
+
+    def test_counters_keep_numbers_and_drop_strings(self):
+        self.assertEqual(monitoring._safe_value("results", 3), 3)
+        self.assertIs(monitoring._safe_value("cached", True), True)
+        self.assertEqual(monitoring._safe_value("seconds_to_first_result", 1.5), 1.5)
+        self.assertIsNone(monitoring._safe_value("results", "remote jobs in sf"))
+
+    def test_unknown_and_sensitive_keys_are_dropped(self):
+        self.assertIsNone(monitoring._safe_value("message", "hi"))
+        self.assertIsNone(monitoring._safe_value("response_body", 1))
+
+    def test_assistant_turn_payload_contains_no_hostile_value(self):
+        payload = monitoring.event_attributes(
+            "assistant_turn",
+            {
+                "phase": "https://x/y",
+                "reason_code": "a@b.c",
+                "failure_stage": "user:42",
+                "correlation_id": "remote jobs in sf",
+                "message": "q" * 1000,
+                "results": "q" * 1000,
+                "turns": 2,
+            },
+        )
+        self.assertEqual(
+            payload,
+            {"event_name": "assistant_turn", "phase": "other", "reason_code": "other",
+             "failure_stage": "other", "turns": 2},
+        )
+
+    def test_per_event_schema_drops_keys_outside_schema(self):
+        payload = monitoring.event_attributes(
+            "assistant_first_result",
+            {"seconds_to_first_result": 4, "turns_to_first_result": 1, "phase": "replied"},
+        )
+        self.assertEqual(
+            payload,
+            {"event_name": "assistant_first_result", "seconds_to_first_result": 4,
+             "turns_to_first_result": 1},
+        )
+
+    def test_failure_stage_for_table(self):
+        for reason, stage in monitoring._FAILURE_STAGE_BY_REASON.items():
+            self.assertEqual(monitoring.failure_stage_for(reason), stage)
+            self.assertIn(stage, monitoring.FAILURE_STAGES)
+        self.assertEqual(monitoring.failure_stage_for("never-seen"), "internal")
+        self.assertEqual(monitoring.failure_stage_for(None), "internal")
+
+    def test_enum_registry_covers_dynamic_sources(self):
+        from crank.agents.jobs import ingest
+        from crank.models.job_search import JobSearchTurn
+
+        registry = monitoring.enum_values()
+        self.assertTrue(set(AgentRun.RunType.values) <= registry["run_type"])
+        self.assertTrue(set(AgentRun.Status.values) <= registry["status"])
+        self.assertTrue(set(JobSearchTurn.FailureCode.values) <= registry["reason_code"])
+        skips = {getattr(ingest, n) for n in dir(ingest) if n.startswith("SKIP_")}
+        self.assertTrue(skips <= registry["reason_code"])
+        self.assertTrue(set(monitoring.FAILURE_STAGES) == registry["failure_stage"])
+        for reason in monitoring._FAILURE_STAGE_BY_REASON:
+            self.assertIn(reason, registry["reason_code"], reason)
+
+    def test_yaml_metrics_block_shape(self):
+        import pathlib
+        import yaml
+
+        doc = yaml.safe_load(
+            (pathlib.Path(__file__).resolve().parents[3] / "docs" / "monitoring.yaml").read_text()
+        )
+        facets = set(doc["facets"])
+        self.assertTrue(doc["metrics"])
+        for metric in doc["metrics"]:
+            self.assertIn(metric["event"], monitoring.EVENT_NAMES)
+            self.assertTrue(set(metric["dimensions"]) <= facets, metric["name"])
+            self.assertEqual(metric["owner"], "maintainer (crank.fyi)")
+            self.assertIs(metric["baseline_only"], True)
+            path, _, anchor = metric["runbook"].partition("#")
+            root = pathlib.Path(__file__).resolve().parents[3]
+            text = (root / path).read_text()
+            self.assertIn(anchor, [
+                line.lstrip("# ").lower().replace(" ", "-")
+                for line in text.splitlines() if line.startswith("#")
+            ])
+
+
+class RecordEventRegistryTests(TestCase):
+    """Every literal enum value passed to ``record_event`` is registered."""
+
+    def test_literal_enum_values_in_record_event_calls_are_registered(self):
+        import ast
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[2]
+        registry = monitoring.enum_values()
+        checked = 0
+        for path in root.rglob("*.py"):
+            if "tests" in path.parts or "migrations" in path.parts:
+                continue
+            tree = ast.parse(path.read_text())
+            for node in ast.walk(tree):
+                if not (
+                    isinstance(node, ast.Call)
+                    and getattr(node.func, "attr", getattr(node.func, "id", "")) == "record_event"
+                    and len(node.args) >= 2
+                    and isinstance(node.args[1], ast.Dict)
+                ):
+                    continue
+                for key, value in zip(node.args[1].keys, node.args[1].values):
+                    if (
+                        isinstance(key, ast.Constant)
+                        and key.value in monitoring._ENUM_KEYS
+                        and isinstance(value, ast.Constant)
+                        and isinstance(value.value, str)
+                    ):
+                        checked += 1
+                        self.assertIn(
+                            value.value, registry[key.value],
+                            f"{path.name}:{node.lineno} {key.value}={value.value!r}",
+                        )
+        self.assertGreater(checked, 5)

@@ -239,6 +239,7 @@ _STATIC_ENUMS = {
         "none", "timeout", "cost_limit", "rejected", "authorization",
         "upstream", "internal", "deadline", "overlap", "constraint",
         "overlap_lock", "overlap_existing", "overlap_constraint",
+        "overlap_advisory_lock",
         "conversation_closed", "preference_stale",
         "preference_version_unavailable", "rate_limited", "turn_in_progress",
         "retry_limited", "disabled", "snapshot_failed",

@@ -145,7 +145,7 @@ are never recorded, and a client `X-Request-ID` that is not a UUID is dropped
   `JobSearchConversation.first_result_at`), `seconds_to_first_result` and
   `turns_to_first_result`.
 - `availability_state`: assistant status and job-matches surfaces.
-- `preference_decision`: apply/dismiss/undo with `state` ok/stale/invalid/failed.
+- `preference_decision`: apply/dismiss/undo with `status` applied/dismissed/undone/stale/invalid/failed.
 - `matching_batch` gains `publication_lag_max_seconds` / `publication_lag_count`.
 - `pipeline_health` (emitted by `crawl_healthcheck`): queue, outbox, review and
   evidence-freshness gauges. `publication_sweep`: per-run sweep outcome.
