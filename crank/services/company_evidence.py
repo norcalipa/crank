@@ -454,7 +454,7 @@ def accept_correction(
     Refused (``CorrectionNotAcceptable``) when the company is no longer active,
     when the text carries hidden characters, and, unless ``allow_stale``, when
     the accepted fact changed since the suggestion was submitted. The created
-    row gets a ``superseded_ids`` attribute for the audit trail.
+    row gets ``superseded_ids`` and ``overrode_changed_value`` attributes for the audit trail.
     """
     from crank.models.company_correction import find_hidden_character
 
@@ -489,7 +489,8 @@ def accept_correction(
             .order_by("-observed_at", "-id")
         )
         current = locked_rows[0] if locked_rows else None
-        if not allow_stale and accepted_fact_changed(locked, current):
+        fact_changed = accepted_fact_changed(locked, current)
+        if not allow_stale and fact_changed:
             raise CorrectionNotAcceptable(
                 "the accepted value changed since this was submitted "
                 f"(now {current.value_text!r})"
@@ -541,6 +542,7 @@ def accept_correction(
     correction.reviewed_by = reviewer
     correction.reviewed_at = now
     evidence.superseded_ids = superseded_ids
+    evidence.overrode_changed_value = fact_changed
     return evidence
 
 

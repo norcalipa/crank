@@ -130,6 +130,32 @@ class CompanyCorrectionModelTest(TestCase):
         item.clean()
         self.assertEqual(item.evidence_url, "https://acme.example.com:443/x")
 
+    def test_idna_2008_hosts_are_not_rewritten(self):
+        item = self.make(evidence_url="https://stra\u00dfe.de/x")
+        item.clean()
+        self.assertEqual(item.evidence_url, "https://xn--strae-oqa.de/x")
+
+    def test_single_script_non_latin_hosts_are_allowed_mixed_script_is_not(self):
+        for host in ("\u304a\u540d\u524d.com", "\u4f8b\u3048.\u30c6\u30b9\u30c8", "\u30b5\u30fc\u30d0.example.com", "\u4eca\u3005.com", "\u03b5\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03cc\u03c2.gr"):
+            item = self.make(evidence_url=f"https://{host}/p")
+            item.clean()
+            self.assertTrue(item.evidence_url.startswith("https://xn--") or ".xn--" in item.evidence_url, host)
+        with self.assertRaises(ValidationError):
+            self.make(evidence_url="https://acme\u304a.com/p").clean()
+
+    def test_default_ignorable_characters_are_hidden_everywhere(self):
+        from crank.models.company_correction import find_hidden_character, strip_hidden_characters
+
+        for char in ("\u115f", "\u1160", "\u3164", "\uffa0", "\u034f", "\u17b4", "\u180b", "\ufe00", "\ufe0f", "\U000e0100", "\U000e01ef"):
+            self.assertEqual(find_hidden_character(f"Re{char}mote"), char)
+            self.assertEqual(strip_hidden_characters(f"Re{char}mote"), "Remote")
+            for name in ("proposed_value", "note"):
+                with self.assertRaises(ValidationError, msg=char) as ctx:
+                    self.make(**{name: f"Re{char}mote"}).clean()
+                self.assertIn(name, ctx.exception.message_dict)
+            with self.assertRaises(ValidationError, msg=char):
+                self.make(evidence_url=f"https://exa{char}mple.com/p").clean()
+
     def test_unparseable_and_overlong_idna_hosts_are_rejected(self):
         for url in ("https://[::1/x", "https://\u00e9" + "a" * 62 + ".example.com/"):
             with self.assertRaises(ValidationError, msg=url):

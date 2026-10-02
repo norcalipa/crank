@@ -37,7 +37,7 @@
             <tr>
                 <td>Company requests and fact corrections you submit (company details, the value you propose, your evidence link and note)</td>
                 <td>Staff review of your suggestion; an accepted evidence link is published as the public source of that fact</td>
-                <td>Until account deletion</td>
+                <td>Your submission is deleted with your account; an accepted value and link become part of the public company record and stay after account deletion</td>
             </tr>
             <tr>
                 <td>Agent run summaries (counts, status)</td>
@@ -76,7 +76,7 @@
     <h2>Delete Your Data</h2>
     <ul>
         <li><strong>Delete a conversation:</strong> <code>DELETE /api/agent/conversations/&lt;conversation_id&gt;/delete/</code></li>
-        <li><strong>Delete all data:</strong> Account deletion cascades to all preferences, conversations, and matches.</li>
+        <li><strong>Delete all data:</strong> Account deletion cascades to all preferences, conversations, matches, and your company requests and correction submissions. An accepted correction's value and link are already part of the public company record and are not removed.</li>
     </ul>
 
     <h2>Security Controls</h2>

@@ -680,7 +680,7 @@ def test_funding_label_uppercases_canonical_stage():
     assert _funding_label("s") == "Seed"
 
 
-@pytest.mark.parametrize("value", ["Re\u200bmote", "Rem\u202eote", "Remo\x07te", "\uff32emote", "Re\ufeffmote"])
+@pytest.mark.parametrize("value", ["Re\u200bmote", "Rem\u202eote", "Remo\x07te", "\uff32emote", "Re\ufeffmote", "Re\u3164mote", "Re\u115fmote", "Re\uffa0mote", "Re\u034fmote", "Re\ufe00mote", "Re\U000e0100mote", "Re\u180bmote"])
 def test_rto_days_ignores_hidden_and_compat_characters(value):
     from crank.agents.jobs.matching import _normalized, _rto_days
 

@@ -15,6 +15,11 @@ from crank.models.company_profile import CompanyFieldEvidence
 from crank.models.organization import Organization
 from crank.models.publication import PublicationEvent
 
+DEFAULT_IGNORABLE_SAMPLES = (
+    "\u00ad", "\u034f", "\u061c", "\u115f", "\u1160", "\u17b4", "\u17b5", "\u180b", "\u180d",
+    "\u180f", "\u3164", "\ufe00", "\ufe0f", "\uffa0", "\U000e0100", "\U000e01ef", "\U000e0001",
+    "\u2060", "\u206a", "\ufff0", "\U0001d173",
+)
 URL = "/api/company-corrections/"
 
 
@@ -419,6 +424,7 @@ class CompanyCorrectionsViewTest(TestCase):
             response = self.client.get(f"{URL}?organization={value}")
             self.assertEqual(response.status_code, 400)
 
+    @override_settings(COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR=1000)
     def test_hidden_characters_get_a_clear_400(self):
         self.login()
         for field, value in (
@@ -427,6 +433,12 @@ class CompanyCorrectionsViewTest(TestCase):
             ("evidence_url", "https://exa\u200bmple.com/p"),
             ("evidence_url", "https://ex\u0430mple.com/p"),
             ("evidence_url", "https://[2606:4700:4700::1111]/x"),
+            *[
+                (field, f"Re{char}mote")
+                for char in DEFAULT_IGNORABLE_SAMPLES
+                for field in ("proposed_value", "note")
+            ],
+            *[("evidence_url", f"https://exa{char}mple.com/p") for char in DEFAULT_IGNORABLE_SAMPLES],
         ):
             response = self.post(self.body(**{field: value}))
             self.assertEqual(response.status_code, 400, (field, value))
@@ -449,32 +461,30 @@ class CompanyCorrectionsViewTest(TestCase):
         response = self.client.get(f"{URL}?organization={'1' * 4400}")
         self.assertEqual(response.status_code, 400)
 
-    def test_per_address_cap_applies_across_accounts(self):
+    def test_account_cap_does_not_affect_other_accounts(self):
         third = User.objects.create_user(username="u3", password="pw-477-xyz")
-        with override_settings(COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR=2):
-            for user, field in ((self.user, "rto_policy"), (self.other, "locations")):
-                client = Client()
-                client.force_login(user)
-                self.assertEqual(self.post(self.body(field_key=field), client=client).status_code, 201)
-            client = Client()
-            client.force_login(third)
-            limited = self.post(self.body(field_key="funding_round"), client=client)
+        with override_settings(COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR=1):
+            self.login()
+            self.assertEqual(self.post(self.body(field_key="rto_policy")).status_code, 201)
+            limited = self.post(self.body(field_key="locations"))
             self.assertEqual(limited.status_code, 429)
             self.assertTrue(1 <= int(limited["Retry-After"]) <= 3600)
-            self.assertEqual(cache.get(f"company-correction-rate:{third.pk}") or 0, 0)
-
-    def test_per_address_rejection_cap(self):
-        with override_settings(COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR=2):
-            for user in (self.user, self.other):
+            for user in (self.other, third):
                 client = Client()
                 client.force_login(user)
-                self.assertEqual(
-                    self.post(self.body(proposed_value="Remote-first"), client=client).status_code, 400
-                )
-            third = User.objects.create_user(username="u3", password="pw-477-xyz")
+                self.assertEqual(self.post(self.body(field_key="locations"), client=client).status_code, 201)
+
+    def test_rejected_attempt_cap_is_per_account(self):
+        with override_settings(COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR=2):
+            self.login()
+            for _ in range(2):
+                self.assertEqual(self.post(self.body(proposed_value="Remote-first")).status_code, 400)
+            limited = self.post(self.body())
+            self.assertEqual(limited.status_code, 429)
+            self.assertTrue(1 <= int(limited["Retry-After"]) <= 3600)
             client = Client()
-            client.force_login(third)
-            self.assertEqual(self.post(self.body(), client=client).status_code, 429)
+            client.force_login(self.other)
+            self.assertEqual(self.post(self.body(), client=client).status_code, 201)
 
     def test_detail_is_owner_scoped(self):
         self.login()

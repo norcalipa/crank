@@ -26,8 +26,6 @@ from crank.services.company_evidence import resolve_field_evidence, scoped_corre
 RATE_LIMIT_SECONDS = 60 * 60
 DEFAULT_RATE_LIMIT = 10
 DEFAULT_REJECTED_LIMIT = 60
-DEFAULT_IP_RATE_LIMIT = 30
-DEFAULT_IP_REJECTED_LIMIT = 300
 MAX_ID_DIGITS = 18
 MAX_ORGANIZATION_ID = 2**63 - 1
 MAX_BODY_BYTES = 8 * 1024
@@ -70,22 +68,8 @@ def _payload(correction):
     }
 
 
-def _client_ip(request):
-    return request.META.get("REMOTE_ADDR") or "unknown"
-
-
 def _rate_keys(request):
     base = f"company-correction-rate:{request.user.pk}"
-    return base, f"{base}:reset"
-
-
-def _ip_rate_keys(request):
-    base = f"company-correction-rate-ip:{_client_ip(request)}"
-    return base, f"{base}:reset"
-
-
-def _ip_rejection_keys(request):
-    base = f"company-correction-rejected-ip:{_client_ip(request)}"
     return base, f"{base}:reset"
 
 
@@ -133,34 +117,24 @@ def _reserve_slot(request):
     return _reserve(_rate_keys(request), limit)
 
 
-def _reserve_ip_slot(request):
-    """Coarse per-address allowance in front of the per-account one."""
-    limit = getattr(settings, "COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR", DEFAULT_IP_RATE_LIMIT)
-    return _reserve(_ip_rate_keys(request), limit)
-
-
 def _rejection_keys(request):
     base = f"company-correction-rejected:{request.user.pk}"
     return base, f"{base}:reset"
 
 
 def _rejections_exhausted(request):
-    """The reset key of the exhausted rejection cap (user, then address), else None."""
-    user_limit = getattr(
+    """The reset key of the exhausted rejection cap, else None."""
+    limit = getattr(
         settings, "COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR", DEFAULT_REJECTED_LIMIT
     )
-    ip_limit = getattr(
-        settings, "COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR", DEFAULT_IP_REJECTED_LIMIT
-    )
-    for keys, limit in ((_rejection_keys(request), user_limit), (_ip_rejection_keys(request), ip_limit)):
-        if (cache.get(keys[0]) or 0) >= limit:
-            return keys[1]
+    keys = _rejection_keys(request)
+    if (cache.get(keys[0]) or 0) >= limit:
+        return keys[1]
     return None
 
 
 def _count_rejection(request):
     _bump(*_rejection_keys(request))
-    _bump(*_ip_rejection_keys(request))
 
 
 def _normalized(value):
@@ -244,24 +218,16 @@ def _limited_store(request, payload, idempotency_key):
     exhausted = _rejections_exhausted(request)
     if exhausted:
         return _too_many(request, exhausted)
-    if not _reserve_ip_slot(request):
-        return _too_many(request, _ip_rate_keys(request)[1])
     if not _reserve_slot(request):
-        _release(_ip_rate_keys(request)[0])
         return _too_many(request, _rate_keys(request)[1])
-    keys = (_rate_keys(request)[0], _ip_rate_keys(request)[0])
-
-    def release():
-        for held in keys:
-            _release(held)
-
+    key = _rate_keys(request)[0]
     try:
         response = _store(request, payload, idempotency_key)
     except BaseException:
-        release()
+        _release(key)
         raise
     if response.status_code != 201:
-        release()
+        _release(key)
         if response.status_code in (400, 404, 409):
             _count_rejection(request)
     return response

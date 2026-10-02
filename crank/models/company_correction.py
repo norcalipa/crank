@@ -8,6 +8,7 @@ import ipaddress
 import unicodedata
 from urllib.parse import urlsplit, urlunsplit
 
+import idna
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -17,26 +18,26 @@ from django_extensions.db.models import TimeStampedModel
 from crank.models.company_profile import CompanyFieldEvidence
 from crank.models.company_request import normalize_public_url
 from crank.models.organization import Organization
+from crank.services.hidden_characters import is_hidden_character
 
 MAX_VALUE_LENGTH = 500
 MAX_SCOPE_VALUE_LENGTH = 100
 MAX_EVIDENCE_URL_LENGTH = 750
-_HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 
 
 def find_hidden_character(value: str, *, allow_newlines: bool = False) -> str | None:
-    """First control, format (zero-width, bidi), surrogate or unassigned character, if any."""
+    """First control, format, default-ignorable, surrogate or unassigned character, if any."""
     for char in value or "":
         if allow_newlines and char in "\n\t\r":
             continue
-        if unicodedata.category(char) in _HIDDEN_CATEGORIES:
+        if is_hidden_character(char):
             return char
     return None
 
 
 def strip_hidden_characters(value: str) -> str:
     """``value`` with every hidden character removed (comparison only, never storage)."""
-    return "".join(c for c in value or "" if unicodedata.category(c) not in _HIDDEN_CATEGORIES)
+    return "".join(c for c in value or "" if not is_hidden_character(c))
 
 
 def canonical_text(value: str) -> str:
@@ -45,11 +46,16 @@ def canonical_text(value: str) -> str:
     return " ".join(text.split()).casefold()
 
 
+_CJK_PREFIXES = ("CJK", "HIRAGANA", "KATAKANA", "IDEOGRAPHIC", "HANGUL", "BOPOMOFO")
+
+
 def _label_scripts(label: str) -> set[str]:
+    """Scripts of a label's letters; Han, kana and Hangul count as one script set."""
     scripts = set()
     for char in label:
         if char.isalpha():
-            scripts.add(unicodedata.name(char, "UNKNOWN").split()[0])
+            script = unicodedata.name(char, "UNKNOWN").split()[0]
+            scripts.add("CJK" if script.startswith(_CJK_PREFIXES) else script)
     return scripts
 
 
@@ -72,7 +78,7 @@ def normalize_evidence_url(value: str) -> str:
         raise ValidationError("Use a link with a website name, not an IP address.")
     normalized = normalize_public_url(text)
     parts = urlsplit(normalized)
-    host = parts.hostname or ""
+    host = (urlsplit(text).hostname or "").rstrip(".")
     try:
         ipaddress.ip_address(host)
     except ValueError:
@@ -82,8 +88,8 @@ def normalize_evidence_url(value: str) -> str:
     if any(len(_label_scripts(label)) > 1 for label in host.split(".")):
         raise ValidationError("The link's website name mixes alphabets; use its plain form.")
     try:
-        ascii_host = host.encode("idna").decode("ascii")
-    except UnicodeError as exc:
+        ascii_host = idna.encode(host, uts46=True, transitional=False).decode("ascii")
+    except (idna.IDNAError, UnicodeError) as exc:
         raise ValidationError("Use a valid HTTPS URL.") from exc
     netloc = ascii_host if parts.port is None else f"{ascii_host}:{parts.port}"
     result = urlunsplit(("https", netloc, parts.path or "/", parts.query, ""))

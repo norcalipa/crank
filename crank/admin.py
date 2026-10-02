@@ -669,7 +669,7 @@ class CompanyCorrectionAdmin(ConfirmableAdminActionMixin, StaffOnlyAdminMixin, a
                         "evidence_id": evidence.pk,
                         "superseded_ids": evidence.superseded_ids,
                         "value": evidence.value_text,
-                        "overrode_changed_value": allow_stale,
+                        "overrode_changed_value": evidence.overrode_changed_value,
                     },
                 )
                 accepted += 1

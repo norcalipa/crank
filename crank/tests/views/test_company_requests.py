@@ -680,6 +680,12 @@ class CompanyCorrectionAdminTest(TestCase):
         self.assertEqual(len(audit.new_value["superseded_ids"]), 1)
         self.assertEqual(CompanyFieldEvidence.objects.filter(state="accepted").count(), 1)
 
+    def test_override_button_on_unchanged_fact_records_false(self):
+        self.make()
+        self.admin.accept_corrections_over_changed_value(self._post(), self._qs())
+        audit = OperationalChangeAudit.objects.get()
+        self.assertFalse(audit.new_value["overrode_changed_value"])
+
     def test_live_accepted_value_display_branches(self):
         self.assertEqual(self.admin.live_accepted_value(None), "-")
         item = self.make()

@@ -14,6 +14,7 @@ from functools import lru_cache
 from typing import Any
 
 from crank.agents.jobs.ranking_config import DEFAULT_CONFIG, RankingConfig
+from crank.services.hidden_characters import is_hidden_character
 
 _WS = re.compile(r"\s+")
 _NON_WORD = re.compile(r"[^\w\s-]+", re.UNICODE)
@@ -28,7 +29,7 @@ def _strip_hidden(value: str) -> str:
     """NFKC-normalize and drop control/format (zero-width, bidi) characters so
     hidden marks cannot split a word or hide a policy term from matching."""
     value = unicodedata.normalize("NFKC", value)
-    return "".join(c for c in value if unicodedata.category(c) not in ("Cc", "Cf") or c in "\t\n\r")
+    return "".join(c for c in value if c in "\t\n\r" or not is_hidden_character(c))
 
 
 @lru_cache(maxsize=8192)
