@@ -2770,6 +2770,7 @@ describe('durable turn state (issue #458)', () => {
             ['rate_limited', 429, 'Too many messages. Try again shortly.'],
             ['invalid_message', 400, 'Message content is required.'],
             ['not_found', 404, 'Conversation not found or not owned by this user.'],
+            ['invalid_context', 400, 'The page context was not valid.'],
         ])('%s keeps the per-turn marker until explicit resolution', async (type, status, message) => {
             await renderChat([]);
             const mock = global.fetch as jest.Mock;
@@ -4176,5 +4177,170 @@ describe('workspace navigation state (issue #479)', () => {
         settlePost(jsonResponse({message: assistantMessage(98, 'Hi there'), preferences_changed: false}));
         await screen.findByText('Hi there');
         expect(screen.queryByTestId('stale-context-note')).not.toBeInTheDocument();
+    });
+});
+
+describe('validated page context and assistant actions (issue #484)', () => {
+    const remoteAction = {type: 'propose_filters', target: 'rankings', filters: {rto_policy: 'R'}};
+
+    beforeEach(() => {
+        global.fetch = statusAwareFetch();
+        window.localStorage.clear();
+    });
+
+    afterEach(() => {
+        resetWorkspaceForTests();
+        jest.restoreAllMocks();
+    });
+
+    async function send(text: string, reply: Record<string, unknown>) {
+        const mock = global.fetch as jest.Mock;
+        const settle = holdNextFetch(mock);
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: text}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await postedKeyAfterSend(mock);
+        return {mock, settle: () => settle(jsonResponse(reply))};
+    }
+
+    test('the POST carries the snake_case context without names or search text', async () => {
+        await renderChat([]);
+        act(() => setWorkspaceContext({
+            surface: 'rankings', page: 2, algorithmId: 3, searchTerm: 'private', organizationName: 'Secret Co',
+            filters: {rtoPolicy: 'R'}, resultGeneration: 4, preferenceRevision: 5,
+        }));
+        const revision = getWorkspaceSnapshot().contextRevision;
+        const {mock, settle} = await send('hi', {message: assistantMessage(90, 'ok'), preferences_changed: false});
+        settle();
+        await screen.findByText('ok');
+        const body = postBodies(mock, messageUrl()).pop();
+        expect(body.context).toEqual({
+            revision, surface: 'rankings', page: 2, algorithm_id: 3,
+            filters: {rto_policy: 'R'}, preference_revision: 5, result_generation: 4,
+        });
+        expect(JSON.stringify(body)).not.toMatch(/private|Secret/);
+    });
+
+    test('with no page context the POST has no context key', async () => {
+        await renderChat([]);
+        const {mock, settle} = await send('hi', {message: assistantMessage(90, 'ok'), preferences_changed: false});
+        settle();
+        await screen.findByText('ok');
+        expect(postBodies(mock, messageUrl()).pop()).not.toHaveProperty('context');
+    });
+
+    test('an echo that matches the live revision shows no note even if the sent revision differs', async () => {
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'company', organizationId: 3, organizationName: 'Acme'}));
+        const {settle} = await send('hi', {
+            message: assistantMessage(91, 'Same view'), preferences_changed: false,
+            context: {revision: getWorkspaceSnapshot().contextRevision + 1},
+        });
+        act(() => setWorkspaceContext({organizationId: 4, organizationName: 'Other'}));
+        settle();
+        await screen.findByText('Same view');
+        expect(screen.queryByTestId('stale-context-note')).not.toBeInTheDocument();
+    });
+
+    test('an echo behind the live revision shows the note', async () => {
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'company', organizationId: 3, organizationName: 'Acme'}));
+        const sent = getWorkspaceSnapshot().contextRevision;
+        const {settle} = await send('hi', {
+            message: assistantMessage(92, 'Older view'), preferences_changed: false, context: {revision: sent},
+        });
+        act(() => setWorkspaceContext({organizationId: 4, organizationName: 'Other'}));
+        settle();
+        await screen.findByText('Older view');
+        expect(screen.getByTestId('stale-context-note')).toHaveTextContent('Asked while viewing Acme');
+    });
+
+    test('actions render for the answered view and disable once the page moves on', async () => {
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'rankings'}));
+        const revision = getWorkspaceSnapshot().contextRevision;
+        const {settle} = await send('only remote', {
+            message: assistantMessage(93, 'Here you go'), preferences_changed: false,
+            context: {revision}, actions: [remoteAction],
+        });
+        settle();
+        const button = await screen.findByRole('button', {name: 'Apply remote filter'});
+        expect(button).toHaveAttribute('aria-disabled', 'false');
+        act(() => setWorkspaceContext({surface: 'rankings', page: 2}));
+        expect(screen.getByRole('button', {name: 'Apply remote filter'})).toHaveAttribute('aria-disabled', 'true');
+        expect(screen.getByTestId('assistant-actions-stale')).toHaveTextContent('This suggestion was for an earlier view.');
+    });
+
+    test('open_company actions use the name from the reply result cards', async () => {
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'rankings'}));
+        const revision = getWorkspaceSnapshot().contextRevision;
+        const {settle} = await send('open acme', {
+            message: assistantMessage(94, 'Found it', false, {organizations: [{id: 8, name: 'Acme', url: '/?company=8'}]}),
+            preferences_changed: false, context: {revision},
+            actions: [{type: 'open_company', organization_id: 8}],
+        });
+        settle();
+        expect(await screen.findByRole('button', {name: 'Open Acme'})).toBeInTheDocument();
+    });
+
+    test('an open_company action names the company the question was asked from', async () => {
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'company', organizationId: 3, organizationName: 'Acme'}));
+        const revision = getWorkspaceSnapshot().contextRevision;
+        const {settle} = await send('open it', {
+            message: assistantMessage(95, 'Sure'), preferences_changed: false, context: {revision},
+            actions: [{type: 'open_company', organization_id: 3}],
+        });
+        settle();
+        expect(await screen.findByRole('button', {name: 'Open Acme'})).toBeInTheDocument();
+    });
+
+    test('a reply without a context echo never renders actions', async () => {
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'rankings'}));
+        const {settle} = await send('only remote', {
+            message: assistantMessage(96, 'No echo'), preferences_changed: false, actions: [remoteAction],
+        });
+        settle();
+        await screen.findByText('No echo');
+        expect(screen.queryByTestId('assistant-actions')).not.toBeInTheDocument();
+    });
+
+    test('hostile actions are dropped and the reply still renders', async () => {
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'rankings'}));
+        const revision = getWorkspaceSnapshot().contextRevision;
+        const {settle} = await send('x', {
+            message: assistantMessage(97, 'Still here'), preferences_changed: false, context: {revision},
+            actions: [
+                {type: 'navigate', url: 'javascript:alert(1)'},
+                {type: 'compare_companies', organization_ids: [1, 2]},
+                {type: 'open_company', organization_id: 'DROP'},
+            ],
+        });
+        settle();
+        await screen.findByText('Still here');
+        expect(screen.queryByTestId('assistant-actions')).not.toBeInTheDocument();
+    });
+
+    test('a reloaded transcript shows past replies without actions', async () => {
+        await renderChat([userMessage('only remote'), assistantMessage(98, 'Earlier reply')]);
+        await screen.findByText('Earlier reply');
+        expect(screen.queryByTestId('assistant-actions')).not.toBeInTheDocument();
+    });
+
+    test('an account switch purge drops the rendered actions and their reply', async () => {
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'rankings'}));
+        const revision = getWorkspaceSnapshot().contextRevision;
+        const first = await send('only remote', {
+            message: assistantMessage(99, 'First'), preferences_changed: false,
+            context: {revision}, actions: [remoteAction],
+        });
+        first.settle();
+        await screen.findByRole('button', {name: 'Apply remote filter'});
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await waitFor(() => expect(screen.queryByTestId('assistant-actions')).not.toBeInTheDocument());
+        expect(screen.queryByText('First')).not.toBeInTheDocument();
     });
 });
