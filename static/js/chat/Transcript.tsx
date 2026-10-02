@@ -62,6 +62,7 @@ export function Transcript({
                 )}
                 {messages.map((m) => (
                     <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
+                             tabIndex={-1}
                              className={`d-flex flex-column ${m.role === 'user' ? 'align-items-end' : 'align-items-start'} mb-2`}>
                         <div className={`chat-bubble ${m.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}
                              style={{maxWidth: '80%', wordBreak: 'break-word'}}>

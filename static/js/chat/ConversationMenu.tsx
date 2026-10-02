@@ -33,14 +33,14 @@ interface MenuItem {
     separatorBefore?: boolean;
 }
 
-function InlineError({message}: {message: string}) {
+const InlineError = React.forwardRef<HTMLParagraphElement, {message: string; id?: string}>(function InlineError({message, id}, ref) {
     return (
-        <p className="chat-confirm-error" role="alert">
+        <p className="chat-confirm-error" role="alert" id={id} ref={ref}>
             <i className="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
             <span>{message}</span>
         </p>
     );
-}
+});
 
 export function ConversationMenu({
     title, hasConversation, hasMessages, pending,
@@ -61,6 +61,7 @@ export function ConversationMenu({
     const confirmButtonRef = React.useRef<HTMLButtonElement>(null);
     const exportRetryRef = React.useRef<HTMLButtonElement>(null);
     const exportPanelRef = React.useRef<HTMLDivElement>(null);
+    const failureRef = React.useRef<HTMLParagraphElement>(null);
     const focusFirstItemRef = React.useRef(true);
 
     const items: MenuItem[] = [
@@ -105,7 +106,11 @@ export function ConversationMenu({
         if (aboutOpen) aboutHeadingRef.current?.focus();
     }, [aboutOpen]);
     React.useEffect(() => {
-        if (failure) confirmButtonRef.current?.focus();
+        if (!failure) return;
+        // The reader needs the failure text and the retry button together: put
+        // the button in focus without scrolling, then bring the message into view.
+        confirmButtonRef.current?.focus({preventScroll: true});
+        failureRef.current?.scrollIntoView?.({block: 'nearest'});
     }, [failure]);
     React.useEffect(() => {
         if (!exportError) return;
@@ -286,14 +291,17 @@ export function ConversationMenu({
                     <h3 id="chat-confirm-heading" className="chat-confirm-heading" tabIndex={-1} ref={confirmHeadingRef}>
                         {deleting ? 'Delete conversation?' : 'Start a new conversation?'}
                     </h3>
-                    <p className="chat-confirm-copy">{deleting ? DELETE_CONVERSATION_COPY : NEW_CONVERSATION_COPY}</p>
-                    {failure && <InlineError message={failure}/>}
+                    <p id="chat-confirm-copy" className="chat-confirm-copy">
+                        {deleting ? DELETE_CONVERSATION_COPY : NEW_CONVERSATION_COPY}
+                    </p>
+                    {failure && <InlineError message={failure} id="chat-confirm-failure" ref={failureRef}/>}
                     <div className="chat-confirm-actions">
                         <button
                             type="button"
                             ref={confirmButtonRef}
                             className={`btn btn-sm ${deleting ? 'btn-danger' : 'btn-primary'} chat-focus`}
                             disabled={working}
+                            aria-describedby={failure ? 'chat-confirm-copy chat-confirm-failure' : 'chat-confirm-copy'}
                             onClick={() => void runConfirm()}
                             data-testid="confirm-action"
                         >
@@ -314,6 +322,8 @@ export function ConversationMenu({
                                 Export first
                             </button>
                         )}
+                    </div>
+                    <div className="chat-confirm-dismiss">
                         <button
                             type="button"
                             className="btn btn-sm btn-outline-light chat-focus"
@@ -333,7 +343,7 @@ export function ConversationMenu({
                     <p className="chat-confirm-copy">
                         {ABOUT_HISTORY_COPY}
                     </p>
-                    <div className="chat-confirm-actions">
+                    <div className="chat-confirm-dismiss">
                         <button type="button" className="btn btn-sm btn-outline-light chat-focus" onClick={closeAbout}
                                 data-testid="about-history-close">
                             Close
@@ -351,7 +361,9 @@ export function ConversationMenu({
                                 onClick={() => void runExport()}>
                             Try export again
                         </button>
-                        <button type="button" className="btn btn-sm btn-link chat-focus"
+                    </div>
+                    <div className="chat-confirm-dismiss">
+                        <button type="button" className="btn btn-sm btn-outline-light chat-focus"
                                 data-testid="export-error-dismiss"
                                 onClick={() => { setExportError(null); moreRef.current?.focus(); }}>
                             Dismiss

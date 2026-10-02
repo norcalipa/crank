@@ -3271,7 +3271,7 @@ body.assistant-open .app-content .table-responsive,
     position: absolute;
     right: 0;
     top: calc(100% + .25rem);
-    z-index: 5;
+    z-index: 7;
     min-width: 14rem;
     max-width: calc(100vw - 2rem);
     display: flex;
@@ -3318,6 +3318,7 @@ body.assistant-open .app-content .table-responsive,
     max-height: var(--chat-stack-max, none);
     overflow-y: auto;
     overscroll-behavior: contain;
+    scroll-padding-bottom: 4rem;
     position: absolute;
     top: calc(100% + .25rem);
     left: 0;
@@ -3342,17 +3343,23 @@ body.assistant-open .app-content .table-responsive,
     border-color: #f87171;
 }
 
-/* The stack is capped to the transcript band and scrolls; the dismiss/safe
-   action row stays pinned inside each panel so it is always reachable. */
-.chat-panel-stack .chat-confirm-actions {
+/* The stack is capped to the transcript band and scrolls. Only the safe
+   dismiss action is pinned, so the explanation, the failure text and the
+   confirm button stay in the scrolling body above it. */
+.chat-confirm-dismiss {
     position: sticky;
     bottom: 0;
     z-index: 1;
+    display: flex;
     margin: 0 -.75rem -.75rem;
-    padding: .5rem .75rem .75rem;
+    padding: .375rem .75rem .5rem;
     background: #0f172a;
     border-radius: 0 0 .5rem .5rem;
-    box-shadow: 0 -.75rem .75rem -.75rem rgba(0, 0, 0, .75);
+    box-shadow: 0 -.5rem .5rem -.5rem rgba(0, 0, 0, .75);
+}
+
+.chat-confirm-actions + .chat-confirm-dismiss {
+    margin-top: .5rem;
 }
 
 .chat-confirm-heading {
@@ -3442,6 +3449,15 @@ body.assistant-open .app-content .table-responsive,
     z-index: 2;
 }
 
+/* Footer notices (status plus a long error) never take more than 40% of the
+   view; they scroll inside instead of pushing the composer out (issue #483). */
+.chat-footer-notices {
+    max-height: 40vh;
+    max-height: 40dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
 #job-search-chat .chat-jump-row .btn {
     pointer-events: auto;
     box-shadow: 0 .25rem .75rem rgba(0, 0, 0, .5);
@@ -3464,6 +3480,14 @@ body.assistant-open .app-content .table-responsive,
 
 .assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) > :first-child {
     margin-top: .75rem;
+}
+
+/* In panel mode the sticky header can sit right above the band, so a pill
+   floating above the band would be painted over by it. Keep it in the band's
+   own flow instead. */
+#job-search-chat > [data-scroll-owner='panel'] .chat-footer > .chat-jump-row {
+    position: static;
+    margin: 0 0 .5rem;
 }
 
 #job-search-chat > [data-scroll-owner='panel'] .chat-footer {
@@ -3508,12 +3532,13 @@ body.assistant-open .app-content .table-responsive,
         grid-template-columns: 1fr 1fr;
     }
 
-    .chat-confirm-actions .btn {
+    .chat-confirm-actions .btn,
+    .chat-confirm-dismiss .btn {
         min-height: 2.75rem;
     }
 
-    .chat-confirm-actions > :first-child:nth-last-child(n + 3) {
-        grid-column: 1 / -1;
+    .chat-confirm-dismiss .btn {
+        flex: 1 1 auto;
     }
 
     .chat-confirm-actions > :only-child {

@@ -123,6 +123,33 @@ describe('ConversationMenu', () => {
         expect(await screen.findByRole('button', {name: 'Try deleting again'})).toBeInTheDocument();
     });
 
+    test('the confirm button is described by the consequences and the failure, so a screen reader hears them', async () => {
+        setup({onDeleteConversation: jest.fn().mockResolvedValue('Could not delete the conversation.')});
+        fireEvent.click(more());
+        fireEvent.click(screen.getByTestId('conversation-delete'));
+        const confirm = screen.getByTestId('confirm-action');
+        expect(confirm).toHaveAccessibleDescription(DELETE_CONVERSATION_COPY);
+        const scrollIntoView = jest.fn();
+        Element.prototype.scrollIntoView = scrollIntoView;
+        fireEvent.click(confirm);
+        await screen.findByRole('alert');
+        expect(screen.getByTestId('confirm-action')).toHaveAccessibleDescription(
+            `${DELETE_CONVERSATION_COPY} Could not delete the conversation.`,
+        );
+        // The failure text is brought into view next to the focused retry button.
+        expect(scrollIntoView).toHaveBeenCalledWith({block: 'nearest'});
+        delete (Element.prototype as {scrollIntoView?: unknown}).scrollIntoView;
+    });
+
+    test('only the safe dismiss action sits in the pinned row; the confirm action scrolls with the explanation', () => {
+        setup();
+        fireEvent.click(more());
+        fireEvent.click(screen.getByTestId('conversation-delete'));
+        const pinned = screen.getByTestId('confirm-cancel').closest('.chat-confirm-dismiss')!;
+        expect(pinned.querySelectorAll('button')).toHaveLength(1);
+        expect(screen.getByTestId('confirm-action').closest('.chat-confirm-dismiss')).toBeNull();
+    });
+
     test('a double click on the confirm button submits once', async () => {
         let resolve: (v: null) => void = () => undefined;
         const onNewConversation = jest.fn(() => new Promise<null>((r) => { resolve = r; }));
