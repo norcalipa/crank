@@ -334,6 +334,23 @@ describe('AssistantActions', () => {
             spy.mockRestore();
         });
 
+        test('inside a chat bubble the bubble bottom is what scrolls into view', async () => {
+            registerFilterTarget(() => true);
+            const log = document.createElement('div');
+            log.setAttribute('role', 'log');
+            log.innerHTML = '<div class="chat-bubble-assistant"></div>';
+            document.body.appendChild(log);
+            const bubble = log.firstElementChild as HTMLElement;
+            const spy = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+                return (this === log ? {top: 0, bottom: 100} : {top: 50, bottom: 180}) as DOMRect;
+            });
+            render(<AssistantActions turn={turn([remote])} />, {container: bubble.appendChild(document.createElement('div'))});
+            fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+            expect(log.scrollTop).toBe(88);
+            spy.mockRestore();
+            log.remove();
+        });
+
         test('a prefetched proposal with no changes replaces the Save button with the already note', async () => {
             registerFilterTarget(() => true);
             proposePriorities.mockResolvedValueOnce({...proposal, changes: []});
