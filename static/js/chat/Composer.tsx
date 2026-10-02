@@ -68,11 +68,35 @@ export function Composer({
         };
     }, [adjustComposerHeight]);
 
-    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            onEnter();
+    // IME candidate confirmation also reports Enter. Chromium sets isComposing
+    // and keyCode 229; Safari fires compositionend BEFORE the confirming keydown,
+    // so a flag that outlives compositionend by one task covers it (issue #483).
+    const composingRef = React.useRef(false);
+    const settleTimerRef = React.useRef<number | null>(null);
+    React.useEffect(() => () => {
+        if (settleTimerRef.current !== null) window.clearTimeout(settleTimerRef.current);
+    }, []);
+
+    const handleCompositionStart = () => {
+        if (settleTimerRef.current !== null) {
+            window.clearTimeout(settleTimerRef.current);
+            settleTimerRef.current = null;
         }
+        composingRef.current = true;
+    };
+
+    const handleCompositionEnd = () => {
+        settleTimerRef.current = window.setTimeout(() => {
+            composingRef.current = false;
+            settleTimerRef.current = null;
+        }, 0);
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        if (e.key !== 'Enter' || e.shiftKey) return;
+        if (e.nativeEvent.isComposing || composingRef.current || e.keyCode === 229) return;
+        e.preventDefault();
+        onEnter();
     };
 
     return (
@@ -91,6 +115,8 @@ export function Composer({
                     value={value}
                     onChange={(e) => onChange(e.target.value)}
                     onKeyDown={handleKeyDown}
+                    onCompositionStart={handleCompositionStart}
+                    onCompositionEnd={handleCompositionEnd}
                     disabled={textareaDisabled}
                     autoComplete="off"
                     rows={1}
