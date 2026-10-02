@@ -85,6 +85,47 @@ test.describe('priorities editor (issue #480)', () => {
         await expect(page.getByRole('button', {name: 'Reset chat'})).toHaveCount(0);
     });
 
+    test('the last entry of a list and the only work arrangement can be cleared and saved', async ({page}) => {
+        await openEditor(page);
+        const places = page.getByRole('textbox', {name: /Excluded locations/});
+        await places.fill('San Francisco, CA');
+        await places.press('Enter');
+        await page.getByRole('checkbox', {name: 'Remote'}).check();
+        await page.getByRole('button', {name: 'Review changes'}).click();
+        await page.getByRole('button', {name: 'Apply to account'}).click();
+        await expect(page.getByRole('list', {name: 'Changed priorities'})).toBeVisible();
+        await page.getByRole('button', {name: 'Done'}).click();
+
+        await openEditor(page);
+        await page.getByRole('button', {name: 'Remove San Francisco, CA from Excluded locations'}).click();
+        await page.getByRole('checkbox', {name: 'Remote'}).uncheck();
+        await page.getByRole('button', {name: 'Review changes'}).click();
+        await expect(page.getByRole('list', {name: 'Proposed changes'})).toBeVisible();
+        await expect(page.getByText(/must list items/)).toHaveCount(0);
+        await page.getByRole('button', {name: 'Apply to account'}).click();
+        await expect(page.getByRole('list', {name: 'Changed priorities'})).toBeVisible();
+        await page.getByRole('button', {name: 'Done'}).click();
+        await expect(page.getByTestId('priorities-main').getByText(/San Francisco/)).toHaveCount(0);
+    });
+
+    test('Review latest rebases the review onto the changed priorities', async ({page, context}) => {
+        await openEditor(page);
+        await page.getByRole('spinbutton', {name: SALARY}).fill('120000');
+        await page.getByRole('button', {name: 'Review changes'}).click();
+        await expect(page.getByRole('list', {name: 'Proposed changes'})).toBeVisible();
+
+        const other = await context.newPage();
+        await applySalary(other, '130000');
+        await other.close();
+
+        await page.getByRole('button', {name: 'Apply to account'}).click();
+        await page.getByRole('button', {name: 'Review latest'}).click();
+        const review = page.getByRole('list', {name: 'Proposed changes'});
+        await expect(review).toContainText('130,000');
+        await expect(review).toContainText('120,000');
+        await expect(page.getByRole('button', {name: 'Apply to account'})).toBeVisible();
+    });
+
     test('chips stay within the viewport at 375px', async ({page}) => {
         await page.setViewportSize({width: 375, height: 800});
         await applySalary(page, '150000');

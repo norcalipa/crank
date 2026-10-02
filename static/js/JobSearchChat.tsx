@@ -5,6 +5,9 @@ import {createRoot} from 'react-dom/client';
 
 import {purgePrivateClientState} from './authIntent';
 import {preferencePathLabel, preferenceValueLabel} from './priorities/format';
+import {MATCH_CAP} from './priorities/api';
+import {patchFitsEditor} from './priorities/patch';
+import {ChangeList} from './priorities/ReviewChanges';
 import {prioritiesSurface} from './priorities/surface';
 import {
     describeWorkspaceContext,
@@ -411,9 +414,6 @@ async function csrfFetch(url: string, init: RequestInit = {}): Promise<Response>
 
 export {preferencePathLabel, preferenceValueLabel};
 
-// Whole-map diffs (importance weights) read as words, not JSON; other paths keep their plain rendering.
-const mapPath = (path: string) => (path === 'importance' ? path : undefined);
-
 /** Preference-change notice (issue #466): the field-level diff of what the
  * assistant just changed, with a one-click Undo. Four rendered states:
  * populated (diff list + Undo), loading (undo request in flight), empty
@@ -469,19 +469,7 @@ export function PreferenceChangeNotice({changes, undoState, undoError, undoError
                 </button>
             </div>
             {!emptyDiff ? (
-                <ul className="pref-change-list" aria-label="Changed preferences">
-                    {changes.map((change) => (
-                        <li key={change.path} className="pref-change-item">
-                            <span className="pref-change-path">{preferencePathLabel(change.path)}</span>
-                            <span className="pref-change-values">
-                                <span className="pref-change-old">{preferenceValueLabel(change.old, mapPath(change.path))}</span>
-                                <i className="fa-solid fa-arrow-right pref-change-arrow" aria-hidden="true"></i>
-                                <span className="visually-hidden">changed to</span>
-                                <span className="pref-change-new">{preferenceValueLabel(change.new, mapPath(change.path))}</span>
-                            </span>
-                        </li>
-                    ))}
-                </ul>
+                <ChangeList changes={changes} label="Changed preferences"/>
             ) : (
                 <p className="pref-change-empty" data-testid="preference-change-empty">
                     The update did not change any individual preference fields.
@@ -565,19 +553,7 @@ export function PreferenceProposalNotice({proposal, state, error, errorType, onD
                 </button>
             </div>
             {proposal.changes.length > 0 ? (
-                <ul className="pref-change-list" aria-label="Proposed preference changes">
-                    {proposal.changes.map((change) => (
-                        <li key={change.path} className="pref-change-item">
-                            <span className="pref-change-path">{preferencePathLabel(change.path)}</span>
-                            <span className="pref-change-values">
-                                <span className="pref-change-old">{preferenceValueLabel(change.old, mapPath(change.path))}</span>
-                                <i className="fa-solid fa-arrow-right pref-change-arrow" aria-hidden="true"></i>
-                                <span className="visually-hidden">changed to</span>
-                                <span className="pref-change-new">{preferenceValueLabel(change.new, mapPath(change.path))}</span>
-                            </span>
-                        </li>
-                    ))}
-                </ul>
+                <ChangeList changes={proposal.changes} label="Proposed preference changes"/>
             ) : (
                 <p className="pref-change-empty" data-testid="preference-proposal-empty">
                     The suggestion does not change any individual preference fields.
@@ -2350,7 +2326,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         }}
                         onEdit={() => {
                             setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
-                            setPrefProposal(null);
+                            // Keep the proposal while part of it cannot be shown in the editor.
+                            if (patchFitsEditor(prefProposal.token.patch)) setPrefProposal(null);
                         }}
                         onSearchOnly={() => handlePreferenceProposalDecision('apply', 'search')}
                     />
@@ -2363,7 +2340,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                             <span className="pref-change-summary">
                                 <i className="fa-solid fa-filter me-1" aria-hidden="true"></i>
                                 Applied to this search only — not saved to your preferences
-                                {prefSearchApplied > 0 ? ` (${prefSearchApplied} matches)` : ''}.
+                                {prefSearchApplied > 0 ? ` (${prefSearchApplied}${prefSearchApplied >= MATCH_CAP ? '+' : ''} matches)` : ''}.
                             </span>
                             <button type="button" className="pref-change-dismiss" aria-label="Dismiss search filter notice"
                                     onClick={() => {

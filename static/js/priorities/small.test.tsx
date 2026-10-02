@@ -146,6 +146,65 @@ describe('ChangeList values', () => {
     });
 });
 
+describe('chip list entries (issue #480 review)', () => {
+    test('an entry containing a comma stays whole: entries are joined with a semicolon', () => {
+        expect(chipValueLabel('exclusions.locations', 'San Francisco, CA, Austin', undefined, ['San Francisco, CA', 'Austin']))
+            .toBe('San Francisco, CA; Austin');
+        expect(chipValueLabel('culture', 'kind, open', undefined, ['kind', 'open'])).toBe('kind, open');
+        expect(chipValueLabel('funding_stage', 'series_a, seed', undefined, ['series_a', 'seed'], true)).toBe('Series A, Seed');
+    });
+
+    test('a chip renders one whole entry per saved item', () => {
+        render(<PriorityChips chips={[{path: 'exclusions.locations', label: 'Excluded locations', display: 'x',
+            hard: false, supported: true, items: ['San Francisco, CA', 'Austin']}]}
+                              collapsedCount={5} onEdit={jest.fn()}/>);
+        expect(screen.getByTestId('priority-chip')).toHaveTextContent('San Francisco, CA; Austin');
+    });
+});
+
+describe('money in one edit that changes the currency', () => {
+    test('old values use the old currency and new values the proposed one', () => {
+        render(<ReviewChanges changes={[
+            {path: 'compensation.currency', old: 'USD', new: 'EUR'},
+            {path: 'compensation.minimum_salary', old: 150000, new: 140000},
+        ]} currency="USD" onApply={jest.fn()} onCancel={jest.fn()}/>);
+        const row = screen.getByText('Compensation › minimum salary').closest('li') as HTMLElement;
+        expect(row).toHaveTextContent('$150,000');
+        expect(row).toHaveTextContent('EUR 140,000');
+    });
+
+    test('after Apply the saved currency is the new one, the change still carries the old', () => {
+        render(<AppliedChanges changes={[
+            {path: 'compensation.currency', old: 'USD', new: 'EUR'},
+            {path: 'compensation.minimum_salary', old: 150000, new: 140000},
+        ]} currency="EUR" summary="Saved" canUndo={false} onUndo={jest.fn()} onDismiss={jest.fn()}/>);
+        const row = screen.getByText('Compensation › minimum salary').closest('li') as HTMLElement;
+        expect(row).toHaveTextContent('$150,000');
+        expect(row).toHaveTextContent('EUR 140,000');
+    });
+});
+
+describe('Review latest while it runs', () => {
+    test('is announced as busy, ignores a second activation and keeps focusability', () => {
+        const onReviewLatest = jest.fn();
+        render(<ReviewChanges changes={changes} stale pending announcement="Updated. " onApply={jest.fn()}
+                              onCancel={jest.fn()} onReviewLatest={onReviewLatest}/>);
+        const button = screen.getByRole('button', {name: 'Checking…'});
+        expect(button).toHaveAttribute('aria-disabled', 'true');
+        expect(button).not.toBeDisabled();
+        fireEvent.click(button);
+        expect(onReviewLatest).not.toHaveBeenCalled();
+        expect(screen.getByRole('status')).toHaveTextContent('Updated. 1 change to review');
+    });
+});
+
+describe('free text is shown as typed', () => {
+    test('enum tokens read as labels but a sentence is left alone', () => {
+        expect(preferenceValueLabel('series_b', 'funding_stage')).toBe('Series B');
+        expect(preferenceValueLabel('prefers remote-first teams', 'notes')).toBe('prefers remote-first teams');
+    });
+});
+
 describe('chipValueLabel', () => {
     test('groups numbers, adds a currency symbol for money, leaves text alone', () => {
         expect(chipValueLabel('compensation.minimum_salary', '150000')).toBe('$150,000');

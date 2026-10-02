@@ -25,6 +25,8 @@ export interface ReviewChangesProps {
     onReviewLatest?: () => void;
     // Criteria the draft edited that also changed elsewhere since it was loaded (labels).
     conflicts?: string[];
+    // Spoken (not shown) when a proposal replaces an earlier one, e.g. after "Review latest".
+    announcement?: string;
     currency?: unknown;
     choicePaths?: ReadonlySet<string>;
     // Editor field labels by path, so the diff names a field as the editor does.
@@ -53,6 +55,8 @@ function ChangeValue({value, path, currency, importance, choice}: {
     return <>{preferenceValueLabel(value, path, currency)}</>;
 }
 
+const CURRENCY_PATH = 'compensation.currency';
+
 export function ChangeList({changes, label, labels, currency, choicePaths}: {
     changes: PreferenceChange[];
     label: string;
@@ -60,6 +64,10 @@ export function ChangeList({changes, label, labels, currency, choicePaths}: {
     currency?: unknown;
     choicePaths?: ReadonlySet<string>;
 }) {
+    // A currency change in the same edit re-labels the money on both sides: old values in the old currency, new in the new.
+    const currencyChange = changes.find((change) => change.path === CURRENCY_PATH);
+    const oldCurrency = currencyChange ? currencyChange.old : currency;
+    const newCurrency = currencyChange ? currencyChange.new : currency;
     return (
         <ul className="pref-change-list" aria-label={label}>
             {expandChanges(changes, labels).map((change) => (
@@ -67,13 +75,13 @@ export function ChangeList({changes, label, labels, currency, choicePaths}: {
                     <span className="pref-change-path">{change.label}</span>
                     <span className="pref-change-values">
                         <span className={`pref-change-old${isEmptyValue(change.old) ? ' is-empty' : ''}`}>
-                            <ChangeValue value={change.old} path={change.path} currency={currency} importance={change.importance}
+                            <ChangeValue value={change.old} path={change.path} currency={oldCurrency} importance={change.importance}
                                          choice={choicePaths?.has(change.path)}/>
                         </span>
                         <i className="fa-solid fa-arrow-right pref-change-arrow" aria-hidden="true"></i>
                         <span className="visually-hidden">changed to</span>
                         <span className="pref-change-new">
-                            <ChangeValue value={change.new} path={change.path} currency={currency} importance={change.importance}
+                            <ChangeValue value={change.new} path={change.path} currency={newCurrency} importance={change.importance}
                                          choice={choicePaths?.has(change.path)}/>
                         </span>
                     </span>
@@ -86,7 +94,7 @@ export function ChangeList({changes, label, labels, currency, choicePaths}: {
 export default function ReviewChanges({
     changes, scope = 'account', pending = false, error = null, stale = false,
     heading = 'Review your changes', onApply, onCancel, onEdit, onApplySearchOnly, onReviewLatest,
-    labels, currency, choicePaths, conflicts = [], testId = 'priorities-review',
+    labels, currency, choicePaths, conflicts = [], announcement = '', testId = 'priorities-review',
 }: ReviewChangesProps) {
     const headingId = `priorities-review-${React.useId()}`;
     const headingRef = React.useRef<HTMLHeadingElement>(null);
@@ -101,7 +109,7 @@ export default function ReviewChanges({
                 {heading}
             </h3>
             <span className="visually-hidden" role="status">
-                {changes.length === 1 ? '1 change to review' : `${changes.length} changes to review`}
+                {announcement}{changes.length === 1 ? '1 change to review' : `${changes.length} changes to review`}
             </span>
             <p className="priorities-scope-note">
                 {isSearch
@@ -131,8 +139,10 @@ export default function ReviewChanges({
             )}
             <div className="chat-actions" role="group" aria-label="Review actions">
                 {stale && onReviewLatest ? (
-                    <button type="button" className="btn btn-sm btn-primary"
-                            onClick={onReviewLatest}>Review latest</button>
+                    <button type="button" className="btn btn-sm btn-primary" aria-disabled={pending} aria-busy={pending}
+                            onClick={() => { if (!pending) onReviewLatest(); }}>
+                        {pending ? 'Checking…' : 'Review latest'}
+                    </button>
                 ) : (
                     <button type="button" className="btn btn-sm btn-primary"
                             onClick={onApply} disabled={pending || changes.length === 0} aria-busy={pending}>

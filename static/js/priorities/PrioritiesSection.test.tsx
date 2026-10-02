@@ -247,12 +247,13 @@ describe('PrioritiesSection', () => {
         expect(screen.getByText('Compensation › Minimum base salary', {exact: false})).toBeInTheDocument();
     });
 
-    test('a propose failure without field errors shows the server message; network error too', async () => {
-        let mode: 'msg' | 'net' = 'msg';
+    test('a propose failure never shows the server wording for a 400; a 500 message and a network error do', async () => {
+        let mode: 'msg' | 'srv' | 'net' = 'msg';
         mockFetch({
             '/api/agent/preferences/propose/': () => {
                 if (mode === 'net') throw new Error('x');
-                return json({error: {message: 'No can do'}}, 400);
+                if (mode === 'srv') return json({error: {message: 'Busy right now'}}, 500);
+                return json({error: {message: "'remove' for list field 'exclusions.locations' must list items"}}, 400);
             },
             '/api/agent/preferences/': () => json(snapshotBody(2, [chip])),
         });
@@ -264,7 +265,11 @@ describe('PrioritiesSection', () => {
         const form = await openEditor();
         fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '5'}});
         fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
-        expect(await screen.findByText('No can do')).toBeInTheDocument();
+        expect(await screen.findByText(/These changes could not be checked/)).toBeInTheDocument();
+        expect(screen.queryByText(/must list items/)).not.toBeInTheDocument();
+        mode = 'srv';
+        fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+        expect(await screen.findByText('Busy right now')).toBeInTheDocument();
         mode = 'net';
         fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
         expect(await screen.findByText(/Could not reach the server/)).toBeInTheDocument();
@@ -620,16 +625,20 @@ describe('PrioritiesSection', () => {
             render(<PrioritiesSection variant="main" authenticated/>);
             const form = await openEditor();
             fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '150000'}});
+            const salaryRow = within(form).getByLabelText('Minimum base salary').closest('[data-testid="priorities-field"]') as HTMLElement;
+            fireEvent.click(within(salaryRow).getByRole('button', {name: 'Requirement'}));
             fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
             await screen.findByRole('heading', {name: 'Review your changes'});
             const first = bodies.length;
-            current = snapshotBody(5, [chip], {preferences: {}});
+            current = snapshotBody(5, [chip], {preferences: {importance: {culture: 1}}});
             current.fields[0] = field({value: 200000, set: true});
             fireEvent.click(screen.getByRole('button', {name: 'Apply to account'}));
             await screen.findByTestId('priorities-review-error');
             fireEvent.click(screen.getByRole('button', {name: 'Review latest'}));
             await waitFor(() => expect(bodies.length).toBe(first + 1));
-            expect(bodies[first].base_revision ?? bodies[first].expected_revision ?? 5).toBe(5);
+            // The rebased patch is built against the fresh document: the other tab's requirement is kept.
+            expect(bodies[first].patch.set.importance).toEqual({culture: 1, 'compensation.minimum_salary': 1});
+            expect(bodies[first].patch.set['compensation.minimum_salary']).toBe(150000);
             expect(await screen.findByTestId('priorities-review-conflicts')).toHaveTextContent('Minimum base salary');
         });
 
@@ -758,6 +767,167 @@ describe('PrioritiesSection', () => {
             reload = true;
             fireEvent.click(screen.getByRole('button', {name: 'Review latest'}));
             expect(await screen.findByText(/Could not load your latest priorities/)).toBeInTheDocument();
+        });
+    });
+
+    describe('review round 2 (issue #480)', () => {
+        const sentBodies = () => {
+            const bodies: any[] = [];
+            const fn = mockFetch({
+                '/api/agent/preferences/propose/': (_u, init) => { bodies.push(JSON.parse(init!.body as string)); return json(proposal); },
+                '/api/agent/preferences/': () => json(snapshotBody(2, [chip])),
+            });
+            return {bodies, fn};
+        };
+
+        test('emptying a list, or clearing a read-only list, is sent as a set of [] the server accepts', async () => {
+            const {bodies} = sentBodies();
+            render(<PrioritiesSection variant="main" authenticated/>);
+            const form = await openEditor();
+            fireEvent.click(within(form).getByRole('button', {name: /Remove kind/}));
+            const group = within(form).getByText('Not used for matching yet (', {exact: false}).closest('details') as HTMLElement;
+            fireEvent.click(within(group).getByRole('button', {name: 'Clear Titles'}));
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            await waitFor(() => expect(bodies.length).toBe(1));
+            expect(bodies[0].patch).toEqual({set: {culture: [], 'roles.titles': []}});
+        });
+
+        test('removing an entry hands focus to the next entry, then the input; Add stays focusable', async () => {
+            sentBodies();
+            render(<PrioritiesSection variant="main" authenticated/>);
+            const form = await openEditor();
+            const culture = within(form).getByLabelText('Culture');
+            fireEvent.change(culture, {target: {value: 'open'}});
+            fireEvent.click(within(form).getByRole('button', {name: /^Add/}));
+            const add = within(form).getByRole('button', {name: /^Add/});
+            expect(add).toHaveAttribute('aria-disabled', 'true');
+            expect(add).not.toBeDisabled();
+            fireEvent.click(within(form).getByRole('button', {name: /Remove kind/}));
+            await waitFor(() => expect(within(form).getByRole('button', {name: /Remove open/})).toHaveFocus());
+            fireEvent.click(within(form).getByRole('button', {name: /Remove open/}));
+            await waitFor(() => expect(within(form).getByLabelText('Culture')).toHaveFocus());
+        });
+
+        test('Keep after Clear leaves the group open and keeps focus on the button', async () => {
+            sentBodies();
+            render(<PrioritiesSection variant="main" authenticated/>);
+            const form = await openEditor();
+            const group = within(form).getByText('Not used for matching yet (', {exact: false}).closest('details') as HTMLDetailsElement;
+            group.open = true;
+            const clear = within(group).getByRole('button', {name: 'Clear Titles'});
+            clear.focus();
+            fireEvent.click(clear);
+            expect(group.open).toBe(true);
+            const keep = within(group).getByRole('button', {name: 'Keep Titles'});
+            keep.focus();
+            fireEvent.click(keep);
+            expect(group.open).toBe(true);
+            expect(within(group).getByRole('button', {name: 'Clear Titles'})).toBeInTheDocument();
+            expect(group.contains(document.activeElement)).toBe(true);
+        });
+
+        test('an Edit seed shows a one-item removal as the rest of the list and a proposed read-only value as the new value', async () => {
+            const {bodies} = sentBodies();
+            render(<PrioritiesSection variant="main" authenticated/>);
+            await screen.findByRole('button', {name: /Edit priorities/});
+            act(() => setPrioritiesEditorOpen('main', {
+                remove: {culture: ['kind']},
+                set: {'roles.titles': ['Staff Engineer'], culture2: 1},
+            }));
+            const form = await screen.findByRole('form', {name: 'Edit priorities'});
+            const group = within(form).getByText('Not used for matching yet (', {exact: false}).closest('details') as HTMLDetailsElement;
+            expect(group.open).toBe(true);
+            expect(group.querySelector('#priority-main-roles-titles')).toHaveTextContent('Staff Engineer');
+            expect(group.querySelector('#priority-main-roles-titles')).not.toHaveTextContent('Will be cleared');
+            fireEvent.click(within(group).getByRole('button', {name: 'Discard the proposed Titles'}));
+            expect(group.querySelector('#priority-main-roles-titles')).toHaveTextContent('SRE');
+            expect(within(form).queryByRole('button', {name: /Remove kind/})).not.toBeInTheDocument();
+            expect(bodies).toHaveLength(0);
+        });
+
+        test('Edit your priorities from the applied summary opens the editor, and Done does not pop it open later', async () => {
+            mockFetch({
+                '/api/agent/preferences/propose/': () => json(proposal),
+                '/api/agent/preferences/apply/': () => json({scope: 'account', revision: 3, changes: proposal.changes, undo: null}),
+                '/api/agent/preferences/': () => json(snapshotBody(2, [chip])),
+            });
+            render(<PrioritiesSection variant="main" authenticated/>);
+            const form = await openEditor();
+            fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '150000'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            await screen.findByRole('heading', {name: 'Review your changes'});
+            fireEvent.click(screen.getByRole('button', {name: 'Apply to account'}));
+            await screen.findByTestId('priorities-applied');
+            act(() => setPrioritiesEditorOpen('main'));
+            expect(await screen.findByRole('form', {name: 'Edit priorities'})).toBeInTheDocument();
+            expect(screen.queryByTestId('priorities-applied')).not.toBeInTheDocument();
+        });
+
+        test('an open request is honoured from the reset prompt, and once closed nothing reopens', async () => {
+            mockFetch({'/api/agent/preferences/': () => json(snapshotBody(2, [chip]))});
+            render(<PrioritiesSection variant="main" authenticated/>);
+            fireEvent.click(await screen.findByRole('button', {name: 'Reset priorities'}));
+            act(() => setPrioritiesEditorOpen('main'));
+            expect(await screen.findByRole('form', {name: 'Edit priorities'})).toBeInTheDocument();
+            fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
+            await screen.findByRole('button', {name: 'Edit priorities'});
+            expect(screen.queryByRole('form', {name: 'Edit priorities'})).not.toBeInTheDocument();
+        });
+
+        test('a seed arriving while editing merges into the draft instead of replacing typed values', async () => {
+            const {bodies} = sentBodies();
+            render(<PrioritiesSection variant="main" authenticated/>);
+            const form = await openEditor();
+            fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '123456'}});
+            act(() => setPrioritiesEditorOpen('main', {set: {'compensation.currency': 'EUR'}}));
+            await waitFor(() => expect(within(screen.getByRole('form', {name: 'Edit priorities'})).getByLabelText('Currency')).toHaveValue('EUR'));
+            expect(within(screen.getByRole('form', {name: 'Edit priorities'})).getByLabelText('Minimum base salary')).toHaveValue(123456);
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            await waitFor(() => expect(bodies.length).toBe(1));
+            expect(bodies[0].patch.set).toEqual({'compensation.minimum_salary': 123456, 'compensation.currency': 'EUR'});
+        });
+
+        test('the expired-session link returns to the current page when the page renders no sign-in link', async () => {
+            const redirected = new Response('<html>login</html>', {status: 200, headers: {'Content-Type': 'text/html'}});
+            Object.defineProperty(redirected, 'redirected', {value: true});
+            mockFetch({'/api/agent/preferences/': () => redirected});
+            window.history.pushState({}, '', '/jobs/?q=sre');
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const banner = await screen.findByTestId('priorities-session-expired');
+            expect(within(banner).getByRole('link', {name: /sign in/i}))
+                .toHaveAttribute('href', '/accounts/login/?next=%2Fjobs%2F%3Fq%3Dsre');
+            window.history.pushState({}, '', '/');
+        });
+
+        test('Review latest shows a busy state, ignores a second press and announces the new proposal', async () => {
+            let release: (r: Response) => void = () => undefined;
+            let slow = false;
+            const bodies: any[] = [];
+            mockFetch({
+                '/api/agent/preferences/propose/': (_u, init) => { bodies.push(init); return json(proposal); },
+                '/api/agent/preferences/apply/': () => json({error: {type: 'preference_stale', message: 's', current_revision: 5}}, 409),
+                '/api/agent/preferences/': () => (slow ? new Promise<Response>((r) => { release = r; }) as any : json(snapshotBody(2, [chip]))),
+            });
+            render(<PrioritiesSection variant="main" authenticated/>);
+            const form = await openEditor();
+            fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '150000'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            await screen.findByRole('heading', {name: 'Review your changes'});
+            fireEvent.click(screen.getByRole('button', {name: 'Apply to account'}));
+            await screen.findByTestId('priorities-review-error');
+            slow = true;
+            fireEvent.click(screen.getByRole('button', {name: 'Review latest'}));
+            const busy = await screen.findByRole('button', {name: 'Checking…'});
+            expect(busy).toHaveAttribute('aria-disabled', 'true');
+            fireEvent.click(busy);
+            const first = bodies.length;
+            const changed = snapshotBody(5, [chip]);
+            changed.fields[0] = field({value: 90000, set: true});
+            await act(async () => { release(json(changed)); });
+            await waitFor(() => expect(bodies.length).toBe(first + 1));
+            const heading = await screen.findByRole('heading', {name: 'Review your changes'});
+            await waitFor(() => expect(heading).toHaveFocus());
+            expect(screen.getAllByRole('status')[0]).toHaveTextContent('Updated against your latest priorities.');
         });
     });
 });

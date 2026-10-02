@@ -48,9 +48,14 @@ const ScrollRegion: React.FC<{children: React.ReactNode}> = ({children}) => {
 
 const STALE_COPY = 'Your priorities changed elsewhere. Review the latest before applying.';
 
+// The page's own sign-in link when it renders one; otherwise the login page, returning to the current page.
 function signInHref(): string {
-    return document.getElementById('priorities-main')?.dataset.signInUrl || window.location.href;
+    const {pathname, search} = window.location;
+    return document.getElementById('priorities-main')?.dataset.signInUrl
+        || `/accounts/login/?next=${encodeURIComponent(pathname + search)}`;
 }
+
+const INVALID_COPY = 'These changes could not be checked. Review your edits and try again.';
 
 function searchOnlyCopy(result: AppliedResult): string {
     const count = result.matchCount ?? 0;
@@ -78,6 +83,8 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const [undone, setUndone] = React.useState(false);
     const [conflicts, setConflicts] = React.useState<string[]>([]);
     const [sessionExpired, setSessionExpired] = React.useState(false);
+    const [rebasing, setRebasing] = React.useState(false);
+    const [refreshed, setRefreshed] = React.useState(false);
     const guard = React.useMemo(createLatestGuard, []);
     const mounted = React.useRef(true);
     const revisionRef = React.useRef<number | null>(null);
@@ -150,6 +157,8 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         setUndoPending(false);
         setBusy(false);
         setSessionExpired(false);
+        setRebasing(false);
+        setRefreshed(false);
         setPhase('loading');
     }, [guard]);
 
@@ -189,10 +198,17 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const hostsEditor = workspace.prioritiesEditorOpenIn === variant;
     const editorSeed = workspace.prioritiesEditorSeed;
     React.useEffect(() => {
-        if (hostsEditor && snapshot && (step === 'view' || (editorSeed && editorSeed !== seeded.current))) {
-            // A seed (the assistant's proposal) fills the editor instead of the saved values.
+        const newSeed = !!editorSeed && editorSeed !== seeded.current;
+        const working = step === 'edit' || step === 'review';
+        if (hostsEditor && snapshot && (!working || newSeed)) {
+            // A seed (the assistant's proposal) fills the editor instead of the saved values. Asking to edit from the
+            // applied summary or the reset prompt leaves that step; a seed arriving while editing or reviewing merges
+            // into the draft, so typed values the proposal does not touch are kept.
             seeded.current = editorSeed;
-            setDraft(patchToDraft(snapshot.fields, editorSeed));
+            const fromSeed = newSeed ? patchToDraft(snapshot.fields, editorSeed) : emptyDraft();
+            setDraft((current) => (working
+                ? {values: {...current.values, ...fromSeed.values}, hard: {...current.hard, ...fromSeed.hard}}
+                : fromSeed));
             setFieldErrors({});
             setFormError(null);
             setStep('edit');
@@ -246,6 +262,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         try {
             const next = await proposePriorities(patch, 'account', write.signal);
             if (!write.live()) return;
+            setRefreshed(base !== snapshot);
             setProposal(next);
             setReviewError(null);
             setStale(false);
@@ -258,7 +275,10 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                 setFormError('Some values are not valid. Fix them and review again.');
             } else {
                 setSessionExpired(err instanceof ApiFailure && err.authRequired);
-                setFormError(err instanceof ApiFailure ? err.message : 'Could not check your changes.');
+                // A 400 carries the server's validation wording; users get friendly copy, never that text.
+                setFormError(err instanceof ApiFailure
+                    ? (err.status === 400 ? INVALID_COPY : err.message)
+                    : 'Could not check your changes.');
             }
             setStep('edit');
         } finally {
@@ -309,14 +329,20 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     };
 
     const reviewLatest = async () => {
+        if (rebasing) return;
         const before = snapshot;
-        const fresh = await load();
-        if (!fresh) {
-            if (mounted.current) setReviewError('Could not load your latest priorities. Try again.');
-            return;
+        setRebasing(true);
+        try {
+            const fresh = await load();
+            if (!fresh) {
+                if (mounted.current) setReviewError('Could not load your latest priorities. Try again.');
+                return;
+            }
+            const found = before ? conflictingPaths(before.fields, fresh.fields, draft).map((path) => labels[path] || path) : [];
+            await startReview(fresh, found);
+        } finally {
+            if (mounted.current) setRebasing(false);
         }
-        const found = before ? conflictingPaths(before.fields, fresh.fields, draft).map((path) => labels[path] || path) : [];
-        await startReview(fresh, found);
     };
 
     const undo = async () => {
@@ -426,8 +452,10 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     } else if (step === 'review' && proposal) {
         body = (
             <ScrollRegion>
-                <ReviewChanges changes={proposal.changes} labels={labels} currency={currency} choicePaths={choicePaths}
-                               conflicts={conflicts} pending={busy} error={reviewError} stale={stale}
+                <ReviewChanges key={proposal.id} changes={proposal.changes} labels={labels} currency={currency}
+                               choicePaths={choicePaths} conflicts={conflicts} pending={busy || rebasing}
+                               error={reviewError} stale={stale}
+                               announcement={refreshed ? 'Updated against your latest priorities. ' : ''}
                                onApply={() => void apply('account')}
                                onApplySearchOnly={() => void apply('search')}
                                onEdit={() => setStep('edit')} onCancel={close}

@@ -3482,7 +3482,7 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
         expect(screen.getByText('Work location › modes')).toBeInTheDocument();
         expect(screen.getByText('Notes')).toBeInTheDocument();
         expect(screen.getAllByText('Not set').length).toBeGreaterThanOrEqual(2);
-        expect(screen.getByText('200,000')).toBeInTheDocument();
+        expect(screen.getByText('$200,000')).toBeInTheDocument();
         expect(screen.getByText('prefers remote-first teams')).toBeInTheDocument();
         // Nothing was applied yet: no applied notice, no plain banner.
         expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
@@ -3610,6 +3610,52 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
         expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(proposal.token.patch);
         expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument();
         expect((global.fetch as jest.Mock).mock.calls.length).toBe(calls);
+    });
+
+    test('the proposal reads list entries one per token and money with its currency (issue #480 review)', async () => {
+        const listProposal = {
+            ...proposal,
+            changes: [
+                {path: 'exclusions.locations', old: [], new: ['San Francisco, CA', 'Boston']},
+                {path: 'compensation.minimum_salary', old: null, new: 150000},
+            ],
+        };
+        await submitTurnWithProposal({
+            message: assistantMessage(22, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: listProposal,
+        });
+        const notice = screen.getByTestId('preference-proposal-notice');
+        expect(within(notice).getByText('San Francisco, CA')).toHaveClass('pref-change-token');
+        expect(within(notice).getByText('Boston')).toHaveClass('pref-change-token');
+        expect(within(notice).getByText('$150,000')).toBeInTheDocument();
+    });
+
+    test('Edit keeps the proposal when part of it cannot be shown in the editor (issue #480 review)', async () => {
+        const mapProposal = {...proposal, token: {...proposal.token, patch: {set: {'priorities.culture': 0.5}}}};
+        await submitTurnWithProposal({
+            message: assistantMessage(23, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: mapProposal,
+        });
+        fireEvent.click(screen.getByTestId('preference-proposal-edit-button'));
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(mapProposal.token.patch);
+        expect(screen.getByTestId('preference-proposal-notice')).toBeInTheDocument();
+    });
+
+    test('a search-only confirmation marks a capped match count (issue #480 review)', async () => {
+        const searchProposal = {...proposal, scope: 'search', token: {...proposal.token, scope: 'search'}};
+        await submitTurnWithProposal({
+            message: assistantMessage(24, 'Try this filter.', false),
+            preferences_changed: false,
+            preference_proposal: searchProposal,
+        });
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            applied: false, scope: 'search',
+            matches: {job_matches: new Array(25).fill({listing_id: 1}), organization_matches: []},
+        }));
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        expect(await screen.findByTestId('preference-search-applied')).toHaveTextContent('(25+ matches)');
     });
 
     test('This search only applies the same patch with scope=search and never saves (issue #480)', async () => {

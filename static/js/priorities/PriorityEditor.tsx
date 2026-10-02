@@ -45,6 +45,20 @@ function ListEditor({items, inputId, describedBy, invalid, label, onChange}: {
     onChange: (value: string[]) => void;
 }) {
     const [text, setText] = React.useState('');
+    const root = React.useRef<HTMLDivElement>(null);
+    const focusIndex = React.useRef<number | null>(null);
+    // After a removal the button that had focus is gone: move to the next entry's remove button, else the input.
+    React.useEffect(() => {
+        if (focusIndex.current === null) return;
+        const buttons = root.current?.querySelectorAll<HTMLElement>('.priority-list-remove');
+        const target = buttons && buttons.length ? buttons[Math.min(focusIndex.current, buttons.length - 1)] : null;
+        focusIndex.current = null;
+        (target || root.current?.querySelector<HTMLElement>('input'))?.focus();
+    }, [items]);
+    const remove = (index: number) => {
+        focusIndex.current = index;
+        onChange(items.filter((_, i) => i !== index));
+    };
     const commit = () => {
         const entry = text.trim();
         setText('');
@@ -53,15 +67,15 @@ function ListEditor({items, inputId, describedBy, invalid, label, onChange}: {
         }
     };
     return (
-        <div className="priority-list-editor">
+        <div className="priority-list-editor" ref={root}>
             {items.length > 0 && (
                 <ul className="priority-list-items" aria-label={`${label} entries`}>
-                    {items.map((item) => (
+                    {items.map((item, index) => (
                         <li key={item} className="priority-list-item">
                             <span className="priority-list-text">{item}</span>
                             <button type="button" className="priority-list-remove"
                                     aria-label={`Remove ${item} from ${label}`}
-                                    onClick={() => onChange(items.filter((other) => other !== item))}>
+                                    onClick={() => remove(index)}>
                                 <i className="fa-solid fa-xmark" aria-hidden="true"></i>
                             </button>
                         </li>
@@ -79,8 +93,9 @@ function ListEditor({items, inputId, describedBy, invalid, label, onChange}: {
                                commit();
                            }
                        }}/>
-                <button type="button" className="btn btn-outline-secondary" onMouseDown={(e) => e.preventDefault()}
-                        onClick={commit} disabled={text.trim() === ''}>Add</button>
+                <button type="button" className={`btn btn-outline-secondary${text.trim() === '' ? ' disabled' : ''}`}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={commit} aria-disabled={text.trim() === ''}>Add</button>
             </div>
         </div>
     );
@@ -234,6 +249,13 @@ export default function PriorityEditor({
         return () => window.cancelAnimationFrame(frame);
     }, [formError, fieldErrors]);
 
+    const unsupportedDetails = React.useRef<HTMLDetailsElement>(null);
+    const hasUnsupportedDraft = fields.some((f) => (!f.supported || !f.editable) && draft.values[f.path] !== undefined);
+    // Only ever force the group open: closing it when the last pending change is undone would drop focus.
+    React.useEffect(() => {
+        if (hasUnsupportedDraft && unsupportedDetails.current) unsupportedDetails.current.open = true;
+    }, [hasUnsupportedDraft]);
+
     const visible = fields.filter((f) => f.type !== 'float_map');
     // The server's `editable` flag decides what can be changed here; the rest is shown with a Clear action.
     const supported = visible.filter((f) => f.supported && f.editable);
@@ -266,26 +288,34 @@ export default function PriorityEditor({
                 </fieldset>
             ))}
             {unsupported.length > 0 && (
-                <details className="priorities-unsupported" open={unsupported.some((f) => draft.values[f.path] !== undefined) || undefined}>
+                <details className="priorities-unsupported" ref={unsupportedDetails}>
                     <summary>Not used for matching yet ({unsupported.length})</summary>
                     {unsupportedEditable.map((field) => (
                         <FieldRow key={field.path} field={{...field, supported: false}} inputId={idFor(field)} {...rowProps}/>
                     ))}
                     {unsupportedReadOnly.map((field) => {
-                        const cleared = draft.values[field.path] !== undefined;
+                        const edited = draft.values[field.path];
+                        const proposed = edited !== undefined
+                            && (Array.isArray(edited) ? edited.length > 0 : edited !== '');
+                        const cleared = edited !== undefined && !proposed;
+                        const changed = proposed || cleared;
+                        const shown = proposed
+                            ? preferenceValueLabel(edited, field.path, currencyCode)
+                            : cleared ? 'Will be cleared'
+                                : field.set ? preferenceValueLabel(field.value, field.path, currencyCode) : 'Not set';
                         return (
                             <div key={field.path} className="priorities-readonly-row" data-testid="priorities-field">
                                 <span id={`${idFor(field)}-label`} className="priorities-label">{field.label}</span>
-                                <span id={idFor(field)} className={`priorities-readonly${field.set && !cleared ? ' is-set' : ''}`}>
-                                    {field.set && !cleared ? preferenceValueLabel(field.value, field.path, currencyCode) : cleared ? 'Will be cleared' : 'Not set'}
+                                <span id={idFor(field)} className={`priorities-readonly${(field.set || proposed) && !cleared ? ' is-set' : ''}`}>
+                                    {shown}
                                 </span>
-                                {field.set && (
+                                {(field.set || proposed) && (
                                     <button type="button" className="btn btn-sm btn-link priorities-clear"
-                                            aria-label={cleared ? `Keep ${field.label}` : `Clear ${field.label}`}
-                                            onClick={() => cleared
+                                            aria-label={proposed ? `Discard the proposed ${field.label}` : cleared ? `Keep ${field.label}` : `Clear ${field.label}`}
+                                            onClick={() => changed
                                                 ? onUndoClear(field.path)
                                                 : onChange(field.path, field.type === 'str_list' ? [] : '')}>
-                                        {cleared ? 'Keep' : 'Clear'}
+                                        {proposed ? 'Discard' : cleared ? 'Keep' : 'Clear'}
                                     </button>
                                 )}
                             </div>

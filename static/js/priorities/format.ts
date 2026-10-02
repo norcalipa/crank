@@ -58,7 +58,8 @@ export function preferenceValueLabel(value: unknown, path?: string, currency?: u
     if (typeof value === 'boolean') return value ? 'Yes' : 'No';
     if (typeof value === 'string') {
         if (value === '') return 'Not set';
-        return path === undefined ? value : humanizeToken(value);
+        // Enum tokens read as labels; free text (it has spaces) is shown as typed.
+        return path === undefined || /\s/.test(value) ? value : humanizeToken(value);
     }
     if (typeof value === 'number') {
         if (!Number.isFinite(value)) return String(value);
