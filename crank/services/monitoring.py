@@ -10,6 +10,7 @@ identifiers are never accepted as event attributes.
 
 from __future__ import annotations
 
+import functools
 import re
 from typing import Any, Mapping
 
@@ -31,6 +32,12 @@ EVENT_NAMES = frozenset(
         "job_search_turn",
         "job_search_tool_invocation",
         "job_search_helpfulness_gap",
+        "assistant_turn",
+        "assistant_first_result",
+        "availability_state",
+        "preference_decision",
+        "pipeline_health",
+        "publication_sweep",
     }
 )
 
@@ -124,8 +131,210 @@ _SAFE_KEYS = frozenset(
         # Versioned job-match recompute (issue #475): CAS-publish counters.
         "stale_discarded",
         "duplicate_skipped",
+        # Assistant success, data freshness and publication->match lag
+        # (issue #482). Enums, ints, bools only.
+        "phase",
+        "state",
+        "surface",
+        "failure_stage",
+        "decision",
+        "scope",
+        "origin",
+        "availability_state",
+        "attempt",
+        "retry",
+        "results",
+        "cached",
+        "turns",
+        "seconds_to_first_result",
+        "turns_to_first_result",
+        "scanned",
+        "processed",
+        "keys_deleted",
+        "outbox_oldest_age_seconds",
+        "outbox_pending",
+        "accepted_evidence_rows",
+        "evidence_stale_rows",
+        "evidence_oldest_verified_days",
+        "organizations_with_evidence",
+        "organizations_active",
+        "observations_pending",
+        "observations_conflicted",
+        "field_claims_pending",
+        "corrections_pending",
+        "unresolved_employers",
+        "queued_runs",
+        "oldest_queued_age_seconds",
+        "users_without_generation",
+        "publication_match_lag_seconds",
+        "publication_lag_max_seconds",
+        "publication_lag_count",
     }
 )
+
+FAILURE_STAGES = frozenset(
+    {
+        "provider",
+        "source",
+        "publication",
+        "matching",
+        "availability",
+        "capacity",
+        "lifecycle",
+        "internal",
+    }
+)
+
+_FAILURE_STAGE_BY_REASON = {
+    "provider_timeout": "provider",
+    "cost_limit": "provider",
+    "invalid_output": "provider",
+    "assistant_unavailable": "availability",
+    "conversation_gone": "lifecycle",
+    "conversation_closed": "lifecycle",
+    "preference_stale": "lifecycle",
+    "preference_version_unavailable": "lifecycle",
+    "service_error": "internal",
+    "unexpected_error": "internal",
+    "worker_interrupted": "internal",
+    "rate_limited": "capacity",
+    "turn_in_progress": "capacity",
+    "retry_limited": "capacity",
+}
+
+
+def failure_stage_for(reason_code: str | None) -> str:
+    """Map a turn failure/rejection reason to its finite failure stage."""
+    return _FAILURE_STAGE_BY_REASON.get(reason_code or "", "internal")
+
+
+# Keys whose values must come from a closed registry; a miss becomes "other".
+_ENUM_KEYS = frozenset(
+    {
+        "status", "reason_code", "stage", "phase", "state", "surface",
+        "failure_stage", "decision", "scope", "origin", "latency_bucket",
+        "action", "run_type", "tool", "capability", "availability_state",
+    }
+)
+# Keys carrying a short operator/vendor identifier (never user input).
+_SLUG_KEYS = frozenset(
+    {
+        "source_key", "source_kind", "provider", "model",
+        "provider_error_class", "adapter_version", "page_context",
+    }
+)
+_SLUG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:+-]{0,63}$")
+_UUID = re.compile(
+    r"^(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$"
+)
+
+_STATIC_ENUMS = {
+    "status": {
+        "succeeded", "failed", "skipped", "completed", "deadline", "error",
+        "provider_succeeded", "provider_failed", "passed", "disabled",
+        "applied", "dismissed", "undone", "stale", "invalid", "ok",
+    },
+    "reason_code": {
+        "none", "timeout", "cost_limit", "rejected", "authorization",
+        "upstream", "internal", "deadline", "overlap", "constraint",
+        "overlap_lock", "overlap_existing", "overlap_constraint",
+        "conversation_closed", "preference_stale",
+        "preference_version_unavailable", "rate_limited", "turn_in_progress",
+        "retry_limited", "disabled", "snapshot_failed",
+    },
+    "stage": {
+        "job_ingest", "score_gathering", "company_profile_crawl",
+        "match_recompute", "job_pipeline_matching",
+    },
+    "phase": {"attempted", "saved", "replied", "failed", "rejected", "replayed"},
+    "surface": {"assistant_status", "job_matches"},
+    "decision": {"apply", "dismiss", "undo"},
+    "scope": {"account", "search"},
+    "origin": {"proposal", "direct"},
+    "latency_bucket": {"lt100", "100-300", "300-1000", "gt1000"},
+    "action": {
+        "seed_job_sources", "queue_retrieval", "queue_pipeline",
+        "retry_failed", "rollback_drill", "enable", "disable",
+    },
+    "capability": {"job_source", "all"},
+}
+
+
+@functools.lru_cache(maxsize=1)
+def enum_values() -> dict:
+    """Closed value registry per enum key, including dynamic sources.
+
+    Built lazily (model imports) and cached; tests assert every literal
+    ``record_event`` value is registered.
+    """
+    from crank import empty_state
+    from crank.agents.jobs import ingest
+    from crank.models.agent_run import AgentRun
+    from crank.models.job_search import JobSearchTurn
+    from crank.models.monitoring import ALLOWED_CAPABILITY_KEYS
+    from crank.views import assistant_status
+
+    registry = {key: set(_STATIC_ENUMS.get(key, ())) for key in _ENUM_KEYS}
+    registry["failure_stage"] = set(FAILURE_STAGES)
+    availability = {
+        getattr(assistant_status, name)
+        for name in (
+            "SIGNED_OUT", "REPLIES_DISABLED", "TEMPORARILY_UNAVAILABLE",
+            "REFRESHING", "INVENTORY_UNAVAILABLE", "READY",
+        )
+    } | {
+        getattr(empty_state, name)
+        for name in (
+            "NO_SOURCE", "SOURCE_DISABLED", "CRAWL_RUNNING", "CRAWL_FAILED",
+            "CRAWL_STALE", "CRAWL_EMPTY", "NO_PREFERENCES", "NO_MATCHES",
+            "PARTIAL_COVERAGE", "OK",
+        )
+    }
+    registry["state"] = set(availability)
+    registry["availability_state"] = set(availability)
+    registry["run_type"] |= set(AgentRun.RunType.values)
+    registry["status"] |= set(AgentRun.Status.values)
+    registry["reason_code"] |= set(JobSearchTurn.FailureCode.values)
+    registry["reason_code"] |= {
+        getattr(ingest, name) for name in dir(ingest) if name.startswith("SKIP_")
+    }
+    registry["capability"] |= set(ALLOWED_CAPABILITY_KEYS)
+    registry["tool"] = {
+        "query_active_organizations", "query_score_summaries",
+        "search_job_listings", "get_matches_for_user",
+    }
+    return {key: frozenset(values) for key, values in registry.items()}
+
+
+# Per-event key schemas for events introduced by issue #482; unknown keys are
+# dropped. Older events keep the global allowlist so existing dashboards
+# keep every attribute they query.
+EVENT_SCHEMAS = {
+    "assistant_turn": frozenset(
+        {"phase", "attempt", "retry", "results", "latency_ms", "latency_bucket",
+         "reason_code", "failure_stage", "turns"}
+    ),
+    "assistant_first_result": frozenset(
+        {"seconds_to_first_result", "turns_to_first_result", "latency_bucket"}
+    ),
+    "availability_state": frozenset({"surface", "state", "cached"}),
+    "preference_decision": frozenset({"decision", "scope", "status", "origin"}),
+    "pipeline_health": frozenset(
+        {"healthy", "reason_code", "enabled_sources", "accepted_evidence_rows",
+         "evidence_stale_rows", "evidence_oldest_verified_days",
+         "organizations_with_evidence", "organizations_active",
+         "observations_pending", "observations_conflicted",
+         "field_claims_pending", "corrections_pending", "unresolved_employers",
+         "outbox_pending", "outbox_oldest_age_seconds", "queued_runs",
+         "oldest_queued_age_seconds", "users_without_generation",
+         "publication_match_lag_seconds"}
+    ),
+    "publication_sweep": frozenset(
+        {"status", "scanned", "processed", "keys_deleted",
+         "outbox_oldest_age_seconds", "reason_code", "failure_stage"}
+    ),
+}
 _SENSITIVE_KEY = re.compile(r"(?i)(response|body|content|secret|credential)")
 
 
@@ -147,16 +356,31 @@ def failure_reason(error: BaseException | None) -> str:
     return "internal"
 
 
+def _slug(value: Any) -> str:
+    text = str(value)
+    return text if _SLUG.match(text) else "other"
+
+
 def _safe_value(key: str, value: Any) -> Any:
-    if key not in _SAFE_KEYS or _SENSITIVE_KEY.search(key):
+    if key not in _SAFE_KEYS or _SENSITIVE_KEY.search(key) or value is None:
         return None
-    if isinstance(value, bool):
+    if key == "run_id":
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+    if key == "correlation_id":
+        text = str(value)
+        return text if _UUID.match(text) else None
+    if key in _ENUM_KEYS:
+        if isinstance(value, str) and value in enum_values().get(key, ()):
+            return value
+        return "other"
+    if key in _SLUG_KEYS:
+        return _slug(value)
+    if key == "action_drop_reasons":
+        parts = str(value).split(",") if value else []
+        return ",".join(_slug(part) for part in parts)[:64]
+    if isinstance(value, (bool, int, float)):
         return value
-    if isinstance(value, (int, float)):
-        return value
-    if value is None:
-        return None
-    return str(value)[:64]
+    return None
 
 
 def event_attributes(event_name: str, attributes: Mapping[str, Any] | None = None) -> dict:
@@ -164,7 +388,10 @@ def event_attributes(event_name: str, attributes: Mapping[str, Any] | None = Non
     if event_name not in EVENT_NAMES:
         raise ValueError(f"Unsupported monitoring event: {event_name}")
     payload = {"event_name": event_name}
+    schema = EVENT_SCHEMAS.get(event_name)
     for key, value in (attributes or {}).items():
+        if schema is not None and key not in schema:
+            continue
         safe = _safe_value(key, value)
         if safe is not None:
             payload[key] = safe
@@ -214,7 +441,11 @@ def capability_enabled(key: str, default: bool = True) -> bool:
 
 __all__ = [
     "EVENT_NAMES",
+    "EVENT_SCHEMAS",
+    "FAILURE_STAGES",
+    "enum_values",
     "event_attributes",
+    "failure_stage_for",
     "failure_reason",
     "latency_bucket",
     "record_event",

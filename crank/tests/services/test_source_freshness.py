@@ -726,7 +726,9 @@ class SourceRefreshMigrationShapeTests(TestCase):
         leaves = [k for k in loader.graph.leaf_nodes() if k[0] == "crank"]
         self.assertEqual(len(leaves), 1)
         self.assertIn(("crank", self.NAMES[-1]), loader.graph.forwards_plan(leaves[0]))
-        self.assertEqual(leaves, [("crank", "0047_companycorrection")])
+        self.assertEqual(
+            leaves, [("crank", "0048_jobsearchconversation_first_result_at")]
+        )
         self.assertEqual(
             loader.disk_migrations[("crank", "0046_alter_companyfieldevidence_state")].dependencies,
             [("crank", self.NAMES[-1])],
@@ -739,3 +741,17 @@ class SourceRefreshMigrationShapeTests(TestCase):
             ],
             [("crank", "0046_alter_companyfieldevidence_state")],
         )
+        first_result = loader.disk_migrations[
+            ("crank", "0048_jobsearchconversation_first_result_at")
+        ]
+        self.assertEqual(
+            [dep for dep in first_result.dependencies if dep[0] == "crank"],
+            [("crank", "0047_companycorrection")],
+        )
+        self.assertEqual(len(first_result.operations), 1)
+        # Issue #482: a single nullable AddField with no default and no index
+        # is exactly one ADD COLUMN ... NULL on MySQL.
+        field = first_result.operations[0].field
+        self.assertTrue(field.null)
+        self.assertFalse(field.has_default())
+        self.assertFalse(field.db_index or field.unique or field.remote_field)

@@ -35,6 +35,13 @@ class JobSearchConversation(TimeStampedModel):
                   "has been emitted for this conversation. Set atomically so "
                   "concurrent submissions emit the gap signal exactly once.",
     )
+    first_result_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the first assistant reply carrying result cards committed. "
+                  "Claimed with a conditional update so the first-result "
+                  "telemetry event is emitted exactly once.",
+    )
 
     class Meta:
         app_label = "crank"
