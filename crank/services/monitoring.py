@@ -257,6 +257,7 @@ _STATIC_ENUMS = {
     "action": {
         "seed_job_sources", "queue_retrieval", "queue_pipeline",
         "retry_failed", "rollback_drill", "enable", "disable",
+        "approve", "block", "queue",
     },
     "capability": {"job_source", "all"},
 }

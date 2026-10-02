@@ -163,9 +163,13 @@ def recompute_user(user_or_id, *, reason, config=DEFAULT_CONFIG, force=False, ma
         persisted = 0
         lag = None
         if status == RecomputeStatus.PUBLISHED:
-            lag = publication_lag_seconds(
-                snapshot.previous_data_revision, snapshot.data_revision
-            )
+            # A first generation has no previous window: measuring it would
+            # report the age of the whole outbox. Same population as
+            # operations_readiness.publication_match_lag_seconds().
+            if snapshot.previous_generation is not None:
+                lag = publication_lag_seconds(
+                    snapshot.previous_data_revision, snapshot.data_revision
+                )
             persisted = (
                 MatchResultState.objects.filter(user=user)
                 .values_list("result_count", flat=True)

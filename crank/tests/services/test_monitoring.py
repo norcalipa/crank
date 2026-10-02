@@ -384,37 +384,127 @@ class AssistantTelemetryPolicyTests(TestCase):
 
 
 class RecordEventRegistryTests(TestCase):
-    """Every literal enum value passed to ``record_event`` is registered."""
+    """Every enum value reaching ``record_event`` is registered or audited.
 
-    def test_literal_enum_values_in_record_event_calls_are_registered(self):
+    Literals are checked in direct calls and in the view helpers that wrap
+    them. Non-literal values cannot be resolved statically, so each such site
+    must appear in ``AUDITED_DYNAMIC`` with the test that drives it at the
+    vendor boundary; a new dynamic site fails here until someone audits it.
+    """
+
+    HELPERS = {
+        "_turn_event": {"phase": 0},
+        "_turn_failed": {"reason_code": 0},
+        "_turn_rejected": {"reason_code": 0},
+    }
+    HELPER_KWARGS = {"_preference_decision_event": {"decision", "scope", "ok_status"}}
+    # site -> where the value comes from and what pins it to the registry
+    AUDITED_DYNAMIC = {
+        ("admin.py", "action"): "state-action literals; test_monitoring_vendor_boundary",
+        ("admin.py", "capability"): "CapabilitySwitch.key, registry holds ALLOWED_CAPABILITY_KEYS",
+        ("admin_dashboard.py", "action"): "'Queue'.lower(); test_monitoring_vendor_boundary",
+        ("admin_dashboard.py", "reason_code"): "skip_reason literals, registered; vendor-boundary test",
+        ("admin_dashboard.py", "run_type"): "AgentRun.RunType member",
+        ("agent_runs.py", "run_type"): "AgentRun.RunType value",
+        ("agent_runs.py", "status"): "AgentRun.Status value / literal map",
+        ("agent_runs.py", "reason_code"): "failure_reason() or record_skipped reasons, registered",
+        ("assistant_status.py", "state"): "assistant_status state constants",
+        ("job_matches.py", "state"): "empty_state constants",
+        ("crawl_healthcheck.py", "reason_code"): "failure_reason()",
+        ("publication_sweep.py", "reason_code"): "failure_reason()",
+        ("job_ingest.py", "reason_code"): "SKIP_* constants",
+        ("job_pipeline.py", "reason_code"): "failure_reason() / literals",
+        ("score_gathering.py", "reason_code"): "failure_reason()",
+        ("job_search.py", "phase"): "helper parameter; callers checked as literals",
+        ("job_search.py", "status"): "helper parameter; callers checked as literals",
+        ("job_search.py", "decision"): "helper parameter; callers checked as literals",
+        ("job_search.py", "scope"): "helper parameter; callers checked as literals",
+        ("service.py", "availability_state"): "availability dict state, registered",
+        ("service.py", "latency_bucket"): "monitoring.latency_bucket()",
+        ("service.py", "reason_code"): "failure_reason() / FailureCode",
+    }
+
+    @staticmethod
+    def _resolve(node):
+        import ast
+
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return {node.value}
+        if isinstance(node, ast.IfExp):
+            body, orelse = (RecordEventRegistryTests._resolve(n) for n in (node.body, node.orelse))
+            return body | orelse if body is not None and orelse is not None else None
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "lower"
+            and not node.args
+        ):
+            inner = RecordEventRegistryTests._resolve(node.func.value)
+            return {v.lower() for v in inner} if inner is not None else None
+        return None
+
+    def _walk(self):
         import ast
         import pathlib
 
         root = pathlib.Path(__file__).resolve().parents[2]
-        registry = monitoring.enum_values()
-        checked = 0
         for path in root.rglob("*.py"):
             if "tests" in path.parts or "migrations" in path.parts:
                 continue
-            tree = ast.parse(path.read_text())
-            for node in ast.walk(tree):
-                if not (
-                    isinstance(node, ast.Call)
-                    and getattr(node.func, "attr", getattr(node.func, "id", "")) == "record_event"
-                    and len(node.args) >= 2
-                    and isinstance(node.args[1], ast.Dict)
-                ):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.Call):
+                    yield path, node
+
+    def test_enum_values_in_record_event_calls_are_registered(self):
+        import ast
+
+        registry = monitoring.enum_values()
+        checked = 0
+        dynamic = set()
+        for path, node in self._walk():
+            name = getattr(node.func, "attr", getattr(node.func, "id", ""))
+            pairs = []
+            if name == "record_event" and len(node.args) >= 2 and isinstance(node.args[1], ast.Dict):
+                pairs = [
+                    (k.value, v)
+                    for k, v in zip(node.args[1].keys, node.args[1].values)
+                    if isinstance(k, ast.Constant)
+                ]
+            elif name in self.HELPERS:
+                pairs = [
+                    (key, node.args[idx])
+                    for key, idx in self.HELPERS[name].items()
+                    if len(node.args) > idx
+                ]
+            elif name in self.HELPER_KWARGS:
+                pairs = [
+                    ({"ok_status": "status"}.get(kw.arg, kw.arg), kw.value)
+                    for kw in node.keywords
+                    if kw.arg in self.HELPER_KWARGS[name]
+                ]
+            for key, value in pairs:
+                if key not in monitoring._ENUM_KEYS:
                     continue
-                for key, value in zip(node.args[1].keys, node.args[1].values):
-                    if (
-                        isinstance(key, ast.Constant)
-                        and key.value in monitoring._ENUM_KEYS
-                        and isinstance(value, ast.Constant)
-                        and isinstance(value.value, str)
-                    ):
-                        checked += 1
-                        self.assertIn(
-                            value.value, registry[key.value],
-                            f"{path.name}:{node.lineno} {key.value}={value.value!r}",
-                        )
-        self.assertGreater(checked, 5)
+                values = self._resolve(value)
+                if values is None:
+                    dynamic.add((path.name, key))
+                    continue
+                for literal in values:
+                    checked += 1
+                    self.assertIn(
+                        literal, registry[key], f"{path.name}:{node.lineno} {key}={literal!r}"
+                    )
+        self.assertGreater(checked, 30)
+        unaudited = {site for site in dynamic if site not in self.AUDITED_DYNAMIC}
+        self.assertFalse(
+            unaudited,
+            f"dynamic enum values need a vendor-boundary test and an AUDITED_DYNAMIC entry: {sorted(unaudited)}",
+        )
+
+    def test_computed_sources_stay_inside_the_registry(self):
+        registry = monitoring.enum_values()
+        for exc in (None, TimeoutError(), ValueError(), PermissionError(), ConnectionError()):
+            self.assertIn(monitoring.failure_reason(exc), registry["reason_code"])
+        for ms in (0, 99, 100, 299, 300, 999, 1000, 10**6):
+            self.assertIn(monitoring.latency_bucket(ms), registry["latency_bucket"])
+        self.assertTrue({"approve", "block", "queue"} <= registry["action"])

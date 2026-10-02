@@ -75,6 +75,12 @@ class RecomputeLagTests(TestCase):
         make_listing(source, organization)
         UserPreference.objects.create(user=self.user, revision=0)
 
+    def test_first_generation_reports_no_lag(self):
+        make_event(30 * 86400)
+        first = recompute_user(self.user, reason="preference")
+        self.assertEqual(first.status, RecomputeStatus.PUBLISHED)
+        self.assertIsNone(first.publication_lag_seconds)
+
     def test_published_outcome_carries_lag_only_with_events(self):
         first = recompute_user(self.user, reason="preference")
         self.assertEqual(first.status, RecomputeStatus.PUBLISHED)
@@ -92,6 +98,7 @@ class RecomputeLagTests(TestCase):
         self.assertIsNone(current.publication_lag_seconds)
 
     def test_drain_aggregates_lag(self):
+        recompute_user(self.user, reason="preference")
         make_event(90)
         counts = match_recompute.drain(10)
         self.assertEqual(counts["publication_lag_count"], 1)
