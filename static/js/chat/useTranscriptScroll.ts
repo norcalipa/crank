@@ -5,8 +5,15 @@ import * as React from 'react';
 export type ScrollOwner = 'transcript' | 'panel';
 
 const NEAR_BOTTOM_PX = 48;
-const INTENT_WINDOW_MS = 1000;
+// Our own scrollTo/scrollTop writes (a smooth scroll fires scroll events for a
+// while) must not read as the reader scrolling away.
+const PROGRAMMATIC_WINDOW_MS = 1000;
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
+
+interface ScrollAnchor {
+    element: HTMLElement;
+    offset: number;
+}
 
 // Exactly one element scrolls the conversation. Normally that is the
 // transcript; when the assistant panel is too short to give the transcript a
@@ -22,8 +29,8 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
     const historyRef = React.useRef<HTMLDivElement>(null);
     const nearBottomRef = React.useRef(true);
     const seenAssistantRef = React.useRef(assistantCount);
-    const lastIntentRef = React.useRef(0);
-    const draggingRef = React.useRef(false);
+    const programmaticUntilRef = React.useRef(0);
+    const anchorRef = React.useRef<ScrollAnchor | null>(null);
     const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
     const [unreadCount, setUnreadCount] = React.useState(0);
 
@@ -36,6 +43,37 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         if (!history) return null;
         if (scrollOwner === 'panel') return history.closest<HTMLElement>('.assistant-panel-body') ?? history;
         return history;
+    };
+
+    const markProgrammatic = () => {
+        programmaticUntilRef.current = Date.now() + PROGRAMMATIC_WINDOW_MS;
+    };
+
+    // The top edge of what the reader can see: the scroller's own top, or in
+    // panel mode the bottom of the pinned header.
+    const visibleTop = (scroller: HTMLElement): number => {
+        const rect = scroller.getBoundingClientRect();
+        const history = historyRef.current;
+        if (scroller === history) return rect.top;
+        const header = history?.closest('section')?.querySelector<HTMLElement>('.card-header');
+        return Math.max(rect.top, header ? header.getBoundingClientRect().bottom : rect.top);
+    };
+
+    // Remember the first message the reader can see, and how far below the
+    // visible top it sits, so the position survives the scroll owner changing.
+    const captureAnchor = () => {
+        const history = historyRef.current;
+        const scroller = getScroller();
+        anchorRef.current = null;
+        if (!history || !scroller || nearBottomRef.current) return;
+        const top = visibleTop(scroller);
+        for (const element of Array.from(history.querySelectorAll<HTMLElement>('article'))) {
+            const rect = element.getBoundingClientRect();
+            if (rect.bottom > top) {
+                anchorRef.current = {element, offset: rect.top - top};
+                return;
+            }
+        }
     };
 
     const isNearBottom = (): boolean => {
@@ -64,6 +102,7 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
     const scrollToLatest = (behavior: ScrollBehavior = prefersReducedMotion() || scrollOwner === 'panel' ? 'auto' : 'smooth') => {
         const scroller = getScroller();
         if (!scroller) return;
+        markProgrammatic();
         if (typeof scroller.scrollTo === 'function') {
             scroller.scrollTo({top: scroller.scrollHeight, behavior});
         } else {
@@ -85,35 +124,32 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         if (!followNextAppendRef.current) return;
         followNextAppendRef.current = false;
         const scroller = getScroller();
-        if (scroller) scroller.scrollTop = scroller.scrollHeight;
+        if (!scroller) return;
+        markProgrammatic();
+        scroller.scrollTop = scroller.scrollHeight;
     }, [messagesLength, pending]);
 
     // Keep the latest content visible only while the reader is already at the bottom.
     React.useEffect(() => {
         const scroller = getScroller();
         if (!scroller) return undefined;
-        // Only the reader can end "following". Layout shifts (a reply replacing
-        // the pending indicator, a banner appearing) clamp or move scrollTop
-        // without any input, and must not read as scrolling away (issue #483).
-        // Typing in the composer (inside the panel scroller in panel mode) is not
-        // scrolling; only keys that scroll, pressed outside form controls, count.
-        const markIntent = (e?: Event) => {
+        // "Following" follows the actual scroll position: any scroll that is not
+        // one of our own writes and ends away from the bottom (wheel, keys, a
+        // Tab to an older link, find-in-page, a screen reader) stops it.
+        // Layout shifts clamp or move scrollTop without leaving the bottom, so
+        // they still read as following (issue #483). Input that scrolls cancels
+        // the programmatic window so it can interrupt a smooth scroll.
+        const cancelProgrammatic = (e?: Event) => {
             if (e?.type === 'keydown') {
                 if (!SCROLL_KEYS.has((e as KeyboardEvent).key)) return;
                 if ((e.target as HTMLElement).closest('textarea, input, select, button, [contenteditable="true"]')) return;
             }
-            lastIntentRef.current = Date.now();
-        };
-        // A press on the scroller itself (not a button inside it) is a scrollbar drag.
-        const pointerDown = (e: Event) => { draggingRef.current = e.target === scroller; };
-        const pointerUp = () => {
-            if (!draggingRef.current) return;
-            draggingRef.current = false;
-            markIntent();
+            programmaticUntilRef.current = 0;
         };
         const handleScroll = () => {
-            const intentional = draggingRef.current || Date.now() - lastIntentRef.current < INTENT_WINDOW_MS;
-            const nearBottom = isNearBottom() || (!intentional && nearBottomRef.current);
+            const atBottom = isNearBottom();
+            const ownScroll = Date.now() < programmaticUntilRef.current;
+            const nearBottom = atBottom || (ownScroll && nearBottomRef.current);
             nearBottomRef.current = nearBottom;
             setShowJumpToLatest(!nearBottom);
             if (nearBottom) {
@@ -121,36 +157,37 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
                 setUnreadCount(0);
             }
         };
-        const intentEvents = ['wheel', 'touchmove', 'keydown'] as const;
-        intentEvents.forEach((name) => scroller.addEventListener(name, markIntent, {passive: true}));
-        scroller.addEventListener('pointerdown', pointerDown, {passive: true});
-        window.addEventListener('pointerup', pointerUp);
+        const inputEvents = ['wheel', 'touchmove', 'keydown', 'pointerdown', 'focusin'] as const;
+        inputEvents.forEach((name) => scroller.addEventListener(name, cancelProgrammatic, {passive: true}));
         scroller.addEventListener('scroll', handleScroll, {passive: true});
         return () => {
             scroller.removeEventListener('scroll', handleScroll);
-            intentEvents.forEach((name) => scroller.removeEventListener(name, markIntent));
-            scroller.removeEventListener('pointerdown', pointerDown);
-            window.removeEventListener('pointerup', pointerUp);
+            inputEvents.forEach((name) => scroller.removeEventListener(name, cancelProgrammatic));
         };
     }, [scrollOwner, assistantCount]);
 
     // Changing who scrolls changes what "the bottom" means. A reader who was
     // following the conversation stays at the end in either mode; one reading
-    // older messages keeps their place and gets the jump pill.
+    // older messages keeps their place: the message that was at the top of the
+    // view (recorded by captureAnchor before the switch) is put back at the
+    // same offset on the new scroller, and the jump pill stays up.
     const previousOwnerRef = React.useRef(scrollOwner);
-    React.useEffect(() => {
+    React.useLayoutEffect(() => {
         const previous = previousOwnerRef.current;
         previousOwnerRef.current = scrollOwner;
         if (previous === scrollOwner) return;
-        if (scrollOwner === 'panel') {
-            if (nearBottomRef.current) {
-                scrollToLatest('auto');
-                return;
-            }
-            setShowJumpToLatest(true);
-        } else if (nearBottomRef.current) {
+        if (nearBottomRef.current) {
             scrollToLatest('auto');
+            return;
         }
+        const anchor = anchorRef.current;
+        anchorRef.current = null;
+        const scroller = getScroller();
+        if (anchor && scroller && anchor.element.isConnected) {
+            markProgrammatic();
+            scroller.scrollTop += anchor.element.getBoundingClientRect().top - visibleTop(scroller) - anchor.offset;
+        }
+        setShowJumpToLatest(true);
     }, [scrollOwner]);
 
     // The transcript's box changes size when banners or confirmations appear
@@ -227,5 +264,5 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         };
     }, [scrollOwner, assistantCount]);
 
-    return {historyRef, nearBottomRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend};
+    return {historyRef, nearBottomRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend, captureAnchor};
 }
