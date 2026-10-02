@@ -683,6 +683,18 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 shownGenerationRef.current = generation;
             }
             setRankedMatches(rankedData);
+            // Issue #484: the server compares these with its own revisions to
+            // tell the assistant when the user's view is outdated.
+            const reported: {resultGeneration?: number; preferenceRevision?: number} = {};
+            if (generation !== null) {
+                reported.resultGeneration = generation;
+            }
+            if (typeof revision?.preference_revision === 'number') {
+                reported.preferenceRevision = revision.preference_revision;
+            }
+            if (Object.keys(reported).length > 0) {
+                setWorkspaceContext(reported);
+            }
             setPhase('ready');
         } catch (e) {
             if (!request.isLatest()) {

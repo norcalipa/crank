@@ -10,10 +10,14 @@
 
 import {
     AssistantVisibility,
+    FilterTargetHandler,
     PrioritiesEditorHost,
     PrioritiesEditorSeed,
     WorkspaceAccount,
+    RtoPolicyCode,
+    WireContext,
     WorkspaceContext,
+    WorkspaceFilters,
     WorkspaceMode,
     WorkspaceSnapshot,
     WORKSPACE_CONTEXT_EVENT,
@@ -35,6 +39,7 @@ interface WorkspaceStoreShape {
     version: number;
     snapshot: WorkspaceSnapshot;
     listeners: Set<() => void>;
+    filterTargets?: FilterTargetHandler[];
 }
 
 declare global {
@@ -82,8 +87,28 @@ function update(partial: Partial<WorkspaceSnapshot>): void {
     notify();
 }
 
+// Fixed key order, so equal contexts always serialize equally regardless of
+// the order their keys were first set in.
+const CONTEXT_KEY_ORDER: readonly (keyof WorkspaceContext)[] = [
+    'surface', 'organizationId', 'organizationName', 'jobId', 'comparisonIds',
+    'searchTerm', 'page', 'algorithmId', 'filters', 'resultGeneration', 'preferenceRevision',
+];
+
+function canonicalContext(context: WorkspaceContext | null): unknown {
+    if (!context) {
+        return null;
+    }
+    const ordered: Record<string, unknown> = {};
+    for (const key of CONTEXT_KEY_ORDER) {
+        if (context[key] !== undefined) {
+            ordered[key] = context[key];
+        }
+    }
+    return ordered;
+}
+
 function sameContext(a: WorkspaceContext | null, b: WorkspaceContext | null): boolean {
-    return JSON.stringify(a) === JSON.stringify(b);
+    return JSON.stringify(canonicalContext(a)) === JSON.stringify(canonicalContext(b));
 }
 
 function revisionFor(snapshot: WorkspaceSnapshot, next: WorkspaceContext | null): number {
@@ -102,6 +127,11 @@ function normalizeInteger(value: unknown): number | undefined {
 }
 
 const MAX_COMPARISON_IDS = 4;
+
+function normalizeNonNegativeInteger(value: unknown): number | undefined {
+    const n = normalizeInteger(value);
+    return n !== undefined && n >= 0 ? n : undefined;
+}
 
 function normalizePositiveInteger(value: unknown): number | undefined {
     const n = normalizeInteger(value);
@@ -141,6 +171,32 @@ export function normalizeWorkspaceContext(detail: unknown): Partial<WorkspaceCon
     const jobId = normalizePositiveInteger(raw.jobId);
     if (jobId !== undefined) {
         context.jobId = jobId;
+    }
+    const algorithmId = normalizePositiveInteger(raw.algorithmId);
+    if (algorithmId !== undefined) {
+        context.algorithmId = algorithmId;
+    }
+    if (typeof raw.filters === 'object' && raw.filters !== null) {
+        // A present filters object replaces the previous one wholesale; an
+        // empty one means "no filters" and is kept so a removed chip clears.
+        const rawFilters = raw.filters as Record<string, unknown>;
+        const filters: WorkspaceFilters = {};
+        if (typeof rawFilters.rtoPolicy === 'string'
+            && ['R', 'H', 'O'].includes(rawFilters.rtoPolicy)) {
+            filters.rtoPolicy = rawFilters.rtoPolicy as RtoPolicyCode;
+        }
+        if (rawFilters.acceleratedVesting === true) {
+            filters.acceleratedVesting = true;
+        }
+        context.filters = filters;
+    }
+    const resultGeneration = normalizeNonNegativeInteger(raw.resultGeneration);
+    if (resultGeneration !== undefined) {
+        context.resultGeneration = resultGeneration;
+    }
+    const preferenceRevision = normalizeNonNegativeInteger(raw.preferenceRevision);
+    if (preferenceRevision !== undefined) {
+        context.preferenceRevision = preferenceRevision;
     }
     if (Array.isArray(raw.comparisonIds)) {
         const ids = Array.from(new Set(
@@ -403,4 +459,71 @@ export function describeWorkspaceContext(context: WorkspaceContext | null): stri
         return `Comparing ${context.comparisonIds.length} companies`;
     }
     return '';
+}
+
+// Registers the mounted surface that can apply assistant-proposed filters
+// (the rankings list). Returns the unregister function; the newest
+// registration wins and releasing it restores the previous one.
+export function registerFilterTarget(handler: FilterTargetHandler): () => void {
+    const s = store();
+    s.filterTargets = [...(s.filterTargets ?? []), handler];
+    return () => {
+        const current = store();
+        current.filterTargets = (current.filterTargets ?? []).filter((h) => h !== handler);
+    };
+}
+
+// Applies filters on the mounted target; false when none is mounted or it
+// declined, so the caller can fall back to navigation.
+export function applyWorkspaceFilters(filters: WorkspaceFilters): boolean {
+    const targets = store().filterTargets ?? [];
+    const target = targets[targets.length - 1];
+    return target ? target(filters) === true : false;
+}
+
+// Maps the live context to the snake_case wire shape. Names and search text
+// are display-only and are never sent.
+export function buildWireContext(snapshot: WorkspaceSnapshot): WireContext | undefined {
+    const context = snapshot.context;
+    if (!context) {
+        return undefined;
+    }
+    const wire: WireContext = {revision: snapshot.contextRevision};
+    if (context.surface !== undefined) {
+        wire.surface = context.surface;
+    }
+    if (context.organizationId !== undefined && context.organizationId > 0) {
+        wire.organization_id = context.organizationId;
+    }
+    if (context.jobId !== undefined) {
+        wire.job_id = context.jobId;
+    }
+    if (context.comparisonIds && context.comparisonIds.length > 0) {
+        wire.comparison_ids = [...context.comparisonIds];
+    }
+    if (context.algorithmId !== undefined) {
+        wire.algorithm_id = context.algorithmId;
+    }
+    if (context.page !== undefined && context.page > 0) {
+        wire.page = Math.min(context.page, 10000);
+    }
+    if (context.filters) {
+        const filters: NonNullable<WireContext['filters']> = {};
+        if (context.filters.rtoPolicy) {
+            filters.rto_policy = context.filters.rtoPolicy;
+        }
+        if (context.filters.acceleratedVesting) {
+            filters.accelerated_vesting = true;
+        }
+        if (Object.keys(filters).length > 0) {
+            wire.filters = filters;
+        }
+    }
+    if (context.preferenceRevision !== undefined) {
+        wire.preference_revision = context.preferenceRevision;
+    }
+    if (context.resultGeneration !== undefined) {
+        wire.result_generation = context.resultGeneration;
+    }
+    return wire;
 }

@@ -3802,3 +3802,60 @@ span.priority-chip-button { cursor: default; }
 @media (min-width: 768px) {
     #job-search-chat-title { font-size: 1rem; font-weight: 600; color: #f8f9fa; }
 }
+
+/* issue #484 assistant actions and RTO chip */
+.assistant-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: stretch;
+}
+.assistant-action {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    align-items: flex-start;
+}
+.assistant-action-btn,
+.assistant-action-save {
+    max-width: 100%;
+    white-space: normal;
+    text-align: left;
+}
+.assistant-action-btn[aria-disabled='true'] {
+    background-color: #334155;
+    color: #e2e8f0;
+    border-color: #64748b;
+    cursor: not-allowed;
+}
+.assistant-action-btn.is-done[aria-disabled='true'] {
+    background-color: #14532d;
+    color: #f0fdf4;
+    border-color: #86efac;
+    cursor: default;
+}
+.assistant-actions-status {
+    font-style: italic;
+    color: #e2e8f0;
+}
+.assistant-actions-status:empty {
+    display: none;
+}
+.assistant-action-note {
+    color: #e2e8f0;
+}
+.assistant-action-error {
+    color: #fecaca;
+}
+.assistant-action .priorities-review {
+    width: 100%;
+}
+.filter-chip[data-testid='filter-chip-rto'] {
+    border-style: solid;
+}
+@media (prefers-reduced-motion: reduce) {
+    .assistant-action-btn,
+    .assistant-action-save {
+        transition: none;
+    }
+}

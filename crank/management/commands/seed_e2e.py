@@ -89,6 +89,10 @@ TARGET_ORGS: list[tuple[str, float]] = [
     ),
 ]
 
+#: Orgs seeded as Remote (all others are Hybrid), so the assistant's "only
+#: remote" filter (issue #484) keeps exactly one of the four rows.
+REMOTE_ORG_NAMES = frozenset({"E2E Beta Labs"})
+
 ACTIVE_LISTING_URL = "https://www.usajobs.gov/Job/e2e-seed-active-1"
 
 #: The seeded listing's stable synthetic key. Reconciliation is keyed on
@@ -214,6 +218,11 @@ class Command(BaseCommand):
         )
         orgs: dict[str, Organization] = {}
         for name, score_value in TARGET_ORGS:
+            rto_policy = (
+                Organization.RTOPolicy.REMOTE
+                if name in REMOTE_ORG_NAMES
+                else Organization.RTOPolicy.HYBRID
+            )
             org, _ = Organization.objects.get_or_create(
                 name=name,
                 defaults={
@@ -222,7 +231,7 @@ class Command(BaseCommand):
                     "gives_ratings": False,
                     "public": True,
                     "funding_round": Organization.FundingRound.PUBLIC,
-                    "rto_policy": Organization.RTOPolicy.HYBRID,
+                    "rto_policy": rto_policy,
                 },
             )
             _sync_fields(
@@ -233,7 +242,7 @@ class Command(BaseCommand):
                     "gives_ratings": False,
                     "public": True,
                     "funding_round": Organization.FundingRound.PUBLIC,
-                    "rto_policy": Organization.RTOPolicy.HYBRID,
+                    "rto_policy": rto_policy,
                     "status": 1,
                 },
             )

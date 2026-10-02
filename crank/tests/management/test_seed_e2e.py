@@ -18,6 +18,7 @@ from crank.management.commands.seed_e2e import (
     FIXTURE_SOURCE_NAME,
     PRESET_ALGORITHM_NAME,
     RATING_SOURCE_ORG_NAME,
+    REMOTE_ORG_NAMES,
     TARGET_ORGS,
 )
 from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
@@ -122,6 +123,32 @@ class SeedE2ECommandTests(TestCase):
         ]
         return "\n".join(
             serializers.serialize("json", qs, ensure_ascii=False) for qs in querysets
+        )
+
+    def test_beta_is_the_only_remote_org_and_drift_is_repaired(self):
+        """Issue #484: "only remote" must keep exactly one of the four rows."""
+        call_command("seed_e2e", stdout=StringIO())
+        remote = Organization.RTOPolicy.REMOTE
+        self.assertEqual(REMOTE_ORG_NAMES, {"E2E Beta Labs"})
+        self.assertEqual(
+            set(
+                Organization.objects.filter(
+                    name__in=[name for name, _ in TARGET_ORGS], rto_policy=remote
+                ).values_list("name", flat=True)
+            ),
+            REMOTE_ORG_NAMES,
+        )
+        Organization.objects.filter(name="E2E Beta Labs").update(
+            rto_policy=Organization.RTOPolicy.IN_OFFICE
+        )
+        Organization.objects.filter(name="E2E Alpha Corp").update(rto_policy=remote)
+        call_command("seed_e2e", stdout=StringIO())
+        self.assertEqual(
+            Organization.objects.get(name="E2E Beta Labs").rto_policy, remote
+        )
+        self.assertEqual(
+            Organization.objects.get(name="E2E Alpha Corp").rto_policy,
+            Organization.RTOPolicy.HYBRID,
         )
 
     def test_seeds_one_accepted_rto_policy_claim_for_alpha(self):

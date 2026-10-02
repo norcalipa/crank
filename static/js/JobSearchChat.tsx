@@ -7,9 +7,11 @@ import {purgePrivateClientState} from './authIntent';
 import {preferencePathLabel, preferenceValueLabel} from './priorities/format';
 import {MATCH_CAP} from './priorities/api';
 import {patchFitsEditor} from './priorities/patch';
+import AssistantActions, {TurnActions, parseActions} from './chat/AssistantActions';
 import {ChangeList} from './priorities/ReviewChanges';
 import {prioritiesSurface} from './priorities/surface';
 import {
+    buildWireContext,
     describeWorkspaceContext,
     getWorkspaceSnapshot,
     setWorkspaceConversation,
@@ -124,6 +126,10 @@ interface SubmitResponse {
     // Additive (issue #466 review): present only when the turn produced a
     // read-only preference proposal through an orchestrator-backed provider.
     preference_proposal?: PreferenceProposal | null;
+    // Additive (issue #484): typed UI actions and the page-context echo, both
+    // absent for context-less requests, replays and older servers.
+    actions?: unknown;
+    context?: {revision?: number} | null;
 }
 
 /** Undo lifecycle for the preference-change notice (issue #466). */
@@ -353,6 +359,7 @@ const PRE_PERSISTENCE_ERROR_TYPES = new Set([
     'payload_too_large',
     'invalid_request',
     'not_found',
+    'invalid_context',
 ]);
 // Typed envelopes the server returns only AFTER the user turn is persisted;
 // for these the failed-turn UI ("your message is saved; retry") is honest.
@@ -949,6 +956,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const [input, setInput] = React.useState('');
     // "Answered about …" notes keyed by assistant message id (issue #479).
     const [staleNotes, setStaleNotes] = React.useState<Record<number, string>>({});
+    // Issue #484: typed actions per assistant message id. In memory only, so a
+    // reload never resurrects a suggestion for a view that no longer exists.
+    const [turnActions, setTurnActions] = React.useState<Record<number, TurnActions>>({});
     const [pending, setPending] = React.useState(false);
     const [loading, setLoading] = React.useState(true);
     const [initError, setInitErrorState] = React.useState<string | null>(null);
@@ -1495,6 +1505,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         lastSent.current = null;
         setMessages([]);
         setStaleNotes({});
+        setTurnActions({});
         setConversationId(null);
         conversationIdRef.current = null;
         setInput('');
@@ -1708,7 +1719,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         keepDraftRef.current = false;
         // Context this turn was sent under (issue #479): compared with the
         // live context when the reply lands.
-        const sentContextLabel = describeWorkspaceContext(getWorkspaceSnapshot().context);
+        const sentSnapshot = getWorkspaceSnapshot();
+        const sentContextLabel = describeWorkspaceContext(sentSnapshot.context);
+        const sentRevision = sentSnapshot.contextRevision;
+        const wireContext = buildWireContext(sentSnapshot);
         setPending(true);
         setError(null);
         setErrorType(null);
@@ -1783,7 +1797,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         try {
             const res = await csrfFetch(`/api/agent/conversations/${turnConversationId}/`, {
                 method: 'POST',
-                body: JSON.stringify({content, idempotency_key: key}),
+                body: JSON.stringify(wireContext
+                    ? {content, idempotency_key: key, context: wireContext}
+                    : {content, idempotency_key: key}),
                 signal: controller.signal,
             });
             // A reset/delete in another tab (or anything else that switched the
@@ -1918,12 +1934,32 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             // The reply is server history and is always appended; if the page
             // context moved on meanwhile it is labelled with the page the
             // question was asked from, without touching the context strip or
-            // the store. Page context is not sent to the model yet (#484), so
-            // the note must not claim the reply was about that entity.
-            if (sentContextLabel
-                && sentContextLabel !== describeWorkspaceContext(getWorkspaceSnapshot().context)) {
+            // the store. The server echoes the revision it answered; a reply
+            // from a server that does not (older deploy) falls back to the
+            // revision this turn was sent under.
+            const answeredRevision = typeof data.context?.revision === 'number'
+                ? data.context.revision
+                : sentRevision;
+            if (sentContextLabel && answeredRevision !== getWorkspaceSnapshot().contextRevision) {
                 const answered = sentContextLabel.replace(/^(About|Comparing) /, '');
                 setStaleNotes((prev) => ({...prev, [data.message.id]: `Asked while viewing ${answered}`}));
+            }
+            // Actions are only trusted alongside a context echo; they stay
+            // enabled for the revision the server answered (issue #484).
+            const actions = data.context ? parseActions(data.actions) : [];
+            if (actions.length > 0) {
+                const names: Record<number, string> = {};
+                for (const org of data.message.results?.organizations ?? []) {
+                    names[org.id] = org.name;
+                }
+                const sentContext = sentSnapshot.context;
+                if (sentContext?.organizationId !== undefined && sentContext.organizationName) {
+                    names[sentContext.organizationId] ??= sentContext.organizationName;
+                }
+                setTurnActions((prev) => ({
+                    ...prev,
+                    [data.message.id]: {actions, revision: answeredRevision, names},
+                }));
             }
             // Keep the turn in its ORIGINAL position and insert the reply
             // immediately after it: a retried turn must never reorder the
@@ -2502,6 +2538,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                                     )}
                                     {m.role === 'assistant' && m.results && (
                                         <ResultCards results={m.results} />
+                                    )}
+                                    {m.role === 'assistant' && turnActions[m.id] && (
+                                        <AssistantActions turn={turnActions[m.id]} />
                                     )}
                                     {m.role === 'assistant' && m.id === lastAssistantId && !hasResults(m.results) && availability && availability.state !== 'ok' && (
                                         <AvailabilityNotice availability={availability} />

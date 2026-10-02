@@ -17,6 +17,34 @@ export interface WorkspaceContext {
     comparisonIds?: number[];
     searchTerm?: string;
     page?: number;
+    // Issue #484: server-validated ids/enums only, sent on assistant turns.
+    algorithmId?: number;
+    filters?: WorkspaceFilters;
+    resultGeneration?: number;
+    preferenceRevision?: number;
+}
+
+export type RtoPolicyCode = 'R' | 'H' | 'O';
+export interface WorkspaceFilters {
+    rtoPolicy?: RtoPolicyCode;
+    acceleratedVesting?: true;
+}
+
+// Handler a mounted filter surface registers; returns true when it applied.
+export type FilterTargetHandler = (filters: WorkspaceFilters) => boolean;
+
+// Snake_case page context on the wire (POST /api/agent/conversations/<id>/).
+export interface WireContext {
+    revision: number;
+    surface?: WorkspaceContext['surface'];
+    organization_id?: number;
+    job_id?: number;
+    comparison_ids?: number[];
+    algorithm_id?: number;
+    page?: number;
+    filters?: {rto_policy?: RtoPolicyCode; accelerated_vesting?: true};
+    preference_revision?: number;
+    result_generation?: number;
 }
 
 export type AccountStatus = 'unknown' | 'anonymous' | 'authenticated';
