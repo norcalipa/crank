@@ -535,16 +535,37 @@ describe('JobSearchChat', () => {
             delete (window as unknown as {matchMedia?: unknown}).matchMedia;
         });
 
-        test('shows jump-to-latest and preserves position when the reader scrolls up', async () => {
+        test('scrolling up shows no pill until an unseen reply arrives; the pill then jumps to latest', async () => {
             await renderChat([assistantMessage(1, 'older'), assistantMessage(2, 'latest')]);
             const history = screen.getByLabelText('Message history');
+            let resolveReply: (value: unknown) => void = () => undefined;
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockReturnValueOnce(new Promise((resolve) => { resolveReply = resolve; }));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByTestId('pending-status');
             setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
             fireEvent.scroll(history);
-            expect(await screen.findByTestId('jump-to-latest')).toHaveTextContent('New messages');
+            expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
 
+            await act(async () => {
+                resolveReply(jsonResponse({message: assistantMessage(3, 'reply'), preferences_changed: false}, 201));
+            });
+            await screen.findByText('reply');
+            expect(await screen.findByTestId('jump-to-latest')).toHaveTextContent('New messages');
             scrollTo.mockClear();
             fireEvent.click(screen.getByTestId('jump-to-latest'));
             expect(scrollTo).toHaveBeenCalledWith({top: 1000, behavior: 'auto'});
+            expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+        });
+
+        test('the pill clears once the reader is within 64px of the bottom', async () => {
+            await renderChat([assistantMessage(1, 'ready')]);
+            const history = screen.getByLabelText('Message history');
+            setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
+            fireEvent.scroll(history);
+            setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 740, clientHeight: 200});
+            fireEvent.scroll(history);
             expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
         });
 
@@ -591,7 +612,7 @@ describe('JobSearchChat', () => {
             scrollTo.mockClear();
             fireEvent(window, new Event('resize'));
             expect(scrollTo).not.toHaveBeenCalled();
-            expect(screen.getByTestId('jump-to-latest')).toBeInTheDocument();
+            expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
         });
     });
 

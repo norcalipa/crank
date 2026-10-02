@@ -1149,6 +1149,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const nearBottomRef = React.useRef(true);
     // Own message just sent: jump (not smooth-scroll) so the scroll events of an animation cannot read as the reader leaving the bottom before the reply lands.
     const jumpOnSendRef = React.useRef(false);
+    const unseenRef = React.useRef(false);
     const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
     const [cardHeight, setCardHeight] = React.useState<number | null>(null);
     // rAF bookkeeping so resize/orientation/keyboard bursts coalesce into at most
@@ -1257,7 +1258,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     );
 
     const isNearBottom = (element: HTMLDivElement): boolean => (
-        element.scrollHeight - element.scrollTop - element.clientHeight <= 48
+        element.scrollHeight - element.scrollTop - element.clientHeight <= 64
     );
 
     const scrollToLatest = (behavior: ScrollBehavior = prefersReducedMotion() ? 'auto' : 'smooth') => {
@@ -1269,6 +1270,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             history.scrollTop = history.scrollHeight;
         }
         nearBottomRef.current = true;
+        unseenRef.current = false;
         setShowJumpToLatest(false);
     };
 
@@ -1279,7 +1281,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         const handleScroll = () => {
             const nearBottom = isNearBottom(history);
             nearBottomRef.current = nearBottom;
-            setShowJumpToLatest(!nearBottom);
+            if (nearBottom) unseenRef.current = false;
+            setShowJumpToLatest(!nearBottom && unseenRef.current);
         };
         history.addEventListener('scroll', handleScroll, {passive: true});
         return () => history.removeEventListener('scroll', handleScroll);
@@ -1296,7 +1299,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             return;
         }
         if (loading || !nearBottomRef.current) {
-            if (!nearBottomRef.current) setShowJumpToLatest(true);
+            if (!nearBottomRef.current) {
+                unseenRef.current = true;
+                setShowJumpToLatest(true);
+            }
             return;
         }
         const behavior = jumpOnSendRef.current ? 'auto' : undefined;
@@ -1312,7 +1318,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             if (!history) return;
             const nearBottom = isNearBottom(history);
             nearBottomRef.current = nearBottom;
-            setShowJumpToLatest(!nearBottom);
+            if (nearBottom) unseenRef.current = false;
+            setShowJumpToLatest(!nearBottom && unseenRef.current);
             if (nearBottom) scrollToLatest('auto');
         };
         window.addEventListener('resize', handleViewportResize);

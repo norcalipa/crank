@@ -160,20 +160,48 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
         controllers.current.forEach((controller) => controller.abort());
     }, []);
     const root = React.useRef<HTMLDivElement>(null);
-    const reviewing = Object.values(requirement).some((state) => state.status === 'review');
-    const failing = Object.values(requirement).some((state) => state.status === 'error');
-    // Scroll the transcript only (never the panel around it) so a card or
-    // message that appears below the fold is brought into view.
+    // Background check (propose is read-only) so "Save as a requirement" is
+    // only offered when it would change something.
+    const [saveable, setSaveable] = React.useState<Record<number, Proposal | 'already'>>({});
+    const prefetched = React.useRef(new Set<number>());
     React.useEffect(() => {
-        const target = reviewing ? 'assistant-action-review' : failing ? 'assistant-action-error' : null;
-        const el = target ? (root.current as HTMLElement).querySelector(`[data-testid="${target}"]`) : null;
-        const log = el?.closest('[role="log"]');
-        if (el && log) {
-            const gap = el.getBoundingClientRect().top - log.getBoundingClientRect().top;
-            const overflow = el.getBoundingClientRect().bottom - log.getBoundingClientRect().bottom;
-            log.scrollTop += reviewing ? gap : Math.max(0, overflow);
+        turn?.actions.forEach((action, index) => {
+            if (action.type !== 'propose_filters' || !applied[index] || prefetched.current.has(index)) {
+                return;
+            }
+            prefetched.current.add(index);
+            const controller = new AbortController();
+            controllers.current.add(controller);
+            proposePriorities(filtersToPatch(action), 'account', controller.signal)
+                .then((proposal) => setSaveable((prev) => ({
+                    ...prev, [index]: proposal.changes.length === 0 ? 'already' : proposal,
+                })))
+                .catch(() => undefined)
+                .finally(() => controllers.current.delete(controller));
+        });
+    }, [turn, applied]);
+    // After a user-driven state change, bring the bubble's bottom edge into the
+    // log without pushing a review card's heading above the log's top.
+    const mounted = React.useRef(false);
+    React.useLayoutEffect(() => {
+        if (!mounted.current) {
+            mounted.current = true;
+            return;
         }
-    }, [reviewing, failing]);
+        const host = root.current as HTMLElement;
+        const log = host.closest('[role="log"]');
+        if (!log) {
+            return;
+        }
+        const bubble = host.closest('.chat-bubble-assistant') ?? host;
+        const card = host.querySelector('[data-testid="assistant-action-review"]');
+        const logRect = log.getBoundingClientRect();
+        const overflow = bubble.getBoundingClientRect().bottom - logRect.bottom + 8;
+        const headroom = card ? Math.max(0, card.getBoundingClientRect().top - logRect.top) : Infinity;
+        if (overflow > 0) {
+            log.scrollTop += Math.min(overflow, headroom);
+        }
+    }, [applied, requirement, saveable]);
     if (!turn || turn.actions.length === 0) {
         return null;
     }
@@ -228,6 +256,15 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
         }
     };
 
+    const openReview = (index: number, action: AssistantAction & {type: 'propose_filters'}) => {
+        const cached = saveable[index];
+        if (cached && cached !== 'already') {
+            setReq(index, {status: 'review', proposal: cached, applying: false, error: null, stale: false});
+        } else {
+            void propose(index, action);
+        }
+    };
+
     const save = async (index: number, state: Extract<RequirementState, {status: 'review'}>) => {
         const controller = new AbortController();
         controllers.current.add(controller);
@@ -273,15 +310,24 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
                             {done && <i className="fa-solid fa-check me-1" aria-hidden="true"></i>}
                             {label}
                         </button>
-                        {action.type === 'propose_filters' && done && state.status === 'idle' && (
+                        {action.type === 'propose_filters' && done && state.status === 'idle' && saveable[index] === 'already' && (
+                            <div className="small assistant-action-note" role="status" data-testid="assistant-action-already">
+                                <i className="fa-solid fa-circle-check" aria-hidden="true"></i>
+                                <span>Already one of your requirements.</span>
+                            </div>
+                        )}
+                        {action.type === 'propose_filters' && done && state.status === 'idle' && saveable[index] !== 'already' && (
                             <button type="button" className="chat-btn chat-btn-secondary chat-focus assistant-action-save"
                                     data-testid="assistant-action-save"
-                                    onClick={() => void propose(index, action)}>
+                                    onClick={() => openReview(index, action)}>
                                 Save as a requirement
                             </button>
                         )}
                         {state.status === 'proposing' && (
-                            <div className="small assistant-action-note" role="status">Preparing the change for review…</div>
+                            <div className="small assistant-action-note" role="status">
+                                <span className="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                                <span>Preparing the change for review…</span>
+                            </div>
                         )}
                         {state.status === 'error' && (
                             <div className="small assistant-action-note assistant-action-error" role="alert" data-testid="assistant-action-error">
@@ -295,8 +341,8 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
                         )}
                         {action.type === 'propose_filters' && state.status === 'review' && state.proposal.changes.length === 0 && (
                             <div className="small assistant-action-note" role="status" data-testid="assistant-action-already">
-                                <i className="fa-solid fa-circle-check me-1" aria-hidden="true"></i>
-                                Already one of your requirements.
+                                <i className="fa-solid fa-circle-check" aria-hidden="true"></i>
+                                <span>Already one of your requirements.</span>
                             </div>
                         )}
                         {action.type === 'propose_filters' && state.status === 'review' && state.proposal.changes.length > 0 && (
@@ -306,7 +352,8 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
                                 pending={state.applying}
                                 error={state.error}
                                 stale={state.stale}
-                                heading="Save as a lasting requirement"
+                                heading="Save as a requirement?"
+                                applyLabel="Save"
                                 testId="assistant-action-review"
                                 onApply={() => void save(index, state)}
                                 onCancel={() => setReq(index, {status: 'idle'})}
@@ -315,16 +362,16 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
                         )}
                         {state.status === 'saved' && (
                             <div className="small assistant-action-note" role="status" data-testid="assistant-action-saved">
-                                <i className="fa-solid fa-circle-check me-1" aria-hidden="true"></i>
-                                Saved to your account.
+                                <i className="fa-solid fa-circle-check" aria-hidden="true"></i>
+                                <span>Saved to your account.</span>
                             </div>
                         )}
                     </div>
                 );
             })}
             <div className="assistant-actions-status small" role="status" data-testid="assistant-actions-stale">
-                {stale && anyPending && <i className="fa-solid fa-clock-rotate-left me-1" aria-hidden="true"></i>}
-                {stale && anyPending ? STALE_MESSAGE : ''}
+                {stale && anyPending && <i className="fa-solid fa-clock-rotate-left" aria-hidden="true"></i>}
+                {stale && anyPending ? <span>{STALE_MESSAGE}</span> : ''}
             </div>
         </div>
     );

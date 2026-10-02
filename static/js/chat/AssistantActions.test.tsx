@@ -40,6 +40,7 @@ beforeEach(() => {
     resetWorkspaceForTests();
     setWorkspaceContext({surface: 'rankings'});
     proposePriorities.mockReset();
+    proposePriorities.mockRejectedValue(new Error('offline'));
     applyProposal.mockReset();
     assign.mockReset();
     Object.defineProperty(window, 'location', {
@@ -263,7 +264,7 @@ describe('AssistantActions', () => {
             await act(async () => { resolve(proposal); });
             expect(await screen.findByTestId('assistant-action-review')).toBeInTheDocument();
             applyProposal.mockResolvedValue({revision: 5, changes: [], undo: null, scope: 'account'});
-            fireEvent.click(screen.getByRole('button', {name: 'Apply to account'}));
+            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
             expect(await screen.findByTestId('assistant-action-saved')).toHaveTextContent('Saved to your account.');
             expect(applyProposal).toHaveBeenCalledWith(proposal.token, expect.any(AbortSignal));
             expect(getWorkspaceSnapshot().prioritiesRevision).toBe(5);
@@ -276,7 +277,7 @@ describe('AssistantActions', () => {
             await screen.findByTestId('assistant-action-review');
             const before = getWorkspaceSnapshot().prioritiesRevision;
             applyProposal.mockResolvedValue({revision: null, changes: [], undo: null, scope: 'account'});
-            fireEvent.click(screen.getByRole('button', {name: 'Apply to account'}));
+            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
             await screen.findByTestId('assistant-action-saved');
             expect(getWorkspaceSnapshot().prioritiesRevision).toBe(before);
         });
@@ -310,20 +311,44 @@ describe('AssistantActions', () => {
             await applyFilter();
             const log = screen.getByTestId('assistant-actions').parentElement as HTMLElement;
             log.setAttribute('role', 'log');
-            const rect = (top: number, bottom: number) => () => ({top, bottom} as DOMRect);
+            const reviewOpen = () => screen.queryByTestId('assistant-action-review') !== null;
             const spy = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
-                if (this === log) return rect(100, 300)();
-                return this.getAttribute('data-testid') === 'assistant-action-review' ? rect(400, 700)() : rect(350, 380)();
+                const shift = log.scrollTop;
+                const box = (top: number, bottom: number) => ({top: top - shift, bottom: bottom - shift} as DOMRect);
+                if (this === log) return {top: 100, bottom: 300} as DOMRect;
+                if (this.getAttribute('data-testid') === 'assistant-action-review') return box(400, 700);
+                return box(350, reviewOpen() ? 700 : 380);
             });
             proposePriorities.mockRejectedValueOnce(new Error('network'));
             fireEvent.click(screen.getByTestId('assistant-action-save'));
             await screen.findByTestId('assistant-action-error');
-            expect(log.scrollTop).toBe(80);
+            expect(log.scrollTop).toBe(88);
             proposePriorities.mockResolvedValueOnce(proposal);
             fireEvent.click(screen.getByRole('button', {name: 'Try again'}));
             await screen.findByTestId('assistant-action-review');
-            expect(log.scrollTop).toBe(80 + 300);
+            expect(log.scrollTop).toBe(300);
             spy.mockRestore();
+        });
+
+        test('a prefetched proposal with no changes replaces the Save button with the already note', async () => {
+            registerFilterTarget(() => true);
+            proposePriorities.mockResolvedValueOnce({...proposal, changes: []});
+            render(<AssistantActions turn={turn([remote])} />);
+            fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+            expect(await screen.findByTestId('assistant-action-already')).toHaveTextContent('Already one of your requirements.');
+            expect(screen.queryByTestId('assistant-action-save')).not.toBeInTheDocument();
+        });
+
+        test('a prefetched proposal opens the review without another request', async () => {
+            registerFilterTarget(() => true);
+            proposePriorities.mockResolvedValueOnce(proposal);
+            render(<AssistantActions turn={turn([remote])} />);
+            fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+            await waitFor(() => expect(proposePriorities).toHaveBeenCalledTimes(1));
+            await act(async () => undefined);
+            fireEvent.click(screen.getByTestId('assistant-action-save'));
+            expect(screen.getByTestId('assistant-action-review')).toBeInTheDocument();
+            expect(proposePriorities).toHaveBeenCalledTimes(1);
         });
 
         test('a proposal with no changes says it is already a requirement', async () => {
@@ -340,11 +365,11 @@ describe('AssistantActions', () => {
             fireEvent.click(screen.getByTestId('assistant-action-save'));
             await screen.findByTestId('assistant-action-review');
             applyProposal.mockRejectedValueOnce(new Error('boom'));
-            fireEvent.click(screen.getByRole('button', {name: 'Apply to account'}));
+            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
             expect(await screen.findByTestId('priorities-review-error')).toHaveTextContent(prioritiesApi.GENERIC_ERROR_MESSAGE);
             const stale = new ApiFailure(409, 'preference_stale', 'Your priorities changed.', {}, 6);
             applyProposal.mockRejectedValueOnce(stale);
-            fireEvent.click(screen.getByRole('button', {name: 'Apply to account'}));
+            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
             const latest = await screen.findByRole('button', {name: 'Review latest'});
             proposePriorities.mockClear();
             proposePriorities.mockResolvedValueOnce(proposal);
@@ -366,7 +391,7 @@ describe('AssistantActions', () => {
                     s.addEventListener('abort', () => reject(new Error('aborted')));
                 });
             });
-            fireEvent.click(screen.getByRole('button', {name: 'Apply to account'}));
+            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
             unmount();
             await act(async () => { await Promise.resolve(); });
             expect(signal?.aborted).toBe(true);
