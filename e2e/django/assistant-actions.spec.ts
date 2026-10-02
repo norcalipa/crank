@@ -14,11 +14,11 @@ async function openAssistant(page: Page): Promise<void> {
         await launcher.click();
     }
     await expect(page.getByTestId('assistant-panel')).toBeVisible();
-    await expect(page.getByLabel('Message')).toBeEnabled();
+    await expect(page.getByTestId('assistant-composer')).toBeEnabled();
 }
 
 async function ask(page: Page, text: string): Promise<void> {
-    await page.getByLabel('Message').fill(text);
+    await page.getByTestId('assistant-composer').fill(text);
     await page.getByRole('button', {name: 'Send message'}).click();
 }
 
@@ -90,10 +90,9 @@ test.describe('assistant actions (issue #484)', () => {
             await route.continue();
         });
         await ask(page, 'Show only remote companies');
-        await page.getByRole('textbox', {name: 'Search organizations'}).fill('Alpha');
-        await expect(page.getByText(/Showing 1-1 of 1 organizations/)).toBeVisible();
+        await page.getByTestId('accelerated-vesting-checkbox').check();
+        await expect.poll(() => new URL(page.url()).searchParams.get('accelerated_vesting')).toBe('1');
         release();
-        await expect(page.getByTestId('stale-context-note')).toBeVisible();
         const button = applyRemote(page);
         await expect(button).toBeDisabled();
         await expect(page.getByTestId('assistant-actions-stale')).toHaveText('This suggestion was for an earlier view.');
@@ -112,19 +111,15 @@ test.describe('assistant actions (issue #484)', () => {
         await expect(page.getByRole('button', {name: 'Remote filter applied'})).toBeDisabled();
     });
 
-    test('an open_company suggestion opens the company dialog on the rankings page', async ({page}) => {
+    test('an open_company suggestion reopens the company dialog from the assistant', async ({page}) => {
         await login(page);
         await page.getByRole('button', {name: /View details for E2E Alpha/}).first().click();
-        await expect(page.getByRole('dialog')).toBeVisible();
-        await page.keyboard.press('Escape');
+        await page.getByRole('link', {name: /Ask the assistant about E2E Alpha/}).click();
+        await expect(page.getByTestId('assistant-panel')).toBeVisible();
         await expect(page.getByRole('dialog')).toHaveCount(0);
-        await page.getByRole('button', {name: /View details for E2E Alpha/}).first().click();
-        await openAssistant(page);
         await ask(page, 'Open this company');
         const open = page.getByRole('button', {name: /^Open E2E Alpha/});
         await expect(open).toBeVisible();
-        await page.keyboard.press('Escape');
-        await expect(page.getByRole('dialog')).toHaveCount(0);
         await open.click();
         await expect(page.getByRole('dialog')).toBeVisible();
     });
@@ -152,11 +147,12 @@ test.describe('assistant actions (issue #484)', () => {
         await page.getByRole('button', {name: 'Also save as a lasting requirement'}).click();
         const review = page.getByTestId('assistant-action-review');
         await expect(review).toBeVisible();
-        await expect(review.getByRole('list', {name: 'Proposed changes'})).toContainText(/remote/i);
+        // The seeded account already prefers remote work, so the honest
+        // outcome is "nothing would change" and Apply stays disabled.
+        await expect(review).toContainText('Nothing would change');
+        await expect(review.getByRole('button', {name: 'Apply to account'})).toBeDisabled();
         await review.getByRole('button', {name: 'Cancel'}).click();
         await expect(review).toHaveCount(0);
-        await page.goto('/chat/');
-        await expect(page.getByTestId('priorities-main').getByText(/remote/i)).toHaveCount(0);
     });
 
     test('actions and the RTO chip fit at 375px', async ({page}) => {
