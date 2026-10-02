@@ -93,6 +93,7 @@ def agent_preference_propose(request):
                 "scope": scope,
                 "base_revision": proposal["base_revision"],
                 "origin": "direct",
+                "owner": pref_services.token_owner(request.user),
             },
         },
         headers={**_NO_STORE, "X-Request-ID": request_id},

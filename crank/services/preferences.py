@@ -26,12 +26,15 @@ Design rules from the issue:
 * Preference contents are never written to logs; audit rows store metadata only.
 """
 import copy
+import hmac
 import logging
+import math
 from datetime import timezone as _dt_tz
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+from django.utils.crypto import salted_hmac
 from django.utils.module_loading import import_string
 
 logger = logging.getLogger(__name__)
@@ -282,7 +285,12 @@ def validate_value(field, leaf_type, value):
             raise InvalidValueError(
                 f"Field {field!r} must be a number"
             )
-        return float(value)
+        number = float(value)
+        if not math.isfinite(number):
+            raise InvalidValueError(f"Field {field!r} must be a finite number")
+        if field == "compensation.equity_minimum_percent" and not 0 <= number <= 100:
+            raise InvalidValueError(f"Field {field!r} must be within 0-100")
+        return number
     if leaf_type == "str":
         # "notes" is free-form (up to MAX_NOTES_LENGTH and may be empty);
         # other string fields are capped at MAX_SCALAR_LENGTH (M1).
@@ -325,7 +333,9 @@ def validate_value(field, leaf_type, value):
         out = {}
         for key, weight in value.items():
             _validate_str(key, field)
-            if field == "importance" and key not in CRITERION_SUPPORT:
+            if field == "importance" and (
+                key not in CRITERION_SUPPORT or key == "importance"
+            ):
                 raise InvalidValueError(
                     f"Unknown criterion key {key!r} for {field!r}"
                 )
@@ -334,7 +344,7 @@ def validate_value(field, leaf_type, value):
                     f"Priority {key!r} must be a number"
                 )
             weight = float(weight)
-            if weight < MIN_PRIORITY or weight > MAX_PRIORITY:
+            if not math.isfinite(weight) or weight < MIN_PRIORITY or weight > MAX_PRIORITY:
                 raise InvalidValueError(
                     f"Priority {key!r} must be within {MIN_PRIORITY}-{MAX_PRIORITY}"
                 )
@@ -986,7 +996,18 @@ def diff_patch(document, patch):
     return _diff_changes(base, new_doc, patch), change_count
 
 
-def build_undo_token(expected_revision, prior_document):
+def token_owner(user):
+    """Return the opaque owner stamp that binds client-held tokens to ``user``."""
+    return salted_hmac("crank.pref-token", str(user.pk)).hexdigest()[:32]
+
+
+def token_owner_matches(user, token):
+    """True when ``token`` carries the stamp issued for ``user``."""
+    owner = token.get("owner") if isinstance(token, dict) else None
+    return isinstance(owner, str) and hmac.compare_digest(owner, token_owner(user))
+
+
+def build_undo_token(expected_revision, prior_document, user=None):
     """Build an opaque undo token capturing the full pre-apply document.
 
     The token carries the stored document exactly as it was before the apply
@@ -1002,10 +1023,13 @@ def build_undo_token(expected_revision, prior_document):
     """
     if prior_document is None:
         return None
-    return {
+    token = {
         "expected_revision": expected_revision,
         "document": copy.deepcopy(prior_document),
     }
+    if user is not None:
+        token["owner"] = token_owner(user)
+    return token
 
 
 def propose_patch_for_user(user, patch, *, scope="account"):
@@ -1640,7 +1664,7 @@ def apply_patch_to_user(user, patch, expected_modified=None, *, expected_revisio
             # The undo token captures the full pre-apply stored document so
             # the restore is byte-identical for every supported shape
             # (issue #466 review), not an inverse patch rebuilt from the diff.
-            undo_token = build_undo_token(new_revision, pref.preferences)
+            undo_token = build_undo_token(new_revision, pref.preferences, user)
             pref.preferences = new_doc
             pref.preferences_markdown = to_markdown(new_doc)
             pref.revision = new_revision
@@ -1723,7 +1747,7 @@ def reset(user, expected_modified=None, *, expected_revision=None):
             pref.save(update_fields=[
                 "preferences", "preferences_markdown", "revision", "modified",
             ])
-            undo_token = build_undo_token(pref.revision, prior_document)
+            undo_token = build_undo_token(pref.revision, prior_document, user)
             _audit(user, UserPreferenceAudit.Action.RESET)
             _schedule_recompute("{}:{}".format(user.pk, pref.revision))
         result = _serialize(pref)

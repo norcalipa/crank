@@ -153,6 +153,7 @@ class TestPropose:
         assert body["token"] == {
             "patch": EDIT_PATCH, "scope": "account",
             "base_revision": before[0], "origin": "direct",
+            "owner": prefs.token_owner(alice),
         }
         assert self.snapshot(alice) == before
 
@@ -345,12 +346,51 @@ class TestApplyUndoIdempotencyAndConcurrency:
 
     def test_cross_user_token_cannot_touch_other_account(self, alice, bob, client_a):
         seed(alice)
+        seed(bob)
         token = post(client_a, "agent-preference-propose", {"patch": EDIT_PATCH}).json()["token"]
         client_b = Client()
         client_b.force_login(bob)
+        before = prefs.read(bob)
+        assert UserPreference.objects.get(user=bob).revision == UserPreference.objects.get(user=alice).revision
         response = post(client_b, "agent-preference-apply", {"decision": "apply", "proposal": token})
-        assert response.status_code == 409
+        assert response.status_code == 403
+        assert prefs.read(bob) == before
         assert prefs.read(alice)["preferences"]["work_location"]["modes"] == ["remote"]
+
+    def test_cross_user_undo_token_rejected_at_equal_revisions(self, alice, bob, client_a):
+        seed(alice)
+        seed(bob)
+        reset = post(client_a, "agent-preference-reset", {"expected_revision": UserPreference.objects.get(user=alice).revision}).json()
+        client_b = Client()
+        client_b.force_login(bob)
+        post(client_b, "agent-preference-propose", {"patch": EDIT_PATCH})
+        prefs.apply_patch_to_user(bob, {"set": {"notes": "bob edit"}})
+        assert UserPreference.objects.get(user=bob).revision == reset["undo"]["expected_revision"]
+        before = prefs.read(bob)
+        response = post(client_b, "agent-preference-undo", {"undo": reset["undo"]})
+        assert response.status_code == 403
+        assert prefs.read(bob) == before
+
+    def test_token_without_owner_is_rejected(self, alice, client_a):
+        seed(alice)
+        token = post(client_a, "agent-preference-propose", {"patch": EDIT_PATCH}).json()["token"]
+        del token["owner"]
+        response = post(client_a, "agent-preference-apply", {"decision": "apply", "proposal": token})
+        assert response.status_code == 403
+        assert post(client_a, "agent-preference-undo", {"undo": {"expected_revision": 1, "document": {}}}).status_code == 403
+
+    @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity", "1e999", "-5", "250"])
+    def test_non_finite_and_out_of_range_floats_are_400(self, alice, client_a, literal):
+        seed(alice)
+        raw = '{"patch": {"set": {"compensation.equity_minimum_percent": %s}}}' % literal
+        for name in ("agent-preference-propose", "agent-preference-apply"):
+            body = raw if name == "agent-preference-propose" else (
+                '{"decision": "apply", "proposal": {"scope": "account", "base_revision": 1, "owner": "%s", '
+                '"patch": {"set": {"compensation.equity_minimum_percent": %s}}}}' % (prefs.token_owner(alice), literal)
+            )
+            response = client_a.post(reverse(name), data=body, content_type="application/json")
+            assert response.status_code == 400, name
+            json.loads(response.content)
 
 
 class TestChatAndEditorPathsYieldIdenticalDocuments:
@@ -407,9 +447,12 @@ class TestChatAndEditorPathsYieldIdenticalDocuments:
 
         chat_client = Client()
         chat_client.force_login(chat_user)
-        for client, proposal in ((chat_client, chat_proposal), (editor, editor_proposal)):
+        for client, proposal, user in (
+            (chat_client, chat_proposal, chat_user), (editor, editor_proposal, edit_user),
+        ):
             response = post(client, "agent-preference-apply", {
-                "decision": "apply", "proposal": proposal["token"],
+                "decision": "apply",
+                "proposal": {**proposal["token"], "owner": prefs.token_owner(user)},
             })
             assert response.status_code == 200
 

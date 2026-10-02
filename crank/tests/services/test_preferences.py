@@ -236,6 +236,10 @@ class TestUnsupportedCriteria:
         result = prefs.validate_value("importance", "float_map", {"priorities": 1.0})
         assert result == {"priorities": 1.0}
 
+    def test_importance_rejects_its_own_key(self):
+        with pytest.raises(prefs.InvalidValueError):
+            prefs.validate_value("importance", "float_map", {"importance": 1.0})
+
     def test_pre_migration_document_missing_v3_keys_has_no_unsupported_criteria(self):
         """A stored v2 document (pre-0035) lacks every v3 key outright, not
         just at its default value. ``unsupported_criteria`` must tolerate the
@@ -1463,8 +1467,29 @@ class TestUndo:
         assert result["undo"] == {
             "expected_revision": 1,
             "document": prefs.default_preferences(),
+            "owner": prefs.token_owner(user),
         }
         assert result["change_id"] == f"{user.pk}:1"
+
+    def test_owner_stamp_is_per_user_and_checked(self, user, django_user_model):
+        other = django_user_model.objects.create_user("stamp-other", password="pw")
+        assert prefs.token_owner(user) != prefs.token_owner(other)
+        assert prefs.token_owner_matches(user, {"owner": prefs.token_owner(user)})
+        assert not prefs.token_owner_matches(other, {"owner": prefs.token_owner(user)})
+        assert not prefs.token_owner_matches(user, {"owner": 5})
+        assert not prefs.token_owner_matches(user, {})
+        assert not prefs.token_owner_matches(user, None)
+
+    def test_validate_value_rejects_non_finite_and_out_of_range_floats(self):
+        for bad in (float("nan"), float("inf"), float("-inf"), 1e999):
+            with pytest.raises(prefs.InvalidValueError):
+                prefs.validate_value("compensation.equity_minimum_percent", "float", bad)
+        for bad in (-5, 250):
+            with pytest.raises(prefs.InvalidValueError):
+                prefs.validate_value("compensation.equity_minimum_percent", "float", bad)
+        assert prefs.validate_value("compensation.equity_minimum_percent", "float", 12) == 12.0
+        with pytest.raises(prefs.InvalidValueError):
+            prefs.validate_value("priorities", "float_map", {"salary": float("nan")})
 
     def test_undo_restores_document_byte_for_byte(self, user):
         prefs.apply_patch_to_user(user, {"set": {"notes": "seed", "culture": ["x"]}})
