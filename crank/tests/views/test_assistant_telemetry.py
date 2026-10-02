@@ -162,6 +162,33 @@ class AssistantTurnEventTests(_Base):
         self.assertGreaterEqual(seconds, 11 * 60)
         self.assertLess(seconds, 13 * 60)
 
+    def _failed_then_retried(self, record, backdate):
+        from crank.models import JobSearchMessage
+
+        conv = self.start()
+        key = str(uuid.uuid4())
+        with patch.object(JobSearchService, "run_turn", side_effect=ServiceTimeout("x")):
+            self.assertEqual(self.submit(conv, key).status_code, 504)
+        JobSearchMessage.objects.filter(conversation_id=conv, role="user").update(
+            created=timezone.now() - backdate
+        )
+        with self.run_with(_reply(results=_results())):
+            self.assertEqual(self.submit(conv, key).status_code, 201)
+        return _events(record, "assistant_first_result")
+
+    @patch(RECORD)
+    def test_retry_after_idle_gap_anchors_at_retry_time(self, record):
+        first = self._failed_then_retried(record, timedelta(hours=3))
+        self.assertEqual(len(first), 1)
+        self.assertLess(first[0]["seconds_to_first_result"], 60)
+
+    @patch(RECORD)
+    def test_retry_within_threshold_keeps_original_anchor(self, record):
+        first = self._failed_then_retried(record, timedelta(minutes=10))
+        self.assertEqual(len(first), 1)
+        self.assertGreaterEqual(first[0]["seconds_to_first_result"], 10 * 60)
+        self.assertLess(first[0]["seconds_to_first_result"], 11 * 60)
+
     @patch(RECORD)
     def test_first_result_on_second_turn_counts_turns(self, record):
         conv = self.start()

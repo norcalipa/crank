@@ -1037,6 +1037,11 @@ def agent_conversation_detail(request, conversation_id):
     # reply with no result-bearing predecessor from before this request
     # emits (concurrent same-conversation turns are not predecessors).
     now = timezone.now()
+    # A retry reuses the original user row; after an idle gap the clock
+    # restarts at this request rather than counting the idle time.
+    timer_anchor = user_message.created
+    if turn_started_at - timer_anchor > FIRST_RESULT_SESSION_GAP:
+        timer_anchor = turn_started_at
     if (
         has_results
         and conversation.first_result_at is None
@@ -1054,8 +1059,7 @@ def agent_conversation_detail(request, conversation_id):
                     0,
                     int(
                         (
-                            now
-                            - _session_start(conversation, user_message.created)
+                            now - _session_start(conversation, timer_anchor)
                         ).total_seconds()
                     ),
                 ),

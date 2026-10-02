@@ -393,79 +393,112 @@ class RecordEventRegistryTests(TestCase):
     dynamic site fails here until someone audits it, and a stale entry fails too.
     """
 
+    # helper name -> (positional enum keys by index, keyword -> enum key)
     HELPERS = {
-        "_turn_event": {"phase": 0},
-        "_turn_failed": {"reason_code": 0},
-        "_turn_rejected": {"reason_code": 0},
+        "_turn_event": (
+            ("phase",),
+            {"phase": "phase", "reason_code": "reason_code",
+             "failure_stage": "failure_stage", "latency_bucket": "latency_bucket"},
+        ),
+        "_turn_failed": (("reason_code",), {"reason_code": "reason_code"}),
+        "_turn_rejected": (("reason_code",), {"reason_code": "reason_code"}),
+        "_preference_decision_event": (
+            (),
+            {"decision": "decision", "scope": "scope", "ok_status": "status", "origin": "origin"},
+        ),
     }
-    HELPER_KWARGS = {"_preference_decision_event": {"decision", "scope", "ok_status"}}
-    # (file, enclosing function, key or <event name>/<payload>) -> where the
-    # value comes from and what pins it to the registry. A new dynamic value in
-    # a listed file but a different function, key or call shape fails the audit.
+    # (file, enclosing function, key or <event name>/<payload>) -> (call-site
+    # count, where the value comes from and what pins it to the registry). A new
+    # dynamic value in a different function, key or call shape, or an extra call
+    # site on a listed entry, fails the audit.
     AUDITED_DYNAMIC = {
-        ("admin.py", "_state_action", "action"): "state-action literals; test_monitoring_vendor_boundary",
-        ("admin.py", "_toggle", "action"): "enable/disable literals; vendor-boundary test",
-        ("admin.py", "_toggle", "capability"): "CapabilitySwitch.key, registry holds ALLOWED_CAPABILITY_KEYS",
-        ("admin_dashboard.py", "_acquire_pipeline_slot", "action"): "'Queue'.lower(); test_monitoring_vendor_boundary",
-        ("admin_dashboard.py", "_acquire_pipeline_slot", "reason_code"): "skip_reason literals, registered; vendor-boundary test",
-        ("admin_dashboard.py", "_acquire_pipeline_slot", "run_type"): "AgentRun.RunType member",
-        ("admin_dashboard.py", "retry_failed_view", "reason_code"): "skip_reason literals, registered; vendor-boundary test",
-        ("admin_dashboard.py", "retry_failed_view", "run_type"): "AgentRun.RunType member",
-        ("agent_runs.py", "claim_run", "run_type"): "AgentRun.RunType value",
-        ("agent_runs.py", "finalize_failure", "reason_code"): "failure_reason(), registered",
-        ("agent_runs.py", "finalize_failure", "run_type"): "AgentRun.RunType value",
-        ("agent_runs.py", "finalize_failure", "status"): "AgentRun.Status value / literal map",
-        ("agent_runs.py", "record_agent_event", "<payload>"): "payload built from run fields; enum keys sanitized by event_attributes",
-        ("agent_runs.py", "record_skipped", "reason_code"): "record_skipped reasons, registered",
-        ("agent_runs.py", "record_skipped", "run_type"): "AgentRun.RunType value",
-        ("assistant_status.py", "assistant_status", "state"): "assistant_status state constants",
-        ("crawl_healthcheck.py", "_emit_pipeline_health", "<payload>"): "pipeline_health gauge dict; EVENT_SCHEMAS allowlist",
-        ("crawl_healthcheck.py", "handle", "<payload>"): "healthcheck summary dict; sanitized by event_attributes",
-        ("crawl_healthcheck.py", "handle", "reason_code"): "failure_reason()",
-        ("crawl_runs.py", "trigger_crawl", "<event name>"): "IfExp over crawl_run_* names, each registered (test_crawl_runs)",
-        ("crawl_scheduler.py", "plan_crawls", "<payload>"): "planning counts dict; sanitized by event_attributes",
-        ("job_ingest.py", "ingest_job_source", "reason_code"): "SKIP_* constants",
-        ("job_matches.py", "job_match_status", "state"): "empty_state constants",
-        ("job_pipeline.py", "run_job_pipeline", "<payload>"): "stage summary dict; sanitized by event_attributes",
-        ("job_pipeline.py", "run_job_pipeline", "reason_code"): "failure_reason() / literals",
-        ("job_search.py", "_preference_decision_event", "decision"): "helper parameter; callers checked as literals",
-        ("job_search.py", "_preference_decision_event", "origin"): "_token_origin() allowlist; test_assistant_telemetry origin tests",
-        ("job_search.py", "_preference_decision_event", "scope"): "helper parameter; callers checked as literals",
-        ("job_search.py", "_preference_decision_event", "status"): "derived from HTTP status: ok_status literals or stale/invalid/failed",
-        ("job_search.py", "_turn_event", "<payload>"): "phase/attempt payload; phase resolved via HELPERS",
-        ("job_search.py", "agent_preference_apply", "decision"): "meta['decision'] is apply or dismiss; apply tests",
-        ("job_search.py", "agent_preference_apply", "scope"): "meta['scope'] is account or search; apply tests",
-        ("publication_sweep.py", "handle", "<payload>"): "sweep summary dict; EVENT_SCHEMAS allowlist",
-        ("publication_sweep.py", "handle", "reason_code"): "failure_reason()",
-        ("recompute_matches.py", "run_payload", "<payload>"): "matching_batch counters dict; sanitized by event_attributes",
-        ("score_gathering.py", "gather_scores", "reason_code"): "failure_reason()",
-        ("service.py", "_invoke_gateway", "reason_code"): "failure_reason() / FailureCode",
-        ("service.py", "run", "availability_state"): "availability dict state, registered",
-        ("service.py", "run", "latency_bucket"): "monitoring.latency_bucket()",
-        ("service.py", "run", "reason_code"): "failure_reason() / FailureCode",
+        ("admin.py", "_state_action", "action"): (1, "state-action literals; test_monitoring_vendor_boundary"),
+        ("admin.py", "_toggle", "capability"): (1, "CapabilitySwitch.key, registry holds ALLOWED_CAPABILITY_KEYS"),
+        ("admin_dashboard.py", "_acquire_pipeline_slot", "action"): (1, "'Queue'.lower(); test_monitoring_vendor_boundary"),
+        ("admin_dashboard.py", "_acquire_pipeline_slot", "reason_code"): (1, "skip_reason literals, registered; vendor-boundary test"),
+        ("admin_dashboard.py", "_acquire_pipeline_slot", "run_type"): (1, "AgentRun.RunType member"),
+        ("admin_dashboard.py", "retry_failed_view", "reason_code"): (1, "skip_reason literals, registered; vendor-boundary test"),
+        ("admin_dashboard.py", "retry_failed_view", "run_type"): (1, "AgentRun.RunType member"),
+        ("agent_runs.py", "claim_run", "run_type"): (1, "AgentRun.RunType value"),
+        ("agent_runs.py", "finalize_failure", "reason_code"): (1, "failure_reason(), registered"),
+        ("agent_runs.py", "finalize_failure", "run_type"): (1, "AgentRun.RunType value"),
+        ("agent_runs.py", "finalize_failure", "status"): (1, "AgentRun.Status value / literal map"),
+        ("agent_runs.py", "record_agent_event", "<payload>"): (1, "payload built from run fields; enum keys sanitized by event_attributes"),
+        ("agent_runs.py", "record_skipped", "reason_code"): (1, "record_skipped reasons, registered"),
+        ("agent_runs.py", "record_skipped", "run_type"): (1, "AgentRun.RunType value"),
+        ("assistant_status.py", "assistant_status", "state"): (1, "assistant_status state constants"),
+        ("crawl_healthcheck.py", "_emit_pipeline_health", "<payload>"): (1, "pipeline_health gauge dict; EVENT_SCHEMAS allowlist"),
+        ("crawl_healthcheck.py", "handle", "<payload>"): (1, "healthcheck summary dict; sanitized by event_attributes"),
+        ("crawl_healthcheck.py", "handle", "reason_code"): (1, "failure_reason()"),
+        ("crawl_scheduler.py", "plan_crawls", "<payload>"): (2, "planning counts dict; sanitized by event_attributes"),
+        ("job_ingest.py", "ingest_job_source", "reason_code"): (1, "SKIP_* constants"),
+        ("job_matches.py", "job_match_status", "state"): (1, "empty_state constants"),
+        ("job_pipeline.py", "run_job_pipeline", "<payload>"): (1, "stage summary dict; sanitized by event_attributes"),
+        ("job_pipeline.py", "run_job_pipeline", "reason_code"): (2, "failure_reason() / literals"),
+        ("job_search.py", "_preference_decision_event", "decision"): (1, "helper parameter; callers checked as literals"),
+        ("job_search.py", "_preference_decision_event", "origin"): (1, "_token_origin() allowlist; test_assistant_telemetry origin tests"),
+        ("job_search.py", "_preference_decision_event", "scope"): (1, "helper parameter; callers checked as literals"),
+        ("job_search.py", "_preference_decision_event", "status"): (1, "derived from HTTP status: ok_status literals or stale/invalid/failed"),
+        ("job_search.py", "_turn_event", "<payload>"): (1, "phase/attempt payload; phase resolved via HELPERS"),
+        ("job_search.py", "_turn_event", "phase"): (1, "helper parameter; callers checked as literals"),
+        ("job_search.py", "_turn_failed", "failure_stage"): (1, "failure_stage_for() output; test_failure_stage_for_table"),
+        ("job_search.py", "_turn_failed", "reason_code"): (1, "helper parameter; callers checked as literals"),
+        ("job_search.py", "_turn_interrupted", "failure_stage"): (1, "failure_stage_for() output; test_failure_stage_for_table"),
+        ("job_search.py", "_turn_rejected", "failure_stage"): (1, "failure_stage_for() output; test_failure_stage_for_table"),
+        ("job_search.py", "_turn_rejected", "reason_code"): (1, "helper parameter; callers checked as literals"),
+        ("job_search.py", "agent_conversation_detail", "latency_bucket"): (1, "monitoring.latency_bucket()"),
+        ("job_search.py", "agent_preference_apply", "decision"): (1, "meta['decision'] is apply or dismiss; apply tests"),
+        ("job_search.py", "agent_preference_apply", "origin"): (1, "_token_origin() allowlist; test_assistant_telemetry origin tests"),
+        ("job_search.py", "agent_preference_apply", "scope"): (1, "meta['scope'] is account or search; apply tests"),
+        ("job_search.py", "agent_preference_undo", "origin"): (1, "_token_origin() allowlist; test_assistant_telemetry origin tests"),
+        ("publication_sweep.py", "handle", "<payload>"): (1, "sweep summary dict; EVENT_SCHEMAS allowlist"),
+        ("publication_sweep.py", "handle", "reason_code"): (1, "failure_reason()"),
+        ("recompute_matches.py", "run_payload", "<payload>"): (1, "matching_batch counters dict; sanitized by event_attributes"),
+        ("score_gathering.py", "gather_scores", "reason_code"): (1, "failure_reason()"),
+        ("service.py", "_invoke_gateway", "reason_code"): (1, "failure_reason() / FailureCode"),
+        ("service.py", "run", "availability_state"): (1, "availability dict state, registered"),
+        ("service.py", "run", "latency_bucket"): (3, "monitoring.latency_bucket()"),
+        ("service.py", "run", "reason_code"): (1, "failure_reason() / FailureCode"),
     }
 
     @staticmethod
-    def _resolve(node):
+    def _resolve(node, fn=None):
+        """Literal string values ``node`` can take, or ``None`` if unresolvable.
+
+        A bare name resolves through every assignment to it inside ``fn``.
+        """
         import ast
 
+        resolve = RecordEventRegistryTests._resolve
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return {node.value}
         if isinstance(node, ast.IfExp):
-            body, orelse = (RecordEventRegistryTests._resolve(n) for n in (node.body, node.orelse))
+            body, orelse = resolve(node.body, fn), resolve(node.orelse, fn)
             return body | orelse if body is not None and orelse is not None else None
+        if isinstance(node, ast.Name) and fn is not None:
+            values, found = set(), False
+            for stmt in ast.walk(fn):
+                if isinstance(stmt, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == node.id for t in stmt.targets
+                ):
+                    found = True
+                    resolved = resolve(stmt.value, fn)
+                    if resolved is None:
+                        return None
+                    values |= resolved
+            return values if found else None
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "lower"
             and not node.args
         ):
-            inner = RecordEventRegistryTests._resolve(node.func.value)
+            inner = resolve(node.func.value, fn)
             return {v.lower() for v in inner} if inner is not None else None
         return None
 
     def _walk(self):
-        """Yield ``(file name, enclosing function, call node)`` for every call."""
+        """Yield ``(file name, enclosing function name, call node, function node)``."""
         import ast
         import pathlib
 
@@ -478,63 +511,79 @@ class RecordEventRegistryTests(TestCase):
             for fn in ast.walk(tree):
                 if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     for child in ast.walk(fn):
-                        owner[child] = fn.name
+                        owner[child] = fn
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call):
-                    yield path.name, owner.get(node, "<module>"), node
+                    fn = owner.get(node)
+                    yield path.name, fn.name if fn else "<module>", node, fn
+
+    @classmethod
+    def _dict_pairs(cls, node):
+        """``(constant-key pairs, dynamic)`` for a dict literal, following
+        ``**`` spreads of literal dicts (and ``{...} if c else {}`` forms)."""
+        import ast
+
+        if isinstance(node, ast.IfExp):
+            body, body_dyn = cls._dict_pairs(node.body)
+            orelse, orelse_dyn = cls._dict_pairs(node.orelse)
+            return body + orelse, body_dyn or orelse_dyn
+        if not isinstance(node, ast.Dict):
+            return [], True
+        pairs, dynamic = [], False
+        for key, value in zip(node.keys, node.values):
+            if key is None:
+                sub, sub_dyn = cls._dict_pairs(value)
+                pairs += sub
+                dynamic = dynamic or sub_dyn
+            elif isinstance(key, ast.Constant):
+                pairs.append((key.value, value))
+            else:
+                dynamic = True
+        return pairs, dynamic
 
     def _scan(self):
         """Classify every audited call.
 
         Returns ``(checked, names, dynamic)``: ``checked`` is a list of
         ``(site, key, literal)`` enum literals, ``names`` the literal event
-        names, and ``dynamic`` the set of ``(file, function, what)`` sites
-        whose event name, payload or enum value cannot be resolved statically.
+        names, and ``dynamic`` a ``Counter`` of ``(file, function, what)``
+        sites whose event name, payload or enum value cannot be resolved
+        statically (one count per call site).
         """
         import ast
+        from collections import Counter
 
-        checked, names, dynamic = [], [], set()
-        for fname, func, node in self._walk():
+        checked, names, dynamic = [], [], Counter()
+        for fname, func, node, fn in self._walk():
             name = getattr(node.func, "attr", getattr(node.func, "id", ""))
+            kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
             pairs = []
-            if name == "record_event" and node.args:
-                event = self._resolve(node.args[0])
+            if name == "record_event":
+                event = node.args[0] if node.args else kwargs.get("event_name")
                 if event is None:
-                    dynamic.add((fname, func, "<event name>"))
+                    if "event_kind" not in kwargs:  # publication.record_event is unrelated
+                        dynamic[(fname, func, "<call shape>")] += 1
+                    continue
+                payload = node.args[1] if len(node.args) > 1 else kwargs.get("attributes")
+                resolved = self._resolve(event, fn)
+                if resolved is None:
+                    dynamic[(fname, func, "<event name>")] += 1
                 else:
-                    names.extend((f"{fname}:{node.lineno}", n) for n in event)
-                payload = node.args[1] if len(node.args) > 1 else None
-                if isinstance(payload, ast.Dict) and None not in payload.keys:
-                    pairs = [
-                        (k.value, v)
-                        for k, v in zip(payload.keys, payload.values)
-                        if isinstance(k, ast.Constant)
-                    ]
-                    dynamic.update(
-                        (fname, func, "<payload key>")
-                        for k in payload.keys
-                        if not isinstance(k, ast.Constant)
-                    )
-                elif payload is not None:
-                    dynamic.add((fname, func, "<payload>"))
+                    names.extend((f"{fname}:{node.lineno}", n) for n in resolved)
+                if payload is not None:
+                    pairs, payload_dynamic = self._dict_pairs(payload)
+                    if payload_dynamic or not isinstance(payload, ast.Dict):
+                        dynamic[(fname, func, "<payload>")] += 1
             elif name in self.HELPERS:
-                pairs = [
-                    (key, node.args[idx])
-                    for key, idx in self.HELPERS[name].items()
-                    if len(node.args) > idx
-                ]
-            elif name in self.HELPER_KWARGS:
-                pairs = [
-                    ({"ok_status": "status"}.get(kw.arg, kw.arg), kw.value)
-                    for kw in node.keywords
-                    if kw.arg in self.HELPER_KWARGS[name]
-                ]
+                positional, keyword = self.HELPERS[name]
+                pairs = [(key, node.args[i]) for i, key in enumerate(positional) if len(node.args) > i]
+                pairs += [(key, kwargs[kw]) for kw, key in keyword.items() if kw in kwargs]
             for key, value in pairs:
                 if key not in monitoring._ENUM_KEYS:
                     continue
-                values = self._resolve(value)
+                values = self._resolve(value, fn)
                 if values is None:
-                    dynamic.add((fname, func, key))
+                    dynamic[(fname, func, key)] += 1
                     continue
                 checked.extend((f"{fname}:{node.lineno}", key, v) for v in values)
         return checked, names, dynamic
@@ -548,26 +597,38 @@ class RecordEventRegistryTests(TestCase):
             self.assertIn(literal, registry[key], f"{site} {key}={literal!r}")
         self.assertGreater(len(checked), 30)
         self.assertGreater(len(names), 30)
-        unaudited = {site for site in dynamic if site not in self.AUDITED_DYNAMIC}
-        self.assertFalse(
-            unaudited,
-            "unresolvable record_event names/payloads/enum values need a "
-            f"vendor-boundary test and an AUDITED_DYNAMIC entry: {sorted(unaudited)}",
+        pinned = {site: count for site, (count, _) in self.AUDITED_DYNAMIC.items()}
+        self.assertEqual(
+            dict(dynamic),
+            pinned,
+            "unresolvable record_event names/payloads/enum values need a vendor-boundary "
+            "test and an AUDITED_DYNAMIC entry with the exact call-site count",
         )
-        stale = set(self.AUDITED_DYNAMIC) - dynamic
-        self.assertFalse(stale, f"AUDITED_DYNAMIC entries no longer match a call site: {sorted(stale)}")
 
     def test_crawl_run_skipped_is_registered_and_emitted(self):
         self.assertIn("crawl_run_skipped", monitoring.EVENT_NAMES)
         payload = monitoring.event_attributes("crawl_run_skipped", {"source_key": "fixture-adapter"})
         self.assertEqual(payload["event_name"], "crawl_run_skipped")
 
-    def test_audit_flags_unregistered_names_and_unlisted_dynamic_sites(self):
+    def _scan_source(self, src):
         import ast
         import textwrap
         from unittest import mock
 
-        src = textwrap.dedent(
+        tree = ast.parse(textwrap.dedent(src))
+        calls = []
+        for fn in ast.walk(tree):
+            if isinstance(fn, ast.FunctionDef):
+                calls += [("fake.py", fn.name, n, fn) for n in ast.walk(fn) if isinstance(n, ast.Call)]
+        with mock.patch.object(self, "_walk", return_value=calls):
+            return self._scan()
+
+    def _bad_literals(self, checked):
+        registry = monitoring.enum_values()
+        return {(key, lit) for _, key, lit in checked if lit not in registry[key]}
+
+    def test_audit_flags_unregistered_names_and_unlisted_dynamic_sites(self):
+        checked, names, dynamic = self._scan_source(
             """
             def emit(name, gauges):
                 record_event("not_a_real_event", {"status": "ok"})
@@ -575,21 +636,105 @@ class RecordEventRegistryTests(TestCase):
                 record_event("assistant_turn", {"reason_code": gauges})
             """
         )
-        tree = ast.parse(src)
-        calls = [("fake.py", "emit", n) for n in ast.walk(tree) if isinstance(n, ast.Call)]
-        with mock.patch.object(self, "_walk", return_value=calls):
-            checked, names, dynamic = self._scan()
         self.assertIn(("fake.py:3", "not_a_real_event"), names)
         self.assertNotIn("not_a_real_event", monitoring.EVENT_NAMES)
         self.assertEqual(
-            dynamic,
+            dict(dynamic),
             {
-                ("fake.py", "emit", "<event name>"),
-                ("fake.py", "emit", "<payload>"),
-                ("fake.py", "emit", "reason_code"),
+                ("fake.py", "emit", "<event name>"): 1,
+                ("fake.py", "emit", "<payload>"): 1,
+                ("fake.py", "emit", "reason_code"): 1,
             },
         )
-        self.assertFalse(dynamic & set(self.AUDITED_DYNAMIC))
+        self.assertFalse(set(dynamic) & set(self.AUDITED_DYNAMIC))
+
+    def test_audit_checks_literals_inside_spread_payloads(self):
+        checked, _, dynamic = self._scan_source(
+            """
+            def emit(counts, ok):
+                record_event("matching_batch", {**counts, "failure_stage": "matchng"})
+                record_event("matching_batch", {**counts, **({"failure_stage": "matchng"} if ok else {})})
+                record_event("publication_sweep", {**counts, "status": "bogus_status"})
+                record_event("matching_batch", {**counts, "stage": "job_pipeline_matchng"})
+            """
+        )
+        self.assertEqual(
+            self._bad_literals(checked),
+            {("failure_stage", "matchng"), ("status", "bogus_status"), ("stage", "job_pipeline_matchng")},
+        )
+        self.assertEqual(dynamic[("fake.py", "emit", "<payload>")], 4)
+
+    def test_audit_checks_helper_keyword_arguments(self):
+        checked, _, dynamic = self._scan_source(
+            """
+            def emit(response):
+                _turn_event("failed", reason_code="worker_interuptd", failure_stage="matchng")
+                _turn_failed(reason_code="provider_timeuot")
+                _turn_event(phase="replyed", latency_bucket="slowish")
+                _preference_decision_event(
+                    response, decision="apply", scope="search", ok_status="applied",
+                    origin="priorities_editor",
+                )
+            """
+        )
+        self.assertEqual(
+            self._bad_literals(checked),
+            {
+                ("reason_code", "worker_interuptd"),
+                ("failure_stage", "matchng"),
+                ("reason_code", "provider_timeuot"),
+                ("phase", "replyed"),
+                ("latency_bucket", "slowish"),
+                ("origin", "priorities_editor"),
+            },
+        )
+        self.assertFalse(dynamic)
+
+    def test_audit_handles_keyword_form_record_event(self):
+        checked, names, dynamic = self._scan_source(
+            """
+            def emit(payload):
+                monitoring.record_event(event_name="bogus_evt", attributes={"status": "bogus_status"})
+                monitoring.record_event(attributes=payload)
+                publication.record_event(target_type="t", target_id=1, event_kind="k")
+            """
+        )
+        self.assertIn(("fake.py:3", "bogus_evt"), names)
+        self.assertEqual(self._bad_literals(checked), {("status", "bogus_status")})
+        self.assertEqual(dict(dynamic), {("fake.py", "emit", "<call shape>"): 1})
+
+    def test_audit_resolves_event_name_variables_in_their_function(self):
+        _, names, dynamic = self._scan_source(
+            """
+            def emit(failed, other):
+                event = "crawl_run_completed" if failed else "crawl_run_skipped"
+                if other:
+                    event = "crawl_run_skiped"
+                record_event(event, {})
+
+            def opaque(other):
+                event = "crawl_run_failed"
+                event = other.name
+                record_event(event, {})
+            """
+        )
+        self.assertEqual(
+            sorted(n for _, n in names),
+            ["crawl_run_completed", "crawl_run_skiped", "crawl_run_skipped"],
+        )
+        self.assertEqual(dict(dynamic), {("fake.py", "opaque", "<event name>"): 1})
+
+    def test_audit_pins_call_site_counts_per_entry(self):
+        _, _, dynamic = self._scan_source(
+            """
+            def emit(a, b):
+                record_event("assistant_turn", a)
+                record_event("assistant_turn", b)
+            """
+        )
+        self.assertEqual(dynamic[("fake.py", "emit", "<payload>")], 2)
+        key = ("agent_runs.py", "record_agent_event", "<payload>")
+        self.assertNotEqual(self.AUDITED_DYNAMIC[key][0], 2)
 
     def test_computed_sources_stay_inside_the_registry(self):
         registry = monitoring.enum_values()
