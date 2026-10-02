@@ -1203,6 +1203,46 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
         expect(getWorkspaceSnapshot().context?.surface).toBe('jobs');
     });
 
+    test('reports the displayed result generation and preference revision (issue #484)', async () => {
+        global.fetch = jest.fn().mockImplementation((url: string) => {
+            if (url.includes('/status/')) return Promise.resolve(jsonResponse(statusPayload('ok')));
+            if (url.includes('/ranked/')) {
+                return Promise.resolve(jsonResponse(rankedPayload([{
+                    ...sampleJobMatch, revision: {result_generation: 6},
+                }])));
+            }
+            return Promise.resolve(jsonResponse(matchPayload(1, [{
+                ...sampleJobMatch, revision: {result_generation: 6, preference_revision: 3},
+            }])));
+        });
+        render(<JobMatchPanel/>);
+        await screen.findByTestId('ranked-job-42');
+        expect(getWorkspaceSnapshot().context).toMatchObject({
+            surface: 'jobs', resultGeneration: 6, preferenceRevision: 3,
+        });
+    });
+
+    test('nothing is reported when the payloads carry no generation or revision', async () => {
+        installBatchedFetch([{title: 'Bare', generation: null, hold: false}]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Bare');
+        const context = getWorkspaceSnapshot().context;
+        expect(context).not.toHaveProperty('resultGeneration');
+        expect(context).not.toHaveProperty('preferenceRevision');
+    });
+
+    test('a rejected older result set does not change the reported generation', async () => {
+        installBatchedFetch([
+            {title: 'Generation five', generation: 5, hold: false},
+            {title: 'Generation four', generation: 4, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Generation five');
+        expect(getWorkspaceSnapshot().context?.resultGeneration).toBe(5);
+        await refreshAndSettle(3);
+        expect(getWorkspaceSnapshot().context?.resultGeneration).toBe(5);
+    });
+
     test('an older overlapping request that resolves last never replaces newer data', async () => {
         const batches = installBatchedFetch([
             {title: 'Stale', generation: 1, hold: true},
