@@ -70,11 +70,23 @@ const populatedConversation: ConversationFixture = {
     preferences_changed: false,
 };
 
+const longConversation: ConversationFixture = {
+    ...populatedConversation,
+    messages: Array.from({length: 24}, (_, i) => ({
+        id: 200 + i,
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        content: `Message ${i + 1}: a line of conversation long enough to wrap onto more than one row on a phone.`,
+        preferences_changed: false,
+        created: '2026-08-20T00:01:00Z',
+        results: null,
+    })),
+};
+
 /**
  * Stub the job-search chat API so the component runs without a Django backend.
  * `scenario` selects the resume shape: `empty` (no history) or `populated`.
  */
-async function mockJobSearchApi(page: Page, scenario: 'empty' | 'populated'): Promise<void> {
+async function mockJobSearchApi(page: Page, scenario: 'empty' | 'populated' | 'long'): Promise<void> {
     await page.route('**/api/agent/conversations/**', async (route) => {
         const request = route.request();
         const method = request.method();
@@ -93,7 +105,9 @@ async function mockJobSearchApi(page: Page, scenario: 'empty' | 'populated'): Pr
         }
 
         if (method === 'GET' && pathname === '/api/agent/conversations/') {
-            if (scenario === 'populated') {
+            if (scenario === 'long') {
+                await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(longConversation)});
+            } else if (scenario === 'populated') {
                 await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(populatedConversation)});
             } else {
                 // No existing conversation -> the component will POST to create one.
@@ -392,5 +406,35 @@ test.describe('200% zoom', () => {
 
         await expectNoHorizontalOverflow(page);
         await expectComposerUsable(page);
+    });
+});
+
+test.describe('scroll position across a viewport resize (issue #483)', () => {
+    test.skip(({browserName}) => browserName !== 'chromium', 'resize anchoring is verified in Chromium');
+
+    test('the article the reader was on stays in view when the viewport shrinks', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 700});
+        await mockJobSearchApi(page, 'long');
+        await page.goto(CHAT_FIXTURE);
+        const log = page.getByRole('log');
+        await expect(log.locator('article').first()).toBeVisible();
+        const box = (await log.boundingBox())!;
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.wheel(0, -300);
+        await page.waitForTimeout(300);
+        const readerArticle = await page.evaluate(() => {
+            const top = document.querySelector('[role="log"]')!.getBoundingClientRect().top;
+            const articles = Array.from(document.querySelectorAll('[role="log"] article'));
+            const first = articles.find((a) => a.getBoundingClientRect().bottom > top + 1)!;
+            return articles.indexOf(first);
+        });
+        await page.setViewportSize({width: 375, height: 380});
+        await page.waitForTimeout(400);
+        const inView = await page.evaluate((index) => {
+            const article = document.querySelectorAll('[role="log"] article')[index] as HTMLElement;
+            const rect = article.getBoundingClientRect();
+            return rect.bottom > 0 && rect.top < window.innerHeight;
+        }, readerArticle);
+        expect(inView).toBe(true);
     });
 });

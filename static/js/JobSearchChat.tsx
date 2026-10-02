@@ -251,6 +251,20 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             else composerRef.current?.focus();
         }, 0);
     };
+    // After New conversation or Delete, the sheet keeps the keyboard down by
+    // focusing the empty state's call to action; elsewhere the composer takes
+    // focus, falling back to that call to action while the composer is disabled.
+    const focusAfterHistoryAction = () => {
+        window.setTimeout(() => {
+            const composer = composerRef.current;
+            if (props.workspaceMode !== 'sheet' && composer && !composer.disabled) {
+                composer.focus();
+                return;
+            }
+            const cta = cardRef.current?.querySelector<HTMLElement>('[data-testid="empty-history-cta"]');
+            (cta ?? headingRef.current)?.focus({preventScroll: true});
+        }, 0);
+    };
     const autoFocusRef = React.useRef(true);
     autoFocusRef.current = props.workspaceMode === undefined || !!props.autoFocusComposer;
     // Shared floor for the measured card height; must stay in sync with the
@@ -293,6 +307,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 
     const cardRef = React.useRef<HTMLElement>(null);
     const [panelScroll, setPanelScroll] = React.useState(false);
+    const captureAnchorRef = React.useRef<() => void>(() => undefined);
     const [cardHeight, setCardHeight] = React.useState<number | null>(null);
     // Room between the header and the composer band: inline panels scroll
     // inside it instead of covering the composer.
@@ -343,12 +358,15 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         const formTop = card.querySelector('form')?.getBoundingClientRect().top ?? 0;
         setStackMax(Math.max(MIN_STACK_PX, formTop - headerBottom - 12));
         const scrollsPanel = floor > 0 && computed < floor;
+        // Record where the reader is before the scroll owner changes under them.
+        if (scrollsPanel !== (card.getAttribute('data-scroll-owner') === 'panel')) captureAnchorRef.current();
         setPanelScroll(scrollsPanel);
         // Keep keyboard/programmatic scroll-into-view clear of the pinned header
         // and composer band while the panel body is the scroller.
         if (panelBody) {
-            const headerHeight = card.querySelector('.card-header')!.getBoundingClientRect().height;
-            const footerHeight = card.querySelector<HTMLElement>('.chat-footer')!.offsetHeight;
+            // The footer is not rendered while the init error shows.
+            const headerHeight = card.querySelector('.card-header')?.getBoundingClientRect().height ?? 0;
+            const footerHeight = card.querySelector<HTMLElement>('.chat-footer')?.offsetHeight ?? 0;
             panelBody.style.scrollPaddingTop = scrollsPanel ? `${Math.round(headerHeight)}px` : '';
             panelBody.style.scrollPaddingBottom = scrollsPanel ? `${footerHeight + 8}px` : '';
         }
@@ -384,8 +402,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             // transcript floor / single-scroller decision follows (issue #483).
             const header = cardRef.current.querySelector('.card-header');
             if (header) observer.observe(header);
-            const footer = cardRef.current.querySelector('.chat-footer');
-            if (footer) observer.observe(footer);
             // The priorities block above the chat (assistant panel) resizes as
             // its steps change; the card height depends on its offset.
             // The block can mount after the chat (it waits for sign-in
@@ -417,6 +433,17 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         };
     }, [scheduleMeasure]);
 
+    // The footer unmounts while the init error shows and a new one mounts when
+    // the conversation starts, so it is observed per mount, not once.
+    React.useEffect(() => {
+        const footer = cardRef.current?.querySelector('.chat-footer');
+        if (!footer || typeof ResizeObserver === 'undefined') return undefined;
+        const footerObserver = new ResizeObserver(scheduleMeasure);
+        footerObserver.observe(footer);
+        scheduleMeasure();
+        return () => footerObserver.disconnect();
+    }, [initError, scheduleMeasure]);
+
     const chatCardStyle = React.useMemo<React.CSSProperties>(() => {
         const vars = (stackMax === null ? {} : {'--chat-stack-max': `${stackMax}px`}) as React.CSSProperties;
         if (panelScroll) return {...vars, height: 'auto'};
@@ -426,13 +453,14 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         return {...vars, minHeight: '20rem'};
     }, [cardHeight, panelScroll, stackMax]);
 
-    const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend} = useTranscriptScroll({
+    const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend, captureAnchor} = useTranscriptScroll({
         messagesLength: messages.length,
         assistantCount: messages.filter((m) => m.role === 'assistant').length,
         scrollOwner: panelScroll ? 'panel' : 'transcript',
         pending,
         loading,
     });
+    captureAnchorRef.current = captureAnchor;
 
     // Advisory availability check (issue #457). Runs on mount and is re-run
     // before each send and from the notice's retry affordance. A failed check
@@ -1113,7 +1141,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 
     const handleJumpToLatest = () => {
         scrollToLatest('auto');
-        composerRef.current?.focus({preventScroll: true});
+        // Focus the newest turn, not the composer: that would raise the phone
+        // keyboard, and the composer is disabled while a reply is pending.
+        const articles = historyRef.current?.querySelectorAll<HTMLElement>('article');
+        (articles && articles.length ? articles[articles.length - 1] : historyRef.current)?.focus({preventScroll: true});
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -1266,7 +1297,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setPreferencesChanged(false);
             setPrefDismissed(false);
             setError(null);
-            composerRef.current?.focus();
+            focusAfterHistoryAction();
             return null;
         } catch {
             return 'Could not reset the conversation.';
@@ -1286,7 +1317,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setPreferencesChanged(false);
             setPrefDismissed(false);
             setError(null);
-            composerRef.current?.focus();
+            focusAfterHistoryAction();
             return null;
         } catch {
             return 'Could not delete the conversation.';
@@ -1583,27 +1614,29 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     {showJumpToLatest && (
                         <JumpToLatest unreadCount={unreadCount} onJump={handleJumpToLatest}/>
                     )}
-                    {assistantStatus && (
-                        <AssistantStatusNotice
-                            status={assistantStatus}
-                            checking={statusChecking}
-                            onRetry={() => { void refreshStatus(); }}
-                        />
-                    )}
+                    <div className="chat-footer-notices">
+                        {assistantStatus && (
+                            <AssistantStatusNotice
+                                status={assistantStatus}
+                                checking={statusChecking}
+                                onRetry={() => { void refreshStatus(); }}
+                            />
+                        )}
 
-                    {error && (
-                        <div className="alert alert-danger d-flex justify-content-between align-items-center"
-                             role="alert" data-testid="chat-error" data-error-type={errorType || undefined}>
-                            <span className="flex-grow-1 me-2">{error}</span>
-                            {retrying && (
-                                <button type="button"
-                                        className="btn btn-sm btn-outline-danger ms-2 flex-shrink-0 text-nowrap chat-focus"
-                                        onClick={handleRetry} disabled={pending} data-testid="retry-button">
-                                    Retry
-                                </button>
-                            )}
-                        </div>
-                    )}
+                        {error && (
+                            <div className="alert alert-danger d-flex justify-content-between align-items-center"
+                                 role="alert" data-testid="chat-error" data-error-type={errorType || undefined}>
+                                <span className="flex-grow-1 me-2">{error}</span>
+                                {retrying && (
+                                    <button type="button"
+                                            className="btn btn-sm btn-outline-danger ms-2 flex-shrink-0 text-nowrap chat-focus"
+                                            onClick={handleRetry} disabled={pending} data-testid="retry-button">
+                                        Retry
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                    </div>
 
                     <Composer
                         textareaRef={composerRef}
@@ -1619,6 +1652,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     />
                 </div>
                 )}
+
+                <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true"
+                     data-testid="new-messages-status">
+                    {unreadCount > 0 ? `${unreadCount} new ${unreadCount === 1 ? 'message' : 'messages'}` : ''}
+                </div>
 
                 {/* Screen-reader-only live region for pending/error transitions. */}
                 <div ref={statusRef} className="visually-hidden" role="status" aria-live="assertive">

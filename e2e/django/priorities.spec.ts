@@ -81,7 +81,7 @@ test.describe('priorities editor (issue #480)', () => {
         await page.getByTestId('priorities-main').getByRole('button', {name: 'Reset priorities'}).click();
         await expect(page.getByText(/Your conversations are not changed/)).toBeVisible();
         await page.getByRole('button', {name: 'Keep priorities'}).click();
-        await expect(page.getByRole('button', {name: 'More'}).first()).toBeVisible();
+        await expect(page.getByTestId('conversation-more')).toBeVisible();
         await expect(page.getByRole('button', {name: 'Reset chat'})).toHaveCount(0);
     });
 

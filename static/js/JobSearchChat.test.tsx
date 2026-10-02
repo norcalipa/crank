@@ -223,6 +223,47 @@ describe('JobSearchChat', () => {
             expect(screen.getByTestId('job-search-chat').style.getPropertyValue('--chat-stack-max')).toBe('96px');
         });
 
+        test('keeps measuring inside the assistant panel while the init error shows, then observes the new footer', async () => {
+            const observed: Element[] = [];
+            class MockResizeObserver {
+                observe = (el: Element) => { observed.push(el); };
+                disconnect = jest.fn();
+            }
+            (globalThis as {ResizeObserver?: unknown}).ResizeObserver = MockResizeObserver;
+            const panelBody = document.createElement('div');
+            panelBody.className = 'assistant-panel-body';
+            const container = document.createElement('div');
+            panelBody.append(container);
+            document.body.appendChild(panelBody);
+            const errors: unknown[] = [];
+            const onError = (e: ErrorEvent) => { errors.push(e.error); e.preventDefault(); };
+            window.addEventListener('error', onError);
+            try {
+                (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+                (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({detail: 'boom'}, 500));
+                render(<JobSearchChat/>, {container});
+                await screen.findByText(/restore your previous conversation/i);
+                await act(async () => {
+                    fireEvent(window, new Event('resize'));
+                    await flushRaf();
+                    await flushRaf();
+                });
+                expect(errors).toEqual([]);
+                expect(screen.getByTestId('job-search-chat').style.getPropertyValue('--chat-stack-max')).toBe('96px');
+                expect(panelBody.querySelector('.chat-footer')).toBeNull();
+
+                (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(43, []), 201));
+                fireEvent.click(screen.getByRole('button', {name: 'Start a conversation'}));
+                await screen.findByLabelText('Message');
+                const footer = panelBody.querySelector('.chat-footer');
+                expect(footer).not.toBeNull();
+                expect(observed).toContain(footer);
+            } finally {
+                window.removeEventListener('error', onError);
+                panelBody.remove();
+            }
+        });
+
         test.each([
             ['inside the assistant panel', true, 'auto', 'panel'],
             ['on the page', false, '752px', 'transcript'],
@@ -605,7 +646,37 @@ describe('JobSearchChat', () => {
             fireEvent.click(screen.getByTestId('jump-to-latest'));
             expect(scrollTo).toHaveBeenCalledWith({top: 1000, behavior: 'auto'});
             expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
-            expect(screen.getByLabelText('Message')).toHaveFocus();
+            // Focus goes to the newest turn, never the composer (it would raise the phone keyboard).
+            const articles = screen.getAllByRole('article');
+            expect(articles[articles.length - 1]).toHaveFocus();
+            expect(screen.getByLabelText('Message')).not.toHaveFocus();
+        });
+
+        test('announces new messages politely, and only while some are unread', async () => {
+            const history = await sendAndScrollUpDuringReply();
+            expect(history).toBeInTheDocument();
+            expect(screen.getByTestId('new-messages-status')).toHaveTextContent('1 new message');
+            expect(screen.getByTestId('new-messages-status')).toHaveAttribute('aria-live', 'polite');
+            setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 790, clientHeight: 200});
+            fireEvent.scroll(history);
+            expect(screen.getByTestId('new-messages-status')).toBeEmptyDOMElement();
+        });
+
+        test('jumping to latest while a reply is pending keeps focus in the transcript, not on <body>', async () => {
+            await renderChat([assistantMessage(1, 'ready')]);
+            const history = screen.getByLabelText('Message history');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockReturnValueOnce(new Promise(() => undefined));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByTestId('pending-status');
+            fireEvent.wheel(history);
+            setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
+            fireEvent.scroll(history);
+            fireEvent.click(await screen.findByTestId('jump-to-latest'));
+            expect(screen.getByLabelText('Message')).toBeDisabled();
+            const articles = screen.getAllByRole('article');
+            expect(articles[articles.length - 1]).toHaveFocus();
         });
 
         test('auto-scrolls new pending content only when already near the bottom', async () => {
@@ -1002,6 +1073,27 @@ describe('JobSearchChat', () => {
             deleteConversation();
             await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
             expect(screen.queryByText('done with this')).not.toBeInTheDocument();
+            await waitFor(() => expect(screen.getByLabelText('Message')).toHaveFocus());
+        });
+
+        test('New conversation focuses the composer when docked', async () => {
+            await renderChat([userMessage('first')]);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(43, [])));
+            startNewConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+            await waitFor(() => expect(screen.getByLabelText('Message')).toHaveFocus());
+        });
+
+        test('New conversation in the sheet keeps the phone keyboard down', async () => {
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, [userMessage('first')])));
+            setWorkspaceAccount({status: 'authenticated', key: 'tester'});
+            render(<JobSearchChat workspaceMode="sheet"/>);
+            await screen.findByLabelText('Message');
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(43, [])));
+            startNewConversation();
+            await waitFor(() => expect(screen.getByTestId('empty-history-cta')).toHaveFocus());
+            expect(screen.getByLabelText('Message')).not.toHaveFocus();
         });
     });
 });
