@@ -144,20 +144,16 @@ test.describe('assistant actions (issue #484)', () => {
         await expect(page.getByRole('button', {name: /remote filter/})).toHaveCount(0);
     });
 
-    test('save as a lasting requirement reviews the change; Cancel writes nothing', async ({page}) => {
+    test('save as a lasting requirement says so when it is already saved; nothing is written', async ({page}) => {
         await login(page, PREFS_USER, E2E_PASSWORD);
         await openAssistant(page);
         await ask(page, 'Show only remote companies');
         await applyRemote(page).click();
         await page.getByRole('button', {name: 'Save as a requirement'}).click();
-        const review = page.getByTestId('assistant-action-review');
-        await expect(review).toBeVisible();
-        // The seeded account already prefers remote work, so the honest
-        // outcome is "nothing would change" and Apply stays disabled.
-        await expect(review).toContainText('Nothing would change');
-        await expect(review.getByRole('button', {name: 'Apply to account'})).toBeDisabled();
-        await review.getByRole('button', {name: 'Cancel'}).click();
-        await expect(review).toHaveCount(0);
+        // The seeded account already prefers remote work, so there is nothing
+        // to review: the note says so and no write happens.
+        await expect(page.getByTestId('assistant-action-already')).toContainText('Already one of your requirements');
+        await expect(page.getByTestId('assistant-action-review')).toHaveCount(0);
     });
 
     test('actions and the RTO chip fit at 375px', async ({page}) => {
