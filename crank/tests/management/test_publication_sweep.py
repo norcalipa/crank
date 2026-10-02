@@ -40,6 +40,22 @@ class PublicationSweepTelemetryTests(TestCase):
         self.assertGreaterEqual(payload["outbox_oldest_age_seconds"], 0)
 
     @patch(RECORD)
+    def test_backlog_gauge_failure_does_not_fail_the_sweep(self, record):
+        out = StringIO()
+        with patch("crank.services.publication.consumer_enabled", return_value=True), patch(
+            "crank.services.publication.sweep_pending",
+            return_value={"scanned": 1, "processed": 1, "keys_deleted": 1},
+        ), patch(
+            "crank.services.operations_readiness.outbox_backlog",
+            side_effect=RuntimeError("db"),
+        ):
+            call_command("publication_sweep", stdout=out)
+        payload = record.call_args.args[1]
+        self.assertEqual(payload["status"], "completed")
+        self.assertNotIn("outbox_oldest_age_seconds", payload)
+        self.assertIn("publication sweep: scanned=1", out.getvalue())
+
+    @patch(RECORD)
     def test_empty_outbox_reports_zero_age(self, record):
         with patch("crank.services.publication.consumer_enabled", return_value=True):
             call_command("publication_sweep", stdout=StringIO())

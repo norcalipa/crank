@@ -175,7 +175,7 @@ metrics:
     baseline_only: true
 alerts:
   - name: repeated-failure
-    nrql: "SELECT count(*) FROM CrankOperation WHERE status = 'failed' SINCE 15 minutes ago"
+    nrql: "SELECT count(*) FROM CrankOperation WHERE status = 'failed' AND event_name NOT IN ('publication_sweep', 'preference_decision') SINCE 15 minutes ago"
     threshold: 3
     operator: above
     recovery: "Inspect sanitized AgentRun/SourceRun, then disable the affected source or capability."

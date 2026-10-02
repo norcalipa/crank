@@ -15,8 +15,11 @@ Only stable operational attributes are accepted: run type, status, stage,
 registered adapter key, reason code, bounded counters, latency/duration,
 freshness, token counters, and estimated cost. Prompts, model responses, source
 bodies, credentials, arbitrary URLs, and user IDs are never event attributes.
-Reason codes are the finite set `none`, `timeout`, `cost_limit`, `rejected`,
-`authorization`, `upstream`, and `internal`.
+Reason codes are a finite per-event set: the pipeline codes `none`, `timeout`,
+`cost_limit`, `rejected`, `authorization`, `upstream`, and `internal`, plus the
+assistant codes listed under [Assistant and data-freshness
+metrics](#assistant-and-data-freshness-metrics). Unknown values are recorded as
+`other`.
 
 ## Dashboard and alert queries
 
@@ -138,15 +141,25 @@ are never recorded, and a client `X-Request-ID` that is not a UUID is dropped
 
 - `assistant_turn`: `phase` attempted/saved/replied/failed/rejected/replayed;
   failures carry `reason_code` (provider_timeout, cost_limit, invalid_output,
-  assistant_unavailable, conversation_gone, conversation_closed,
-  preference_stale, service_error, unexpected_error, worker_interrupted) and a
-  `failure_stage`; rejections use rate_limited, turn_in_progress, retry_limited.
+  assistant_unavailable, conversation_gone, preference_stale,
+  preference_version_unavailable, service_error, unexpected_error, worker_interrupted) and a
+  `failure_stage`. `worker_interrupted` is emitted when a stale claim is reaped
+  or taken over (a plain failed retry is not counted); rejections use rate_limited, turn_in_progress, retry_limited.
 - `assistant_first_result`: once per conversation (conditional update on
   `JobSearchConversation.first_result_at`), `seconds_to_first_result` and
   `turns_to_first_result`.
 - `availability_state`: assistant status and job-matches surfaces.
-- `preference_decision`: apply/dismiss/undo with `status` applied/dismissed/undone/stale/invalid/failed.
+- `preference_decision`: apply/dismiss/undo with `status` applied/dismissed/undone/stale/invalid/failed
+  and `origin` proposal (chat), direct (priorities editor) or reset. Origin comes
+  from an allowlisted label stamped on the undo token; tokens issued before
+  deploy have none and default to `proposal`.
 - `matching_batch` gains `publication_lag_max_seconds` / `publication_lag_count`.
+  Lag is measured only for users with a previous generation, matching the
+  `publication_to_match_lag` gauge, so first generations are excluded. Failed
+  `source_stage` events carry `failure_stage=source`; `matching_batch` carries
+  `failure_stage=matching` when any user failed.
+- The `repeated-failure` alert excludes `publication_sweep` and
+  `preference_decision`; those failures are inspected via their own events.
 - `pipeline_health` (emitted by `crawl_healthcheck`): queue, outbox, review and
   evidence-freshness gauges. `publication_sweep`: per-run sweep outcome.
 

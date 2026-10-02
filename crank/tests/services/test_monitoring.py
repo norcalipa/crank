@@ -412,6 +412,7 @@ class RecordEventRegistryTests(TestCase):
         ("job_matches.py", "state"): "empty_state constants",
         ("crawl_healthcheck.py", "reason_code"): "failure_reason()",
         ("publication_sweep.py", "reason_code"): "failure_reason()",
+        ("job_search.py", "origin"): "_token_origin() allowlist; test_assistant_telemetry origin tests",
         ("job_ingest.py", "reason_code"): "SKIP_* constants",
         ("job_pipeline.py", "reason_code"): "failure_reason() / literals",
         ("score_gathering.py", "reason_code"): "failure_reason()",

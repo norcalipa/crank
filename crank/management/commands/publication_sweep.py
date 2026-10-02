@@ -49,17 +49,14 @@ class Command(BaseCommand):
                 },
             )
             raise
-        monitoring.record_event(
-            "publication_sweep",
-            {
-                "status": "completed",
-                **counts,
-                "outbox_oldest_age_seconds": (
-                    operations_readiness.outbox_backlog()["oldest_pending_age_seconds"]
-                    or 0
-                ),
-            },
-        )
+        event = {"status": "completed", **counts}
+        try:
+            event["outbox_oldest_age_seconds"] = (
+                operations_readiness.outbox_backlog()["oldest_pending_age_seconds"] or 0
+            )
+        except Exception:
+            pass
+        monitoring.record_event("publication_sweep", event)
         self.stdout.write(
             self.style.SUCCESS(
                 "publication sweep: scanned={scanned} processed={processed} "

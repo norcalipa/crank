@@ -546,7 +546,6 @@ def test_viewed_company_scores_survive_a_full_score_catalog():
 
     from crank.agents.job_search.service import JobSearchOrchestrator
     from crank.tests.agents.test_golden_conversations import RecordingPreferenceService
-    from crank.tests.agents.test_golden_conversations import RecordingPreferenceService
 
     gw = ScriptedGateway({**BASE})
     orch = JobSearchOrchestrator(
