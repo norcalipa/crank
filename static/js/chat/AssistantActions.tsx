@@ -166,7 +166,7 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
     // message that appears below the fold is brought into view.
     React.useEffect(() => {
         const target = reviewing ? 'assistant-action-review' : failing ? 'assistant-action-error' : null;
-        const el = target ? root.current?.querySelector(`[data-testid="${target}"]`) : null;
+        const el = target ? (root.current as HTMLElement).querySelector(`[data-testid="${target}"]`) : null;
         const log = el?.closest('[role="log"]');
         if (el && log) {
             const gap = el.getBoundingClientRect().top - log.getBoundingClientRect().top;
