@@ -327,7 +327,7 @@ export function ConversationMenu({
                 </div>
             )}
 
-            <div className="visually-hidden" role="status" aria-live="polite" data-testid="conversation-status">{status}</div>
+            <div className="visually-hidden" aria-live="polite" aria-atomic="true" data-testid="conversation-status">{status}</div>
         </>
     );
 }
