@@ -190,8 +190,7 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
             return;
         }
         // No rankings list is mounted (/chat/, jobs): go to the rankings page.
-        const query = filterQuery(action);
-        window.location.assign(`/${query ? `?${query}` : ''}`);
+        window.location.assign(`/?${filterQuery(action)}`);
     };
 
     const propose = async (index: number, action: AssistantAction & {type: 'propose_filters'}) => {
@@ -279,7 +278,7 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
                                 )}
                             </div>
                         )}
-                        {state.status === 'review' && (
+                        {action.type === 'propose_filters' && state.status === 'review' && (
                             <ReviewChanges
                                 changes={state.proposal.changes}
                                 scope="account"
@@ -290,7 +289,7 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
                                 testId="assistant-action-review"
                                 onApply={() => void save(index, state)}
                                 onCancel={() => setReq(index, {status: 'idle'})}
-                                onReviewLatest={action.type === 'propose_filters' ? () => void propose(index, action) : undefined}
+                                onReviewLatest={() => void propose(index, action)}
                             />
                         )}
                         {state.status === 'saved' && (

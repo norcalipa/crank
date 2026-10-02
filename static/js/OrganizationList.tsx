@@ -366,7 +366,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         };
     };
 
-    filterOrganizations = (organizations: Organization[], searchTerm: string, acceleratedVesting: boolean, rtoPolicy: RtoPolicyCode | '' = '') => {
+    filterOrganizations = (organizations: Organization[], searchTerm: string, acceleratedVesting: boolean, rtoPolicy: RtoPolicyCode | '') => {
         let filteredOrganizations = organizations;
 
         if (rtoPolicy) {

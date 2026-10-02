@@ -77,7 +77,8 @@ describe('parseActions', () => {
             {type: 'propose_filters', target: 'rankings', filters: null},
             {type: 'propose_filters', target: 'rankings', filters: {rto_policy: 'R'}, href: '/x'},
         ];
-        expect(parseActions(hostile)).toEqual([]);
+        // The list is capped at three, so each entry is parsed on its own.
+        hostile.forEach((item) => expect(parseActions([item])).toEqual([]));
         expect(parseActions(undefined)).toEqual([]);
         expect(parseActions({type: 'open_company', organization_id: 7})).toEqual([]);
     });
@@ -321,6 +322,26 @@ describe('AssistantActions', () => {
             proposePriorities.mockResolvedValueOnce(proposal);
             fireEvent.click(latest);
             await waitFor(() => expect(proposePriorities).toHaveBeenCalledTimes(1));
+        });
+
+        test('abort on unmount while applying leaves the review untouched', async () => {
+            registerFilterTarget(() => true);
+            const {unmount} = render(<AssistantActions turn={turn([remote])} />);
+            fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+            proposePriorities.mockResolvedValue(proposal);
+            fireEvent.click(screen.getByTestId('assistant-action-save'));
+            await screen.findByTestId('assistant-action-review');
+            let signal: AbortSignal | undefined;
+            applyProposal.mockImplementation((_token, s: AbortSignal) => {
+                signal = s;
+                return new Promise((_resolve, reject) => {
+                    s.addEventListener('abort', () => reject(new Error('aborted')));
+                });
+            });
+            fireEvent.click(screen.getByRole('button', {name: 'Apply to account'}));
+            unmount();
+            await act(async () => { await Promise.resolve(); });
+            expect(signal?.aborted).toBe(true);
         });
 
         test('abort on unmount is signalled', async () => {
