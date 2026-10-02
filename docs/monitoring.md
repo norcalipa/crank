@@ -146,16 +146,21 @@ are never recorded, and a client `X-Request-ID` that is not a UUID is dropped
   `failure_stage`. `worker_interrupted` is emitted when a stale claim is reaped
   or taken over (a plain failed retry is not counted); rejections use rate_limited, turn_in_progress, retry_limited.
 - `assistant_first_result`: once per conversation (conditional update on
-  `JobSearchConversation.first_result_at`), `seconds_to_first_result` and
-  `turns_to_first_result`.
+  `JobSearchConversation.first_result_at`). `seconds_to_first_result` counts from
+  the start of the current chat session (the earliest user message reachable
+  without an idle gap over 30 minutes), not from conversation creation, so
+  resumed and pre-deploy conversations do not report weeks.
+  `turns_to_first_result` counts assistant turns across the whole conversation.
 - `availability_state`: assistant status and job-matches surfaces.
-- `preference_decision`: apply/dismiss/undo with `status` applied/dismissed/undone/stale/invalid/failed
-  and `origin` proposal (chat), direct (priorities editor) or reset. Origin comes
-  from an allowlisted label stamped on the undo token; tokens issued before
-  deploy have none and default to `proposal`.
+- `preference_decision`: apply/dismiss/undo/reset with `status` applied/dismissed/undone/stale/invalid/failed
+  and `origin` proposal (chat), direct (priorities editor) or reset. Apply and
+  dismiss take the origin from the allowlisted label on the proposal token;
+  undo takes it from the label stamped on the undo token. A reset records
+  `decision=reset`, `origin=reset` itself. Tokens issued before deploy have no
+  label and default to `proposal`.
 - `matching_batch` gains `publication_lag_max_seconds` / `publication_lag_count`.
   Lag is measured only for users with a previous generation, matching the
-  `publication_to_match_lag` gauge, so first generations are excluded. Failed
+  `publication_match_lag_seconds` gauge, so first generations are excluded. Failed
   `source_stage` events carry `failure_stage=source`; `matching_batch` carries
   `failure_stage=matching` when any user failed.
 - The `repeated-failure` alert excludes `publication_sweep` and

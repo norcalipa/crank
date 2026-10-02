@@ -23,7 +23,12 @@ from django.views.decorators.http import require_GET, require_POST
 
 from crank.agents.job_search.errors import is_database_locked
 from crank.services import preferences as pref_services
-from crank.views.job_search import _body, _error, _request_id
+from crank.views.job_search import (
+    _body,
+    _error,
+    _preference_decision_event,
+    _request_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +108,15 @@ def agent_preference_propose(request):
 @login_required
 @require_POST
 def agent_preference_reset(request):
+    response = _agent_preference_reset(request)
+    _preference_decision_event(
+        response, decision="reset", scope="account", ok_status="applied",
+        origin="reset",
+    )
+    return response
+
+
+def _agent_preference_reset(request):
     request_id = _request_id(request)
     payload, error = _body(request, request_id)
     if error:

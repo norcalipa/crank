@@ -128,6 +128,41 @@ class AssistantTurnEventTests(_Base):
         self.assertIsNotNone(JobSearchConversation.objects.get(pk=conv).first_result_at)
 
     @patch(RECORD)
+    def test_seconds_to_first_result_ignores_old_conversation_age(self, record):
+        from crank.models import JobSearchMessage
+
+        conv = self.start()
+        old = timezone.now() - timedelta(days=20)
+        JobSearchConversation.objects.filter(pk=conv).update(created=old)
+        with self.run_with(_reply()):
+            self.submit(conv)
+        JobSearchMessage.objects.filter(conversation_id=conv).update(created=old)
+        with self.run_with(_reply(results=_results())):
+            self.submit(conv)
+        first = _events(record, "assistant_first_result")
+        self.assertEqual(len(first), 1)
+        self.assertLess(first[0]["seconds_to_first_result"], 60)
+        self.assertEqual(first[0]["turns_to_first_result"], 2)
+
+    @patch(RECORD)
+    def test_seconds_to_first_result_spans_the_current_session(self, record):
+        from crank.models import JobSearchMessage
+
+        conv = self.start()
+        with self.run_with(_reply()):
+            for _ in range(3):
+                self.submit(conv)
+        now = timezone.now()
+        ages = [timedelta(minutes=m) for m in (200, 12, 5)]
+        for msg, age in zip(JobSearchMessage.objects.filter(conversation_id=conv, role="user").order_by("pk"), ages):
+            JobSearchMessage.objects.filter(pk=msg.pk).update(created=now - age)
+        with self.run_with(_reply(results=_results())):
+            self.submit(conv)
+        seconds = _events(record, "assistant_first_result")[0]["seconds_to_first_result"]
+        self.assertGreaterEqual(seconds, 11 * 60)
+        self.assertLess(seconds, 13 * 60)
+
+    @patch(RECORD)
     def test_first_result_on_second_turn_counts_turns(self, record):
         conv = self.start()
         with self.run_with(_reply()):
@@ -472,7 +507,29 @@ class PreferenceDecisionEventTests(_Base):
         )
         self.assertEqual(
             [(e["decision"], e["origin"]) for e in _events(record, "preference_decision")],
-            [("undo", "reset")],
+            [("reset", "reset"), ("undo", "reset")],
+        )
+
+    @patch(RECORD)
+    def test_reset_records_decision_for_every_outcome(self, record):
+        from crank.models.preference import UserPreference
+
+        apply_patch_to_user(self.user, {"set": {"notes": "r1"}})
+        revision = UserPreference.objects.get(user=self.user).revision
+        self.assertEqual(
+            self.post("agent-preference-reset", {"expected_revision": revision + 5}).status_code, 409
+        )
+        self.assertEqual(self.post("agent-preference-reset", {"expected_revision": "x"}).status_code, 400)
+        self.assertEqual(
+            self.post("agent-preference-reset", {"expected_revision": revision}).status_code, 200
+        )
+        self.assertEqual(
+            [(e["decision"], e["scope"], e["status"], e["origin"]) for e in _events(record, "preference_decision")],
+            [
+                ("reset", "account", "stale", "reset"),
+                ("reset", "account", "invalid", "reset"),
+                ("reset", "account", "applied", "reset"),
+            ],
         )
 
     @patch(RECORD)

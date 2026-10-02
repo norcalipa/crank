@@ -1051,7 +1051,13 @@ def agent_conversation_detail(request, conversation_id):
             "assistant_first_result",
             {
                 "seconds_to_first_result": max(
-                    0, int((now - conversation.created).total_seconds())
+                    0,
+                    int(
+                        (
+                            now
+                            - _session_start(conversation, user_message.created)
+                        ).total_seconds()
+                    ),
                 ),
                 "turns_to_first_result": assistant_turns,
             },
@@ -1200,6 +1206,31 @@ def agent_conversation_delete(request, conversation_id):
     return JsonResponse(
         {"deleted": True}, status=200, headers={"X-Request-ID": request_id}
     )
+
+
+FIRST_RESULT_SESSION_GAP = timedelta(minutes=30)
+
+
+def _session_start(conversation, anchor):
+    """Start of the user's current chat session: the earliest user message
+    reachable from ``anchor`` without an idle gap over 30 minutes. Counting
+    from ``conversation.created`` would report weeks for resumed or
+    pre-deploy conversations; ``turns_to_first_result`` stays whole-conversation."""
+    start = anchor
+    for created in (
+        JobSearchMessage.objects.filter(
+            conversation=conversation,
+            role=JobSearchMessage.Role.USER,
+            created__lt=anchor,
+        )
+        .order_by("-created")
+        .values_list("created", flat=True)
+        .iterator()
+    ):
+        if start - created > FIRST_RESULT_SESSION_GAP:
+            break
+        start = created
+    return start
 
 
 def _token_origin(token, allowed):

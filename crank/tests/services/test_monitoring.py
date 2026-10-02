@@ -386,10 +386,11 @@ class AssistantTelemetryPolicyTests(TestCase):
 class RecordEventRegistryTests(TestCase):
     """Every enum value reaching ``record_event`` is registered or audited.
 
-    Literals are checked in direct calls and in the view helpers that wrap
-    them. Non-literal values cannot be resolved statically, so each such site
-    must appear in ``AUDITED_DYNAMIC`` with the test that drives it at the
-    vendor boundary; a new dynamic site fails here until someone audits it.
+    Event names and enum literals are checked in direct calls and in the view
+    helpers that wrap them. Non-literal event names, payloads and values cannot
+    be resolved statically, so each such site must appear in
+    ``AUDITED_DYNAMIC`` keyed by file, enclosing function and key; a new
+    dynamic site fails here until someone audits it, and a stale entry fails too.
     """
 
     HELPERS = {
@@ -398,31 +399,50 @@ class RecordEventRegistryTests(TestCase):
         "_turn_rejected": {"reason_code": 0},
     }
     HELPER_KWARGS = {"_preference_decision_event": {"decision", "scope", "ok_status"}}
-    # site -> where the value comes from and what pins it to the registry
+    # (file, enclosing function, key or <event name>/<payload>) -> where the
+    # value comes from and what pins it to the registry. A new dynamic value in
+    # a listed file but a different function, key or call shape fails the audit.
     AUDITED_DYNAMIC = {
-        ("admin.py", "action"): "state-action literals; test_monitoring_vendor_boundary",
-        ("admin.py", "capability"): "CapabilitySwitch.key, registry holds ALLOWED_CAPABILITY_KEYS",
-        ("admin_dashboard.py", "action"): "'Queue'.lower(); test_monitoring_vendor_boundary",
-        ("admin_dashboard.py", "reason_code"): "skip_reason literals, registered; vendor-boundary test",
-        ("admin_dashboard.py", "run_type"): "AgentRun.RunType member",
-        ("agent_runs.py", "run_type"): "AgentRun.RunType value",
-        ("agent_runs.py", "status"): "AgentRun.Status value / literal map",
-        ("agent_runs.py", "reason_code"): "failure_reason() or record_skipped reasons, registered",
-        ("assistant_status.py", "state"): "assistant_status state constants",
-        ("job_matches.py", "state"): "empty_state constants",
-        ("crawl_healthcheck.py", "reason_code"): "failure_reason()",
-        ("publication_sweep.py", "reason_code"): "failure_reason()",
-        ("job_search.py", "origin"): "_token_origin() allowlist; test_assistant_telemetry origin tests",
-        ("job_ingest.py", "reason_code"): "SKIP_* constants",
-        ("job_pipeline.py", "reason_code"): "failure_reason() / literals",
-        ("score_gathering.py", "reason_code"): "failure_reason()",
-        ("job_search.py", "phase"): "helper parameter; callers checked as literals",
-        ("job_search.py", "status"): "helper parameter; callers checked as literals",
-        ("job_search.py", "decision"): "helper parameter; callers checked as literals",
-        ("job_search.py", "scope"): "helper parameter; callers checked as literals",
-        ("service.py", "availability_state"): "availability dict state, registered",
-        ("service.py", "latency_bucket"): "monitoring.latency_bucket()",
-        ("service.py", "reason_code"): "failure_reason() / FailureCode",
+        ("admin.py", "_state_action", "action"): "state-action literals; test_monitoring_vendor_boundary",
+        ("admin.py", "_toggle", "action"): "enable/disable literals; vendor-boundary test",
+        ("admin.py", "_toggle", "capability"): "CapabilitySwitch.key, registry holds ALLOWED_CAPABILITY_KEYS",
+        ("admin_dashboard.py", "_acquire_pipeline_slot", "action"): "'Queue'.lower(); test_monitoring_vendor_boundary",
+        ("admin_dashboard.py", "_acquire_pipeline_slot", "reason_code"): "skip_reason literals, registered; vendor-boundary test",
+        ("admin_dashboard.py", "_acquire_pipeline_slot", "run_type"): "AgentRun.RunType member",
+        ("admin_dashboard.py", "retry_failed_view", "reason_code"): "skip_reason literals, registered; vendor-boundary test",
+        ("admin_dashboard.py", "retry_failed_view", "run_type"): "AgentRun.RunType member",
+        ("agent_runs.py", "claim_run", "run_type"): "AgentRun.RunType value",
+        ("agent_runs.py", "finalize_failure", "reason_code"): "failure_reason(), registered",
+        ("agent_runs.py", "finalize_failure", "run_type"): "AgentRun.RunType value",
+        ("agent_runs.py", "finalize_failure", "status"): "AgentRun.Status value / literal map",
+        ("agent_runs.py", "record_agent_event", "<payload>"): "payload built from run fields; enum keys sanitized by event_attributes",
+        ("agent_runs.py", "record_skipped", "reason_code"): "record_skipped reasons, registered",
+        ("agent_runs.py", "record_skipped", "run_type"): "AgentRun.RunType value",
+        ("assistant_status.py", "assistant_status", "state"): "assistant_status state constants",
+        ("crawl_healthcheck.py", "_emit_pipeline_health", "<payload>"): "pipeline_health gauge dict; EVENT_SCHEMAS allowlist",
+        ("crawl_healthcheck.py", "handle", "<payload>"): "healthcheck summary dict; sanitized by event_attributes",
+        ("crawl_healthcheck.py", "handle", "reason_code"): "failure_reason()",
+        ("crawl_runs.py", "trigger_crawl", "<event name>"): "IfExp over crawl_run_* names, each registered (test_crawl_runs)",
+        ("crawl_scheduler.py", "plan_crawls", "<payload>"): "planning counts dict; sanitized by event_attributes",
+        ("job_ingest.py", "ingest_job_source", "reason_code"): "SKIP_* constants",
+        ("job_matches.py", "job_match_status", "state"): "empty_state constants",
+        ("job_pipeline.py", "run_job_pipeline", "<payload>"): "stage summary dict; sanitized by event_attributes",
+        ("job_pipeline.py", "run_job_pipeline", "reason_code"): "failure_reason() / literals",
+        ("job_search.py", "_preference_decision_event", "decision"): "helper parameter; callers checked as literals",
+        ("job_search.py", "_preference_decision_event", "origin"): "_token_origin() allowlist; test_assistant_telemetry origin tests",
+        ("job_search.py", "_preference_decision_event", "scope"): "helper parameter; callers checked as literals",
+        ("job_search.py", "_preference_decision_event", "status"): "derived from HTTP status: ok_status literals or stale/invalid/failed",
+        ("job_search.py", "_turn_event", "<payload>"): "phase/attempt payload; phase resolved via HELPERS",
+        ("job_search.py", "agent_preference_apply", "decision"): "meta['decision'] is apply or dismiss; apply tests",
+        ("job_search.py", "agent_preference_apply", "scope"): "meta['scope'] is account or search; apply tests",
+        ("publication_sweep.py", "handle", "<payload>"): "sweep summary dict; EVENT_SCHEMAS allowlist",
+        ("publication_sweep.py", "handle", "reason_code"): "failure_reason()",
+        ("recompute_matches.py", "run_payload", "<payload>"): "matching_batch counters dict; sanitized by event_attributes",
+        ("score_gathering.py", "gather_scores", "reason_code"): "failure_reason()",
+        ("service.py", "_invoke_gateway", "reason_code"): "failure_reason() / FailureCode",
+        ("service.py", "run", "availability_state"): "availability dict state, registered",
+        ("service.py", "run", "latency_bucket"): "monitoring.latency_bucket()",
+        ("service.py", "run", "reason_code"): "failure_reason() / FailureCode",
     }
 
     @staticmethod
@@ -445,6 +465,7 @@ class RecordEventRegistryTests(TestCase):
         return None
 
     def _walk(self):
+        """Yield ``(file name, enclosing function, call node)`` for every call."""
         import ast
         import pathlib
 
@@ -452,25 +473,50 @@ class RecordEventRegistryTests(TestCase):
         for path in root.rglob("*.py"):
             if "tests" in path.parts or "migrations" in path.parts:
                 continue
-            for node in ast.walk(ast.parse(path.read_text())):
+            tree = ast.parse(path.read_text())
+            owner = {}
+            for fn in ast.walk(tree):
+                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for child in ast.walk(fn):
+                        owner[child] = fn.name
+            for node in ast.walk(tree):
                 if isinstance(node, ast.Call):
-                    yield path, node
+                    yield path.name, owner.get(node, "<module>"), node
 
-    def test_enum_values_in_record_event_calls_are_registered(self):
+    def _scan(self):
+        """Classify every audited call.
+
+        Returns ``(checked, names, dynamic)``: ``checked`` is a list of
+        ``(site, key, literal)`` enum literals, ``names`` the literal event
+        names, and ``dynamic`` the set of ``(file, function, what)`` sites
+        whose event name, payload or enum value cannot be resolved statically.
+        """
         import ast
 
-        registry = monitoring.enum_values()
-        checked = 0
-        dynamic = set()
-        for path, node in self._walk():
+        checked, names, dynamic = [], [], set()
+        for fname, func, node in self._walk():
             name = getattr(node.func, "attr", getattr(node.func, "id", ""))
             pairs = []
-            if name == "record_event" and len(node.args) >= 2 and isinstance(node.args[1], ast.Dict):
-                pairs = [
-                    (k.value, v)
-                    for k, v in zip(node.args[1].keys, node.args[1].values)
-                    if isinstance(k, ast.Constant)
-                ]
+            if name == "record_event" and node.args:
+                event = self._resolve(node.args[0])
+                if event is None:
+                    dynamic.add((fname, func, "<event name>"))
+                else:
+                    names.extend((f"{fname}:{node.lineno}", n) for n in event)
+                payload = node.args[1] if len(node.args) > 1 else None
+                if isinstance(payload, ast.Dict) and None not in payload.keys:
+                    pairs = [
+                        (k.value, v)
+                        for k, v in zip(payload.keys, payload.values)
+                        if isinstance(k, ast.Constant)
+                    ]
+                    dynamic.update(
+                        (fname, func, "<payload key>")
+                        for k in payload.keys
+                        if not isinstance(k, ast.Constant)
+                    )
+                elif payload is not None:
+                    dynamic.add((fname, func, "<payload>"))
             elif name in self.HELPERS:
                 pairs = [
                     (key, node.args[idx])
@@ -488,19 +534,62 @@ class RecordEventRegistryTests(TestCase):
                     continue
                 values = self._resolve(value)
                 if values is None:
-                    dynamic.add((path.name, key))
+                    dynamic.add((fname, func, key))
                     continue
-                for literal in values:
-                    checked += 1
-                    self.assertIn(
-                        literal, registry[key], f"{path.name}:{node.lineno} {key}={literal!r}"
-                    )
-        self.assertGreater(checked, 30)
+                checked.extend((f"{fname}:{node.lineno}", key, v) for v in values)
+        return checked, names, dynamic
+
+    def test_enum_values_in_record_event_calls_are_registered(self):
+        registry = monitoring.enum_values()
+        checked, names, dynamic = self._scan()
+        for site, literal in names:
+            self.assertIn(literal, monitoring.EVENT_NAMES, f"{site} event name {literal!r}")
+        for site, key, literal in checked:
+            self.assertIn(literal, registry[key], f"{site} {key}={literal!r}")
+        self.assertGreater(len(checked), 30)
+        self.assertGreater(len(names), 30)
         unaudited = {site for site in dynamic if site not in self.AUDITED_DYNAMIC}
         self.assertFalse(
             unaudited,
-            f"dynamic enum values need a vendor-boundary test and an AUDITED_DYNAMIC entry: {sorted(unaudited)}",
+            "unresolvable record_event names/payloads/enum values need a "
+            f"vendor-boundary test and an AUDITED_DYNAMIC entry: {sorted(unaudited)}",
         )
+        stale = set(self.AUDITED_DYNAMIC) - dynamic
+        self.assertFalse(stale, f"AUDITED_DYNAMIC entries no longer match a call site: {sorted(stale)}")
+
+    def test_crawl_run_skipped_is_registered_and_emitted(self):
+        self.assertIn("crawl_run_skipped", monitoring.EVENT_NAMES)
+        payload = monitoring.event_attributes("crawl_run_skipped", {"source_key": "fixture-adapter"})
+        self.assertEqual(payload["event_name"], "crawl_run_skipped")
+
+    def test_audit_flags_unregistered_names_and_unlisted_dynamic_sites(self):
+        import ast
+        import textwrap
+        from unittest import mock
+
+        src = textwrap.dedent(
+            """
+            def emit(name, gauges):
+                record_event("not_a_real_event", {"status": "ok"})
+                record_event(name, gauges)
+                record_event("assistant_turn", {"reason_code": gauges})
+            """
+        )
+        tree = ast.parse(src)
+        calls = [("fake.py", "emit", n) for n in ast.walk(tree) if isinstance(n, ast.Call)]
+        with mock.patch.object(self, "_walk", return_value=calls):
+            checked, names, dynamic = self._scan()
+        self.assertIn(("fake.py:3", "not_a_real_event"), names)
+        self.assertNotIn("not_a_real_event", monitoring.EVENT_NAMES)
+        self.assertEqual(
+            dynamic,
+            {
+                ("fake.py", "emit", "<event name>"),
+                ("fake.py", "emit", "<payload>"),
+                ("fake.py", "emit", "reason_code"),
+            },
+        )
+        self.assertFalse(dynamic & set(self.AUDITED_DYNAMIC))
 
     def test_computed_sources_stay_inside_the_registry(self):
         registry = monitoring.enum_values()
