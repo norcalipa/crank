@@ -155,7 +155,7 @@ describe('OrganizationList', () => {
             expect(screen.getAllByText('Company score').length).toBe(3);
             expect(screen.getAllByText('RTO policy').length).toBe(2);
             expect(screen.getAllByText('Funding round').length).toBe(2);
-            expect(screen.getAllByText('Profile completeness').length).toBe(2);
+            expect(screen.getAllByText('Rating coverage').length).toBe(3);
         });
     });
 
@@ -179,8 +179,8 @@ describe('OrganizationList', () => {
             expect(rtoLabels.length).toBe(2);
             const fundingLabels = screen.getAllByText('Funding round');
             expect(fundingLabels.length).toBe(2);
-            const completenessLabels = screen.getAllByText('Profile completeness');
-            expect(completenessLabels.length).toBe(2);
+            const completenessLabels = screen.getAllByText('Rating coverage');
+            expect(completenessLabels.length).toBe(3);
         });
     });
 
@@ -1881,6 +1881,40 @@ describe('OrganizationList', () => {
             const results = container.querySelector('.organization-results')!;
             expect(results.querySelector('.organization-table-wrap')).not.toBeNull();
             expect(results.querySelector('.organization-cards')).not.toBeNull();
+        });
+    });
+
+    describe('evidence status (#473)', () => {
+        const summary = (overrides: Record<string, unknown> = {}) => ({
+            verified: 0, stale: 0, unknown: 7, total: 7, fact_coverage: 0, last_verified_at: null,
+            pending_review: 0, ...overrides,
+        });
+        const evidenceOrgs = [
+            {...organizations[0], id: 11, name: 'Verified Co', rating_dimensions_total: 2, rating_dimensions_covered: 2,
+                evidence: summary({verified: 3, unknown: 4, fact_coverage: 3, last_verified_at: '2025-01-05T00:00:00Z'})},
+            {...organizations[0], id: 12, name: 'Stale Co', rating_dimensions_total: 2, rating_dimensions_covered: 1,
+                evidence: summary({stale: 2, unknown: 5, fact_coverage: 2, last_verified_at: '2024-02-01T00:00:00Z',
+                    pending_review: 1})},
+            {...organizations[0], id: 13, name: 'Unknown Co', rating_dimensions_total: 2, rating_dimensions_covered: 0,
+                evidence: summary()},
+            {...organizations[1], id: 14, name: 'Legacy Co'},
+        ];
+
+        test('table rows and cards show coverage, facts, last verified and pending review', async () => {
+            render(<OrganizationList organizations={evidenceOrgs}/>);
+            const table = await screen.findByRole('table');
+            const row = (name: string) => within(table).getByRole('button', {name: `View details for ${name}`});
+            expect(row('Verified Co')).toHaveTextContent('2 of 2');
+            expect(within(row('Verified Co')).getByTestId('evidence-facts')).toHaveTextContent('3 verified · 0 stale · 4 unknown');
+            expect(within(row('Verified Co')).getByTestId('evidence-last-verified')).toHaveTextContent('Last verified Jan 5, 2025');
+            expect(row('Stale Co')).toHaveTextContent('1 of 2');
+            expect(row('Stale Co').querySelector('.evidence-badge-stale')).not.toBeNull();
+            expect(within(row('Stale Co')).getByTestId('evidence-pending')).toHaveTextContent('Pending review');
+            expect(within(row('Unknown Co')).getByTestId('evidence-last-verified')).toHaveTextContent('Never verified');
+            expect(within(row('Unknown Co')).queryByTestId('evidence-pending')).toBeNull();
+            expect(row('Legacy Co')).toHaveTextContent('Unknown');
+            expect(row('Legacy Co')).toHaveTextContent('70%');
+            expect(document.querySelectorAll('.organization-card-evidence').length).toBe(4);
         });
     });
 });

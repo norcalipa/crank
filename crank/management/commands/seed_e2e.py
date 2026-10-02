@@ -89,6 +89,11 @@ TARGET_ORGS: list[tuple[str, float]] = [
     ),
 ]
 
+#: Second rating dimension, weighted by no algorithm, scored for Beta only so
+#: rating coverage reads "2 of 2" for Beta and "1 of 2" elsewhere (issue #473).
+EXTRA_SCORE_TYPE_NAME = "E2E Leadership"
+EVIDENCE_VERSION = "e2e-473a"
+
 ACTIVE_LISTING_URL = "https://www.usajobs.gov/Job/e2e-seed-active-1"
 
 #: The seeded listing's stable synthetic key. Reconciliation is keyed on
@@ -97,6 +102,40 @@ ACTIVE_LISTING_URL = "https://www.usajobs.gov/Job/e2e-seed-active-1"
 ACTIVE_LISTING_EXTERNAL_ID = "e2e-seed-active-1"
 
 ACTIVE_LISTING_TITLE = "E2E Seed Software Engineer"
+
+
+def _seed_evidence(
+    org,
+    field_key,
+    state,
+    value,
+    source_url,
+    source_domain,
+    verified_at,
+    last_checked_at=None,
+):
+    """Seed one directly-written evidence row keyed on (org, field, state, version)."""
+    values = {
+        "value_text": value,
+        "source_url": source_url,
+        "source_domain": source_domain,
+        "extractor_version": EVIDENCE_VERSION,
+    }
+    # Timestamps are creation-scoped (see module docstring) so reruns stay identical.
+    row, _ = CompanyFieldEvidence.objects.get_or_create(
+        organization=org,
+        field_key=field_key,
+        state=state,
+        validation_version=EVIDENCE_VERSION,
+        defaults={
+            **values,
+            "observed_at": verified_at or timezone.now(),
+            "last_verified_at": verified_at,
+            "last_checked_at": last_checked_at or verified_at,
+        },
+    )
+    _sync_fields(row, values)
+    return row
 
 
 def _sync_fields(instance, values: dict) -> bool:
@@ -270,6 +309,49 @@ class Command(BaseCommand):
             name__startswith="E2E "
         ).count()
 
+        # -- Rating coverage + evidence status fixtures (issue #473) ----------
+        extra_type, _ = ScoreType.objects.get_or_create(name=EXTRA_SCORE_TYPE_NAME)
+        _sync_fields(extra_type, {"status": 1})
+        beta = orgs[TARGET_ORGS[1][0]]
+        extra_score, _ = Score.objects.get_or_create(
+            type=extra_type,
+            source=rating_source,
+            target=beta,
+            status=1,
+            defaults={
+                "score": 4.0,
+                "low_threshold": 0.0,
+                "high_threshold": 5.0,
+                "activate_date": now - timedelta(days=30),
+                "deactivate_date": None,
+            },
+        )
+        _sync_fields(
+            extra_score, {"score": 4.0, "low_threshold": 0.0, "high_threshold": 5.0}
+        )
+        Score.objects.filter(type=extra_type).exclude(pk=extra_score.pk).delete()
+        long_ago = now - timedelta(days=400)
+        beta_url = "https://e2e.example.test/beta/about"
+        FieldKey = CompanyFieldEvidence.FieldKey
+        State = CompanyFieldEvidence.State
+        for field_key, value in (
+            (FieldKey.RTO_POLICY, "Hybrid"),
+            (FieldKey.FUNDING_ROUND, "Series B"),
+        ):
+            _seed_evidence(
+                beta, field_key, State.ACCEPTED, value, beta_url, "e2e.example.test", long_ago
+            )
+        _seed_evidence(
+            beta,
+            FieldKey.RTO_POLICY,
+            State.CONFLICTED,
+            "Fully in office",
+            "https://rival.example.test/beta",
+            "rival.example.test",
+            None,
+            last_checked_at=now,
+        )
+
         # -- Approved+enabled fixture source with an active listing ----------
         # Distinct name so curated seed_job_sources policy is never rewritten.
         usajobs = next(
@@ -368,6 +450,16 @@ class Command(BaseCommand):
                 "extractor_version": "e2e-seed-1",
                 "state": CompanyFieldEvidence.State.ACCEPTED,
             },
+        )
+        # Off-domain source: the dialog must show this as text, never a link.
+        _seed_evidence(
+            alpha,
+            FieldKey.LOCATIONS,
+            State.ACCEPTED,
+            "Remote (US)",
+            "https://elsewhere.example.net/alpha/locations",
+            "e2e.example.test",
+            now,
         )
         # Key the canonical listing on its own synthetic (source, external_id)
         # identity FIRST — never on canonical_url. A URL-first lookup here made

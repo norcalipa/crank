@@ -123,7 +123,7 @@ describe('OrganizationDetailsPopup', () => {
         expect(screen.getByText('Remote')).toBeInTheDocument();
         expect(screen.getAllByText('Yes').length).toBe(2); // For gives_ratings and accelerated_vesting
         expect(screen.getByText('5')).toBeInTheDocument(); // For ranking
-        expect(screen.getByText('85%')).toBeInTheDocument(); // For profile_completeness
+        expect(screen.getByTestId('rating-coverage')).toHaveTextContent('85% of rating dimensions'); // fallback without dimension counts
         expect(screen.getByRole('dialog', {name: 'Test Organization'})).toHaveAttribute('aria-modal', 'true');
         expect(screen.getByRole('button', {name: 'Close'})).toHaveFocus();
     });
@@ -855,14 +855,15 @@ describe('OrganizationDetailsPopup', () => {
         provenanceWithEvidence();
         render(<OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}}/>);
         const meta = await screen.findByTestId('field-evidence-rto_policy');
-        expect(meta).toHaveTextContent('example.com, last verified');
+        expect(meta).toHaveTextContent('Source: example.com');
+        expect(meta).toHaveTextContent('Last verified');
         cleanup();
         provenanceWithEvidence({fields: [{
             field_key: 'rto_policy', state: 'accepted', value: 'Remote first', source_domain: '',
             last_verified_at: '2025-01-10T12:00:00Z', stale: false, scope: {},
         }]});
         render(<OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}}/>);
-        expect(await screen.findByTestId('field-evidence-rto_policy')).toHaveTextContent('unknown source, last verified');
+        expect(await screen.findByTestId('field-evidence-rto_policy')).toHaveTextContent('Source: unknown source');
     });
 
     test('renders verified field rows with value, source domain and observed date', async () => {
@@ -1332,14 +1333,14 @@ describe('OrganizationDetailsPopup', () => {
             expect(grid.querySelector('.popup-details-scores')).toBeInTheDocument();
         });
 
-        test('Rank and Profile Completeness share one score card with the scores', () => {
+        test('Rank and Rating coverage share one score card with the scores', () => {
             renderAuthenticated(jest.fn());
             const card = screen.getByTestId('popup-details-score-card');
             expect(card).toHaveClass('popup-details-scores');
             const rows = card.querySelectorAll('.popup-details-score-row');
             expect(rows).toHaveLength(2);
             expect(rows[0]).toHaveTextContent(`Rank:${mockOrganization.ranking}`);
-            expect(rows[1]).toHaveTextContent(`Profile Completeness:${mockOrganization.profile_completeness.toFixed(0)}%`);
+            expect(rows[1]).toHaveTextContent(`Rating coverage:${mockOrganization.profile_completeness.toFixed(0)}% of rating dimensions`);
             expect(screen.getByTestId('popup-details-grid').querySelector('.popup-details-profile'))
                 .not.toHaveTextContent('Rank:');
         });
@@ -1483,7 +1484,7 @@ describe('OrganizationDetailsPopup', () => {
             expect(list).toHaveTextContent('unknown_key');
             expect(list).toHaveTextContent('RTO Policy:');
             expect(list).not.toHaveTextContent('RTO policy');
-            expect(list.querySelector('.badge-pending')).not.toBeNull();
+            expect(list.querySelector('.evidence-badge-pending')).not.toBeNull();
             expect(list).not.toHaveTextContent(/verified/i);
         });
 

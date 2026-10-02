@@ -678,15 +678,16 @@ body.app-nav-drawer-open {
 .organization-table {
     table-layout: fixed;
     width: 100%;
-    min-width: 48rem;
+    min-width: 56rem;
     margin-bottom: 0;
 }
 
 .organization-table .col-rank { width: 5rem; }
-.organization-table .col-score { width: 11rem; }
-.organization-table .col-funding { width: 9rem; }
-.organization-table .col-rto { width: 8rem; }
-.organization-table .col-profile { width: 9rem; }
+.organization-table .col-score { width: 8rem; }
+.organization-table .col-funding { width: 8rem; }
+.organization-table .col-rto { width: 7rem; }
+.organization-table .col-profile { width: 7rem; }
+.organization-table .col-evidence { width: 14rem; }
 .organization-table .col-name { width: auto; }
 
 .organization-table th,
@@ -711,12 +712,12 @@ body.app-nav-drawer-open {
 
 /* The table-to-card switch follows the width available to the results (not
    the viewport), so it also holds when a side panel narrows the page (#479).
-   48rem is the table's minimum width. */
+   56rem is the table's minimum width. */
 .organization-results {
     container: organization-results / inline-size;
 }
 
-@container organization-results (max-width: 48rem) {
+@container organization-results (max-width: 56rem) {
     .organization-table-wrap {
         display: none;
     }
@@ -752,7 +753,6 @@ body.app-nav-drawer-open {
     }
 
     .organization-card .organization-card-score {
-        grid-column: 1 / -1;
         font-size: 1.25rem;
         font-weight: 700;
     }
@@ -4229,3 +4229,110 @@ span.priority-chip-button { cursor: default; }
         padding: .5rem !important;
     }
 }
+
+/* issue #473 evidence status */
+.evidence-badge {
+    display: inline-block;
+    padding: .125rem .5rem;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    font-size: .8125rem;
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: nowrap;
+}
+
+.evidence-badge-verified { color: #86efac; }
+.evidence-badge-stale { color: #fcd34d; }
+.evidence-badge-unknown { color: #d1d5db; }
+.evidence-badge-profile { color: #bfdbfe; }
+.evidence-badge-pending { color: #fdba74; border-style: dashed; }
+.evidence-badge-conflicted { color: #fda4af; border-style: dashed; }
+
+.table .evidence-badge,
+.card .evidence-badge { background: transparent; }
+
+.evidence-summary {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: .25rem;
+    font-size: .8125rem;
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+}
+
+.evidence-summary-fresh { color: var(--bs-secondary-color); }
+
+.organization-card .organization-card-evidence { grid-column: 1 / -1; }
+
+.evidence-coverage > div + div { margin-top: .25rem; }
+
+.evidence-row-value .evidence-value,
+.evidence-pending-item .evidence-observed-value {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.evidence-meta a { overflow-wrap: anywhere; }
+
+.evidence-external-note { color: var(--bs-secondary-color); font-size: .75rem; }
+
+.evidence-timestamps { margin-top: .25rem; }
+
+.evidence-timestamps summary {
+    display: inline-block;
+    min-block-size: 44px;
+    line-height: 44px;
+    cursor: pointer;
+    color: var(--bs-link-color);
+}
+
+.evidence-timestamps summary:focus-visible,
+.evidence-retry:focus-visible,
+.evidence-empty-action:focus-visible {
+    outline: 3px solid #93c5fd;
+    outline-offset: 2px;
+}
+
+.evidence-timestamps dl { display: grid; grid-template-columns: max-content 1fr; gap: 0 .75rem; }
+.evidence-timestamps dd { margin: 0; }
+
+.evidence-retry,
+.evidence-empty-action {
+    min-block-size: 44px;
+    display: inline-flex;
+    align-items: center;
+}
+
+.evidence-unavailable,
+.evidence-empty {
+    padding: .75rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--bs-border-radius);
+}
+
+.evidence-skeleton-row { display: flex; gap: .75rem; margin-bottom: .75rem; }
+
+.evidence-skeleton-bar {
+    display: block;
+    block-size: 1rem;
+    border-radius: .25rem;
+    background: linear-gradient(90deg, #374151 25%, #4b5563 50%, #374151 75%);
+    background-size: 200% 100%;
+    animation: evidence-skeleton-shimmer 1.4s linear infinite;
+}
+
+.evidence-skeleton-label { flex: 0 0 38%; }
+.evidence-skeleton-value { flex: 1 1 auto; }
+
+@keyframes evidence-skeleton-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .evidence-skeleton-bar { animation: none; background: #374151; }
+}
+
+.evidence-legend li + li { margin-top: .25rem; }
