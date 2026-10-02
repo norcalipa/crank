@@ -3364,7 +3364,7 @@ body.assistant-open .app-content .table-responsive,
     .priority-chip:hover .priority-chip-icon,
     .priority-chip-button:focus-visible .priority-chip-icon { opacity: 1; }
 }
-.priority-chips-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 1rem; margin: 0 0 0.5rem; }
+.priority-chips-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 1rem; margin: 0 0 0.25rem; }
 .priorities-section .priority-chips-more { min-height: 2rem; padding: 0; }
 @media (pointer: coarse) {
     .priorities-section .priority-chips-more { min-height: 44px; }
