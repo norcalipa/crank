@@ -3,10 +3,11 @@
 // Navigation-state sharing (issue #479): the conversation, page context,
 // drafts and result position survive full Django page transitions, never
 // cross accounts, and never appear in URLs or history.state.
-import {expect, Page, test} from '@playwright/test';
-import {E2E_PASSWORD, login, requireDjangoTier} from './support';
+import {chromium, expect, Page, test} from '@playwright/test';
+import {DJANGO_BASE_URL, E2E_PASSWORD, login, requireDjangoTier} from './support';
 
 const COMPANY = 'E2E Alpha Corp';
+const ACCOUNT_DIGEST = /^u:[0-9a-f]{16}$/;
 const STRIP = '[data-testid="assistant-context-strip"]';
 
 async function askAboutCompany(page: Page): Promise<void> {
@@ -449,7 +450,9 @@ test.describe('navigation state (issue #479)', () => {
         await page.goto('/help/');
         await page.waitForTimeout(500);
         const record = JSON.parse(await page.evaluate(() => window.sessionStorage.getItem('crank:workspace:v1') ?? 'null'));
-        expect(record.account).toEqual({status: 'authenticated', key: 'e2e_user'});
+        expect(record.account.status).toBe('authenticated');
+        expect(record.account.key).toMatch(/^d:[0-9a-f]{16}$/);
+        expect(JSON.stringify(record)).not.toContain('e2e_user');
         expect(record.context.organizationName).toBe(COMPANY);
         await page.unroute('**/api/account/whoami/');
         await page.reload();
@@ -488,7 +491,7 @@ test.describe('navigation state (issue #479)', () => {
         await page.waitForURL((url) => url.pathname === '/chat/');
 
         // The other tab has been told and re-hydrated onto the signed-in account…
-        await expect.poll(() => anonymous.evaluate(() => window.sessionStorage.getItem('crank:nav-account-seen'))).toBe('u:e2e_user');
+        await expect.poll(() => anonymous.evaluate(() => window.sessionStorage.getItem('crank:nav-account-seen'))).toMatch(ACCOUNT_DIGEST);
         // …and the draft still arrives in the composer that signed in.
         await expect(page.locator('textarea[aria-label="Message"]')).toHaveValue(draft);
     });
@@ -504,7 +507,7 @@ test.describe('navigation state (issue #479)', () => {
 
         const other = await context.newPage();
         await other.goto('/');
-        await expect.poll(() => other.evaluate(() => window.sessionStorage.getItem('crank:nav-account-seen'))).toBe('u:e2e_user');
+        await expect.poll(() => other.evaluate(() => window.sessionStorage.getItem('crank:nav-account-seen'))).toMatch(ACCOUNT_DIGEST);
         await context.clearCookies({name: 'sessionid'});
         await other.reload();
         await expect.poll(() => other.evaluate(() => window.sessionStorage.getItem('crank:nav-account-seen'))).toBe('anon');
@@ -516,4 +519,141 @@ test.describe('navigation state (issue #479)', () => {
         await page.goto('/chat/');
         await expect(page.locator('textarea[aria-label="Message"]')).toHaveValue('draft that must survive expiry');
     });
+
+    test('a failed whoami that lands after the chat mounts keeps the signed-in draft slot and hides the signed-out introduction', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await login(page);
+        await page.goto('/chat/');
+        await sendMessage(page, 'seed a conversation for the draft key');
+
+        await page.addInitScript(() => {
+            const w = window as unknown as {__hydrations: {unobserved: boolean}[]};
+            w.__hydrations = [];
+            document.addEventListener('crank:auth-hydrated', (e) => {
+                w.__hydrations.push({unobserved: (e as CustomEvent).detail.unobserved === true});
+            });
+        });
+        let failedWhoami = false;
+        await page.route('**/api/account/whoami/', async (route) => {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            failedWhoami = true;
+            await route.fulfill({status: 503, body: 'down'});
+        });
+        await page.reload();
+        const composer = page.locator('textarea[aria-label="Message"]');
+        await expect(composer).toBeEnabled();
+        await expect.poll(() => failedWhoami, {timeout: 10_000}).toBe(true);
+        // Type only once the page has processed the failed hydration.
+        await expect.poll(() => page.evaluate(() => (window as unknown as {
+            __hydrations: {unobserved: boolean}[];
+        }).__hydrations.some((h) => h.unobserved))).toBe(true);
+        await expect(page.getByTestId('signed-out-introduction')).toHaveCount(0);
+        await composer.fill('SIGNED-IN PRIVATE TEXT');
+        await expect.poll(() => page.evaluate(() => Object.keys(window.localStorage)
+            .filter((k) => /^crank:jobsearch:draft:\d+$/.test(k))
+            .map((k) => window.localStorage.getItem(k)))).toContain('SIGNED-IN PRIVATE TEXT');
+        expect(await page.evaluate(() => window.localStorage.getItem('crank:jobsearch:draft:pending'))).toBeNull();
+        await expect(page.getByTestId('signed-out-introduction')).toHaveCount(0);
+    });
+
+    // `nonAppPage`: the tab sits on a document without app-nav (so its
+    // `crank:nav-account-seen` never moves) while the account changes in
+    // another tab. Storage events are swallowed only in documents that have
+    // entered the bfcache, modelling an engine that does not replay them.
+    for (const variant of [
+        {name: 'a page of the app', offline: false, away: '/help/'},
+        {name: 'a non-app page', offline: false, away: '/static/dist/manifest.json'},
+        {name: 'a non-app page, offline at restore', offline: true, away: '/static/dist/manifest.json'},
+        {name: 'a non-app page, offline, with no epoch change (only last-account differs)', offline: true, forgetEpoch: true, away: '/static/dist/manifest.json'},
+    ]) {
+        test(`a page restored from the back/forward cache is purged after another account signs in: tab on ${variant.name} (real bfcache)`, async () => {
+            const browser = await chromium.launch({
+                channel: 'chromium',
+                ignoreDefaultArgs: ['--disable-back-forward-cache'],
+                args: ['--host-resolver-rules=MAP local.crank.fyi 127.0.0.1'],
+            });
+            try {
+                const context = await browser.newContext({baseURL: DJANGO_BASE_URL, viewport: {width: 1280, height: 900}});
+                await context.addInitScript(() => {
+                    const w = window as unknown as {__pageshows: boolean[]; __cached: boolean; __epochEvents: (string | null)[]};
+                    w.__pageshows = [];
+                    w.__epochEvents = [];
+                    window.addEventListener('storage', (e) => {
+                        if (e.key === 'crank:account-epoch') w.__epochEvents.push(e.newValue);
+                    });
+                    w.__cached = false;
+                    window.addEventListener('pagehide', (e) => {
+                        if (e.persisted) w.__cached = true;
+                    });
+                    window.addEventListener('storage', (e) => {
+                        if (w.__cached) e.stopImmediatePropagation();
+                    }, true);
+                    window.addEventListener('pageshow', (e) => w.__pageshows.push(e.persisted));
+                });
+                const page = await context.newPage();
+                await login(page);
+                await askAboutCompany(page);
+                const secret = 'PRIVATE MESSAGE FROM ACCOUNT A';
+                await sendMessage(page, secret);
+                const epochBefore = await page.evaluate(() => window.localStorage.getItem('crank:account-epoch'));
+                // The hold must be in place before the page enters the bfcache,
+                // or it never delays the restored page's whoami.
+                if (!variant.offline) {
+                    await page.route('**/api/account/whoami/', async (route) => {
+                        await new Promise((resolve) => setTimeout(resolve, 3000));
+                        await route.continue().catch(() => undefined);
+                    });
+                }
+                await page.goto(variant.away);
+                await expect(page).toHaveURL(new RegExp(`${variant.away.replace(/\./g, '\\.')}$`));
+
+                const other = await context.newPage();
+                await other.goto('/chat/');
+                await logout(other);
+                await login(other, 'e2e_user_b', E2E_PASSWORD);
+                if (variant.forgetEpoch) {
+                    // No tab announced the switch: only the shared last-account
+                    // (rewritten for B by the chat mount) can say it happened.
+                    await other.goto('/chat/');
+                    await expect.poll(() => other.evaluate(() => window.localStorage.getItem('crank:last-account'))).toMatch(/^d:/);
+                    await other.evaluate((value) => {
+                        if (value === null) window.localStorage.removeItem('crank:account-epoch');
+                        else window.localStorage.setItem('crank:account-epoch', value);
+                    }, epochBefore);
+                }
+                const announcedBefore = await other.evaluate(() => (window as unknown as {__epochEvents: unknown[]}).__epochEvents.length);
+
+                if (variant.offline) {
+                    await context.setOffline(true);
+                }
+                await page.goBack({waitUntil: 'commit'});
+                await expect.poll(() => page.evaluate(() => (window as unknown as {__pageshows?: boolean[]}).__pageshows ?? []),
+                    {message: 'the page must come from the back/forward cache'}).toContain(true);
+                // Well before whoami can answer: the epoch comparison purges
+                // synchronously and needs no network.
+                await expect(page.getByText(secret)).toHaveCount(0, {timeout: 1500});
+                await expect(page.locator(STRIP)).toHaveCount(0, {timeout: 1500});
+                if (variant.offline) {
+                    await expect(page.locator('#nav-account')).not.toContainText('e2e_user');
+                } else {
+                    await expect(page.locator('#nav-account')).toContainText('e2e_user_b');
+                }
+                const record = await page.evaluate(() => window.sessionStorage.getItem('crank:workspace:v1') ?? '');
+                expect(record).not.toContain(COMPANY);
+                expect(record).not.toContain('e2e_user');
+                // The restored document never re-announced: the live tab saw no
+                // epoch write since before Back (online: after whoami answered).
+                if (!variant.offline) {
+                    await expect(page.locator('#nav-account')).toContainText('e2e_user_b', {timeout: 8000});
+                    await page.waitForTimeout(500);
+                } else {
+                    await page.waitForTimeout(1500);
+                }
+                expect(await other.evaluate(() => (window as unknown as {__epochEvents: unknown[]}).__epochEvents.length)).toBe(announcedBefore);
+                await context.close();
+            } finally {
+                await browser.close();
+            }
+        });
+    }
 });
