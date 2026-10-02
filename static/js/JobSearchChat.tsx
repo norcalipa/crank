@@ -1,7 +1,6 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
-import {createRoot} from 'react-dom/client';
 
 import {preferencePathLabel, preferenceValueLabel} from './priorities/format';
 import {MATCH_CAP} from './priorities/api';
@@ -11,10 +10,13 @@ import {
     describeWorkspaceContext,
     getWorkspaceSnapshot,
     setWorkspaceConversation,
-    subscribeWorkspace,
     setPrioritiesEditorOpen,
     setPrioritiesRevision,
 } from './workspace/store';
+import {Transcript} from './chat/Transcript';
+import {Composer} from './chat/Composer';
+import {useTranscriptScroll} from './chat/useTranscriptScroll';
+import {useAccountGate} from './chat/useAccountGate';
 import {
     csrfFetch,
     newId,
@@ -36,10 +38,9 @@ import {
     writePendingDraft,
 } from './chat/storage';
 import type {InFlightTurn} from './chat/storage';
-import {hasResults, ResultCards} from './chat/ResultCards';
+import {hasResults} from './chat/ResultCards';
 import {
     AssistantStatusNotice,
-    AvailabilityNotice,
     isGatedState,
     PreferenceChangeNotice,
     PreferenceProposalNotice,
@@ -128,37 +129,12 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // retain the legacy create-on-mount contract for compatibility; the
     // prop-less workspace/test mount uses the issue #472 default of false.
     const createOnMount = props.createOnMount ?? props.isAuthenticated !== undefined;
-    // Cross-account purge, synchronously, before the first render commits
-    // (issue #465 review round 2). Conversation resume and
-    // adoptPendingDraft() both read local storage from mount effects, which
-    // run long before the async whoami hydration below can compare
-    // `crank:last-account`; until it resolved, the *previous* account's
-    // pending draft could be adopted into the new account's conversation.
-    // Reconciling the trusted server-rendered key here happens first, so
-    // there is nothing stale left to read. Idempotent: the second call of a
-    // StrictMode double render sees the key already stored.
-    const accountGuardRef = React.useRef(false);
-    if (!accountGuardRef.current) {
-        accountGuardRef.current = true;
-        reconcileAccountKey(accountKey || (props.workspaceMode !== undefined
-            && getWorkspaceSnapshot().account.status === 'authenticated'
-            ? getWorkspaceSnapshot().account.key
-            : ''));
-    }
-    // Account gate (issue #479): a lazily mounted workspace chat has no
-    // server-rendered accountKey, so until the shared store knows the account
-    // (crank:auth-hydrated) it must not adopt a pending draft or read stored
-    // drafts. The store is read at mount, so a mount after hydration is not
-    // left waiting for an event it can no longer receive.
-    const workspaceAccount = React.useSyncExternalStore(
-        subscribeWorkspace,
-        () => getWorkspaceSnapshot().account,
-    );
-    const accountPending = props.workspaceMode !== undefined
-        && !accountKey
-        && workspaceAccount.status === 'unknown';
-
-    const [effectiveAuthenticated, setEffectiveAuthenticated] = React.useState(isAuthenticated);
+    const {accountPending, effectiveAuthenticated, setEffectiveAuthenticated, workspaceAccount} = useAccountGate({
+        isAuthenticated,
+        accountKey,
+        workspaceMode: props.workspaceMode,
+        onPurge: () => resetForPurge(),
+    });
 
     const [conversationId, setConversationId] = React.useState<number | null>(null);
     const [messages, setMessages] = React.useState<ChatMessage[]>([]);
@@ -246,10 +222,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // client's wait; the server may still complete and is reconciled via GET.
     const abortRef = React.useRef<AbortController | null>(null);
     const statusRef = React.useRef<HTMLDivElement>(null);
-    const historyRef = React.useRef<HTMLDivElement>(null);
 
-    // Auto-resize the composer textarea up to a bounded max rows.
-    const MAX_COMPOSER_ROWS = 6;
     const composerRef = React.useRef<HTMLTextAreaElement>(null);
     const initErrorActionRef = React.useRef<HTMLButtonElement>(null);
     const refocusInitErrorRef = React.useRef(false);
@@ -273,27 +246,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // `20rem` inline minHeight below (16px rem * 20) so the two cannot drift.
     const MIN_CARD_PX = 320;
     const MIN_TRANSCRIPT_PX = 128;
-    const adjustComposerHeight = React.useCallback(() => {
-        const ta = composerRef.current;
-        if (!ta) return;
-        ta.style.height = 'auto';
-        if (!ta.value) {
-            ta.style.overflowY = 'hidden';
-            return;
-        }
-        const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 24;
-        const maxHeight = lineHeight * MAX_COMPOSER_ROWS;
-        const desired = Math.min(ta.scrollHeight, maxHeight);
-        ta.style.height = `${desired}px`;
-        ta.style.overflowY = ta.scrollHeight > maxHeight ? 'auto' : 'hidden';
-    }, []);
-    // Adjust the composer on mount and on every keystroke/content reset. This
-    // only invokes the (stable) adjuster; it does *not* (re)register the passive
-    // window/font listeners below, so typing does not recreate them each key.
-    React.useEffect(() => {
-        adjustComposerHeight();
-    }, [adjustComposerHeight, input]);
-
     const loadAvailability = React.useCallback(async () => {
         if (availabilityRequested.current) return;
         availabilityRequested.current = true;
@@ -327,33 +279,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         return null;
     }, [messages]);
 
-    // Register the long-lived listeners exactly once: window/viewport resize plus
-    // a one-shot document.fonts.ready hook so the height is re-measured once web
-    // fonts finish loading (the initial measure uses a fallback line-height before
-    // the real face paints). Because adjustComposerHeight is stable and the only
-    // dependency, these listeners are never re-registered per keystroke.
-    React.useEffect(() => {
-        // Defensive/idempotent mount-time measure: Effect 1 already runs
-        // adjustComposerHeight when the input state settles, but this guarantees
-        // the height is correct before the font/resize listeners are registered
-        // — the two effects are intentionally order-independent.
-        adjustComposerHeight();
-        let cancelled = false;
-        if (document.fonts && typeof document.fonts.ready?.then === 'function') {
-            const reflow = () => { if (!cancelled) adjustComposerHeight(); };
-            void document.fonts.ready.then(reflow, reflow);
-        }
-        window.addEventListener('resize', adjustComposerHeight);
-        window.visualViewport?.addEventListener('resize', adjustComposerHeight);
-        return () => {
-            cancelled = true;
-            window.removeEventListener('resize', adjustComposerHeight);
-            window.visualViewport?.removeEventListener('resize', adjustComposerHeight);
-        };
-    }, [adjustComposerHeight]);
     const cardRef = React.useRef<HTMLElement>(null);
-    const nearBottomRef = React.useRef(true);
-    const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
     const [cardHeight, setCardHeight] = React.useState<number | null>(null);
     // rAF bookkeeping so resize/orientation/keyboard bursts coalesce into at most
     // one measure per frame instead of thrashing layout on every event.
@@ -456,74 +382,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         return {minHeight: '20rem'};
     }, [cardHeight]);
 
-    const prefersReducedMotion = (): boolean => (
-        typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    );
-
-    const isNearBottom = (element: HTMLDivElement): boolean => (
-        element.scrollHeight - element.scrollTop - element.clientHeight <= 48
-    );
-
-    const scrollToLatest = (behavior: ScrollBehavior = prefersReducedMotion() ? 'auto' : 'smooth') => {
-        const history = historyRef.current;
-        if (!history) return;
-        if (typeof history.scrollTo === 'function') {
-            history.scrollTo({top: history.scrollHeight, behavior});
-        } else {
-            history.scrollTop = history.scrollHeight;
-        }
-        nearBottomRef.current = true;
-        setShowJumpToLatest(false);
-    };
-
-    // Keep the latest content visible only while the reader is already at the bottom.
-    React.useEffect(() => {
-        const history = historyRef.current;
-        if (!history) return;
-        const handleScroll = () => {
-            const nearBottom = isNearBottom(history);
-            nearBottomRef.current = nearBottom;
-            setShowJumpToLatest(!nearBottom);
-        };
-        history.addEventListener('scroll', handleScroll, {passive: true});
-        return () => history.removeEventListener('scroll', handleScroll);
-    }, []);
-
-    // Initial history, optimistic turns, replies, and the pending indicator all append
-    // content to the same viewport. Do not interrupt someone reading older messages.
-    React.useEffect(() => {
-        // Empty history (visual review #472 round 5): never auto-scroll — the
-        // empty state stays anchored at the top of the log so its lead is
-        // visible on first open, even on the shortest sheet viewports.
-        // Auto-scroll resumes once a conversation exists or content is added.
-        if (messages.length === 0) {
-            return;
-        }
-        if (loading || !nearBottomRef.current) {
-            if (!nearBottomRef.current) setShowJumpToLatest(true);
-            return;
-        }
-        scrollToLatest();
-    }, [messages.length, pending, loading]);
-
-    // Visual viewport changes cover mobile keyboards and orientation changes. Preserve
-    // the reader's position when they are browsing older messages.
-    React.useEffect(() => {
-        const handleViewportResize = () => {
-            const history = historyRef.current;
-            if (!history) return;
-            const nearBottom = isNearBottom(history);
-            nearBottomRef.current = nearBottom;
-            setShowJumpToLatest(!nearBottom);
-            if (nearBottom) scrollToLatest('auto');
-        };
-        window.addEventListener('resize', handleViewportResize);
-        window.visualViewport?.addEventListener('resize', handleViewportResize);
-        return () => {
-            window.removeEventListener('resize', handleViewportResize);
-            window.visualViewport?.removeEventListener('resize', handleViewportResize);
-        };
-    }, []);
+    const {historyRef, showJumpToLatest, scrollToLatest} = useTranscriptScroll({
+        messagesLength: messages.length,
+        pending,
+        loading,
+    });
 
     // Advisory availability check (issue #457). Runs on mount and is re-run
     // before each send and from the notice's retry affordance. A failed check
@@ -738,36 +601,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setPurgeGeneration((g) => g + 1);
         }
     };
-
-    React.useEffect(() => {
-        // Sign-out (issue #465 AC-9): app-nav.js purges storage and
-        // dispatches this directly before its redirect.
-        const handlePurged = () => resetForPurge();
-        // Account switch while this page is already open (issue #465 AC-9):
-        // app-nav.js's whoami hydration dispatches this on every load, and
-        // it is the only signal for a switch that happened after the server
-        // rendered `accountKey`. The load-time case is already handled
-        // synchronously by reconcileAccountKey() above — this covers the
-        // rest, using the same comparison so the two cannot disagree.
-        const handleHydrated = (e: Event) => {
-            const detail = (e as CustomEvent).detail as {authenticated?: boolean; username?: string; unobserved?: boolean} | undefined;
-            // A failed whoami says nothing about the account: keep the
-            // current auth state so the signed-in draft never moves to the
-            // shared anonymous `pending` slot.
-            if (!detail || detail.unobserved) return;
-            setEffectiveAuthenticated(!!detail.authenticated);
-            if (!detail.authenticated || !detail.username) return;
-            if (reconcileAccountKey(detail.username)) {
-                resetForPurge();
-            }
-        };
-        document.addEventListener('crank:private-state-purged', handlePurged);
-        document.addEventListener('crank:auth-hydrated', handleHydrated);
-        return () => {
-            document.removeEventListener('crank:private-state-purged', handlePurged);
-            document.removeEventListener('crank:auth-hydrated', handleHydrated);
-        };
-    }, [effectiveAuthenticated]);
 
     // Announce new assistant content to assistive tech.
     React.useEffect(() => {
@@ -1302,15 +1135,31 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
     };
 
-    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            const content = input.trim();
-            if (content && isReady && !composerGated) {
-                // Explicit send resolves the surfaced recovery draft (see
-                // submitTurn).
-                void submitTurn(content);
-            }
+    const handleComposerChange = (value: string) => {
+        setInput(value);
+        if (effectiveAuthenticated) {
+            writeComposerDraft(conversationId, value);
+        } else {
+            // Sensitive draft text (issue #465 AC-8): kept client-side only,
+            // in a pre-conversation slot since a signed-out visitor has no
+            // conversation id to key it against. Never sent anywhere,
+            // including the sign-in `next`.
+            writePendingDraft(value);
+        }
+        // Explicit discard (issue #458 r2): emptying the composer throws the
+        // surfaced recovery draft away for good — other unsent turns stay
+        // recoverable in storage.
+        if (value === '') {
+            clearSurfacedDraft();
+        }
+    };
+
+    const handleSend = () => {
+        const content = input.trim();
+        if (content && isReady && !composerGated) {
+            // Explicit send resolves the surfaced recovery draft (see
+            // submitTurn).
+            void submitTurn(content);
         }
     };
 
@@ -1676,144 +1525,24 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 )}
 
                 {!initError && (
-                <div className="d-flex flex-column flex-grow-1" style={{minHeight: 0}}>
-                    <div className="bg-dark chat-transcript rounded p-3 mb-3 flex-grow-1" style={{minHeight: 0, overflowY: 'auto'}}
-                         ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
-                        {effectiveAuthenticated && loading && (
-                            <div className="text-muted chat-loading-status" role="status" aria-live="polite"
-                                 data-testid="chat-loading">
-                                <i className="fa-solid fa-spinner fa-spin me-2" aria-hidden="true"></i>Loading conversation…
-                            </div>
-                        )}
-                        {effectiveAuthenticated && messages.length === 0 && !loading && (
-                            <div data-testid="empty-history">
-                                <p className="empty-history-lead mb-2">
-                                    Ask about compensation, work location, funding, or culture to get started.
-                                </p>
-                                <p className="empty-history-note small mb-3">
-                                    <i className="fa-solid fa-circle-info me-1"></i>
-                                    {props.workspaceMode === 'sheet'
-                                        ? 'Tap Back to results to view job-match status and results.'
-                                        : 'Job-match status and results appear in the Job Matches panel.'}
-                                </p>
-                                <button type="button" className="btn btn-primary empty-history-cta"
-                                        data-testid="empty-history-cta"
-                                        onClick={() => composerRef.current?.focus()}>
-                                    <i className="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>
-                                    Ask your first question
-                                </button>
-                            </div>
-                        )}
-                        {messages.map((m) => (
-                            <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
-                                     className={`d-flex flex-column ${m.role === 'user' ? 'align-items-end' : 'align-items-start'} mb-2`}>
-                                <div className={`chat-bubble ${m.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}
-                                     style={{maxWidth: '80%', wordBreak: 'break-word'}}>
-                                    <div style={{whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>{m.content}</div>
-                                    {m.role === 'assistant' && staleNotes[m.id] && (
-                                        <div className="chat-stale-context-note small mt-1"
-                                             data-testid="stale-context-note">
-                                            {staleNotes[m.id]}
-                                        </div>
-                                    )}
-                                    {m.role === 'assistant' && m.results && (
-                                        <ResultCards results={m.results} />
-                                    )}
-                                    {m.role === 'assistant' && m.id === lastAssistantId && !hasResults(m.results) && availability && availability.state !== 'ok' && (
-                                        <AvailabilityNotice availability={availability} />
-                                    )}
-                                    {m.role === 'user' && m.delivery_state === 'pending' && retryKey !== m.idempotency_key && (
-                                        <div className="chat-retry-panel mt-2" data-testid="pending-turn">
-                                            <div className="chat-status-row" role="status">
-                                                <i className="fa-solid fa-hourglass-half chat-status-icon" aria-hidden="true"></i>
-                                                <div>
-                                                    <div>The response has not arrived yet.</div>
-                                                </div>
-                                            </div>
-                                            <div className="chat-actions mt-3" role="group" aria-label="Pending turn actions">
-                                                <button type="button" className="chat-btn chat-btn-primary chat-focus"
-                                                        onClick={() => void handleCheckResponse(m)}
-                                                        aria-label="Check for response" data-testid="check-response-button">
-                                                    Check for response
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
-                                    {m.role === 'user' && retryKey !== null && m.idempotency_key === retryKey && m.delivery_state !== 'completed' && (
-                                        <div className="chat-retry-panel mt-2" data-testid="retrying-turn">
-                                            <div className="chat-status-row" role="status">
-                                                <i className="fa-solid fa-spinner fa-spin chat-status-icon" aria-hidden="true"></i>
-                                                <div>
-                                                    <div>Retrying response…</div>
-                                                </div>
-                                            </div>
-                                            <div className="chat-actions mt-3" role="group" aria-label="Failed turn actions">
-                                                <button type="button" className="chat-btn chat-btn-primary" disabled
-                                                        aria-label="Retrying response" data-testid="retry-response-button">
-                                                    Retrying…
-                                                </button>
-                                                <button type="button" className="chat-btn chat-btn-secondary" disabled
-                                                        aria-label="Edit as new message" data-testid="edit-as-new-button">
-                                                    Edit as new message
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                                {m.role === 'user' && m.delivery_state === 'failed' && retryKey !== m.idempotency_key && (
-                                    <div className="chat-failure-panel chat-failure-panel--outside" data-testid="failed-turn">
-                                        <div className="chat-status-row" role="status">
-                                            <i className="fa-solid fa-triangle-exclamation chat-status-icon" aria-hidden="true"></i>
-                                            <div>
-                                                {m.retry_available === false ? (
-                                                    <div>Response failed after several retries. Your message is saved.</div>
-                                                ) : (
-                                                    <div>Response failed. Your message is saved; retries are limited.</div>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <div className="chat-actions mt-3" role="group" aria-label="Failed turn actions">
-                                            {m.retry_available === false ? (
-                                                <button type="button" className="chat-btn chat-btn-primary chat-focus" disabled
-                                                        aria-label="Retry limit reached" data-testid="retry-response-button">
-                                                    Retry limit reached
-                                                </button>
-                                            ) : (
-                                                <button type="button" className="chat-btn chat-btn-primary chat-focus"
-                                                        onClick={() => handleRetryMessage(m)}
-                                                        aria-label="Retry response" data-testid="retry-response-button">
-                                                    Retry response
-                                                </button>
-                                            )}
-                                            <button type="button" className="chat-btn chat-btn-secondary chat-focus"
-                                                    onClick={() => handleEditAsNew(m)}
-                                                    aria-label="Edit as new message" data-testid="edit-as-new-button">
-                                                Edit as new message
-                                            </button>
-                                        </div>
-                                    </div>
-                                )}
-                            </article>
-                        ))}
-                        {pending && (
-                            <div className="text-muted" role="status" aria-live="polite" data-testid="pending-status">
-                                <i className="fa-solid fa-spinner fa-spin me-1"></i>Assistant is typing…
-                            </div>
-                        )}
-                    </div>
-                    {showJumpToLatest && (
-                        /* Reserved footer slot (round-2 critique): the control
-                           sits in its own row below the history instead of
-                           floating over message content. */
-                        <div className="flex-shrink-0 text-end mb-2">
-                            <button type="button" className="btn btn-sm btn-primary"
-                                    onClick={() => scrollToLatest('auto')} aria-label="Jump to latest message"
-                                    data-testid="jump-to-latest">
-                                New messages · Jump to latest
-                            </button>
-                        </div>
-                    )}
-                </div>
+                <Transcript
+                    historyRef={historyRef}
+                    messages={messages}
+                    staleNotes={staleNotes}
+                    lastAssistantId={lastAssistantId}
+                    availability={availability}
+                    retryKey={retryKey}
+                    pending={pending}
+                    loading={loading}
+                    authenticated={effectiveAuthenticated}
+                    workspaceMode={props.workspaceMode}
+                    showJumpToLatest={showJumpToLatest}
+                    onJumpToLatest={() => scrollToLatest('auto')}
+                    onAskFirstQuestion={() => composerRef.current?.focus()}
+                    onCheckResponse={(m) => void handleCheckResponse(m)}
+                    onRetryMessage={(m) => handleRetryMessage(m)}
+                    onEditAsNew={handleEditAsNew}
+                />
                 )}
 
                 {!initError && (
@@ -1840,62 +1569,18 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         </div>
                     )}
 
-                    <form onSubmit={handleSubmit} aria-busy={pending}>
-                        {/* chat-composer-pending (round-2 critique): while the Stop
-                            control renders, compact Send to an icon-only 44px target on
-                            narrow screens so the row never clips the placeholder. */}
-                        <div className={`input-group${pending ? ' chat-composer-pending' : ''}`}>
-                            <textarea
-                                ref={composerRef}
-                                className="form-control chat-focus"
-                                placeholder="Type your message…"
-                                aria-label="Message"
-                                data-testid="assistant-composer"
-                                aria-describedby={!effectiveAuthenticated ? 'job-search-signed-out-reason' : undefined}
-                                value={input}
-                                onChange={(e) => {
-                                    setInput(e.target.value);
-                                    if (effectiveAuthenticated) {
-                                        writeComposerDraft(conversationId, e.target.value);
-                                    } else {
-                                        // Sensitive draft text (issue #465 AC-8):
-                                        // kept client-side only, in a
-                                        // pre-conversation slot since a
-                                        // signed-out visitor has no
-                                        // conversation id to key it against.
-                                        // Never sent anywhere, including the
-                                        // sign-in `next`.
-                                        writePendingDraft(e.target.value);
-                                    }
-                                    // Explicit discard (issue #458 r2): emptying the
-                                    // composer throws the surfaced recovery draft
-                                    // away for good — other unsent turns stay
-                                    // recoverable in storage.
-                                    if (e.target.value === '') {
-                                        clearSurfacedDraft();
-                                    }
-                                }}
-                                onKeyDown={handleKeyDown}
-                                disabled={effectiveAuthenticated ? ((createOnMount && !conversationId) || pending || composerGated) : pending}
-                                autoComplete="off"
-                                rows={1}
-                                style={{resize: 'none', overflowY: 'hidden'}}
-                            />
-                            <button type="submit" className="btn btn-primary chat-send chat-focus"
-                                    disabled={!effectiveAuthenticated || (createOnMount && !conversationId) || pending || composerGated || !input.trim()}
-                                    aria-label="Send message" aria-describedby={!effectiveAuthenticated ? 'job-search-signed-out-reason' : undefined}>
-                                <i className="fa-solid fa-paper-plane" aria-hidden="true"></i>
-                                <span>Send</span>
-                            </button>
-                            {pending && (
-                                <button type="button" className="btn btn-outline-light chat-stop chat-focus" onClick={handleStopWaiting}
-                                        aria-label="Stop waiting for response" data-testid="stop-button">
-                                    <i className="fa-solid fa-circle-stop" aria-hidden="true"></i>
-                                    <span>Stop</span>
-                                </button>
-                            )}
-                        </div>
-                    </form>
+                    <Composer
+                        textareaRef={composerRef}
+                        value={input}
+                        pending={pending}
+                        authenticated={effectiveAuthenticated}
+                        textareaDisabled={effectiveAuthenticated ? ((createOnMount && !conversationId) || pending || composerGated) : pending}
+                        sendDisabled={!effectiveAuthenticated || (createOnMount && !conversationId) || pending || composerGated || !input.trim()}
+                        onChange={handleComposerChange}
+                        onSubmit={handleSubmit}
+                        onEnter={handleSend}
+                        onStop={handleStopWaiting}
+                    />
                 </div>
                 )}
 
