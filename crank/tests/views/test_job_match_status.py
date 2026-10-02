@@ -105,6 +105,7 @@ class JobMatchStatusViewTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["state"], "no_preferences")
         self.assertIn("chat", payload["actions"])
+        self.assertIn("edit_priorities", payload["actions"])
 
     def test_no_matches_state(self):
         source = self.make_source(enabled=True)
@@ -125,6 +126,7 @@ class JobMatchStatusViewTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["state"], "no_matches")
         self.assertIn("chat", payload["actions"])
+        self.assertIn("edit_priorities", payload["actions"])
 
     def test_ok_state_with_matches(self):
         source = self.make_source(enabled=True)

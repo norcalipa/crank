@@ -3,7 +3,12 @@
 import * as React from 'react';
 import {installPositionTracking, restoreResultPosition} from './workspace/position';
 import {createLatestGuard} from './workspace/requests';
-import {getWorkspaceSnapshot, setWorkspaceContext, subscribeWorkspace} from './workspace/store';
+import {
+    getWorkspaceSnapshot,
+    setPrioritiesEditorOpen,
+    setWorkspaceContext,
+    subscribeWorkspace,
+} from './workspace/store';
 
 /**
  * JobMatchPanel displays the user's job-match status with distinct empty-state
@@ -161,6 +166,7 @@ const ACTION_LABELS: Record<string, string> = {
     chat: 'Chat with the assistant',
     complete_profile: 'Complete your profile',
     explore_companies: 'Explore company rankings',
+    edit_priorities: 'Edit your priorities',
 };
 
 const ACTION_ICONS: Record<string, string> = {
@@ -676,6 +682,18 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         fetchStatus();
     }, [fetchStatus]);
 
+    // Issue #480: a priorities write anywhere on the page refetches matches once.
+    const seenPrioritiesRevision = React.useRef(getWorkspaceSnapshot().prioritiesRevision);
+    React.useEffect(() => subscribeWorkspace(() => {
+        const revision = getWorkspaceSnapshot().prioritiesRevision;
+        if (revision === null) {
+            seenPrioritiesRevision.current = null;
+        } else if (revision !== seenPrioritiesRevision.current) {
+            seenPrioritiesRevision.current = revision;
+            void fetchStatus();
+        }
+    }), [fetchStatus]);
+
     React.useEffect(() => () => guardRef.current.cancel(), []);
 
     // Issue #479: report the jobs surface, track/restore the Back-navigation
@@ -760,6 +778,9 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 window.location.href = '/';
                 break;
             }
+            case 'edit_priorities':
+                setPrioritiesEditorOpen('main');
+                break;
             default:
                 break;
         }

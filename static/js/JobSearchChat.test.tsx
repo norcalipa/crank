@@ -6,7 +6,7 @@ import * as React from 'react';
 
 import {
     clearWorkspaceContext,
-    getWorkspaceSnapshot,
+    getWorkspaceSnapshot, setPrioritiesEditorOpen,
     resetWorkspaceForTests,
     setWorkspaceAccount,
     setWorkspaceContext,
@@ -183,6 +183,26 @@ describe('JobSearchChat', () => {
             expect(chat).toHaveStyle({height: '752px', minHeight: '20rem'});
         });
 
+        test.each([
+            ['inside the assistant panel', true, '928px'],
+            ['on the page', false, '752px'],
+        ])('transcript floor %s', async (_name, inPanel, expected) => {
+            await renderChat();
+            const chat = screen.getByTestId('job-search-chat');
+            const log = screen.getByRole('log');
+            if (inPanel) {
+                chat.parentElement!.classList.add('assistant-panel-body');
+            }
+            Object.defineProperty(chat, 'offsetHeight', {configurable: true, value: 900});
+            Object.defineProperty(log, 'offsetHeight', {configurable: true, value: 100});
+            await act(async () => {
+                fireEvent(window, new Event('resize'));
+                await flushRaf();
+            });
+            // In the panel: chrome 800 + 128px floor beats the 752px fit; on the page the history yields.
+            expect(chat).toHaveStyle({height: expected});
+        });
+
         test('observes the parent for match-panel resizes when ResizeObserver is available', async () => {
             const observe = jest.fn();
             const disconnect = jest.fn();
@@ -195,6 +215,51 @@ describe('JobSearchChat', () => {
             // afterEach restores the original ResizeObserver, so there is no
             // manual leave-behind to leak into later tests.
             expect(observe).toHaveBeenCalled();
+        });
+
+        test('also observes the priorities block above the chat in the assistant panel', async () => {
+            const observe = jest.fn();
+            class MockResizeObserver {
+                observe = observe;
+                disconnect = jest.fn();
+            }
+            (globalThis as {ResizeObserver?: unknown}).ResizeObserver = MockResizeObserver;
+            const panelBody = document.createElement('div');
+            panelBody.className = 'assistant-panel-body';
+            const priorities = document.createElement('section');
+            priorities.setAttribute('data-testid', 'priorities-sidebar');
+            const container = document.createElement('div');
+            panelBody.append(priorities, container);
+            document.body.appendChild(panelBody);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
+            render(<JobSearchChat/>, {container});
+            await screen.findByLabelText('Message');
+            expect(observe).toHaveBeenCalledWith(priorities);
+            panelBody.remove();
+        });
+
+        test('observes the priorities block when it appears after the first paint (slow whoami)', async () => {
+            const observe = jest.fn();
+            class MockResizeObserver {
+                observe = observe;
+                disconnect = jest.fn();
+            }
+            (globalThis as {ResizeObserver?: unknown}).ResizeObserver = MockResizeObserver;
+            const panelBody = document.createElement('div');
+            panelBody.className = 'assistant-panel-body';
+            const container = document.createElement('div');
+            panelBody.append(container);
+            document.body.appendChild(panelBody);
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
+            render(<JobSearchChat/>, {container});
+            await screen.findByLabelText('Message');
+            const priorities = document.createElement('section');
+            priorities.setAttribute('data-testid', 'priorities-sidebar');
+            panelBody.prepend(priorities);
+            await waitFor(() => expect(observe).toHaveBeenCalledWith(priorities));
+            panelBody.remove();
         });
 
         test('re-measures the card height when the viewport resizes', async () => {
@@ -373,7 +438,7 @@ describe('JobSearchChat', () => {
             await renderChat();
             const group = screen.getByRole('group', {name: 'Conversation controls'});
             expect(group).toHaveClass('chat-conversation-actions');
-            expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['Export chat', 'Reset chat', 'Delete conversation']);
+            expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['Export chat', 'New conversation', 'Delete conversation']);
         });
 
         test('renders existing message history', async () => {
@@ -1216,9 +1281,29 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
         await screen.findByText('old');
         window.confirm = jest.fn().mockReturnValue(true);
         (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(7)));
-        fireEvent.click(screen.getByRole('button', {name: 'Reset chat'}));
+        fireEvent.click(screen.getByRole('button', {name: 'New conversation'}));
         await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
         expect(screen.queryByText('old')).not.toBeInTheDocument();
+    });
+
+    test('New conversation never touches a preference endpoint and says priorities are kept (issue #480)', async () => {
+        (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(
+            jsonResponse(emptyConversation(42, [userMessage('old')])),
+        );
+        render(<JobSearchChat/>);
+        await screen.findByText('old');
+        window.confirm = jest.fn().mockReturnValue(true);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(7)));
+        fireEvent.click(screen.getByRole('button', {name: 'New conversation'}));
+        await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
+        expect(window.confirm).toHaveBeenCalledWith(
+            'Start a new conversation? Your current history will be archived. Your saved priorities are not changed.',
+        );
+        const urls = (global.fetch as jest.Mock).mock.calls.map((c) => String(c[0]));
+        expect(urls.filter((u) => u.includes('/api/agent/preferences/'))).toEqual([]);
+        expect(urls.some((u) => u.includes('/conversations/42/reset/'))).toBe(true);
+        expect(screen.queryByRole('button', {name: 'Reset chat'})).not.toBeInTheDocument();
     });
 
     test('reset surfaces an error when it fails', async () => {
@@ -1230,7 +1315,7 @@ describe('additional JobSearchChat coverage -- control/error paths', () => {
         await screen.findByText('keep');
         window.confirm = jest.fn().mockReturnValue(true);
         (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, 500));
-        fireEvent.click(screen.getByRole('button', {name: 'Reset chat'}));
+        fireEvent.click(screen.getByRole('button', {name: 'New conversation'}));
         await screen.findByText(/could not reset the conversation/i);
         expect(screen.getByText('keep')).toBeInTheDocument();
     });
@@ -2634,7 +2719,7 @@ describe('durable turn state (issue #458)', () => {
             window.localStorage.setItem('crank:jobsearch:draft:42', 'pending text');
             window.confirm = jest.fn().mockReturnValue(true);
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(43), 201));
-            fireEvent.click(screen.getByRole('button', {name: 'Reset chat'}));
+            fireEvent.click(screen.getByRole('button', {name: 'New conversation'}));
             await waitFor(() => expect(screen.getByTestId('empty-history')).toBeInTheDocument());
             // Every marker of THIS conversation is cleared...
             expect(window.localStorage.getItem(inflightKeyFor(42, KEY_A))).toBeNull();
@@ -2857,7 +2942,7 @@ describe('durable turn state (issue #458)', () => {
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'in flight'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             await screen.findByTestId('stop-button');
-            expect(screen.getByRole('button', {name: 'Reset chat'})).toBeDisabled();
+            expect(screen.getByRole('button', {name: 'New conversation'})).toBeDisabled();
             expect(screen.getByRole('button', {name: 'Delete conversation'})).toBeDisabled();
         });
     });
@@ -3341,6 +3426,7 @@ describe('signed-out visitor and account-switch purge (issue #465)', () => {
 
 describe('preference proposal → apply → undo (issue #466 review)', () => {
     beforeEach(() => {
+        resetWorkspaceForTests();
         global.fetch = jest.fn();
     });
 
@@ -3396,7 +3482,7 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
         expect(screen.getByText('Work location › modes')).toBeInTheDocument();
         expect(screen.getByText('Notes')).toBeInTheDocument();
         expect(screen.getAllByText('Not set').length).toBeGreaterThanOrEqual(2);
-        expect(screen.getByText('200,000')).toBeInTheDocument();
+        expect(screen.getByText('$200,000')).toBeInTheDocument();
         expect(screen.getByText('prefers remote-first teams')).toBeInTheDocument();
         // Nothing was applied yet: no applied notice, no plain banner.
         expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
@@ -3471,7 +3557,19 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
         const reviewButton = screen.getByTestId('preference-proposal-review-button');
         expect(reviewButton).toHaveTextContent('Review current preferences');
         fireEvent.click(reviewButton);
-        expect(screen.getByLabelText('Message')).toHaveFocus();
+        expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(proposal.token.patch);
+    });
+
+    test('a 403 on apply shows neutral copy, disables Apply and offers review', async () => {
+        await submitAndApply({
+            error: {type: 'forbidden', message: 'This change expired. Reload to review it again.', request_id: 'req-1'},
+        }, 403);
+        const errorPanel = await screen.findByTestId('preference-proposal-error');
+        expect(errorPanel).toHaveTextContent('This change expired. Reload to review it again.');
+        expect(errorPanel).not.toHaveTextContent(/different account/i);
+        expect(screen.getByTestId('preference-apply-button')).toBeDisabled();
+        expect(screen.getByTestId('preference-proposal-review-button')).toBeInTheDocument();
     });
 
     test('a network failure on apply shows retry copy, not the stale-only review action', async () => {
@@ -3508,6 +3606,254 @@ describe('preference proposal → apply → undo (issue #466 review)', () => {
         expect(confirmation).toHaveTextContent(/not saved/i);
         // Nothing persisted: no applied notice with Undo.
         expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+    });
+
+    const probeProposal = {
+        ...proposal,
+        changes: [{path: 'compensation.minimum_salary', old: 271828, new: 300000}],
+        change_count: 1,
+        token: {patch: {set: {'compensation.minimum_salary': 300000}}, scope: 'account', base_revision: 2},
+    };
+
+    const purgePaths: Array<[string, () => void]> = [
+        ['sign-out', () => document.dispatchEvent(new CustomEvent('crank:private-state-purged'))],
+        ['bfcache restore (pageshow purge)', () => document.dispatchEvent(new CustomEvent('crank:private-state-purged'))],
+        ['cross-tab account switch', () => {
+            window.localStorage.setItem('crank:last-account', 'alice');
+            document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {authenticated: true, username: 'bob'}}));
+        }],
+    ];
+
+    test.each(purgePaths)('a pending proposal and its editor seed are cleared on %s', async (_name, purge) => {
+        window.localStorage.setItem('crank:last-account', 'alice');
+        await submitTurnWithProposal({
+            message: assistantMessage(30, 'I suggest this.', false),
+            preferences_changed: false,
+            preference_proposal: probeProposal,
+        });
+        expect(screen.getByTestId('preference-proposal-notice')).toHaveTextContent('271,828');
+        (global.fetch as jest.Mock).mockResolvedValue(jsonResponse(emptyConversation(55)));
+        act(() => setPrioritiesEditorOpen('sidebar', probeProposal.token.patch));
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).not.toBeNull();
+        act(() => purge());
+        await waitFor(() => expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument());
+        expect(screen.queryByText(/271,828/)).not.toBeInTheDocument();
+        expect(screen.queryByTestId('preference-search-applied')).not.toBeInTheDocument();
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toBeNull();
+        expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBeNull();
+    });
+
+    test('an apply response that lands after a purge is dropped (no diff, no Undo, no revision)', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(32, 'I suggest this.', false),
+            preferences_changed: false,
+            preference_proposal: probeProposal,
+        });
+        const settle = holdNextFetch(global.fetch as jest.Mock);
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        (global.fetch as jest.Mock).mockResolvedValue(jsonResponse(emptyConversation(55)));
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await act(async () => {
+            settle(jsonResponse({applied: true, scope: 'account', revision: 3, changes, undo: undoToken}));
+        });
+        expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('preference-undo-button')).not.toBeInTheDocument();
+        expect(getWorkspaceSnapshot().prioritiesRevision).toBeNull();
+    });
+
+    test('a failed or non-JSON apply that lands after a purge shows nothing', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(33, 'I suggest this.', false),
+            preferences_changed: false,
+            preference_proposal: probeProposal,
+        });
+        const settle = holdNextFetch(global.fetch as jest.Mock);
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        (global.fetch as jest.Mock).mockResolvedValue(jsonResponse(emptyConversation(55)));
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await act(async () => { settle(jsonResponse({error: {type: 'preference_stale', message: 'x'}}, 409)); });
+        expect(screen.queryByTestId('preference-proposal-error')).not.toBeInTheDocument();
+    });
+
+    test('a network failure on apply after a purge shows nothing', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(34, 'I suggest this.', false),
+            preferences_changed: false,
+            preference_proposal: probeProposal,
+        });
+        const settle = holdNextFetch(global.fetch as jest.Mock);
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        (global.fetch as jest.Mock).mockResolvedValue(jsonResponse(emptyConversation(55)));
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await act(async () => { settle(new Error('offline')); });
+        expect(screen.queryByTestId('preference-proposal-error')).not.toBeInTheDocument();
+    });
+
+    describe('undo across a purge', () => {
+        async function applied() {
+            await submitAndApply({applied: true, scope: 'account', revision: 3, changes, undo: undoToken});
+            await screen.findByTestId('preference-change-notice');
+            return screen.getByTestId('preference-undo-button');
+        }
+        const purgeNow = () => {
+            (global.fetch as jest.Mock).mockResolvedValue(jsonResponse(emptyConversation(55)));
+            act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        };
+
+        test('a successful undo that lands after a purge is dropped', async () => {
+            const button = await applied();
+            const settle = holdNextFetch(global.fetch as jest.Mock);
+            fireEvent.click(button);
+            purgeNow();
+            await act(async () => { settle(jsonResponse({undone: true, revision: 4, changes: []})); });
+            expect(getWorkspaceSnapshot().prioritiesRevision).not.toBe(4);
+            expect(screen.queryByTestId('preference-change-notice')).not.toBeInTheDocument();
+        });
+
+        test('a failed undo that lands after a purge is dropped', async () => {
+            const button = await applied();
+            const settle = holdNextFetch(global.fetch as jest.Mock);
+            fireEvent.click(button);
+            purgeNow();
+            await act(async () => { settle(jsonResponse({error: {type: 'preference_stale', message: 'x'}}, 409)); });
+            expect(screen.queryByTestId('preference-undo-error')).not.toBeInTheDocument();
+        });
+
+        test('a network failure on undo after a purge is dropped', async () => {
+            const button = await applied();
+            const settle = holdNextFetch(global.fetch as jest.Mock);
+            fireEvent.click(button);
+            purgeNow();
+            await act(async () => { settle(new Error('offline')); });
+            expect(screen.queryByTestId('preference-undo-error')).not.toBeInTheDocument();
+        });
+    });
+
+    test('Edit opens the inline editor and drops the proposal without any write (issue #480)', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(20, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: proposal,
+        });
+        const calls = (global.fetch as jest.Mock).mock.calls.length;
+        fireEvent.click(screen.getByTestId('preference-proposal-edit-button'));
+        expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
+        // The proposed patch seeds the editor so Edit never opens empty.
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(proposal.token.patch);
+        expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument();
+        expect((global.fetch as jest.Mock).mock.calls.length).toBe(calls);
+    });
+
+    test('the proposal reads list entries one per token and money with its currency (issue #480 review)', async () => {
+        const listProposal = {
+            ...proposal,
+            changes: [
+                {path: 'exclusions.locations', old: [], new: ['San Francisco, CA', 'Boston']},
+                {path: 'compensation.minimum_salary', old: null, new: 150000},
+            ],
+        };
+        await submitTurnWithProposal({
+            message: assistantMessage(22, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: listProposal,
+        });
+        const notice = screen.getByTestId('preference-proposal-notice');
+        expect(within(notice).getByText('San Francisco, CA')).toHaveClass('pref-change-token');
+        expect(within(notice).getByText('Boston')).toHaveClass('pref-change-token');
+        expect(within(notice).getByText('$150,000')).toBeInTheDocument();
+    });
+
+    test.each([
+        ['a whole priorities map', {set: {priorities: {culture: 0.5}}}],
+        ['a priorities subtree', {remove: {priorities: ['culture']}}],
+    ])('Edit keeps the proposal when it carries %s, and a second Edit re-sends the same seed (issue #480 review)', async (_name, patch) => {
+        const keptProposal = {...proposal, token: {...proposal.token, patch}};
+        await submitTurnWithProposal({
+            message: assistantMessage(23, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: keptProposal,
+        });
+        fireEvent.click(screen.getByTestId('preference-proposal-edit-button'));
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(keptProposal.token.patch);
+        expect(screen.getByTestId('preference-proposal-notice')).toBeInTheDocument();
+        act(() => setPrioritiesEditorOpen(null));
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toBeNull();
+        fireEvent.click(screen.getByTestId('preference-proposal-edit-button'));
+        expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(keptProposal.token.patch);
+    });
+
+    test('Edit drops a proposal that only removes an importance weight, since the editor can show it (issue #480 review)', async () => {
+        const weightProposal = {
+            ...proposal,
+            token: {...proposal.token, patch: {remove: {importance: ['compensation.minimum_salary']}}},
+        };
+        await submitTurnWithProposal({
+            message: assistantMessage(25, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: weightProposal,
+        });
+        fireEvent.click(screen.getByTestId('preference-proposal-edit-button'));
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toEqual(weightProposal.token.patch);
+        expect(screen.queryByTestId('preference-proposal-notice')).not.toBeInTheDocument();
+    });
+
+    test('the proposal shows money in the saved currency the server names (issue #480 review)', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(26, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: {
+                ...proposal,
+                currency: 'EUR',
+                changes: [{path: 'compensation.minimum_salary', old: 150000, new: 160000}],
+            },
+        });
+        const notice = screen.getByTestId('preference-proposal-notice');
+        expect(notice).toHaveTextContent('EUR 150,000');
+        expect(notice).toHaveTextContent('EUR 160,000');
+        expect(notice).not.toHaveTextContent('$');
+    });
+
+    test('a search-only confirmation marks a capped match count (issue #480 review)', async () => {
+        const searchProposal = {...proposal, scope: 'search', token: {...proposal.token, scope: 'search'}};
+        await submitTurnWithProposal({
+            message: assistantMessage(24, 'Try this filter.', false),
+            preferences_changed: false,
+            preference_proposal: searchProposal,
+        });
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            applied: false, scope: 'search',
+            matches: {job_matches: new Array(25).fill({listing_id: 1}), organization_matches: []},
+        }));
+        fireEvent.click(screen.getByTestId('preference-apply-button'));
+        expect(await screen.findByTestId('preference-search-applied')).toHaveTextContent('(25+ matches)');
+    });
+
+    test('This search only applies the same patch with scope=search and never saves (issue #480)', async () => {
+        await submitTurnWithProposal({
+            message: assistantMessage(21, 'I suggest these updates.', false),
+            preferences_changed: false,
+            preference_proposal: proposal,
+        });
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            applied: false, scope: 'search', matches: {job_matches: [], organization_matches: []},
+        }));
+        fireEvent.click(screen.getByTestId('preference-proposal-search-only-button'));
+        await screen.findByTestId('preference-search-applied');
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls.at(-1)[1].body);
+        expect(body.proposal.scope).toBe('search');
+        expect(body.proposal.patch).toEqual(proposal.token.patch);
+        expect(getWorkspaceSnapshot().prioritiesRevision).toBeNull();
+    });
+
+    test('apply and undo publish the new revision to the workspace store (issue #480)', async () => {
+        await submitAndApply({scope: 'account', revision: 3, changes, undo: undoToken});
+        await screen.findByTestId('preference-change-notice');
+        expect(getWorkspaceSnapshot().prioritiesRevision).toBe(3);
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({revision: 4}));
+        fireEvent.click(screen.getByRole('button', {name: 'Undo preference update'}));
+        await screen.findByTestId('preference-change-undone');
+        expect(getWorkspaceSnapshot().prioritiesRevision).toBe(4);
     });
 
     test('legacy response without a proposal renders no proposal notice', async () => {
@@ -3631,7 +3977,19 @@ describe('preference change undo (issue #466)', () => {
         const reviewButton = screen.getByTestId('preference-review-button');
         expect(reviewButton).toHaveTextContent('Review current preferences');
         fireEvent.click(reviewButton);
-        expect(screen.getByLabelText('Message')).toHaveFocus();
+        expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
+    });
+
+    test('error state: a 403 on undo disables Undo and offers review', async () => {
+        await applyProposalThen();
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({
+            error: {type: 'forbidden', message: 'This change expired. Reload to review it again.', request_id: 'req-1'},
+        }, 403));
+        fireEvent.click(screen.getByRole('button', {name: 'Undo preference update'}));
+        const errorPanel = await screen.findByTestId('preference-undo-error');
+        expect(errorPanel).toHaveTextContent('This change expired.');
+        expect(screen.getByRole('button', {name: 'Undo preference update'})).toBeDisabled();
+        expect(screen.getByTestId('preference-review-button')).toBeInTheDocument();
     });
 
     test('error state: a network failure shows retry copy and NOT the stale-only review action', async () => {
@@ -3673,7 +4031,7 @@ describe('preference diff formatting helpers (issue #466)', () => {
         expect(preferenceValueLabel('remote')).toBe('remote');
         expect(preferenceValueLabel([])).toBe('None');
         expect(preferenceValueLabel(['remote', 'hybrid'])).toBe('remote, hybrid');
-        expect(preferenceValueLabel({channel: 'email'})).toBe('{"channel":"email"}');
+        expect(preferenceValueLabel({channel: 'email'})).toBe('Channel: email');
     });
 });
 

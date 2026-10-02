@@ -11,7 +11,10 @@ import {
     normalizeWorkspaceContext,
     openAssistant,
     replaceWorkspaceState,
+    resetPriorities,
     resetWorkspaceForTests,
+    setPrioritiesEditorOpen,
+    setPrioritiesRevision,
     setWorkspaceAccount,
     setWorkspaceConversation,
     setWorkspaceContext,
@@ -35,7 +38,35 @@ describe('workspace store', () => {
             account: {status: 'unknown', key: ''},
             conversationId: null,
             userOpened: false,
+            prioritiesRevision: null,
+            prioritiesEditorOpenIn: null,
+            prioritiesEditorSeed: null,
         });
+    });
+
+    test('priorities signals are additive, deduplicated and reset together (issue #480)', () => {
+        const listener = jest.fn();
+        subscribeWorkspace(listener);
+        setPrioritiesRevision(3);
+        setPrioritiesRevision(3);
+        setPrioritiesEditorOpen('main');
+        setPrioritiesEditorOpen('main');
+        expect(listener).toHaveBeenCalledTimes(2);
+        expect(getWorkspaceSnapshot()).toMatchObject({prioritiesRevision: 3, prioritiesEditorOpenIn: 'main'});
+        resetPriorities();
+        expect(getWorkspaceSnapshot()).toMatchObject({prioritiesRevision: null, prioritiesEditorOpenIn: null});
+    });
+
+    test('the editor seed travels with the open host and is dropped on close and reset (issue #480)', () => {
+        const seed = {set: {'compensation.minimum_salary': 200000}};
+        setPrioritiesEditorOpen('sidebar', seed);
+        expect(getWorkspaceSnapshot()).toMatchObject({prioritiesEditorOpenIn: 'sidebar', prioritiesEditorSeed: seed});
+        setPrioritiesEditorOpen('sidebar', seed);
+        setPrioritiesEditorOpen(null, seed);
+        expect(getWorkspaceSnapshot()).toMatchObject({prioritiesEditorOpenIn: null, prioritiesEditorSeed: null});
+        setPrioritiesEditorOpen('main', seed);
+        resetPriorities();
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toBeNull();
     });
 
     test('userOpened is set by openAssistant and cleared by a wholesale replace (issue #479)', () => {

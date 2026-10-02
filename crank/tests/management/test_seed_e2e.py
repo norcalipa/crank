@@ -410,7 +410,7 @@ class SeedE2ECommandTests(TestCase):
         call_command("seed_e2e", stdout=out)
         text = out.getvalue()
         self.assertIn("seed_e2e ready", text)
-        self.assertIn("users=2", text)
+        self.assertIn("users=3", text)
         # Bounded summary: a single short line, never secrets or tracebacks.
         self.assertNotIn(DEFAULT_E2E_PASSWORD, text)
         summary_lines = [line for line in text.splitlines() if "seed_e2e ready" in line]

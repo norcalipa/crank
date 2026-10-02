@@ -10,11 +10,16 @@
 import * as React from 'react';
 import {createRoot} from 'react-dom/client';
 import JobMatchPanel from './JobMatchPanel';
+import {mountPriorities} from './priorities/mount';
 
 document.addEventListener('DOMContentLoaded', () => {
+    mountPriorities();
     const container = document.getElementById('job-match-panel');
     if (container) {
         const root = createRoot(container);
-        root.render(<JobMatchPanel/>);
+        root.render(
+            <JobMatchPanel isAuthenticated={container.dataset.authenticated === 'true'}
+                           signInUrl={container.dataset.signInUrl}/>,
+        );
     }
 });

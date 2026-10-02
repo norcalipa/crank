@@ -212,6 +212,10 @@ def _error(request, status, error_type, message, request_id, extra=None):
     )
 
 
+def _reject_constant(name):
+    raise ValueError(f"non-finite JSON constant {name}")
+
+
 def _body(request, request_id):
     """Parse the JSON request body, enforcing a payload size limit.
 
@@ -229,7 +233,7 @@ def _body(request, request_id):
             "Request body exceeds the allowed size.", request_id,
         )
     try:
-        payload = json.loads(raw) if raw else {}
+        payload = json.loads(raw, parse_constant=_reject_constant) if raw else {}
     except (ValueError, TypeError):
         return None, _error(
             request, 400, "malformed_json", "Request body must be valid JSON.", request_id,
@@ -968,7 +972,16 @@ def agent_conversation_detail(request, conversation_id):
     # (or a legacy provider with no extras) simply omits the key, and the
     # client guards on its presence.
     if pref_extras and pref_extras.get("proposal") is not None:
-        response_payload["preference_proposal"] = pref_extras["proposal"]
+        proposal_payload = pref_extras["proposal"]
+        if isinstance(proposal_payload, dict) and isinstance(
+            proposal_payload.get("token"), dict
+        ):
+            from crank.services import preferences as _pref_services
+
+            proposal_payload["token"]["owner"] = _pref_services.token_owner(
+                request.user
+            )
+        response_payload["preference_proposal"] = proposal_payload
     # Issue #484: validated UI actions (ids/enums only) and the echoed
     # context. Both are additive and absent for context-less clients; the
     # idempotent replay paths deliberately omit them.
@@ -1157,6 +1170,11 @@ def agent_preference_apply(request):
             request, 400, "invalid_request",
             "The preference proposal is no longer valid.", request_id,
         )
+    if not pref_services.token_owner_matches(request.user, token):
+        return _error(
+            request, 403, "forbidden",
+            "This change expired. Reload to review it again.", request_id,
+        )
 
     if scope == "search":
         # This-search-only: compute the in-memory effective document and run
@@ -1273,6 +1291,13 @@ def agent_preference_undo(request):
     token = payload.get("undo")
     from crank.services import preferences as pref_services
 
+    if isinstance(token, dict) and not pref_services.token_owner_matches(
+        request.user, token
+    ):
+        return _error(
+            request, 403, "forbidden",
+            "This change expired. Reload to review it again.", request_id,
+        )
     try:
         result = pref_services.undo_preference_change(request.user, token)
     except pref_services.StalePreferenceError as exc:

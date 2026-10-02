@@ -4,11 +4,18 @@ import * as React from 'react';
 import {createRoot} from 'react-dom/client';
 
 import {purgePrivateClientState} from './authIntent';
+import {preferencePathLabel, preferenceValueLabel} from './priorities/format';
+import {MATCH_CAP} from './priorities/api';
+import {patchFitsEditor} from './priorities/patch';
+import {ChangeList} from './priorities/ReviewChanges';
+import {prioritiesSurface} from './priorities/surface';
 import {
     describeWorkspaceContext,
     getWorkspaceSnapshot,
     setWorkspaceConversation,
     subscribeWorkspace,
+    setPrioritiesEditorOpen,
+    setPrioritiesRevision,
 } from './workspace/store';
 import {accountDigest} from './workspace/persistence';
 
@@ -106,6 +113,8 @@ export interface PreferenceProposal {
     change_count: number;
     base_revision: number;
     unsupported_criteria: string[];
+    // The saved currency the proposal's money values are shown in.
+    currency?: string | null;
     token: PreferenceProposalToken;
 }
 
@@ -405,35 +414,7 @@ async function csrfFetch(url: string, init: RequestInit = {}): Promise<Response>
     return fetch(url, {...init, headers});
 }
 
-/** Human label for a preference path (issue #466):
- * "compensation.minimum_salary" → "Compensation › minimum salary". */
-export function preferencePathLabel(path: string): string {
-    return path
-        .split('.')
-        .map((segment, i) => {
-            const words = segment.replace(/_/g, ' ');
-            return i === 0 ? words.charAt(0).toUpperCase() + words.slice(1) : words;
-        })
-        .join(' › ');
-}
-
-/** Human rendering of a preference value (issue #466). */
-export function preferenceValueLabel(value: unknown): string {
-    if (value === null || value === undefined) return 'Not set';
-    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-    if (typeof value === 'string') return value === '' ? 'Not set' : value;
-    if (typeof value === 'number') {
-        return Number.isFinite(value) ? value.toLocaleString('en-US') : String(value);
-    }
-    if (Array.isArray(value)) {
-        return value.length ? value.map(preferenceValueLabel).join(', ') : 'None';
-    }
-    try {
-        return JSON.stringify(value);
-    } catch {
-        return String(value);
-    }
-}
+export {preferencePathLabel, preferenceValueLabel};
 
 /** Preference-change notice (issue #466): the field-level diff of what the
  * assistant just changed, with a one-click Undo. Four rendered states:
@@ -474,7 +455,7 @@ export function PreferenceChangeNotice({changes, undoState, undoError, undoError
     // Only a server-confirmed stale revision renders the stale-only review
     // action (issue #466 review): connectivity/5xx failures keep the
     // retry-oriented Undo path instead.
-    const staleConflict = undoState === 'error' && undoErrorType === 'preference_stale';
+    const staleConflict = undoState === 'error' && (undoErrorType === 'preference_stale' || undoErrorType === 'forbidden');
     const emptyDiff = changes.length === 0;
     return (
         <div className="alert alert-success pref-change-notice" role="status"
@@ -490,19 +471,7 @@ export function PreferenceChangeNotice({changes, undoState, undoError, undoError
                 </button>
             </div>
             {!emptyDiff ? (
-                <ul className="pref-change-list" aria-label="Changed preferences">
-                    {changes.map((change) => (
-                        <li key={change.path} className="pref-change-item">
-                            <span className="pref-change-path">{preferencePathLabel(change.path)}</span>
-                            <span className="pref-change-values">
-                                <span className="pref-change-old">{preferenceValueLabel(change.old)}</span>
-                                <i className="fa-solid fa-arrow-right pref-change-arrow" aria-hidden="true"></i>
-                                <span className="visually-hidden">changed to</span>
-                                <span className="pref-change-new">{preferenceValueLabel(change.new)}</span>
-                            </span>
-                        </li>
-                    ))}
-                </ul>
+                <ChangeList changes={changes} label="Changed preferences"/>
             ) : (
                 <p className="pref-change-empty" data-testid="preference-change-empty">
                     The update did not change any individual preference fields.
@@ -526,7 +495,7 @@ export function PreferenceChangeNotice({changes, undoState, undoError, undoError
                     </button>
                 )}
                 <button type="button" className="chat-btn chat-btn-secondary chat-focus pref-undo-btn"
-                        onClick={onUndo} disabled={pending}
+                        onClick={onUndo} disabled={pending || (undoState === 'error' && undoErrorType === 'forbidden')}
                         aria-label={pending ? 'Undoing preference update' : 'Undo preference update'}
                         aria-busy={pending} data-testid="preference-undo-button">
                     {pending ? (
@@ -556,17 +525,21 @@ export function PreferenceChangeNotice({changes, undoState, undoError, undoError
  * diff of a model-proposed change with Apply/Dismiss. Nothing is persisted
  * until the user explicitly applies; a this-search-only proposal is labelled
  * as never saved. */
-export function PreferenceProposalNotice({proposal, state, error, errorType, onDecision, onReview}: {
+export function PreferenceProposalNotice({proposal, state, error, errorType, onDecision, onReview, onEdit, onSearchOnly}: {
     proposal: PreferenceProposal;
     state: 'idle' | 'pending' | 'error';
     error: string | null;
     errorType: string | null;
     onDecision: (decision: 'apply' | 'dismiss') => void;
     onReview?: () => void;
+    // Issue #480: open the inline priorities editor / apply to one search only.
+    onEdit?: () => void;
+    onSearchOnly?: () => void;
 }) {
     const pending = state === 'pending';
     const isSearch = proposal.scope === 'search';
-    const staleConflict = state === 'error' && errorType === 'preference_stale';
+    const staleConflict = state === 'error' && (errorType === 'preference_stale' || errorType === 'forbidden');
+    const tokenExpired = state === 'error' && errorType === 'forbidden';
     return (
         <div className="alert alert-warning pref-change-notice" role="status"
              aria-label="Proposed preference change" data-testid="preference-proposal-notice">
@@ -583,19 +556,7 @@ export function PreferenceProposalNotice({proposal, state, error, errorType, onD
                 </button>
             </div>
             {proposal.changes.length > 0 ? (
-                <ul className="pref-change-list" aria-label="Proposed preference changes">
-                    {proposal.changes.map((change) => (
-                        <li key={change.path} className="pref-change-item">
-                            <span className="pref-change-path">{preferencePathLabel(change.path)}</span>
-                            <span className="pref-change-values">
-                                <span className="pref-change-old">{preferenceValueLabel(change.old)}</span>
-                                <i className="fa-solid fa-arrow-right pref-change-arrow" aria-hidden="true"></i>
-                                <span className="visually-hidden">changed to</span>
-                                <span className="pref-change-new">{preferenceValueLabel(change.new)}</span>
-                            </span>
-                        </li>
-                    ))}
-                </ul>
+                <ChangeList changes={proposal.changes} currency={proposal.currency} label="Proposed preference changes"/>
             ) : (
                 <p className="pref-change-empty" data-testid="preference-proposal-empty">
                     The suggestion does not change any individual preference fields.
@@ -616,7 +577,7 @@ export function PreferenceProposalNotice({proposal, state, error, errorType, onD
                     </button>
                 )}
                 <button type="button" className="chat-btn chat-btn-primary chat-focus pref-apply-btn"
-                        onClick={() => onDecision('apply')} disabled={pending}
+                        onClick={() => onDecision('apply')} disabled={pending || tokenExpired}
                         aria-label={pending ? 'Applying preference proposal' : 'Apply preference proposal'}
                         aria-busy={pending} data-testid="preference-apply-button">
                     {pending ? (
@@ -631,6 +592,19 @@ export function PreferenceProposalNotice({proposal, state, error, errorType, onD
                         </>
                     )}
                 </button>
+                {onEdit && (
+                    <button type="button" className="chat-btn chat-btn-secondary chat-focus"
+                            onClick={onEdit} disabled={pending} data-testid="preference-proposal-edit-button">
+                        Edit
+                    </button>
+                )}
+                {onSearchOnly && !isSearch && (
+                    <button type="button" className="chat-btn chat-btn-secondary chat-focus"
+                            onClick={onSearchOnly} disabled={pending}
+                            data-testid="preference-proposal-search-only-button">
+                        This search only
+                    </button>
+                )}
                 <button type="button" className="chat-btn chat-btn-secondary chat-focus pref-dismiss-btn"
                         onClick={() => onDecision('dismiss')} disabled={pending}
                         data-testid="preference-proposal-dismiss-button">
@@ -1070,6 +1044,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // Shared floor for the measured card height; must stay in sync with the
     // `20rem` inline minHeight below (16px rem * 20) so the two cannot drift.
     const MIN_CARD_PX = 320;
+    const MIN_TRANSCRIPT_PX = 128;
     const adjustComposerHeight = React.useCallback(() => {
         const ta = composerRef.current;
         if (!ta) return;
@@ -1182,7 +1157,12 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
         const bottomGap = safeAreaBottom || 16; // breathing room above the page bottom
         const computed = viewportHeight - top - bottomGap;
-        setCardHeight(Math.max(computed, MIN_CARD_PX));
+        // Inside the assistant panel, keep the transcript at least 8rem tall: the
+        // card grows and the panel scrolls rather than the composer painting over
+        // the history. On the page the history alone yields (no page scroll).
+        const log = historyRef.current;
+        const floor = log && card.closest('.assistant-panel-body') ? card.offsetHeight - log.offsetHeight + MIN_TRANSCRIPT_PX : 0;
+        setCardHeight(Math.max(computed, MIN_CARD_PX, floor));
     }, []);
 
     // Coalesce high-frequency resize/viewport events (fired many times per second
@@ -1206,11 +1186,32 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         // Watch the card's offset parent so a match-panel resize above the chat
         // (e.g. empty -> results) re-measures the available height.
         let observer: ResizeObserver | null = null;
+        let mutationObserver: MutationObserver | null = null;
         if (typeof ResizeObserver !== 'undefined' && cardRef.current?.parentElement) {
             observer = new ResizeObserver(scheduleMeasure);
             observer.observe(cardRef.current.parentElement);
+            // The priorities block above the chat (assistant panel) resizes as
+            // its steps change; the card height depends on its offset.
+            // The block can mount after the chat (it waits for sign-in
+            // confirmation), so keep looking until it appears.
+            const body = cardRef.current.closest('.assistant-panel-body');
+            let watched: Element | null = null;
+            const watch = () => {
+                const priorities = body?.querySelector('[data-testid="priorities-sidebar"]') ?? null;
+                if (priorities && priorities !== watched) {
+                    if (watched) observer?.unobserve(watched);
+                    watched = priorities;
+                    observer?.observe(priorities);
+                }
+            };
+            watch();
+            if (body && typeof MutationObserver !== 'undefined') {
+                mutationObserver = new MutationObserver(watch);
+                mutationObserver.observe(body, {childList: true, subtree: true});
+            }
         }
         return () => {
+            mutationObserver?.disconnect();
             if (rafIdRef.current !== null) {
                 window.cancelAnimationFrame(rafIdRef.current);
             }
@@ -1495,6 +1496,13 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         setPrefUndoToken(null);
         setPrefUndoState('idle');
         setPrefUndoError(null);
+        setPrefUndoErrorType(null);
+        setPrefProposal(null);
+        setPrefProposalState('idle');
+        setPrefProposalError(null);
+        setPrefProposalErrorType(null);
+        setPrefSearchApplied(null);
+        setPrioritiesEditorOpen(null);
         if (effectiveAuthenticated) {
             // Force the resume effect to re-run so the (possibly different)
             // account's own conversation loads fresh — never the stale
@@ -2119,7 +2127,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
 
     const handleReset = async () => {
         if (!conversationId) return;  // # pragma: no cover - button is disabled without a conversation
-        if (!window.confirm('Start a new conversation? Your current history will be archived.')) return;
+        if (!window.confirm('Start a new conversation? Your current history will be archived. Your saved priorities are not changed.')) return;
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/reset/`, {method: 'POST'});
             if (!res.ok) throw new Error('reset-failed');
@@ -2169,13 +2177,19 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         setPrefUndoState('pending');
         setPrefUndoError(null);
         setPrefUndoErrorType(null);
+        const epoch = purgeEpochRef.current;
+        const purged = () => purgeEpochRef.current !== epoch;
         try {
             const res = await csrfFetch('/api/agent/preferences/undo/', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({undo: prefUndoToken}),
             });
+            if (purged()) return;
             if (res.ok) {
+                const undone = await res.json().catch(() => null);
+                if (purged()) return;
+                if (typeof undone?.revision === 'number') setPrioritiesRevision(undone.revision);
                 setPrefUndoState('done');
                 setPrefChanges(null);
                 setPrefUndoToken(null);
@@ -2189,6 +2203,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 serverType = parsed?.error?.type || null;
                 serverMsg = parsed?.error?.message || '';
             } catch { /* non-JSON body: fall through to generic copy */ }
+            if (purged()) return;
             setPrefUndoState('error');
             setPrefUndoErrorType(serverType);
             setPrefUndoError(
@@ -2197,6 +2212,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     : (serverMsg || 'The undo request is no longer valid. Please try again.'),
             );
         } catch {
+            if (purged()) return;
             setPrefUndoState('error');
             setPrefUndoErrorType(null);
             setPrefUndoError('Could not undo the preference update. Please check your connection and try again.');
@@ -2206,7 +2222,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // Issue #466 review: apply or dismiss the read-only proposal. Only an
     // explicit Apply persists (scope=account) or runs one unsaved search
     // (scope=search); Dismiss discards the client-held token.
-    const handlePreferenceProposalDecision = async (decision: 'apply' | 'dismiss') => {
+    const handlePreferenceProposalDecision = async (
+        decision: 'apply' | 'dismiss', scopeOverride?: 'search',
+    ) => {
         if (!prefProposal || prefProposalState === 'pending') return;
         if (decision === 'dismiss') {
             setPrefProposal(null);
@@ -2218,20 +2236,25 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         setPrefProposalState('pending');
         setPrefProposalError(null);
         setPrefProposalErrorType(null);
+        const epoch = purgeEpochRef.current;
+        const purged = () => purgeEpochRef.current !== epoch;
         try {
             const res = await csrfFetch('/api/agent/preferences/apply/', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({proposal: prefProposal.token, decision}),
+                body: JSON.stringify({
+                    proposal: scopeOverride ? {...prefProposal.token, scope: scopeOverride} : prefProposal.token,
+                    decision,
+                }),
             });
+            if (purged()) return;
             if (res.ok) {
                 const data = await res.json();
+                if (purged()) return;
                 if (data.scope === 'search') {
                     // This-search-only: never saved; show the confirmation
                     // with the number of matches the temporary filter found.
-                    const matchCount =
-                        (data.matches?.job_matches?.length || 0) +
-                        (data.matches?.organization_matches?.length || 0);
+                    const matchCount = data.matches?.job_matches?.length || 0;
                     setPrefSearchApplied(matchCount);
                 } else {
                     setPrefChanges(data.changes || []);
@@ -2240,6 +2263,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     setPrefUndoError(null);
                     setPrefUndoErrorType(null);
                     setPreferencesChanged(true);
+                    if (typeof data.revision === 'number') setPrioritiesRevision(data.revision);
                 }
                 setPrefProposal(null);
                 setPrefProposalState('idle');
@@ -2253,6 +2277,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 serverType = parsed?.error?.type || null;
                 serverMsg = parsed?.error?.message || '';
             } catch { /* non-JSON body: fall through to generic copy */ }
+            if (purged()) return;
             setPrefProposalState('error');
             setPrefProposalErrorType(serverType);
             setPrefProposalError(
@@ -2261,6 +2286,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     : (serverMsg || 'The proposal could not be applied. Please try again.'),
             );
         } catch {
+            if (purged()) return;
             setPrefProposalState('error');
             setPrefProposalErrorType(null);
             setPrefProposalError('Could not apply the preference proposal. Please check your connection and try again.');
@@ -2285,7 +2311,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     <button type="button" className="btn btn-sm btn-outline-light" onClick={handleExport}
                             disabled={!conversationId || !messages.length}>Export chat</button>
                     <button type="button" className="btn btn-sm btn-outline-light" onClick={handleReset}
-                            disabled={!conversationId || pending}>Reset chat</button>
+                            disabled={!conversationId || pending}>New conversation</button>
                     <button type="button" className="btn btn-sm btn-outline-danger" onClick={handleDelete}
                             disabled={!conversationId || pending}>Delete conversation</button>
                 </div>
@@ -2303,7 +2329,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         </button>
                     </div>
                     <div id="job-search-data-note-details" className={dataNoteOpen ? 'chat-note-details' : 'visually-hidden'}>
-                        Your messages and preference updates are saved to your account; use Export, Reset, or Delete
+                        Your messages and preference updates are saved to your account; use Export, New conversation, or Delete
                         above to manage them.
                     </div>
                 </div>
@@ -2316,10 +2342,16 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         errorType={prefProposalErrorType}
                         onDecision={handlePreferenceProposalDecision}
                         onReview={() => {
-                            // Stale-conflict recovery: review the current
-                            // preferences through the assistant.
-                            composerRef.current?.focus();
+                            // Stale-conflict recovery: reopen the proposal in the
+                            // inline editor, to re-review against the latest (issue #480).
+                            setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
                         }}
+                        onEdit={() => {
+                            setPrioritiesEditorOpen(prioritiesSurface(), prefProposal.token.patch);
+                            // Keep the proposal while part of it cannot be shown in the editor.
+                            if (patchFitsEditor(prefProposal.token.patch)) setPrefProposal(null);
+                        }}
+                        onSearchOnly={() => handlePreferenceProposalDecision('apply', 'search')}
                     />
                 )}
 
@@ -2330,7 +2362,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                             <span className="pref-change-summary">
                                 <i className="fa-solid fa-filter me-1" aria-hidden="true"></i>
                                 Applied to this search only — not saved to your preferences
-                                {prefSearchApplied > 0 ? ` (${prefSearchApplied} matches)` : ''}.
+                                {prefSearchApplied > 0 ? ` (${prefSearchApplied}${prefSearchApplied >= MATCH_CAP ? '+' : ''} matches)` : ''}.
                             </span>
                             <button type="button" className="pref-change-dismiss" aria-label="Dismiss search filter notice"
                                     onClick={() => {
@@ -2359,10 +2391,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                             setPrefUndoErrorType(null);
                         }}
                         onReview={() => {
-                            // Stale-conflict recovery: the current
-                            // preferences are reviewed through the
-                            // assistant, so focus the composer.
-                            composerRef.current?.focus();
+                            // Stale-conflict recovery: review the current
+                            // priorities in the inline editor (issue #480).
+                            setPrioritiesEditorOpen(prioritiesSurface());
                         }}
                     />
                 )}

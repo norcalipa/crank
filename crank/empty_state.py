@@ -470,10 +470,11 @@ def derive_state(
             title="Tell us what you're looking for",
             message=(
                 "There are active job listings, but you haven't shared your "
-                "preferences yet. Chat with the assistant to set your "
-                "criteria—compensation, location, culture, and more."
+                "preferences yet. Edit your priorities directly or chat with "
+                "the assistant to set your criteria—compensation, "
+                "location, culture, and more."
             ),
-            actions=["chat", "help"],
+            actions=["edit_priorities", "chat", "help"],
         )
 
     # Check matches
@@ -520,10 +521,11 @@ def derive_state(
         title="No matches for your current requirements",
         message=(
             "Jobs are available, but none meet your saved requirements yet. "
-            "Your active requirements are listed below—chat with the "
-            "assistant to adjust them, or explore companies while you decide."
+            "Your active requirements are listed below—edit your "
+            "priorities directly or chat with the assistant to adjust "
+            "them, or explore companies while you decide."
         ),
-        actions=["chat", "explore_companies", "suggest_company", "help"],
+        actions=["edit_priorities", "chat", "explore_companies", "suggest_company", "help"],
         refreshing=refreshing,
         active_constraints=_active_constraints(pref_doc),
         inventory=_inventory_facts(

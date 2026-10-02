@@ -870,6 +870,7 @@ class TestProposalCarriage:
                     "change_count": 1,
                     "scope": scope,
                     "unsupported_criteria": ["notes"],
+                    "currency": "EUR",
                 }
 
         gateway = FakeGateway(_patch_completion())
@@ -885,6 +886,7 @@ class TestProposalCarriage:
             {"path": "notes", "old": "", "new": "remote only"}
         ]
         assert proposal["unsupported_criteria"] == ["notes"]
+        assert proposal["currency"] == "EUR"
 
     def test_no_proposal_when_model_proposes_no_patch(self):
         class QuietPort:

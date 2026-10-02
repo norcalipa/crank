@@ -6,7 +6,7 @@ import {render, screen, waitFor} from '@testing-library/react';
 import AssistantPanel from './AssistantPanel';
 import {WorkspaceContext} from './types';
 import {fireEvent} from '@testing-library/react';
-import {getWorkspaceSnapshot, resetWorkspaceForTests, setWorkspaceContext} from './store';
+import {getWorkspaceSnapshot, resetWorkspaceForTests, setWorkspaceAccount, setWorkspaceContext} from './store';
 
 jest.mock('../JobSearchChat', () => ({
     __esModule: true,
@@ -140,5 +140,34 @@ describe('AssistantPanel', () => {
         expect(window.location.pathname + window.location.search + window.location.hash).toBe('/chat/?foo=bar#x');
         expect(window.history.state).toEqual({k: 1});
         window.history.replaceState(null, '', '/');
+    });
+});
+
+describe('AssistantPanel priorities section (issue #480)', () => {
+    const prefs = {exists: true, revision: 1, schema_version: 1, preferences: {}, fields: [],
+        chips: [{path: 'culture', label: 'Culture', display: 'kind', hard: false, supported: true}],
+        unsupported_criteria: []};
+
+    beforeEach(() => {
+        (global as any).fetch = jest.fn(() => Promise.resolve(new Response(JSON.stringify(prefs), {
+            status: 200, headers: {'Content-Type': 'application/json'},
+        })));
+    });
+
+    test('renders for an authenticated account and stays hidden for anonymous or unknown ones', async () => {
+        const {container} = render(<AssistantPanel mode="docked" context={null}/>);
+        expect(container.querySelector('.priorities-sidebar')).toBeNull();
+        expect((global as any).fetch).not.toHaveBeenCalled();
+        setWorkspaceAccount({status: 'authenticated', key: 'u'});
+        expect(await screen.findAllByTestId('priority-chip')).toHaveLength(1);
+        expect(container.querySelector('.assistant-panel-body > .priorities-sidebar')).not.toBeNull();
+        setWorkspaceAccount({status: 'anonymous', key: ''});
+        await waitFor(() => expect(container.querySelector('.priorities-sidebar')).toBeNull());
+    });
+
+    test('is outside the chat Suspense boundary, so it is present while the chat is pending', async () => {
+        setWorkspaceAccount({status: 'authenticated', key: 'u'});
+        render(<AssistantPanel mode="docked" context={null}/>);
+        expect(await screen.findByTestId('priorities-sidebar')).toBeInTheDocument();
     });
 });

@@ -26,12 +26,15 @@ Design rules from the issue:
 * Preference contents are never written to logs; audit rows store metadata only.
 """
 import copy
+import hmac
 import logging
+import math
 from datetime import timezone as _dt_tz
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+from django.utils.crypto import salted_hmac
 from django.utils.module_loading import import_string
 
 logger = logging.getLogger(__name__)
@@ -197,7 +200,7 @@ CRITERION_SUPPORT = {
     "compensation.equity_liquidity_required": UNSUPPORTED,
     "compensation.acceptable_liquidity_events": UNSUPPORTED,
     "work_location.office_days_exact": UNSUPPORTED,
-    "importance": UNSUPPORTED,
+    "importance": SUPPORTED,
     "scope.countries": UNSUPPORTED,
     "scope.role_families": UNSUPPORTED,
 }
@@ -282,7 +285,12 @@ def validate_value(field, leaf_type, value):
             raise InvalidValueError(
                 f"Field {field!r} must be a number"
             )
-        return float(value)
+        number = float(value)
+        if not math.isfinite(number):
+            raise InvalidValueError(f"Field {field!r} must be a finite number")
+        if field == "compensation.equity_minimum_percent" and not 0 <= number <= 100:
+            raise InvalidValueError(f"Field {field!r} must be within 0-100")
+        return number
     if leaf_type == "str":
         # "notes" is free-form (up to MAX_NOTES_LENGTH and may be empty);
         # other string fields are capped at MAX_SCALAR_LENGTH (M1).
@@ -325,7 +333,9 @@ def validate_value(field, leaf_type, value):
         out = {}
         for key, weight in value.items():
             _validate_str(key, field)
-            if field == "importance" and key not in CRITERION_SUPPORT:
+            if field == "importance" and (
+                key not in CRITERION_SUPPORT or key == "importance"
+            ):
                 raise InvalidValueError(
                     f"Unknown criterion key {key!r} for {field!r}"
                 )
@@ -334,7 +344,7 @@ def validate_value(field, leaf_type, value):
                     f"Priority {key!r} must be a number"
                 )
             weight = float(weight)
-            if weight < MIN_PRIORITY or weight > MAX_PRIORITY:
+            if not math.isfinite(weight) or weight < MIN_PRIORITY or weight > MAX_PRIORITY:
                 raise InvalidValueError(
                     f"Priority {key!r} must be within {MIN_PRIORITY}-{MAX_PRIORITY}"
                 )
@@ -528,6 +538,198 @@ def unsupported_criteria(document):
         if _criterion_is_set(spec, value, _get_optional(defaults, path)):
             result.append(path)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Editor metadata (issue #480)
+# ---------------------------------------------------------------------------
+# Server-owned labels and choices so the browser never duplicates the schema.
+CRITERION_LABELS = {
+    "compensation.minimum_salary": "Minimum base salary",
+    "compensation.currency": "Currency",
+    "compensation.equity_minimum_percent": "Minimum equity (%)",
+    "compensation.require_public_company": "Public companies only",
+    "compensation.basis": "Salary basis",
+    "compensation.period": "Salary period",
+    "compensation.minimum_total_compensation": "Minimum total compensation",
+    "compensation.equity_liquidity_required": "Equity liquidity required",
+    "compensation.acceptable_liquidity_events": "Acceptable liquidity events",
+    "culture": "Culture",
+    "work_location.modes": "Work arrangement",
+    "work_location.countries": "Work countries",
+    "work_location.require_onsite": "Require on-site",
+    "work_location.max_in_office_days": "Maximum office days per week",
+    "work_location.office_days_exact": "Exact office days per week",
+    "geography.regions": "Regions",
+    "geography.remote_friendly": "Remote-friendly regions only",
+    "industry": "Industries",
+    "funding_stage": "Funding stages",
+    "vesting.max_cliff_months": "Maximum vesting cliff (months)",
+    "vesting.max_vesting_months": "Maximum vesting period (months)",
+    "vesting.prefer_accelerated": "Prefer accelerated vesting",
+    "exclusions.companies": "Excluded companies",
+    "exclusions.titles": "Excluded titles",
+    "exclusions.industries": "Excluded industries",
+    "exclusions.locations": "Excluded locations",
+    "priorities": "Priority weights",
+    "notes": "Notes",
+    "roles.families": "Role families",
+    "roles.titles": "Role titles",
+    "roles.seniority": "Seniority",
+    "scope.countries": "Scope countries",
+    "scope.role_families": "Scope role families",
+}
+
+FIELD_CHOICES = {
+    "work_location.modes": ["remote", "hybrid", "in-office"],
+    "compensation.basis": ["base", "total"],
+    "compensation.period": ["year", "month", "hour"],
+}
+
+# Fields shown read-only (when set) rather than edited inline.
+_READ_ONLY_FIELDS = frozenset({
+    "notes",
+    "priorities",
+    "roles.families",
+    "roles.titles",
+    "roles.seniority",
+    "scope.countries",
+    "scope.role_families",
+    "work_location.office_days_exact",
+    "work_location.require_onsite",
+    "compensation.basis",
+    "compensation.period",
+    "compensation.equity_liquidity_required",
+    "compensation.acceptable_liquidity_events",
+})
+
+
+def _leaf_paths(spec=None, prefix=""):
+    spec = _FIELD_SPEC if spec is None else spec
+    for key, sub in spec.items():
+        path = "{}.{}".format(prefix, key) if prefix else key
+        if isinstance(sub, dict):
+            yield from _leaf_paths(sub, path)
+        else:
+            yield path, sub
+
+
+def _importance_map_of(document):
+    value = _get_optional(document, "importance")
+    return value if isinstance(value, dict) else {}
+
+
+def _is_hard(path, document):
+    from crank.agents.jobs.matching import is_hard_requirement
+
+    return is_hard_requirement(path, _importance_map_of(document))
+
+
+def _is_always_hard(path):
+    from crank.agents.jobs.matching import is_hard_requirement
+
+    return is_hard_requirement(path, {})
+
+
+# The matcher only evaluates this requirement when the value is True, so a
+# saved False must not render as a locked requirement.
+_HARD_ONLY_WHEN_TRUE = ("compensation.require_public_company",)
+
+
+def editor_fields(document):
+    """Describe every editable/visible leaf for the priorities editor.
+
+    Each entry: ``{path, label, type, choices?, value, set, supported, hard,
+    hard_locked, editable}``. ``set`` is False when the value equals the
+    schema default (rendered "Not set"). ``hard`` is True for a requirement
+    (``importance >= 1.0`` or always-hard); ``hard_locked`` for always-hard.
+    """
+    defaults = default_preferences()
+    fields = []
+    for path, leaf in _leaf_paths():
+        if path == "importance":
+            continue
+        value = _get_optional(document, path)
+        default = _get_optional(defaults, path)
+        entry = {
+            "path": path,
+            "label": CRITERION_LABELS.get(path, path),
+            "type": leaf,
+            "value": copy.deepcopy(value if value is not None else default),
+            "set": _criterion_is_set(leaf, value, default),
+            "supported": CRITERION_SUPPORT.get(path) == SUPPORTED,
+            "hard": _is_hard(path, document)
+            and (path not in _HARD_ONLY_WHEN_TRUE or value is True),
+            "hard_locked": _is_always_hard(path),
+            "editable": path not in _READ_ONLY_FIELDS,
+        }
+        if path in FIELD_CHOICES:
+            entry["choices"] = list(FIELD_CHOICES[path])
+        fields.append(entry)
+    return fields
+
+
+def _display_value(leaf, value):
+    if leaf == "bool":
+        return "Yes" if value else "No"
+    if leaf == "str_list":
+        return ", ".join(str(item) for item in value)
+    if leaf == "float_map":
+        return ", ".join(sorted(str(key) for key in value))
+    return str(value)
+
+
+def criteria_chips(document):
+    """Compact chips for every set field: ``{path, label, display, hard, supported}``.
+
+    List fields also carry ``items`` so an entry containing a comma stays whole.
+    """
+    chips = []
+    for field in editor_fields(document):
+        if not field["set"]:
+            continue
+        # Matching ignores a saved False here, so it is not shown as a preference.
+        if field["path"] in _HARD_ONLY_WHEN_TRUE and field["value"] is not True:
+            continue
+        chip = {
+            "path": field["path"],
+            "label": field["label"],
+            "display": _display_value(field["type"], field["value"]),
+            "hard": field["hard"],
+            "supported": field["supported"],
+        }
+        if field["type"] == "str_list":
+            chip["items"] = [str(item) for item in field["value"]]
+        chips.append(chip)
+    return chips
+
+
+def patch_field_errors(patch):
+    """Return ``{path: [message]}`` for every invalid ``set`` value in *patch*.
+
+    Never raises for a well-formed dict; unknown paths and non-settable
+    dynamic keys are reported against their path.
+    """
+    errors = {}
+    if not isinstance(patch, dict):
+        return errors
+    set_part = patch.get("set")
+    if not isinstance(set_part, dict):
+        return errors
+    for path, value in set_part.items():
+        try:
+            spec, dynamic = _resolve_spec(path)
+            if dynamic:
+                raise AmbiguousPatchError(
+                    "Cannot set a dynamic inner key directly: {!r}".format(path)
+                )
+            if isinstance(spec, dict):
+                _validate_node_value(spec, value)
+            else:
+                validate_value(path, spec, value)
+        except PreferenceError as exc:
+            errors.setdefault(str(path), []).append(str(exc))
+    return errors
 
 
 # ---------------------------------------------------------------------------
@@ -794,7 +996,27 @@ def diff_patch(document, patch):
     return _diff_changes(base, new_doc, patch), change_count
 
 
-def build_undo_token(expected_revision, prior_document):
+def token_owner(user):
+    """Return the opaque owner tag that binds client-held tokens to ``user``.
+
+    This is a per-user tag, not a signature over the token body and it does not
+    expire: replay is blocked by the revision check, and the token holder is
+    the owner of the data it carries.
+    """
+    return salted_hmac(
+        "crank.pref-token", str(user.pk), algorithm="sha256"
+    ).hexdigest()[:32]
+
+
+def token_owner_matches(user, token):
+    """True when ``token`` carries the stamp issued for ``user``."""
+    owner = token.get("owner") if isinstance(token, dict) else None
+    if not isinstance(owner, str) or not owner.isascii():
+        return False
+    return hmac.compare_digest(owner, token_owner(user))
+
+
+def build_undo_token(expected_revision, prior_document, user):
     """Build an opaque undo token capturing the full pre-apply document.
 
     The token carries the stored document exactly as it was before the apply
@@ -810,10 +1032,12 @@ def build_undo_token(expected_revision, prior_document):
     """
     if prior_document is None:
         return None
-    return {
+    token = {
         "expected_revision": expected_revision,
         "document": copy.deepcopy(prior_document),
     }
+    token["owner"] = token_owner(user)
+    return token
 
 
 def propose_patch_for_user(user, patch, *, scope="account"):
@@ -849,6 +1073,7 @@ def propose_patch_for_user(user, patch, *, scope="account"):
         "change_count": change_count,
         "scope": scope,
         "unsupported_criteria": unsupported_criteria(new_doc),
+        "currency": _get_optional(document, "compensation.currency"),
     }
     if scope == "search":
         result["effective_document"] = new_doc
@@ -927,7 +1152,7 @@ def undo_preference_change(user, undo_token):
     try:
         import json as _json
 
-        if len(_json.dumps(document).encode("utf-8")) > _MAX_UNDO_DOCUMENT_BYTES:
+        if len(_json.dumps(document, allow_nan=False).encode("utf-8")) > _MAX_UNDO_DOCUMENT_BYTES:
             raise AmbiguousPatchError("Invalid undo token")
     except (TypeError, ValueError):
         raise AmbiguousPatchError("Invalid undo token")
@@ -1324,6 +1549,28 @@ def _normalize_ts(value):
     return None
 
 
+def read_for_editor(user):
+    """Owner-scoped read for the priorities editor; creates **no** row.
+
+    A user without a stored row gets the schema defaults at revision 0.
+    """
+    pref = UserPreference.objects.filter(user=user).first()
+    if pref is None:
+        document = default_preferences()
+        return {
+            "exists": False,
+            "revision": 0,
+            "schema_version": SCHEMA_VERSION,
+            "preferences": document,
+        }
+    return {
+        "exists": True,
+        "revision": pref.revision,
+        "schema_version": pref.schema_version,
+        "preferences": copy.deepcopy(pref.preferences),
+    }
+
+
 def read(user):
     """Owner-scoped read. Model default, full document + markdown returned."""
     pref = _fetch_or_create(user)
@@ -1425,7 +1672,7 @@ def apply_patch_to_user(user, patch, expected_modified=None, *, expected_revisio
             # The undo token captures the full pre-apply stored document so
             # the restore is byte-identical for every supported shape
             # (issue #466 review), not an inverse patch rebuilt from the diff.
-            undo_token = build_undo_token(new_revision, pref.preferences)
+            undo_token = build_undo_token(new_revision, pref.preferences, user)
             pref.preferences = new_doc
             pref.preferences_markdown = to_markdown(new_doc)
             pref.revision = new_revision
@@ -1444,20 +1691,37 @@ def apply_patch_to_user(user, patch, expected_modified=None, *, expected_revisio
         return result
 
 
-def reset(user, expected_modified=None):
+def reset(user, expected_modified=None, *, expected_revision=None):
     """Owner-scoped reset to valid empty defaults.
 
     ``changed`` is True when the stored document actually differed from the
     defaults (so a repeat reset on already-default preferences is idempotent).
+
+    ``expected_revision`` (issue #480) is a revision precondition: when given
+    it takes precedence over ``expected_modified`` and a mismatch raises
+    :class:`StalePreferenceError` carrying ``current_revision``. A reset that
+    changes the document also returns the field-level ``changes`` and an
+    ``undo`` token (:func:`build_undo_token`); a no-op returns ``undo=None``.
     """
+    _validate_expected_revision(expected_revision)
     with transaction.atomic():
         pref = _lock(user)
+        prior_document = None
         if pref is None:
+            if expected_revision:
+                raise StalePreferenceError(
+                    "preference row was deleted while the reset was in flight",
+                    current_revision=0,
+                )
             pref = _fetch_or_create_pending(user)
             # Newly created default row: nothing to change.
             fresh = default_preferences()
         else:
-            _check_stale(pref, expected_modified)
+            if expected_revision is not None:
+                _check_stale_revision(pref, expected_revision)
+            else:
+                _check_stale(pref, expected_modified)
+            prior_document = copy.deepcopy(pref.preferences)
             fresh = default_preferences()
             # Forward compatibility: a newer schema version may have written
             # additive fields this version cannot interpret. Resetting the
@@ -1468,7 +1732,19 @@ def reset(user, expected_modified=None):
             pref.preferences == fresh
             and pref.preferences_markdown == to_markdown(fresh)
         )
+        change_entries = []
+        undo_token = None
         if changed:
+            base = _diff_base(pref.preferences)
+            for path, _leaf in _leaf_paths():
+                old = _get_optional(base, path)
+                new = _get_optional(fresh, path)
+                if old != new:
+                    change_entries.append({
+                        "path": path,
+                        "old": copy.deepcopy(old),
+                        "new": copy.deepcopy(new),
+                    })
             pref.preferences = fresh
             pref.preferences_markdown = to_markdown(fresh)
             # A reset is a committed canonical document change, so it advances
@@ -1479,11 +1755,14 @@ def reset(user, expected_modified=None):
             pref.save(update_fields=[
                 "preferences", "preferences_markdown", "revision", "modified",
             ])
+            undo_token = build_undo_token(pref.revision, prior_document, user)
             _audit(user, UserPreferenceAudit.Action.RESET)
             _schedule_recompute("{}:{}".format(user.pk, pref.revision))
         result = _serialize(pref)
         result["changed"] = bool(changed)
         result["revision"] = pref.revision
+        result["changes"] = change_entries
+        result["undo"] = undo_token
         return result
 
 
