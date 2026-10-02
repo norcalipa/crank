@@ -1122,7 +1122,7 @@ class TestDiffPatch:
         }]
 
     def test_build_undo_token_returns_none_for_empty_changes(self):
-        assert prefs.build_undo_token(7, None) is None
+        assert prefs.build_undo_token(7, None, None) is None
 
     def test_check_stale_revision_noops_when_expected_revision_is_none(self, user):
         prefs.apply_patch_to_user(user, {"set": {"notes": "seed"}})

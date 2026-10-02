@@ -379,6 +379,40 @@ class TestApplyUndoIdempotencyAndConcurrency:
         assert response.status_code == 403
         assert post(client_a, "agent-preference-undo", {"undo": {"expected_revision": 1, "document": {}}}).status_code == 403
 
+    @pytest.mark.parametrize("owner", ["\u00e9", "\u00e9" * 32, 5, None, [], {}, ""])
+    def test_malformed_owner_is_403_not_500(self, alice, client_a, owner):
+        seed(alice)
+        token = post(client_a, "agent-preference-propose", {"patch": EDIT_PATCH}).json()["token"]
+        before = prefs.read(alice)
+        applied = post(client_a, "agent-preference-apply", {"decision": "apply", "proposal": {**token, "owner": owner}})
+        undone = post(client_a, "agent-preference-undo", {"undo": {"expected_revision": 1, "document": {}, "owner": owner}})
+        assert applied.status_code == 403
+        assert undone.status_code == 403
+        assert prefs.read(alice) == before
+
+    @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity", "1e999"])
+    def test_undo_rejects_non_finite_additive_keys(self, alice, client_a, literal):
+        seed(alice)
+        before = prefs.read(alice)
+        revision = UserPreference.objects.get(user=alice).revision
+        body = (
+            '{"undo": {"expected_revision": %d, "owner": "%s", "document": {"x_future": %s}}}'
+            % (revision, prefs.token_owner(alice), literal)
+        )
+        response = client_a.post(reverse("agent-preference-undo"), data=body, content_type="application/json")
+        assert response.status_code == 400
+        assert prefs.read(alice) == before
+        assert UserPreference.objects.get(user=alice).revision == revision
+
+    def test_undo_service_rejects_non_finite_additive_value(self, alice):
+        seed(alice)
+        revision = UserPreference.objects.get(user=alice).revision
+        for bad in (float("nan"), float("inf")):
+            with pytest.raises(prefs.AmbiguousPatchError):
+                prefs.undo_preference_change(
+                    alice, {"expected_revision": revision, "document": {"x_future": bad}}
+                )
+
     @pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity", "1e999", "-5", "250"])
     def test_non_finite_and_out_of_range_floats_are_400(self, alice, client_a, literal):
         seed(alice)

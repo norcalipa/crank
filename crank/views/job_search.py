@@ -212,6 +212,10 @@ def _error(request, status, error_type, message, request_id, extra=None):
     )
 
 
+def _reject_constant(name):
+    raise ValueError(f"non-finite JSON constant {name}")
+
+
 def _body(request, request_id):
     """Parse the JSON request body, enforcing a payload size limit.
 
@@ -229,7 +233,7 @@ def _body(request, request_id):
             "Request body exceeds the allowed size.", request_id,
         )
     try:
-        payload = json.loads(raw) if raw else {}
+        payload = json.loads(raw, parse_constant=_reject_constant) if raw else {}
     except (ValueError, TypeError):
         return None, _error(
             request, 400, "malformed_json", "Request body must be valid JSON.", request_id,
@@ -1169,7 +1173,7 @@ def agent_preference_apply(request):
     if not pref_services.token_owner_matches(request.user, token):
         return _error(
             request, 403, "forbidden",
-            "This proposal belongs to a different account.", request_id,
+            "This change expired. Reload to review it again.", request_id,
         )
 
     if scope == "search":
@@ -1292,7 +1296,7 @@ def agent_preference_undo(request):
     ):
         return _error(
             request, 403, "forbidden",
-            "This undo belongs to a different account.", request_id,
+            "This change expired. Reload to review it again.", request_id,
         )
     try:
         result = pref_services.undo_preference_change(request.user, token)

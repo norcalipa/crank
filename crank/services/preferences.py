@@ -997,17 +997,26 @@ def diff_patch(document, patch):
 
 
 def token_owner(user):
-    """Return the opaque owner stamp that binds client-held tokens to ``user``."""
-    return salted_hmac("crank.pref-token", str(user.pk)).hexdigest()[:32]
+    """Return the opaque owner tag that binds client-held tokens to ``user``.
+
+    This is a per-user tag, not a signature over the token body and it does not
+    expire: replay is blocked by the revision check, and the token holder is
+    the owner of the data it carries.
+    """
+    return salted_hmac(
+        "crank.pref-token", str(user.pk), algorithm="sha256"
+    ).hexdigest()[:32]
 
 
 def token_owner_matches(user, token):
     """True when ``token`` carries the stamp issued for ``user``."""
     owner = token.get("owner") if isinstance(token, dict) else None
-    return isinstance(owner, str) and hmac.compare_digest(owner, token_owner(user))
+    if not isinstance(owner, str) or not owner.isascii():
+        return False
+    return hmac.compare_digest(owner, token_owner(user))
 
 
-def build_undo_token(expected_revision, prior_document, user=None):
+def build_undo_token(expected_revision, prior_document, user):
     """Build an opaque undo token capturing the full pre-apply document.
 
     The token carries the stored document exactly as it was before the apply
@@ -1027,8 +1036,7 @@ def build_undo_token(expected_revision, prior_document, user=None):
         "expected_revision": expected_revision,
         "document": copy.deepcopy(prior_document),
     }
-    if user is not None:
-        token["owner"] = token_owner(user)
+    token["owner"] = token_owner(user)
     return token
 
 
@@ -1144,7 +1152,7 @@ def undo_preference_change(user, undo_token):
     try:
         import json as _json
 
-        if len(_json.dumps(document).encode("utf-8")) > _MAX_UNDO_DOCUMENT_BYTES:
+        if len(_json.dumps(document, allow_nan=False).encode("utf-8")) > _MAX_UNDO_DOCUMENT_BYTES:
             raise AmbiguousPatchError("Invalid undo token")
     except (TypeError, ValueError):
         raise AmbiguousPatchError("Invalid undo token")
