@@ -201,7 +201,9 @@ def default_score_summary_datasource(
     # active-score definition as rankings and company details.
     from crank.services.scores import active_score_summary_rows
 
-    rows = list(active_score_summary_rows(organization_ids, score_types)[:limit])
+    rows = list(active_score_summary_rows(organization_ids, score_types).order_by(
+        "target_id", "type__name"
+    )[:limit])
     return [
         {
             "organization_id": int(row["target_id"]),
