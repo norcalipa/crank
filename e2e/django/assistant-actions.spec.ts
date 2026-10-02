@@ -149,11 +149,36 @@ test.describe('assistant actions (issue #484)', () => {
         await openAssistant(page);
         await ask(page, 'Show only remote companies');
         await applyRemote(page).click();
-        await page.getByRole('button', {name: 'Save as a requirement'}).click();
-        // The seeded account already prefers remote work, so there is nothing
-        // to review: the note says so and no write happens.
+        // The seeded account already prefers remote work: the background check
+        // says so up front and Save is never offered.
         await expect(page.getByTestId('assistant-action-already')).toContainText('Already one of your requirements');
+        await expect(page.getByRole('button', {name: 'Save as a requirement'})).toHaveCount(0);
         await expect(page.getByTestId('assistant-action-review')).toHaveCount(0);
+    });
+
+    test('the save card confirm button is fully visible at 320px and no false jump pill shows', async ({page}) => {
+        await page.setViewportSize({width: 320, height: 700});
+        await login(page);
+        await page.route('**/api/agent/preferences/propose/', (route) => route.fulfill({
+            status: 200, contentType: 'application/json', body: JSON.stringify({
+                id: 'p1', scope: 'account', change_count: 1, base_revision: 4, unsupported_criteria: [],
+                changes: [{path: 'work_location.modes', old: ['hybrid'], new: ['remote']}],
+                token: {patch: {set: {'work_location.modes': ['remote']}}, scope: 'account', base_revision: 4},
+            }),
+        }));
+        await openAssistant(page);
+        await ask(page, 'Show only remote companies');
+        await applyRemote(page).click();
+        await page.getByRole('button', {name: 'Save as a requirement'}).click();
+        const review = page.getByTestId('assistant-action-review');
+        await expect(review).toBeVisible();
+        const save = review.getByRole('button', {name: 'Save', exact: true});
+        await expect(save).toBeInViewport({ratio: 1});
+        const log = await page.getByRole('log').boundingBox();
+        const box = await save.boundingBox();
+        expect(box!.y).toBeGreaterThanOrEqual(log!.y);
+        expect(box!.y + box!.height).toBeLessThanOrEqual(log!.y + log!.height + 1);
+        await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
     });
 
     test('actions and the RTO chip fit at 375px', async ({page}) => {
