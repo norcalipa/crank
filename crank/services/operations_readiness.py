@@ -943,7 +943,73 @@ def run_progress(now=None, ctx=None):
     return {"latest": latest, "completed": completed}
 
 
+def evidence_freshness(now=None):
+    """Accepted-evidence age and coverage as bounded ints (issue #482).
+
+    One aggregate query over accepted ``CompanyFieldEvidence``: staleness
+    applies ``FIELD_FRESHNESS_POLICY`` per field key (never-verified rows
+    count as stale, matching ``company_evidence.is_stale``), plus one
+    organization count. Read-only.
+    """
+    from crank.models.company_profile import CompanyFieldEvidence
+    from crank.models.organization import Organization
+    from crank.services.company_evidence import FIELD_FRESHNESS_POLICY
+
+    now = now or timezone.now()
+    stale = Q()
+    for field_key, days in FIELD_FRESHNESS_POLICY.items():
+        stale |= Q(field_key=field_key) & (
+            Q(last_verified_at__isnull=True)
+            | Q(last_verified_at__lt=now - timedelta(days=days))
+        )
+    aggregate = CompanyFieldEvidence.objects.filter(
+        state=CompanyFieldEvidence.State.ACCEPTED
+    ).aggregate(
+        rows=Count("pk"),
+        stale=Count("pk", filter=stale),
+        oldest=Min("last_verified_at"),
+        organizations=Count("organization", distinct=True),
+    )
+    oldest_days = (
+        0 if aggregate["oldest"] is None else max(0, (now - aggregate["oldest"]).days)
+    )
+    return {
+        "accepted_evidence_rows": aggregate["rows"],
+        "evidence_stale_rows": aggregate["stale"],
+        "evidence_oldest_verified_days": oldest_days,
+        "organizations_with_evidence": aggregate["organizations"],
+        "organizations_active": Organization.objects.filter(
+            status=Organization.ACTIVE_STATUS
+        ).count(),
+    }
+
+
+def health_gauges(now=None):
+    """Flat int-only gauges for the ``pipeline_health`` event (issue #482)."""
+    ctx = snapshot(now)
+    pending = backlog(ctx=ctx)
+    gauges = {
+        "enabled_sources": ctx.source_counts["live"],
+        "observations_pending": pending["review"]["observations_pending"],
+        "observations_conflicted": pending["review"]["observations_conflicted"],
+        "unresolved_employers": pending["employers"]["unresolved"],
+        "outbox_pending": pending["outbox"]["pending"],
+        "outbox_oldest_age_seconds": pending["outbox"]["oldest_pending_age_seconds"] or 0,
+        "queued_runs": ctx.pending_count,
+        "oldest_queued_age_seconds": _age_seconds(
+            getattr(ctx.oldest_pending, "created", None), ctx.now
+        )
+        or 0,
+        "users_without_generation": pending["matches"]["users_without_generation"],
+        "publication_match_lag_seconds": pending["matches"]["lag_seconds"],
+    }
+    gauges.update(evidence_freshness(ctx.now))
+    return gauges
+
+
 __all__ = [
+    "evidence_freshness",
+    "health_gauges",
     "snapshot",
     "RUNBOOK_BASE_URL",
     "STAGES",

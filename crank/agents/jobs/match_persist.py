@@ -128,6 +128,7 @@ class MatchSnapshot:
     criteria: Any = None
     evidence: dict = field(default_factory=dict)
     data_revisions: dict = field(default_factory=dict)
+    previous_data_revision: int | None = None
 
 
 def _within_age(generated_at, max_age_hours):
@@ -221,6 +222,7 @@ def open_snapshot(
             criteria=criteria,
             evidence=evidence,
             data_revisions=data_revisions,
+            previous_data_revision=state.data_revision,
         )
 
 

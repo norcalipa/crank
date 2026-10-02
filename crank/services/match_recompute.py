@@ -25,6 +25,7 @@ from enum import Enum
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db.models import Exists, F, OuterRef, Q
+from django.utils import timezone
 
 from crank.agents.jobs.match_persist import (
     PublishOutcome,
@@ -35,6 +36,7 @@ from crank.agents.jobs.matching import rank_listings
 from crank.agents.jobs.ranking_config import DEFAULT_CONFIG
 from crank.models.job_match import MatchResultState
 from crank.models.preference import UserPreference
+from crank.models.publication import PublicationEvent
 from crank.services import publication
 
 logger = logging.getLogger("match_recompute")
@@ -54,6 +56,7 @@ class RecomputeOutcome:
     status: RecomputeStatus
     generation: int | None = None
     persisted: int = 0
+    publication_lag_seconds: int | None = None
 
 
 _OUTCOME_MAP = {
@@ -86,6 +89,30 @@ def _max_listings():
 
 def _max_age_hours():
     return int(getattr(settings, "MATCH_RECOMPUTE_MAX_AGE_HOURS", 24))
+
+
+def publication_lag_seconds(previous, current, now=None):
+    """Seconds since the oldest event this publish first reflects.
+
+    Events in ``(previous, current]`` are the ones the new generation covers
+    for the first time; ``None`` when that window is empty. Telemetry only:
+    a failure here never fails the publish.
+    """
+    if current is None or (previous or 0) >= current:
+        return None
+    try:
+        created = (
+            PublicationEvent.objects.filter(id__gt=previous or 0, id__lte=current)
+            .order_by("id")
+            .values_list("created_at", flat=True)
+            .first()
+        )
+    except Exception:  # noqa: BLE001 - measuring must never fail a publish
+        logger.warning("publication lag measurement failed", exc_info=True)
+        return None
+    if created is None:
+        return None
+    return max(0, int(((now or timezone.now()) - created).total_seconds()))
 
 
 def recompute_user(user_or_id, *, reason, config=DEFAULT_CONFIG, force=False, max_listings=None):
@@ -134,7 +161,11 @@ def recompute_user(user_or_id, *, reason, config=DEFAULT_CONFIG, force=False, ma
         outcome = publish(snapshot, ranked)
         status = _OUTCOME_MAP[outcome]
         persisted = 0
+        lag = None
         if status == RecomputeStatus.PUBLISHED:
+            lag = publication_lag_seconds(
+                snapshot.previous_data_revision, snapshot.data_revision
+            )
             persisted = (
                 MatchResultState.objects.filter(user=user)
                 .values_list("result_count", flat=True)
@@ -142,7 +173,10 @@ def recompute_user(user_or_id, *, reason, config=DEFAULT_CONFIG, force=False, ma
                 or 0
             )
         return RecomputeOutcome(
-            status=status, generation=snapshot.ticket, persisted=persisted
+            status=status,
+            generation=snapshot.ticket,
+            persisted=persisted,
+            publication_lag_seconds=lag,
         )
     except Exception:  # noqa: BLE001 - recompute must never raise into callers
         logger.exception(
@@ -318,6 +352,8 @@ def drain(limit, deadline=None):
         "matches_persisted": 0,
         "stale_discarded": 0,
         "duplicate_skipped": 0,
+        "publication_lag_max_seconds": 0,
+        "publication_lag_count": 0,
         "deadline_reached": False,
     }
     user_ids = pending_users(limit)
@@ -334,6 +370,12 @@ def drain(limit, deadline=None):
         if outcome.status == RecomputeStatus.PUBLISHED:
             counts["users_succeeded"] += 1
             counts["matches_persisted"] += outcome.persisted
+            if outcome.publication_lag_seconds is not None:
+                counts["publication_lag_count"] += 1
+                counts["publication_lag_max_seconds"] = max(
+                    counts["publication_lag_max_seconds"],
+                    outcome.publication_lag_seconds,
+                )
         elif outcome.status == RecomputeStatus.CURRENT:
             counts["users_succeeded"] += 1
             counts["duplicate_skipped"] += 1
