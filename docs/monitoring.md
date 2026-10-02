@@ -129,6 +129,36 @@ is ever an event attribute.
 Run `python manage.py check --deploy` in CI: a demo provider
 in a production config must never silently serve simulated replies.
 
+## Assistant and data-freshness metrics
+
+Issue #482 adds bounded, allowlisted `CrankOperation` events. Values are
+enums, integers, booleans or UUIDs only; prompts, URLs, user ids and free text
+are never recorded, and a client `X-Request-ID` that is not a UUID is dropped
+(`correlation_id` is omitted).
+
+- `assistant_turn`: `phase` attempted/saved/replied/failed/rejected/replayed;
+  failures carry `reason_code` (provider_timeout, cost_limit, invalid_output,
+  assistant_unavailable, conversation_gone, conversation_closed,
+  preference_stale, service_error, unexpected_error, worker_interrupted) and a
+  `failure_stage`; rejections use rate_limited, turn_in_progress, retry_limited.
+- `assistant_first_result`: once per conversation (conditional update on
+  `JobSearchConversation.first_result_at`), `seconds_to_first_result` and
+  `turns_to_first_result`.
+- `availability_state`: assistant status and job-matches surfaces.
+- `preference_decision`: apply/dismiss/undo with `state` ok/stale/invalid/failed.
+- `matching_batch` gains `publication_lag_max_seconds` / `publication_lag_count`.
+- `pipeline_health` (emitted by `crawl_healthcheck`): queue, outbox, review and
+  evidence-freshness gauges. `publication_sweep`: per-run sweep outcome.
+
+Recovery: a failing `pipeline_health` emits `healthy=false` with a
+`reason_code`; run `python manage.py crawl_status` and the admin readiness page.
+
+### Baselines
+
+The `metrics:` block in `monitoring.yaml` is `baseline_only`. No alert
+threshold is added; thresholds are chosen after a 14-day baseline and feed
+issue #492.
+
 ## Admin controls and recovery
 
 Staff-only Django admin views expose sanitized `AgentRun`/`SourceRun` history,

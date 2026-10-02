@@ -19,7 +19,7 @@ class MonitoringContractTests(TestCase):
                 "prompt": "private user request",
                 "response_body": "private provider body",
                 "user_id": "must-not-be-a-dimension",
-                "stage": "completion",
+                "stage": "job_ingest",
             },
         )
         self.assertEqual(payload["event_name"], "interactive_call")
@@ -27,7 +27,7 @@ class MonitoringContractTests(TestCase):
         self.assertNotIn("prompt", payload)
         self.assertNotIn("response_body", payload)
         self.assertNotIn("user_id", payload)
-        self.assertEqual(payload["stage"], "completion")
+        self.assertEqual(payload["stage"], "job_ingest")
 
     def test_event_schema_rejects_unknown_event_names(self):
         with self.assertRaises(ValueError):
@@ -140,8 +140,8 @@ class MonitoringContractTests(TestCase):
         self.assertIsNone(monitoring._safe_value("status", None))
 
     def test_safe_value_truncates_strings(self):
-        result = monitoring._safe_value("stage", "a" * 200)
-        self.assertEqual(len(result), 64)
+        self.assertEqual(monitoring._safe_value("stage", "a" * 200), "other")
+        self.assertEqual(monitoring._safe_value("source_key", "a" * 200), "other")
 
     def test_audit_str_representation(self):
         audit = OperationalChangeAudit.record(
