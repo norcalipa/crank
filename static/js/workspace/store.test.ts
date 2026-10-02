@@ -40,6 +40,7 @@ describe('workspace store', () => {
             userOpened: false,
             prioritiesRevision: null,
             prioritiesEditorOpenIn: null,
+            prioritiesEditorSeed: null,
         });
     });
 
@@ -54,6 +55,18 @@ describe('workspace store', () => {
         expect(getWorkspaceSnapshot()).toMatchObject({prioritiesRevision: 3, prioritiesEditorOpenIn: 'main'});
         resetPriorities();
         expect(getWorkspaceSnapshot()).toMatchObject({prioritiesRevision: null, prioritiesEditorOpenIn: null});
+    });
+
+    test('the editor seed travels with the open host and is dropped on close and reset (issue #480)', () => {
+        const seed = {set: {'compensation.minimum_salary': 200000}};
+        setPrioritiesEditorOpen('sidebar', seed);
+        expect(getWorkspaceSnapshot()).toMatchObject({prioritiesEditorOpenIn: 'sidebar', prioritiesEditorSeed: seed});
+        setPrioritiesEditorOpen('sidebar', seed);
+        setPrioritiesEditorOpen(null, seed);
+        expect(getWorkspaceSnapshot()).toMatchObject({prioritiesEditorOpenIn: null, prioritiesEditorSeed: null});
+        setPrioritiesEditorOpen('main', seed);
+        resetPriorities();
+        expect(getWorkspaceSnapshot().prioritiesEditorSeed).toBeNull();
     });
 
     test('userOpened is set by openAssistant and cleared by a wholesale replace (issue #479)', () => {

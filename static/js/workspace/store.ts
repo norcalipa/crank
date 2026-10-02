@@ -11,6 +11,7 @@
 import {
     AssistantVisibility,
     PrioritiesEditorHost,
+    PrioritiesEditorSeed,
     WorkspaceAccount,
     WorkspaceContext,
     WorkspaceMode,
@@ -54,6 +55,7 @@ function initialSnapshot(): WorkspaceSnapshot {
         userOpened: false,
         prioritiesRevision: null,
         prioritiesEditorOpenIn: null,
+        prioritiesEditorSeed: null,
     };
 }
 
@@ -333,16 +335,17 @@ export function setPrioritiesRevision(revision: number): void {
     update({prioritiesRevision: revision});
 }
 
-export function setPrioritiesEditorOpen(host: PrioritiesEditorHost | null): void {
-    if (store().snapshot.prioritiesEditorOpenIn === host) {
+export function setPrioritiesEditorOpen(host: PrioritiesEditorHost | null, seed: PrioritiesEditorSeed | null = null): void {
+    const current = store().snapshot;
+    if (current.prioritiesEditorOpenIn === host && current.prioritiesEditorSeed === seed) {
         return;
     }
-    update({prioritiesEditorOpenIn: host});
+    update({prioritiesEditorOpenIn: host, prioritiesEditorSeed: host === null ? null : seed});
 }
 
 // Account switch / private-state purge: drops every priorities signal.
 export function resetPriorities(): void {
-    update({prioritiesRevision: null, prioritiesEditorOpenIn: null});
+    update({prioritiesRevision: null, prioritiesEditorOpenIn: null, prioritiesEditorSeed: null});
 }
 
 export function subscribeWorkspace(listener: () => void): () => void {

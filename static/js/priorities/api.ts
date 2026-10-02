@@ -29,6 +29,7 @@ export interface PriorityChip {
     display: string;
     hard: boolean;
     supported: boolean;
+    items?: string[];
 }
 
 export interface PrioritiesSnapshot {
@@ -76,7 +77,11 @@ export interface AppliedResult {
     undo: UndoToken | null;
     scope: ProposalScope;
     matchCount?: number;
+    matchCapped?: boolean;
 }
+
+// The server caps each match list at this many entries, so a full list means "at least".
+export const MATCH_CAP = 25;
 
 export class ApiFailure extends Error {
     status: number;
@@ -96,9 +101,15 @@ export class ApiFailure extends Error {
     get stale(): boolean {
         return this.status === 409 || this.type === 'preference_stale';
     }
+
+    get authRequired(): boolean {
+        return this.type === 'auth_required';
+    }
 }
 
 export const GENERIC_ERROR_MESSAGE = 'Something went wrong. Please try again.';
+export const SESSION_EXPIRED_MESSAGE = 'Your session has expired. Sign in to continue.';
+
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
     let res: Response;
@@ -107,8 +118,16 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     } catch {
         throw new ApiFailure(0, 'network', 'Could not reach the server. Check your connection and try again.');
     }
+    // An expired session redirects to the login page, which fetch follows into HTML.
+    if (res.redirected || res.status === 401) {
+        throw new ApiFailure(401, 'auth_required', SESSION_EXPIRED_MESSAGE);
+    }
     if (res.ok) {
-        return (await res.json()) as T;
+        try {
+            return (await res.json()) as T;
+        } catch {
+            throw new ApiFailure(401, 'auth_required', SESSION_EXPIRED_MESSAGE);
+        }
     }
     let type: string | null = null;
     let message = GENERIC_ERROR_MESSAGE;
@@ -126,17 +145,18 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
     throw new ApiFailure(res.status, type, message, fieldErrors, currentRevision);
 }
 
-const post = (body: unknown): RequestInit => ({
+const post = (body: unknown, signal?: AbortSignal): RequestInit => ({
     method: 'POST',
     body: JSON.stringify(body),
+    signal,
 });
 
 export function readPriorities(signal?: AbortSignal): Promise<PrioritiesSnapshot> {
     return request<PrioritiesSnapshot>('/api/agent/preferences/', {signal});
 }
 
-export function proposePriorities(patch: PreferencePatch, scope: ProposalScope): Promise<Proposal> {
-    return request<Proposal>('/api/agent/preferences/propose/', post({patch, scope}));
+export function proposePriorities(patch: PreferencePatch, scope: ProposalScope, signal?: AbortSignal): Promise<Proposal> {
+    return request<Proposal>('/api/agent/preferences/propose/', post({patch, scope}, signal));
 }
 
 interface ApplyResponse {
@@ -147,25 +167,28 @@ interface ApplyResponse {
     matches?: {job_matches?: unknown[]; organization_matches?: unknown[]};
 }
 
-export async function applyProposal(token: ProposalToken): Promise<AppliedResult> {
+export async function applyProposal(token: ProposalToken, signal?: AbortSignal): Promise<AppliedResult> {
     const data = await request<ApplyResponse>(
-        '/api/agent/preferences/apply/', post({proposal: token, decision: 'apply'}),
+        '/api/agent/preferences/apply/', post({proposal: token, decision: 'apply'}, signal),
     );
     if (token.scope === 'search') {
-        const count = (data.matches?.job_matches?.length || 0) + (data.matches?.organization_matches?.length || 0);
-        return {revision: null, changes: [], undo: null, scope: 'search', matchCount: count};
+        const count = data.matches?.job_matches?.length || 0;
+        return {
+            revision: null, changes: [], undo: null, scope: 'search',
+            matchCount: count, matchCapped: count >= MATCH_CAP,
+        };
     }
     return {revision: data.revision ?? null, changes: data.changes || [], undo: data.undo || null, scope: 'account'};
 }
 
-export async function undoApplied(undo: UndoToken): Promise<number | null> {
-    const data = await request<ApplyResponse>('/api/agent/preferences/undo/', post({undo}));
+export async function undoApplied(undo: UndoToken, signal?: AbortSignal): Promise<number | null> {
+    const data = await request<ApplyResponse>('/api/agent/preferences/undo/', post({undo}, signal));
     return data.revision ?? null;
 }
 
-export async function resetPriorities(expectedRevision: number): Promise<AppliedResult> {
+export async function resetPriorities(expectedRevision: number, signal?: AbortSignal): Promise<AppliedResult> {
     const data = await request<ApplyResponse>(
-        '/api/agent/preferences/reset/', post({expected_revision: expectedRevision}),
+        '/api/agent/preferences/reset/', post({expected_revision: expectedRevision}, signal),
     );
     return {revision: data.revision ?? null, changes: data.changes || [], undo: data.undo || null, scope: 'account'};
 }

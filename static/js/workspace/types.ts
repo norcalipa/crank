@@ -45,6 +45,13 @@ export interface WorkspaceSnapshot {
     prioritiesRevision: number | null;
     // Which surface currently hosts the inline priorities editor, if any.
     prioritiesEditorOpenIn: PrioritiesEditorHost | null;
+    // A proposed patch the editor opens with (chat proposal → Edit); null opens it with saved values.
+    prioritiesEditorSeed: PrioritiesEditorSeed | null;
+}
+
+export interface PrioritiesEditorSeed {
+    set?: Record<string, unknown>;
+    remove?: Record<string, unknown>;
 }
 
 export type PrioritiesEditorHost = 'main' | 'sidebar';

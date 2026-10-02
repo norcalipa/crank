@@ -70,10 +70,13 @@ describe('format', () => {
         expect(preferenceValueLabel(Infinity)).toBe('Infinity');
         expect(preferenceValueLabel([])).toBe('None');
         expect(preferenceValueLabel(['a', 1])).toBe('a, 1');
-        expect(preferenceValueLabel({a: 1})).toBe('{"a":1}');
+        expect(preferenceValueLabel({a: 1})).toBe('A: 1');
+        expect(preferenceValueLabel({})).toBe('None');
+        expect(preferenceValueLabel({'work_location.modes': 1, industry: 0}, 'importance'))
+            .toBe('Work location › modes: Requirement, Industry: Preference');
         const cyclic: any = {};
         cyclic.self = cyclic;
-        expect(preferenceValueLabel(cyclic)).toBe('[object Object]');
+        expect(preferenceValueLabel(cyclic)).toBe('Self: [object Object]');
     });
 });
 
@@ -163,5 +166,26 @@ describe('ReviewChanges copy', () => {
         render(<ReviewChanges changes={two} {...h}/>);
         expect(screen.getByRole('status')).toHaveTextContent('2 changes to review');
         expect(screen.getByText('Save these to your account, or use them for this search only.')).toBeInTheDocument();
+    });
+});
+
+describe('review wording (issue #480 round 1)', () => {
+    const {ChangeList} = require('./ReviewChanges');
+    const {preferenceValueLabel, chipValueLabel} = require('./format');
+
+    test('importance toggles review as words, one row per changed key, never JSON', () => {
+        render(<ChangeList label="Changes"
+            changes={[{path: 'importance', old: {'compensation.minimum_salary': 0.5}, new: {'compensation.minimum_salary': 1}}]}
+            labels={{'compensation.minimum_salary': 'Minimum base salary'}}/>);
+        const text = document.body.textContent || '';
+        expect(text).toContain('Minimum base salary');
+        expect(text).toContain('Requirement');
+        expect(text).not.toContain('{');
+    });
+
+    test('currency prefixes follow the saved currency', () => {
+        expect(chipValueLabel('compensation.minimum_salary', '150000', 'EUR')).toContain('EUR');
+        expect(chipValueLabel('compensation.minimum_salary', '150000', 'USD')).toContain('$');
+        expect(preferenceValueLabel(null)).toBeDefined();
     });
 });
