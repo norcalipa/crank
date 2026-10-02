@@ -11,6 +11,7 @@ import {
     setWorkspaceAccount,
     setWorkspaceContext,
 } from './workspace/store';
+import {accountDigest} from './workspace/persistence';
 import JobSearchChat, {AssistantState, AssistantStatus, ChatMessage} from './JobSearchChat';
 
 function jsonResponse(payload: unknown, status = 200): Response {
@@ -3170,7 +3171,7 @@ describe('signed-out visitor and account-switch purge (issue #465)', () => {
 
         await waitFor(() => expect(screen.queryByText('a secret message from alice')).not.toBeInTheDocument());
         expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBeNull();
-        expect(window.localStorage.getItem('crank:last-account')).toBe('bob');
+        expect(window.localStorage.getItem('crank:last-account')).toBe(accountDigest('bob'));
         // The view re-resumes for the new account rather than staying blank.
         await waitFor(() => expect(conversationsCalls(global.fetch as jest.Mock).length).toBeGreaterThan(1));
     });
@@ -3186,6 +3187,23 @@ describe('signed-out visitor and account-switch purge (issue #465)', () => {
 
         expect(screen.getByText('alice can still see this')).toBeInTheDocument();
         expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('alice draft');
+    });
+
+    test('an unobserved (failed whoami) crank:auth-hydrated keeps the signed-in state and the per-conversation draft', async () => {
+        window.localStorage.setItem('crank:last-account', 'alice');
+        await renderChat([userMessage('alice transcript')]);
+
+        act(() => {
+            document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {
+                detail: {authenticated: false, username: null, unobserved: true},
+            }));
+        });
+
+        expect(screen.queryByTestId('signed-out-introduction')).not.toBeInTheDocument();
+        expect(screen.getByText('alice transcript')).toBeInTheDocument();
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'private typing'}});
+        await waitFor(() => expect(window.localStorage.getItem('crank:jobsearch:draft:42')).toBe('private typing'));
+        expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBeNull();
     });
 
     test('crank:private-state-purged aborts an in-flight send and clears the view', async () => {
@@ -3226,7 +3244,7 @@ describe('signed-out visitor and account-switch purge (issue #465)', () => {
         expect(screen.getByLabelText('Message')).toHaveValue('');
         expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBeNull();
         expect(window.localStorage.getItem('crank:jobsearch:draft:7')).toBeNull();
-        expect(window.localStorage.getItem('crank:last-account')).toBe('bob');
+        expect(window.localStorage.getItem('crank:last-account')).toBe(accountDigest('bob'));
 
         // The delayed whoami finally lands and agrees: nothing further to
         // purge, and alice's draft has never been on screen.
@@ -3245,7 +3263,20 @@ describe('signed-out visitor and account-switch purge (issue #465)', () => {
         render(<JobSearchChat isAuthenticated accountKey="alice"/>);
 
         await waitFor(() => expect(screen.getByLabelText('Message')).toHaveValue('alice draft'));
-        expect(window.localStorage.getItem('crank:last-account')).toBe('alice');
+        expect(window.localStorage.getItem('crank:last-account')).toBe(accountDigest('alice'));
+    });
+
+    test('a stored digest of the same account is not a switch and stays a digest', async () => {
+        window.localStorage.setItem('crank:last-account', accountDigest('alice'));
+        window.localStorage.setItem('crank:jobsearch:draft:pending', 'alice draft');
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({detail: 'not found'}, 404));
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(99)));
+
+        render(<JobSearchChat isAuthenticated accountKey="alice"/>);
+
+        await waitFor(() => expect(screen.getByLabelText('Message')).toHaveValue('alice draft'));
+        expect(window.localStorage.getItem('crank:last-account')).toBe(accountDigest('alice'));
+        expect(window.localStorage.getItem('crank:last-account')).not.toContain('alice');
     });
 
     test('a first sign-in records the account and keeps the draft composed while signed out', async () => {
@@ -3258,7 +3289,7 @@ describe('signed-out visitor and account-switch purge (issue #465)', () => {
         render(<JobSearchChat isAuthenticated accountKey="alice"/>);
 
         await waitFor(() => expect(screen.getByLabelText('Message')).toHaveValue('draft from before sign-in'));
-        expect(window.localStorage.getItem('crank:last-account')).toBe('alice');
+        expect(window.localStorage.getItem('crank:last-account')).toBe(accountDigest('alice'));
     });
 
     test('an empty accountKey (signed-out render) neither purges nor records an account', async () => {
@@ -3701,7 +3732,7 @@ describe('workspace navigation state (issue #479)', () => {
         // that ran before the resume, so it is never adopted.
         expect(screen.getByLabelText('Message')).toHaveValue('');
         expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBeNull();
-        expect(window.localStorage.getItem('crank:last-account')).toBe('new-user');
+        expect(window.localStorage.getItem('crank:last-account')).toBe(accountDigest('new-user'));
         expect(getWorkspaceSnapshot().conversationId).toBe(42);
     });
 
@@ -3727,7 +3758,7 @@ describe('workspace navigation state (issue #479)', () => {
         ));
         render(<JobSearchChat workspaceMode="docked"/>);
         await waitFor(() => expect(getWorkspaceSnapshot().conversationId).toBe(7));
-        expect(window.localStorage.getItem('crank:last-account')).toBe('alice');
+        expect(window.localStorage.getItem('crank:last-account')).toBe(accountDigest('alice'));
     });
 
     test('an anonymous account never issues the resume request', async () => {

@@ -100,6 +100,26 @@ describe('workspace persistence', () => {
         expect(record()?.account.key).not.toBe('alice');
     });
 
+    test('the persisted record stores a digest, restores for the same account, and drops for another', () => {
+        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+        teardown = installWorkspacePersistence();
+        openAssistant({surface: 'company', organizationId: 3, organizationName: 'Zed'});
+        const key = record()?.account.key;
+        expect(key).toMatch(/^d:[0-9a-f]{16}$/);
+        expect(key).not.toContain('alice');
+        teardown();
+        teardown = undefined;
+        resetWorkspaceForTests();
+        setWorkspaceAccount({status: 'authenticated', key: 'alice'});
+        teardown = installWorkspacePersistence();
+        expect(getWorkspaceSnapshot().context?.organizationId).toBe(3);
+        teardown();
+        resetWorkspaceForTests();
+        setWorkspaceAccount({status: 'authenticated', key: 'bob'});
+        teardown = installWorkspacePersistence();
+        expect(getWorkspaceSnapshot().context?.organizationId).toBeUndefined();
+    });
+
     test('anonymous hydration against an authenticated record deletes it', () => {
         seedRecord();
         teardown = installWorkspacePersistence();
@@ -116,7 +136,8 @@ describe('workspace persistence', () => {
         expect(getWorkspaceSnapshot().context).toEqual({surface: 'company'});
         expect(getWorkspaceSnapshot().visibility).toBe('closed');
         expect(getWorkspaceSnapshot().account.key).toBe('bob');
-        expect(record()?.account.key).toBe('bob');
+        expect(record()?.account.key).toMatch(/^d:[0-9a-f]{16}$/);
+        expect(JSON.stringify(record())).not.toContain('bob');
         expect(record()?.context).toEqual({});
     });
 

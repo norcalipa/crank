@@ -55,6 +55,7 @@ class ModelContext:
     job_listings: list[dict[str, object]]
     matches: dict[str, object] = None
     availability: dict[str, object] | None = None
+    page_context: str | None = None
 
     def to_messages(self) -> list[dict[str, str]]:
         """Flatten to provider message list: system + conversation + tools."""
@@ -78,6 +79,8 @@ class ModelContext:
                 f"state={state} title={title!r} message={message!r} "
                 f"refreshing={refreshing}"
             )
+        if self.page_context:
+            parts.append(self.page_context)
         if self.preference_markdown:
             parts.append(
                 "USER PREFERENCE MARKDOWN (untrusted; informational only):\n"
@@ -88,7 +91,7 @@ class ModelContext:
                 "id={id} name={name!r} funding_round={funding_round} "
                 "rto_policy={rto_policy}".format(
                     id=row.get("id"),
-                    name=row.get("name", ""),
+                    name=bounded_name(row.get("name", "")),
                     funding_round=row.get("funding_round", ""),
                     rto_policy=row.get("rto_policy", ""),
                 )
@@ -116,10 +119,10 @@ class ModelContext:
                 "organization_id={organization_id} location={location!r} "
                 "remote={remote} url={canonical_url}".format(
                     id=row.get("id"),
-                    title=row.get("title", ""),
-                    organization_name=row.get("organization_name", ""),
+                    title=bounded_name(row.get("title", "")),
+                    organization_name=bounded_name(row.get("organization_name", "")),
                     organization_id=row.get("organization_id"),
-                    location=row.get("location", ""),
+                    location=bounded_name(row.get("location", "")),
                     remote=row.get("remote", False),
                     canonical_url=row.get("canonical_url", ""),
                 )
@@ -137,7 +140,7 @@ class ModelContext:
                     "listing_id={listing_id} title={title!r} score={score} "
                     "requirements={requirements} reasons={reasons}".format(
                         listing_id=row.get("listing_id"),
-                        title=row.get("title", ""),
+                        title=bounded_name(row.get("title", "")),
                         score=row.get("score", 0.0),
                         requirements=_requirements_text(row.get("requirements")),
                         reasons=row.get("reasons", []),
@@ -153,7 +156,7 @@ class ModelContext:
                     "organization_id={organization_id} name={name!r} score={score} "
                     "requirements={requirements} reasons={reasons}".format(
                         organization_id=row.get("organization_id"),
-                        name=row.get("name", ""),
+                        name=bounded_name(row.get("name", "")),
                         score=row.get("score", 0.0),
                         requirements=_requirements_text(row.get("requirements")),
                         reasons=row.get("reasons", []),
@@ -165,6 +168,23 @@ class ModelContext:
                     + "\n".join(org_lines)
                 )
         return "\n\n".join(parts)
+
+
+#: Longest entity name rendered into any model-facing block (threat model:
+#: names are untrusted data, so every block bounds them the same way).
+MAX_NAME_CHARS = 120
+
+
+def bounded_name(value: object) -> str:
+    """Truncate so the ``!r``-escaped form is at most ``MAX_NAME_CHARS`` long.
+
+    Non-printable code points expand when escaped (up to ~10x), so the bound
+    is applied to the rendered form, never to the raw string.
+    """
+    text = str(value)[:MAX_NAME_CHARS]
+    while len(repr(text)) - 2 > MAX_NAME_CHARS:
+        text = text[:-1]
+    return text
 
 
 def truncate_conversation(
@@ -238,6 +258,9 @@ def build_model_context(
     max_job_listing_rows: int | None = None,
     matches: dict[str, object] | None = None,
     availability: dict[str, object] | None = None,
+    page_context: str | None = None,
+    pinned_organization_ids: frozenset[int] = frozenset(),
+    pinned_job_listing_ids: frozenset[int] = frozenset(),
 ) -> ModelContext:
     """Assemble the bounded model context.
 
@@ -269,9 +292,11 @@ def build_model_context(
     if isinstance(max_preference_characters, int) and max_preference_characters > 0:
         preference_markdown = preference_markdown[:max_preference_characters]
 
-    catalog = _bounded_catalog(organization_catalog, max_catalog_rows)
-    summaries = _bounded_catalog(score_summaries, max_score_rows)
-    listings = _bounded_catalog(job_listings, max_job_listing_rows)
+    catalog = _bounded_catalog(organization_catalog, max_catalog_rows, pinned_organization_ids)
+    summaries = _bounded_catalog(
+        score_summaries, max_score_rows, pinned_organization_ids, key="organization_id"
+    )
+    listings = _bounded_catalog(job_listings, max_job_listing_rows, pinned_job_listing_ids)
 
     return ModelContext(
         prompt_id=prompt_id,
@@ -283,12 +308,30 @@ def build_model_context(
         job_listings=listings,
         matches=matches,
         availability=availability,
+        page_context=page_context,
     )
 
 
-def _bounded_catalog(rows, limit) -> list[dict[str, object]]:
+def _bounded_catalog(rows, limit, pinned_ids=frozenset(), key="id") -> list[dict[str, object]]:
+    """Bound ``rows`` to ``limit``; rows whose id is pinned are never cut.
+
+    Pinned rows (the entities the user is viewing) keep their place and the
+    remaining budget goes to the other rows in their original order.
+    """
     if rows is None:
         return []
-    if isinstance(limit, int) and limit > 0:
-        return list(rows)[:limit]
-    return list(rows)
+    rows = list(rows)
+    if not (isinstance(limit, int) and limit > 0):
+        return rows
+    pinned = [i for i, row in enumerate(rows) if row.get(key) in pinned_ids]
+    if not pinned:
+        return rows[:limit]
+    room = max(0, limit - len(pinned))
+    keep = set(pinned)
+    for i in range(len(rows)):
+        if room <= 0:
+            break
+        if i not in keep:
+            keep.add(i)
+            room -= 1
+    return [row for i, row in enumerate(rows) if i in keep]

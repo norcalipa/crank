@@ -46,6 +46,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
+from crank.agents.job_search import page_context as page_context_mod
 from crank.agents.job_search import quality
 from crank.agents.job_search.demo import (
     AssistantUnavailable,
@@ -534,6 +535,15 @@ def agent_conversation_detail(request, conversation_id):
         return error
     serializer = MessageSubmitSerializer(data=payload)
     if not serializer.is_valid():
+        if "context" in serializer.errors:
+            # Distinct from invalid_message so the client keeps the draft.
+            return _error(
+                request, 400, "invalid_context",
+                "Invalid page context: {}".format(
+                    _files_to_json(serializer.errors["context"])
+                ),
+                request_id,
+            )
         return _error(
             request, 400, "invalid_message",
             "Invalid message: {}".format(_files_to_json(serializer.errors)),
@@ -541,6 +551,7 @@ def agent_conversation_detail(request, conversation_id):
         )
     message_text = serializer.validated_data["content"]
     idempotency_key = serializer.validated_data["idempotency_key"]
+    raw_context = serializer.validated_data.get("context")
 
     # Idempotent replay: if we already answered this key, replay that answer
     # so a network retry cannot persist a duplicate assistant turn. Replay is
@@ -668,10 +679,17 @@ def agent_conversation_detail(request, conversation_id):
 
     try:
         service = JobSearchService()
+        run_kwargs = {}
+        if raw_context is not None:
+            # Names and rows are re-read server-side; client text never
+            # reaches the model (issue #484).
+            page_ctx = page_context_mod.resolve(raw_context, user=request.user)
+            run_kwargs["page_context"] = page_ctx
         turn_outcome = service.run_turn(
             conversation=conversation,
             user_message=user_message.content,
             persist_reply=_persist_reply,
+            **run_kwargs,
         )
         # Issue #466: orchestrator-backed providers also return an extras
         # payload (applied preference ``changes``/``undo``); legacy providers
@@ -951,6 +969,13 @@ def agent_conversation_detail(request, conversation_id):
     # client guards on its presence.
     if pref_extras and pref_extras.get("proposal") is not None:
         response_payload["preference_proposal"] = pref_extras["proposal"]
+    # Issue #484: validated UI actions (ids/enums only) and the echoed
+    # context. Both are additive and absent for context-less clients; the
+    # idempotent replay paths deliberately omit them.
+    if pref_extras and pref_extras.get("actions"):
+        response_payload["actions"] = pref_extras["actions"]
+    if raw_context is not None:
+        response_payload["context"] = page_ctx.echo()
     return JsonResponse(
         response_payload,
         status=201,

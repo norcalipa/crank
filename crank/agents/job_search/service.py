@@ -15,10 +15,11 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from crank.agents.job_search import actions
 from crank.agents.job_search import context as ctx
 from crank.agents.job_search import quality
 from crank.agents.job_search import system_prompt as prompt
@@ -127,6 +128,10 @@ class OrchestratorResult:
     cited_ids_count: int = 0
     empty_result: bool = True
     inventory_nonempty: bool = False
+    actions: tuple = ()
+    actions_dropped: int = 0
+    action_drop_reasons: tuple = ()
+    exposed_organization_ids: frozenset = frozenset()
 
 
 class JobSearchOrchestrator:
@@ -195,6 +200,7 @@ class JobSearchOrchestrator:
         persist_reply: Callable[..., None] | None = None,
         token_budget: int | None = None,
         max_tokens: int | None = None,
+        page_context: Any = None,
     ) -> OrchestratorResult:
         """Run one turn and emit only bounded interactive-call telemetry.
 
@@ -219,6 +225,7 @@ class JobSearchOrchestrator:
                 persist_reply=persist_reply,
                 token_budget=token_budget,
                 max_tokens=max_tokens,
+                page_context=page_context,
             )
         except Exception as exc:
             latency_ms = int((time.monotonic() - started) * 1000)
@@ -252,6 +259,13 @@ class JobSearchOrchestrator:
                 "cited_ids_count": result.cited_ids_count,
                 "empty_result": result.empty_result,
                 "inventory_nonempty": result.inventory_nonempty,
+                "page_context": (
+                    "none"
+                    if page_context is None
+                    else "stale" if page_context.stale else "fresh"
+                ),
+                "actions_dropped": result.actions_dropped,
+                "action_drop_reasons": ",".join(result.action_drop_reasons),
                 "latency_ms": latency_ms,
                 "latency_bucket": monitoring.latency_bucket(latency_ms),
             },
@@ -268,6 +282,7 @@ class JobSearchOrchestrator:
         persist_reply: Callable[..., None] | None = None,
         token_budget: int | None = None,
         max_tokens: int | None = None,
+        page_context: Any = None,
     ) -> OrchestratorResult:
         """Execute one orchestrated turn and return its validated result.
 
@@ -278,13 +293,34 @@ class JobSearchOrchestrator:
         """
         # 1. Bounded, server-controlled dataset (active/public only).
         org_rows = self._load_organization_catalog()
+        # Tool telemetry counts only what the tools returned, not pinned rows.
+        org_result_count = len(org_rows)
+        catalog_inventory = bool(tools.union_server_controlled_ids(org_rows))
+        if page_context is not None:
+            # Entities the user is viewing may sit outside the bounded
+            # catalog; expose them (already visibility-checked) so they are
+            # citable. They are pinned when the context is bounded.
+            catalog_ids = {row.get("id") for row in org_rows}
+            org_rows = org_rows + [
+                row for row in page_context.organizations if row["id"] not in catalog_ids
+            ]
         known_ids = tools.union_server_controlled_ids(org_rows)
         score_rows: list[dict[str, Any]] = []
         if known_ids:
-            score_rows = self._load_score_summaries(known_ids)
+            score_rows = self._load_score_summaries(
+                known_ids,
+                page_context.exposed_organization_ids()
+                if page_context is not None
+                else frozenset(),
+            )
 
         # 1b. Bounded, server-controlled job listings (active/open only).
         listing_rows = self._load_job_listings()
+        listing_result_count = len(listing_rows)
+        listing_inventory = bool(tools.union_server_controlled_listing_ids(listing_rows))
+        if page_context is not None and page_context.listing is not None:
+            if page_context.listing["id"] not in {row.get("id") for row in listing_rows}:
+                listing_rows = listing_rows + [page_context.listing]
         known_listing_ids = tools.union_server_controlled_listing_ids(listing_rows)
 
         # 1c. Preference-grounded matches (issue #395). Only invoked when a
@@ -299,10 +335,10 @@ class JobSearchOrchestrator:
         result_counts: list[int] = []
 
         tools_used.append("query_active_organizations")
-        result_counts.append(len(org_rows))
+        result_counts.append(org_result_count)
         monitoring.record_event(
             "job_search_tool_invocation",
-            {"tool": "query_active_organizations", "result_count": len(org_rows)},
+            {"tool": "query_active_organizations", "result_count": org_result_count},
         )
 
         if known_ids:
@@ -314,10 +350,10 @@ class JobSearchOrchestrator:
             )
 
         tools_used.append("search_job_listings")
-        result_counts.append(len(listing_rows))
+        result_counts.append(listing_result_count)
         monitoring.record_event(
             "job_search_tool_invocation",
-            {"tool": "search_job_listings", "result_count": len(listing_rows)},
+            {"tool": "search_job_listings", "result_count": listing_result_count},
         )
 
         if match_enabled:
@@ -344,6 +380,21 @@ class JobSearchOrchestrator:
             score_summaries=score_rows,
             job_listings=listing_rows,
             matches=match_data,
+            page_context=(
+                page_context.to_model_text() if page_context is not None else None
+            ),
+            pinned_organization_ids=(
+                page_context.exposed_organization_ids()
+                if page_context is not None
+                else frozenset()
+            ),
+            pinned_job_listing_ids=(
+                frozenset({page_context.listing["id"]})
+                if page_context is not None and page_context.listing is not None
+                else frozenset()
+            ),
+            include_page_context=page_context is not None,
+            include_actions=page_context is not None and not page_context.stale,
         )
 
         # 3. Provider call (maps provider failures to typed errors).
@@ -359,6 +410,21 @@ class JobSearchOrchestrator:
         self._validate_listing_citations(
             completion.cited_job_listing_ids, frozenset(known_listing_ids)
         )
+        # Actions are advisory: drop (and count) any that name an id the
+        # server did not expose instead of failing the whole reply.
+        valid_actions, ref_drops = actions.sanitize_actions(
+            completion.actions,
+            known_ids,
+            stale=page_context is not None and page_context.stale,
+            has_context=page_context is not None,
+        )
+        action_drops = completion.action_drop_reasons + ref_drops
+        if action_drops:
+            logger.warning(
+                "job_search_actions_dropped prompt_id=%s reasons=%s",
+                model_context.prompt_id,
+                sorted(set(action_drops)),
+            )
         if match_enabled:
             self._validate_match_references(completion.message, match_data)
 
@@ -370,6 +436,7 @@ class JobSearchOrchestrator:
             user_prompt=user_prompt,
             completion=completion,
             inventory_nonempty=inventory_nonempty,
+            valid_actions=valid_actions,
         )
 
         # 6. Build citation-validated structured results BEFORE the guarded
@@ -433,7 +500,11 @@ class JobSearchOrchestrator:
             result_counts=result_counts,
             cited_ids_count=cited_ids_count,
             empty_result=cited_ids_count == 0,
-            inventory_nonempty=inventory_nonempty,
+            inventory_nonempty=catalog_inventory or listing_inventory,
+            actions=valid_actions,
+            actions_dropped=len(action_drops),
+            action_drop_reasons=tuple(sorted(set(action_drops))),
+            exposed_organization_ids=frozenset(known_ids),
         )
 
     def _propose_preference_patch(
@@ -500,15 +571,32 @@ class JobSearchOrchestrator:
         rows = self._org_datasource(filters, capped)
         return tools.normalize_organization_rows(rows)
 
-    def _load_score_summaries(self, known_ids: list[int]) -> list[dict[str, Any]]:
+    def _load_score_summaries(
+        self, known_ids: list[int], pinned_ids: frozenset[int] = frozenset()
+    ) -> list[dict[str, Any]]:
+        """Load bounded score summaries, reserving room for the viewed targets.
+
+        The viewed (pinned) targets are queried first so the bound cannot cut
+        them; the remaining budget goes to the other exposed targets. The
+        result is sorted by ``(organization_id, score_type)`` so the model
+        context does not depend on database row order.
+        """
         capped = tools.clamp_result_limit(
             self._max_score_summary_results, maximum=tools.MAX_SCORE_SUMMARY_RESULTS
         )
-        rows = self._score_datasource(known_ids, None, capped)
+        pinned = sorted(i for i in known_ids if i in pinned_ids)
+        rest = [i for i in known_ids if i not in pinned_ids]
+        raw: list[Any] = []
+        if pinned:
+            raw.extend(self._score_datasource(pinned, None, capped)[:capped])
+        room = capped - len(raw)
+        if rest and room > 0:
+            raw.extend(self._score_datasource(rest, None, room)[:room])
         # Normalize in the service layer so a mis-shapen/injected datasource
         # surfaces as InvalidScoreSummaryRowError instead of a bare KeyError
         # when the context renderer formats the rows.
-        return tools.normalize_score_summary_rows(rows)
+        rows = tools.normalize_score_summary_rows(raw)
+        return sorted(rows, key=lambda r: (r["organization_id"], r["score_type"]))
 
     def _load_job_listings(self) -> list[dict[str, Any]]:
         capped = tools.clamp_result_limit(
@@ -555,6 +643,8 @@ class JobSearchOrchestrator:
             max_score_rows=self._max_score_summary_results,
             max_job_listings=self._max_job_listing_results,
             max_match_results=self._max_match_results,
+            include_page_context=bool(kwargs.get("include_page_context")),
+            include_actions=bool(kwargs.get("include_actions")),
         )
         # Availability state for honesty about inventory/matches (issue #476).
         # Only derived for a persisted user; stand-in objects in tests keep it
@@ -577,6 +667,9 @@ class JobSearchOrchestrator:
             max_job_listing_rows=self._max_job_listing_results,
             matches=kwargs.get("matches"),
             availability=availability,
+            page_context=kwargs.get("page_context"),
+            pinned_organization_ids=kwargs.get("pinned_organization_ids", frozenset()),
+            pinned_job_listing_ids=kwargs.get("pinned_job_listing_ids", frozenset()),
         )
 
     def _invoke_gateway(
@@ -691,7 +784,11 @@ class JobSearchOrchestrator:
 
     @staticmethod
     def _guard_echo(
-        *, user_prompt: str, completion: AssistantCompletion, inventory_nonempty: bool
+        *,
+        user_prompt: str,
+        completion: AssistantCompletion,
+        inventory_nonempty: bool,
+        valid_actions: Sequence[Any] = (),
     ) -> None:
         """Reject an unrooted echo of the user turn when inventory is non-empty.
 
@@ -705,6 +802,8 @@ class JobSearchOrchestrator:
             return
         if completion.cited_organization_ids or completion.cited_job_listing_ids:
             return
+        if valid_actions:
+            return  # an applied action carries the substance of the turn.
         if completion.has_preference_patch:
             return  # preference elicitation / patch turns are legitimate.
         if quality.is_echo(user_prompt, completion.message):

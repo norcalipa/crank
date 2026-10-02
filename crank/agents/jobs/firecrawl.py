@@ -250,6 +250,7 @@ class FirecrawlCareersAdapter(JobSourceAdapter):
 
     key = "firecrawl-careers"
     version = EXTRACTION_VERSION
+    required_settings = ("FIRECRAWL_API_KEY",)
 
     def __init__(self, source, *, client: FirecrawlClient | None = None) -> None:
         super().__init__(source)
@@ -272,18 +273,34 @@ class FirecrawlCareersAdapter(JobSourceAdapter):
                 max_bytes=int(_setting("JOBS_ADAPTER_MAX_BYTES", "JOBS_ADAPTER_MAX_BYTES", 2 * 1024 * 1024)),
             )
 
-    def _validate_source(self, source) -> None:
+    @staticmethod
+    def _approved_host(source) -> str:
         try:
             parsed = urlsplit(str(source.base_url))
             host = parsed.hostname.lower() if parsed.hostname else ""
             validate_job_url(str(source.base_url), allow_hosts=APPROVED_JOB_SOURCE_DOMAINS)
         except Exception as exc:
             raise BlockedRedirectError("career source URL is not approved") from exc
-        if not host:  # pragma: no cover - validate_job_url already rejects empty hosts
-            raise BlockedRedirectError("career source URL has no hostname")
-        if host.rstrip(".") not in APPROVED_JOB_SOURCE_DOMAINS:  # pragma: no cover - validate_job_url already checks allowlist
+        host = host.rstrip(".")
+        if host not in APPROVED_JOB_SOURCE_DOMAINS:
             raise BlockedRedirectError("career source domain is not code-approved")
-        self.source_host = host.rstrip(".")
+        return host
+
+    @classmethod
+    def startup_blockers(cls, source) -> list[str]:
+        blockers = []
+        if not bool(_setting("FIRECRAWL_ENABLED", "FIRECRAWL_ENABLED", False)):
+            blockers.append("FIRECRAWL_ENABLED is off")
+        try:
+            cls._approved_host(source)
+        except BlockedRedirectError as exc:
+            blockers.append(str(exc))
+        if str(getattr(source, "adapter_key", cls.key)).lower() != cls.key:
+            blockers.append("source is not cataloged for Firecrawl careers")
+        return blockers
+
+    def _validate_source(self, source) -> None:
+        self.source_host = self._approved_host(source)
         if getattr(source, "adapter_key", self.key).lower() != self.key:
             raise BlockedRedirectError("source is not cataloged for Firecrawl careers")
 
