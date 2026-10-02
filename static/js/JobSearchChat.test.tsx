@@ -565,7 +565,7 @@ describe('JobSearchChat', () => {
             expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
         });
 
-        test('does not auto-scroll newly appended content while reading older messages', async () => {
+        test('sending a message scrolls to the latest even when reading older messages', async () => {
             await renderChat([assistantMessage(1, 'ready')]);
             const history = screen.getByLabelText('Message history');
             setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
@@ -579,8 +579,8 @@ describe('JobSearchChat', () => {
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
             await screen.findByText('reply');
-            expect(scrollTo).not.toHaveBeenCalled();
-            expect(screen.getByTestId('jump-to-latest')).toBeInTheDocument();
+            expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({behavior: 'auto'}));
+            expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
         });
 
         test('rechecks the bottom after viewport resize without moving older history', async () => {

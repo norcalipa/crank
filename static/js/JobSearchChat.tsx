@@ -1147,6 +1147,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     }, [adjustComposerHeight]);
     const cardRef = React.useRef<HTMLElement>(null);
     const nearBottomRef = React.useRef(true);
+    // Own message just sent: jump (not smooth-scroll) so the scroll events of an animation cannot read as the reader leaving the bottom before the reply lands.
+    const jumpOnSendRef = React.useRef(false);
     const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
     const [cardHeight, setCardHeight] = React.useState<number | null>(null);
     // rAF bookkeeping so resize/orientation/keyboard bursts coalesce into at most
@@ -1297,7 +1299,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             if (!nearBottomRef.current) setShowJumpToLatest(true);
             return;
         }
-        scrollToLatest();
+        const behavior = jumpOnSendRef.current ? 'auto' : undefined;
+        jumpOnSendRef.current = false;
+        scrollToLatest(behavior);
     }, [messages.length, pending, loading]);
 
     // Visual viewport changes cover mobile keyboards and orientation changes. Preserve
@@ -1759,6 +1763,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             // treatment is REPLACED by the retry-in-progress state.
             setRetryKey(key);
         } else {
+            nearBottomRef.current = true;
+            jumpOnSendRef.current = true;
             setMessages((prev) => [...prev, optimisticUser]);
         }
 
@@ -2539,11 +2545,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                                     {m.role === 'assistant' && m.results && (
                                         <ResultCards results={m.results} />
                                     )}
-                                    {m.role === 'assistant' && turnActions[m.id] && (
-                                        <AssistantActions turn={turnActions[m.id]} />
-                                    )}
                                     {m.role === 'assistant' && m.id === lastAssistantId && !hasResults(m.results) && availability && availability.state !== 'ok' && (
                                         <AvailabilityNotice availability={availability} />
+                                    )}
+                                    {m.role === 'assistant' && turnActions[m.id] && (
+                                        <AssistantActions turn={turnActions[m.id]} />
                                     )}
                                     {m.role === 'user' && m.delivery_state === 'pending' && retryKey !== m.idempotency_key && (
                                         <div className="chat-retry-panel mt-2" data-testid="pending-turn">
