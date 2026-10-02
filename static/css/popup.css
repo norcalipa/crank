@@ -3342,6 +3342,19 @@ body.assistant-open .app-content .table-responsive,
     border-color: #f87171;
 }
 
+/* The stack is capped to the transcript band and scrolls; the dismiss/safe
+   action row stays pinned inside each panel so it is always reachable. */
+.chat-panel-stack .chat-confirm-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    margin: 0 -.75rem -.75rem;
+    padding: .5rem .75rem .75rem;
+    background: #0f172a;
+    border-radius: 0 0 .5rem .5rem;
+    box-shadow: 0 -.75rem .75rem -.75rem rgba(0, 0, 0, .75);
+}
+
 .chat-confirm-heading {
     font-size: 1rem;
     font-weight: 600;
@@ -3412,13 +3425,18 @@ body.assistant-open .app-content .table-responsive,
     min-height: 0;
 }
 
-/* The jump pill floats over the transcript so showing it never takes layout
-   height from a short sheet. */
-#job-search-chat .chat-jump-row {
+/* The jump pill lives in the footer and floats over the transcript bottom, so
+   showing it never takes layout height and, in panel-scroll mode, it rides
+   with the sticky composer band. */
+#job-search-chat .chat-footer {
+    position: relative;
+}
+
+#job-search-chat .chat-footer > .chat-jump-row {
     position: absolute;
     left: 0;
     right: 0;
-    bottom: 1.5rem;
+    bottom: calc(100% + 1.5rem);
     margin: 0;
     pointer-events: none;
     z-index: 2;
@@ -3429,8 +3447,8 @@ body.assistant-open .app-content .table-responsive,
     box-shadow: 0 .25rem .75rem rgba(0, 0, 0, .5);
 }
 
-/* Panel-scroll mode: pin the header (with More) and the jump row + composer
-   so they stay reachable whatever the reader has scrolled to. */
+/* Panel-scroll mode: pin the header (with More) and the composer band (which
+   carries the jump pill) so they stay reachable whatever the reader has scrolled to. */
 .assistant-panel #job-search-chat > section[data-scroll-owner='panel'] > .card-header {
     position: sticky;
     top: 0;
@@ -3438,7 +3456,18 @@ body.assistant-open .app-content .table-responsive,
     background: #212529;
 }
 
+/* The sticky bars must sit flush with the scrollport, so the scroller keeps no
+   block padding of its own while the panel body scrolls. */
+.assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) {
+    padding-block: 0;
+}
+
+.assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) > :first-child {
+    margin-top: .75rem;
+}
+
 #job-search-chat > [data-scroll-owner='panel'] .chat-footer {
+    padding-bottom: calc(.5rem + env(safe-area-inset-bottom));
     position: sticky;
     bottom: 0;
     z-index: 3;

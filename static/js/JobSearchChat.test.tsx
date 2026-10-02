@@ -246,6 +246,9 @@ describe('JobSearchChat', () => {
             expect(chat).toHaveAttribute('data-scroll-owner', owner);
             expect(log).toHaveAttribute('data-scroll-owner', owner);
             expect(log).toHaveStyle({overflowY: inPanel ? 'visible' : 'auto'});
+            // Panel-scroll mode keeps scroll-into-view clear of the pinned bars.
+            expect(chat.parentElement!.style.scrollPaddingBottom).toBe(inPanel ? '8px' : '');
+            expect(chat.parentElement!.style.scrollPaddingTop).toBe(inPanel ? '0px' : '');
         });
 
         test('observes the parent for match-panel resizes when ResizeObserver is available', async () => {
@@ -260,6 +263,9 @@ describe('JobSearchChat', () => {
             // afterEach restores the original ResizeObserver, so there is no
             // manual leave-behind to leak into later tests.
             expect(observe).toHaveBeenCalled();
+            // The pinned footer changes height (error alert, status notice), which can
+            // flip the transcript floor, so it is observed too.
+            expect(observe.mock.calls.some(([el]) => (el as Element).classList?.contains('chat-footer'))).toBe(true);
         });
 
         test('also observes the priorities block above the chat in the assistant panel', async () => {
@@ -561,13 +567,14 @@ describe('JobSearchChat', () => {
             });
         }
 
-        test('scrolls initial history to the latest message with motion preference', async () => {
+        test('jumps to the latest message once initial history loads, even when motion is allowed', async () => {
             window.matchMedia = jest.fn().mockReturnValue({matches: false} as MediaQueryList);
             await renderChat([assistantMessage(1, 'latest')]);
             const history = screen.getByLabelText('Message history');
             // The initial scroll runs in an effect after the resume commit;
             // await it so the assertion never races the effect (CI coverage).
-            await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({top: history.scrollHeight, behavior: 'smooth'}));
+            await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({top: history.scrollHeight, behavior: 'auto'}));
+            expect(scrollTo).not.toHaveBeenCalledWith(expect.objectContaining({behavior: 'smooth'}));
             delete (window as unknown as {matchMedia?: unknown}).matchMedia;
         });
 
@@ -590,6 +597,9 @@ describe('JobSearchChat', () => {
             expect(jump).toHaveTextContent('Jump to latest');
             expect(jump).not.toHaveTextContent(/new message/i);
             expect(jump).toHaveAccessibleName('Jump to latest message');
+            // The pill rides in the pinned footer so panel-scroll mode keeps it on screen.
+            expect(jump.closest('.chat-footer')).not.toBeNull();
+            expect(jump.closest('.chat-transcript-wrap')).toBeNull();
 
             scrollTo.mockClear();
             fireEvent.click(screen.getByTestId('jump-to-latest'));

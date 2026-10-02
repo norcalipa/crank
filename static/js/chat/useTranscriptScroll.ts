@@ -6,6 +6,7 @@ export type ScrollOwner = 'transcript' | 'panel';
 
 const NEAR_BOTTOM_PX = 48;
 const INTENT_WINDOW_MS = 1000;
+const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 
 // Exactly one element scrolls the conversation. Normally that is the
 // transcript; when the assistant panel is too short to give the transcript a
@@ -45,8 +46,9 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
             return history.scrollHeight - history.scrollTop - history.clientHeight <= NEAR_BOTTOM_PX;
         }
         // Panel scroller: the reader is "at the bottom" once the end of the
-        // transcript is on screen, whatever sits below it (the composer).
-        return history.getBoundingClientRect().bottom - scroller.getBoundingClientRect().bottom <= NEAR_BOTTOM_PX;
+        // transcript clears the pinned composer band that overlays the panel.
+        const footer = history.closest('section')!.querySelector<HTMLElement>('.chat-footer')!;
+        return history.getBoundingClientRect().bottom - footer.getBoundingClientRect().top <= NEAR_BOTTOM_PX;
     };
 
     const settleAtBottom = () => {
@@ -56,7 +58,10 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         setUnreadCount(0);
     };
 
-    const scrollToLatest = (behavior: ScrollBehavior = prefersReducedMotion() ? 'auto' : 'smooth') => {
+    // A smooth scroll in the panel body is cut short when the pending indicator
+    // is replaced by the reply, stranding the last turn behind the pinned
+    // composer band, so panel mode jumps instead.
+    const scrollToLatest = (behavior: ScrollBehavior = prefersReducedMotion() || scrollOwner === 'panel' ? 'auto' : 'smooth') => {
         const scroller = getScroller();
         if (!scroller) return;
         if (typeof scroller.scrollTo === 'function') {
@@ -90,7 +95,15 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         // Only the reader can end "following". Layout shifts (a reply replacing
         // the pending indicator, a banner appearing) clamp or move scrollTop
         // without any input, and must not read as scrolling away (issue #483).
-        const markIntent = () => { lastIntentRef.current = Date.now(); };
+        // Typing in the composer (inside the panel scroller in panel mode) is not
+        // scrolling; only keys that scroll, pressed outside form controls, count.
+        const markIntent = (e?: Event) => {
+            if (e?.type === 'keydown') {
+                if (!SCROLL_KEYS.has((e as KeyboardEvent).key)) return;
+                if ((e.target as HTMLElement).closest('textarea, input, select, button, [contenteditable="true"]')) return;
+            }
+            lastIntentRef.current = Date.now();
+        };
         // A press on the scroller itself (not a button inside it) is a scrollbar drag.
         const pointerDown = (e: Event) => { draggingRef.current = e.target === scroller; };
         const pointerUp = () => {
@@ -121,19 +134,20 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         };
     }, [scrollOwner, assistantCount]);
 
-    // Changing who scrolls changes what "the bottom" means. Entering panel mode
-    // (a confirmation opened above the transcript) must not yank the reader
-    // away from it, so re-read the real position instead of keeping a stale
-    // "following" flag; leaving it returns the transcript to the latest turn.
+    // Changing who scrolls changes what "the bottom" means. A reader who was
+    // following the conversation stays at the end in either mode; one reading
+    // older messages keeps their place and gets the jump pill.
     const previousOwnerRef = React.useRef(scrollOwner);
     React.useEffect(() => {
         const previous = previousOwnerRef.current;
         previousOwnerRef.current = scrollOwner;
         if (previous === scrollOwner) return;
         if (scrollOwner === 'panel') {
-            const near = isNearBottom();
-            nearBottomRef.current = near;
-            setShowJumpToLatest(!near);
+            if (nearBottomRef.current) {
+                scrollToLatest('auto');
+                return;
+            }
+            setShowJumpToLatest(true);
         } else if (nearBottomRef.current) {
             scrollToLatest('auto');
         }
@@ -158,7 +172,12 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
 
     // Initial history, optimistic turns, replies, and the pending indicator all append
     // content to the same viewport. Do not interrupt someone reading older messages.
+    const wasLoadingRef = React.useRef(loading);
     React.useEffect(() => {
+        // The first scroll after history loads jumps; a smooth scroll through a
+        // long history is cut short as the content settles and strands the reader.
+        const justLoaded = wasLoadingRef.current && !loading;
+        wasLoadingRef.current = loading;
         // Empty history (visual review #472 round 5): never auto-scroll — the
         // empty state stays anchored at the top of the log so its lead is
         // visible on first open, even on the shortest sheet viewports.
@@ -181,13 +200,20 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
             }
             return;
         }
-        scrollToLatest();
+        scrollToLatest(justLoaded ? 'auto' : undefined);
     }, [messagesLength, assistantCount, pending, loading]);
 
     // Visual viewport changes cover mobile keyboards and orientation changes. Preserve
     // the reader's position when they are browsing older messages.
     React.useEffect(() => {
         const handleViewportResize = () => {
+            // A reader who is following keeps following: the keyboard opening
+            // shrinks the scroller before the end of the transcript can be
+            // re-read, which would otherwise look like scrolling away.
+            if (nearBottomRef.current) {
+                scrollToLatest('auto');
+                return;
+            }
             const nearBottom = isNearBottom();
             nearBottomRef.current = nearBottom;
             setShowJumpToLatest(!nearBottom);

@@ -342,7 +342,16 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         const headerBottom = card.querySelector('.card-header')?.getBoundingClientRect().bottom ?? 0;
         const formTop = card.querySelector('form')?.getBoundingClientRect().top ?? 0;
         setStackMax(Math.max(MIN_STACK_PX, formTop - headerBottom - 12));
-        setPanelScroll(floor > 0 && computed < floor);
+        const scrollsPanel = floor > 0 && computed < floor;
+        setPanelScroll(scrollsPanel);
+        // Keep keyboard/programmatic scroll-into-view clear of the pinned header
+        // and composer band while the panel body is the scroller.
+        if (panelBody) {
+            const headerHeight = card.querySelector('.card-header')!.getBoundingClientRect().height;
+            const footerHeight = card.querySelector<HTMLElement>('.chat-footer')!.offsetHeight;
+            panelBody.style.scrollPaddingTop = scrollsPanel ? `${Math.round(headerHeight)}px` : '';
+            panelBody.style.scrollPaddingBottom = scrollsPanel ? `${footerHeight + 8}px` : '';
+        }
         setCardHeight(Math.max(computed, MIN_CARD_PX, floor));
     }, []);
 
@@ -375,6 +384,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             // transcript floor / single-scroller decision follows (issue #483).
             const header = cardRef.current.querySelector('.card-header');
             if (header) observer.observe(header);
+            const footer = cardRef.current.querySelector('.chat-footer');
+            if (footer) observer.observe(footer);
             // The priorities block above the chat (assistant panel) resizes as
             // its steps change; the card height depends on its offset.
             // The block can mount after the chat (it waits for sign-in
@@ -1564,14 +1575,14 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     onRetryMessage={(m) => handleRetryMessage(m)}
                     onEditAsNew={handleEditAsNew}
                 />
-                {showJumpToLatest && (
-                    <JumpToLatest unreadCount={unreadCount} onJump={handleJumpToLatest}/>
-                )}
                 </div>
                 )}
 
                 {!initError && (
                 <div className="chat-footer flex-shrink-0">
+                    {showJumpToLatest && (
+                        <JumpToLatest unreadCount={unreadCount} onJump={handleJumpToLatest}/>
+                    )}
                     {assistantStatus && (
                         <AssistantStatusNotice
                             status={assistantStatus}

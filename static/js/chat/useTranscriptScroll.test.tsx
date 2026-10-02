@@ -6,17 +6,20 @@ import * as React from 'react';
 
 import {ScrollOwner, useTranscriptScroll} from './useTranscriptScroll';
 
-function Harness({assistantCount, owner, extra = 0}: {assistantCount: number; owner: ScrollOwner; extra?: number}) {
+function Harness({assistantCount, owner, extra = 0, loading = false}: {assistantCount: number; owner: ScrollOwner; extra?: number; loading?: boolean}) {
     const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend} = useTranscriptScroll({
         messagesLength: assistantCount + extra,
         assistantCount,
         pending: false,
-        loading: false,
+        loading,
         scrollOwner: owner,
     });
     return (
         <div className="assistant-panel-body" data-testid="panel">
-            <div ref={historyRef} data-testid="log"/>
+            <section>
+                <div ref={historyRef} data-testid="log"/>
+                <div className="chat-footer" data-testid="footer"><textarea data-testid="composer"/></div>
+            </section>
             <span data-testid="state">{`${showJumpToLatest}:${unreadCount}`}</span>
             <button onClick={() => scrollToLatest('auto')}>latest</button>
             <button onClick={() => followNextAppend()}>follow</button>
@@ -98,11 +101,12 @@ describe('useTranscriptScroll', () => {
         metrics(panel, {scrollHeight: 2000, scrollTop: 100, clientHeight: 500});
         const logRect = jest.spyOn(log, 'getBoundingClientRect');
         jest.spyOn(panel, 'getBoundingClientRect').mockReturnValue(rect(500) as DOMRect);
+        jest.spyOn(screen.getByTestId('footer'), 'getBoundingClientRect').mockReturnValue(rect(500) as DOMRect);
         logRect.mockReturnValue(rect(900) as DOMRect);
         fireEvent.wheel(panel);
         fireEvent.scroll(panel);
         expect(screen.getByTestId('state')).toHaveTextContent('true:0');
-        logRect.mockReturnValue(rect(520) as DOMRect);
+        logRect.mockReturnValue(rect(500) as DOMRect);
         fireEvent.scroll(panel);
         expect(screen.getByTestId('state')).toHaveTextContent('false:0');
         act(() => { fireEvent.click(screen.getByText('latest')); });
@@ -120,21 +124,112 @@ describe('useTranscriptScroll', () => {
         expect(screen.getByTestId('state')).toHaveTextContent('false:0');
     });
 
-    test('entering panel mode re-reads the real position; leaving it returns to the latest turn', () => {
+    test('entering panel mode keeps a following reader at the end and gives an away reader the pill', () => {
         const {rerender} = render(<Harness assistantCount={1} owner="transcript"/>);
         const log = screen.getByTestId('log');
         const panel = screen.getByTestId('panel');
-        jest.spyOn(panel, 'getBoundingClientRect').mockReturnValue(rect(500) as DOMRect);
-        jest.spyOn(log, 'getBoundingClientRect').mockReturnValue(rect(1500) as DOMRect);
+        const scrollTo = jest.fn();
+        panel.scrollTo = scrollTo;
         rerender(<Harness assistantCount={1} owner="panel"/>);
+        expect(scrollTo).toHaveBeenCalledWith({top: expect.any(Number), behavior: 'auto'});
+        expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+        log.scrollTo = jest.fn();
+        rerender(<Harness assistantCount={1} owner="transcript"/>);
+        expect(log.scrollTo).toHaveBeenCalledWith(expect.objectContaining({behavior: 'auto'}));
+
+        fireEvent.wheel(log);
+        metrics(log, {scrollHeight: 1000, scrollTop: 0, clientHeight: 200});
+        fireEvent.scroll(log);
         expect(screen.getByTestId('state')).toHaveTextContent('true:0');
-        jest.spyOn(log, 'getBoundingClientRect').mockReturnValue(rect(510) as DOMRect);
+        scrollTo.mockClear();
+        rerender(<Harness assistantCount={1} owner="panel"/>);
+        expect(scrollTo).not.toHaveBeenCalled();
+        expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+    });
+
+    test('panel "bottom" is measured to the pinned composer band, not the panel edge', () => {
+        render(<Harness assistantCount={1} owner="panel"/>);
+        const log = screen.getByTestId('log');
+        const panel = screen.getByTestId('panel');
+        jest.spyOn(panel, 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
+        jest.spyOn(screen.getByTestId('footer'), 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
+        // The footer rect top is 590; the transcript end at 700 sits behind the band.
+        jest.spyOn(log, 'getBoundingClientRect').mockReturnValue(rect(700) as DOMRect);
+        fireEvent.wheel(panel);
+        fireEvent.scroll(panel);
+        expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+        jest.spyOn(log, 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
         fireEvent.scroll(panel);
         expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+    });
+
+    test('typing in the composer is not scroll intent, scroll keys outside controls are', () => {
+        render(<Harness assistantCount={1} owner="panel"/>);
+        const log = screen.getByTestId('log');
+        const panel = screen.getByTestId('panel');
+        jest.spyOn(panel, 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
+        jest.spyOn(screen.getByTestId('footer'), 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
+        const logRect = jest.spyOn(log, 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
+        fireEvent.scroll(panel);
+        const composer = screen.getByTestId('composer');
+        fireEvent.keyDown(composer, {key: 'a'});
+        fireEvent.keyDown(composer, {key: 'ArrowUp'});
+        fireEvent.keyDown(panel, {key: 'Enter'});
+        // A layout shift pushes the end out of view with no reader scroll.
+        logRect.mockReturnValue(rect(900) as DOMRect);
+        fireEvent.scroll(panel);
+        expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+        fireEvent.keyDown(panel, {key: 'PageUp'});
+        fireEvent.scroll(panel);
+        expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+    });
+
+    test('the first scroll after history loads jumps instead of smooth-scrolling', () => {
+        const {rerender} = render(<Harness assistantCount={2} owner="transcript" loading/>);
+        const log = screen.getByTestId('log');
         const scrollTo = jest.fn();
         log.scrollTo = scrollTo;
-        rerender(<Harness assistantCount={1} owner="transcript"/>);
-        expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({behavior: 'auto'}));
+        metrics(log, {scrollHeight: 3000, scrollTop: 0, clientHeight: 200});
+        rerender(<Harness assistantCount={2} owner="transcript"/>);
+        expect(scrollTo).toHaveBeenLastCalledWith({top: 3000, behavior: 'auto'});
+        scrollTo.mockClear();
+        rerender(<Harness assistantCount={2} extra={1} owner="transcript"/>);
+        expect(scrollTo).toHaveBeenLastCalledWith({top: 3000, behavior: 'smooth'});
+    });
+
+    test('a new message in panel mode jumps to the end instead of smooth-scrolling', () => {
+        const {rerender} = render(<Harness assistantCount={2} owner="panel"/>);
+        const panel = screen.getByTestId('panel');
+        const scrollTo = jest.fn();
+        panel.scrollTo = scrollTo;
+        metrics(panel, {scrollHeight: 3000, scrollTop: 0, clientHeight: 300});
+        rerender(<Harness assistantCount={2} extra={1} owner="panel"/>);
+        expect(scrollTo).toHaveBeenLastCalledWith({top: 3000, behavior: 'auto'});
+    });
+
+    test('a viewport resize keeps a following reader at the end and leaves an away reader in place', () => {
+        render(<Harness assistantCount={1} owner="transcript"/>);
+        const log = screen.getByTestId('log');
+        const scrollTo = jest.fn();
+        log.scrollTo = scrollTo;
+        // Keyboard opens: the scroller shrinks first, so the end looks far away.
+        metrics(log, {scrollHeight: 1000, scrollTop: 700, clientHeight: 100});
+        act(() => { fireEvent(window, new Event('resize')); });
+        expect(scrollTo).toHaveBeenCalledWith({top: 1000, behavior: 'auto'});
+        expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+
+        fireEvent.wheel(log);
+        metrics(log, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
+        fireEvent.scroll(log);
+        scrollTo.mockClear();
+        act(() => { fireEvent(window, new Event('resize')); });
+        expect(scrollTo).not.toHaveBeenCalled();
+        expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+        // The reader is back at the end after the resize: following resumes.
+        metrics(log, {scrollHeight: 1000, scrollTop: 790, clientHeight: 200});
+        act(() => { fireEvent(window, new Event('resize')); });
+        expect(scrollTo).toHaveBeenCalledWith({top: 1000, behavior: 'auto'});
+        expect(screen.getByTestId('state')).toHaveTextContent('false:0');
     });
 
     test('a scrollbar drag counts as the reader moving; a press on a child does not', () => {
