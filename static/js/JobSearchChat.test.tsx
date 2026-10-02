@@ -554,6 +554,7 @@ describe('JobSearchChat', () => {
         test('shows jump-to-latest and preserves position when the reader scrolls up', async () => {
             await renderChat([assistantMessage(1, 'older'), assistantMessage(2, 'latest')]);
             const history = screen.getByLabelText('Message history');
+            fireEvent.wheel(history);
             setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
             fireEvent.scroll(history);
             const jump = await screen.findByTestId('jump-to-latest');
@@ -588,6 +589,7 @@ describe('JobSearchChat', () => {
         test('does not auto-scroll newly appended content while reading older messages', async () => {
             await renderChat([assistantMessage(1, 'ready')]);
             const history = screen.getByLabelText('Message history');
+            fireEvent.wheel(history);
             setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
             fireEvent.scroll(history);
             scrollTo.mockClear();
@@ -606,6 +608,7 @@ describe('JobSearchChat', () => {
         test('counts replies that arrive while scrolled up and clears the count on return', async () => {
             await renderChat([assistantMessage(1, 'ready')]);
             const history = screen.getByLabelText('Message history');
+            fireEvent.wheel(history);
             setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
             fireEvent.scroll(history);
 
@@ -629,6 +632,7 @@ describe('JobSearchChat', () => {
         test('rechecks the bottom after viewport resize without moving older history', async () => {
             await renderChat([assistantMessage(1, 'ready')]);
             const history = screen.getByLabelText('Message history');
+            fireEvent.wheel(history);
             setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
             fireEvent.scroll(history);
             scrollTo.mockClear();

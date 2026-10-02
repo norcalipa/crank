@@ -3271,6 +3271,7 @@ body.assistant-open .app-content .table-responsive,
 
 .chat-more {
     position: relative;
+    margin-left: auto;
 }
 
 .chat-more-button {
@@ -3297,7 +3298,7 @@ body.assistant-open .app-content .table-responsive,
 }
 
 .chat-more-item {
-    min-height: 2.5rem;
+    min-height: 2.75rem;
     padding: .375rem .75rem;
     border: 0;
     border-radius: .375rem;

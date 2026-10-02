@@ -298,7 +298,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         const viewportHeight = viewport ? viewport.height : window.innerHeight;
         // Clamp so a negative offset when the page is scrolled cannot inflate the
         // card past the viewport (which would bury the composer below the fold).
-        const top = Math.max(0, card.getBoundingClientRect().top);
+        // Inside the assistant panel add back the panel's own scroll offset so the
+        // height does not depend on how far the reader has scrolled it (which would
+        // oversize the card and nest a second scrollbar, issue #483).
+        const panelBody = card.closest<HTMLElement>('.assistant-panel-body');
+        const top = Math.max(0, card.getBoundingClientRect().top + (panelBody ? panelBody.scrollTop : 0));
         // Respect the device home-indicator inset (iPhone X+). env() is exposed as
         // a CSS custom property (popup.css) since it isn't directly readable.
         let safeAreaBottom = 0;
@@ -349,6 +353,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         if (typeof ResizeObserver !== 'undefined' && cardRef.current?.parentElement) {
             observer = new ResizeObserver(scheduleMeasure);
             observer.observe(cardRef.current.parentElement);
+            // Inline confirmations grow the header; re-measure so the
+            // transcript floor / single-scroller decision follows (issue #483).
+            const header = cardRef.current.querySelector('.card-header');
+            if (header) observer.observe(header);
             // The priorities block above the chat (assistant panel) resizes as
             // its steps change; the card height depends on its offset.
             // The block can mount after the chat (it waits for sign-in
