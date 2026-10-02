@@ -559,6 +559,19 @@ describe('JobSearchChat', () => {
             expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
         });
 
+        test('frames of our own smooth scroll are ignored until the reader wheels or touches the log', async () => {
+            window.matchMedia = jest.fn().mockReturnValue({matches: false} as MediaQueryList);
+            await renderChat([assistantMessage(1, 'older'), assistantMessage(2, 'latest')]);
+            const history = screen.getByLabelText('Message history');
+            expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({behavior: 'smooth'}));
+            setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
+            fireEvent.scroll(history);
+            fireEvent.wheel(history);
+            fireEvent.touchStart(history);
+            fireEvent.scroll(history);
+            expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+        });
+
         test('the pill clears once the reader is within 64px of the bottom', async () => {
             await renderChat([assistantMessage(1, 'ready')]);
             const history = screen.getByLabelText('Message history');

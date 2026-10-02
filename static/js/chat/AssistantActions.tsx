@@ -197,7 +197,9 @@ export default function AssistantActions({turn}: AssistantActionsProps) {
         const card = host.querySelector('[data-testid="assistant-action-review"]');
         const logRect = log.getBoundingClientRect();
         const overflow = bubble.getBoundingClientRect().bottom - logRect.bottom + 8;
-        const headroom = card ? Math.max(0, card.getBoundingClientRect().top - logRect.top) : Infinity;
+        // A failed save keeps the confirm control in view even if the heading must scroll away.
+        const failed = card?.querySelector('[data-testid="priorities-review-error"]') != null;
+        const headroom = card && !failed ? Math.max(0, card.getBoundingClientRect().top - logRect.top) : Infinity;
         if (overflow > 0) {
             log.scrollTop += Math.min(overflow, headroom);
         }

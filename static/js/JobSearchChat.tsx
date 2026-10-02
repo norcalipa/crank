@@ -1150,6 +1150,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // Own message just sent: jump (not smooth-scroll) so the scroll events of an animation cannot read as the reader leaving the bottom before the reply lands.
     const jumpOnSendRef = React.useRef(false);
     const unseenRef = React.useRef(false);
+    const autoScrollUntilRef = React.useRef(0);
     const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
     const [cardHeight, setCardHeight] = React.useState<number | null>(null);
     // rAF bookkeeping so resize/orientation/keyboard bursts coalesce into at most
@@ -1271,6 +1272,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
         nearBottomRef.current = true;
         unseenRef.current = false;
+        // Mid-flight frames of a smooth scroll are ours, not the reader leaving the bottom.
+        autoScrollUntilRef.current = behavior === 'smooth' ? Date.now() + 800 : 0;
         setShowJumpToLatest(false);
     };
 
@@ -1280,12 +1283,20 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         if (!history) return;
         const handleScroll = () => {
             const nearBottom = isNearBottom(history);
+            if (!nearBottom && Date.now() < autoScrollUntilRef.current) return;
             nearBottomRef.current = nearBottom;
             if (nearBottom) unseenRef.current = false;
             setShowJumpToLatest(!nearBottom && unseenRef.current);
         };
+        const handleUserInput = () => { autoScrollUntilRef.current = 0; };
         history.addEventListener('scroll', handleScroll, {passive: true});
-        return () => history.removeEventListener('scroll', handleScroll);
+        history.addEventListener('wheel', handleUserInput, {passive: true});
+        history.addEventListener('touchstart', handleUserInput, {passive: true});
+        return () => {
+            history.removeEventListener('scroll', handleScroll);
+            history.removeEventListener('wheel', handleUserInput);
+            history.removeEventListener('touchstart', handleUserInput);
+        };
     }, []);
 
     // Initial history, optimistic turns, replies, and the pending indicator all append

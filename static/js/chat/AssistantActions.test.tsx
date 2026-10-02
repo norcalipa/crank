@@ -327,6 +327,10 @@ describe('AssistantActions', () => {
             fireEvent.click(screen.getByRole('button', {name: 'Try again'}));
             await screen.findByTestId('assistant-action-review');
             expect(log.scrollTop).toBe(300);
+            applyProposal.mockRejectedValueOnce(new Error('boom'));
+            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            await screen.findByTestId('priorities-review-error');
+            expect(log.scrollTop).toBeGreaterThan(300);
             spy.mockRestore();
         });
 
