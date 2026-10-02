@@ -148,7 +148,11 @@ def agent_preference_reset(request):
             "reset": bool(result["changed"]),
             "revision": result["revision"],
             "changes": result["changes"],
-            "undo": result["undo"],
+            "undo": (
+                {**result["undo"], "origin": "reset"}
+                if isinstance(result["undo"], dict)
+                else result["undo"]
+            ),
         },
         headers={**_NO_STORE, "X-Request-ID": request_id},
     )

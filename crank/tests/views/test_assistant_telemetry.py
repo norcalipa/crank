@@ -430,12 +430,81 @@ class PreferenceDecisionEventTests(_Base):
             ],
         )
 
+    @patch(RECORD)
+    def test_priorities_editor_flow_reports_direct_origin(self, record):
+        proposed = self.post(
+            "agent-preference-propose", {"patch": {"set": {"notes": "e1"}}, "scope": "account"}
+        ).json()
+        self.assertEqual(proposed["token"]["origin"], "direct")
+        applied = self.post(
+            "agent-preference-apply", {"proposal": proposed["token"], "decision": "apply"}
+        ).json()
+        self.assertEqual(applied["undo"]["origin"], "direct")
+        self.assertEqual(
+            self.post("agent-preference-undo", {"undo": applied["undo"]}).status_code, 200
+        )
+        got = [(e["decision"], e["origin"]) for e in _events(record, "preference_decision")]
+        self.assertEqual(got, [("apply", "direct"), ("undo", "direct")])
+
+    @patch(RECORD)
+    def test_chat_proposal_flow_reports_proposal_origin_through_undo(self, record):
+        token = {
+            "patch": {"set": {"notes": "c1"}}, "scope": "account",
+            "base_revision": 0, "owner": token_owner(self.user),
+        }
+        applied = self.post(
+            "agent-preference-apply", {"proposal": token, "decision": "apply"}
+        ).json()
+        self.assertEqual(applied["undo"]["origin"], "proposal")
+        self.post("agent-preference-undo", {"undo": applied["undo"]})
+        got = [(e["decision"], e["origin"]) for e in _events(record, "preference_decision")]
+        self.assertEqual(got, [("apply", "proposal"), ("undo", "proposal")])
+
+    @patch(RECORD)
+    def test_reset_undo_reports_reset_origin(self, record):
+        apply_patch_to_user(self.user, {"set": {"notes": "r1"}})
+        from crank.models.preference import UserPreference
+
+        revision = UserPreference.objects.get(user=self.user).revision
+        reset = self.post("agent-preference-reset", {"expected_revision": revision}).json()
+        self.assertEqual(reset["undo"]["origin"], "reset")
+        self.assertEqual(
+            self.post("agent-preference-undo", {"undo": reset["undo"]}).status_code, 200
+        )
+        self.assertEqual(
+            [(e["decision"], e["origin"]) for e in _events(record, "preference_decision")],
+            [("undo", "reset")],
+        )
+
+    @patch(RECORD)
+    def test_origin_is_allowlisted_not_trusted(self, record):
+        token = {
+            "patch": {"set": {"notes": "h1"}}, "scope": "account", "base_revision": 0,
+            "owner": token_owner(self.user), "origin": "https://evil.example/x",
+        }
+        applied = self.post(
+            "agent-preference-apply", {"proposal": token, "decision": "apply"}
+        ).json()
+        self.assertEqual(applied["undo"]["origin"], "proposal")
+        self.post("agent-preference-undo", {"undo": dict(applied["undo"], origin="reset; DROP")})
+        self.post("agent-preference-apply", {"proposal": dict(token, origin="reset"), "decision": "dismiss"})
+        origins = {e["origin"] for e in _events(record, "preference_decision")}
+        self.assertEqual(origins, {"proposal"})
+
+    @patch(RECORD)
+    def test_dismiss_reports_the_token_scope(self, record):
+        token = {"patch": {"set": {"notes": "d"}}, "scope": "search", "origin": "direct"}
+        self.post("agent-preference-apply", {"proposal": token, "decision": "dismiss"})
+        self.post("agent-preference-apply", {"proposal": dict(token, scope="bogus"), "decision": "dismiss"})
+        got = [(e["decision"], e["scope"], e["origin"]) for e in _events(record, "preference_decision")]
+        self.assertEqual(got, [("dismiss", "search", "direct"), ("dismiss", "account", "direct")])
+
     def test_failed_status_for_server_errors(self):
         from django.http import JsonResponse
         from crank.views import job_search as view
 
         with patch(RECORD) as record:
             view._preference_decision_event(
-                JsonResponse({}, status=500), decision="apply", scope="account", ok_status="applied"
+                JsonResponse({}, status=500), decision="apply", scope="account", ok_status="applied", origin="proposal"
             )
         self.assertEqual(_events(record, "preference_decision")[0]["status"], "failed")

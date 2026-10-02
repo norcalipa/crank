@@ -252,7 +252,7 @@ _STATIC_ENUMS = {
     "surface": {"assistant_status", "job_matches"},
     "decision": {"apply", "dismiss", "undo"},
     "scope": {"account", "search"},
-    "origin": {"proposal", "direct"},
+    "origin": {"proposal", "direct", "reset"},
     "latency_bucket": {"lt100", "100-300", "300-1000", "gt1000"},
     "action": {
         "seed_job_sources", "queue_retrieval", "queue_pipeline",

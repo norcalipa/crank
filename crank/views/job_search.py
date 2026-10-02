@@ -1202,7 +1202,14 @@ def agent_conversation_delete(request, conversation_id):
     )
 
 
-def _preference_decision_event(response, *, decision, scope, ok_status):
+def _token_origin(token, allowed):
+    """Which surface issued a client-held token: an allowlisted label or
+    ``proposal`` (the chat flow, whose tokens predate the label)."""
+    origin = token.get("origin") if isinstance(token, dict) else None
+    return origin if origin in allowed else "proposal"
+
+
+def _preference_decision_event(response, *, decision, scope, ok_status, origin):
     """Emit one bounded ``preference_decision`` event for any outcome."""
     code = response.status_code
     if code < 300:
@@ -1219,7 +1226,7 @@ def _preference_decision_event(response, *, decision, scope, ok_status):
             "decision": decision,
             "scope": scope,
             "status": status,
-            "origin": "proposal",
+            "origin": origin,
         },
     )
 
@@ -1228,13 +1235,14 @@ def _preference_decision_event(response, *, decision, scope, ok_status):
 @require_POST
 def agent_preference_apply(request):
     """Apply or dismiss a proposal, counting every outcome (issue #482)."""
-    meta = {"decision": "apply", "scope": "account"}
+    meta = {"decision": "apply", "scope": "account", "origin": "proposal"}
     response = _agent_preference_apply(request, meta)
     _preference_decision_event(
         response,
         decision=meta["decision"],
         scope=meta["scope"],
         ok_status="dismissed" if meta["decision"] == "dismiss" else "applied",
+        origin=meta["origin"],
     )
     return response
 
@@ -1273,8 +1281,11 @@ def _agent_preference_apply(request, meta):
     decision = payload.get("decision", "apply")
     from crank.services import preferences as pref_services
 
+    meta["origin"] = _token_origin(token, ("proposal", "direct"))
     if decision == "dismiss":
         meta["decision"] = "dismiss"
+        if isinstance(token, dict) and token.get("scope") in ("account", "search"):
+            meta["scope"] = token["scope"]
         return JsonResponse(
             {"dismissed": True}, headers={"X-Request-ID": request_id}
         )
@@ -1394,13 +1405,18 @@ def _agent_preference_apply(request, meta):
             "We couldn't update your preferences right now. Please retry.",
             request_id,
         )
+    undo = result.get("undo")
+    if isinstance(undo, dict):
+        # The undo token carries its issuer so a later undo is attributed to
+        # the surface (chat proposal vs priorities editor) that made the change.
+        undo = {**undo, "origin": meta["origin"]}
     return JsonResponse(
         {
             "applied": bool(result.get("changed")),
             "scope": "account",
             "revision": result.get("revision"),
             "changes": result.get("changes"),
-            "undo": result.get("undo"),
+            "undo": undo,
         },
         headers={"X-Request-ID": request_id},
     )
@@ -1410,14 +1426,19 @@ def _agent_preference_apply(request, meta):
 @require_POST
 def agent_preference_undo(request):
     """Undo a preference change, counting every outcome (issue #482)."""
-    response = _agent_preference_undo(request)
+    meta = {"origin": "proposal"}
+    response = _agent_preference_undo(request, meta)
     _preference_decision_event(
-        response, decision="undo", scope="account", ok_status="undone"
+        response,
+        decision="undo",
+        scope="account",
+        ok_status="undone",
+        origin=meta["origin"],
     )
     return response
 
 
-def _agent_preference_undo(request):
+def _agent_preference_undo(request, meta):
     """Apply a client-held undo token under its revision precondition (issue #466).
 
     The token is an ordinary owner-scoped preference patch: it is re-validated
@@ -1431,6 +1452,7 @@ def _agent_preference_undo(request):
     if error:
         return error
     token = payload.get("undo")
+    meta["origin"] = _token_origin(token, ("proposal", "direct", "reset"))
     from crank.services import preferences as pref_services
 
     if isinstance(token, dict) and not pref_services.token_owner_matches(
