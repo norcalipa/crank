@@ -175,20 +175,15 @@ class AssistantTurnEventTests(_Base):
     @patch(RECORD)
     def test_replay_via_completed_anchor(self, record):
         conv = self.start()
-        key = str(uuid.uuid4())
         with self.run_with(_reply()):
-            self.submit(conv, key)
+            self.submit(conv)
+        stored = JobSearchConversation.objects.get(pk=conv).messages.last()
         record.reset_mock()
         with patch.object(
-            job_search_view_module(), "_claim_turn",
-            return_value=(None, "completed", JobSearchConversation.objects.get(pk=conv).messages.last()),
+            job_search_view_module(), "_claim_turn", return_value=(None, "completed", stored)
         ):
-            with patch.object(
-                JobSearchConversation.messages.rel.related_model.objects, "filter"
-            ) as flt:
-                flt.return_value.first.return_value = None
-                self.submit(conv, key)
-        self.assertIn("replayed", _phases(record))
+            self.assertEqual(self.submit(conv).status_code, 200)
+        self.assertEqual(_phases(record), ["replayed"])
 
     @override_settings(JOB_SEARCH_RATE_LIMIT_PER_HOUR=1)
     @patch(RECORD)
