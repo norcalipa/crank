@@ -367,19 +367,30 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         )
     );
 
-    // One source of truth per field: once evidence has loaded, the profile grid
-    // shows the field's evidence status; before that it makes no claim.
-    const profileFieldBadges = (key: 'funding_round' | 'rto_policy', label: string) => {
+    // The grid shows profile columns; evidence rows are a separate record (#477),
+    // so a field's evidence status describes the shown value only when the
+    // accepted evidence value is that value. Otherwise the grid says so.
+    const normalizeFact = (value: string) => {
+        const text = value.trim().toLowerCase();
+        return ({true: 'yes', false: 'no'} as Record<string, string>)[text] ?? text;
+    };
+    const profileFieldBadges = (key: 'funding_round' | 'rto_policy' | 'accelerated_vesting', label: string, shown: string | undefined) => {
         if (!provenance) return null;
         const row = provenance.fields?.find(item => item.field_key === key);
-        const status: EvidenceStatusKey = row ? (row.status || (row.stale ? 'stale' : 'verified')) : 'profile';
+        const agreeing = row && normalizeFact(row.value) === normalizeFact(`${shown}`) ? row : undefined;
+        const status: EvidenceStatusKey = agreeing ? (agreeing.status || (agreeing.stale ? 'stale' : 'verified')) : 'profile';
         const pendingItem = provenance.pending_review?.find(item => item.field_key === key);
         const review = row?.review && row.review !== 'none' ? row.review : pendingItem?.review ?? null;
         return (
             <>
                 {' '}
-                <EvidenceBadge status={status} fieldLabel={label} lastVerifiedAt={row?.last_verified_at}/>
+                <EvidenceBadge status={status} fieldLabel={label} lastVerifiedAt={agreeing?.last_verified_at}/>
                 {review && <>{' '}<EvidenceBadge status={review}/></>}
+                {row && !agreeing && (
+                    <span className="d-block small text-muted" data-testid={`profile-differs-${key}`}>
+                        Differs from the sourced value under Field evidence
+                    </span>
+                )}
             </>
         );
     };
@@ -417,9 +428,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         && organization.rating_dimensions_covered !== undefined
         ? {covered: organization.rating_dimensions_covered, total: organization.rating_dimensions_total}
         : null;
-    const ratingCoverageText = ratingCoverage
-        ? `${ratingCoverage.covered} of ${ratingCoverage.total} rating dimensions`
-        : `${organization.profile_completeness.toFixed(0)}% of rating dimensions`;
+
 
     const handleCloseClick = (e: React.MouseEvent) => {
         e.stopPropagation();
@@ -520,11 +529,11 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                             </div>
                             <div className="row mb-3">
                                 <div className="col-5 text-end fw-bold">Funding Round:</div>
-                                <div className="col-7">{fundingRoundMap[organization.funding_round]}{profileFieldBadges('funding_round', 'Funding Round')}</div>
+                                <div className="col-7">{fundingRoundMap[organization.funding_round]}{profileFieldBadges('funding_round', 'Funding Round', fundingRoundMap[organization.funding_round])}</div>
                             </div>
                             <div className="row mb-3">
                                 <div className="col-5 text-end fw-bold">RTO Policy:</div>
-                                <div className="col-7">{rtoPolicyMap[organization.rto_policy]}{profileFieldBadges('rto_policy', 'RTO Policy')}</div>
+                                <div className="col-7">{rtoPolicyMap[organization.rto_policy]}{profileFieldBadges('rto_policy', 'RTO Policy', rtoPolicyMap[organization.rto_policy])}</div>
                             </div>
                             {organization.gives_ratings !== undefined && (
                                 <div className="row mb-3">
@@ -535,7 +544,10 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                             {organization.accelerated_vesting !== undefined && (
                                 <div className="row mb-3">
                                     <div className="col-5 text-end fw-bold">Accelerated Vesting:</div>
-                                    <div className="col-7">{organization.accelerated_vesting ? 'Yes' : 'No'}</div>
+                                    <div className="col-7">
+                                        {organization.accelerated_vesting ? 'Yes' : 'No'}
+                                        {profileFieldBadges('accelerated_vesting', 'Accelerated Vesting', organization.accelerated_vesting ? 'Yes' : 'No')}
+                                    </div>
                                 </div>
                             )}
                         </div>
@@ -544,10 +556,12 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                 <span className="fw-bold">Rank:</span>
                                 <span>{organization.ranking}</span>
                             </div>
-                            <div className="popup-details-score-row">
-                                <span className="fw-bold">Rating coverage:</span>
-                                <span data-testid="rating-coverage">{ratingCoverageText}</span>
-                            </div>
+                            {!ratingCoverage && (
+                                <div className="popup-details-score-row">
+                                    <span className="fw-bold">Rating coverage:</span>
+                                    <span data-testid="rating-coverage">{`${organization.profile_completeness.toFixed(0)}% of rating dimensions`}</span>
+                                </div>
+                            )}
                             {loading ? (
                                 <p>Loading scores...</p>
                             ) : (
@@ -647,13 +661,13 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                         emptyAction={emptyAction}
                                     />
                                     {isAuthenticated && (provenance.fields?.length ?? 0) > 0 && (
-                                        <div className="mt-2" data-testid="correction-action">
+                                        <div className="mt-3 pt-3 border-top" data-testid="correction-action">
                                             <button type="button"
                                                     className="btn btn-sm btn-outline-light"
                                                     data-testid="suggest-correction-link"
                                                     onClick={() => openCorrection('company_details')}>
                                                 <i className="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>
-                                                Suggest a correction
+                                                Choose a field to correct
                                             </button>
                                         </div>
                                     )}

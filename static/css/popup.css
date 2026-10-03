@@ -43,7 +43,6 @@
     display: flex;
     justify-content: center;
     align-items: flex-start;
-    overflow-y: auto;
 }
 
 /* Suggest-company modal rides Bootstrap's .modal but must also sit above the
@@ -827,7 +826,8 @@ body.app-nav-drawer-open {
 }
 
 .popup-overlay {
-    padding: clamp(.75rem, 4vh, 2rem) .75rem .75rem;
+    --popup-gap-top: clamp(.75rem, 4vh, 2rem);
+    padding: var(--popup-gap-top) .75rem .75rem;
 }
 
 .popup-details {
@@ -1013,7 +1013,8 @@ body.app-nav-drawer-open {
     }
 
     .popup-details {
-        max-height: calc(100vh - 1.5rem);
+        max-height: calc(100vh - var(--popup-gap-top, .75rem) - .75rem);
+        max-height: calc(100dvh - var(--popup-gap-top, .75rem) - .75rem);
     }
 
     .popup-details .card-header h2 {
@@ -2814,15 +2815,17 @@ body.app-nav-drawer-open {
 .popup-details {
     display: flex;
     flex-direction: column;
-    max-height: calc(100vh - 1.5rem);
-    max-height: calc(100dvh - 1.5rem);
+    max-height: calc(100vh - var(--popup-gap-top, .75rem) - .75rem);
+    max-height: calc(100dvh - var(--popup-gap-top, .75rem) - .75rem);
 }
 
 .popup-details .card-header {
     flex: 0 0 auto;
 }
 
+/* Positioned so absolutely placed .visually-hidden spans scroll with the body, not the overlay. */
 .popup-details .card-body {
+    position: relative;
     overflow-y: auto;
     min-height: 0;
 }
@@ -4300,7 +4303,7 @@ span.priority-chip-button { cursor: default; }
     inline-size: fit-content;
     min-block-size: 44px;
     padding-block: .6875rem;
-    margin-block-start: -.5rem;
+    margin-block-start: 0;
     line-height: 1.5;
     cursor: pointer;
     color: var(--bs-link-color);
@@ -4326,10 +4329,20 @@ span.priority-chip-button { cursor: default; }
 .evidence-skeleton { min-block-size: 11rem; }
 
 .evidence-row + .evidence-row,
-.evidence-pending-item + .evidence-pending-item {
-    border-top: 1px solid var(--bs-border-color-translucent);
+.evidence-pending-item + .evidence-pending-item,
+.evidence-group + .evidence-group > .evidence-row:first-child {
     padding-top: .5rem;
+    background: linear-gradient(var(--bs-border-color-translucent), var(--bs-border-color-translucent))
+        center top / calc(100% - var(--bs-gutter-x)) 1px no-repeat;
 }
+
+.evidence-meta a:focus-visible {
+    outline: 2px solid #93c5fd;
+    outline-offset: 1px;
+    border-radius: 2px;
+}
+
+.evidence-external-note { white-space: nowrap; }
 
 .evidence-empty {
     padding: .75rem;
@@ -4362,3 +4375,4 @@ span.priority-chip-button { cursor: default; }
 
 .evidence-legend li + li { margin-top: .375rem; }
 .evidence-legend-windows { margin-top: .25rem; }
+.evidence-legend .evidence-badge { margin-inline-end: .25rem; }

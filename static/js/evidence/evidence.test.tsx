@@ -82,7 +82,7 @@ describe('EvidenceSummary', () => {
         const root = screen.getByTestId('evidence-summary');
         expect(root).toHaveClass('evidence-summary-card');
         expect(root.querySelector('.evidence-badge-stale')).toHaveTextContent('Stale');
-        expect(screen.getByTestId('evidence-facts')).toHaveTextContent('0 of 7 verified · 2 stale · 5 unknown');
+        expect(screen.getByTestId('evidence-facts')).toHaveTextContent('0 verified · 2 stale · 5 unknown');
         expect(screen.getByTestId('evidence-last-verified')).toHaveTextContent('Last verified Aug 8, 2024');
     });
 
@@ -92,7 +92,7 @@ describe('EvidenceSummary', () => {
         const root = screen.getByTestId('evidence-summary');
         expect(root.querySelector('.evidence-badge-verified')).toBeNull();
         expect(root.querySelector('.evidence-badge-unknown')).toBeNull();
-        expect(screen.getByTestId('evidence-facts')).toHaveTextContent('3 of 7 verified · 0 stale · 4 unknown');
+        expect(screen.getByTestId('evidence-facts')).toHaveTextContent('3 verified · 0 stale · 4 unknown');
         expect(screen.getByTestId('evidence-pending')).toHaveTextContent('Pending review');
     });
 
@@ -195,5 +195,22 @@ describe('EvidenceDetails', () => {
         render(<EvidenceSkeleton/>);
         expect(screen.getByTestId('provenance-loading')).toHaveAttribute('aria-busy', 'true');
         expect(screen.getByRole('status')).toHaveTextContent('Loading evidence…');
+    });
+});
+
+describe('details dialog overlay CSS (#473a)', () => {
+    const css = fs.readFileSync(path.resolve(__dirname, '../../css/popup.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rules = (selector: string) => css.split('}').filter(block => block.trim().startsWith(selector + ' {'));
+
+    test('the overlay never scrolls; only the card body does', () => {
+        const overlay = rules('.popup-overlay').join('\n');
+        expect(overlay).not.toMatch(/overflow-y:\s*auto/);
+        expect(rules('.popup-details .card-body').join('\n')).toMatch(/position:\s*relative/);
+    });
+
+    test('the dialog height accounts for the overlay top gap', () => {
+        const dialog = rules('.popup-details').join('\n');
+        expect(dialog).toContain('var(--popup-gap-top');
+        expect(dialog).not.toContain('100dvh - 1.5rem');
     });
 });

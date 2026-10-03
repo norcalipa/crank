@@ -1445,7 +1445,7 @@ describe('OrganizationDetailsPopup', () => {
             const evidenceButton = await screen.findByTestId('suggest-correction-field-rto_policy');
             expect(evidenceButton).toHaveAccessibleName('Suggest a correction to RTO Policy');
             expect(evidenceButton).not.toHaveAttribute('aria-label');
-            expect(screen.getByRole('button', {name: 'Suggest a correction'})).toHaveAttribute('data-testid', 'suggest-correction-link');
+            expect(screen.getByRole('button', {name: 'Choose a field to correct'})).toHaveAttribute('data-testid', 'suggest-correction-link');
             expect(screen.getByTestId('field-evidence')).toHaveTextContent('Field evidence');
             expect(screen.getByTestId('field-evidence-rto_policy')).toContainElement(evidenceButton);
             expect(screen.getByTestId('field-unverified-funding_round'))

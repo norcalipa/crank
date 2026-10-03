@@ -116,7 +116,7 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                 </div>
             )}
             {fields.length > 0 && (
-                <div className="mt-2" data-testid="field-evidence">
+                <div className="mt-2 evidence-group" data-testid="field-evidence">
                     <h4 className="h6 fw-semibold mt-3 mb-2">Field evidence</h4>
                     {fields.map(field => {
                         const key = field.field_key;
@@ -185,7 +185,7 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                 </div>
             )}
             {unverified.length > 0 && (
-                <div className="mt-2" data-testid="unverified-fields">
+                <div className="mt-2 evidence-group" data-testid="unverified-fields">
                     {unverified.map(key => (
                         <div className="row mb-1 align-items-baseline evidence-row" key={key}
                              data-testid={`field-unverified-${key}`}>
@@ -215,8 +215,9 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                                 <EvidenceBadge status={item.review}/>
                                 <span className="d-block small text-muted">
                                     Observed {formatEvidenceDate(item.observed_at)} ·{' '}
-                                    {item.source_domain || 'unknown source'} · Not yet reviewed
+                                    {item.source_domain || 'unknown source'}
                                 </span>
+                                <span className="d-block small text-muted">Not yet reviewed</span>
                                 {item.observed_value && (
                                     <span className="d-block small evidence-observed-value">
                                         Observed, not verified: “{item.observed_value}”
