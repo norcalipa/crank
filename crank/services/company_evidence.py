@@ -42,6 +42,7 @@ Invariants enforced here:
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import logging
 import unicodedata
 from datetime import datetime, timedelta
@@ -1164,6 +1165,14 @@ def field_status(row: CompanyFieldEvidence, *, now: datetime | None = None) -> s
     return "verified"
 
 
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
+
+
 def safe_source_url(row: CompanyFieldEvidence) -> str | None:
     """The row's source URL only when it is a public HTTPS URL on its own domain.
 
@@ -1180,6 +1189,8 @@ def safe_source_url(row: CompanyFieldEvidence) -> str | None:
     except ValidationError:
         return None
     host = (urlsplit(url).hostname or "").casefold()
+    if _is_ip_literal(host):
+        return None
     if host == domain or host.endswith("." + domain):
         return url
     return None
@@ -1252,6 +1263,27 @@ def evidence_summaries_for_orgs(organization_ids, *, now: datetime | None = None
     }
 
 
+def _agrees_with_displayed(field_key: str, value_text: str, shown: str | None) -> bool | None:
+    """Whether the accepted evidence value says what the profile shows.
+
+    ``None`` when the profile shows nothing for the field. Values compare the
+    way matching reads them (#477): RTO by in-office days, accelerated vesting
+    by its true/yes/1 rule, everything else by case-folded text.
+    """
+    if shown is None:
+        return None
+    from crank.agents.jobs import matching
+
+    if field_key == CompanyFieldEvidence.FieldKey.RTO_POLICY:
+        evidence_days, shown_days = matching._rto_days(value_text), matching._rto_days(shown)
+        if evidence_days is not None and shown_days is not None:
+            return evidence_days == shown_days
+    if field_key == CompanyFieldEvidence.FieldKey.ACCELERATED_VESTING:
+        truthy = {"true", "yes", "1"}
+        return (value_text.strip().lower() in truthy) == (shown.strip().lower() in truthy)
+    return value_text.strip().casefold() == shown.strip().casefold()
+
+
 def field_evidence_payload(organization, *, now: datetime | None = None) -> dict:
     """Build the serialized ``fields`` / ``unverified_fields`` arrays.
 
@@ -1267,23 +1299,24 @@ def field_evidence_payload(organization, *, now: datetime | None = None) -> dict
     resolved = resolve_field_evidence(organization)
     claim_rows = _open_claim_rows([organization.id])
     review: dict[str, str] = {}
-    newest_claim: dict[str, CompanyFieldEvidence] = {}
     for claim in claim_rows:
-        newest_claim.setdefault(claim.field_key, claim)
         if claim.state == State.CONFLICTED:
             review[claim.field_key] = "conflicted"
         else:
             review.setdefault(claim.field_key, "pending")
+    # One entry per open claim: value, source, date and state stay together,
+    # so two pages disagreeing about a field are both listed (newest first).
     pending_review = [
         {
-            "field_key": key,
-            "review": review[key],
+            "field_key": claim.field_key,
+            "review": "conflicted" if claim.state == State.CONFLICTED else "pending",
             "observed_at": claim.observed_at.isoformat(),
             "source_domain": claim.source_domain,
             "observed_value": claim.value_text[:_MAX_VALUE_TEXT],
         }
-        for key, claim in sorted(newest_claim.items())
+        for claim in sorted(claim_rows, key=lambda claim: claim.field_key)
     ]
+    displayed = displayed_field_values(organization)
     fields = []
     for field_key in sorted(resolved):
         row = resolved[field_key]
@@ -1314,6 +1347,9 @@ def field_evidence_payload(organization, *, now: datetime | None = None) -> dict
                 "stale": stale,
                 "status": "stale" if stale else "verified",
                 "review": review.get(row.field_key, "none"),
+                "agrees_with_displayed": _agrees_with_displayed(
+                    row.field_key, row.value_text, displayed.get(row.field_key)
+                ),
                 "policy_days": FIELD_FRESHNESS_POLICY.get(
                     row.field_key, DEFAULT_FRESHNESS_DAYS
                 ),
