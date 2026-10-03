@@ -31,7 +31,9 @@ const EvidenceSummary: React.FC<EvidenceSummaryProps> = ({evidence, variant = 'r
         <div className={`evidence-summary evidence-summary-${variant}`} data-testid="evidence-summary">
             {headline && <EvidenceBadge status={headline}/>}
             <span className="evidence-summary-facts fw-semibold" data-testid="evidence-facts">
-                {evidence.verified} of {evidence.total} verified · {evidence.stale} stale · {evidence.unknown} unknown
+                <span className="text-nowrap">{evidence.verified} verified</span>{' · '}
+                <span className="text-nowrap">{evidence.stale} stale</span>{' · '}
+                <span className="text-nowrap">{evidence.unknown} unknown</span>
             </span>
             <span className="evidence-summary-fresh" data-testid="evidence-last-verified">
                 {evidence.last_verified_at

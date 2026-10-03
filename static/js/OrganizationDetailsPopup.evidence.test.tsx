@@ -15,7 +15,8 @@ const organization = {
 };
 
 const field = (key: string, overrides: Record<string, unknown> = {}) => ({
-    field_key: key, state: 'accepted', value: 'Remote first', source_domain: 'example.com',
+    field_key: key, state: 'accepted',
+    value: ({rto_policy: 'Remote', funding_round: 'Seed', accelerated_vesting: 'No'} as Record<string, string>)[key] ?? 'Remote first', source_domain: 'example.com',
     source_url: 'https://example.com/about', observed_at: '2025-01-10T12:00:00Z', scope: {},
     last_checked_at: '2025-01-10T12:00:00Z', last_successful_fetch_at: null, last_changed_at: null,
     last_verified_at: '2025-01-10T12:00:00Z', stale: false, status: 'verified', review: 'none', policy_days: 90,
@@ -53,7 +54,7 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
         mockProvenance(() => ok(payload()));
         open({isAuthenticated: true});
         expect(await screen.findByTestId('coverage-summary')).toBeInTheDocument();
-        expect(screen.getByTestId('rating-coverage')).toHaveTextContent('1 of 2 rating dimensions');
+        expect(screen.getByTestId('coverage-rating')).toHaveTextContent('1 of 2 rating dimensions');
         expect(screen.getByTestId('last-updated').closest('.row')).toHaveTextContent('Record last edited');
         expect(screen.getByText('Editing the record does not re-verify facts.')).toBeInTheDocument();
         expect(screen.getByTestId('field-stale-rto_policy')).toBeInTheDocument();
@@ -96,7 +97,7 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
     test('the profile grid shows no status until evidence loads, then follows the field evidence', async () => {
         mockProvenance(() => ok(payload({
             fields: [field('rto_policy', {status: 'stale', stale: true, review: 'conflicted'}),
-                field('funding_round')],
+                field('funding_round'), field('accelerated_vesting')],
             unverified_fields: [],
         })));
         open();
@@ -122,6 +123,56 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
         const funding = gridRow('Funding Round');
         expect(funding.querySelector('.evidence-badge-profile')).not.toBeNull();
         expect(funding.querySelector('.evidence-badge-pending')).toHaveTextContent('Pending review');
+    });
+
+    test('after an accepted correction the grid does not certify the profile value it contradicts', async () => {
+        mockProvenance(() => ok(payload({
+            fields: [field('rto_policy', {value: 'Hybrid'})],
+            unverified_fields: [], pending_review: [],
+        })));
+        open();
+        await screen.findByTestId('coverage-summary');
+        const rto = gridRow('RTO Policy');
+        expect(rto.querySelector('.evidence-badge-verified')).toBeNull();
+        expect(rto.querySelector('.evidence-badge-profile')).toHaveTextContent('Profile data');
+        expect(screen.getByTestId('profile-differs-rto_policy')).toHaveTextContent('Differs from the sourced value');
+    });
+
+    test('Accelerated Vesting shows its stale and conflicting state in the grid', async () => {
+        mockProvenance(() => ok(payload({
+            fields: [field('accelerated_vesting', {status: 'stale', stale: true, review: 'conflicted'})],
+            unverified_fields: [], pending_review: [],
+        })));
+        open();
+        await screen.findByTestId('coverage-summary');
+        const vesting = gridRow('Accelerated Vesting');
+        expect(vesting.querySelector('.evidence-badge-stale')).toHaveTextContent('Stale');
+        expect(vesting.querySelector('.evidence-badge-conflicted')).toHaveTextContent('Conflicting observation');
+    });
+
+    test('Accelerated Vesting without evidence falls back to Profile data and matches boolean-ish evidence values', async () => {
+        mockProvenance(() => ok(payload({fields: [], unverified_fields: ['accelerated_vesting']})));
+        open();
+        await screen.findByTestId('coverage-summary');
+        expect(gridRow('Accelerated Vesting').querySelector('.evidence-badge-profile')).not.toBeNull();
+    });
+
+    test('evidence values true/false compare equal to Yes/No', async () => {
+        mockProvenance(() => ok(payload({
+            fields: [field('accelerated_vesting', {value: 'false'})], unverified_fields: [], pending_review: [],
+        })));
+        open();
+        await screen.findByTestId('coverage-summary');
+        expect(gridRow('Accelerated Vesting').querySelector('.evidence-badge-verified')).not.toBeNull();
+    });
+
+    test('evidence value true matches a Yes profile value', async () => {
+        mockProvenance(() => ok(payload({
+            fields: [field('accelerated_vesting', {value: 'true'})], unverified_fields: [], pending_review: [],
+        })));
+        open({organization: {...organization, accelerated_vesting: true}});
+        await screen.findByTestId('coverage-summary');
+        expect(gridRow('Accelerated Vesting').querySelector('.evidence-badge-verified')).not.toBeNull();
     });
 
     test('the profile grid derives status from stale when the payload has no status', async () => {

@@ -31,7 +31,7 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
             const beta = list.getByRole('button', {name: 'View details for E2E Beta Labs'}).locator('visible=true').first();
             await expect(beta).toContainText('2 of 2');
             await expect(beta).toContainText('Stale');
-            await expect(beta).toContainText('0 of 7 verified · 2 stale · 5 unknown');
+            await expect(beta).toContainText('0 verified · 2 stale · 5 unknown');
             await expect(beta).toContainText('Pending review');
             const gamma = list.getByRole('button', {name: 'View details for E2E Gamma Works'}).locator('visible=true').first();
             await expect(gamma).toContainText('1 of 2');
@@ -54,7 +54,7 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
         test('the dialog separates coverage, stale facts and pending review', async ({page}) => {
             const dialog = await openDialog(page, 'E2E Beta Labs');
             await expect(dialog.getByTestId('coverage-summary')).toBeVisible();
-            await expect(dialog.getByTestId('rating-coverage')).toContainText('2 of 2');
+            await expect(dialog.getByTestId('coverage-rating')).toContainText('2 of 2');
             await expect(dialog.getByTestId('last-updated')).toBeVisible();
             await expect(dialog.getByText('Editing the record does not re-verify facts')).toBeVisible();
             await expect(dialog.getByTestId('field-stale-rto_policy')).toBeVisible();
@@ -98,3 +98,45 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
         });
     });
 }
+
+for (const [width, height] of [[1280, 900], [375, 800], [320, 800]] as const) {
+    test(`the details dialog never scrolls apart and fits the viewport at ${width}px`, async ({page}) => {
+        await page.setViewportSize({width, height});
+        const dialog = await openDialog(page, 'E2E Beta Labs');
+        await expect(dialog.getByTestId('coverage-summary')).toBeVisible();
+        const overlay = page.getByTestId('popup-overlay');
+        const metrics = () => overlay.evaluate((el) => {
+            const box = el.querySelector('[role="dialog"]')!.getBoundingClientRect();
+            return {
+                scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight,
+                top: box.top, bottom: box.bottom, innerHeight: window.innerHeight,
+            };
+        });
+        const before = await metrics();
+        expect(before.scrollHeight).toBe(before.clientHeight);
+        expect(before.bottom).toBeLessThanOrEqual(before.innerHeight);
+
+        await page.mouse.move(4, Math.round(height / 2));
+        await page.mouse.wheel(0, 900);
+        await page.mouse.move(Math.round(width / 2), 55);
+        await page.mouse.wheel(0, 900);
+        await dialog.getByRole('button', {name: 'Close'}).focus();
+        for (let i = 0; i < 3; i++) {
+            await page.keyboard.press('PageDown');
+        }
+        const after = await metrics();
+        expect(after.scrollTop).toBe(0);
+        expect(after.top).toBe(before.top);
+        expect(after.bottom).toBeLessThanOrEqual(after.innerHeight);
+    });
+}
+
+test('a Retry button stays fully inside the viewport at 320px', async ({page}) => {
+    await page.setViewportSize({width: 320, height: 800});
+    await page.route('**/api/organizations/*/provenance/', route => route.abort());
+    const dialog = await openDialog(page, 'E2E Beta Labs');
+    const retry = dialog.getByRole('button', {name: 'Retry'});
+    await retry.focus();
+    const box = (await retry.boundingBox())!;
+    expect(box.y + box.height + 5).toBeLessThanOrEqual(800);
+});
