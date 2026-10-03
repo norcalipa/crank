@@ -252,6 +252,25 @@ describe('details dialog overlay CSS (#473a)', () => {
         expect(rules('.popup-details .card-body').join('\n')).toMatch(/position:\s*relative/);
     });
 
+    test('popup-overlay has exactly one consumer: the details popup', () => {
+        const roots = [path.resolve(__dirname, '..'), path.resolve(__dirname, '../../../templates')];
+        const users: string[] = [];
+        const walk = (dir: string) => {
+            for (const entry of fs.readdirSync(dir, {withFileTypes: true})) {
+                const full = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    walk(full);
+                } else if (/\.(tsx?|html)$/.test(entry.name) && !/\.test\./.test(entry.name)) {
+                    if (fs.readFileSync(full, 'utf8').includes('popup-overlay')) {
+                        users.push(path.basename(full));
+                    }
+                }
+            }
+        };
+        roots.forEach(walk);
+        expect(users).toEqual(['OrganizationDetailsPopup.tsx']);
+    });
+
     test('the dialog height accounts for the overlay top gap', () => {
         const dialog = rules('.popup-details').join('\n');
         expect(dialog).toContain('var(--popup-gap-top');
