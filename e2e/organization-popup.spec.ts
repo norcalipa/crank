@@ -41,6 +41,50 @@ async function scrollWindowTo(page: Page, top: number, message?: string): Promis
     ).toBe(top);
 }
 
+const LONG_SOURCE = 'https://a-very-long-source-domain-name-that-keeps-going-and-going-for-overflow-checks.example.com/careers/jobs/2026/remote-first-policy-announcement-with-an-extremely-long-path';
+const LONG_VALUE = 'Hybrid three days in office with an extremely long qualifying clause that must wrap rather than overflow the narrow dialog at three hundred twenty pixels';
+
+const iso = (daysAgo: number) => new Date(Date.now() - daysAgo * 86400000).toISOString();
+
+function provenanceStub(kind: 'populated' | 'stale' | 'pending' | 'long') {
+    const field = (key: string, value: string, extra: Record<string, unknown> = {}) => ({
+        field_key: key, value, source_domain: 'acme.example', source_url: 'https://acme.example/careers',
+        observed_at: iso(3), scope: {}, last_checked_at: iso(2), last_successful_fetch_at: iso(2),
+        last_changed_at: iso(30), last_verified_at: iso(2), stale: false, status: 'verified', review: 'none',
+        agrees_with_displayed: true, policy_days: 90, ...extra,
+    });
+    const base = {
+        organization_id: 1, organization_modified: iso(1), organization_created: iso(400), latest_observation: null,
+        evidence_schema: 2, unverified_fields: [], pending_review: [] as unknown[],
+        summary: {verified: 2, stale: 0, unknown: 5, total: 7, fact_coverage: 2, last_verified_at: iso(2), pending_review: 0},
+    };
+    if (kind === 'stale') {
+        return {...base, fields: [field('rto_policy', 'Hybrid', {stale: true, status: 'stale', last_verified_at: iso(200)})],
+            summary: {...base.summary, verified: 0, stale: 1, fact_coverage: 1, last_verified_at: iso(200)}};
+    }
+    if (kind === 'pending') {
+        const claim = (value: string, domain: string, review: string, days: number) =>
+            ({field_key: 'rto_policy', review, observed_at: iso(days), source_domain: domain, observed_value: value});
+        return {...base, fields: [field('rto_policy', 'Hybrid')],
+            pending_review: [claim('Remote', 'one.example', 'pending', 1), claim('On-site', 'two.example', 'conflicted', 2)],
+            summary: {...base.summary, pending_review: 2}};
+    }
+    if (kind === 'long') {
+        return {...base, fields: [field('rto_policy', LONG_VALUE, {source_domain: LONG_SOURCE.replace('https://', '').split('/')[0], source_url: LONG_SOURCE})],
+            pending_review: [{field_key: 'rto_policy', review: 'pending', observed_at: iso(1), source_domain: 'x.example', observed_value: LONG_VALUE}]};
+    }
+    return {...base, fields: [field('rto_policy', 'Hybrid'), field('accelerated_vesting', 'true')]};
+}
+
+async function stubProvenance(page: Page, kind: 'populated' | 'stale' | 'pending' | 'long'): Promise<void> {
+    await page.route('**/api/organizations/*/provenance/', route =>
+        route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(provenanceStub(kind))}));
+}
+
+test.beforeEach(async ({page}) => {
+    await stubProvenance(page, 'populated');
+});
+
 test.describe('company details dialog layering (issue #464) — desktop', () => {
     test.use({viewport: {width: 1280, height: 800}});
 
@@ -450,5 +494,75 @@ test.describe('company details dialog layering (issue #464) — mobile', () => {
         expect(released.inert).toBe(false);
         expect(released.overflow).toEqual(overflowBefore);
         await scrollWindowTo(page, 150, 'sanity: the document scrolls again after the close');
+    });
+});
+
+test.describe('evidence states in the details dialog (#473a, fixture tier)', () => {
+    test.use({viewport: {width: 1280, height: 800}});
+
+    test('populated state shows rating coverage and verified facts', async ({page}) => {
+        await page.goto(POPUP_FIXTURE);
+        await openDetailsDialog(page);
+        const dialog = page.getByRole('dialog');
+        await expect(dialog.getByTestId('rating-coverage')).toContainText('5 of 5');
+        await expect(dialog.getByTestId('coverage-summary')).toBeVisible();
+    });
+
+    test('stale state labels the fact as stale', async ({page}) => {
+        await stubProvenance(page, 'stale');
+        await page.goto(POPUP_FIXTURE);
+        await openDetailsDialog(page);
+        await expect(page.getByRole('dialog').getByTestId('field-stale-rto_policy')).toBeVisible();
+    });
+
+    test('pending state lists every open claim with its own source', async ({page}) => {
+        await stubProvenance(page, 'pending');
+        await page.goto(POPUP_FIXTURE);
+        await openDetailsDialog(page);
+        const dialog = page.getByRole('dialog');
+        await expect(dialog).toContainText('Remote');
+        await expect(dialog).toContainText('one.example');
+        await expect(dialog).toContainText('On-site');
+        await expect(dialog).toContainText('two.example');
+    });
+
+    test('the failure state keeps rating coverage visible', async ({page}) => {
+        await page.route('**/api/organizations/*/provenance/', route => route.fulfill({status: 500, body: 'no'}));
+        await page.goto(POPUP_FIXTURE);
+        await openDetailsDialog(page);
+        await expect(page.getByRole('dialog').getByTestId('rating-coverage')).toContainText('of');
+    });
+
+    test('rows and cards expose their evidence summary as the accessible description', async ({page, browserName}) => {
+        test.skip(browserName !== 'chromium', 'CDP accessibility tree is Chromium-only');
+        await page.goto(POPUP_FIXTURE);
+        const row = page.locator('tr.organization-row').first();
+        await expect(row).toHaveAttribute('aria-describedby', /organization-summary-\d+/);
+        const client = await page.context().newCDPSession(page);
+        const {nodes} = await client.send('Accessibility.getFullAXTree');
+        const described = nodes.filter((n: any) => n.role?.value === 'row' || n.role?.value === 'button')
+            .filter((n: any) => /Rating coverage \d+ of \d+/.test(n.description?.value ?? ''));
+        expect(described.length).toBeGreaterThan(0);
+    });
+});
+
+test.describe('evidence states at 320px (#473a, fixture tier)', () => {
+    test.use({viewport: {width: 320, height: 640}});
+
+    test('long source and value text wraps without horizontal overflow', async ({page}) => {
+        await stubProvenance(page, 'long');
+        await page.goto(POPUP_FIXTURE);
+        await openDetailsDialog(page);
+        const dialog = page.getByRole('dialog');
+        await expect(dialog).toContainText('extremely long qualifying clause');
+        const overflow = await page.evaluate(() => {
+            const body = document.querySelector('.popup-details .card-body') as HTMLElement;
+            return {
+                body: body.scrollWidth - body.clientWidth,
+                page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+            };
+        });
+        expect(overflow.body).toBeLessThanOrEqual(1);
+        expect(overflow.page).toBeLessThanOrEqual(1);
     });
 });
