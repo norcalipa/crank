@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 
 import * as React from 'react';
 
@@ -57,6 +57,12 @@ describe('OrganizationDetailsPopup', () => {
                             extraction_version: 'v1.2.3',
                             status: 'auto_applied',
                         },
+                        fields: [{
+                            field_key: 'rto_policy', state: 'accepted', value: 'Remote first', source_domain: 'example.com',
+                            observed_at: '2025-01-10T12:00:00Z', scope: {}, last_checked_at: null,
+                            last_successful_fetch_at: null, last_changed_at: null,
+                            last_verified_at: '2025-01-10T12:00:00Z', stale: false,
+                        }],
                     }),
                 });
             }
@@ -745,7 +751,7 @@ describe('OrganizationDetailsPopup', () => {
         expect(screen.getByTestId('last-updated')).toBeInTheDocument();
         expect(screen.getByTestId('added-to-catalog')).toBeInTheDocument();
         expect(screen.getByTestId('observation-details')).toBeInTheDocument();
-        expect(screen.getByText('example.com')).toBeInTheDocument();
+        expect(within(screen.getByTestId('observation-details')).getByText('example.com')).toBeInTheDocument();
         expect(screen.getByText('v1.2.3')).toBeInTheDocument();
         expect(screen.getByText('auto_applied')).toBeInTheDocument();
     });

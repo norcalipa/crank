@@ -768,7 +768,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             <div className="card-body">
                                 <h2 className="h5 organization-card-name" title={org.name}>{org.name}</h2>
                                 <div className="organization-card-score">
-                                    <span className="organization-card-label">{scoreLabel}</span>
+                                    <span className="organization-card-label">Company score{currentPreset && <span className="visually-hidden"> ({currentPreset.name})</span>}</span>
                                     #{org.ranking} · {org.avg_score.toFixed(2)}
                                 </div>
                                 <div>
@@ -784,7 +784,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                                     {choiceLabel(fundingRoundChoices, org.funding_round)}
                                 </div>
                                 <div className="organization-card-evidence">
-                                    <span className="visually-hidden">Evidence</span>
+                                    <span className="organization-card-label">Facts</span>
                                     <EvidenceSummary evidence={org.evidence} variant="card"/>
                                 </div>
                             </div>

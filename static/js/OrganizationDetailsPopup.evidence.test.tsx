@@ -86,7 +86,66 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
             summary: {verified: 0, stale: 0, unknown: 7, total: 7, fact_coverage: 0, last_verified_at: null, pending_review: 0}})));
         open({isAuthenticated: true});
         expect(await screen.findByTestId('evidence-empty')).toBeInTheDocument();
-        expect(screen.getByTestId('evidence-empty-action')).toHaveTextContent('Suggest a correction');
+        expect(screen.getByTestId('evidence-empty-action')).toHaveTextContent('Suggest a value');
+        expect(screen.queryByTestId('suggest-correction-link')).toBeNull();
+    });
+
+    const gridRow = (label: string) => Array.from(screen.getByTestId('popup-details-grid').querySelectorAll('.row'))
+        .find(row => row.textContent?.startsWith(label)) as HTMLElement;
+
+    test('the profile grid shows no status until evidence loads, then follows the field evidence', async () => {
+        mockProvenance(() => ok(payload({
+            fields: [field('rto_policy', {status: 'stale', stale: true, review: 'conflicted'}),
+                field('funding_round')],
+            unverified_fields: [],
+        })));
+        open();
+        expect(gridRow('RTO Policy').querySelector('.evidence-badge')).toBeNull();
+        await screen.findByTestId('coverage-summary');
+        const rto = gridRow('RTO Policy');
+        expect(rto.querySelector('.evidence-badge-stale')).toHaveTextContent('Stale');
+        expect(rto.querySelector('.evidence-badge-conflicted')).toHaveTextContent('Conflicting observation');
+        expect(gridRow('Funding Round').querySelector('.evidence-badge-verified')).toHaveTextContent('Verified');
+        expect(screen.getByTestId('popup-details-grid').querySelector('.evidence-badge-profile')).toBeNull();
+    });
+
+    test('the profile grid falls back to Profile data, with a pending marker, for fields without evidence', async () => {
+        mockProvenance(() => ok(payload({
+            fields: [field('public_status')],
+            unverified_fields: ['rto_policy', 'funding_round'],
+            pending_review: [{field_key: 'funding_round', review: 'pending', observed_at: '2025-03-01T00:00:00Z',
+                source_domain: 'x.example', observed_value: 'Series A'}],
+        })));
+        open();
+        await screen.findByTestId('coverage-summary');
+        expect(gridRow('RTO Policy').querySelector('.evidence-badge-profile')).toHaveTextContent('Profile data');
+        const funding = gridRow('Funding Round');
+        expect(funding.querySelector('.evidence-badge-profile')).not.toBeNull();
+        expect(funding.querySelector('.evidence-badge-pending')).toHaveTextContent('Pending review');
+    });
+
+    test('the profile grid derives status from stale when the payload has no status', async () => {
+        mockProvenance(() => ok(payload({
+            fields: [field('rto_policy', {status: undefined, stale: true, review: undefined}),
+                field('funding_round', {status: undefined})],
+            unverified_fields: [], pending_review: [],
+        })));
+        open();
+        await screen.findByTestId('coverage-summary');
+        expect(gridRow('RTO Policy').querySelector('.evidence-badge-stale')).not.toBeNull();
+        expect(gridRow('Funding Round').querySelector('.evidence-badge-verified')).not.toBeNull();
+    });
+
+    test('the no-observation note drops the curated-data claim when evidence exists', async () => {
+        mockProvenance(() => ok(payload()));
+        open();
+        expect(await screen.findByTestId('no-observation')).toHaveTextContent(/^No crawl observations recorded\.$/);
+    });
+
+    test('the no-observation note keeps the curated-data sentence with no evidence', async () => {
+        mockProvenance(() => ok(emptyPayload()));
+        open();
+        expect(await screen.findByTestId('no-observation')).toHaveTextContent('Data is curated from submitted reviews.');
     });
 
     test('a failed provenance request shows an alert with Retry that refetches', async () => {

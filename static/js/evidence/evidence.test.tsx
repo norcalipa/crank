@@ -82,15 +82,24 @@ describe('EvidenceSummary', () => {
         const root = screen.getByTestId('evidence-summary');
         expect(root).toHaveClass('evidence-summary-card');
         expect(root.querySelector('.evidence-badge-stale')).toHaveTextContent('Stale');
-        expect(screen.getByTestId('evidence-facts')).toHaveTextContent('0 verified · 2 stale · 5 unknown');
+        expect(screen.getByTestId('evidence-facts')).toHaveTextContent('0 of 7 verified · 2 stale · 5 unknown');
         expect(screen.getByTestId('evidence-last-verified')).toHaveTextContent('Last verified Aug 8, 2024');
     });
 
-    test('verified with a pending marker', () => {
+    test('a partly verified profile leads with counts, never a Verified verdict', () => {
         render(<EvidenceSummary evidence={{...base, verified: 3, unknown: 4, fact_coverage: 3,
             last_verified_at: '2025-01-01T00:00:00Z', pending_review: 1}}/>);
-        expect(screen.getByTestId('evidence-summary').querySelector('.evidence-badge-verified')).toHaveTextContent('Verified');
+        const root = screen.getByTestId('evidence-summary');
+        expect(root.querySelector('.evidence-badge-verified')).toBeNull();
+        expect(root.querySelector('.evidence-badge-unknown')).toBeNull();
+        expect(screen.getByTestId('evidence-facts')).toHaveTextContent('3 of 7 verified · 0 stale · 4 unknown');
         expect(screen.getByTestId('evidence-pending')).toHaveTextContent('Pending review');
+    });
+
+    test('every fact verified reads Verified', () => {
+        render(<EvidenceSummary evidence={{...base, verified: 7, unknown: 0, fact_coverage: 7,
+            last_verified_at: '2025-01-01T00:00:00Z'}}/>);
+        expect(screen.getByTestId('evidence-summary').querySelector('.evidence-badge-verified')).toHaveTextContent('Verified');
     });
 
     test('never verified', () => {

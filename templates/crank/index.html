@@ -26,16 +26,22 @@
                         <dt>Fact coverage</dt>
                         <dd>How many of the 7 tracked facts (RTO policy, funding round, public status, accelerated vesting, locations, company name and company domain) have accepted evidence.</dd>
                         <dt>Freshness</dt>
-                        <dd>"Last verified" is the most recent date a source was re-checked and still supported an accepted fact. Editing the company record does not re-verify facts. Each fact has its own re-check window: RTO policy 90 days, funding round, public status and locations 180 days, accelerated vesting, company name and company domain 365 days.</dd>
+                        <dd>"Last verified" is the most recent date a source was re-checked and still supported an accepted fact. Editing the company record does not re-verify facts. Each fact has its own re-check window:
+                            <ul class="list-unstyled mb-0 evidence-legend-windows">
+                                <li>RTO policy: 90 days</li>
+                                <li>Funding round, public status and locations: 180 days</li>
+                                <li>Accelerated vesting, company name and company domain: 365 days</li>
+                            </ul>
+                        </dd>
                         <dt>Evidence status</dt>
                         <dd>
                             <ul class="evidence-legend list-unstyled mb-0" data-testid="evidence-legend">
-                                <li><strong>&#10003; Verified</strong>: accepted and re-checked within its window.</li>
-                                <li><strong>! Stale</strong>: accepted, but not re-checked within its window.</li>
-                                <li><strong>? Unknown</strong>: no accepted evidence yet.</li>
-                                <li><strong>&bull; Profile data</strong>: a curated profile value without field-level evidence.</li>
-                                <li><strong>&hellip; Pending review</strong>: an observation is waiting for review and is not verified.</li>
-                                <li><strong>&#9888; Conflicting observation</strong>: a later observation disagrees and is not verified.</li>
+                                <li><span class="evidence-badge evidence-badge-verified"><span class="evidence-badge-marker" aria-hidden="true">&#10003;</span> Verified</span>: accepted and re-checked within its window.</li>
+                                <li><span class="evidence-badge evidence-badge-stale"><span class="evidence-badge-marker" aria-hidden="true">!</span> Stale</span>: accepted, but not re-checked within its window.</li>
+                                <li><span class="evidence-badge evidence-badge-unknown"><span class="evidence-badge-marker" aria-hidden="true">?</span> Unknown</span>: no accepted evidence yet.</li>
+                                <li><span class="evidence-badge evidence-badge-profile"><span class="evidence-badge-marker" aria-hidden="true">&bull;</span> Profile data</span>: a curated profile value without field-level evidence.</li>
+                                <li><span class="evidence-badge evidence-badge-pending"><span class="evidence-badge-marker" aria-hidden="true">&hellip;</span> Pending review</span>: an observation is waiting for review and is not verified.</li>
+                                <li><span class="evidence-badge evidence-badge-conflicted"><span class="evidence-badge-marker" aria-hidden="true">&#9888;&#xFE0E;</span> Conflicting observation</span>: a later observation disagrees and is not verified.</li>
                             </ul>
                         </dd>
                     </dl>

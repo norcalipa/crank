@@ -89,18 +89,22 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
         renderFieldAction ? renderFieldAction(key, verb, joiner) : null;
     return (
         <div data-testid="evidence-details">
-            <div className="evidence-coverage mt-2" data-testid="coverage-summary">
+            <div className="evidence-coverage mt-3" data-testid="coverage-summary">
                 {ratingCoverage && (
-                    <div data-testid="coverage-rating">
-                        <span className="fw-bold">Rating coverage:</span>{' '}
-                        {ratingCoverage.covered} of {ratingCoverage.total} rating dimensions
+                    <div className="row mb-2" data-testid="coverage-rating">
+                        <div className="col-5 text-end fw-bold">Rating coverage:</div>
+                        <div className="col-7">{ratingCoverage.covered} of {ratingCoverage.total} rating dimensions</div>
                     </div>
                 )}
                 {summary && (
-                    <div data-testid="coverage-facts">
-                        <span className="fw-bold">Fact coverage:</span>{' '}
-                        {summary.fact_coverage} of {summary.total} tracked facts
-                        {' '}({summary.verified} verified · {summary.stale} stale · {summary.unknown} unknown)
+                    <div className="row mb-2" data-testid="coverage-facts">
+                        <div className="col-5 text-end fw-bold">Fact coverage:</div>
+                        <div className="col-7">
+                            {summary.fact_coverage} of {summary.total} tracked facts
+                            <span className="d-block small text-muted">
+                                {summary.verified} verified · {summary.stale} stale · {summary.unknown} unknown
+                            </span>
+                        </div>
                     </div>
                 )}
             </div>
@@ -146,14 +150,16 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                                             Source: <SourceText field={field}/>
                                         </span>
                                         <span className="text-muted small evidence-meta">
-                                            Observed {formatEvidenceDate(field.observed_at)} ·{' '}
-                                            <span className="text-nowrap">
-                                                Last verified {field.last_verified_at
-                                                    ? formatEvidenceDate(field.last_verified_at)
-                                                    : 'never'}
-                                            </span>
-                                            {field.policy_days ? ` · Re-check every ${field.policy_days} days` : ''}
+                                            Observed {formatEvidenceDate(field.observed_at)}
                                         </span>
+                                        <span className="text-muted small evidence-meta">
+                                            <span className="text-nowrap">Last verified {field.last_verified_at
+                                                ? formatEvidenceDate(field.last_verified_at)
+                                                : 'never'}</span>
+                                        </span>
+                                        {field.policy_days ? (
+                                            <span className="text-muted small evidence-meta">Re-check every {field.policy_days} days</span>
+                                        ) : null}
                                         {scope && <span className="text-muted small evidence-meta">{scope}</span>}
                                         <details className="evidence-timestamps small">
                                             <summary>
@@ -201,11 +207,11 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                     <p className="text-muted small mb-2">
                         Observed but not accepted. These are not verified and do not change the facts above.
                     </p>
-                    <ul className="list-unstyled mb-0">
-                        {pending.map(item => (
-                            <li className="evidence-pending-item mb-2" key={item.field_key}
-                                data-testid={`pending-review-${item.field_key}`}>
-                                <span className="fw-bold">{fieldKeyLabel(item.field_key)}</span>{' '}
+                    {pending.map(item => (
+                        <div className="row mb-2 evidence-pending-item" key={item.field_key}
+                             data-testid={`pending-review-${item.field_key}`}>
+                            <div className="col-5 text-end fw-bold">{fieldKeyLabel(item.field_key)}:</div>
+                            <div className="col-7">
                                 <EvidenceBadge status={item.review}/>
                                 <span className="d-block small text-muted">
                                     Observed {formatEvidenceDate(item.observed_at)} ·{' '}
@@ -216,9 +222,9 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                                         Observed, not verified: “{item.observed_value}”
                                     </span>
                                 )}
-                            </li>
-                        ))}
-                    </ul>
+                            </div>
+                        </div>
+                    ))}
                 </div>
             )}
         </div>

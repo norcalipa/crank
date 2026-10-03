@@ -3,7 +3,7 @@
 import * as React from 'react';
 import {createPortal} from 'react-dom';
 import {lockBackground, unlockBackground} from './modalIsolation';
-import {fieldKeyLabel} from './labels';
+import {EvidenceStatusKey, fieldKeyLabel} from './labels';
 import EvidenceBadge from './evidence/EvidenceBadge';
 import EvidenceDetails, {EvidenceData, EvidenceSkeleton} from './evidence/EvidenceDetails';
 import {setCachedProvenance} from './provenanceCache';
@@ -356,16 +356,33 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         <button type="button" className="btn btn-sm btn-primary evidence-empty-action"
                 data-testid="evidence-empty-action"
                 onClick={() => openCorrection('company_details')}>
-            Suggest a correction
+            Suggest a value
         </button>
     ) : (
         companySignInUrl(signInUrlTemplate, organization.id) && (
             <a href={companySignInUrl(signInUrlTemplate, organization.id) as string}
                className="btn btn-sm btn-primary evidence-empty-action" data-testid="evidence-empty-action">
-                Sign in to suggest a source
+                Sign in to suggest a value
             </a>
         )
     );
+
+    // One source of truth per field: once evidence has loaded, the profile grid
+    // shows the field's evidence status; before that it makes no claim.
+    const profileFieldBadges = (key: 'funding_round' | 'rto_policy', label: string) => {
+        if (!provenance) return null;
+        const row = provenance.fields?.find(item => item.field_key === key);
+        const status: EvidenceStatusKey = row ? (row.status || (row.stale ? 'stale' : 'verified')) : 'profile';
+        const pendingItem = provenance.pending_review?.find(item => item.field_key === key);
+        const review = row?.review && row.review !== 'none' ? row.review : pendingItem?.review ?? null;
+        return (
+            <>
+                {' '}
+                <EvidenceBadge status={status} fieldLabel={label} lastVerifiedAt={row?.last_verified_at}/>
+                {review && <>{' '}<EvidenceBadge status={review}/></>}
+            </>
+        );
+    };
 
     // Map funding round codes to display names
     const fundingRoundMap: Record<string, string> = {
@@ -503,11 +520,11 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                             </div>
                             <div className="row mb-3">
                                 <div className="col-5 text-end fw-bold">Funding Round:</div>
-                                <div className="col-7">{fundingRoundMap[organization.funding_round]}{' '}<EvidenceBadge status="profile"/></div>
+                                <div className="col-7">{fundingRoundMap[organization.funding_round]}{profileFieldBadges('funding_round', 'Funding Round')}</div>
                             </div>
                             <div className="row mb-3">
                                 <div className="col-5 text-end fw-bold">RTO Policy:</div>
-                                <div className="col-7">{rtoPolicyMap[organization.rto_policy]}{' '}<EvidenceBadge status="profile"/></div>
+                                <div className="col-7">{rtoPolicyMap[organization.rto_policy]}{profileFieldBadges('rto_policy', 'RTO Policy')}</div>
                             </div>
                             {organization.gives_ratings !== undefined && (
                                 <div className="row mb-3">
@@ -616,7 +633,12 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                             )}
                                         </div>
                                     ) : (
-                                        <p className="text-muted small mb-2" data-testid="no-observation">No crawl observations recorded. Data is curated from submitted reviews.</p>
+                                        <div className="row mb-2">
+                                            <p className="col-7 offset-5 text-muted small mb-0" data-testid="no-observation">
+                                                No crawl observations recorded.
+                                                {(provenance.fields?.length ?? 0) === 0 && ' Data is curated from submitted reviews.'}
+                                            </p>
+                                        </div>
                                     )}
                                     <EvidenceDetails
                                         evidence={provenance}
@@ -624,7 +646,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                         renderFieldAction={fieldCorrectionButton}
                                         emptyAction={emptyAction}
                                     />
-                                    {isAuthenticated && (
+                                    {isAuthenticated && (provenance.fields?.length ?? 0) > 0 && (
                                         <div className="mt-2" data-testid="correction-action">
                                             <button type="button"
                                                     className="btn btn-sm btn-outline-light"
@@ -652,7 +674,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                     )}
                                 </div>
                             ) : (
-                                <div className="evidence-unavailable" role="alert" data-testid="provenance-unavailable">
+                                <div className="alert alert-warning evidence-unavailable mb-0" role="alert" data-testid="provenance-unavailable">
                                     <p className="mb-2">Evidence unavailable — try again</p>
                                     <button type="button" className="btn btn-outline-light evidence-retry"
                                             data-testid="provenance-retry"

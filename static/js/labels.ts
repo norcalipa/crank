@@ -34,7 +34,7 @@ export const EVIDENCE_STATUS_META: Record<EvidenceStatusKey, EvidenceStatusMeta>
     unknown: {label: 'Unknown', marker: '?', meaning: 'No accepted evidence for this fact.'},
     profile: {label: 'Profile data', marker: '•', meaning: 'Curated profile value without field-level evidence.'},
     pending: {label: 'Pending review', marker: '…', meaning: 'An observation is waiting for review. Not verified.'},
-    conflicted: {label: 'Conflicting observation', marker: '⚠', meaning: 'A later observation disagrees. Not verified.'},
+    conflicted: {label: 'Conflicting observation', marker: '\u26A0\uFE0E', meaning: 'A later observation disagrees. Not verified.'},
 };
 
 export interface EvidenceSummaryData {
