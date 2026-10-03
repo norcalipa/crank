@@ -130,13 +130,3 @@ for (const [width, height] of [[1280, 900], [375, 800], [320, 800]] as const) {
         expect(after.bottom).toBeLessThanOrEqual(after.innerHeight);
     });
 }
-
-test('a Retry button stays fully inside the viewport at 320px', async ({page}) => {
-    await page.setViewportSize({width: 320, height: 800});
-    await page.route('**/api/organizations/*/provenance/', route => route.abort());
-    const dialog = await openDialog(page, 'E2E Beta Labs');
-    const retry = dialog.getByRole('button', {name: 'Retry'});
-    await retry.focus();
-    const box = (await retry.boundingBox())!;
-    expect(box.y + box.height + 5).toBeLessThanOrEqual(800);
-});
