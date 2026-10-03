@@ -82,7 +82,7 @@ describe('EvidenceBadge', () => {
         // announcement, a section heading naming a different noun). Anything
         // new must be added here deliberately.
         const allowed: Record<string, string[]> = {
-            'CompanyCorrectionForm.tsx': ['Verified', 'Stale', 'Pending review'],
+            'CompanyCorrectionForm.tsx': ['Stale', 'Pending review'],
         };
         const patterns = labels.map(label => ({
             label,

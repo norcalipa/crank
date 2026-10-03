@@ -402,11 +402,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         const sameProfileValue = shownValue !== undefined && provenance.displayed_values?.[key] === shownValue;
         const agreeing = row?.agrees_with_displayed === true && sameProfileValue ? row : undefined;
         const status: EvidenceStatusKey = agreeing ? (agreeing.status || (agreeing.stale ? 'stale' : 'verified')) : 'profile';
-        const claims = provenance.pending_review?.filter(item => item.field_key === key) ?? [];
-        const claimReview = claims.some(item => item.review === 'conflicted')
-            ? 'conflicted' as const
-            : claims.length > 0 ? 'pending' as const : null;
-        const review = row?.review && row.review !== 'none' ? row.review : claimReview;
+        const review = provenance.review_by_field?.[key] ?? null;
         return (
             <>
                 {' '}

@@ -75,6 +75,29 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
             await expect(dialog.getByTestId('field-source-link-rto_policy')).toBeVisible();
         });
 
+        test('the grid badges follow the real provenance response, not a stub', async ({page}) => {
+            const provenance = page.waitForResponse(res => /\/api\/organizations\/\d+\/provenance\/$/.test(res.url()));
+            const dialog = await openDialog(page, 'E2E Beta Labs');
+            const data = await (await provenance).json();
+            const byKey = Object.fromEntries(data.fields.map((f: {field_key: string}) => [f.field_key, f]));
+            // The contract the grid depends on: the server's display label is the label the dialog renders.
+            expect(data.displayed_values.rto_policy).toBe('Hybrid');
+            expect(byKey.rto_policy.agrees_with_displayed).toBe(true);
+            expect(byKey.funding_round.agrees_with_displayed).toBe(false);
+
+            const grid = dialog.getByTestId('popup-details-grid');
+            const rto = grid.locator('.row').filter({hasText: 'RTO Policy'});
+            await expect(rto).toContainText('Hybrid');
+            await expect(rto).toContainText('Stale');
+            await expect(rto).toContainText('Conflicting observation');
+            await expect(rto).not.toContainText('Profile data');
+            const funding = grid.locator('.row').filter({hasText: 'Funding Round'});
+            await expect(funding).toContainText('Profile data');
+            await expect(funding.getByTestId('profile-differs-funding_round')).toContainText('Sourced value: \u201cSeries B\u201d');
+            await expect(funding).not.toContainText('Verified');
+            await expect(funding).not.toContainText('Stale');
+        });
+
         test('an organization with no evidence explains it', async ({page}) => {
             const dialog = await openDialog(page, 'E2E Gamma Works');
             await expect(dialog.getByTestId('evidence-empty')).toBeVisible();
