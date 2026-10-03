@@ -50,7 +50,8 @@ from urllib.parse import urlsplit
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Count, Q
+from django.db.models import Count, F, Q, Window
+from django.db.models.functions import RowNumber
 from django.utils import timezone
 
 from crank.models.company_request import normalize_public_url
@@ -873,12 +874,12 @@ def reject_claim(
                 fresh.organization_id, fresh.field_key, fresh.value_text, now,
                 exclude_pk=fresh.pk,
             )
-            publication.record_event(
-                target_type=PublicationEvent.TargetType.ORGANIZATION,
-                target_id=fresh.organization_id,
-                event_kind=PublicationEvent.EventKind.CHANGED,
-                payload={"status": "retracted"},
-            )
+        publication.record_event(
+            target_type=PublicationEvent.TargetType.ORGANIZATION,
+            target_id=fresh.organization_id,
+            event_kind=PublicationEvent.EventKind.CHANGED,
+            payload={"status": "retracted" if retracted else "rejected"},
+        )
         fresh.state = State.REJECTED
         fresh.last_checked_at = now
         fresh.save()
@@ -1013,6 +1014,12 @@ def queue_legacy_claim(row: CompanyFieldEvidence, *, now: datetime | None = None
             # One open claim per (organization, field, page): a page that
             # already has one (for this value or another) is not re-stated.
             return None
+        publication.record_event(
+            target_type=PublicationEvent.TargetType.ORGANIZATION,
+            target_id=fresh.organization_id,
+            event_kind=PublicationEvent.EventKind.CHANGED,
+            payload={"status": "claim_queued"},
+        )
         return CompanyFieldEvidence.objects.create(
             organization_id=fresh.organization_id,
             field_key=fresh.field_key,
@@ -1120,19 +1127,24 @@ def resolve_field_evidence(organization) -> dict[str, CompanyFieldEvidence]:
     return resolved
 
 
-def resolve_field_evidence_for_orgs(organization_ids):
+def resolve_field_evidence_for_orgs(organization_ids, *, summary_only: bool = False):
     """Return accepted evidence per field key per organization in one query.
 
     The bulk counterpart of :func:`resolve_field_evidence`, used by match
     ranking to avoid an N+1 (issue #467). Only rows in state ``accepted`` are
     returned; when a race left two accepted rows for one field, the newest
-    ``observed_at`` wins deterministically.
+    ``observed_at`` wins deterministically. ``summary_only`` defers the text
+    columns for callers that only count (the rankings summaries).
     """
     if not organization_ids:
         return {}
     rows = CompanyFieldEvidence.objects.filter(
         organization_id__in=organization_ids, state=State.ACCEPTED
     ).order_by("-observed_at", "-id")
+    if summary_only:
+        rows = rows.only(
+            "organization_id", "field_key", "observed_at", "last_verified_at", "scope_json"
+        )
     resolved: dict[int, dict[str, CompanyFieldEvidence]] = {}
     for row in rows:
         per_field = resolved.setdefault(row.organization_id, {})
@@ -1155,7 +1167,12 @@ def is_stale(
 
 
 TRACKED_FIELD_COUNT = len(FieldKey.values)
-EVIDENCE_SCHEMA_VERSION = 2
+EVIDENCE_SCHEMA_VERSION = 3
+
+# The public provenance payload lists only the newest few open claims: claims
+# on abandoned crawl URLs pile up, and the payload is served to everyone.
+PENDING_REVIEW_PER_FIELD = 2
+PENDING_REVIEW_MAX = 10
 
 
 def field_status(row: CompanyFieldEvidence, *, now: datetime | None = None) -> str:
@@ -1165,42 +1182,68 @@ def field_status(row: CompanyFieldEvidence, *, now: datetime | None = None) -> s
     return "verified"
 
 
-def _is_ip_literal(host: str) -> bool:
-    try:
-        ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return True
-
-
 def safe_source_url(row: CompanyFieldEvidence) -> str | None:
     """The row's source URL only when it is a public HTTPS URL on its own domain.
 
     A link is shown only for a validated destination: the URL must pass
-    ``normalize_public_url`` and its host must equal ``source_domain`` or be a
-    subdomain of it, so a stored URL can never send the reader somewhere other
-    than the domain the dialog names.
+    ``normalize_evidence_url`` (#477's check: public HTTPS, no IP literal, no
+    mixed-script look-alike host) on an ASCII, non-punycode domain and its host must equal the ASCII
+    ``source_domain`` or be a subdomain of it, so a stored URL can never send
+    the reader somewhere other than the domain the dialog names.
     """
+    from crank.models.company_correction import normalize_evidence_url
+
     domain = (row.source_domain or "").strip().rstrip(".").casefold()
     if not domain or not row.source_url:
         return None
+    if not (domain.isascii() and row.source_url.isascii()):
+        return None
+    if any(label.startswith("xn--") for label in domain.split(".")):
+        return None
     try:
-        url = normalize_public_url(row.source_url)
+        url = normalize_evidence_url(row.source_url)
     except ValidationError:
         return None
     host = (urlsplit(url).hostname or "").casefold()
-    if _is_ip_literal(host):
-        return None
     if host == domain or host.endswith("." + domain):
         return url
     return None
 
 
-def _open_claim_rows(organization_ids) -> list[CompanyFieldEvidence]:
-    return list(
+def _review_state(conflicted: int) -> str:
+    """The one escalation rule: any conflicted claim makes the field conflicted."""
+    return "conflicted" if conflicted else "pending"
+
+
+def _open_claim_aggregate(organization_ids):
+    """Per (organization, field): total and conflicted open-claim counts."""
+    return (
         CompanyFieldEvidence.objects.filter(
             organization_id__in=organization_ids, state__in=OPEN_CLAIM_STATES
-        ).order_by("-observed_at", "-id")
+        )
+        .values("organization_id", "field_key")
+        .annotate(
+            total=Count("id"),
+            conflicted=Count("id", filter=Q(state=State.CONFLICTED)),
+        )
+    )
+
+
+def _capped_open_claims(organization_id) -> list[CompanyFieldEvidence]:
+    """The newest open claims, at most N per field and M overall, in one query."""
+    ranked = CompanyFieldEvidence.objects.filter(
+        organization_id=organization_id, state__in=OPEN_CLAIM_STATES
+    ).annotate(
+        field_rank=Window(
+            RowNumber(),
+            partition_by=F("field_key"),
+            order_by=[F("observed_at").desc(), F("id").desc()],
+        )
+    )
+    return list(
+        ranked.filter(field_rank__lte=PENDING_REVIEW_PER_FIELD).order_by(
+            "-observed_at", "-id"
+        )[:PENDING_REVIEW_MAX]
     )
 
 
@@ -1208,27 +1251,30 @@ def open_claims_by_org(organization_ids) -> dict[int, dict[str, str]]:
     """``{org_id: {field_key: "pending"|"conflicted"}}`` in one aggregate query."""
     if not organization_ids:
         return {}
-    rows = (
-        CompanyFieldEvidence.objects.filter(
-            organization_id__in=organization_ids, state__in=OPEN_CLAIM_STATES
-        )
-        .values("organization_id", "field_key")
-        .annotate(
-            conflicted=Count("id", filter=Q(state=State.CONFLICTED)),
-        )
-    )
     claims: dict[int, dict[str, str]] = {}
-    for row in rows:
-        claims.setdefault(row["organization_id"], {})[row["field_key"]] = (
-            "conflicted" if row["conflicted"] else "pending"
+    for row in _open_claim_aggregate(organization_ids):
+        claims.setdefault(row["organization_id"], {})[row["field_key"]] = _review_state(
+            row["conflicted"]
         )
     return claims
+
+
+def is_company_wide(row: CompanyFieldEvidence) -> bool:
+    """True when the row speaks for the whole company, not a location or role.
+
+    A scoped row (``countries`` / ``role_families``) is real evidence for its
+    scope but must not certify the company-wide value: matching treats it as
+    not applying outside that scope. ``claimed_domain`` is attribution, not scope.
+    """
+    return not list_scope(row.scope_json)
 
 
 def _summary(resolved: dict[str, CompanyFieldEvidence], review: dict[str, str], now) -> dict:
     verified = stale = 0
     last_verified: datetime | None = None
     for row in resolved.values():
+        if not is_company_wide(row):
+            continue
         if field_status(row, now=now) == "verified":
             verified += 1
         else:
@@ -1255,7 +1301,7 @@ def evidence_summaries_for_orgs(organization_ids, *, now: datetime | None = None
     """
     now = now or timezone.now()
     organization_ids = list(organization_ids)
-    resolved = resolve_field_evidence_for_orgs(organization_ids)
+    resolved = resolve_field_evidence_for_orgs(organization_ids, summary_only=True)
     claims = open_claims_by_org(organization_ids)
     return {
         org_id: _summary(resolved.get(org_id, {}), claims.get(org_id, {}), now)
@@ -1316,19 +1362,20 @@ def field_evidence_payload(organization, *, now: datetime | None = None) -> dict
     evidence is explicit. ``status`` (verified/stale) and ``review``
     (none/pending/conflicted) are separate axes: an accepted fact can be
     verified while a conflicting observation awaits review. ``pending_review``
-    lists open claims for inspection only; they never carry a verified status.
+    lists the newest open claims (capped) for inspection only; they never
+    carry a verified status. A scoped accepted row never agrees with the
+    company-wide value.
     """
     now = now or timezone.now()
     resolved = resolve_field_evidence(organization)
-    claim_rows = _open_claim_rows([organization.id])
     review: dict[str, str] = {}
-    for claim in claim_rows:
-        if claim.state == State.CONFLICTED:
-            review[claim.field_key] = "conflicted"
-        else:
-            review.setdefault(claim.field_key, "pending")
-    # One entry per open claim: value, source, date and state stay together,
+    pending_total = 0
+    for aggregate in _open_claim_aggregate([organization.id]):
+        review[aggregate["field_key"]] = _review_state(aggregate["conflicted"])
+        pending_total += aggregate["total"]
+    # One entry per listed claim: value, source, date and state stay together,
     # so two pages disagreeing about a field are both listed (newest first).
+    # The list is capped; ``review_by_field`` and the totals stay exact.
     pending_review = [
         {
             "field_key": claim.field_key,
@@ -1337,7 +1384,10 @@ def field_evidence_payload(organization, *, now: datetime | None = None) -> dict
             "source_domain": claim.source_domain,
             "observed_value": claim.value_text[:_MAX_VALUE_TEXT],
         }
-        for claim in sorted(claim_rows, key=lambda claim: claim.field_key)
+        for claim in sorted(
+            _capped_open_claims(organization.id) if pending_total else [],
+            key=lambda claim: claim.field_key,
+        )
     ]
     displayed = displayed_field_values(organization)
     fields = []
@@ -1370,8 +1420,12 @@ def field_evidence_payload(organization, *, now: datetime | None = None) -> dict
                 "stale": stale,
                 "status": "stale" if stale else "verified",
                 "review": review.get(row.field_key, "none"),
-                "agrees_with_displayed": _agrees_with_displayed(
-                    row.field_key, row.value_text, displayed.get(row.field_key)
+                "agrees_with_displayed": (
+                    _agrees_with_displayed(
+                        row.field_key, row.value_text, displayed.get(row.field_key)
+                    )
+                    if is_company_wide(row)
+                    else None
                 ),
                 "policy_days": FIELD_FRESHNESS_POLICY.get(
                     row.field_key, DEFAULT_FRESHNESS_DAYS
@@ -1384,6 +1438,10 @@ def field_evidence_payload(organization, *, now: datetime | None = None) -> dict
         "unverified_fields": unverified_fields,
         "summary": _summary(resolved, review, now),
         "pending_review": pending_review,
+        "pending_review_total": pending_total,
+        "pending_review_more": pending_total - len(pending_review),
+        "review_by_field": review,
+        "displayed_values": displayed,
     }
 
 
