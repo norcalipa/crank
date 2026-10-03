@@ -200,6 +200,7 @@ describe('EvidenceDetails', () => {
         expect(screen.getByTestId('field-evidence-rto_policy')).toHaveTextContent('Last verified never');
         expect(screen.getByTestId('field-status-locations')).toHaveTextContent('Stale');
         expect(screen.queryByTestId('field-review-locations')).toBeNull();
+        expect(screen.getByTestId('field-evidence-locations')).toHaveTextContent('Last verified Jan 1, 2024');
     });
 
     test('check history details lists the four timestamps', () => {

@@ -149,7 +149,7 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                                             Observed {formatEvidenceDate(field.observed_at)}
                                         </span>
                                         <span className="text-muted small evidence-meta">
-                                            <span className="text-nowrap">Last verified {dateOrNever(field.last_verified_at).toLowerCase()}</span>
+                                            <span className="text-nowrap">Last verified {field.last_verified_at ? formatEvidenceDate(field.last_verified_at) : 'never'}</span>
                                         </span>
                                         {field.policy_days ? (
                                             <span className="text-muted small evidence-meta">Re-check every {field.policy_days} days</span>
