@@ -2225,6 +2225,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             clearInflightTurns(conversationId);
             writeComposerDraft(conversationId, '');
             surfacedDraftRef.current = null;
+            sentSnapshots.current.clear();
             setConversationId(data.id);
             setMessages([]);
             setPreferencesChanged(false);
@@ -2245,6 +2246,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             clearInflightTurns(conversationId);
             writeComposerDraft(conversationId, '');
             surfacedDraftRef.current = null;
+            sentSnapshots.current.clear();
             setConversationId(null);
             setMessages([]);
             setPreferencesChanged(false);
