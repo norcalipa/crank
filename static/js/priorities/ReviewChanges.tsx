@@ -18,6 +18,7 @@ export interface ReviewChangesProps {
     // A stale error (revision conflict) swaps the primary action for "Review latest".
     stale?: boolean;
     heading?: string;
+    applyLabel?: string;
     onApply: () => void;
     onCancel: () => void;
     onEdit?: () => void;
@@ -91,7 +92,7 @@ export function ChangeList({changes, label, labels, currency, choicePaths}: {
 
 export default function ReviewChanges({
     changes, scope = 'account', pending = false, error = null, stale = false,
-    heading = 'Review your changes', onApply, onCancel, onEdit, onApplySearchOnly, onReviewLatest,
+    heading = 'Review your changes', applyLabel, onApply, onCancel, onEdit, onApplySearchOnly, onReviewLatest,
     labels, currency, choicePaths, conflicts = [], testId = 'priorities-review',
 }: ReviewChangesProps) {
     const headingId = `priorities-review-${React.useId()}`;
@@ -149,7 +150,7 @@ export default function ReviewChanges({
                                 <span className="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
                                 Applying…
                             </>
-                        ) : (isSearch ? 'Apply to this search' : 'Apply to account')}
+                        ) : (isSearch ? 'Apply to this search' : (applyLabel ?? 'Apply to account'))}
                     </button>
                 )}
                 {onEdit && (

@@ -94,8 +94,8 @@ lands — implemented-before-documented rule, per #463's registry).
 
 ### Allowlisted UI actions
 
-- **Status: implemented (part 484a, server side)** — owner: #484; rendering
-  and dispatch in the browser are 484b/#471.
+- **Status: implemented (part 484a server side; part 484b browser side)** —
+  owner: #484; the sidebar surface itself is #471.
 - **Asset:** the fixed, code-owned action vocabulary (`open_company`,
   `propose_filters`, `compare_companies`) and the fixed `AssistantCompletion`
   schema. `tools.py` remains a plain server-wired module with no
@@ -120,6 +120,39 @@ lands — implemented-before-documented rule, per #463's registry).
 - **Evidence:** `crank/tests/agents/test_actions.py`,
   `MalformedActionPayloadTests` in `crank/tests/security/test_phase4_security.py`,
   `test_prompt_injection_fixture_cannot_invoke_tools`.
+- **Browser controls (484b):** `static/js/chat/AssistantActions.tsx` renders
+  each action as an explicit button and does nothing until it is pressed.
+  1. *Click-time revision check.* A reply is stale unless the page context is
+     the revision it answered or, judged by effect rather than time, the
+     context it was asked under plus only what its own clicks changed (the
+     filters it applied, a company it opened and the list the dialog returns
+     to when closed, or Back restoring the original view). Staleness is per
+     reply, so applying one action does not disable its siblings, in either
+     click order, while a newer selection, a different company, a changed
+     filter, a refresh or any other change does. The
+     check runs again at click time, so a context that moved after the last
+     render still blocks the click. The sent revision (not the server echo) is
+     what the reply is judged by; a mismatched echo drops the actions.
+  2. *URLs come from enums and ids only.* The client re-validates the wire
+     shape (`parseActions`: known types, no extra keys, enum values, positive
+     integer ids, at most three) and builds every URL itself
+     (`/?rto=R&accelerated_vesting=1`, `/?company=<id>`); the model never
+     supplies a URL, and the rankings query is an allowlist.
+  3. *No window event.* Filters and company opens go through typed targets
+     registered in the workspace store (`registerFilterTarget`,
+     `registerCompanyTarget`; the newest wins and a target that declines or
+     does not know the id reports so, with navigation or a visible note as
+     the fallback). Assistant actions dispatch no `CustomEvent`, so a script or
+     another component cannot trigger them by raising an event. This is pinned
+     by `static/js/crankEvents.test.ts`, which also requires every dispatched
+     `crank:` event in the app to have a listener.
+  Saving a filter as a lasting requirement is a separate, explicit step that
+  goes through the #480 propose/review/apply path (with Undo); no action
+  changes stored preferences by itself.
+- **Browser evidence:** `static/js/chat/AssistantActions.test.tsx`,
+  `static/js/JobSearchChat.test.tsx` (validated page context and assistant
+  actions), `static/js/workspace/store.test.ts`,
+  `static/js/crankEvents.test.ts`, `e2e/django/assistant-actions.spec.ts`.
 
 ### Proposed preference patches
 

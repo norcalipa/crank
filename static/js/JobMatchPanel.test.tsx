@@ -1203,6 +1203,89 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
         expect(getWorkspaceSnapshot().context?.surface).toBe('jobs');
     });
 
+    test('reports the displayed result generation and preference revision (issue #484)', async () => {
+        global.fetch = jest.fn().mockImplementation((url: string) => {
+            if (url.includes('/status/')) return Promise.resolve(jsonResponse(statusPayload('ok')));
+            if (url.includes('/ranked/')) {
+                return Promise.resolve(jsonResponse(rankedPayload([{
+                    ...sampleJobMatch, revision: {result_generation: 6},
+                }])));
+            }
+            return Promise.resolve(jsonResponse(matchPayload(1, [{
+                ...sampleJobMatch, revision: {result_generation: 6, preference_revision: 3},
+            }])));
+        });
+        render(<JobMatchPanel/>);
+        await screen.findByTestId('ranked-job-42');
+        expect(getWorkspaceSnapshot().context).toMatchObject({
+            surface: 'jobs', resultGeneration: 6, preferenceRevision: 3,
+        });
+    });
+
+    const revisionFetch = (block: Record<string, unknown>) => {
+        global.fetch = jest.fn().mockImplementation((url: string) => {
+            if (url.includes('/status/')) return Promise.resolve(jsonResponse(statusPayload('ok')));
+            if (url.includes('/ranked/')) {
+                return Promise.resolve(jsonResponse(rankedPayload([{...sampleJobMatch, revision: {result_generation: 6}}])));
+            }
+            return Promise.resolve(jsonResponse(matchPayload(1, [{...sampleJobMatch, revision: {result_generation: 6, ...block}}])));
+        });
+    };
+
+    test('stored rows behind an edit made in this tab report the current revision, not the lagging one', async () => {
+        revisionFetch({preference_revision: 3, stale: true});
+        act(() => setPrioritiesRevision(9));
+        render(<JobMatchPanel/>);
+        await screen.findByTestId('ranked-job-42');
+        expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'jobs', preferenceRevision: 9});
+    });
+
+    test('an edit made after load is reported immediately, before the refetch lands', async () => {
+        revisionFetch({preference_revision: 3, stale: true});
+        render(<JobMatchPanel/>);
+        await screen.findByTestId('ranked-job-42');
+        expect(getWorkspaceSnapshot().context).not.toHaveProperty('preferenceRevision');
+        act(() => setPrioritiesRevision(7));
+        expect(getWorkspaceSnapshot().context).toMatchObject({preferenceRevision: 7});
+    });
+
+    test('stale rows with no known edit report no preference revision rather than a lagging one', async () => {
+        revisionFetch({preference_revision: 3, stale: true});
+        render(<JobMatchPanel/>);
+        await screen.findByTestId('ranked-job-42');
+        expect(getWorkspaceSnapshot().context).toMatchObject({resultGeneration: 6});
+        expect(getWorkspaceSnapshot().context).not.toHaveProperty('preferenceRevision');
+    });
+
+    test('rows that are current report their own revision even when this tab saved an older one', async () => {
+        revisionFetch({preference_revision: 3});
+        act(() => setPrioritiesRevision(2));
+        render(<JobMatchPanel/>);
+        await screen.findByTestId('ranked-job-42');
+        expect(getWorkspaceSnapshot().context).toMatchObject({preferenceRevision: 3});
+    });
+
+    test('nothing is reported when the payloads carry no generation or revision', async () => {
+        installBatchedFetch([{title: 'Bare', generation: null, hold: false}]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Bare');
+        const context = getWorkspaceSnapshot().context;
+        expect(context).not.toHaveProperty('resultGeneration');
+        expect(context).not.toHaveProperty('preferenceRevision');
+    });
+
+    test('a rejected older result set does not change the reported generation', async () => {
+        installBatchedFetch([
+            {title: 'Generation five', generation: 5, hold: false},
+            {title: 'Generation four', generation: 4, hold: false},
+        ]);
+        render(<JobMatchPanel/>);
+        await screen.findByText('Generation five');
+        expect(getWorkspaceSnapshot().context?.resultGeneration).toBe(5);
+        await refreshAndSettle(3);
+        expect(getWorkspaceSnapshot().context?.resultGeneration).toBe(5);
+    });
+
     test('an older overlapping request that resolves last never replaces newer data', async () => {
         const batches = installBatchedFetch([
             {title: 'Stale', generation: 1, hold: true},

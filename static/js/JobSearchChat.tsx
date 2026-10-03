@@ -7,9 +7,11 @@ import {purgePrivateClientState} from './authIntent';
 import {preferencePathLabel, preferenceValueLabel} from './priorities/format';
 import {MATCH_CAP} from './priorities/api';
 import {patchFitsEditor} from './priorities/patch';
+import AssistantActions, {TurnActions, parseActions} from './chat/AssistantActions';
 import {ChangeList} from './priorities/ReviewChanges';
 import {prioritiesSurface} from './priorities/surface';
 import {
+    buildWireContext,
     describeWorkspaceContext,
     getWorkspaceSnapshot,
     setWorkspaceConversation,
@@ -18,6 +20,7 @@ import {
     setPrioritiesRevision,
 } from './workspace/store';
 import {accountDigest} from './workspace/persistence';
+import {WorkspaceSnapshot} from './workspace/types';
 
 export interface JobResult {
     id: number;
@@ -124,6 +127,10 @@ interface SubmitResponse {
     // Additive (issue #466 review): present only when the turn produced a
     // read-only preference proposal through an orchestrator-backed provider.
     preference_proposal?: PreferenceProposal | null;
+    // Additive (issue #484): typed UI actions and the page-context echo, both
+    // absent for context-less requests, replays and older servers.
+    actions?: unknown;
+    context?: {revision?: number} | null;
 }
 
 /** Undo lifecycle for the preference-change notice (issue #466). */
@@ -353,6 +360,7 @@ const PRE_PERSISTENCE_ERROR_TYPES = new Set([
     'payload_too_large',
     'invalid_request',
     'not_found',
+    'invalid_context',
 ]);
 // Typed envelopes the server returns only AFTER the user turn is persisted;
 // for these the failed-turn UI ("your message is saved; retry") is honest.
@@ -949,6 +957,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const [input, setInput] = React.useState('');
     // "Answered about …" notes keyed by assistant message id (issue #479).
     const [staleNotes, setStaleNotes] = React.useState<Record<number, string>>({});
+    // Issue #484: typed actions per assistant message id. In memory only, so a
+    // reload never resurrects a suggestion for a view that no longer exists.
+    const [turnActions, setTurnActions] = React.useState<Record<number, TurnActions>>({});
+    const sentSnapshots = React.useRef(new Map<string, WorkspaceSnapshot>());
     const [pending, setPending] = React.useState(false);
     const [loading, setLoading] = React.useState(true);
     const [initError, setInitErrorState] = React.useState<string | null>(null);
@@ -1111,6 +1123,15 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         return null;
     }, [messages]);
 
+    // Only the newest reply with actions announces a stale view, so one view
+    // change is spoken once, not once per past reply.
+    const newestActionsId = React.useMemo(() => {
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (turnActions[messages[i].id]) return messages[i].id;
+        }
+        return null;
+    }, [messages, turnActions]);
+
     // Register the long-lived listeners exactly once: window/viewport resize plus
     // a one-shot document.fonts.ready hook so the height is re-measured once web
     // fonts finish loading (the initial measure uses a fallback line-height before
@@ -1137,6 +1158,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     }, [adjustComposerHeight]);
     const cardRef = React.useRef<HTMLElement>(null);
     const nearBottomRef = React.useRef(true);
+    // Own message just sent: jump (not smooth-scroll) so the scroll events of an animation cannot read as the reader leaving the bottom before the reply lands.
+    const jumpOnSendRef = React.useRef(false);
+    const unseenRef = React.useRef(false);
+    const autoScrollUntilRef = React.useRef(0);
     const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
     const [cardHeight, setCardHeight] = React.useState<number | null>(null);
     // rAF bookkeeping so resize/orientation/keyboard bursts coalesce into at most
@@ -1245,7 +1270,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     );
 
     const isNearBottom = (element: HTMLDivElement): boolean => (
-        element.scrollHeight - element.scrollTop - element.clientHeight <= 48
+        element.scrollHeight - element.scrollTop - element.clientHeight <= 64
     );
 
     const scrollToLatest = (behavior: ScrollBehavior = prefersReducedMotion() ? 'auto' : 'smooth') => {
@@ -1257,6 +1282,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             history.scrollTop = history.scrollHeight;
         }
         nearBottomRef.current = true;
+        unseenRef.current = false;
+        // Mid-flight frames of a smooth scroll are ours, not the reader leaving the bottom.
+        autoScrollUntilRef.current = behavior === 'smooth' ? Date.now() + 800 : 0;
         setShowJumpToLatest(false);
     };
 
@@ -1266,11 +1294,20 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         if (!history) return;
         const handleScroll = () => {
             const nearBottom = isNearBottom(history);
+            if (!nearBottom && Date.now() < autoScrollUntilRef.current) return;
             nearBottomRef.current = nearBottom;
-            setShowJumpToLatest(!nearBottom);
+            if (nearBottom) unseenRef.current = false;
+            setShowJumpToLatest(!nearBottom && unseenRef.current);
         };
+        const handleUserInput = () => { autoScrollUntilRef.current = 0; };
         history.addEventListener('scroll', handleScroll, {passive: true});
-        return () => history.removeEventListener('scroll', handleScroll);
+        history.addEventListener('wheel', handleUserInput, {passive: true});
+        history.addEventListener('touchstart', handleUserInput, {passive: true});
+        return () => {
+            history.removeEventListener('scroll', handleScroll);
+            history.removeEventListener('wheel', handleUserInput);
+            history.removeEventListener('touchstart', handleUserInput);
+        };
     }, []);
 
     // Initial history, optimistic turns, replies, and the pending indicator all append
@@ -1284,10 +1321,15 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             return;
         }
         if (loading || !nearBottomRef.current) {
-            if (!nearBottomRef.current) setShowJumpToLatest(true);
+            if (!nearBottomRef.current) {
+                unseenRef.current = true;
+                setShowJumpToLatest(true);
+            }
             return;
         }
-        scrollToLatest();
+        const behavior = jumpOnSendRef.current ? 'auto' : undefined;
+        jumpOnSendRef.current = false;
+        scrollToLatest(behavior);
     }, [messages.length, pending, loading]);
 
     // Visual viewport changes cover mobile keyboards and orientation changes. Preserve
@@ -1298,7 +1340,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             if (!history) return;
             const nearBottom = isNearBottom(history);
             nearBottomRef.current = nearBottom;
-            setShowJumpToLatest(!nearBottom);
+            if (nearBottom) unseenRef.current = false;
+            setShowJumpToLatest(!nearBottom && unseenRef.current);
             if (nearBottom) scrollToLatest('auto');
         };
         window.addEventListener('resize', handleViewportResize);
@@ -1495,6 +1538,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         lastSent.current = null;
         setMessages([]);
         setStaleNotes({});
+        setTurnActions({});
+        sentSnapshots.current.clear();
         setConversationId(null);
         conversationIdRef.current = null;
         setInput('');
@@ -1708,7 +1753,13 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         keepDraftRef.current = false;
         // Context this turn was sent under (issue #479): compared with the
         // live context when the reply lands.
-        const sentContextLabel = describeWorkspaceContext(getWorkspaceSnapshot().context);
+        // A retry of the same turn is re-grounded on the page it was first asked
+        // from, not on whatever is open now.
+        const sentSnapshot = sentSnapshots.current.get(key) ?? getWorkspaceSnapshot();
+        sentSnapshots.current.set(key, sentSnapshot);
+        const sentContextLabel = describeWorkspaceContext(sentSnapshot.context);
+        const sentRevision = sentSnapshot.contextRevision;
+        const wireContext = buildWireContext(sentSnapshot);
         setPending(true);
         setError(null);
         setErrorType(null);
@@ -1745,6 +1796,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             // treatment is REPLACED by the retry-in-progress state.
             setRetryKey(key);
         } else {
+            nearBottomRef.current = true;
+            jumpOnSendRef.current = true;
             setMessages((prev) => [...prev, optimisticUser]);
         }
 
@@ -1783,7 +1836,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         try {
             const res = await csrfFetch(`/api/agent/conversations/${turnConversationId}/`, {
                 method: 'POST',
-                body: JSON.stringify({content, idempotency_key: key}),
+                body: JSON.stringify(wireContext
+                    ? {content, idempotency_key: key, context: wireContext}
+                    : {content, idempotency_key: key}),
                 signal: controller.signal,
             });
             // A reset/delete in another tab (or anything else that switched the
@@ -1918,12 +1973,32 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             // The reply is server history and is always appended; if the page
             // context moved on meanwhile it is labelled with the page the
             // question was asked from, without touching the context strip or
-            // the store. Page context is not sent to the model yet (#484), so
-            // the note must not claim the reply was about that entity.
-            if (sentContextLabel
-                && sentContextLabel !== describeWorkspaceContext(getWorkspaceSnapshot().context)) {
+            // the store.
+            // The reply is judged against the revision this turn was sent under.
+            // The server only echoes what it received, so a different echo means
+            // it answered some other view: no actions are kept for it.
+            const echoMatches = typeof data.context?.revision !== 'number'
+                || data.context.revision === sentRevision;
+            if (sentContextLabel && sentRevision !== getWorkspaceSnapshot().contextRevision) {
                 const answered = sentContextLabel.replace(/^(About|Comparing) /, '');
                 setStaleNotes((prev) => ({...prev, [data.message.id]: `Asked while viewing ${answered}`}));
+            }
+            // Actions are only trusted alongside a context echo; they stay
+            // enabled for the revision this turn was sent under (issue #484).
+            const actions = data.context && echoMatches ? parseActions(data.actions) : [];
+            if (actions.length > 0) {
+                const names: Record<number, string> = {};
+                for (const org of data.message.results?.organizations ?? []) {
+                    names[org.id] = org.name;
+                }
+                const sentContext = sentSnapshot.context;
+                if (sentContext?.organizationId !== undefined && sentContext.organizationName) {
+                    names[sentContext.organizationId] ??= sentContext.organizationName;
+                }
+                setTurnActions((prev) => ({
+                    ...prev,
+                    [data.message.id]: {actions, revision: sentRevision, names, context: sentContext},
+                }));
             }
             // Keep the turn in its ORIGINAL position and insert the reply
             // immediately after it: a retried turn must never reorder the
@@ -2150,6 +2225,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             clearInflightTurns(conversationId);
             writeComposerDraft(conversationId, '');
             surfacedDraftRef.current = null;
+            sentSnapshots.current.clear();
             setConversationId(data.id);
             setMessages([]);
             setPreferencesChanged(false);
@@ -2170,6 +2246,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             clearInflightTurns(conversationId);
             writeComposerDraft(conversationId, '');
             surfacedDraftRef.current = null;
+            sentSnapshots.current.clear();
             setConversationId(null);
             setMessages([]);
             setPreferencesChanged(false);
@@ -2505,6 +2582,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                                     )}
                                     {m.role === 'assistant' && m.id === lastAssistantId && !hasResults(m.results) && availability && availability.state !== 'ok' && (
                                         <AvailabilityNotice availability={availability} />
+                                    )}
+                                    {m.role === 'assistant' && turnActions[m.id] && (
+                                        <AssistantActions turn={turnActions[m.id]} announce={m.id === newestActionsId} />
                                     )}
                                     {m.role === 'user' && m.delivery_state === 'pending' && retryKey !== m.idempotency_key && (
                                         <div className="chat-retry-panel mt-2" data-testid="pending-turn">
