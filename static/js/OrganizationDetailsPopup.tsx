@@ -30,6 +30,7 @@ interface ProvenanceData {
     organization_modified: string | null;
     organization_created: string | null;
     latest_observation: ProvenanceObservation | null;
+    displayed_values?: Record<string, string>;
 }
 
 type Provenance = ProvenanceData & EvidenceData;
@@ -389,12 +390,17 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     // so a field's evidence status describes the shown value only when the
     // accepted evidence value is that value. Otherwise the grid says so.
     const clip = (text: string, max = 60) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
-    const profileFieldBadges = (key: 'funding_round' | 'rto_policy' | 'accelerated_vesting', label: string) => {
+    const profileFieldBadges = (
+        key: 'funding_round' | 'rto_policy' | 'accelerated_vesting', label: string, shownValue: string | undefined,
+    ) => {
         if (!provenance) return null;
         const row = provenance.fields?.find(item => item.field_key === key);
-        // The server decides agreement (matching's reading of both values), so
-        // every surface shares one rule.
-        const agreeing = row?.agrees_with_displayed === true ? row : undefined;
+        // The server decides agreement (strict whole-value readings), but it
+        // computed it against the profile as of the provenance fetch. Honor it
+        // only when that profile value is the one this grid renders; an open tab
+        // whose list went stale then falls back to the neutral note.
+        const sameProfileValue = shownValue !== undefined && provenance.displayed_values?.[key] === shownValue;
+        const agreeing = row?.agrees_with_displayed === true && sameProfileValue ? row : undefined;
         const status: EvidenceStatusKey = agreeing ? (agreeing.status || (agreeing.stale ? 'stale' : 'verified')) : 'profile';
         const claims = provenance.pending_review?.filter(item => item.field_key === key) ?? [];
         const claimReview = claims.some(item => item.review === 'conflicted')
@@ -549,11 +555,11 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                             </div>
                             <div className="row mb-3">
                                 <div className="col-5 text-end fw-bold">Funding Round:</div>
-                                <div className="col-7">{fundingRoundMap[organization.funding_round]}{profileFieldBadges('funding_round', 'Funding Round')}</div>
+                                <div className="col-7">{fundingRoundMap[organization.funding_round]}{profileFieldBadges('funding_round', 'Funding Round', fundingRoundMap[organization.funding_round])}</div>
                             </div>
                             <div className="row mb-3">
                                 <div className="col-5 text-end fw-bold">RTO Policy:</div>
-                                <div className="col-7">{rtoPolicyMap[organization.rto_policy]}{profileFieldBadges('rto_policy', 'RTO Policy')}</div>
+                                <div className="col-7">{rtoPolicyMap[organization.rto_policy]}{profileFieldBadges('rto_policy', 'RTO Policy', rtoPolicyMap[organization.rto_policy])}</div>
                             </div>
                             {organization.gives_ratings !== undefined && (
                                 <div className="row mb-3">
@@ -566,7 +572,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                     <div className="col-5 text-end fw-bold">Accelerated Vesting:</div>
                                     <div className="col-7">
                                         {organization.accelerated_vesting ? 'Yes' : 'No'}
-                                        {profileFieldBadges('accelerated_vesting', 'Accelerated Vesting')}
+                                        {profileFieldBadges('accelerated_vesting', 'Accelerated Vesting', organization.accelerated_vesting ? 'Yes' : 'No')}
                                     </div>
                                 </div>
                             )}

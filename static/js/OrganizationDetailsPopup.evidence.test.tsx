@@ -26,6 +26,7 @@ const field = (key: string, overrides: Record<string, unknown> = {}) => ({
 const payload = (overrides: Record<string, unknown> = {}) => ({
     organization_id: 1, organization_modified: '2025-03-01T00:00:00Z', organization_created: '2024-06-01T00:00:00Z',
     latest_observation: null, evidence_schema: 2,
+    displayed_values: {rto_policy: 'Remote', funding_round: 'Seed', accelerated_vesting: 'No'},
     fields: [field('rto_policy', {status: 'stale', stale: true, review: 'conflicted'})],
     unverified_fields: ['funding_round'],
     pending_review: [{field_key: 'rto_policy', review: 'conflicted', observed_at: '2025-03-01T00:00:00Z',
@@ -174,12 +175,58 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
         mockProvenance(() => ok(payload({
             fields: [field('accelerated_vesting', {value: '1', agrees_with_displayed: true})],
             unverified_fields: [], pending_review: [],
+            displayed_values: {accelerated_vesting: 'Yes'},
         })));
         open({organization: {...organization, accelerated_vesting: true}});
         await screen.findByTestId('coverage-summary');
         const vesting = gridRow('Accelerated Vesting');
         expect(vesting.querySelector('.evidence-badge-verified')).not.toBeNull();
         expect(screen.queryByTestId('profile-differs-accelerated_vesting')).toBeNull();
+    });
+
+    test.each([
+        ['RTO Policy', 'rto_policy', 'Remote-first', {rto_policy: 'Remote'}],
+        ['Funding Round', 'funding_round', 'Seed', {funding_round: 'Seed'}],
+        ['Accelerated Vesting', 'accelerated_vesting', 'No', {accelerated_vesting: 'No'}],
+    ])('%s: a flag computed for another profile value than the grid shows is not honored', async (
+        label, key, evidence, provenanceShown,
+    ) => {
+        const listCodes: Record<string, unknown> = {rto_policy: 'H', funding_round: 'A', accelerated_vesting: true};
+        mockProvenance(() => ok(payload({
+            fields: [field(key, {value: evidence, agrees_with_displayed: true})],
+            unverified_fields: [], pending_review: [], displayed_values: provenanceShown,
+        })));
+        open({organization: {...organization, [key]: listCodes[key]}});
+        await screen.findByTestId('coverage-summary');
+        const row = gridRow(label);
+        expect(row.querySelector('.evidence-badge-verified')).toBeNull();
+        expect(row.querySelector('.evidence-badge-profile')).toHaveTextContent('Profile data');
+        expect(screen.getByTestId(`profile-differs-${key}`)).toHaveTextContent(`Sourced value: “${evidence}”`);
+    });
+
+    test('a payload without displayed_values never certifies the grid value', async () => {
+        mockProvenance(() => ok(payload({
+            fields: [field('rto_policy', {agrees_with_displayed: true})],
+            unverified_fields: [], pending_review: [], displayed_values: undefined,
+        })));
+        open();
+        await screen.findByTestId('coverage-summary');
+        expect(gridRow('RTO Policy').querySelector('.evidence-badge-verified')).toBeNull();
+        expect(screen.getByTestId('profile-differs-rto_policy')).toBeInTheDocument();
+    });
+
+    test('the neutral note, not a badge, shows when the server leaves agreement undetermined (null)', async () => {
+        mockProvenance(() => ok(payload({
+            fields: [field('accelerated_vesting', {value: 'Yes, double-trigger', agrees_with_displayed: null})],
+            unverified_fields: [], pending_review: [],
+        })));
+        open();
+        await screen.findByTestId('coverage-summary');
+        const vesting = gridRow('Accelerated Vesting');
+        expect(vesting.querySelector('.evidence-badge-verified')).toBeNull();
+        expect(vesting.querySelector('.evidence-badge-profile')).toHaveTextContent('Profile data');
+        expect(screen.getByTestId('profile-differs-accelerated_vesting'))
+            .toHaveTextContent('Sourced value: “Yes, double-trigger”');
     });
 
     test('a field without the agreement flag (older cached payload) never certifies the profile value', async () => {
