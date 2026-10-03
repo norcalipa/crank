@@ -583,6 +583,65 @@ describe('AssistantActions', () => {
             bar.remove();
         });
 
+        test('a pinned bar that covers the whole control scrolls it fully clear of the bar', async () => {
+            await applyFilter();
+            const log = screen.getByTestId('assistant-actions').parentElement as HTMLElement;
+            log.setAttribute('role', 'log');
+            const bar = document.createElement('div');
+            bar.style.position = 'sticky';
+            const inner = document.createElement('textarea');
+            bar.appendChild(inner);
+            document.body.appendChild(bar);
+            const rects = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+                if (this === log) return {top: 100, bottom: 300} as DOMRect;
+                if (this === bar) return {top: 190, bottom: 300} as DOMRect;
+                if (this === inner) return {top: 200, bottom: 290} as DOMRect;
+                return {top: 200, bottom: 260, left: 10, right: 110, width: 100} as DOMRect;
+            });
+            Object.defineProperty(document, 'elementFromPoint', {value: () => inner, configurable: true});
+            proposePriorities.mockResolvedValueOnce(proposal);
+            fireEvent.click(screen.getByTestId('assistant-action-save'));
+            await screen.findByTestId('assistant-action-review');
+            // The control's bottom (260) ends 8px above the pinned ancestor's top (190).
+            expect(log.scrollTop).toBeGreaterThanOrEqual(260 - 190 + 8);
+            delete (document as {elementFromPoint?: unknown}).elementFromPoint;
+            rects.mockRestore();
+            bar.remove();
+        });
+
+        test('a hit on the control or on something around it is not a covering bar', async () => {
+            await applyFilter();
+            const log = screen.getByTestId('assistant-actions').parentElement as HTMLElement;
+            log.setAttribute('role', 'log');
+            const rects = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+                if (this === log) return {top: 100, bottom: 300} as DOMRect;
+                return {top: 200, bottom: 260, left: 10, right: 110, width: 100} as DOMRect;
+            });
+            Object.defineProperty(document, 'elementFromPoint', {value: () => log, configurable: true});
+            proposePriorities.mockResolvedValueOnce(proposal);
+            fireEvent.click(screen.getByTestId('assistant-action-save'));
+            await screen.findByTestId('assistant-action-review');
+            expect(log.scrollTop).toBe(0);
+            delete (document as {elementFromPoint?: unknown}).elementFromPoint;
+            rects.mockRestore();
+        });
+
+        test('a heading that cannot share the view with the control hands focus to the primary action', async () => {
+            await applyFilter();
+            const log = screen.getByTestId('assistant-actions').parentElement as HTMLElement;
+            log.setAttribute('role', 'log');
+            const rects = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+                if (this === log) return {top: 100, bottom: 200} as DOMRect;
+                if (this.tagName === 'H3') return {top: 40, bottom: 70} as DOMRect;
+                return {top: 120, bottom: 180} as DOMRect;
+            });
+            proposePriorities.mockResolvedValueOnce(proposal);
+            fireEvent.click(screen.getByTestId('assistant-action-save'));
+            await screen.findByTestId('assistant-action-review');
+            expect(document.activeElement).toBe(screen.getByRole('button', {name: /^Save$/}));
+            rects.mockRestore();
+        });
+
         test('a prefetched proposal with no changes replaces the Save button with the already note', async () => {
             registerFilterTarget(() => true);
             proposePriorities.mockResolvedValueOnce({...proposal, changes: []});
@@ -798,6 +857,19 @@ describe('per-reply staleness (issue #484 review)', () => {
             });
             expect(screen.getByTestId('assistant-actions-stale')).toHaveTextContent(STALE_MESSAGE);
         });
+    });
+
+    test('manually setting the filter the reply proposes keeps the reply and its siblings fresh', () => {
+        registerFilterTarget(() => true);
+        const release = registerCompanyTarget(() => true);
+        setWorkspaceContext({surface: 'rankings', filters: {}});
+        render(<AssistantActions turn={{...turn([remote, open12], {12: 'Acme'}), context: getWorkspaceSnapshot().context}} />);
+        act(() => {
+            setWorkspaceContext({filters: {rtoPolicy: 'R'}, page: 1});
+        });
+        release();
+        expect(screen.getByRole('button', {name: 'Open Acme'})).toHaveAttribute('aria-disabled', 'false');
+        expect(screen.queryByTestId('assistant-actions-stale')).toHaveTextContent('');
     });
 
     test('Back removing the filter reverts the label and lets it be applied again', () => {

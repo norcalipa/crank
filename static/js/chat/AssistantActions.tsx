@@ -185,6 +185,9 @@ interface ReplyEffects {
 
 const emptyEffects = (): ReplyEffects => ({filters: {}, companies: new Set()});
 
+const proposedFilters = (turn: TurnActions): WorkspaceFilters => turn.actions.reduce<WorkspaceFilters>(
+    (all, action) => (action.type === 'propose_filters' ? {...all, ...toWorkspaceFilters(action)} : all), {});
+
 const entityKey = (context: WorkspaceContext) => JSON.stringify([
     context.surface, context.organizationId, context.organizationName, context.jobId, context.comparisonIds ?? null,
 ]);
@@ -226,31 +229,69 @@ export function matchesReplyView(
     return openedHere || (noEntity && live.surface === 'rankings' && live.organizationName === undefined);
 }
 
-// Brings a control into the scrolling ancestor with the least movement
-// (`nearest` honours the scroller's scroll-padding). Where a fixed bar still
-// covers its centre, scrolls on by the overlap. Where the focused element in
-// the reply (a card heading) is now above the view and would fit alongside the
-// control, scrolls back up to it so neither is lost.
-function revealControl(control: HTMLElement, scroller: HTMLElement, host: HTMLElement) {
-    control.scrollIntoView?.({block: 'nearest', behavior: 'instant' as ScrollBehavior});
-    if (typeof document.elementFromPoint === 'function') {
-        const rect = control.getBoundingClientRect();
-        const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-        if (hit && !control.contains(hit) && !hit.contains(control)) {
-            const covered = hit.getBoundingClientRect();
-            if (covered.top > rect.top && covered.top < rect.bottom) {
-                scroller.scrollTop += rect.bottom - covered.top + 8;
+// The pinned (sticky or fixed) bar, or else the element itself, that is hit at
+// `x`,`y` when it is neither the control nor around it.
+function coveringElement(control: HTMLElement, x: number, y: number): HTMLElement | null {
+    const hit = document.elementFromPoint(x, y);
+    if (!(hit instanceof HTMLElement) || control.contains(hit) || hit.contains(control)) {
+        return null;
+    }
+    for (let node: HTMLElement | null = hit; node && node !== document.body; node = node.parentElement) {
+        if (/(sticky|fixed)/.test(getComputedStyle(node).position) && !node.contains(control)) {
+            return node;
+        }
+    }
+    return hit;
+}
+
+// The top edge of the highest bar sitting over the lower part of the control,
+// found by probing a grid of points across it. Null when nothing covers it.
+function coveringTop(control: HTMLElement): number | null {
+    if (typeof document.elementFromPoint !== 'function') {
+        return null;
+    }
+    const rect = control.getBoundingClientRect();
+    const middle = (rect.top + rect.bottom) / 2;
+    let top: number | null = null;
+    for (const y of [rect.top + 4, middle, rect.bottom - 4]) {
+        for (const x of [rect.left + 4, rect.left + rect.width / 2, rect.right - 4]) {
+            const bar = coveringElement(control, x, y)?.getBoundingClientRect();
+            if (bar && bar.bottom > rect.top && bar.top < rect.bottom && (bar.top + bar.bottom) / 2 > middle) {
+                top = top === null ? bar.top : Math.min(top, bar.top);
             }
         }
+    }
+    return top;
+}
+
+// Brings a control into the scrolling ancestor with the least movement
+// (`nearest` honours the scroller's scroll-padding). Where a pinned bar still
+// covers any part of it, however much, scrolls on until the control clears the
+// bar's top edge. Where the focused element in the reply (a card heading) is
+// now above the view and would fit alongside the control above that bar,
+// scrolls back up to it so neither is lost. Returns true when the focused
+// element is left wholly out of view, so the caller can move focus somewhere
+// visible.
+function revealControl(control: HTMLElement, scroller: HTMLElement, host: HTMLElement): boolean {
+    control.scrollIntoView?.({block: 'nearest', behavior: 'instant' as ScrollBehavior});
+    const barTop = coveringTop(control);
+    if (barTop !== null) {
+        scroller.scrollTop += control.getBoundingClientRect().bottom - barTop + 8;
     }
     const focused = document.activeElement;
     if (focused instanceof HTMLElement && focused !== control && host.contains(focused)) {
         const view = scroller.getBoundingClientRect();
-        const top = focused.getBoundingClientRect().top;
-        if (top < view.top && control.getBoundingClientRect().bottom - top <= view.bottom - view.top) {
-            scroller.scrollTop -= view.top - top;
+        const visibleBottom = Math.min(view.bottom, barTop ?? view.bottom);
+        const {top, bottom} = focused.getBoundingClientRect();
+        if (top < view.top) {
+            if (control.getBoundingClientRect().bottom - top <= visibleBottom - view.top) {
+                scroller.scrollTop -= view.top - top;
+            } else if (view.bottom > view.top && bottom <= view.top) {
+                return true;
+            }
         }
     }
+    return false;
 }
 
 // The control to keep in view: the last button or note of the reply that has content.
@@ -307,7 +348,11 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
         }
         const snapshot = getWorkspaceSnapshot();
         return snapshot.contextRevision === turn.revision
-            || matchesReplyView(snapshot.context, turn.context, effects.current);
+            || matchesReplyView(snapshot.context, turn.context, {
+                ...effects.current,
+                // A filter the reply proposes counts as its own effect however it was set.
+                filters: {...proposedFilters(turn), ...effects.current.filters},
+            });
     };
     const stale = !isFresh();
     const liveFilters = getWorkspaceSnapshot().context?.filters;
@@ -389,10 +434,15 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
             }
         }
         let expectedTop = scroller.scrollTop;
+        let ownFocus = false;
         const reveal = () => {
             const control = revealTarget(host);
-            if (control) {
-                revealControl(control, scroller, host);
+            if (control && revealControl(control, scroller, host)) {
+                // The heading cannot share the view with the control: focus the card's primary action.
+                const primary = Array.from(host.querySelectorAll<HTMLElement>('.btn-primary')).pop() ?? control;
+                ownFocus = true;
+                primary.focus({preventScroll: true});
+                ownFocus = false;
             }
             expectedTop = scroller.scrollTop;
         };
@@ -416,12 +466,15 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
                 stop();
             }
         };
-        const events = ['wheel', 'touchstart', 'keydown', 'pointerdown', 'focusin'] as const;
+        const events = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const;
+        const onFocusIn = () => { if (!ownFocus) stop(); };
+        scroller.addEventListener('focusin', onFocusIn, {passive: true});
         events.forEach((name) => scroller.addEventListener(name, stop, {passive: true}));
         scroller.addEventListener('scroll', onScroll, {passive: true});
         return () => {
             stop();
             events.forEach((name) => scroller.removeEventListener(name, stop));
+            scroller.removeEventListener('focusin', onFocusIn);
             scroller.removeEventListener('scroll', onScroll);
         };
     }, [applied, requirement, saveable, staleShown, notFound]);
