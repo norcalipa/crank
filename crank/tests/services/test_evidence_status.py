@@ -252,13 +252,22 @@ class PayloadTests(TestCase):
         self.assertEqual(by_key["rto_policy"]["review"], "conflicted")
         self.assertEqual(payload["summary"]["pending_review"], 1)
 
-    def test_agrees_with_displayed_uses_matching_readings(self):
+    def _agreement(self, key, evidence, **org):
+        for attr, value in org.items():
+            setattr(self.org, attr, value)
+        self.org.save()
+        CompanyFieldEvidence.objects.filter(organization=self.org).delete()
+        make_row(self.org, key, value=evidence)
+        by_key = {f["field_key"]: f for f in field_evidence_payload(self.org)["fields"]}
+        return by_key[key]["agrees_with_displayed"]
+
+    def test_agrees_with_displayed_certifies_identical_whole_values(self):
         self.org.accelerated_vesting = True
         self.org.rto_policy = "H"
         self.org.funding_round = "B"
         self.org.save()
         make_row(self.org, FieldKey.ACCELERATED_VESTING, value="1")
-        make_row(self.org, FieldKey.RTO_POLICY, value="Hybrid 3 days")
+        make_row(self.org, FieldKey.RTO_POLICY, value="Hybrid")
         make_row(self.org, FieldKey.FUNDING_ROUND, value="Series C")
         make_row(self.org, FieldKey.LOCATIONS, value="Berlin")
         by_key = {f["field_key"]: f for f in field_evidence_payload(self.org)["fields"]}
@@ -278,6 +287,54 @@ class PayloadTests(TestCase):
         self.assertFalse(by_key["accelerated_vesting"]["agrees_with_displayed"])
         self.assertFalse(by_key["rto_policy"]["agrees_with_displayed"])
         self.assertTrue(by_key["company_name"]["agrees_with_displayed"])
+
+    def test_vesting_prose_never_certifies_the_displayed_value(self):
+        # Displayed "No" is the column default, so loose readings hit most orgs.
+        for evidence in (
+            "Yes, double-trigger", "Y", "Offered", "Unknown", "no accelerated vesting",
+            "single trigger", "Yes or no", "not offered", "",
+        ):
+            with self.subTest(evidence=evidence, shown="No"):
+                self.assertIsNone(
+                    self._agreement(FieldKey.ACCELERATED_VESTING, evidence, accelerated_vesting=False)
+                )
+            with self.subTest(evidence=evidence, shown="Yes"):
+                self.assertIsNone(
+                    self._agreement(FieldKey.ACCELERATED_VESTING, evidence, accelerated_vesting=True)
+                )
+
+    def test_vesting_whole_values_agree_or_disagree(self):
+        for evidence, shown, expected in (
+            ("Yes", True, True), (" TRUE ", True, True), ("1", True, True),
+            ("No", False, True), ("false", False, True), ("0", False, True),
+            ("Yes", False, False), ("no", True, False),
+        ):
+            with self.subTest(evidence=evidence, shown=shown):
+                self.assertIs(
+                    self._agreement(FieldKey.ACCELERATED_VESTING, evidence, accelerated_vesting=shown),
+                    expected,
+                )
+
+    def test_rto_prose_never_certifies_the_displayed_value(self):
+        for evidence in (
+            "Hybrid, 3 days in office", "Remote-first; office optional", "Remote or hybrid",
+            "Not remote", "Not fully remote", "No office required", "Hybrid 3 days",
+            "5 days in office", "2 days in office", "Remote first", "Flexible", "",
+        ):
+            for code in ("R", "H", "O"):
+                with self.subTest(evidence=evidence, shown=code):
+                    self.assertIsNone(self._agreement(FieldKey.RTO_POLICY, evidence, rto_policy=code))
+
+    def test_rto_whole_values_agree_or_disagree(self):
+        for evidence, code, expected in (
+            ("Remote", "R", True), ("remote", "R", True), ("R", "R", True),
+            ("Hybrid", "H", True), ("hybrid", "H", True),
+            ("In-Office", "O", True), ("in office", "O", True), ("In_Office", "O", True),
+            ("onsite", "O", True), ("  Onsite ", "O", True),
+            ("Hybrid", "R", False), ("Remote", "O", False), ("In-Office", "H", False),
+        ):
+            with self.subTest(evidence=evidence, shown=code):
+                self.assertIs(self._agreement(FieldKey.RTO_POLICY, evidence, rto_policy=code), expected)
 
     def test_payload_status_review_policy_link_and_pending_block(self):
         make_row(self.org, FieldKey.RTO_POLICY, verified_days_ago=1)
