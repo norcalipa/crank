@@ -33,6 +33,10 @@ export interface WorkspaceFilters {
 // Handler a mounted filter surface registers; returns true when it applied.
 export type FilterTargetHandler = (filters: WorkspaceFilters) => boolean;
 
+// Handler a mounted list registers to open a company's details by id; returns
+// false when the company is not in that list.
+export type CompanyTargetHandler = (organizationId: number) => boolean;
+
 // Snake_case page context on the wire (POST /api/agent/conversations/<id>/).
 export interface WireContext {
     revision: number;

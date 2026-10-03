@@ -10,6 +10,7 @@
 
 import {
     AssistantVisibility,
+    CompanyTargetHandler,
     FilterTargetHandler,
     PrioritiesEditorHost,
     PrioritiesEditorSeed,
@@ -40,6 +41,7 @@ interface WorkspaceStoreShape {
     snapshot: WorkspaceSnapshot;
     listeners: Set<() => void>;
     filterTargets?: FilterTargetHandler[];
+    companyTargets?: CompanyTargetHandler[];
 }
 
 declare global {
@@ -107,7 +109,7 @@ function canonicalContext(context: WorkspaceContext | null): unknown {
     return ordered;
 }
 
-function sameContext(a: WorkspaceContext | null, b: WorkspaceContext | null): boolean {
+export function sameContext(a: WorkspaceContext | null, b: WorkspaceContext | null): boolean {
     return JSON.stringify(canonicalContext(a)) === JSON.stringify(canonicalContext(b));
 }
 
@@ -479,6 +481,30 @@ export function applyWorkspaceFilters(filters: WorkspaceFilters): boolean {
     const targets = store().filterTargets ?? [];
     const target = targets[targets.length - 1];
     return target ? target(filters) === true : false;
+}
+
+// Registers the mounted surface that can open a company's details by id
+// (the rankings list); same newest-wins rules as the filter target.
+export function registerCompanyTarget(handler: CompanyTargetHandler): () => void {
+    const s = store();
+    s.companyTargets = [...(s.companyTargets ?? []), handler];
+    return () => {
+        const current = store();
+        current.companyTargets = (current.companyTargets ?? []).filter((h) => h !== handler);
+    };
+}
+
+export type CompanyOpenOutcome = 'opened' | 'not-found' | 'no-target';
+
+// 'not-found' means a list is mounted but the company is not in it, so the
+// caller must not claim it opened; 'no-target' means navigate instead.
+export function openWorkspaceCompany(organizationId: number): CompanyOpenOutcome {
+    const targets = store().companyTargets ?? [];
+    const target = targets[targets.length - 1];
+    if (!target) {
+        return 'no-target';
+    }
+    return target(organizationId) === true ? 'opened' : 'not-found';
 }
 
 // Maps the live context to the snake_case wire shape. Names and search text

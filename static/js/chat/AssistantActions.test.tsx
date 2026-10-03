@@ -7,20 +7,20 @@ import '@testing-library/jest-dom';
 import AssistantActions, {
     STALE_MESSAGE, TurnActions, companyUrl, filterLabel, filterQuery, filtersToPatch, parseActions,
 } from './AssistantActions';
-import {COMPANY_OPEN_EVENT} from '../suggestCompany/controller';
 import {
-    getWorkspaceSnapshot, registerFilterTarget, resetWorkspaceForTests, setWorkspaceContext,
+    getWorkspaceSnapshot, registerCompanyTarget, registerFilterTarget, resetWorkspaceForTests, setWorkspaceContext,
 } from '../workspace/store';
 import {ApiFailure} from '../priorities/api';
 import * as prioritiesApi from '../priorities/api';
 
 jest.mock('../priorities/api', () => {
     const actual = jest.requireActual('../priorities/api');
-    return {...actual, proposePriorities: jest.fn(), applyProposal: jest.fn()};
+    return {...actual, proposePriorities: jest.fn(), applyProposal: jest.fn(), undoApplied: jest.fn()};
 });
 
 const proposePriorities = prioritiesApi.proposePriorities as jest.Mock;
 const applyProposal = prioritiesApi.applyProposal as jest.Mock;
+const undoApplied = prioritiesApi.undoApplied as jest.Mock;
 
 const remote = {type: 'propose_filters', target: 'rankings', filters: {rto_policy: 'R'}} as const;
 const proposal = {
@@ -42,6 +42,7 @@ beforeEach(() => {
     proposePriorities.mockReset();
     proposePriorities.mockRejectedValue(new Error('offline'));
     applyProposal.mockReset();
+    undoApplied.mockReset();
     assign.mockReset();
     Object.defineProperty(window, 'location', {
         value: {...originalLocation, assign}, writable: true, configurable: true,
@@ -169,19 +170,40 @@ describe('AssistantActions', () => {
         expect(screen.getByRole('button', {name: 'Apply remote filter'})).toBeInTheDocument();
     });
 
-    test('open_company dispatches the in-page event when the list is mounted', () => {
-        const marker = document.createElement('div');
-        marker.id = 'organization-list';
-        document.body.appendChild(marker);
-        const heard = jest.fn();
-        window.addEventListener(COMPANY_OPEN_EVENT, heard);
+    test('open_company opens through the typed company target when the list is mounted', () => {
+        const open = jest.fn(() => true);
+        const release = registerCompanyTarget(open);
         render(<AssistantActions turn={turn([{type: 'open_company', organization_id: 9}], {9: 'Acme'})} />);
         fireEvent.click(screen.getByRole('button', {name: 'Open Acme'}));
-        window.removeEventListener(COMPANY_OPEN_EVENT, heard);
-        expect(heard).toHaveBeenCalledTimes(1);
-        expect((heard.mock.calls[0][0] as CustomEvent).detail).toEqual({organizationId: 9});
+        release();
+        expect(open).toHaveBeenCalledWith(9);
         expect(assign).not.toHaveBeenCalled();
         expect(screen.getByRole('button', {name: 'Opened Acme'})).toHaveAttribute('aria-disabled', 'true');
+        expect(screen.queryByTestId('assistant-action-not-in-list')).not.toBeInTheDocument();
+    });
+
+    test('a company missing from the ranked list says so and never claims it opened', () => {
+        const release = registerCompanyTarget(() => false);
+        render(<AssistantActions turn={turn([{type: 'open_company', organization_id: 9}], {9: 'Acme'})} />);
+        fireEvent.click(screen.getByRole('button', {name: 'Open Acme'}));
+        release();
+        expect(screen.getByTestId('assistant-action-not-in-list')).toHaveTextContent("isn't in the ranked list");
+        expect(screen.getByRole('button', {name: 'Open Acme'})).toHaveAttribute('aria-disabled', 'false');
+        expect(screen.queryByRole('button', {name: 'Opened Acme'})).not.toBeInTheDocument();
+        expect(assign).not.toHaveBeenCalled();
+    });
+
+    test('the not-in-list note clears once the company does open', () => {
+        let present = false;
+        const release = registerCompanyTarget(() => present);
+        render(<AssistantActions turn={turn([{type: 'open_company', organization_id: 9}], {9: 'Acme'})} />);
+        fireEvent.click(screen.getByRole('button', {name: 'Open Acme'}));
+        expect(screen.getByTestId('assistant-action-not-in-list')).toBeInTheDocument();
+        present = true;
+        fireEvent.click(screen.getByRole('button', {name: 'Open Acme'}));
+        release();
+        expect(screen.queryByTestId('assistant-action-not-in-list')).not.toBeInTheDocument();
+        expect(screen.getByRole('button', {name: 'Opened Acme'})).toBeInTheDocument();
     });
 
     test('open_company navigates from other pages and falls back to a generic label', () => {
@@ -191,11 +213,10 @@ describe('AssistantActions', () => {
     });
 
     test('an unnamed open_company reads "Opened company" once applied in-page', () => {
-        const marker = document.createElement('div');
-        marker.id = 'organization-list';
-        document.body.appendChild(marker);
+        const release = registerCompanyTarget(() => true);
         render(<AssistantActions turn={turn([{type: 'open_company', organization_id: 9}])} />);
         fireEvent.click(screen.getByRole('button', {name: 'Open company details'}));
+        release();
         expect(screen.getByRole('button', {name: 'Opened company'})).toBeInTheDocument();
     });
 
@@ -365,7 +386,8 @@ describe('AssistantActions', () => {
                 const box = (top: number, bottom: number) => ({top: top - shift, bottom: bottom - shift} as DOMRect);
                 if (this === log) return {top: 100, bottom: 300} as DOMRect;
                 if (this.getAttribute('data-testid') === 'assistant-action-review') return box(400, 700);
-                return box(350, reviewOpen() ? 700 : 380);
+                const failed = screen.queryByTestId('priorities-review-error') !== null;
+                return box(250, failed ? 760 : reviewOpen() ? 700 : 380);
             });
             proposePriorities.mockRejectedValueOnce(new Error('network'));
             fireEvent.click(screen.getByTestId('assistant-action-save'));
@@ -374,11 +396,11 @@ describe('AssistantActions', () => {
             proposePriorities.mockResolvedValueOnce(proposal);
             fireEvent.click(screen.getByRole('button', {name: 'Try again'}));
             await screen.findByTestId('assistant-action-review');
-            expect(log.scrollTop).toBe(300);
+            expect(log.scrollTop).toBe(408);
             applyProposal.mockRejectedValueOnce(new Error('boom'));
             fireEvent.click(screen.getByRole('button', {name: 'Save'}));
             await screen.findByTestId('priorities-review-error');
-            expect(log.scrollTop).toBeGreaterThan(300);
+            expect(log.scrollTop).toBe(468);
             spy.mockRestore();
         });
 
@@ -480,6 +502,259 @@ describe('AssistantActions', () => {
             fireEvent.click(screen.getByTestId('assistant-action-save'));
             unmount();
             expect(signal?.aborted).toBe(true);
+        });
+    });
+});
+
+describe('per-reply staleness (issue #484 review)', () => {
+    const open12 = {type: 'open_company', organization_id: 12} as const;
+    // Like OrganizationList: the target applies the change and reports the new context.
+    const registerRankings = () => registerFilterTarget((filters) => {
+        setWorkspaceContext({filters});
+        return true;
+    });
+
+    test('applying one action leaves a sibling action of the same reply enabled', () => {
+        registerRankings();
+        const release = registerCompanyTarget(() => {
+            setWorkspaceContext({surface: 'company', organizationId: 12});
+            return true;
+        });
+        render(<AssistantActions turn={turn([remote, open12], {12: 'Acme'})} />);
+        fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+        expect(screen.getByRole('button', {name: 'Open Acme'})).toHaveAttribute('aria-disabled', 'false');
+        expect(screen.getByTestId('assistant-actions-stale')).toHaveTextContent('');
+        fireEvent.click(screen.getByRole('button', {name: 'Open Acme'}));
+        release();
+        expect(screen.getByRole('button', {name: 'Opened Acme'})).toBeInTheDocument();
+        expect(screen.getByRole('button', {name: 'Remote filter applied'})).toBeInTheDocument();
+        expect(screen.getByTestId('assistant-actions-stale')).toHaveTextContent('');
+    });
+
+    test('a change the reply did not cause still makes the sibling stale', () => {
+        registerRankings();
+        let now = 1_000_000;
+        const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+        render(<AssistantActions turn={turn([remote, open12], {12: 'Acme'})} />);
+        fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+        now += 5000;
+        act(() => {
+            setWorkspaceContext({page: 4});
+        });
+        clock.mockRestore();
+        expect(screen.getByRole('button', {name: 'Open Acme'})).toHaveAttribute('aria-disabled', 'true');
+        expect(screen.getByTestId('assistant-actions-stale')).toHaveTextContent(STALE_MESSAGE);
+    });
+
+    test('Back removing the filter reverts the label and lets it be applied again', () => {
+        const target = jest.fn((filters) => {
+            setWorkspaceContext({filters});
+            return true;
+        });
+        registerFilterTarget(target);
+        setWorkspaceContext({surface: 'rankings', filters: {}});
+        let now = 1_000_000;
+        const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+        render(<AssistantActions turn={{...turn([remote]), context: getWorkspaceSnapshot().context}} />);
+        fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+        expect(screen.getByRole('button', {name: 'Remote filter applied'})).toBeInTheDocument();
+        now += 5000;
+        act(() => {
+            setWorkspaceContext({filters: {}});
+        });
+        const again = screen.getByRole('button', {name: 'Apply remote filter'});
+        expect(again).toHaveAttribute('aria-disabled', 'false');
+        fireEvent.click(again);
+        clock.mockRestore();
+        expect(target).toHaveBeenCalledTimes(2);
+        expect(screen.getByRole('button', {name: 'Remote filter applied'})).toBeInTheDocument();
+    });
+
+    test('only an announcing reply puts the stale message in a live region', () => {
+        const {rerender} = render(<AssistantActions turn={turn([remote])} announce={false} />);
+        act(() => {
+            setWorkspaceContext({page: 2});
+        });
+        const quiet = screen.getByTestId('assistant-actions-stale');
+        expect(quiet).toHaveTextContent(STALE_MESSAGE);
+        expect(quiet).not.toHaveAttribute('role');
+        rerender(<AssistantActions turn={turn([remote])} announce />);
+        expect(screen.getByTestId('assistant-actions-stale')).toHaveAttribute('role', 'status');
+    });
+});
+
+describe('focus, undo and scrolling after a save (issue #484 review)', () => {
+    const undoToken = {id: 'u1'} as never;
+    const open = async () => {
+        registerFilterTarget(() => true);
+        render(<AssistantActions turn={turn([remote])} />);
+        fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+    };
+    const openReview = async () => {
+        await open();
+        proposePriorities.mockResolvedValue(proposal);
+        fireEvent.click(screen.getByTestId('assistant-action-save'));
+        await screen.findByTestId('assistant-action-review');
+    };
+    const saveWithUndo = async (undo: unknown = undoToken) => {
+        await openReview();
+        applyProposal.mockResolvedValue({revision: 5, changes: [], undo, scope: 'account'});
+        fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+        await screen.findByTestId('assistant-action-saved');
+    };
+
+    test('Cancel returns focus to the follow-up button', async () => {
+        await openReview();
+        screen.getByRole('button', {name: 'Cancel'}).focus();
+        fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
+        expect(document.activeElement).toBe(screen.getByTestId('assistant-action-save'));
+    });
+
+    test('Save moves focus to the saved note', async () => {
+        await openReview();
+        screen.getByRole('button', {name: 'Save'}).focus();
+        applyProposal.mockResolvedValue({revision: 5, changes: [], undo: null, scope: 'account'});
+        fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+        const note = await screen.findByTestId('assistant-action-saved');
+        expect(document.activeElement).toBe(note);
+        expect(screen.queryByTestId('assistant-action-undo')).not.toBeInTheDocument();
+    });
+
+    test('focus follows the follow-up button into the loading note and then the retry button', async () => {
+        await open();
+        let reject: (reason: unknown) => void = () => undefined;
+        proposePriorities.mockReturnValue(new Promise((_resolve, r) => { reject = r; }));
+        screen.getByTestId('assistant-action-save').focus();
+        fireEvent.click(screen.getByTestId('assistant-action-save'));
+        expect(document.activeElement).toHaveTextContent('Preparing the change for review');
+        await act(async () => { reject(new Error('offline')); });
+        await screen.findByTestId('assistant-action-error');
+        expect(document.activeElement).toBe(screen.getByRole('button', {name: 'Try again'}));
+    });
+
+    test('focus the reader moved elsewhere is left alone', async () => {
+        await open();
+        const elsewhere = document.createElement('button');
+        document.body.appendChild(elsewhere);
+        proposePriorities.mockRejectedValue(new Error('offline'));
+        fireEvent.click(screen.getByTestId('assistant-action-save'));
+        elsewhere.focus();
+        await screen.findByTestId('assistant-action-error');
+        expect(document.activeElement).toBe(elsewhere);
+        elsewhere.remove();
+    });
+
+    test('Undo reverses the save and records the new revision', async () => {
+        await saveWithUndo();
+        undoApplied.mockResolvedValue(6);
+        screen.getByTestId('assistant-action-undo').focus();
+        fireEvent.click(screen.getByTestId('assistant-action-undo'));
+        await waitFor(() => expect(screen.getByTestId('assistant-action-saved')).toHaveTextContent('Change undone.'));
+        expect(document.activeElement).toBe(screen.getByTestId('assistant-action-saved'));
+        expect(undoApplied).toHaveBeenCalledWith(undoToken, expect.any(AbortSignal));
+        expect(getWorkspaceSnapshot().prioritiesRevision).toBe(6);
+        expect(screen.queryByTestId('assistant-action-undo')).not.toBeInTheDocument();
+    });
+
+    test('an undo with no revision leaves the stored one alone, and a second press while pending is ignored', async () => {
+        await saveWithUndo();
+        let resolve: (value: number | null) => void = () => undefined;
+        undoApplied.mockReturnValue(new Promise((r) => { resolve = r; }));
+        const button = screen.getByTestId('assistant-action-undo');
+        fireEvent.click(button);
+        fireEvent.click(screen.getByTestId('assistant-action-undo'));
+        expect(undoApplied).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('assistant-action-undo')).toHaveTextContent('Undoing…');
+        await act(async () => { resolve(null); });
+        expect(getWorkspaceSnapshot().prioritiesRevision).toBe(5);
+    });
+
+    test('an undo failure explains itself and keeps Undo available where the reader left focus', async () => {
+        await saveWithUndo();
+        screen.getByTestId('assistant-action-undo').focus();
+        undoApplied.mockRejectedValueOnce(new ApiFailure(409, 'preference_stale', 'Your priorities changed.', {}, 6));
+        fireEvent.click(screen.getByTestId('assistant-action-undo'));
+        expect(await screen.findByTestId('assistant-action-undo-error'))
+            .toHaveTextContent('can no longer be undone');
+        expect(document.activeElement).toBe(screen.getByTestId('assistant-action-undo'));
+        undoApplied.mockRejectedValueOnce(new ApiFailure(500, 'server_error', 'Server said no'));
+        fireEvent.click(screen.getByTestId('assistant-action-undo'));
+        await waitFor(() => expect(screen.getByTestId('assistant-action-undo-error')).toHaveTextContent('Server said no'));
+        undoApplied.mockRejectedValueOnce(new Error('offline'));
+        fireEvent.click(screen.getByTestId('assistant-action-undo'));
+        await waitFor(() => expect(screen.getByTestId('assistant-action-undo-error'))
+            .toHaveTextContent('Could not undo. Try again.'));
+    });
+
+    test('unmounting during an undo aborts it without a late update', async () => {
+        const {unmount} = (() => {
+            registerFilterTarget(() => true);
+            return render(<AssistantActions turn={turn([remote])} />);
+        })();
+        fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+        proposePriorities.mockResolvedValue(proposal);
+        fireEvent.click(screen.getByTestId('assistant-action-save'));
+        await screen.findByTestId('assistant-action-review');
+        applyProposal.mockResolvedValue({revision: 5, changes: [], undo: undoToken, scope: 'account'});
+        fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+        await screen.findByTestId('assistant-action-saved');
+        let signal: AbortSignal | undefined;
+        undoApplied.mockImplementation((_token, s: AbortSignal) => {
+            signal = s;
+            return new Promise((_resolve, reject) => { s.addEventListener('abort', () => reject(new Error('aborted'))); });
+        });
+        fireEvent.click(screen.getByTestId('assistant-action-undo'));
+        unmount();
+        await act(async () => { await Promise.resolve(); });
+        expect(signal?.aborted).toBe(true);
+    });
+
+    describe('scrolling', () => {
+        const stub = (scroller: HTMLElement, host: {top: number; bottom: number}) =>
+            jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+                return (this === scroller ? {top: 0, bottom: 100} : host) as DOMRect;
+            });
+
+        test('the nearest scrolling ancestor scrolls even when it is not the log', () => {
+            registerFilterTarget(() => true);
+            const panel = document.createElement('div');
+            panel.style.overflowY = 'auto';
+            panel.innerHTML = '<div class="chat-bubble-assistant"></div>';
+            document.body.appendChild(panel);
+            const spy = stub(panel, {top: 50, bottom: 180});
+            render(<AssistantActions turn={turn([remote])} />, {
+                container: (panel.firstElementChild as HTMLElement).appendChild(document.createElement('div')),
+            });
+            fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+            expect(panel.scrollTop).toBe(88);
+            spy.mockRestore();
+            panel.remove();
+        });
+
+        test('a reader who scrolled this reply out of view is not pulled back by a later update', async () => {
+            registerFilterTarget(() => true);
+            const log = document.createElement('div');
+            log.setAttribute('role', 'log');
+            log.innerHTML = '<div class="chat-bubble-assistant"></div>';
+            document.body.appendChild(log);
+            const spy = stub(log, {top: -300, bottom: -150});
+            render(<AssistantActions turn={turn([remote])} />, {
+                container: (log.firstElementChild as HTMLElement).appendChild(document.createElement('div')),
+            });
+            proposePriorities.mockResolvedValue(proposal);
+            fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+            await act(async () => undefined);
+            expect(screen.getByTestId('assistant-action-save')).toBeInTheDocument();
+            expect(log.scrollTop).toBe(0);
+            spy.mockRestore();
+            log.remove();
+        });
+
+        test('with no scrolling ancestor at all nothing throws', () => {
+            registerFilterTarget(() => true);
+            render(<AssistantActions turn={turn([remote])} />);
+            fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+            expect(screen.getByRole('button', {name: 'Remote filter applied'})).toBeInTheDocument();
         });
     });
 });

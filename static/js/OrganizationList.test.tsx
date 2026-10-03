@@ -8,7 +8,7 @@ import * as React from 'react';
 import OrganizationList from './OrganizationList';
 import SuggestCompanyHost from './suggestCompany/SuggestCompanyHost';
 import * as suggestCompanyController from './suggestCompany/controller';
-import {applyWorkspaceFilters, clearWorkspaceContext, getWorkspaceSnapshot, resetWorkspaceForTests, setWorkspaceAccount, setWorkspaceContext} from './workspace/store';
+import {applyWorkspaceFilters, clearWorkspaceContext, getWorkspaceSnapshot, openWorkspaceCompany, resetWorkspaceForTests, setWorkspaceAccount, setWorkspaceContext} from './workspace/store';
 
 interface Organization {
     id: number;
@@ -902,6 +902,20 @@ describe('OrganizationList', () => {
             render(<OrganizationList organizations={organizations} />);
             fire(null);
             expect(screen.queryByRole('dialog')).toBeNull();
+        });
+
+        test('the typed company target opens a listed company, reports a missing one, and is released on unmount', async () => {
+            const {unmount} = render(<OrganizationList organizations={organizations} />);
+            act(() => {
+                expect(openWorkspaceCompany(999999)).toBe('not-found');
+            });
+            expect(screen.queryByRole('dialog')).toBeNull();
+            act(() => {
+                expect(openWorkspaceCompany(1)).toBe('opened');
+            });
+            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+            unmount();
+            expect(openWorkspaceCompany(1)).toBe('no-target');
         });
 
         test('stops listening after unmount', () => {

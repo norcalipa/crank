@@ -8,6 +8,7 @@ import {installPositionTracking, PositionAnchor, restoreResultPosition} from './
 import {
     clearWorkspaceContext,
     getWorkspaceSnapshot,
+    registerCompanyTarget,
     registerFilterTarget,
     setWorkspaceContext,
     subscribeWorkspace,
@@ -163,6 +164,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         this.restoredScrollY = window.scrollY;
         this.unsubscribeWorkspace = subscribeWorkspace(this.handleWorkspaceChange);
         this.unregisterFilterTarget = registerFilterTarget(this.applyAssistantFilters);
+        this.unregisterCompanyTarget = registerCompanyTarget(this.openCompanyById);
     }
 
     componentDidUpdate(_prevProps: unknown, prevState: OrganizationListState) {
@@ -186,9 +188,11 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         this.stopPositionTracking?.();
         this.unsubscribeWorkspace?.();
         this.unregisterFilterTarget?.();
+        this.unregisterCompanyTarget?.();
     }
 
     private unregisterFilterTarget?: () => void;
+    private unregisterCompanyTarget?: () => void;
     private stopPositionTracking?: () => void;
     private restoredAfterHydration = false;
     private restoredScrollY = 0;
@@ -349,10 +353,17 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     handleCompanyOpenEvent = (event: Event) => {
         const organizationId = (event as CustomEvent).detail?.organizationId;
         if (!Number.isInteger(organizationId)) return;
+        this.openCompanyById(organizationId);
+    };
+
+    // Opens the dialog for an id in this list; false when it is not ranked here.
+    openCompanyById = (organizationId: number): boolean => {
         const organization = this.props.organizations.find((org) => org.id === organizationId);
-        if (organization) {
-            this.handleOrganizationClick(organization);
+        if (!organization) {
+            return false;
         }
+        this.handleOrganizationClick(organization);
+        return true;
     };
 
     getUrlState = () => {

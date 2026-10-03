@@ -12,6 +12,8 @@ import {
     minimizeAssistant,
     normalizeWorkspaceContext,
     openAssistant,
+    openWorkspaceCompany,
+    registerCompanyTarget,
     registerFilterTarget,
     replaceWorkspaceState,
     resetPriorities,
@@ -405,5 +407,20 @@ describe('validated page context (issue #484)', () => {
         expect(applyWorkspaceFilters({rtoPolicy: 'H'})).toBe(true);
         releaseFirst();
         expect(applyWorkspaceFilters({rtoPolicy: 'H'})).toBe(false);
+    });
+
+    test('company targets: none navigates, the newest decides, a miss is not an open, release restores', () => {
+        expect(openWorkspaceCompany(5)).toBe('no-target');
+        const first = jest.fn(() => true);
+        const second = jest.fn(() => false);
+        const releaseFirst = registerCompanyTarget(first);
+        const releaseSecond = registerCompanyTarget(second);
+        expect(openWorkspaceCompany(5)).toBe('not-found');
+        expect(second).toHaveBeenCalledWith(5);
+        expect(first).not.toHaveBeenCalled();
+        releaseSecond();
+        expect(openWorkspaceCompany(5)).toBe('opened');
+        releaseFirst();
+        expect(openWorkspaceCompany(5)).toBe('no-target');
     });
 });
