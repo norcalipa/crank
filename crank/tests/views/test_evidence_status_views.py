@@ -2,7 +2,11 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 """Rankings and provenance carry separate coverage / freshness / evidence status (#473)."""
 
+import html
 import json
+import re
+from pathlib import Path
+from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
@@ -13,7 +17,13 @@ from django.test.utils import CaptureQueriesContext
 from crank.models.company_profile import CompanyFieldEvidence
 from crank.models.organization import Organization
 from crank.models.score import Score, ScoreAlgorithm, ScoreAlgorithmWeight, ScoreType
-from crank.services.company_evidence import EVIDENCE_SCHEMA_VERSION, TRACKED_FIELD_COUNT
+from crank.services.company_evidence import (
+    DEFAULT_FRESHNESS_DAYS,
+    EVIDENCE_SCHEMA_VERSION,
+    FIELD_FRESHNESS_POLICY,
+    TRACKED_FIELD_COUNT,
+)
+from crank.views.index import freshness_windows
 from crank.services.scores import (
     algorithm_results_cache_key,
     organization_provenance_api_cache_key,
@@ -223,3 +233,89 @@ class ProvenanceEvidenceTests(TestCase):
         cache.clear()
         self.client.force_login(User.objects.create_user("someone", password="pw"))
         self.assertEqual(self._get(), anonymous)
+
+
+@override_settings(CACHES=LOCMEM)
+class LegendParityTests(TestCase):
+    """The server-rendered legend must say what ``EvidenceBadge`` says (#473)."""
+
+    def setUp(self):
+        cache.clear()
+        ScoreAlgorithm.objects.create(
+            id=DEFAULT_ALGORITHM_ID,
+            name="Algo",
+            description_content="test.md",
+            status=1,
+        )
+        cache.set("algorithm_object_list", ScoreAlgorithm.objects.filter(status=1))
+
+    def _page(self):
+        response = self.client.get(f"/algo/{DEFAULT_ALGORITHM_ID}/")
+        self.assertEqual(response.status_code, 200)
+        return response.content.decode()
+
+    def _labels_ts_entries(self):
+        source = (Path(__file__).resolve().parents[3] / "static/js/labels.ts").read_text()
+        entries = {}
+        for match in re.finditer(
+            r"^\s+(\w+): \{label: '([^']+)', marker: '([^']+)', meaning: '([^']+)'\},?$",
+            source,
+            re.M,
+        ):
+            key, label, marker, meaning = match.groups()
+            marker = re.sub(
+                r"\\u([0-9A-Fa-f]{4})", lambda m: chr(int(m.group(1), 16)), marker
+            )
+            entries[key] = (label, marker, meaning)
+        return entries
+
+    def test_legend_words_markers_and_meanings_match_labels_ts(self):
+        expected = self._labels_ts_entries()
+        self.assertEqual(
+            set(expected),
+            {"verified", "stale", "unknown", "profile", "pending", "conflicted"},
+        )
+        page = self._page()
+        legend = page[page.index('data-testid="evidence-legend"'):]
+        legend = legend[: legend.index("</ul>")]
+        rendered = {}
+        for key, marker, label, meaning in re.findall(
+            r'evidence-badge-(\w+)"><span class="evidence-badge-marker" aria-hidden="true">'
+            r"([^<]+)</span> ([^<]+)</span>: ([^<]+)</li>",
+            legend,
+        ):
+            rendered[key] = (label, html.unescape(marker), html.unescape(meaning))
+        self.assertEqual(rendered, expected)
+
+    def test_freshness_windows_come_from_the_policy_table(self):
+        page = self._page()
+        section = page[page.index("evidence-legend-windows"):]
+        section = section[: section.index("</ul>")]
+        rendered = {
+            days: html.unescape(fields)
+            for fields, days in re.findall(r"<li>([^<]+): (\d+) days</li>", section)
+        }
+        expected = {}
+        for key, label in CompanyFieldEvidence.FieldKey.choices:
+            expected.setdefault(str(FIELD_FRESHNESS_POLICY[key]), []).append(str(label).lower())
+        self.assertEqual(set(rendered), set(expected))
+        for days, labels in expected.items():
+            self.assertEqual(
+                sorted(rendered[days].lower().replace(" and ", ", ").split(", ")),
+                sorted(labels),
+            )
+        self.assertIn(f"How many of the {TRACKED_FIELD_COUNT} tracked facts", page)
+
+    def test_windows_group_unlisted_keys_under_the_default(self):
+        with patch.dict(FIELD_FRESHNESS_POLICY, clear=True):
+            windows = freshness_windows()
+        self.assertEqual(
+            windows,
+            [
+                {
+                    "days": DEFAULT_FRESHNESS_DAYS,
+                    "fields": "RTO policy, funding round, public status, accelerated vesting, "
+                    "locations, company name and company domain",
+                }
+            ],
+        )

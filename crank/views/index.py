@@ -9,7 +9,13 @@ from django.core.cache import cache
 from django.conf import settings
 from crank.auth import sign_in_url
 from crank.models.score import ScoreAlgorithm, ScoreType
-from crank.services.company_evidence import evidence_summaries_for_orgs
+from crank.services.company_evidence import (
+    DEFAULT_FRESHNESS_DAYS,
+    FIELD_FRESHNESS_POLICY,
+    TRACKED_FIELD_COUNT,
+    evidence_summaries_for_orgs,
+)
+from crank.models.company_profile import CompanyFieldEvidence
 from crank.services.scores import algorithm_results_cache_key
 from crank.settings.base import CONTENT_DIR, DEFAULT_ALGORITHM_ID
 from crank.forms.organization_filter import OrganizationFilterForm
@@ -22,6 +28,26 @@ from crank.forms.organization_filter import OrganizationFilterForm
 #: guard. Contains only unreserved characters, so ``urlencode`` leaves it
 #: byte-identical and the client can find it in the emitted URL.
 COMPANY_ID_PLACEHOLDER = "__COMPANY_ID__"
+
+
+def freshness_windows():
+    """``[{"days": n, "fields": "A, b and c"}]`` from ``FIELD_FRESHNESS_POLICY``.
+
+    The legend states the re-check windows the server actually applies, so the
+    page can never drift from the policy table.
+    """
+    by_days: dict[int, list[str]] = {}
+    for key, label in CompanyFieldEvidence.FieldKey.choices:
+        by_days.setdefault(FIELD_FRESHNESS_POLICY.get(key, DEFAULT_FRESHNESS_DAYS), []).append(str(label))
+    windows = []
+    for days in sorted(by_days):
+        labels = [
+            label if index == 0 or label[:2].isupper() else label[0].lower() + label[1:]
+            for index, label in enumerate(by_days[days])
+        ]
+        joined = labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} and {labels[-1]}"
+        windows.append({'days': days, 'fields': joined})
+    return windows
 
 
 class IndexView(generic.ListView):
@@ -161,6 +187,8 @@ class IndexView(generic.ListView):
             {'id': algo.id, 'name': algo.name}
             for algo in context['all_algorithms'].order_by('id')
         ]
+        context['freshness_windows'] = freshness_windows()
+        context['tracked_field_count'] = TRACKED_FIELD_COUNT
         context['current_algorithm_id'] = self.algorithm.id if self.algorithm else None
         context['form'] = OrganizationFilterForm(
             initial={'accelerated_vesting': self.request.session.get('accelerated_vesting')}, request=self.request)

@@ -24,24 +24,24 @@
                         <dt>Rating coverage</dt>
                         <dd>How many of the active rating dimensions have at least one score for the company, shown as "N of M". A dimension with no score counts as missing, never as zero.</dd>
                         <dt>Fact coverage</dt>
-                        <dd>How many of the 7 tracked facts (RTO policy, funding round, public status, accelerated vesting, locations, company name and company domain) have accepted evidence.</dd>
+                        <dd>How many of the {{ tracked_field_count }} tracked facts (RTO policy, funding round, public status, accelerated vesting, locations, company name and company domain) have accepted evidence.</dd>
                         <dt>Freshness</dt>
                         <dd>"Last verified" is the most recent date a source was re-checked and still supported an accepted fact. Editing the company record does not re-verify facts. Each fact has its own re-check window:
                             <ul class="mb-0 mt-1 ps-3 evidence-legend-windows">
-                                <li>RTO policy: 90 days</li>
-                                <li>Funding round, public status and locations: 180 days</li>
-                                <li>Accelerated vesting, company name and company domain: 365 days</li>
+                                {% for window in freshness_windows %}
+                                <li>{{ window.fields }}: {{ window.days }} days</li>
+                                {% endfor %}
                             </ul>
                         </dd>
                         <dt>Evidence status</dt>
                         <dd>
                             <ul class="evidence-legend list-unstyled mb-0" data-testid="evidence-legend">
-                                <li><span class="evidence-badge evidence-badge-verified"><span class="evidence-badge-marker" aria-hidden="true">&#10003;</span> Verified</span>: accepted and re-checked within its window.</li>
-                                <li><span class="evidence-badge evidence-badge-stale"><span class="evidence-badge-marker" aria-hidden="true">!</span> Stale</span>: accepted, but not re-checked within its window.</li>
-                                <li><span class="evidence-badge evidence-badge-unknown"><span class="evidence-badge-marker" aria-hidden="true">?</span> Unknown</span>: no accepted evidence yet.</li>
-                                <li><span class="evidence-badge evidence-badge-profile"><span class="evidence-badge-marker" aria-hidden="true">&bull;</span> Profile data</span>: a curated profile value without field-level evidence.</li>
-                                <li><span class="evidence-badge evidence-badge-pending"><span class="evidence-badge-marker" aria-hidden="true">&hellip;</span> Pending review</span>: an observation is waiting for review and is not verified.</li>
-                                <li><span class="evidence-badge evidence-badge-conflicted"><span class="evidence-badge-marker" aria-hidden="true">&#9888;&#xFE0E;</span> Conflicting observation</span>: a later observation disagrees and is not verified.</li>
+                                <li><span class="evidence-badge evidence-badge-verified"><span class="evidence-badge-marker" aria-hidden="true">&#10003;</span> Verified</span>: Accepted and re-checked within its freshness window.</li>
+                                <li><span class="evidence-badge evidence-badge-stale"><span class="evidence-badge-marker" aria-hidden="true">!</span> Stale</span>: Accepted, but not re-verified within its freshness window.</li>
+                                <li><span class="evidence-badge evidence-badge-unknown"><span class="evidence-badge-marker" aria-hidden="true">?</span> Unknown</span>: No accepted evidence for this fact.</li>
+                                <li><span class="evidence-badge evidence-badge-profile"><span class="evidence-badge-marker" aria-hidden="true">&bull;</span> Profile data</span>: Curated profile value without field-level evidence.</li>
+                                <li><span class="evidence-badge evidence-badge-pending"><span class="evidence-badge-marker" aria-hidden="true">&hellip;</span> Pending review</span>: An observation is waiting for review. Not verified.</li>
+                                <li><span class="evidence-badge evidence-badge-conflicted"><span class="evidence-badge-marker" aria-hidden="true">&#9888;&#xFE0E;</span> Conflicting observation</span>: A later observation disagrees. Not verified.</li>
                             </ul>
                         </dd>
                     </dl>
