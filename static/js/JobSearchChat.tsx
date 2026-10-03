@@ -20,6 +20,7 @@ import {
     setPrioritiesRevision,
 } from './workspace/store';
 import {accountDigest} from './workspace/persistence';
+import {WorkspaceSnapshot} from './workspace/types';
 
 export interface JobResult {
     id: number;
@@ -959,6 +960,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // Issue #484: typed actions per assistant message id. In memory only, so a
     // reload never resurrects a suggestion for a view that no longer exists.
     const [turnActions, setTurnActions] = React.useState<Record<number, TurnActions>>({});
+    const sentSnapshots = React.useRef(new Map<string, WorkspaceSnapshot>());
     const [pending, setPending] = React.useState(false);
     const [loading, setLoading] = React.useState(true);
     const [initError, setInitErrorState] = React.useState<string | null>(null);
@@ -1120,6 +1122,15 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
         return null;
     }, [messages]);
+
+    // Only the newest reply with actions announces a stale view, so one view
+    // change is spoken once, not once per past reply.
+    const newestActionsId = React.useMemo(() => {
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (turnActions[messages[i].id]) return messages[i].id;
+        }
+        return null;
+    }, [messages, turnActions]);
 
     // Register the long-lived listeners exactly once: window/viewport resize plus
     // a one-shot document.fonts.ready hook so the height is re-measured once web
@@ -1528,6 +1539,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         setMessages([]);
         setStaleNotes({});
         setTurnActions({});
+        sentSnapshots.current.clear();
         setConversationId(null);
         conversationIdRef.current = null;
         setInput('');
@@ -1741,7 +1753,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         keepDraftRef.current = false;
         // Context this turn was sent under (issue #479): compared with the
         // live context when the reply lands.
-        const sentSnapshot = getWorkspaceSnapshot();
+        // A retry of the same turn is re-grounded on the page it was first asked
+        // from, not on whatever is open now.
+        const sentSnapshot = sentSnapshots.current.get(key) ?? getWorkspaceSnapshot();
+        sentSnapshots.current.set(key, sentSnapshot);
         const sentContextLabel = describeWorkspaceContext(sentSnapshot.context);
         const sentRevision = sentSnapshot.contextRevision;
         const wireContext = buildWireContext(sentSnapshot);
@@ -1958,19 +1973,19 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             // The reply is server history and is always appended; if the page
             // context moved on meanwhile it is labelled with the page the
             // question was asked from, without touching the context strip or
-            // the store. The server echoes the revision it answered; a reply
-            // from a server that does not (older deploy) falls back to the
-            // revision this turn was sent under.
-            const answeredRevision = typeof data.context?.revision === 'number'
-                ? data.context.revision
-                : sentRevision;
-            if (sentContextLabel && answeredRevision !== getWorkspaceSnapshot().contextRevision) {
+            // the store.
+            // The reply is judged against the revision this turn was sent under.
+            // The server only echoes what it received, so a different echo means
+            // it answered some other view: no actions are kept for it.
+            const echoMatches = typeof data.context?.revision !== 'number'
+                || data.context.revision === sentRevision;
+            if (sentContextLabel && sentRevision !== getWorkspaceSnapshot().contextRevision) {
                 const answered = sentContextLabel.replace(/^(About|Comparing) /, '');
                 setStaleNotes((prev) => ({...prev, [data.message.id]: `Asked while viewing ${answered}`}));
             }
             // Actions are only trusted alongside a context echo; they stay
-            // enabled for the revision the server answered (issue #484).
-            const actions = data.context ? parseActions(data.actions) : [];
+            // enabled for the revision this turn was sent under (issue #484).
+            const actions = data.context && echoMatches ? parseActions(data.actions) : [];
             if (actions.length > 0) {
                 const names: Record<number, string> = {};
                 for (const org of data.message.results?.organizations ?? []) {
@@ -1982,7 +1997,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 }
                 setTurnActions((prev) => ({
                     ...prev,
-                    [data.message.id]: {actions, revision: answeredRevision, names},
+                    [data.message.id]: {actions, revision: sentRevision, names, context: sentContext},
                 }));
             }
             // Keep the turn in its ORIGINAL position and insert the reply
@@ -2567,7 +2582,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                                         <AvailabilityNotice availability={availability} />
                                     )}
                                     {m.role === 'assistant' && turnActions[m.id] && (
-                                        <AssistantActions turn={turnActions[m.id]} />
+                                        <AssistantActions turn={turnActions[m.id]} announce={m.id === newestActionsId} />
                                     )}
                                     {m.role === 'user' && m.delivery_state === 'pending' && retryKey !== m.idempotency_key && (
                                         <div className="chat-retry-panel mt-2" data-testid="pending-turn">

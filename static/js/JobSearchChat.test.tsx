@@ -4262,17 +4262,43 @@ describe('validated page context and assistant actions (issue #484)', () => {
         expect(postBodies(mock, messageUrl()).pop()).not.toHaveProperty('context');
     });
 
-    test('an echo that matches the live revision shows no note even if the sent revision differs', async () => {
+    test('a mismatched echo is judged by the revision that was sent: note shown, no actions kept', async () => {
         await renderChat([]);
         act(() => setWorkspaceContext({surface: 'company', organizationId: 3, organizationName: 'Acme'}));
+        const sent = getWorkspaceSnapshot().contextRevision;
         const {settle} = await send('hi', {
-            message: assistantMessage(91, 'Same view'), preferences_changed: false,
-            context: {revision: getWorkspaceSnapshot().contextRevision + 1},
+            message: assistantMessage(91, 'Odd echo'), preferences_changed: false,
+            context: {revision: sent + 1}, actions: [remoteAction],
         });
         act(() => setWorkspaceContext({organizationId: 4, organizationName: 'Other'}));
         settle();
-        await screen.findByText('Same view');
-        expect(screen.queryByTestId('stale-context-note')).not.toBeInTheDocument();
+        await screen.findByText('Odd echo');
+        expect(screen.getByTestId('stale-context-note')).toHaveTextContent('Asked while viewing Acme');
+        expect(screen.queryByTestId('assistant-actions')).not.toBeInTheDocument();
+    });
+
+    test('a retried turn is sent with the page it was first asked from', async () => {
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'company', organizationId: 3, organizationName: 'Alpha'}));
+        const asked = getWorkspaceSnapshot().contextRevision;
+        const mock = global.fetch as jest.Mock;
+        const failFirst = holdNextFetch(mock);
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'Is this company remote?'}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        await postedKeyAfterSend(mock);
+        failFirst(jsonResponse({error: {type: 'service_error', message: 'down', request_id: 'r1'}}, 500));
+        const retry = await screen.findByTestId('retry-button');
+
+        act(() => setWorkspaceContext({organizationId: 4, organizationName: 'Beta'}));
+        expect(getWorkspaceSnapshot().contextRevision).toBeGreaterThan(asked);
+        mock.mockResolvedValueOnce(jsonResponse({message: assistantMessage(88, 'Retried'), preferences_changed: false}, 201));
+        fireEvent.click(retry);
+        await screen.findByText('Retried');
+
+        const posts = postBodies(mock, messageUrl());
+        expect(posts).toHaveLength(2);
+        expect(posts[1].context).toEqual(posts[0].context);
+        expect(posts[1].context).toMatchObject({revision: asked, organization_id: 3});
     });
 
     test('an echo behind the live revision shows the note', async () => {
