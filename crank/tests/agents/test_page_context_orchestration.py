@@ -163,6 +163,31 @@ def test_stale_context_suppresses_actions():
     assert result.action_drop_reasons == ("stale_context",)
 
 
+@pytest.mark.parametrize(
+    ("reported", "expected_actions", "expected_drops"),
+    [(6, ("open_company",), ()), (3, (), ("stale_context",))],
+)
+def test_actions_follow_the_current_preferences_revision(
+    db, django_user_model, reported, expected_actions, expected_drops
+):
+    """The client reports the current UserPreference.revision (6); the revision the stored
+    matches were computed for lags it (3) while recompute is off, and is stale."""
+    from crank.models.preference import UserPreference
+
+    user = django_user_model.objects.create_user("rev", "rev@example.com", "pw")
+    pref = UserPreference.objects.create(user=user)
+    UserPreference.objects.filter(pk=pref.pk).update(revision=6)
+    ctx = page_context.resolve(
+        {"revision": 2, "organization_id": 1, "preference_revision": reported}, user=user,
+    )
+    gw = ScriptedGateway({**BASE, "actions": [OPEN_1]})
+    result = make_orchestrator(gw, orgs=(ORG_ACME,)).run(
+        user_prompt="x", conversation=[], preference_markdown="", page_context=ctx
+    )
+    assert tuple(a["type"] for a in result.actions) == expected_actions
+    assert result.action_drop_reasons == expected_drops
+
+
 def test_actions_section_only_with_page_context():
     _, with_ctx = run({}, {"revision": 2, "organization_id": 3})
     _, without = run({})

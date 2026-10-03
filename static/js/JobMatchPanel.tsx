@@ -602,6 +602,20 @@ export interface JobMatchPanelProps {
     signInUrl?: string;
 }
 
+// The preferences revision the user is looking at: the one this tab last saved
+// (>= the stored rows' revision), else the stored rows' own while they are
+// current. Stale rows with no known edit report nothing rather than a lagging value.
+function currentPreferenceRevision(
+    revision: {preference_revision?: number | null; stale?: boolean} | null,
+): number | undefined {
+    const stored = typeof revision?.preference_revision === 'number' ? revision.preference_revision : undefined;
+    const saved = getWorkspaceSnapshot().prioritiesRevision;
+    if (saved !== null && (stored === undefined || saved >= stored)) {
+        return saved;
+    }
+    return revision?.stale === true ? undefined : stored;
+}
+
 const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, signInUrl = '/accounts/login/'}) => {
     const [phase, setPhase] = React.useState<PanelPhase>('loading');
     const [emptyState, setEmptyState] = React.useState<EmptyStatePayload | null>(null);
@@ -684,13 +698,16 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             }
             setRankedMatches(rankedData);
             // Issue #484: the server compares these with its own revisions to
-            // tell the assistant when the user's view is outdated.
+            // tell the assistant when the user's view is outdated. The revision
+            // is the CURRENT preferences revision, not the one the stored rows
+            // were computed for: those lag every edit while recompute is off.
             const reported: {resultGeneration?: number; preferenceRevision?: number} = {};
             if (generation !== null) {
                 reported.resultGeneration = generation;
             }
-            if (typeof revision?.preference_revision === 'number') {
-                reported.preferenceRevision = revision.preference_revision;
+            const preferenceRevision = currentPreferenceRevision(revision);
+            if (preferenceRevision !== undefined) {
+                reported.preferenceRevision = preferenceRevision;
             }
             if (Object.keys(reported).length > 0) {
                 setWorkspaceContext(reported);
@@ -717,6 +734,9 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             seenPrioritiesRevision.current = null;
         } else if (revision !== seenPrioritiesRevision.current) {
             seenPrioritiesRevision.current = revision;
+            // Report the new revision now, not after the refetch, so a turn sent
+            // in between is not judged against the pre-edit view.
+            setWorkspaceContext({preferenceRevision: revision});
             void fetchStatus();
         }
     }), [fetchStatus]);

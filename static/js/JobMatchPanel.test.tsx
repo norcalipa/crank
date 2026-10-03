@@ -1222,6 +1222,49 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
         });
     });
 
+    const revisionFetch = (block: Record<string, unknown>) => {
+        global.fetch = jest.fn().mockImplementation((url: string) => {
+            if (url.includes('/status/')) return Promise.resolve(jsonResponse(statusPayload('ok')));
+            if (url.includes('/ranked/')) {
+                return Promise.resolve(jsonResponse(rankedPayload([{...sampleJobMatch, revision: {result_generation: 6}}])));
+            }
+            return Promise.resolve(jsonResponse(matchPayload(1, [{...sampleJobMatch, revision: {result_generation: 6, ...block}}])));
+        });
+    };
+
+    test('stored rows behind an edit made in this tab report the current revision, not the lagging one', async () => {
+        revisionFetch({preference_revision: 3, stale: true});
+        act(() => setPrioritiesRevision(9));
+        render(<JobMatchPanel/>);
+        await screen.findByTestId('ranked-job-42');
+        expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'jobs', preferenceRevision: 9});
+    });
+
+    test('an edit made after load is reported immediately, before the refetch lands', async () => {
+        revisionFetch({preference_revision: 3, stale: true});
+        render(<JobMatchPanel/>);
+        await screen.findByTestId('ranked-job-42');
+        expect(getWorkspaceSnapshot().context).not.toHaveProperty('preferenceRevision');
+        act(() => setPrioritiesRevision(7));
+        expect(getWorkspaceSnapshot().context).toMatchObject({preferenceRevision: 7});
+    });
+
+    test('stale rows with no known edit report no preference revision rather than a lagging one', async () => {
+        revisionFetch({preference_revision: 3, stale: true});
+        render(<JobMatchPanel/>);
+        await screen.findByTestId('ranked-job-42');
+        expect(getWorkspaceSnapshot().context).toMatchObject({resultGeneration: 6});
+        expect(getWorkspaceSnapshot().context).not.toHaveProperty('preferenceRevision');
+    });
+
+    test('rows that are current report their own revision even when this tab saved an older one', async () => {
+        revisionFetch({preference_revision: 3});
+        act(() => setPrioritiesRevision(2));
+        render(<JobMatchPanel/>);
+        await screen.findByTestId('ranked-job-42');
+        expect(getWorkspaceSnapshot().context).toMatchObject({preferenceRevision: 3});
+    });
+
     test('nothing is reported when the payloads carry no generation or revision', async () => {
         installBatchedFetch([{title: 'Bare', generation: null, hold: false}]);
         render(<JobMatchPanel/>);
