@@ -42,7 +42,7 @@
     z-index: var(--z-blocking-dialog);
     display: flex;
     justify-content: center;
-    align-items: center;
+    align-items: flex-start;
 }
 
 /* Suggest-company modal rides Bootstrap's .modal but must also sit above the
@@ -678,15 +678,16 @@ body.app-nav-drawer-open {
 .organization-table {
     table-layout: fixed;
     width: 100%;
-    min-width: 48rem;
+    min-width: 56rem;
     margin-bottom: 0;
 }
 
-.organization-table .col-rank { width: 5rem; }
-.organization-table .col-score { width: 11rem; }
-.organization-table .col-funding { width: 9rem; }
-.organization-table .col-rto { width: 8rem; }
-.organization-table .col-profile { width: 9rem; }
+.organization-table .col-rank { width: 3.75rem; }
+.organization-table .col-score { width: 7rem; }
+.organization-table .col-funding { width: 8rem; }
+.organization-table .col-rto { width: 6.5rem; }
+.organization-table .col-profile { width: 6.5rem; }
+.organization-table .col-evidence { width: 14rem; }
 .organization-table .col-name { width: auto; }
 
 .organization-table th,
@@ -711,12 +712,12 @@ body.app-nav-drawer-open {
 
 /* The table-to-card switch follows the width available to the results (not
    the viewport), so it also holds when a side panel narrows the page (#479).
-   48rem is the table's minimum width. */
+   56rem is the table's minimum width. */
 .organization-results {
     container: organization-results / inline-size;
 }
 
-@container organization-results (max-width: 48rem) {
+@container organization-results (max-width: 56rem) {
     .organization-table-wrap {
         display: none;
     }
@@ -752,7 +753,6 @@ body.app-nav-drawer-open {
     }
 
     .organization-card .organization-card-score {
-        grid-column: 1 / -1;
         font-size: 1.25rem;
         font-weight: 700;
     }
@@ -826,7 +826,8 @@ body.app-nav-drawer-open {
 }
 
 .popup-overlay {
-    padding: .75rem;
+    --popup-gap-top: clamp(.75rem, 4vh, 2rem);
+    padding: var(--popup-gap-top) .75rem .75rem;
 }
 
 .popup-details {
@@ -864,7 +865,7 @@ body.app-nav-drawer-open {
 }
 
 .popup-details .card-header .btn-close:focus-visible {
-    outline: 3px solid var(--bs-warning);
+    outline: 3px solid #93c5fd;
     outline-offset: 2px;
 }
 
@@ -1012,7 +1013,8 @@ body.app-nav-drawer-open {
     }
 
     .popup-details {
-        max-height: calc(100vh - 1.5rem);
+        max-height: calc(100vh - var(--popup-gap-top, .75rem) - .75rem);
+        max-height: calc(100dvh - var(--popup-gap-top, .75rem) - .75rem);
     }
 
     .popup-details .card-header h2 {
@@ -1021,6 +1023,10 @@ body.app-nav-drawer-open {
 
     .popup-details .card-body .row > [class*='col-'] {
         width: 100%;
+    }
+
+    .popup-details .card-body .row > .offset-5 {
+        margin-left: 0;
     }
 
     .popup-details .card-body .row.mb-3 {
@@ -2816,17 +2822,27 @@ body.app-nav-drawer-open {
 .popup-details {
     display: flex;
     flex-direction: column;
-    max-height: calc(100vh - 1.5rem);
-    max-height: calc(100dvh - 1.5rem);
+    max-height: calc(100vh - var(--popup-gap-top, .75rem) - .75rem);
+    max-height: calc(100dvh - var(--popup-gap-top, .75rem) - .75rem);
 }
 
 .popup-details .card-header {
     flex: 0 0 auto;
 }
 
+/* Positioned so absolutely placed .visually-hidden spans scroll with the body, not the overlay. */
 .popup-details .card-body {
+    position: relative;
     overflow-y: auto;
     min-height: 0;
+}
+
+.popup-details .card-body :is(a, button, summary) {
+    scroll-margin-block: .75rem;
+}
+
+.popup-details h3[tabindex="-1"]:focus {
+    outline: none;
 }
 
 .popup-details-grid {
@@ -3414,7 +3430,7 @@ body.assistant-open .app-content .table-responsive,
     .evidence-row-value {
         display: grid;
         grid-template-columns: minmax(0, 1fr) 10.5rem;
-        align-items: center;
+        align-items: baseline;
     }
 
     .evidence-row-value > .correction-action {
@@ -3802,3 +3818,142 @@ span.priority-chip-button { cursor: default; }
 @media (min-width: 768px) {
     #job-search-chat-title { font-size: 1rem; font-weight: 600; color: #f8f9fa; }
 }
+
+/* issue #473 evidence status */
+.evidence-badge {
+    display: inline-block;
+    padding: .125rem .5rem;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    font-size: .8125rem;
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: nowrap;
+}
+
+.evidence-badge-marker { font-variant-emoji: text; }
+
+.evidence-badge-verified { color: var(--bs-success-text-emphasis); }
+.evidence-badge-stale { color: var(--bs-warning-text-emphasis); }
+.evidence-badge-unknown { color: var(--bs-secondary-text-emphasis); }
+.evidence-badge-profile { color: var(--bs-primary-text-emphasis); }
+.evidence-badge-pending { color: var(--bs-info-text-emphasis); border-style: dashed; }
+.evidence-badge-conflicted { color: var(--bs-danger-text-emphasis); border-style: dashed; }
+
+[data-bs-theme="dark"] .evidence-badge-verified { color: #86efac; }
+[data-bs-theme="dark"] .evidence-badge-stale { color: #fcd34d; }
+[data-bs-theme="dark"] .evidence-badge-unknown { color: #d1d5db; }
+[data-bs-theme="dark"] .evidence-badge-profile { color: #bfdbfe; }
+[data-bs-theme="dark"] .evidence-badge-pending { color: #c4b5fd; }
+[data-bs-theme="dark"] .evidence-badge-conflicted { color: #fda4af; }
+
+.table .evidence-badge,
+.card .evidence-badge { background: transparent; }
+
+.evidence-summary {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: .25rem;
+    font-size: .8125rem;
+    min-inline-size: 0;
+    overflow-wrap: anywhere;
+}
+
+.evidence-summary-fresh { color: var(--bs-secondary-color); }
+
+.organization-card .organization-card-evidence { grid-column: 1 / -1; }
+
+.evidence-coverage > div + div { margin-top: .25rem; }
+
+.evidence-row-value .evidence-value,
+.evidence-pending-item .evidence-observed-value {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.evidence-meta a { overflow-wrap: anywhere; }
+
+.evidence-external-note { color: var(--bs-secondary-color); font-size: .75rem; }
+
+.evidence-timestamps { margin-top: .25rem; }
+
+.evidence-timestamps summary {
+    display: list-item;
+    list-style-position: inside;
+    inline-size: fit-content;
+    min-block-size: 44px;
+    padding-block: .6875rem;
+    margin-block-start: 0;
+    line-height: 1.5;
+    cursor: pointer;
+    color: var(--bs-link-color);
+}
+
+.evidence-timestamps summary:focus-visible,
+.evidence-retry:focus-visible,
+.evidence-empty-action:focus-visible {
+    outline: 3px solid #93c5fd;
+    outline-offset: 2px;
+}
+
+.evidence-timestamps dl { display: grid; grid-template-columns: max-content 1fr; gap: 0 .75rem; }
+.evidence-timestamps dd { margin: 0; }
+
+.evidence-retry,
+.evidence-empty-action {
+    min-block-size: 44px;
+    display: inline-flex;
+    align-items: center;
+}
+
+.evidence-skeleton { min-block-size: 11rem; }
+
+.evidence-row + .evidence-row,
+.evidence-pending-item + .evidence-pending-item,
+.evidence-group + .evidence-group > .evidence-row:first-child {
+    padding-top: .5rem;
+    background: linear-gradient(var(--bs-border-color-translucent), var(--bs-border-color-translucent))
+        center top / calc(100% - var(--bs-gutter-x)) 1px no-repeat;
+}
+
+.evidence-meta a:focus-visible {
+    outline: 2px solid #93c5fd;
+    outline-offset: 1px;
+    border-radius: 2px;
+}
+
+.evidence-external-note { white-space: nowrap; }
+
+.evidence-empty {
+    padding: .75rem;
+    border: 1px solid var(--bs-border-color);
+    border-radius: var(--bs-border-radius);
+}
+
+.evidence-skeleton-row { display: flex; gap: .75rem; margin-bottom: .75rem; }
+
+.evidence-skeleton-bar {
+    display: block;
+    block-size: 1rem;
+    border-radius: .25rem;
+    background: linear-gradient(90deg, #374151 25%, #4b5563 50%, #374151 75%);
+    background-size: 200% 100%;
+    animation: evidence-skeleton-shimmer 1.4s linear infinite;
+}
+
+.evidence-skeleton-label { flex: 0 0 38%; }
+.evidence-skeleton-value { flex: 1 1 auto; }
+
+@keyframes evidence-skeleton-shimmer {
+    from { background-position: 200% 0; }
+    to { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .evidence-skeleton-bar { animation: none; background: #374151; }
+}
+
+.evidence-legend li + li { margin-top: .375rem; }
+.evidence-legend-windows { margin-top: .25rem; }
+.evidence-legend .evidence-badge { margin-inline-end: .25rem; }

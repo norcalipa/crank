@@ -997,6 +997,18 @@ class ClaimTests(TestCase):
         )
         self.assertIsNotNone(self._claim(value="Hybrid"))
 
+    def test_rejecting_a_plain_claim_publishes_a_changed_event(self):
+        from crank.services.company_evidence import reject_claim
+
+        claim = self._claim()
+        before = PublicationEvent.objects.count()
+        reject_claim(claim, reviewer=self.reviewer)
+        event = PublicationEvent.objects.latest("id")
+        self.assertEqual(PublicationEvent.objects.count(), before + 1)
+        self.assertEqual(event.target_id, self.organization.pk)
+        self.assertEqual(event.event_kind, PublicationEvent.EventKind.CHANGED)
+        self.assertEqual(event.payload, {"status": "rejected"})
+
     def test_accept_claim_supersedes_previous_and_emits_event(self):
         from crank.services.company_evidence import accept_claim
 
@@ -1473,10 +1485,14 @@ class RoundTwoReviewTests(TestCase):
 
         legacy, _ = self._legacy()
         self.assertIn(legacy.pk, [r.pk for r in self._legacy_rows()])
+        events = PublicationEvent.objects.count()
         claim = queue_legacy_claim(legacy)
         self.assertEqual(claim.state, State.PENDING)
+        self.assertEqual(PublicationEvent.objects.count(), events + 1)
+        self.assertEqual(PublicationEvent.objects.latest("id").payload, {"status": "claim_queued"})
         self.assertEqual(claim.scope_json, {"claimed_domain": "example.test"})
         self.assertIsNone(queue_legacy_claim(legacy))
+        self.assertEqual(PublicationEvent.objects.count(), events + 1)
         claim.refresh_from_db()
         self.assertEqual(self._open().count(), 1)
 

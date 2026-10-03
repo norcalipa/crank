@@ -3,7 +3,9 @@
 import * as React from 'react';
 import {createPortal} from 'react-dom';
 import {lockBackground, unlockBackground} from './modalIsolation';
-import {fieldKeyLabel} from './labels';
+import {EvidenceStatusKey, fieldKeyLabel} from './labels';
+import EvidenceBadge from './evidence/EvidenceBadge';
+import EvidenceDetails, {EvidenceData, EvidenceSkeleton} from './evidence/EvidenceDetails';
 import {setCachedProvenance} from './provenanceCache';
 import {openSuggestCompany} from './suggestCompany/controller';
 import {openAssistant} from './workspace/store';
@@ -23,28 +25,15 @@ interface ProvenanceObservation {
     is_verified?: boolean;
 }
 
-interface ProvenanceFieldEvidence {
-    field_key: string;
-    state: string;
-    value: string;
-    source_domain: string;
-    observed_at: string;
-    scope: Record<string, unknown>;
-    last_checked_at: string | null;
-    last_successful_fetch_at: string | null;
-    last_changed_at: string | null;
-    last_verified_at: string | null;
-    stale: boolean;
-}
-
 interface ProvenanceData {
     organization_id: number;
     organization_modified: string | null;
     organization_created: string | null;
     latest_observation: ProvenanceObservation | null;
-    fields?: ProvenanceFieldEvidence[];
-    unverified_fields?: string[];
+    displayed_values?: Record<string, string>;
 }
+
+type Provenance = ProvenanceData & EvidenceData;
 
 interface PendingCorrection {
     id: number;
@@ -63,6 +52,8 @@ interface Organization {
     funding_round: string;
     rto_policy: string;
     profile_completeness: number;
+    rating_dimensions_covered?: number;
+    rating_dimensions_total?: number;
     accelerated_vesting: boolean;
     url?: string;
     type?: string;
@@ -105,20 +96,6 @@ export function companyChatUrl(companyId: number): string {
     return `/chat/?company=${companyId}`;
 }
 
-// Display labels for accepted field-level evidence keys (issue #460).
-
-// Render an evidence scope (e.g. {"countries": [...], "roles": [...]}) as a
-// short human-readable suffix; empty scope renders nothing.
-const formatScope = (scope: Record<string, unknown>): string => {
-    const parts: string[] = [];
-    for (const [key, value] of Object.entries(scope)) {
-        if (Array.isArray(value) && value.length > 0) {
-            parts.push(`${key}: ${value.join(', ')}`);
-        }
-    }
-    return parts.length > 0 ? ` (${parts.join('; ')})` : '';
-};
-
 const formatRelativeTime = (isoString: string | null): string => {
     if (!isoString) return 'Unknown';
     const date = new Date(isoString);
@@ -155,10 +132,18 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
 }) => {
     const [scores, setScores] = React.useState<ScoreDetail[]>([]);
     const [loading, setLoading] = React.useState(false);
-    const [provenance, setProvenance] = React.useState<ProvenanceData | null>(null);
+    const [provenance, setProvenance] = React.useState<Provenance | null>(null);
     const [provenanceLoading, setProvenanceLoading] = React.useState(false);
+    const [provenanceFailed, setProvenanceFailed] = React.useState(false);
+    const [provenanceAttempt, setProvenanceAttempt] = React.useState(0);
+    const [retryFocusTick, setRetryFocusTick] = React.useState(0);
+    // Set by the Retry button, consumed by the next failure: focus returns to
+    // Retry only when the user started the attempt that failed.
+    const userRetryRef = React.useRef(false);
     const [pendingCorrections, setPendingCorrections] = React.useState<PendingCorrection[]>([]);
     const closeButtonRef = React.useRef<HTMLButtonElement>(null);
+    const freshnessHeadingRef = React.useRef<HTMLHeadingElement>(null);
+    const retryRef = React.useRef<HTMLButtonElement>(null);
     const dialogRef = React.useRef<HTMLDivElement>(null);
     // Element that had focus when the dialog opened (the trigger). Restored on
     // close so keyboard and pointer users return to where they left off.
@@ -181,23 +166,48 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     }, [organization, visible]);
 
     React.useEffect(() => {
+        userRetryRef.current = false;
+    }, [organization, visible]);
+
+    React.useEffect(() => {
         if (organization && visible) {
+            let cancelled = false;
             setProvenanceLoading(true);
+            setProvenanceFailed(false);
             fetch(`/api/organizations/${organization.id}/provenance/`)
-                .then(response => response.json())
+                .then(response => {
+                    if (response.ok === false) throw new Error(`Provenance request failed (${response.status})`);
+                    return response.json();
+                })
                 .then(data => {
+                    if (cancelled) return;
+                    userRetryRef.current = false;
                     setProvenance(data);
                     setCachedProvenance(organization.id, data);
                     setProvenanceLoading(false);
                 })
                 .catch(error => {
+                    if (cancelled) return;
                     console.error('Error fetching organization provenance:', error);
+                    setProvenance(null);
+                    setProvenanceFailed(true);
                     setProvenanceLoading(false);
+                    if (userRetryRef.current) setRetryFocusTick(tick => tick + 1);
+                    userRetryRef.current = false;
                 });
-        } else {
-            setProvenance(null);
+            return () => {
+                cancelled = true;
+            };
         }
-    }, [organization, visible]);
+        setProvenance(null);
+        setProvenanceFailed(false);
+        return undefined;
+    }, [organization, visible, provenanceAttempt]);
+
+    // A retry the user started that fails again hands focus back to Retry (never on the first failure).
+    React.useEffect(() => {
+        if (retryFocusTick > 0) retryRef.current?.focus();
+    }, [retryFocusTick]);
 
     // The requester's own pending suggestions (issue #477). Only fetched when
     // signed in; a failure simply hides the list.
@@ -361,6 +371,52 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         </button>
     );
 
+    const emptyAction = isAuthenticated ? (
+        <button type="button" className="btn btn-sm btn-primary evidence-empty-action"
+                data-testid="evidence-empty-action"
+                onClick={() => openCorrection('company_details')}>
+            Suggest a value
+        </button>
+    ) : (
+        companySignInUrl(signInUrlTemplate, organization.id) && (
+            <a href={companySignInUrl(signInUrlTemplate, organization.id) as string}
+               className="btn btn-sm btn-primary evidence-empty-action" data-testid="evidence-empty-action">
+                Sign in to suggest a value
+            </a>
+        )
+    );
+
+    // The grid shows profile columns; evidence rows are a separate record (#477),
+    // so a field's evidence status describes the shown value only when the
+    // accepted evidence value is that value. Otherwise the grid says so.
+    const clip = (text: string, max = 60) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
+    const profileFieldBadges = (
+        key: 'funding_round' | 'rto_policy' | 'accelerated_vesting', label: string, shownValue: string | undefined,
+    ) => {
+        if (!provenance) return null;
+        const row = provenance.fields?.find(item => item.field_key === key);
+        // The server decides agreement (strict whole-value readings), but it
+        // computed it against the profile as of the provenance fetch. Honor it
+        // only when that profile value is the one this grid renders; an open tab
+        // whose list went stale then falls back to the neutral note.
+        const sameProfileValue = shownValue !== undefined && provenance.displayed_values?.[key] === shownValue;
+        const agreeing = row?.agrees_with_displayed === true && sameProfileValue ? row : undefined;
+        const status: EvidenceStatusKey = agreeing ? (agreeing.status || (agreeing.stale ? 'stale' : 'verified')) : 'profile';
+        const review = provenance.review_by_field?.[key] ?? null;
+        return (
+            <>
+                {' '}
+                <EvidenceBadge status={status} fieldLabel={label} lastVerifiedAt={agreeing?.last_verified_at}/>
+                {review && <>{' '}<EvidenceBadge status={review}/></>}
+                {row && !agreeing && (
+                    <span className="d-block small text-muted" data-testid={`profile-differs-${key}`}>
+                        Sourced value: “{clip(row.value)}” (see Field evidence)
+                    </span>
+                )}
+            </>
+        );
+    };
+
     // Map funding round codes to display names
     const fundingRoundMap: Record<string, string> = {
         'S': 'Seed',
@@ -389,6 +445,12 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     };
 
     const displayScores = organization.avg_scores || scores;
+
+    const ratingCoverage = organization.rating_dimensions_total !== undefined
+        && organization.rating_dimensions_covered !== undefined
+        ? {covered: organization.rating_dimensions_covered, total: organization.rating_dimensions_total}
+        : null;
+
 
     const handleCloseClick = (e: React.MouseEvent) => {
         e.stopPropagation();
@@ -489,11 +551,11 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                             </div>
                             <div className="row mb-3">
                                 <div className="col-5 text-end fw-bold">Funding Round:</div>
-                                <div className="col-7">{fundingRoundMap[organization.funding_round]}</div>
+                                <div className="col-7">{fundingRoundMap[organization.funding_round]}{profileFieldBadges('funding_round', 'Funding Round', fundingRoundMap[organization.funding_round])}</div>
                             </div>
                             <div className="row mb-3">
                                 <div className="col-5 text-end fw-bold">RTO Policy:</div>
-                                <div className="col-7">{rtoPolicyMap[organization.rto_policy]}</div>
+                                <div className="col-7">{rtoPolicyMap[organization.rto_policy]}{profileFieldBadges('rto_policy', 'RTO Policy', rtoPolicyMap[organization.rto_policy])}</div>
                             </div>
                             {organization.gives_ratings !== undefined && (
                                 <div className="row mb-3">
@@ -504,7 +566,10 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                             {organization.accelerated_vesting !== undefined && (
                                 <div className="row mb-3">
                                     <div className="col-5 text-end fw-bold">Accelerated Vesting:</div>
-                                    <div className="col-7">{organization.accelerated_vesting ? 'Yes' : 'No'}</div>
+                                    <div className="col-7">
+                                        {organization.accelerated_vesting ? 'Yes' : 'No'}
+                                        {profileFieldBadges('accelerated_vesting', 'Accelerated Vesting', organization.accelerated_vesting ? 'Yes' : 'No')}
+                                    </div>
                                 </div>
                             )}
                         </div>
@@ -514,11 +579,24 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                 <span>{organization.ranking}</span>
                             </div>
                             <div className="popup-details-score-row">
-                                <span className="fw-bold">Profile Completeness:</span>
-                                <span>{organization.profile_completeness.toFixed(0)}%</span>
+                                <span className="fw-bold">Rating coverage:</span>
+                                <span data-testid="rating-coverage">
+                                    {ratingCoverage
+                                        ? `${ratingCoverage.covered} of ${ratingCoverage.total} rating dimensions`
+                                        : `${organization.profile_completeness.toFixed(0)}% of rating dimensions`}
+                                </span>
                             </div>
                             {loading ? (
-                                <p>Loading scores...</p>
+                                <table className="table table-dark" aria-busy="true" data-testid="scores-loading">
+                                    <tbody>
+                                        {Array.from({length: Math.max(1, ratingCoverage?.covered ?? 1)}, (_, i) => (
+                                            <tr key={i}>
+                                                <td className="w-75 text-body-secondary">{i === 0 ? 'Loading scores...' : '\u00a0'}</td>
+                                                <td className="text-end w-25">{'\u00a0'}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
                             ) : (
                                 <table className="table table-dark">
                                     <tbody>
@@ -545,17 +623,22 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                     <hr className="my-3" />
                     <div className="row">
                         <div className="col-12">
-                            <h3 className="h5 mt-3 mb-2">Data Freshness & Sources</h3>
+                            <h3 ref={freshnessHeadingRef} tabIndex={-1} className="h5 mt-3 mb-2">Data Freshness & Sources</h3>
                             {provenanceLoading ? (
-                                <p data-testid="provenance-loading">Loading provenance…</p>
+                                <EvidenceSkeleton/>
                             ) : provenance ? (
                                 <div data-testid="provenance-section">
                                     <div className="row mb-2">
-                                        <div className="col-5 text-end fw-bold">Last Updated:</div>
-                                        <div className="col-7" data-testid="last-updated">
-                                            {provenance.organization_modified
-                                                ? `${formatRelativeTime(provenance.organization_modified)} (${formatDate(provenance.organization_modified)})`
-                                                : 'Unknown'}
+                                        <div className="col-5 text-end fw-bold">Record last edited:</div>
+                                        <div className="col-7">
+                                            <span data-testid="last-updated">
+                                                {provenance.organization_modified
+                                                    ? `${formatRelativeTime(provenance.organization_modified)} (${formatDate(provenance.organization_modified)})`
+                                                    : 'Unknown'}
+                                            </span>
+                                            <span className="d-block small text-muted" data-testid="last-updated-note">
+                                                Editing the record does not re-verify facts.
+                                            </span>
                                         </div>
                                     </div>
                                     <div className="row mb-2">
@@ -597,64 +680,26 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                             )}
                                         </div>
                                     ) : (
-                                        <p className="text-muted small mb-2" data-testid="no-observation">No crawl observations recorded. Data is curated from submitted reviews.</p>
-                                    )}
-                                    {provenance.fields && provenance.fields.length > 0 && (
-                                        <div className="mt-2" data-testid="field-evidence">
-                                            <h4 className="h6 fw-semibold mt-3 mb-2">Field evidence</h4>
-                                            {provenance.fields.map(fieldEvidence => (
-                                                <div className="row mb-1 align-items-baseline evidence-row" key={fieldEvidence.field_key}
-                                                     data-testid={`field-evidence-${fieldEvidence.field_key}`}>
-                                                    <div className="col-5 text-end fw-bold">
-                                                        {fieldKeyLabel(fieldEvidence.field_key)}:
-                                                    </div>
-                                                    <div className="col-7 evidence-row-value">
-                                                        <span>
-                                                            <span data-testid={`field-value-${fieldEvidence.field_key}`}>
-                                                                {fieldEvidence.value}
-                                                            </span>
-                                                            {fieldEvidence.stale && (
-                                                                <span className="badge bg-warning text-dark ms-1"
-                                                                      data-testid={`field-stale-${fieldEvidence.field_key}`}>
-                                                                    Stale
-                                                                </span>
-                                                            )}
-                                                            <span className="text-muted small evidence-meta">
-                                                                {fieldEvidence.source_domain || 'unknown source'},{' '}
-                                                                <span className="text-nowrap">last verified {formatDate(fieldEvidence.last_verified_at)}</span>
-                                                                {formatScope(fieldEvidence.scope)}
-                                                            </span>
-                                                        </span>
-                                                        {fieldCorrectionButton(fieldEvidence.field_key)}
-                                                    </div>
-                                                </div>
-                                            ))}
+                                        <div className="row mb-2">
+                                            <p className="col-7 offset-5 text-muted small mb-0" data-testid="no-observation">
+                                                No crawl observations recorded.
+                                                {(provenance.fields?.length ?? 0) === 0 && ' Data is curated from submitted reviews.'}
+                                            </p>
                                         </div>
                                     )}
-                                    {provenance.unverified_fields && provenance.unverified_fields.length > 0 && (
-                                        <div className="mt-2" data-testid="unverified-fields">
-                                            {provenance.unverified_fields.map(fieldKey => (
-                                                <div className="row mb-1 align-items-baseline evidence-row" key={fieldKey}
-                                                     data-testid={`field-unverified-${fieldKey}`}>
-                                                    <div className="col-5 text-end fw-bold">
-                                                        {fieldKeyLabel(fieldKey)}:
-                                                    </div>
-                                                    <div className="col-7 evidence-row-value">
-                                                        <span className="text-muted">No accepted evidence</span>
-                                                        {fieldCorrectionButton(fieldKey, 'Suggest a value', 'for')}
-                                                    </div>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                    {isAuthenticated && (
-                                        <div className="mt-2" data-testid="correction-action">
+                                    <EvidenceDetails
+                                        evidence={provenance}
+                                        renderFieldAction={fieldCorrectionButton}
+                                        emptyAction={emptyAction}
+                                    />
+                                    {isAuthenticated && (provenance.fields?.length ?? 0) > 0 && (
+                                        <div className="mt-3 pt-3 border-top" data-testid="correction-action">
                                             <button type="button"
                                                     className="btn btn-sm btn-outline-light"
                                                     data-testid="suggest-correction-link"
                                                     onClick={() => openCorrection('company_details')}>
                                                 <i className="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>
-                                                Suggest a correction
+                                                Choose a field to correct
                                             </button>
                                         </div>
                                     )}
@@ -667,10 +712,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                                         data-testid={`your-pending-correction-${item.id}`}>
                                                         <span className="fw-bold">{fieldKeyLabel(item.field_key)}:</span>
                                                         <span>{item.proposed_value}</span>
-                                                        <span className="badge text-bg-warning badge-pending">
-                                                            <i className="fa-solid fa-hourglass-half me-1" aria-hidden="true"></i>
-                                                            Pending review
-                                                        </span>
+                                                        <EvidenceBadge status="pending"/>
                                                     </li>
                                                 ))}
                                             </ul>
@@ -678,7 +720,18 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                     )}
                                 </div>
                             ) : (
-                                <p className="text-muted" data-testid="provenance-unavailable">Provenance data unavailable.</p>
+                                <div className="alert alert-warning evidence-unavailable mb-0" role="alert" data-testid="provenance-unavailable">
+                                    <p className="mb-2">Evidence unavailable — try again</p>
+                                    <button type="button" ref={retryRef} className="btn btn-outline-light evidence-retry"
+                                            data-testid="provenance-retry"
+                                            onClick={() => {
+                                                freshnessHeadingRef.current?.focus({preventScroll: true});
+                                                userRetryRef.current = true;
+                                                setProvenanceAttempt(attempt => attempt + 1);
+                                            }}>
+                                        Retry
+                                    </button>
+                                </div>
                             )}
                         </div>
                     </div>

@@ -1,0 +1,380 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+"""Rankings and provenance carry separate coverage / freshness / evidence status (#473)."""
+
+import html
+import json
+import re
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from django.contrib.auth.models import User
+from django.core.cache import cache
+from django.db import connection
+from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
+
+from crank.models.company_profile import CompanyFieldEvidence
+from crank.models.organization import Organization
+from crank.models.score import Score, ScoreAlgorithm, ScoreAlgorithmWeight, ScoreType
+from crank.services.company_evidence import (
+    DEFAULT_FRESHNESS_DAYS,
+    EVIDENCE_SCHEMA_VERSION,
+    FIELD_FRESHNESS_POLICY,
+    TRACKED_FIELD_COUNT,
+)
+from crank.views.index import freshness_windows, tracked_field_names
+from crank.services.scores import (
+    algorithm_results_cache_key,
+    organization_provenance_api_cache_key,
+)
+from crank.settings import DEFAULT_ALGORITHM_ID
+from crank.tests.services.test_evidence_status import make_row
+
+FieldKey = CompanyFieldEvidence.FieldKey
+State = CompanyFieldEvidence.State
+
+LOCMEM = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+
+
+@override_settings(CACHES=LOCMEM)
+class RankingsEvidenceTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        ScoreAlgorithm.objects.create(
+            id=DEFAULT_ALGORITHM_ID,
+            name="Algo",
+            description_content="test.md",
+            status=1,
+        )
+        cache.set("algorithm_object_list", ScoreAlgorithm.objects.filter(status=1))
+        self.type_a = ScoreType.objects.create(name="Culture")
+        self.type_b = ScoreType.objects.create(name="Leadership")
+        ScoreAlgorithmWeight.objects.create(
+            algorithm_id=DEFAULT_ALGORITHM_ID, type_id=self.type_a.id, weight=1.0
+        )
+        self.scorer = Organization.objects.create(
+            name="Scorer", url="https://scorer.test", status=1
+        )
+        self.full = Organization.objects.create(
+            name="Full", url="https://full.test", status=1
+        )
+        self.half = Organization.objects.create(
+            name="Half", url="https://half.test", status=1
+        )
+        for org in (self.full, self.half):
+            Score.objects.create(
+                source_id=self.scorer.id,
+                target_id=org.id,
+                score=4.0,
+                type_id=self.type_a.id,
+            )
+        Score.objects.create(
+            source_id=self.scorer.id,
+            target_id=self.full.id,
+            score=3.0,
+            type_id=self.type_b.id,
+        )
+
+    def _rows(self):
+        response = self.client.get(f"/algo/{DEFAULT_ALGORITHM_ID}/")
+        self.assertEqual(response.status_code, 200)
+        return {
+            row["id"]: row for row in response.context_data["top_organization_list"]
+        }
+
+    def test_rows_carry_exact_rating_coverage_and_evidence_summary(self):
+        make_row(self.full, FieldKey.RTO_POLICY, verified_days_ago=500)
+        make_row(self.full, FieldKey.FUNDING_ROUND, verified_days_ago=500)
+        make_row(self.full, FieldKey.LOCATIONS, state=State.CONFLICTED)
+        rows = self._rows()
+        full, half = rows[self.full.id], rows[self.half.id]
+        self.assertEqual(
+            (full["rating_dimensions_covered"], full["rating_dimensions_total"]), (2, 2)
+        )
+        self.assertEqual(
+            (half["rating_dimensions_covered"], half["rating_dimensions_total"]), (1, 2)
+        )
+        # 100% rating coverage with every accepted fact past policy is stale.
+        self.assertEqual(full["evidence"]["stale"], 2)
+        self.assertEqual(full["evidence"]["verified"], 0)
+        self.assertEqual(full["evidence"]["unknown"], TRACKED_FIELD_COUNT - 2)
+        self.assertEqual(full["evidence"]["pending_review"], 1)
+        self.assertEqual(half["evidence"]["unknown"], TRACKED_FIELD_COUNT)
+        self.assertIsNone(half["evidence"]["last_verified_at"])
+
+    def test_scoped_rows_do_not_count_as_verified_company_facts(self):
+        make_row(self.full, FieldKey.RTO_POLICY, scope={"countries": ["US"]})
+        make_row(self.full, FieldKey.FUNDING_ROUND, scope={"role_families": ["sales"]})
+        make_row(self.full, FieldKey.LOCATIONS)
+        evidence = self._rows()[self.full.id]["evidence"]
+        self.assertEqual(evidence["verified"], 1)
+        self.assertEqual(evidence["fact_coverage"], 1)
+        self.assertEqual(evidence["unknown"], TRACKED_FIELD_COUNT - 1)
+
+    def test_rejecting_a_claim_clears_provenance_and_rankings_caches(self):
+        from crank.models.publication import PublicationEvent
+        from crank.services import publication
+        from crank.services.company_evidence import reject_claim
+
+        reviewer = User.objects.create_user("rejecter", password="pw")
+        claim = make_row(self.full, FieldKey.RTO_POLICY, state=State.PENDING)
+        self.assertEqual(self._rows()[self.full.id]["evidence"]["pending_review"], 1)
+        prov_key = organization_provenance_api_cache_key(self.full.pk)
+        cache.set(prov_key, {"evidence_schema": EVIDENCE_SCHEMA_VERSION, "stale": True})
+        PublicationEvent.objects.all().delete()
+
+        reject_claim(claim, reviewer=reviewer)
+        event = PublicationEvent.objects.get()
+        self.assertEqual(event.payload, {"status": "rejected"})
+        publication.sweep_pending()
+
+        self.assertIsNone(cache.get(prov_key))
+        self.assertIsNone(cache.get(algorithm_results_cache_key(DEFAULT_ALGORITHM_ID)))
+        self.assertEqual(self._rows()[self.full.id]["evidence"]["pending_review"], 0)
+
+    def test_extra_queries_are_bounded_and_result_is_cached(self):
+        for org in (self.full, self.half, self.scorer):
+            make_row(org, FieldKey.RTO_POLICY)
+        make_row(self.full, FieldKey.LOCATIONS, state=State.PENDING)
+        with CaptureQueriesContext(connection) as ctx:
+            rows = self._rows()
+        self.assertEqual(len(rows), 2)
+        evidence_queries = [
+            q["sql"]
+            for q in ctx.captured_queries
+            if "crank_companyfieldevidence" in q["sql"]
+            or 'FROM "crank_scoretype"' in q["sql"]
+            or "FROM `crank_scoretype`" in q["sql"]
+        ]
+        self.assertLessEqual(len(evidence_queries), 3)
+        self.assertGreaterEqual(len(evidence_queries), 3)
+        cached = cache.get(algorithm_results_cache_key(DEFAULT_ALGORITHM_ID))
+        self.assertEqual(len(cached), 2)
+        self.assertIn("evidence", cached[0])
+
+    def test_cached_shell_is_auth_neutral(self):
+        make_row(self.full, FieldKey.RTO_POLICY)
+        anonymous = self.client.get(f"/algo/{DEFAULT_ALGORITHM_ID}/").content
+        user = User.objects.create_user("someone", password="pw")
+        self.client.force_login(user)
+        self.assertEqual(
+            self.client.get(f"/algo/{DEFAULT_ALGORITHM_ID}/").content, anonymous
+        )
+
+    def test_no_organizations_makes_no_evidence_queries(self):
+        Score.objects.all().delete()
+        with CaptureQueriesContext(connection) as ctx:
+            self.assertEqual(self._rows(), {})
+        self.assertFalse(
+            [q for q in ctx.captured_queries if "crank_companyfieldevidence" in q["sql"]]
+        )
+
+    def test_total_request_queries_do_not_grow_with_organization_count(self):
+        def total_queries():
+            cache.clear()
+            with CaptureQueriesContext(connection) as ctx:
+                self._rows()
+            return len(ctx.captured_queries)
+
+        def add_orgs(count, offset):
+            for i in range(count):
+                org = Organization.objects.create(
+                    name=f"Bulk {offset + i}", url=f"https://b{offset + i}.test", status=1
+                )
+                make_row(org, FieldKey.RTO_POLICY)
+                make_row(org, FieldKey.LOCATIONS, state=State.PENDING)
+                Score.objects.create(
+                    source_id=self.scorer.id,
+                    target_id=org.id,
+                    score=3.0,
+                    type_id=self.type_a.id,
+                )
+
+        add_orgs(3, 0)
+        small = total_queries()
+        add_orgs(27, 3)
+        self.assertEqual(total_queries(), small)
+
+
+@override_settings(CACHES=LOCMEM)
+class ProvenanceEvidenceTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.org = Organization.objects.create(
+            name="Prov Org", url="https://example.test", status=1
+        )
+
+    def _get(self, org=None):
+        org = org or self.org
+        response = self.client.get(f"/api/organizations/{org.pk}/provenance/")
+        self.assertEqual(response.status_code, 200)
+        return json.loads(response.content)
+
+    def test_new_keys_link_suppression_and_pending_excludes_closed_states(self):
+        make_row(self.org, FieldKey.RTO_POLICY)
+        make_row(self.org, FieldKey.LOCATIONS, source_url="https://elsewhere.test/x")
+        make_row(
+            self.org, FieldKey.FUNDING_ROUND, state=State.PENDING, value="Series C"
+        )
+        make_row(self.org, FieldKey.PUBLIC_STATUS, state=State.REJECTED)
+        make_row(self.org, FieldKey.COMPANY_NAME, state=State.SUPERSEDED)
+        data = self._get()
+        self.assertEqual(data["evidence_schema"], EVIDENCE_SCHEMA_VERSION)
+        by_key = {f["field_key"]: f for f in data["fields"]}
+        self.assertEqual(
+            by_key["rto_policy"]["source_url"], "https://example.test/about"
+        )
+        self.assertIsNone(by_key["locations"]["source_url"])
+        self.assertEqual(
+            [p["field_key"] for p in data["pending_review"]], ["funding_round"]
+        )
+        self.assertEqual(data["summary"]["verified"], 2)
+
+    def test_payload_carries_displayed_values_once_and_exact_pending_totals(self):
+        make_row(self.org, FieldKey.RTO_POLICY, state=State.CONFLICTED)
+        data = self._get()
+        self.assertEqual(data["displayed_values"]["company_name"], "Prov Org")
+        self.assertEqual(data["review_by_field"], {"rto_policy": "conflicted"})
+        self.assertEqual(data["pending_review_total"], 1)
+        self.assertEqual(data["pending_review_more"], 0)
+
+    def test_legacy_cached_payload_is_rebuilt_once(self):
+        key = organization_provenance_api_cache_key(self.org.pk)
+        cache.set(
+            key, {"fields": [], "unverified_fields": [], "organization_id": self.org.pk}
+        )
+        make_row(self.org, FieldKey.RTO_POLICY)
+        data = self._get()
+        self.assertEqual(data["evidence_schema"], EVIDENCE_SCHEMA_VERSION)
+        self.assertEqual(len(data["fields"]), 1)
+        make_row(self.org, FieldKey.FUNDING_ROUND)
+        self.assertEqual(len(self._get()["fields"]), 1)
+
+    def test_unknown_or_inactive_organization_is_404(self):
+        inactive = Organization.objects.create(
+            name="Gone", url="https://gone.test", status=0
+        )
+        self.assertEqual(
+            self.client.get("/api/organizations/999999/provenance/").status_code, 404
+        )
+        self.assertEqual(
+            self.client.get(
+                f"/api/organizations/{inactive.pk}/provenance/"
+            ).status_code,
+            404,
+        )
+
+    def test_payload_is_identical_for_two_accounts(self):
+        make_row(self.org, FieldKey.RTO_POLICY)
+        anonymous = self._get()
+        cache.clear()
+        self.client.force_login(User.objects.create_user("someone", password="pw"))
+        self.assertEqual(self._get(), anonymous)
+
+
+@override_settings(CACHES=LOCMEM)
+class LegendParityTests(TestCase):
+    """The server-rendered legend must say what ``EvidenceBadge`` says (#473)."""
+
+    def setUp(self):
+        cache.clear()
+        ScoreAlgorithm.objects.create(
+            id=DEFAULT_ALGORITHM_ID,
+            name="Algo",
+            description_content="test.md",
+            status=1,
+        )
+        cache.set("algorithm_object_list", ScoreAlgorithm.objects.filter(status=1))
+
+    def _page(self):
+        response = self.client.get(f"/algo/{DEFAULT_ALGORITHM_ID}/")
+        self.assertEqual(response.status_code, 200)
+        return response.content.decode()
+
+    def _labels_ts_entries(self):
+        source = (Path(__file__).resolve().parents[3] / "static/js/labels.ts").read_text()
+        entries = {}
+        for match in re.finditer(
+            r"^\s+(\w+): \{label: '([^']+)', marker: '([^']+)', meaning: '([^']+)'\},?$",
+            source,
+            re.M,
+        ):
+            key, label, marker, meaning = match.groups()
+            marker = re.sub(
+                r"\\u([0-9A-Fa-f]{4})", lambda m: chr(int(m.group(1), 16)), marker
+            )
+            entries[key] = (label, marker, meaning)
+        return entries
+
+    def test_legend_words_markers_and_meanings_match_labels_ts(self):
+        expected = self._labels_ts_entries()
+        self.assertEqual(
+            set(expected),
+            {"verified", "stale", "unknown", "profile", "pending", "conflicted"},
+        )
+        page = self._page()
+        legend = page[page.index('data-testid="evidence-legend"'):]
+        legend = legend[: legend.index("</ul>")]
+        rendered = {}
+        for key, marker, label, meaning in re.findall(
+            r'evidence-badge-(\w+)"><span class="evidence-badge-marker" aria-hidden="true">'
+            r"([^<]+)</span> ([^<]+)</span>: ([^<]+)</li>",
+            legend,
+        ):
+            rendered[key] = (label, html.unescape(marker), html.unescape(meaning))
+        self.assertEqual(rendered, expected)
+
+    def test_freshness_windows_come_from_the_policy_table(self):
+        page = self._page()
+        section = page[page.index("evidence-legend-windows"):]
+        section = section[: section.index("</ul>")]
+        rendered = {
+            days: html.unescape(fields)
+            for fields, days in re.findall(r"<li>([^<]+): (\d+) days</li>", section)
+        }
+        expected = {}
+        for key, label in CompanyFieldEvidence.FieldKey.choices:
+            expected.setdefault(str(FIELD_FRESHNESS_POLICY[key]), []).append(str(label).lower())
+        self.assertEqual(set(rendered), set(expected))
+        for days, labels in expected.items():
+            self.assertEqual(
+                sorted(rendered[days].lower().replace(" and ", ", ").split(", ")),
+                sorted(labels),
+            )
+        self.assertIn(f"How many of the {TRACKED_FIELD_COUNT} tracked facts", page)
+
+    def test_fact_coverage_names_come_from_field_key_choices(self):
+        page = self._page()
+        names = ", ".join(str(label) for _key, label in CompanyFieldEvidence.FieldKey.choices)
+        self.assertEqual(tracked_field_names().replace(" and ", ", ").lower(), names.lower())
+        self.assertIn(f"tracked facts ({tracked_field_names()}) have accepted evidence", page)
+        stand_in = SimpleNamespace(FieldKey=SimpleNamespace(choices=[("a", "Alpha"), ("b", "Beta")]))
+        with patch("crank.views.index.CompanyFieldEvidence", stand_in):
+            self.assertEqual(tracked_field_names(), "Alpha and beta")
+
+    def test_static_fixture_legends_match_the_rendered_legend(self):
+        def section(markup):
+            start = markup.index("<dt>Fact coverage</dt>")
+            end = markup.index("</ul>", markup.index("evidence-legend-windows"))
+            return " ".join(re.sub(r"\s*\n\s*", " ", markup[start:end]).split())
+
+        rendered = section(self._page())
+        root = Path(__file__).resolve().parents[3] / "e2e/fixtures"
+        for name in ("organization-list.html", "organization-list-paged.html"):
+            self.assertEqual(section((root / name).read_text()), rendered, name)
+
+    def test_windows_group_unlisted_keys_under_the_default(self):
+        with patch.dict(FIELD_FRESHNESS_POLICY, clear=True):
+            windows = freshness_windows()
+        self.assertEqual(
+            windows,
+            [
+                {
+                    "days": DEFAULT_FRESHNESS_DAYS,
+                    "fields": "RTO policy, funding round, public status, accelerated vesting, "
+                    "locations, company name and company domain",
+                }
+            ],
+        )
