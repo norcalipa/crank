@@ -124,7 +124,37 @@ class RankingsEvidenceTests(TestCase):
 
     def test_no_organizations_makes_no_evidence_queries(self):
         Score.objects.all().delete()
-        self.assertEqual(self._rows(), {})
+        with CaptureQueriesContext(connection) as ctx:
+            self.assertEqual(self._rows(), {})
+        self.assertFalse(
+            [q for q in ctx.captured_queries if "crank_companyfieldevidence" in q["sql"]]
+        )
+
+    def test_total_request_queries_do_not_grow_with_organization_count(self):
+        def total_queries():
+            cache.clear()
+            with CaptureQueriesContext(connection) as ctx:
+                self._rows()
+            return len(ctx.captured_queries)
+
+        def add_orgs(count, offset):
+            for i in range(count):
+                org = Organization.objects.create(
+                    name=f"Bulk {offset + i}", url=f"https://b{offset + i}.test", status=1
+                )
+                make_row(org, FieldKey.RTO_POLICY)
+                make_row(org, FieldKey.LOCATIONS, state=State.PENDING)
+                Score.objects.create(
+                    source_id=self.scorer.id,
+                    target_id=org.id,
+                    score=3.0,
+                    type_id=self.type_a.id,
+                )
+
+        add_orgs(3, 0)
+        small = total_queries()
+        add_orgs(27, 3)
+        self.assertEqual(total_queries(), small)
 
 
 @override_settings(CACHES=LOCMEM)

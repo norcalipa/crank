@@ -102,12 +102,34 @@ class SafeSourceUrlTests(TestCase):
             "https://notexample.test/about",
             "https://user:pw@example.test/about",
             "https://127.0.0.1/about",
+            "https://8.8.8.8/x",
+            "https://[::1]/x",
+            "https://example.test./about#frag",
+            "https://exаmple.test/about",
+            "https://example。test/about",
+            "https://user@example.test@evil.test/",
+            "https://example.test\\@evil.test/",
+            "javascript:alert(1)",
+            "data:text/html,hi",
+            "//example.test/about",
+            "https://xn--exmple-cua.test/about",
+            "https://example.test.evil.test/about",
             "https://example.test:8443/about",
             "https://example.test/about#frag",
             "not a url",
         ):
             with self.subTest(url=url):
                 self.assertIsNone(self._url(url))
+
+    def test_ip_hosts_never_link_even_when_domain_matches(self):
+        self.assertIsNone(self._url("https://8.8.8.8/x", source_domain="8.8.8.8"))
+        self.assertIsNone(self._url("https://127.0.0.1/x", source_domain="127.0.0.1"))
+
+    def test_case_and_trailing_dot_are_normalized(self):
+        self.assertEqual(
+            self._url("https://EXAMPLE.test/About", source_domain="Example.TEST."),
+            "https://example.test/About",
+        )
 
     def test_missing_domain_or_url_is_suppressed(self):
         self.assertIsNone(self._url("https://example.test/about", source_domain=""))
@@ -190,6 +212,73 @@ class PayloadTests(TestCase):
             name="Payload Org", url="https://example.test", status=1
         )
 
+    def test_two_open_claims_on_one_field_keep_value_source_and_state_together(self):
+        make_row(self.org, FieldKey.RTO_POLICY, value="Hybrid")
+        make_row(
+            self.org,
+            FieldKey.RTO_POLICY,
+            state=State.CONFLICTED,
+            value="Remote",
+            source_domain="jobs.p.test",
+            source_url="https://jobs.p.test/x",
+            observed_days_ago=5,
+        )
+        make_row(
+            self.org,
+            FieldKey.RTO_POLICY,
+            state=State.PENDING,
+            value="Hybrid",
+            source_domain="p.test",
+            source_url="https://p.test/x",
+            observed_days_ago=1,
+        )
+        payload = field_evidence_payload(self.org)
+        entries = {
+            p["source_domain"]: (p["review"], p["observed_value"])
+            for p in payload["pending_review"]
+        }
+        self.assertEqual(
+            entries,
+            {
+                "p.test": ("pending", "Hybrid"),
+                "jobs.p.test": ("conflicted", "Remote"),
+            },
+        )
+        self.assertEqual(
+            [p["source_domain"] for p in payload["pending_review"]],
+            ["p.test", "jobs.p.test"],
+        )
+        by_key = {f["field_key"]: f for f in payload["fields"]}
+        self.assertEqual(by_key["rto_policy"]["review"], "conflicted")
+        self.assertEqual(payload["summary"]["pending_review"], 1)
+
+    def test_agrees_with_displayed_uses_matching_readings(self):
+        self.org.accelerated_vesting = True
+        self.org.rto_policy = "H"
+        self.org.funding_round = "B"
+        self.org.save()
+        make_row(self.org, FieldKey.ACCELERATED_VESTING, value="1")
+        make_row(self.org, FieldKey.RTO_POLICY, value="Hybrid 3 days")
+        make_row(self.org, FieldKey.FUNDING_ROUND, value="Series C")
+        make_row(self.org, FieldKey.LOCATIONS, value="Berlin")
+        by_key = {f["field_key"]: f for f in field_evidence_payload(self.org)["fields"]}
+        self.assertTrue(by_key["accelerated_vesting"]["agrees_with_displayed"])
+        self.assertTrue(by_key["rto_policy"]["agrees_with_displayed"])
+        self.assertFalse(by_key["funding_round"]["agrees_with_displayed"])
+        self.assertIsNone(by_key["locations"]["agrees_with_displayed"])
+
+    def test_agrees_with_displayed_disagreement_and_text_fallback(self):
+        self.org.accelerated_vesting = False
+        self.org.rto_policy = "R"
+        self.org.save()
+        make_row(self.org, FieldKey.ACCELERATED_VESTING, value="Yes")
+        make_row(self.org, FieldKey.RTO_POLICY, value="Hybrid")
+        make_row(self.org, FieldKey.COMPANY_NAME, value="payload org")
+        by_key = {f["field_key"]: f for f in field_evidence_payload(self.org)["fields"]}
+        self.assertFalse(by_key["accelerated_vesting"]["agrees_with_displayed"])
+        self.assertFalse(by_key["rto_policy"]["agrees_with_displayed"])
+        self.assertTrue(by_key["company_name"]["agrees_with_displayed"])
+
     def test_payload_status_review_policy_link_and_pending_block(self):
         make_row(self.org, FieldKey.RTO_POLICY, verified_days_ago=1)
         make_row(self.org, FieldKey.RTO_POLICY, state=State.PENDING, value="In office")
@@ -222,11 +311,18 @@ class PayloadTests(TestCase):
         self.assertTrue(by_key["locations"]["stale"])
         self.assertEqual(by_key["locations"]["review"], "none")
         self.assertIsNone(by_key["locations"]["source_url"])
-        pending = {p["field_key"]: p for p in payload["pending_review"]}
-        self.assertEqual(set(pending), {"rto_policy", "funding_round"})
-        self.assertEqual(pending["rto_policy"]["review"], "conflicted")
-        self.assertEqual(pending["rto_policy"]["observed_value"], "Hybrid")
-        self.assertEqual(pending["funding_round"]["review"], "pending")
+        pending = [
+            (p["field_key"], p["review"], p["observed_value"])
+            for p in payload["pending_review"]
+        ]
+        self.assertEqual(
+            pending,
+            [
+                ("funding_round", "pending", "Series B"),
+                ("rto_policy", "conflicted", "Hybrid"),
+                ("rto_policy", "pending", "In office"),
+            ],
+        )
         self.assertEqual(payload["summary"]["verified"], 1)
         self.assertEqual(payload["summary"]["stale"], 1)
         self.assertEqual(payload["summary"]["pending_review"], 2)
