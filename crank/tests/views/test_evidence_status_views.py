@@ -104,6 +104,36 @@ class RankingsEvidenceTests(TestCase):
         self.assertEqual(half["evidence"]["unknown"], TRACKED_FIELD_COUNT)
         self.assertIsNone(half["evidence"]["last_verified_at"])
 
+    def test_scoped_rows_do_not_count_as_verified_company_facts(self):
+        make_row(self.full, FieldKey.RTO_POLICY, scope={"countries": ["US"]})
+        make_row(self.full, FieldKey.FUNDING_ROUND, scope={"role_families": ["sales"]})
+        make_row(self.full, FieldKey.LOCATIONS)
+        evidence = self._rows()[self.full.id]["evidence"]
+        self.assertEqual(evidence["verified"], 1)
+        self.assertEqual(evidence["fact_coverage"], 1)
+        self.assertEqual(evidence["unknown"], TRACKED_FIELD_COUNT - 1)
+
+    def test_rejecting_a_claim_clears_provenance_and_rankings_caches(self):
+        from crank.models.publication import PublicationEvent
+        from crank.services import publication
+        from crank.services.company_evidence import reject_claim
+
+        reviewer = User.objects.create_user("rejecter", password="pw")
+        claim = make_row(self.full, FieldKey.RTO_POLICY, state=State.PENDING)
+        self.assertEqual(self._rows()[self.full.id]["evidence"]["pending_review"], 1)
+        prov_key = organization_provenance_api_cache_key(self.full.pk)
+        cache.set(prov_key, {"evidence_schema": EVIDENCE_SCHEMA_VERSION, "stale": True})
+        PublicationEvent.objects.all().delete()
+
+        reject_claim(claim, reviewer=reviewer)
+        event = PublicationEvent.objects.get()
+        self.assertEqual(event.payload, {"status": "rejected"})
+        publication.sweep_pending()
+
+        self.assertIsNone(cache.get(prov_key))
+        self.assertIsNone(cache.get(algorithm_results_cache_key(DEFAULT_ALGORITHM_ID)))
+        self.assertEqual(self._rows()[self.full.id]["evidence"]["pending_review"], 0)
+
     def test_extra_queries_are_bounded_and_result_is_cached(self):
         for org in (self.full, self.half, self.scorer):
             make_row(org, FieldKey.RTO_POLICY)
@@ -201,6 +231,14 @@ class ProvenanceEvidenceTests(TestCase):
             [p["field_key"] for p in data["pending_review"]], ["funding_round"]
         )
         self.assertEqual(data["summary"]["verified"], 2)
+
+    def test_payload_carries_displayed_values_once_and_exact_pending_totals(self):
+        make_row(self.org, FieldKey.RTO_POLICY, state=State.CONFLICTED)
+        data = self._get()
+        self.assertEqual(data["displayed_values"]["company_name"], "Prov Org")
+        self.assertEqual(data["review_by_field"], {"rto_policy": "conflicted"})
+        self.assertEqual(data["pending_review_total"], 1)
+        self.assertEqual(data["pending_review_more"], 0)
 
     def test_legacy_cached_payload_is_rebuilt_once(self):
         key = organization_provenance_api_cache_key(self.org.pk)

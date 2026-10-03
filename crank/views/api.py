@@ -10,7 +10,6 @@ from crank.models.organization import Organization
 from crank.models.company_profile import CompanyProfileObservation
 from crank.services.company_evidence import (
     EVIDENCE_SCHEMA_VERSION,
-    displayed_field_values,
     field_evidence_payload,
 )
 from crank.services.scores import (
@@ -102,7 +101,6 @@ def organization_provenance(request, pk):
             }
 
         prov_data.update(field_evidence_payload(organization))
-        prov_data['displayed_values'] = displayed_field_values(organization)
 
         cache.set(cache_key, prov_data, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
 

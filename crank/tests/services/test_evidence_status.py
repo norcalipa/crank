@@ -2,6 +2,8 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 """Shared evidence vocabulary: status, review, validated links, summaries (#473)."""
 
+import json
+import uuid
 from datetime import timedelta
 
 from django.test import TestCase
@@ -33,6 +35,7 @@ def make_row(
     source_domain="example.test",
     value="Remote",
     observed_days_ago=1,
+    scope=None,
 ):
     now = timezone.now()
     return CompanyFieldEvidence.objects.create(
@@ -45,6 +48,7 @@ def make_row(
         validation_version="v1",
         extractor_version="v1",
         state=state,
+        scope_json=scope or {},
         last_verified_at=(
             None
             if verified_days_ago is None
@@ -120,6 +124,22 @@ class SafeSourceUrlTests(TestCase):
         ):
             with self.subTest(url=url):
                 self.assertIsNone(self._url(url))
+
+    def test_idn_and_punycode_hosts_never_link(self):
+        for url, domain in (
+            ("https://аpple.com/jobs", "аpple.com"),
+            ("https://аррlе.com/jobs", "аррlе.com"),
+            ("https://xn--pple-43d.com/jobs", "xn--pple-43d.com"),
+            ("https://careers.xn--pple-43d.com/jobs", "xn--pple-43d.com"),
+            ("https://apple.com/jobs", "аpple.com"),
+            ("https://аpple.com/jobs", "apple.com"),
+        ):
+            with self.subTest(url=url, domain=domain):
+                self.assertIsNone(self._url(url, source_domain=domain))
+        self.assertEqual(
+            self._url("https://apple.com/jobs", source_domain="apple.com"),
+            "https://apple.com/jobs",
+        )
 
     def test_ip_hosts_never_link_even_when_domain_matches(self):
         self.assertIsNone(self._url("https://8.8.8.8/x", source_domain="8.8.8.8"))
@@ -204,6 +224,147 @@ class SummaryTests(TestCase):
         with self.assertNumQueries(2):
             summaries = evidence_summaries_for_orgs([org.id for org in orgs])
         self.assertEqual(len(summaries), 50)
+
+
+class ScopedEvidenceTests(TestCase):
+    """A location- or role-scoped row never speaks for the whole company."""
+
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name="Scoped Org",
+            url="https://example.test",
+            status=1,
+            rto_policy=Organization.RTOPolicy.REMOTE,
+        )
+
+    def _by_key(self):
+        return {f["field_key"]: f for f in field_evidence_payload(self.org)["fields"]}
+
+    def test_scoped_row_does_not_agree_but_unscoped_and_claimed_domain_do(self):
+        for scope, expected in (
+            ({"countries": ["Germany"]}, None),
+            ({"role_families": ["sales"]}, None),
+            ({"countries": ["US"], "claimed_domain": "example.test"}, None),
+            ({}, True),
+            ({"claimed_domain": "example.test"}, True),
+        ):
+            with self.subTest(scope=scope):
+                CompanyFieldEvidence.objects.all().delete()
+                make_row(self.org, FieldKey.RTO_POLICY, value="Remote", scope=scope)
+                row = self._by_key()["rto_policy"]
+                self.assertIs(row["agrees_with_displayed"], expected)
+                self.assertEqual(row["scope"], scope)
+
+    def test_scoped_rows_are_not_counted_as_verified_or_stale_facts(self):
+        make_row(self.org, FieldKey.RTO_POLICY, scope={"countries": ["US"]})
+        make_row(
+            self.org, FieldKey.FUNDING_ROUND, verified_days_ago=400,
+            scope={"role_families": ["sales"]},
+        )
+        make_row(self.org, FieldKey.LOCATIONS)
+        for summary in (
+            field_evidence_payload(self.org)["summary"],
+            evidence_summaries_for_orgs([self.org.id])[self.org.id],
+        ):
+            self.assertEqual(summary["verified"], 1)
+            self.assertEqual(summary["stale"], 0)
+            self.assertEqual(summary["fact_coverage"], 1)
+            self.assertEqual(summary["unknown"], TRACKED_FIELD_COUNT - 1)
+
+    def test_only_scoped_rows_leave_no_last_verified_date(self):
+        make_row(self.org, FieldKey.RTO_POLICY, scope={"countries": ["US"]})
+        summary = evidence_summaries_for_orgs([self.org.id])[self.org.id]
+        self.assertIsNone(summary["last_verified_at"])
+        self.assertEqual(summary["verified"], 0)
+
+    def test_scoped_correction_and_admin_scope_edit_stay_out_of_the_badge(self):
+        from django.contrib.auth.models import User
+
+        from crank.models.company_correction import CompanyCorrection
+        from crank.services.company_evidence import accept_claim, accept_correction
+
+        reviewer = User.objects.create_user("scope-reviewer", password="pw")
+        correction = CompanyCorrection.objects.create(
+            idempotency_key=uuid.uuid4(),
+            requester=reviewer,
+            organization=self.org,
+            field_key=FieldKey.RTO_POLICY,
+            proposed_value="Remote",
+            scope_level=CompanyCorrection.ScopeLevel.LOCATION,
+            scope_value="Germany",
+            evidence_url="https://example.test/jobs",
+        )
+        accept_correction(correction, reviewer=reviewer)
+        row = self._by_key()["rto_policy"]
+        self.assertEqual(row["scope"], {"countries": ["Germany"]})
+        self.assertIsNone(row["agrees_with_displayed"])
+        self.assertEqual(
+            evidence_summaries_for_orgs([self.org.id])[self.org.id]["verified"], 0
+        )
+
+        CompanyFieldEvidence.objects.all().delete()
+        claim = make_row(self.org, FieldKey.FUNDING_ROUND, state=State.PENDING, value="Public")
+        claim.scope_json = {"countries": ["US"]}
+        claim.save()
+        accept_claim(claim, reviewer=reviewer)
+        self.assertIsNone(self._by_key()["funding_round"]["agrees_with_displayed"])
+        self.assertEqual(
+            evidence_summaries_for_orgs([self.org.id])[self.org.id]["fact_coverage"], 0
+        )
+
+
+class PendingReviewCapTests(TestCase):
+    def setUp(self):
+        self.org = Organization.objects.create(
+            name="Many Claims", url="https://example.test", status=1
+        )
+
+    def test_many_open_claims_are_capped_per_field_and_overall_with_exact_totals(self):
+        from crank.services.company_evidence import (
+            PENDING_REVIEW_MAX,
+            PENDING_REVIEW_PER_FIELD,
+        )
+
+        fields = (FieldKey.RTO_POLICY, FieldKey.FUNDING_ROUND, FieldKey.LOCATIONS,
+                  FieldKey.ACCELERATED_VESTING, FieldKey.COMPANY_NAME, FieldKey.COMPANY_DOMAIN)
+        for page in range(30):
+            for field in fields:
+                make_row(
+                    self.org, field, state=State.PENDING, value=f"v{page}",
+                    source_url=f"https://example.test/p{page}", observed_days_ago=60 - page,
+                )
+        make_row(
+            self.org, FieldKey.RTO_POLICY, state=State.CONFLICTED, value="oldest",
+            source_url="https://example.test/old", observed_days_ago=900,
+        )
+        payload = field_evidence_payload(self.org)
+        listed = payload["pending_review"]
+        self.assertEqual(len(listed), PENDING_REVIEW_MAX)
+        per_field = {}
+        for item in listed:
+            per_field[item["field_key"]] = per_field.get(item["field_key"], 0) + 1
+        self.assertLessEqual(max(per_field.values()), PENDING_REVIEW_PER_FIELD)
+        self.assertEqual(payload["pending_review_total"], 30 * len(fields) + 1)
+        self.assertEqual(payload["pending_review_more"], 30 * len(fields) + 1 - PENDING_REVIEW_MAX)
+        self.assertNotIn("oldest", [item["observed_value"] for item in listed])
+        # The oldest claim is cut from the list but still escalates the field.
+        self.assertEqual(payload["review_by_field"]["rto_policy"], "conflicted")
+        self.assertEqual(payload["review_by_field"]["funding_round"], "pending")
+        self.assertEqual(payload["summary"]["pending_review"], len(fields))
+        self.assertLess(len(json.dumps(payload)), 12_000)
+
+    def test_small_lists_are_complete(self):
+        make_row(self.org, FieldKey.RTO_POLICY, state=State.PENDING)
+        payload = field_evidence_payload(self.org)
+        self.assertEqual(len(payload["pending_review"]), 1)
+        self.assertEqual(payload["pending_review_more"], 0)
+
+    def test_no_open_claims_skips_the_list_query_and_builds_in_two_queries(self):
+        with self.assertNumQueries(2):
+            payload = field_evidence_payload(self.org)
+        self.assertEqual(payload["pending_review"], [])
+        self.assertEqual(payload["review_by_field"], {})
+        self.assertEqual(payload["displayed_values"]["company_name"], "Many Claims")
 
 
 class PayloadTests(TestCase):
