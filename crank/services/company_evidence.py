@@ -1263,25 +1263,48 @@ def evidence_summaries_for_orgs(organization_ids, *, now: datetime | None = None
     }
 
 
+_RTO_BADGE_READINGS = {
+    "r": "remote", "remote": "remote",
+    "h": "hybrid", "hybrid": "hybrid",
+    "o": "in-office", "in-office": "in-office", "in office": "in-office", "onsite": "in-office",
+}
+_VESTING_BADGE_READINGS = {
+    "true": True, "yes": True, "1": True,
+    "false": False, "no": False, "0": False,
+}
+
+
+def _badge_reading(field_key: str, text: str):
+    """Canonical value of ``text`` for badge agreement, or ``None`` if ambiguous.
+
+    Stricter than matching's readers on purpose: those rank listings and may
+    guess from prose, but a "Verified" badge must never sit on a value the
+    evidence contradicts. Only whole-value forms parse; any prose reads as
+    ambiguous.
+    """
+    normalized = " ".join(text.replace("_", " ").casefold().split())
+    if field_key == CompanyFieldEvidence.FieldKey.RTO_POLICY:
+        return _RTO_BADGE_READINGS.get(normalized)
+    if field_key == CompanyFieldEvidence.FieldKey.ACCELERATED_VESTING:
+        return _VESTING_BADGE_READINGS.get(normalized)
+    return normalized
+
+
 def _agrees_with_displayed(field_key: str, value_text: str, shown: str | None) -> bool | None:
     """Whether the accepted evidence value says what the profile shows.
 
-    ``None`` when the profile shows nothing for the field. Values compare the
-    way matching reads them (#477): RTO by in-office days, accelerated vesting
-    by its true/yes/1 rule, everything else by case-folded text.
+    ``None`` when the profile shows nothing or either value is ambiguous
+    (prose, negations, mixed policies): the client then shows the neutral
+    "Sourced value" note instead of a badge. RTO and accelerated vesting
+    compare normalized readings, everything else case-folded text.
     """
     if shown is None:
         return None
-    from crank.agents.jobs import matching
-
-    if field_key == CompanyFieldEvidence.FieldKey.RTO_POLICY:
-        evidence_days, shown_days = matching._rto_days(value_text), matching._rto_days(shown)
-        if evidence_days is not None and shown_days is not None:
-            return evidence_days == shown_days
-    if field_key == CompanyFieldEvidence.FieldKey.ACCELERATED_VESTING:
-        truthy = {"true", "yes", "1"}
-        return (value_text.strip().lower() in truthy) == (shown.strip().lower() in truthy)
-    return value_text.strip().casefold() == shown.strip().casefold()
+    evidence_reading = _badge_reading(field_key, value_text)
+    shown_reading = _badge_reading(field_key, shown)
+    if evidence_reading is None or shown_reading is None:
+        return None
+    return evidence_reading == shown_reading
 
 
 def field_evidence_payload(organization, *, now: datetime | None = None) -> dict:
