@@ -135,7 +135,19 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
         const rto = gridRow('RTO Policy');
         expect(rto.querySelector('.evidence-badge-verified')).toBeNull();
         expect(rto.querySelector('.evidence-badge-profile')).toHaveTextContent('Profile data');
-        expect(screen.getByTestId('profile-differs-rto_policy')).toHaveTextContent('Differs from the sourced value');
+        expect(screen.getByTestId('profile-differs-rto_policy')).toHaveTextContent('Sourced value: “Hybrid”');
+    });
+
+    test('the sourced-value note clips a long free-text evidence value', async () => {
+        const long = 'Remote-first company with offices in several cities and a long policy statement';
+        mockProvenance(() => ok(payload({
+            fields: [field('rto_policy', {value: long})], unverified_fields: [], pending_review: [],
+        })));
+        open();
+        await screen.findByTestId('coverage-summary');
+        const note = screen.getByTestId('profile-differs-rto_policy');
+        expect(note).toHaveTextContent('Sourced value: “Remote-first company with offices in several cities and a l…”');
+        expect(note).not.toHaveTextContent('statement');
     });
 
     test('Accelerated Vesting shows its stale and conflicting state in the grid', async () => {
@@ -216,6 +228,42 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
         expect(calls).toBe(2);
         await waitFor(() => expect(consoleSpy).toHaveBeenCalled());
         consoleSpy.mockRestore();
+    });
+
+    test('Retry keeps focus in the dialog through the reload and returns to Retry when it fails again', async () => {
+        const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        let calls = 0;
+        mockProvenance(() => {
+            calls += 1;
+            return Promise.resolve({ok: false, status: 503, json: () => Promise.resolve({})});
+        });
+        open();
+        const retry = await screen.findByTestId('provenance-retry');
+        expect(retry).not.toHaveFocus();
+        fireEvent.click(retry);
+        expect(screen.getByRole('heading', {name: /Data Freshness/})).toHaveFocus();
+        await waitFor(() => expect(calls).toBe(2));
+        await waitFor(() => expect(screen.getByTestId('provenance-retry')).toHaveFocus());
+        consoleSpy.mockRestore();
+    });
+
+    test('the loading score table reserves one row per covered rating dimension', () => {
+        global.fetch = jest.fn().mockImplementation(() => new Promise(() => {}));
+        const {avg_scores: _omit, ...withoutScores} = organization as Record<string, unknown>;
+        open({organization: {...withoutScores, rating_dimensions_covered: 3, rating_dimensions_total: 5}});
+        const table = screen.getByTestId('scores-loading');
+        expect(table).toHaveAttribute('aria-busy', 'true');
+        expect(table.querySelectorAll('tr')).toHaveLength(3);
+        expect(table.querySelectorAll('tr')[0]).toHaveTextContent('Loading scores...');
+        expect(table.querySelectorAll('tr')[1]).not.toHaveTextContent('Loading');
+    });
+
+    test('the loading score table keeps one row without rating coverage', () => {
+        global.fetch = jest.fn().mockImplementation(() => new Promise(() => {}));
+        const {avg_scores: _omit, rating_dimensions_covered: _c, rating_dimensions_total: _t, ...bare} =
+            organization as Record<string, unknown>;
+        open({organization: bare});
+        expect(screen.getByTestId('scores-loading').querySelectorAll('tr')).toHaveLength(1);
     });
 
     const emptyPayload = () => payload({fields: [], unverified_fields: [], pending_review: [],

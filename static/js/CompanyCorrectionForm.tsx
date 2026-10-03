@@ -3,7 +3,7 @@
 import * as React from 'react';
 import {createPortal} from 'react-dom';
 import EvidenceBadge from './evidence/EvidenceBadge';
-import {CORRECTABLE_FIELD_LABELS, fieldKeyLabel} from './labels';
+import {CORRECTABLE_FIELD_LABELS, fieldKeyLabel, formatEvidenceDate} from './labels';
 import {lockBackground, unlockBackground} from './modalIsolation';
 import {getCachedProvenance, setCachedProvenance} from './provenanceCache';
 import {COMPANY_OPEN_EVENT} from './suggestCompany/controller';
@@ -67,11 +67,6 @@ const newIdempotencyKey = (): string =>
               return (ch === 'x' ? n : (n & 0x3) | 0x8).toString(16);
           });
 
-const formatDate = (isoString: string | null): string =>
-    isoString
-        ? new Date(isoString).toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'})
-        : 'Unknown';
-
 export const describeCurrentValue = (
     provenance: ProvenanceState, fieldKey: string
 ): {
@@ -92,7 +87,7 @@ export const describeCurrentValue = (
         ? (provenance.data.fields || []).find(item => item.field_key === fieldKey)
         : undefined;
     if (row) {
-        const date = formatDate(row.last_verified_at);
+        const date = formatEvidenceDate(row.last_verified_at);
         const source = row.source_domain ? `from ${row.source_domain} · ` : '';
         const verified = `${source}last verified ${date}`;
         return {

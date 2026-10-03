@@ -42,6 +42,13 @@ describe('EvidenceBadge', () => {
         expect(formatEvidenceDate('2024-08-08T00:00:00Z')).toBe('Aug 8, 2024');
     });
 
+    test('formatEvidenceDate formats in the reader\'s time zone, not UTC', () => {
+        const spy = jest.spyOn(Date.prototype, 'toLocaleDateString');
+        expect(formatEvidenceDate('2024-08-08T03:00:00Z')).toBe('Aug 8, 2024');
+        expect(spy.mock.calls[0][1]).not.toHaveProperty('timeZone');
+        spy.mockRestore();
+    });
+
     test('no other component renders the status vocabulary', () => {
         const root = path.resolve(__dirname, '..');
         const files: string[] = [];
