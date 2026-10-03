@@ -19,7 +19,7 @@ const field = (key: string, overrides: Record<string, unknown> = {}) => ({
     value: ({rto_policy: 'Remote', funding_round: 'Seed', accelerated_vesting: 'No'} as Record<string, string>)[key] ?? 'Remote first', source_domain: 'example.com',
     source_url: 'https://example.com/about', observed_at: '2025-01-10T12:00:00Z', scope: {},
     last_checked_at: '2025-01-10T12:00:00Z', last_successful_fetch_at: null, last_changed_at: null,
-    last_verified_at: '2025-01-10T12:00:00Z', stale: false, status: 'verified', review: 'none', policy_days: 90,
+    last_verified_at: '2025-01-10T12:00:00Z', stale: false, status: 'verified', review: 'none', agrees_with_displayed: true, policy_days: 90,
     ...overrides,
 });
 
@@ -54,7 +54,8 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
         mockProvenance(() => ok(payload()));
         open({isAuthenticated: true});
         expect(await screen.findByTestId('coverage-summary')).toBeInTheDocument();
-        expect(screen.getByTestId('coverage-rating')).toHaveTextContent('1 of 2 rating dimensions');
+        expect(screen.getByTestId('rating-coverage')).toHaveTextContent('1 of 2 rating dimensions');
+        expect(screen.queryByTestId('coverage-rating')).toBeNull();
         expect(screen.getByTestId('last-updated').closest('.row')).toHaveTextContent('Record last edited');
         expect(screen.getByText('Editing the record does not re-verify facts.')).toBeInTheDocument();
         expect(screen.getByTestId('field-stale-rto_policy')).toBeInTheDocument();
@@ -127,7 +128,7 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
 
     test('after an accepted correction the grid does not certify the profile value it contradicts', async () => {
         mockProvenance(() => ok(payload({
-            fields: [field('rto_policy', {value: 'Hybrid'})],
+            fields: [field('rto_policy', {value: 'Hybrid', agrees_with_displayed: false})],
             unverified_fields: [], pending_review: [],
         })));
         open();
@@ -141,7 +142,7 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
     test('the sourced-value note clips a long free-text evidence value', async () => {
         const long = 'Remote-first company with offices in several cities and a long policy statement';
         mockProvenance(() => ok(payload({
-            fields: [field('rto_policy', {value: long})], unverified_fields: [], pending_review: [],
+            fields: [field('rto_policy', {value: long, agrees_with_displayed: false})], unverified_fields: [], pending_review: [],
         })));
         open();
         await screen.findByTestId('coverage-summary');
@@ -169,22 +170,90 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
         expect(gridRow('Accelerated Vesting').querySelector('.evidence-badge-profile')).not.toBeNull();
     });
 
-    test('evidence values true/false compare equal to Yes/No', async () => {
+    test('the grid trusts the server agreement flag, not the text of the evidence value', async () => {
         mockProvenance(() => ok(payload({
-            fields: [field('accelerated_vesting', {value: 'false'})], unverified_fields: [], pending_review: [],
-        })));
-        open();
-        await screen.findByTestId('coverage-summary');
-        expect(gridRow('Accelerated Vesting').querySelector('.evidence-badge-verified')).not.toBeNull();
-    });
-
-    test('evidence value true matches a Yes profile value', async () => {
-        mockProvenance(() => ok(payload({
-            fields: [field('accelerated_vesting', {value: 'true'})], unverified_fields: [], pending_review: [],
+            fields: [field('accelerated_vesting', {value: '1', agrees_with_displayed: true})],
+            unverified_fields: [], pending_review: [],
         })));
         open({organization: {...organization, accelerated_vesting: true}});
         await screen.findByTestId('coverage-summary');
-        expect(gridRow('Accelerated Vesting').querySelector('.evidence-badge-verified')).not.toBeNull();
+        const vesting = gridRow('Accelerated Vesting');
+        expect(vesting.querySelector('.evidence-badge-verified')).not.toBeNull();
+        expect(screen.queryByTestId('profile-differs-accelerated_vesting')).toBeNull();
+    });
+
+    test('a field without the agreement flag (older cached payload) never certifies the profile value', async () => {
+        mockProvenance(() => ok(payload({
+            fields: [field('accelerated_vesting', {agrees_with_displayed: undefined})],
+            unverified_fields: [], pending_review: [],
+        })));
+        open();
+        await screen.findByTestId('coverage-summary');
+        expect(gridRow('Accelerated Vesting').querySelector('.evidence-badge-verified')).toBeNull();
+        expect(gridRow('Accelerated Vesting').querySelector('.evidence-badge-profile')).not.toBeNull();
+    });
+
+    test('two open claims on one field are listed separately, each with its own value and source', async () => {
+        mockProvenance(() => ok(payload({
+            fields: [field('rto_policy', {review: 'conflicted'})], unverified_fields: [],
+            pending_review: [
+                {field_key: 'rto_policy', review: 'pending', observed_at: '2025-03-01T00:00:00Z',
+                    source_domain: 'p.test', observed_value: 'Hybrid'},
+                {field_key: 'rto_policy', review: 'conflicted', observed_at: '2025-02-01T00:00:00Z',
+                    source_domain: 'jobs.p.test', observed_value: 'Remote'},
+            ],
+        })));
+        open();
+        await screen.findByTestId('coverage-summary');
+        const [first, second] = screen.getAllByTestId('pending-review-rto_policy');
+        expect(first).toHaveTextContent('Pending review');
+        expect(first).toHaveTextContent('p.test');
+        expect(first).toHaveTextContent('“Hybrid”');
+        expect(second).toHaveTextContent('Conflicting observation');
+        expect(second).toHaveTextContent('jobs.p.test');
+        expect(second).toHaveTextContent('“Remote”');
+        expect(second).not.toHaveTextContent('“Hybrid”');
+    });
+
+    test('a field with a pending and a conflicting claim and no evidence row shows the conflict in the grid', async () => {
+        mockProvenance(() => ok(payload({
+            fields: [], unverified_fields: ['rto_policy'],
+            pending_review: [
+                {field_key: 'rto_policy', review: 'pending', observed_at: '2025-03-01T00:00:00Z',
+                    source_domain: 'p.test', observed_value: 'Hybrid'},
+                {field_key: 'rto_policy', review: 'conflicted', observed_at: '2025-02-01T00:00:00Z',
+                    source_domain: 'jobs.p.test', observed_value: 'Remote'},
+            ],
+        })));
+        open();
+        await screen.findByTestId('coverage-summary');
+        expect(gridRow('RTO Policy').querySelector('.evidence-badge-conflicted')).not.toBeNull();
+    });
+
+    test('null check-history timestamps read Never, not Unknown', async () => {
+        mockProvenance(() => ok(payload({
+            fields: [field('rto_policy', {last_verified_at: null, last_checked_at: null})],
+            unverified_fields: [], pending_review: [],
+        })));
+        open();
+        const row = await screen.findByTestId('field-evidence-rto_policy');
+        const history = row.querySelector('.evidence-timestamps') as HTMLElement;
+        expect(history).toHaveTextContent('Last checkedNever');
+        expect(history).toHaveTextContent('Last successful fetchNever');
+        expect(history).toHaveTextContent('Last changedNever');
+        expect(history).toHaveTextContent('Last verifiedNever');
+        expect(history).not.toHaveTextContent('Unknown');
+        expect(row).toHaveTextContent('Last verified never');
+    });
+
+    test('rating coverage stays in the score card while evidence loads and after it fails', async () => {
+        const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        mockProvenance(() => Promise.resolve({ok: false, status: 503, json: () => Promise.resolve({})}));
+        open();
+        expect(screen.getByTestId('rating-coverage')).toHaveTextContent('1 of 2 rating dimensions');
+        await screen.findByTestId('provenance-unavailable');
+        expect(screen.getByTestId('rating-coverage')).toHaveTextContent('1 of 2 rating dimensions');
+        consoleSpy.mockRestore();
     });
 
     test('the profile grid derives status from stale when the payload has no status', async () => {
@@ -244,6 +313,44 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
         expect(screen.getByRole('heading', {name: /Data Freshness/})).toHaveFocus();
         await waitFor(() => expect(calls).toBe(2));
         await waitFor(() => expect(screen.getByTestId('provenance-retry')).toHaveFocus());
+        consoleSpy.mockRestore();
+    });
+
+    test('a first failure for another company never steals focus after an earlier Retry', async () => {
+        const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        mockProvenance(() => Promise.resolve({ok: false, status: 503, json: () => Promise.resolve({})}));
+        const alpha = {...organization, id: 1, name: 'Alpha'};
+        const beta = {...organization, id: 2, name: 'Beta'};
+        const view = render(<OrganizationDetailsPopup organization={alpha} visible={true} onClose={() => {}}/>);
+        fireEvent.click(await screen.findByTestId('provenance-retry'));
+        await waitFor(() => expect(screen.getByTestId('provenance-retry')).toHaveFocus());
+        view.rerender(<OrganizationDetailsPopup organization={alpha} visible={false} onClose={() => {}}/>);
+        view.rerender(<OrganizationDetailsPopup organization={beta} visible={true} onClose={() => {}}/>);
+        const retry = await screen.findByTestId('provenance-retry');
+        await waitFor(() => expect((global.fetch as jest.Mock).mock.calls.length).toBe(3));
+        expect(retry).not.toHaveFocus();
+        consoleSpy.mockRestore();
+    });
+
+    test('a Retry abandoned by closing does not leak its focus request to the next company', async () => {
+        const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+        let calls = 0;
+        let release: (value: unknown) => void = () => {};
+        mockProvenance(() => {
+            calls += 1;
+            if (calls === 2) return new Promise(resolve => { release = resolve; });
+            return Promise.resolve({ok: false, status: 503, json: () => Promise.resolve({})});
+        });
+        const alpha = {...organization, id: 1, name: 'Alpha'};
+        const beta = {...organization, id: 2, name: 'Beta'};
+        const view = render(<OrganizationDetailsPopup organization={alpha} visible={true} onClose={() => {}}/>);
+        fireEvent.click(await screen.findByTestId('provenance-retry'));
+        view.rerender(<OrganizationDetailsPopup organization={alpha} visible={false} onClose={() => {}}/>);
+        release({ok: false, status: 503, json: () => Promise.resolve({})});
+        view.rerender(<OrganizationDetailsPopup organization={beta} visible={true} onClose={() => {}}/>);
+        const retry = await screen.findByTestId('provenance-retry');
+        await waitFor(() => expect(calls).toBe(3));
+        expect(retry).not.toHaveFocus();
         consoleSpy.mockRestore();
     });
 

@@ -136,6 +136,9 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     const [provenanceFailed, setProvenanceFailed] = React.useState(false);
     const [provenanceAttempt, setProvenanceAttempt] = React.useState(0);
     const [retryFocusTick, setRetryFocusTick] = React.useState(0);
+    // Set by the Retry button, consumed by the next failure: focus returns to
+    // Retry only when the user started the attempt that failed.
+    const userRetryRef = React.useRef(false);
     const [pendingCorrections, setPendingCorrections] = React.useState<PendingCorrection[]>([]);
     const closeButtonRef = React.useRef<HTMLButtonElement>(null);
     const freshnessHeadingRef = React.useRef<HTMLHeadingElement>(null);
@@ -162,6 +165,10 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     }, [organization, visible]);
 
     React.useEffect(() => {
+        userRetryRef.current = false;
+    }, [organization, visible]);
+
+    React.useEffect(() => {
         if (organization && visible) {
             let cancelled = false;
             setProvenanceLoading(true);
@@ -173,6 +180,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                 })
                 .then(data => {
                     if (cancelled) return;
+                    userRetryRef.current = false;
                     setProvenance(data);
                     setCachedProvenance(organization.id, data);
                     setProvenanceLoading(false);
@@ -183,7 +191,8 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                     setProvenance(null);
                     setProvenanceFailed(true);
                     setProvenanceLoading(false);
-                    if (provenanceAttempt > 0) setRetryFocusTick(tick => tick + 1);
+                    if (userRetryRef.current) setRetryFocusTick(tick => tick + 1);
+                    userRetryRef.current = false;
                 });
             return () => {
                 cancelled = true;
@@ -380,17 +389,18 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     // so a field's evidence status describes the shown value only when the
     // accepted evidence value is that value. Otherwise the grid says so.
     const clip = (text: string, max = 60) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
-    const normalizeFact = (value: string) => {
-        const text = value.trim().toLowerCase();
-        return ({true: 'yes', false: 'no'} as Record<string, string>)[text] ?? text;
-    };
-    const profileFieldBadges = (key: 'funding_round' | 'rto_policy' | 'accelerated_vesting', label: string, shown: string | undefined) => {
+    const profileFieldBadges = (key: 'funding_round' | 'rto_policy' | 'accelerated_vesting', label: string) => {
         if (!provenance) return null;
         const row = provenance.fields?.find(item => item.field_key === key);
-        const agreeing = row && normalizeFact(row.value) === normalizeFact(`${shown}`) ? row : undefined;
+        // The server decides agreement (matching's reading of both values), so
+        // every surface shares one rule.
+        const agreeing = row?.agrees_with_displayed === true ? row : undefined;
         const status: EvidenceStatusKey = agreeing ? (agreeing.status || (agreeing.stale ? 'stale' : 'verified')) : 'profile';
-        const pendingItem = provenance.pending_review?.find(item => item.field_key === key);
-        const review = row?.review && row.review !== 'none' ? row.review : pendingItem?.review ?? null;
+        const claims = provenance.pending_review?.filter(item => item.field_key === key) ?? [];
+        const claimReview = claims.some(item => item.review === 'conflicted')
+            ? 'conflicted' as const
+            : claims.length > 0 ? 'pending' as const : null;
+        const review = row?.review && row.review !== 'none' ? row.review : claimReview;
         return (
             <>
                 {' '}
@@ -539,11 +549,11 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                             </div>
                             <div className="row mb-3">
                                 <div className="col-5 text-end fw-bold">Funding Round:</div>
-                                <div className="col-7">{fundingRoundMap[organization.funding_round]}{profileFieldBadges('funding_round', 'Funding Round', fundingRoundMap[organization.funding_round])}</div>
+                                <div className="col-7">{fundingRoundMap[organization.funding_round]}{profileFieldBadges('funding_round', 'Funding Round')}</div>
                             </div>
                             <div className="row mb-3">
                                 <div className="col-5 text-end fw-bold">RTO Policy:</div>
-                                <div className="col-7">{rtoPolicyMap[organization.rto_policy]}{profileFieldBadges('rto_policy', 'RTO Policy', rtoPolicyMap[organization.rto_policy])}</div>
+                                <div className="col-7">{rtoPolicyMap[organization.rto_policy]}{profileFieldBadges('rto_policy', 'RTO Policy')}</div>
                             </div>
                             {organization.gives_ratings !== undefined && (
                                 <div className="row mb-3">
@@ -556,7 +566,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                     <div className="col-5 text-end fw-bold">Accelerated Vesting:</div>
                                     <div className="col-7">
                                         {organization.accelerated_vesting ? 'Yes' : 'No'}
-                                        {profileFieldBadges('accelerated_vesting', 'Accelerated Vesting', organization.accelerated_vesting ? 'Yes' : 'No')}
+                                        {profileFieldBadges('accelerated_vesting', 'Accelerated Vesting')}
                                     </div>
                                 </div>
                             )}
@@ -566,12 +576,14 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                 <span className="fw-bold">Rank:</span>
                                 <span>{organization.ranking}</span>
                             </div>
-                            {!ratingCoverage && (
-                                <div className="popup-details-score-row">
-                                    <span className="fw-bold">Rating coverage:</span>
-                                    <span data-testid="rating-coverage">{`${organization.profile_completeness.toFixed(0)}% of rating dimensions`}</span>
-                                </div>
-                            )}
+                            <div className="popup-details-score-row">
+                                <span className="fw-bold">Rating coverage:</span>
+                                <span data-testid="rating-coverage">
+                                    {ratingCoverage
+                                        ? `${ratingCoverage.covered} of ${ratingCoverage.total} rating dimensions`
+                                        : `${organization.profile_completeness.toFixed(0)}% of rating dimensions`}
+                                </span>
+                            </div>
                             {loading ? (
                                 <table className="table table-dark" aria-busy="true" data-testid="scores-loading">
                                     <tbody>
@@ -675,7 +687,6 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                     )}
                                     <EvidenceDetails
                                         evidence={provenance}
-                                        ratingCoverage={ratingCoverage}
                                         renderFieldAction={fieldCorrectionButton}
                                         emptyAction={emptyAction}
                                     />
@@ -713,6 +724,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                             data-testid="provenance-retry"
                                             onClick={() => {
                                                 freshnessHeadingRef.current?.focus({preventScroll: true});
+                                                userRetryRef.current = true;
                                                 setProvenanceAttempt(attempt => attempt + 1);
                                             }}>
                                         Retry
