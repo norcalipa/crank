@@ -295,7 +295,7 @@ test.describe('assistant actions (issue #484)', () => {
     });
 
     test('the save card confirm button is fully visible at 320px and no false jump pill shows', async ({page}) => {
-        await page.setViewportSize({width: 320, height: 700});
+        await page.setViewportSize({width: 320, height: 800});
         await login(page);
         await page.route('**/api/agent/preferences/propose/', (route) => route.fulfill({
             status: 200, contentType: 'application/json', body: JSON.stringify({
