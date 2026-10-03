@@ -219,6 +219,32 @@ describe('useTranscriptScroll', () => {
         expect(screen.getByTestId('state')).toHaveTextContent('true:0');
     });
 
+    test('leaving panel mode measures the anchor below the sticky header and restores it in the transcript', () => {
+        const {rerender} = render(<Harness assistantCount={2} owner="panel"/>);
+        const log = screen.getByTestId('log');
+        const panel = screen.getByTestId('panel');
+        metrics(panel, {scrollHeight: 3000, scrollTop: 400, clientHeight: 500});
+        jest.spyOn(panel, 'getBoundingClientRect').mockReturnValue({...rect(600), top: 0} as DOMRect);
+        jest.spyOn(screen.getByTestId('header'), 'getBoundingClientRect').mockReturnValue({...rect(40), top: 0} as DOMRect);
+        // The end of the transcript is far below the composer band: the reader is away from it.
+        const logRect = jest.spyOn(log, 'getBoundingClientRect').mockReturnValue({...rect(2000), top: 0} as DOMRect);
+        jest.spyOn(screen.getByTestId('footer'), 'getBoundingClientRect').mockReturnValue({...rect(600), top: 500} as DOMRect);
+        now += 5000;
+        fireEvent.wheel(panel);
+        fireEvent.scroll(panel);
+        // a1 is above the visible top (the header's bottom at 40); a2 sits 30px below it.
+        jest.spyOn(screen.getByTestId('a1'), 'getBoundingClientRect').mockReturnValue({...rect(30), top: 20} as DOMRect);
+        jest.spyOn(screen.getByTestId('a2'), 'getBoundingClientRect').mockReturnValue({...rect(120), top: 70} as DOMRect);
+        fireEvent.click(screen.getByText('capture'));
+
+        metrics(log, {scrollHeight: 2000, scrollTop: 0, clientHeight: 200});
+        logRect.mockReturnValue({...rect(300), top: 100} as DOMRect);
+        jest.spyOn(screen.getByTestId('a2'), 'getBoundingClientRect').mockReturnValue({...rect(350), top: 250} as DOMRect);
+        rerender(<Harness assistantCount={2} owner="transcript"/>);
+        // a2 is 150px below the log's top and must end 30px below it: scroll by 120.
+        expect(log.scrollTop).toBe(120);
+    });
+
     test('a reader at the bottom has no anchor to restore and keeps following across the switch', () => {
         const {rerender} = render(<Harness assistantCount={1} owner="transcript"/>);
         const panel = screen.getByTestId('panel');
