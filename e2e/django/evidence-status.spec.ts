@@ -54,7 +54,7 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
         test('the dialog separates coverage, stale facts and pending review', async ({page}) => {
             const dialog = await openDialog(page, 'E2E Beta Labs');
             await expect(dialog.getByTestId('coverage-summary')).toBeVisible();
-            await expect(dialog.getByTestId('coverage-rating')).toContainText('2 of 2');
+            await expect(dialog.getByTestId('rating-coverage')).toContainText('2 of 2');
             await expect(dialog.getByTestId('last-updated')).toBeVisible();
             await expect(dialog.getByText('Editing the record does not re-verify facts')).toBeVisible();
             await expect(dialog.getByTestId('field-stale-rto_policy')).toBeVisible();
