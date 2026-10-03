@@ -3,7 +3,7 @@
 // Validated page context and explicit assistant actions (issue #484). The
 // seeded demo provider answers "only remote" with a propose_filters action and
 // "open it" with open_company, and only when the page context was sent.
-import {expect, Page, test} from '@playwright/test';
+import {expect, Locator, Page, test} from '@playwright/test';
 import {E2E_PASSWORD, expectNoHorizontalOverflow, login, requireDjangoTier} from './support';
 
 const PREFS_USER = 'e2e_prefs_user';
@@ -47,6 +47,22 @@ async function setWorkModes(page: Page, modes: string[]): Promise<void> {
         proposal: proposed.body.token, decision: 'apply',
     });
     expect(applied.status).toBeLessThan(300);
+}
+
+// Visible, inside the transcript and not covered by anything (a pinned
+// composer, a sticky bar): what the reader can actually see and press.
+async function expectUnobstructed(page: Page, target: Locator): Promise<void> {
+    await expect(target).toBeVisible();
+    await expect.poll(() => target.evaluate((el) => {
+        const rect = el.getBoundingClientRect();
+        const log = document.querySelector('[role="log"]');
+        const bounds = log ? log.getBoundingClientRect() : {top: 0, bottom: window.innerHeight};
+        if (rect.top < bounds.top - 1 || rect.bottom > bounds.bottom + 1) {
+            return 'outside the transcript';
+        }
+        const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        return hit && (hit === el || el.contains(hit) || hit.contains(el)) ? 'clear' : 'covered';
+    }), {timeout: 5000}).toBe('clear');
 }
 
 const applyRemote = (page: Page) => page.getByRole('button', {name: 'Apply remote filter'});
@@ -128,13 +144,10 @@ test.describe('assistant actions (issue #484)', () => {
         const button = applyRemote(page);
         await expect(button).toBeDisabled();
         await expect(page.getByTestId('assistant-actions-stale')).toHaveText('This suggestion was for an earlier view.');
-        // Changing the view can nudge the log off its bottom, in which case the
-        // reply is announced by the jump pill instead of being followed.
-        const pill = page.getByTestId('jump-to-latest');
-        if (await pill.count() > 0) {
-            await pill.click();
-        }
-        await expect(page.getByTestId('assistant-actions-stale')).toBeInViewport({ratio: 1});
+        // The reason is shown, in view, with no jump pill: the view change
+        // must not push the newest reply out of the transcript.
+        await expectUnobstructed(page, page.getByTestId('assistant-actions-stale'));
+        await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
         await button.click({force: true});
         expect(new URL(page.url()).searchParams.has('rto')).toBe(false);
     });
@@ -173,6 +186,29 @@ test.describe('assistant actions (issue #484)', () => {
         await open.click();
         await expect(page.getByRole('dialog')).toBeVisible();
         await expect(page.getByRole('button', {name: /^Opened E2E Beta/})).toBeDisabled();
+    });
+
+    test('Open, close the dialog, then Apply: the sibling stays usable whatever the click order', async ({page}) => {
+        await login(page);
+        await page.getByRole('button', {name: /View details for E2E Beta/}).first().click();
+        await page.getByRole('link', {name: /Ask the assistant about E2E Beta/}).click();
+        await expect(page.getByTestId('assistant-panel')).toBeVisible();
+        await ask(page, 'Show only remote companies and open it');
+        const open = page.getByRole('button', {name: /^Open E2E Beta/});
+        await expect(applyRemote(page)).toBeVisible();
+        await open.click();
+        await expect(page.getByRole('dialog')).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(page.getByRole('dialog')).toHaveCount(0);
+        // Past any short window a time-based check would allow.
+        await page.waitForTimeout(600);
+        await expect(applyRemote(page)).toBeEnabled();
+        await expect(page.getByTestId('assistant-actions-stale')).toHaveText('');
+        await applyRemote(page).click();
+        await expect(page.getByTestId('filter-chip-rto')).toBeVisible();
+        await expect(page.getByRole('button', {name: 'Remote filter applied'})).toBeDisabled();
+        await expect(page.getByRole('button', {name: /^Opened E2E Beta/})).toBeDisabled();
+        await expect(page.getByTestId('assistant-actions-stale')).toHaveText('');
     });
 
     test('an open_company suggestion reopens the company dialog from the assistant', async ({page}) => {
@@ -276,12 +312,18 @@ test.describe('assistant actions (issue #484)', () => {
         await expect(review).toBeVisible();
         await expect(review).toContainText('Work arrangement');
         const save = review.getByRole('button', {name: 'Save', exact: true});
-        await expect(save).toBeInViewport({ratio: 1});
-        const log = await page.getByRole('log').boundingBox();
-        const box = await save.boundingBox();
-        expect(box!.y).toBeGreaterThanOrEqual(log!.y);
-        expect(box!.y + box!.height).toBeLessThanOrEqual(log!.y + log!.height + 1);
+        const heading = review.getByRole('heading', {name: 'Save as a requirement?'});
+        await expect(heading).toBeFocused();
+        // Both the focused heading and the confirm button stay visible and uncovered.
+        await expectUnobstructed(page, heading);
+        await expectUnobstructed(page, save);
         await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+        // Nothing keeps moving the transcript after it has settled.
+        const top = await page.getByRole('log').evaluate((el) => el.scrollTop);
+        await page.waitForTimeout(1500);
+        expect(await page.getByRole('log').evaluate((el) => el.scrollTop)).toBe(top);
+        await expectUnobstructed(page, heading);
+        await expectUnobstructed(page, save);
     });
 
     test('actions and the RTO chip fit at 375px', async ({page}) => {

@@ -2,13 +2,13 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 
 import * as React from 'react';
-import {act, fireEvent, render, screen, waitFor} from '@testing-library/react';
+import {act, cleanup, fireEvent, render, screen, waitFor} from '@testing-library/react';
 import '@testing-library/jest-dom';
 import AssistantActions, {
-    STALE_MESSAGE, TurnActions, companyUrl, filterLabel, filterQuery, filtersToPatch, parseActions,
+    STALE_MESSAGE, TurnActions, matchesReplyView, companyUrl, filterLabel, filterQuery, filtersToPatch, parseActions,
 } from './AssistantActions';
 import {
-    getWorkspaceSnapshot, registerCompanyTarget, registerFilterTarget, resetWorkspaceForTests, setWorkspaceContext,
+    clearWorkspaceContext, getWorkspaceSnapshot, registerCompanyTarget, registerFilterTarget, resetWorkspaceForTests, setPrioritiesRevision, setWorkspaceAccount, setWorkspaceContext,
 } from '../workspace/store';
 import {ApiFailure} from '../priorities/api';
 import * as prioritiesApi from '../priorities/api';
@@ -30,11 +30,12 @@ const proposal = {
 };
 
 function turn(actions: TurnActions['actions'], names?: Record<number, string>): TurnActions {
-    return {actions, revision: getWorkspaceSnapshot().contextRevision, names};
+    return {actions, revision: getWorkspaceSnapshot().contextRevision, names, context: getWorkspaceSnapshot().context};
 }
 
 const assign = jest.fn();
 const originalLocation = window.location;
+const revealed: Array<{el: HTMLElement; arg: unknown}> = [];
 
 beforeEach(() => {
     resetWorkspaceForTests();
@@ -44,12 +45,17 @@ beforeEach(() => {
     applyProposal.mockReset();
     undoApplied.mockReset();
     assign.mockReset();
+    revealed.length = 0;
+    Element.prototype.scrollIntoView = function (this: HTMLElement, arg?: boolean | ScrollIntoViewOptions) {
+        revealed.push({el: this, arg});
+    };
     Object.defineProperty(window, 'location', {
         value: {...originalLocation, assign}, writable: true, configurable: true,
     });
 });
 
 afterEach(() => {
+    delete (Element.prototype as {scrollIntoView?: unknown}).scrollIntoView;
     Object.defineProperty(window, 'location', {value: originalLocation, writable: true, configurable: true});
     document.getElementById('organization-list')?.remove();
 });
@@ -88,6 +94,44 @@ describe('parseActions', () => {
     test('a missing target defaults to rankings and both filters may combine', () => {
         expect(parseActions([{type: 'propose_filters', filters: {rto_policy: 'H', accelerated_vesting: true}}]))
             .toEqual([{type: 'propose_filters', target: 'rankings', filters: {rto_policy: 'H', accelerated_vesting: true}}]);
+    });
+});
+
+describe('matchesReplyView', () => {
+    const base = {surface: 'company', organizationId: 12, organizationName: 'Acme', filters: {}, page: 3} as const;
+    const none = {filters: {}, companies: new Set<number>()};
+
+    test('needs both a live and an original context', () => {
+        expect(matchesReplyView(null, base, none)).toBe(false);
+        expect(matchesReplyView({...base}, null, none)).toBe(false);
+        expect(matchesReplyView({...base}, undefined, none)).toBe(false);
+    });
+
+    test('the original context matches; any other entity does not unless the reply opened it', () => {
+        expect(matchesReplyView({...base}, base, none)).toBe(true);
+        const other = {...base, organizationId: 7, organizationName: 'Other'};
+        expect(matchesReplyView(other, base, none)).toBe(false);
+        expect(matchesReplyView(other, base, {...none, companies: new Set([7])})).toBe(true);
+        expect(matchesReplyView({surface: 'rankings', filters: {}, page: 3}, base, none)).toBe(false);
+        expect(matchesReplyView({surface: 'rankings', filters: {}, page: 3}, base, {...none, companies: new Set([12])})).toBe(true);
+    });
+
+    test('an opened company does not excuse a job, a comparison or another surface', () => {
+        const opened = {...none, companies: new Set([7])};
+        expect(matchesReplyView({...base, organizationId: 7, jobId: 4}, base, opened)).toBe(false);
+        expect(matchesReplyView({...base, organizationId: 7, comparisonIds: [7, 8]}, base, opened)).toBe(false);
+        expect(matchesReplyView({surface: 'jobs', filters: {}, page: 3}, base, opened)).toBe(false);
+    });
+
+    test('applied filters, and the page reset they bring, are the reply\'s own; other values are not', () => {
+        const applied = {filters: {rtoPolicy: 'R' as const}, companies: new Set<number>()};
+        expect(matchesReplyView({...base, filters: {rtoPolicy: 'R'}, page: 1}, base, applied)).toBe(true);
+        expect(matchesReplyView({...base, filters: {rtoPolicy: 'R'}, page: undefined}, base, applied)).toBe(true);
+        expect(matchesReplyView({...base, filters: {rtoPolicy: 'R'}, page: 5}, base, applied)).toBe(false);
+        expect(matchesReplyView({...base, filters: {rtoPolicy: 'O'}, page: 1}, base, applied)).toBe(false);
+        expect(matchesReplyView({...base, filters: {rtoPolicy: 'R'}, page: 3}, base, none)).toBe(false);
+        expect(matchesReplyView({...base, filters: {acceleratedVesting: true}}, base, none)).toBe(false);
+        expect(matchesReplyView({...base, searchTerm: 'x'}, base, none)).toBe(false);
     });
 });
 
@@ -270,20 +314,22 @@ describe('AssistantActions', () => {
         };
 
         test('follows the newest bubble when its action row was in view', () => {
-            const {log, done} = mountInLog(1, 60);
-            expect(log.scrollTop).toBe(88);
+            const {done} = mountInLog(1, 60);
+            expect(revealed).toHaveLength(1);
+            expect(revealed[0].el).toBe(screen.getByTestId('assistant-actions-stale'));
+            expect(revealed[0].arg).toEqual({block: 'nearest', behavior: 'instant'});
             done();
         });
 
         test('leaves a reader who scrolled up alone', () => {
-            const {log, done} = mountInLog(1, 160);
-            expect(log.scrollTop).toBe(0);
+            const {done} = mountInLog(1, 160);
+            expect(revealed).toHaveLength(0);
             done();
         });
 
         test('leaves an older bubble alone', () => {
-            const {log, done} = mountInLog(2, 60);
-            expect(log.scrollTop).toBe(0);
+            const {done} = mountInLog(2, 60);
+            expect(revealed).toHaveLength(0);
             done();
         });
     });
@@ -291,7 +337,6 @@ describe('AssistantActions', () => {
     describe('the reveal follows a card that is still growing', () => {
         const original = globalThis.ResizeObserver;
         let observers: Array<{callback: () => void; observe: jest.Mock; disconnect: jest.Mock}>;
-        let geometry: {bottom: number};
         let spy: jest.SpyInstance;
         let log: HTMLElement;
         let view: ReturnType<typeof render>;
@@ -299,7 +344,6 @@ describe('AssistantActions', () => {
         beforeEach(() => {
             jest.useFakeTimers();
             observers = [];
-            geometry = {bottom: 180};
             globalThis.ResizeObserver = class {
                 observe = jest.fn();
                 disconnect = jest.fn();
@@ -315,7 +359,7 @@ describe('AssistantActions', () => {
             spy = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
                 if (this === log) return {top: 0, bottom: 100} as DOMRect;
                 if (this.classList.contains('assistant-action-btn')) return {top: 0, bottom: 60} as DOMRect;
-                return {top: 50, bottom: geometry.bottom} as DOMRect;
+                return {top: 50, bottom: 180} as DOMRect;
             });
             view = render(<AssistantActions turn={turn([remote])} />, {
                 container: (log.firstElementChild as HTMLElement).appendChild(document.createElement('div')),
@@ -333,24 +377,41 @@ describe('AssistantActions', () => {
         });
 
         test('re-applies the reveal when the bubble grows after the first scroll', () => {
-            expect(log.scrollTop).toBe(88);
+            expect(revealed).toHaveLength(1);
             expect(observers[0].observe).toHaveBeenCalledWith(log.firstElementChild);
-            geometry.bottom = 200;
             observers[0].callback();
-            expect(log.scrollTop).toBe(196);
+            expect(revealed).toHaveLength(2);
         });
 
-        test('stops following once the reader scrolls', () => {
-            log.dispatchEvent(new Event('wheel'));
+        test.each(['wheel', 'touchstart', 'keydown', 'pointerdown', 'focusin'])('stops following on the reader\'s %s', (name) => {
+            log.dispatchEvent(new Event(name));
             expect(observers[0].disconnect).toHaveBeenCalled();
         });
 
-        test('stops following after a moment', () => {
+        test('stops following when the reader scrolls, but not for its own scroll', () => {
+            log.dispatchEvent(new Event('scroll'));
             expect(observers[0].disconnect).not.toHaveBeenCalled();
-            act(() => {
-                jest.advanceTimersByTime(1000);
-            });
+            log.scrollTop = 40;
+            log.dispatchEvent(new Event('scroll'));
             expect(observers[0].disconnect).toHaveBeenCalled();
+        });
+
+        test('keeps following while the card grows however long that takes', () => {
+            act(() => {
+                jest.advanceTimersByTime(10_000);
+            });
+            expect(observers[0].disconnect).not.toHaveBeenCalled();
+            observers[0].callback();
+            expect(revealed).toHaveLength(2);
+        });
+
+        test('stops following once the reply has been scrolled out of view', () => {
+            spy.mockImplementation(function (this: Element) {
+                return (this === log ? {top: 0, bottom: 100} : {top: -300, bottom: -150}) as DOMRect;
+            });
+            observers[0].callback();
+            expect(observers[0].disconnect).toHaveBeenCalled();
+            expect(revealed).toHaveLength(1);
         });
 
         test('stops following when the reply unmounts', () => {
@@ -360,7 +421,6 @@ describe('AssistantActions', () => {
 
         test('works without ResizeObserver', () => {
             delete (globalThis as {ResizeObserver?: unknown}).ResizeObserver;
-            geometry.bottom = 190;
             act(() => {
                 setWorkspaceContext({surface: 'rankings', page: 5});
             });
@@ -456,49 +516,71 @@ describe('AssistantActions', () => {
             expect(await screen.findByTestId('assistant-action-review')).toBeInTheDocument();
         });
 
-        test('opening the review or an error scrolls the transcript, not the page', async () => {
+        test('opening the review or an error reveals its last control, not the whole bubble', async () => {
             await applyFilter();
             const log = screen.getByTestId('assistant-actions').parentElement as HTMLElement;
             log.setAttribute('role', 'log');
-            const reviewOpen = () => screen.queryByTestId('assistant-action-review') !== null;
             const spy = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
-                const shift = log.scrollTop;
-                const box = (top: number, bottom: number) => ({top: top - shift, bottom: bottom - shift} as DOMRect);
-                if (this === log) return {top: 100, bottom: 300} as DOMRect;
-                if (this.getAttribute('data-testid') === 'assistant-action-review') return box(400, 700);
-                const failed = screen.queryByTestId('priorities-review-error') !== null;
-                return box(250, failed ? 760 : reviewOpen() ? 700 : 380);
+                return (this === log ? {top: 100, bottom: 300} : {top: 150, bottom: 250}) as DOMRect;
             });
+            revealed.length = 0;
             proposePriorities.mockRejectedValueOnce(new Error('network'));
             fireEvent.click(screen.getByTestId('assistant-action-save'));
             await screen.findByTestId('assistant-action-error');
-            expect(log.scrollTop).toBe(88);
+            expect(revealed[revealed.length - 1].el).toBe(screen.getByRole('button', {name: 'Try again'}));
             proposePriorities.mockResolvedValueOnce(proposal);
             fireEvent.click(screen.getByRole('button', {name: 'Try again'}));
             await screen.findByTestId('assistant-action-review');
-            expect(log.scrollTop).toBe(408);
+            expect(revealed[revealed.length - 1].el).toBe(screen.getByRole('button', {name: 'Cancel'}));
             applyProposal.mockRejectedValueOnce(new Error('boom'));
             fireEvent.click(screen.getByRole('button', {name: 'Save'}));
             await screen.findByTestId('priorities-review-error');
-            expect(log.scrollTop).toBe(468);
+            expect(revealed[revealed.length - 1].el.tagName).toBe('BUTTON');
             spy.mockRestore();
         });
 
-        test('inside a chat bubble the bubble bottom is what scrolls into view', async () => {
-            registerFilterTarget(() => true);
-            const log = document.createElement('div');
+        test('a focused card heading pushed above the view is scrolled back when it fits with the control', async () => {
+            await applyFilter();
+            const log = screen.getByTestId('assistant-actions').parentElement as HTMLElement;
             log.setAttribute('role', 'log');
-            log.innerHTML = '<div class="chat-bubble-assistant"></div>';
-            document.body.appendChild(log);
-            const bubble = log.firstElementChild as HTMLElement;
-            const spy = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
-                return (this === log ? {top: 0, bottom: 100} : {top: 50, bottom: 180}) as DOMRect;
+            log.scrollTop = 100;
+            const rects = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+                if (this === log) return {top: 100, bottom: 300} as DOMRect;
+                if (this.tagName === 'H3') return {top: 80, bottom: 100} as DOMRect;
+                return {top: 200, bottom: 260} as DOMRect;
             });
-            render(<AssistantActions turn={turn([remote])} />, {container: bubble.appendChild(document.createElement('div'))});
-            fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
-            expect(log.scrollTop).toBe(88);
-            spy.mockRestore();
-            log.remove();
+            proposePriorities.mockResolvedValueOnce(proposal);
+            fireEvent.click(screen.getByTestId('assistant-action-save'));
+            await screen.findByTestId('assistant-action-review');
+            expect(document.activeElement?.tagName).toBe('H3');
+            expect(log.scrollTop).toBe(80);
+            rects.mockRestore();
+        });
+
+        test('a pinned bar over the control scrolls the transcript on by the overlap', async () => {
+            await applyFilter();
+            const log = screen.getByTestId('assistant-actions').parentElement as HTMLElement;
+            log.setAttribute('role', 'log');
+            const bar = document.createElement('div');
+            document.body.appendChild(bar);
+            const rects = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+                if (this === log) return {top: 100, bottom: 300} as DOMRect;
+                if (this === bar) return {top: 240, bottom: 300} as DOMRect;
+                return {top: 200, bottom: 260, left: 10, width: 100} as DOMRect;
+            });
+            const hit = jest.fn(() => bar);
+            Object.defineProperty(document, 'elementFromPoint', {value: hit, configurable: true});
+            proposePriorities.mockResolvedValueOnce(proposal);
+            fireEvent.click(screen.getByTestId('assistant-action-save'));
+            await screen.findByTestId('assistant-action-review');
+            expect(hit).toHaveBeenCalled();
+            expect(log.scrollTop).toBeGreaterThanOrEqual(28);
+            hit.mockReturnValue(null as never);
+            log.scrollTop = 0;
+            await act(async () => { setWorkspaceContext({page: 9}); });
+            delete (document as {elementFromPoint?: unknown}).elementFromPoint;
+            rects.mockRestore();
+            bar.remove();
         });
 
         test('a prefetched proposal with no changes replaces the Save button with the already note', async () => {
@@ -624,6 +706,98 @@ describe('per-reply staleness (issue #484 review)', () => {
         clock.mockRestore();
         expect(screen.getByRole('button', {name: 'Open Acme'})).toHaveAttribute('aria-disabled', 'true');
         expect(screen.getByTestId('assistant-actions-stale')).toHaveTextContent(STALE_MESSAGE);
+    });
+
+    // Like OrganizationList: opening reports the dialog's context (after a fetch,
+    // so after any fixed delay) and closing reports the list without the company.
+    describe('open, close, then apply (click order never strands a sibling)', () => {
+        const asked = {surface: 'company', organizationId: 12, organizationName: 'Acme', filters: {}, page: 3} as const;
+        let slow: (() => void) | null;
+        beforeEach(() => {
+            slow = null;
+            setWorkspaceContext(asked);
+            registerFilterTarget((filters) => {
+                setWorkspaceContext({filters, page: 1});
+                return true;
+            });
+        });
+
+        const openThenClose = (delayed: boolean) => {
+            const release = registerCompanyTarget(() => {
+                const commit = () => setWorkspaceContext({surface: 'company', organizationId: 12, organizationName: 'Acme'});
+                if (delayed) {
+                    slow = commit;
+                } else {
+                    commit();
+                }
+                return true;
+            });
+            render(<AssistantActions turn={turn([remote, open12], {12: 'Acme'})} />);
+            fireEvent.click(screen.getByRole('button', {name: 'Open Acme'}));
+            return release;
+        };
+
+        const closeDialog = () => act(() => {
+            clearWorkspaceContext();
+            setWorkspaceContext({surface: 'rankings'});
+        });
+
+        test.each([[false], [true]])('Open, close the dialog, then Apply stays enabled (slow fetch: %s)', (delayed) => {
+            const release = openThenClose(delayed);
+            if (slow) {
+                act(() => slow!());
+            }
+            closeDialog();
+            release();
+            const apply = screen.getByRole('button', {name: 'Apply remote filter'});
+            expect(apply).toHaveAttribute('aria-disabled', 'false');
+            expect(screen.getByTestId('assistant-actions-stale')).toHaveTextContent('');
+            fireEvent.click(apply);
+            expect(screen.getByRole('button', {name: 'Remote filter applied'})).toBeInTheDocument();
+            expect(screen.getByRole('button', {name: 'Opened Acme'})).toBeInTheDocument();
+            expect(screen.getByTestId('assistant-actions-stale')).toHaveTextContent('');
+        });
+
+        test('the dialog committing long after the click is still the reply\'s own change', () => {
+            const clock = jest.spyOn(Date, 'now').mockImplementation(() => 5_000_000);
+            const release = openThenClose(true);
+            clock.mockImplementation(() => 5_009_000);
+            act(() => slow!());
+            release();
+            clock.mockRestore();
+            expect(screen.getByRole('button', {name: 'Apply remote filter'})).toHaveAttribute('aria-disabled', 'false');
+        });
+
+        test('a different company opened by the reader still makes the reply stale', () => {
+            const release = openThenClose(false);
+            act(() => {
+                setWorkspaceContext({surface: 'company', organizationId: 99, organizationName: 'Other'});
+            });
+            release();
+            expect(screen.getByRole('button', {name: 'Apply remote filter'})).toHaveAttribute('aria-disabled', 'true');
+            expect(screen.getByTestId('assistant-actions-stale')).toHaveTextContent(STALE_MESSAGE);
+        });
+
+        test('a filter the reader changes after applying one makes the reply stale', () => {
+            const release = openThenClose(false);
+            fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+            act(() => {
+                setWorkspaceContext({filters: {rtoPolicy: 'O'}});
+            });
+            release();
+            expect(screen.getByTestId('assistant-actions-stale')).toHaveTextContent(STALE_MESSAGE);
+        });
+
+        test('a click the target declines is not remembered as an effect', () => {
+            const release = registerCompanyTarget(() => false);
+            render(<AssistantActions turn={turn([remote, open12], {12: 'Acme'})} />);
+            fireEvent.click(screen.getByRole('button', {name: 'Open Acme'}));
+            release();
+            act(() => {
+                setWorkspaceContext({surface: 'company', organizationId: 12, organizationName: 'Acme', page: 8});
+            });
+            expect(screen.getByTestId('assistant-actions-stale')).toHaveTextContent(STALE_MESSAGE);
+        });
     });
 
     test('Back removing the filter reverts the label and lets it be applied again', () => {
@@ -789,6 +963,73 @@ describe('focus, undo and scrolling after a save (issue #484 review)', () => {
         expect(signal?.aborted).toBe(true);
     });
 
+    describe('a response landing after an account change or unmount writes nothing', () => {
+        const saveToReview = async () => {
+            registerFilterTarget(() => true);
+            render(<AssistantActions turn={turn([remote])} />);
+            fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+            proposePriorities.mockResolvedValue(proposal);
+            await act(async () => undefined);
+            fireEvent.click(screen.getByTestId('assistant-action-save'));
+            await screen.findByTestId('assistant-action-review');
+        };
+
+        test('Save for the previous account does not record its revision', async () => {
+            const write = setPrioritiesRevision;
+            write(2);
+            await saveToReview();
+            let land: (value: unknown) => void = () => undefined;
+            applyProposal.mockReturnValue(new Promise((resolve) => { land = resolve; }));
+            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            act(() => {
+                setWorkspaceAccount({status: 'authenticated', key: 'someone-else'});
+            });
+            await act(async () => {
+                land({revision: 9, undo: null});
+            });
+            expect(getWorkspaceSnapshot().prioritiesRevision).toBe(2);
+            expect(screen.queryByTestId('assistant-action-saved')).not.toBeInTheDocument();
+        });
+
+        test('Save records its revision when the account is unchanged', async () => {
+            await saveToReview();
+            applyProposal.mockResolvedValue({revision: 9, undo: null});
+            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            await screen.findByTestId('assistant-action-saved');
+            expect(getWorkspaceSnapshot().prioritiesRevision).toBe(9);
+        });
+
+        test('Undo for the previous account does not record its revision', async () => {
+            await saveToReview();
+            applyProposal.mockResolvedValue({revision: 9, undo: {id: 'u1'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            await screen.findByTestId('assistant-action-saved');
+            let land: (value: unknown) => void = () => undefined;
+            undoApplied.mockReturnValue(new Promise((resolve) => { land = resolve; }));
+            fireEvent.click(screen.getByTestId('assistant-action-undo'));
+            act(() => {
+                setWorkspaceAccount({status: 'authenticated', key: 'someone-else'});
+            });
+            await act(async () => {
+                land(11);
+            });
+            expect(getWorkspaceSnapshot().prioritiesRevision).toBe(9);
+            expect(screen.queryByText('Change undone.')).not.toBeInTheDocument();
+        });
+
+        test('an aborted Save that still resolves writes nothing', async () => {
+            await saveToReview();
+            let land: (value: unknown) => void = () => undefined;
+            applyProposal.mockReturnValue(new Promise((resolve) => { land = resolve; }));
+            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            cleanup();
+            await act(async () => {
+                land({revision: 9, undo: null});
+            });
+            expect(getWorkspaceSnapshot().prioritiesRevision).toBeNull();
+        });
+    });
+
     describe('scrolling', () => {
         const stub = (scroller: HTMLElement, host: {top: number; bottom: number}) =>
             jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
@@ -806,7 +1047,7 @@ describe('focus, undo and scrolling after a save (issue #484 review)', () => {
                 container: (panel.firstElementChild as HTMLElement).appendChild(document.createElement('div')),
             });
             fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
-            expect(panel.scrollTop).toBe(88);
+            expect(revealed.length).toBeGreaterThan(0);
             spy.mockRestore();
             panel.remove();
         });
@@ -826,6 +1067,7 @@ describe('focus, undo and scrolling after a save (issue #484 review)', () => {
             await act(async () => undefined);
             expect(screen.getByTestId('assistant-action-save')).toBeInTheDocument();
             expect(log.scrollTop).toBe(0);
+            expect(revealed).toHaveLength(0);
             spy.mockRestore();
             log.remove();
         });

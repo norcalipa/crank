@@ -123,10 +123,13 @@ lands — implemented-before-documented rule, per #463's registry).
 - **Browser controls (484b):** `static/js/chat/AssistantActions.tsx` renders
   each action as an explicit button and does nothing until it is pressed.
   1. *Click-time revision check.* A reply is stale unless the page context is
-     the revision it answered, or one its own clicks caused (a short window
-     after a click, or Back restoring the context the reply was asked under).
-     Staleness is per reply, so applying one action never disables its
-     siblings, while a newer selection, refresh or unrelated change does. The
+     the revision it answered or, judged by effect rather than time, the
+     context it was asked under plus only what its own clicks changed (the
+     filters it applied, a company it opened and the list the dialog returns
+     to when closed, or Back restoring the original view). Staleness is per
+     reply, so applying one action does not disable its siblings, in either
+     click order, while a newer selection, a different company, a changed
+     filter, a refresh or any other change does. The
      check runs again at click time, so a context that moved after the last
      render still blocks the click. The sent revision (not the server echo) is
      what the reply is judged by; a mismatched echo drops the actions.

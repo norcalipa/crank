@@ -15,10 +15,10 @@ import {
 } from '../priorities/api';
 import ReviewChanges from '../priorities/ReviewChanges';
 import {
-    applyWorkspaceFilters, getWorkspaceSnapshot, openWorkspaceCompany, sameContext, setPrioritiesRevision,
+    applyWorkspaceFilters, getWorkspaceSnapshot, openWorkspaceCompany, setPrioritiesRevision,
     subscribeWorkspace,
 } from '../workspace/store';
-import {RtoPolicyCode, WorkspaceContext, WorkspaceFilters} from '../workspace/types';
+import {RtoPolicyCode, WorkspaceAccount, WorkspaceContext, WorkspaceFilters} from '../workspace/types';
 
 export type AssistantAction =
     | {type: 'open_company'; organization_id: number}
@@ -26,7 +26,7 @@ export type AssistantAction =
 
 export interface TurnActions {
     actions: AssistantAction[];
-    // `context.revision` the server echoed for the turn that produced them.
+    // The `context.revision` the client sent with the turn that produced them.
     revision: number;
     // Display names for ids a reply may open (its result cards and the page
     // the question was asked from); an unknown id gets a generic label.
@@ -36,9 +36,6 @@ export interface TurnActions {
     context?: WorkspaceContext | null;
 }
 
-// Revision bumps that land this soon after a click are the click's own
-// consequence (the list re-reports its context when React commits).
-const SELF_CHANGE_WINDOW_MS = 250;
 const NOT_IN_LIST_MESSAGE = "That company isn't in the ranked list you're viewing.";
 
 const RTO_CODES: readonly string[] = ['R', 'H', 'O'];
@@ -179,6 +176,97 @@ function scrollParentOf(element: HTMLElement): HTMLElement | null {
     return element.closest<HTMLElement>('[role="log"]');
 }
 
+// What this reply's own clicks changed on the page: the filters it applied and
+// the companies it opened. A reply is judged by effect, never by timing.
+interface ReplyEffects {
+    filters: WorkspaceFilters;
+    companies: Set<number>;
+}
+
+const emptyEffects = (): ReplyEffects => ({filters: {}, companies: new Set()});
+
+const entityKey = (context: WorkspaceContext) => JSON.stringify([
+    context.surface, context.organizationId, context.organizationName, context.jobId, context.comparisonIds ?? null,
+]);
+
+// True when `live` is the context the reply was asked under, or that context
+// plus only what the reply's own clicks cause: the filters it applied (and the
+// page reset they bring), a company it opened, and the list the company dialog
+// returns to once closed. Anything else is a view change the reply did not make.
+export function matchesReplyView(
+    live: WorkspaceContext | null, base: WorkspaceContext | null | undefined, effects: ReplyEffects,
+): boolean {
+    if (!live || !base) {
+        return false;
+    }
+    const filterKeys = ['rtoPolicy', 'acceleratedVesting'] as const;
+    let filterApplied = false;
+    for (const key of filterKeys) {
+        const applied = effects.filters[key];
+        filterApplied = filterApplied || applied !== undefined;
+        if (live.filters?.[key] !== base.filters?.[key] && !(applied !== undefined && live.filters?.[key] === applied)) {
+            return false;
+        }
+    }
+    const pageReset = filterApplied && (live.page === undefined || live.page === 1);
+    if (live.searchTerm !== base.searchTerm || live.algorithmId !== base.algorithmId
+        || live.resultGeneration !== base.resultGeneration || live.preferenceRevision !== base.preferenceRevision
+        || (live.page !== base.page && !pageReset)) {
+        return false;
+    }
+    if (entityKey(live) === entityKey(base)) {
+        return true;
+    }
+    if (effects.companies.size === 0) {
+        return false;
+    }
+    const noEntity = live.organizationId === undefined && live.jobId === undefined && live.comparisonIds === undefined;
+    const openedHere = live.surface === 'company' && live.organizationId !== undefined
+        && effects.companies.has(live.organizationId) && live.jobId === undefined && live.comparisonIds === undefined;
+    return openedHere || (noEntity && live.surface === 'rankings' && live.organizationName === undefined);
+}
+
+// Brings a control into the scrolling ancestor with the least movement
+// (`nearest` honours the scroller's scroll-padding). Where a fixed bar still
+// covers its centre, scrolls on by the overlap. Where the focused element in
+// the reply (a card heading) is now above the view and would fit alongside the
+// control, scrolls back up to it so neither is lost.
+function revealControl(control: HTMLElement, scroller: HTMLElement, host: HTMLElement) {
+    control.scrollIntoView?.({block: 'nearest', behavior: 'instant' as ScrollBehavior});
+    if (typeof document.elementFromPoint === 'function') {
+        const rect = control.getBoundingClientRect();
+        const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+        if (hit && !control.contains(hit) && !hit.contains(control)) {
+            const covered = hit.getBoundingClientRect();
+            if (covered.top > rect.top && covered.top < rect.bottom) {
+                scroller.scrollTop += rect.bottom - covered.top + 8;
+            }
+        }
+    }
+    const focused = document.activeElement;
+    if (focused instanceof HTMLElement && focused !== control && host.contains(focused)) {
+        const view = scroller.getBoundingClientRect();
+        const top = focused.getBoundingClientRect().top;
+        if (top < view.top && control.getBoundingClientRect().bottom - top <= view.bottom - view.top) {
+            scroller.scrollTop -= view.top - top;
+        }
+    }
+}
+
+// The control to keep in view: the last button or note of the reply that has content.
+function revealTarget(host: HTMLElement): HTMLElement | null {
+    const candidates = Array.from(host.querySelectorAll<HTMLElement>('button, [role="status"], [role="alert"], [data-testid="assistant-actions-stale"]'))
+        .filter((node) => node.tagName === 'BUTTON' || (node.textContent ?? '').trim() !== '');
+    return candidates[candidates.length - 1] ?? null;
+}
+
+// A response that lands after the account changed (a purge not yet unmounted
+// this reply) belongs to the previous account and must not write its revision.
+const sameAccount = (account: WorkspaceAccount): boolean => {
+    const current = getWorkspaceSnapshot().account;
+    return current.status === account.status && current.key === account.key;
+};
+
 const filtersPresent = (
     action: AssistantAction & {type: 'propose_filters'}, live: WorkspaceFilters | undefined,
 ): boolean => {
@@ -204,32 +292,24 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
     const root = React.useRef<HTMLDivElement>(null);
     const focusNext = React.useRef<{index: number; kind: FocusKind} | null>(null);
 
-    // Staleness is per reply: the revision it answered, plus the revisions its
-    // own clicks caused. Any other change (a newer selection, Back, a refresh)
-    // leaves the reply on an earlier view.
-    const accepted = React.useRef<Set<number>>(new Set());
-    const acceptedFor = React.useRef<TurnActions | undefined>(undefined);
-    const selfChangeUntil = React.useRef(0);
-    if (acceptedFor.current !== turn) {
-        acceptedFor.current = turn;
-        accepted.current = new Set(turn ? [turn.revision] : []);
+    // Staleness is per reply: the page context it was asked under, plus only
+    // what its own clicks changed. Any other change (a newer selection, Back
+    // to a different view, a refresh) leaves the reply on an earlier view.
+    const effects = React.useRef<ReplyEffects>(emptyEffects());
+    const effectsFor = React.useRef<TurnActions | undefined>(undefined);
+    if (effectsFor.current !== turn) {
+        effectsFor.current = turn;
+        effects.current = emptyEffects();
     }
-    const hasApplied = Object.values(applied).some(Boolean);
-    const adoptLiveRevision = () => {
+    const isFresh = () => {
+        if (!turn) {
+            return true;
+        }
         const snapshot = getWorkspaceSnapshot();
-        const live = snapshot.contextRevision;
-        if (accepted.current.has(live)) {
-            return true;
-        }
-        if (Date.now() <= selfChangeUntil.current
-            || (hasApplied && turn?.context && sameContext(snapshot.context, turn.context))) {
-            accepted.current.add(live);
-            return true;
-        }
-        return false;
+        return snapshot.contextRevision === turn.revision
+            || matchesReplyView(snapshot.context, turn.context, effects.current);
     };
-    const fresh = turn ? adoptLiveRevision() : true;
-    const stale = !fresh;
+    const stale = !isFresh();
     const liveFilters = getWorkspaceSnapshot().context?.filters;
     const isDone = (index: number, action: AssistantAction) => applied[index] === true
         && (action.type !== 'propose_filters' || filtersPresent(action, liveFilters));
@@ -259,13 +339,8 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
         && turn.actions.some((action, index) => !isDone(index, action));
     const prevStale = React.useRef(staleShown);
     const mounted = React.useRef(false);
-    // After a state change, bring the bubble's bottom edge (the confirm row of
-    // a review card included) into the scrolling ancestor. The card heading may
-    // scroll away when the card is taller than the view; it stays reachable by
-    // scrolling. A reader who has scrolled this reply out of view is left alone.
+    // Focus restoration: only when the control the reader was on disappeared.
     React.useLayoutEffect(() => {
-        const staleFlip = staleShown && !prevStale.current;
-        prevStale.current = staleShown;
         const focusTarget = focusNext.current;
         focusNext.current = null;
         if (focusTarget) {
@@ -275,6 +350,17 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
                     `[data-focus-key="${focusTarget.index}:${focusTarget.kind}"]`)?.focus({preventScroll: true});
             }
         }
+    }, [applied, requirement, saveable, staleShown, notFound]);
+    // After a state change, bring the reply's last control (the confirm row of a
+    // review card, a stale or saved note) into the scrolling ancestor with the
+    // least movement, clear of any pinned bar. A reader who has scrolled this
+    // reply out of view is left alone, and following stops at the reader's own
+    // scroll, key, pointer or focus change. A passive effect, so it runs after a
+    // child's own mount focus (a review card focuses its heading) and has the
+    // last word on scrolling.
+    React.useEffect(() => {
+        const staleFlip = staleShown && !prevStale.current;
+        prevStale.current = staleShown;
         if (!mounted.current) {
             mounted.current = true;
             return;
@@ -284,44 +370,59 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
         if (!scroller) {
             return;
         }
-        const scrollerRect = scroller.getBoundingClientRect();
-        const hostRect = host.getBoundingClientRect();
-        if (hostRect.bottom <= scrollerRect.top || hostRect.top >= scrollerRect.bottom) {
+        const inView = () => {
+            const scrollerRect = scroller.getBoundingClientRect();
+            const hostRect = host.getBoundingClientRect();
+            return hostRect.bottom > scrollerRect.top && hostRect.top < scrollerRect.bottom;
+        };
+        if (!inView()) {
             return;
         }
-        const bubble = host.closest('.chat-bubble-assistant') ?? host;
         if (staleFlip) {
             // A view change makes every reply stale at once: follow it only for the newest bubble.
+            const bubble = host.closest('.chat-bubble-assistant') ?? host;
             const bubbles = scroller.querySelectorAll('.chat-bubble-assistant');
             const btn = host.querySelector('.assistant-action-btn') as Element;
             if (bubbles[bubbles.length - 1] !== bubble
-                || btn.getBoundingClientRect().bottom > scrollerRect.bottom) {
+                || btn.getBoundingClientRect().bottom > scroller.getBoundingClientRect().bottom) {
                 return;
             }
         }
+        let expectedTop = scroller.scrollTop;
         const reveal = () => {
-            const overflow = bubble.getBoundingClientRect().bottom - scroller.getBoundingClientRect().bottom + 8;
-            if (overflow > 0) {
-                scroller.scrollTop += overflow;
+            const control = revealTarget(host);
+            if (control) {
+                revealControl(control, scroller, host);
             }
+            expectedTop = scroller.scrollTop;
         };
         reveal();
         if (typeof ResizeObserver === 'undefined') {
             return;
         }
-        // The card may still be growing (a scroll past the current end is clamped), so
-        // follow its height for a moment, until the reader scrolls on their own.
-        const observer = new ResizeObserver(reveal);
+        // The card may still be growing, so follow its height until the reader acts.
+        const bubble = host.closest('.chat-bubble-assistant') ?? host;
+        const observer = new ResizeObserver(() => {
+            if (inView()) {
+                reveal();
+            } else {
+                observer.disconnect();
+            }
+        });
         observer.observe(bubble);
         const stop = () => observer.disconnect();
-        const timer = window.setTimeout(stop, 1000);
-        scroller.addEventListener('wheel', stop, {passive: true});
-        scroller.addEventListener('touchstart', stop, {passive: true});
+        const onScroll = () => {
+            if (Math.abs(scroller.scrollTop - expectedTop) > 1) {
+                stop();
+            }
+        };
+        const events = ['wheel', 'touchstart', 'keydown', 'pointerdown', 'focusin'] as const;
+        events.forEach((name) => scroller.addEventListener(name, stop, {passive: true}));
+        scroller.addEventListener('scroll', onScroll, {passive: true});
         return () => {
             stop();
-            window.clearTimeout(timer);
-            scroller.removeEventListener('wheel', stop);
-            scroller.removeEventListener('touchstart', stop);
+            events.forEach((name) => scroller.removeEventListener(name, stop));
+            scroller.removeEventListener('scroll', onScroll);
         };
     }, [applied, requirement, saveable, staleShown, notFound]);
     if (!turn || turn.actions.length === 0) {
@@ -337,32 +438,42 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
     };
 
     const markApplied = (index: number) => {
-        selfChangeUntil.current = Date.now() + SELF_CHANGE_WINDOW_MS;
         setApplied((prev) => ({...prev, [index]: true}));
     };
 
     const run = (index: number, action: AssistantAction) => {
         // Click-time check: the context may have moved since render.
-        if (isDone(index, action) || !adoptLiveRevision()) {
+        if (isDone(index, action) || !isFresh()) {
             return;
         }
-        selfChangeUntil.current = Date.now() + SELF_CHANGE_WINDOW_MS;
+        // The effect is recorded before the target runs: the list re-reports its
+        // context as it commits, possibly before this call returns.
+        const before = {filters: {...effects.current.filters}, companies: new Set(effects.current.companies)};
+        const undoEffect = () => {
+            effects.current = before;
+        };
         if (action.type === 'open_company') {
+            effects.current.companies.add(action.organization_id);
             const outcome = openWorkspaceCompany(action.organization_id);
             if (outcome === 'opened') {
                 setNotFound((prev) => ({...prev, [index]: false}));
                 markApplied(index);
             } else if (outcome === 'not-found') {
+                undoEffect();
                 setNotFound((prev) => ({...prev, [index]: true}));
             } else {
+                undoEffect();
                 window.location.assign(companyUrl(action.organization_id));
             }
             return;
         }
-        if (applyWorkspaceFilters(toWorkspaceFilters(action))) {
+        const appliedFilters = toWorkspaceFilters(action);
+        effects.current.filters = {...effects.current.filters, ...appliedFilters};
+        if (applyWorkspaceFilters(appliedFilters)) {
             markApplied(index);
             return;
         }
+        undoEffect();
         // No rankings list is mounted (/chat/, jobs): go to the rankings page.
         window.location.assign(`/?${filterQuery(action)}`);
     };
@@ -399,9 +510,13 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
     const save = async (index: number, state: Extract<RequirementState, {status: 'review'}>) => {
         const controller = new AbortController();
         controllers.current.add(controller);
+        const account = getWorkspaceSnapshot().account;
         setReq(index, {...state, applying: true, error: null});
         try {
             const result = await applyProposal(state.proposal.token, controller.signal);
+            if (controller.signal.aborted || !sameAccount(account)) {
+                return;
+            }
             if (result.revision !== null) {
                 setPrioritiesRevision(result.revision);
             }
@@ -428,9 +543,13 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
         }
         const controller = new AbortController();
         controllers.current.add(controller);
+        const account = getWorkspaceSnapshot().account;
         setReq(index, {...state, undoState: 'pending', undoError: null});
         try {
             const revision = await undoApplied(state.undo, controller.signal);
+            if (controller.signal.aborted || !sameAccount(account)) {
+                return;
+            }
             if (revision !== null) {
                 setPrioritiesRevision(revision);
             }
