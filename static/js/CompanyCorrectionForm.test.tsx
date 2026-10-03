@@ -152,11 +152,12 @@ describe('CompanyCorrectionForm', () => {
             expect(describeCurrentValue({status: 'loading'}, 'rto_policy').kind).toBe('loading');
         });
 
-        test('a verified row with no verification date reads "Unknown"', () => {
+        test('a verified row with no verification date reads "never", as the dialog does', () => {
             const result = describeCurrentValue({status: 'ready', data: {fields: [
                 {field_key: 'rto_policy', value: 'X', stale: false, last_verified_at: null},
             ]}}, 'rto_policy');
-            expect(result.text).toBe('X · last verified Unknown');
+            expect(result.text).toBe('X · last verified never');
+            expect(result.date).toBe('never');
         });
     });
 
