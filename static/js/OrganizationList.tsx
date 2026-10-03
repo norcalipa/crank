@@ -3,7 +3,7 @@
 import * as React from 'react';
 import {createRoot} from "react-dom/client";
 import OrganizationDetailsPopup from './OrganizationDetailsPopup';
-import EvidenceSummary from './evidence/EvidenceSummary';
+import EvidenceSummary, {evidenceDescription} from './evidence/EvidenceSummary';
 import {EvidenceSummaryData} from './labels';
 import {closeSuggestCompany, COMPANY_OPEN_EVENT, openSuggestCompany} from './suggestCompany/controller';
 import {installPositionTracking, PositionAnchor, restoreResultPosition} from './workspace/position';
@@ -734,11 +734,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             tabIndex={0}
                             role="button"
                             aria-label={`View details for ${org.name}`}
+                            aria-describedby={`organization-summary-${org.id}`}
                             className="organization-row"
                             data-organization-id={org.id}
                         >
                             <td className="col-rank">{org.ranking}</td>
-                            <td className="col-name"><span className="organization-name" title={org.name}>{org.name}</span></td>
+                            <td className="col-name"><span className="organization-name" title={org.name}>{org.name}</span><span className="visually-hidden" id={`organization-summary-${org.id}`}>{evidenceDescription(ratingCoverageText(org), org.evidence)}</span></td>
                             <td className="col-score">{org.avg_score.toFixed(2)}</td>
                             <td className="col-funding">{choiceLabel(fundingRoundChoices, org.funding_round)}</td>
                             <td className="col-rto">{choiceLabel(rtoPolicyChoices, org.rto_policy)}</td>
@@ -764,8 +765,10 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             tabIndex={0}
                             role="button"
                             aria-label={`View details for ${org.name}`}
+                            aria-describedby={`organization-card-summary-${org.id}`}
                         >
                             <div className="card-body">
+                                <span className="visually-hidden" id={`organization-card-summary-${org.id}`}>{evidenceDescription(ratingCoverageText(org), org.evidence)}</span>
                                 <h2 className="h5 organization-card-name" title={org.name}>{org.name}</h2>
                                 <div className="organization-card-score">
                                     <span className="organization-card-label">Company score{currentPreset && <span className="visually-hidden"> ({currentPreset.name})</span>}</span>

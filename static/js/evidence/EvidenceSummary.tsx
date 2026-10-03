@@ -1,8 +1,21 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
-import {EvidenceStatusKey, EvidenceSummaryData, formatEvidenceDate} from '../labels';
+import {EVIDENCE_STATUS_META, EvidenceStatusKey, EvidenceSummaryData, formatEvidenceDate} from '../labels';
 import EvidenceBadge from './EvidenceBadge';
+
+// One sentence for assistive tech. Rows and cards are role="button" with an
+// aria-label, so their text is skipped in focus mode; aria-describedby points
+// here so the coverage, counts and freshness are announced with the name.
+export const evidenceDescription = (coverage: string, evidence?: EvidenceSummaryData | null): string => {
+    if (!evidence) return `Rating coverage ${coverage}. Facts: ${EVIDENCE_STATUS_META.unknown.label}.`;
+    const freshness = evidence.last_verified_at
+        ? `Last verified ${formatEvidenceDate(evidence.last_verified_at)}`
+        : 'Never verified';
+    const pending = evidence.pending_review > 0 ? ` ${EVIDENCE_STATUS_META.pending.label}.` : '';
+    return `Rating coverage ${coverage}. Facts: ${evidence.verified} verified, ${evidence.stale} stale, `
+        + `${evidence.unknown} unknown. ${freshness}.${pending}`;
+};
 
 interface EvidenceSummaryProps {
     evidence?: EvidenceSummaryData | null;
