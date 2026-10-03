@@ -1916,5 +1916,27 @@ describe('OrganizationList', () => {
             expect(row('Legacy Co')).toHaveTextContent('70%');
             expect(document.querySelectorAll('.organization-card-evidence').length).toBe(4);
         });
+
+        test('rows and cards expose coverage, counts, freshness and review to assistive tech via aria-describedby', async () => {
+            render(<OrganizationList organizations={evidenceOrgs}/>);
+            const table = await screen.findByRole('table');
+            const describe = (element: HTMLElement) => {
+                const ids = (element.getAttribute('aria-describedby') || '').split(' ').filter(Boolean);
+                expect(ids.length).toBeGreaterThan(0);
+                return ids.map(id => document.getElementById(id)?.textContent).join(' ');
+            };
+            const row = (name: string) => within(table).getByRole('button', {name: `View details for ${name}`});
+            expect(describe(row('Verified Co'))).toBe(
+                'Rating coverage 2 of 2. Facts: 3 verified, 0 stale, 4 unknown. Last verified Jan 5, 2025.');
+            expect(describe(row('Stale Co'))).toBe(
+                'Rating coverage 1 of 2. Facts: 0 verified, 2 stale, 5 unknown. Last verified Feb 1, 2024. Pending review.');
+            expect(describe(row('Unknown Co'))).toContain('Never verified.');
+            expect(describe(row('Legacy Co'))).toBe('Rating coverage 70%. Facts: Unknown.');
+            const card = Array.from(document.querySelectorAll<HTMLElement>('.organization-card'))
+                .find(element => element.getAttribute('aria-label') === 'View details for Stale Co') as HTMLElement;
+            expect(describe(card)).toBe(describe(row('Stale Co')));
+            const ids = Array.from(document.querySelectorAll('[id^="organization-"]')).map(element => element.id);
+            expect(new Set(ids).size).toBe(ids.length);
+        });
     });
 });
