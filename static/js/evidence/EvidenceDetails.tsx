@@ -18,6 +18,7 @@ export interface EvidenceField {
     stale: boolean;
     status?: 'verified' | 'stale';
     review?: 'none' | 'pending' | 'conflicted';
+    agrees_with_displayed?: boolean | null;
     policy_days?: number;
 }
 
@@ -38,7 +39,6 @@ export interface EvidenceData {
 
 interface EvidenceDetailsProps {
     evidence: EvidenceData;
-    ratingCoverage?: {covered: number; total: number} | null;
     renderFieldAction?: (fieldKey: string, verb?: string, joiner?: string) => React.ReactNode;
     emptyAction?: React.ReactNode;
 }
@@ -52,6 +52,8 @@ const formatScope = (scope: Record<string, unknown>): string => {
     }
     return parts.length > 0 ? `Scope — ${parts.join('; ')}` : '';
 };
+
+const dateOrNever = (iso: string | null): string => (iso ? formatEvidenceDate(iso) : 'Never');
 
 const SourceText: React.FC<{field: EvidenceField}> = ({field}) => {
     const domain = field.source_domain || 'unknown source';
@@ -79,7 +81,7 @@ export const EvidenceSkeleton: React.FC = () => (
 );
 
 const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
-    evidence, ratingCoverage, renderFieldAction, emptyAction
+    evidence, renderFieldAction, emptyAction
 }) => {
     const fields = evidence.fields || [];
     const unverified = evidence.unverified_fields || [];
@@ -90,12 +92,6 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
     return (
         <div data-testid="evidence-details">
             <div className="evidence-coverage mt-3" data-testid="coverage-summary">
-                {ratingCoverage && (
-                    <div className="row mb-2" data-testid="coverage-rating">
-                        <div className="col-5 text-end fw-bold">Rating coverage:</div>
-                        <div className="col-7">{ratingCoverage.covered} of {ratingCoverage.total} rating dimensions</div>
-                    </div>
-                )}
                 {summary && (
                     <div className="row mb-2" data-testid="coverage-facts">
                         <div className="col-5 text-end fw-bold">Fact coverage:</div>
@@ -153,9 +149,7 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                                             Observed {formatEvidenceDate(field.observed_at)}
                                         </span>
                                         <span className="text-muted small evidence-meta">
-                                            <span className="text-nowrap">Last verified {field.last_verified_at
-                                                ? formatEvidenceDate(field.last_verified_at)
-                                                : 'never'}</span>
+                                            <span className="text-nowrap">Last verified {dateOrNever(field.last_verified_at).toLowerCase()}</span>
                                         </span>
                                         {field.policy_days ? (
                                             <span className="text-muted small evidence-meta">Re-check every {field.policy_days} days</span>
@@ -167,13 +161,13 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                                             </summary>
                                             <dl className="mb-0">
                                                 <dt>Last checked</dt>
-                                                <dd>{formatEvidenceDate(field.last_checked_at)}</dd>
+                                                <dd>{dateOrNever(field.last_checked_at)}</dd>
                                                 <dt>Last successful fetch</dt>
-                                                <dd>{formatEvidenceDate(field.last_successful_fetch_at)}</dd>
+                                                <dd>{dateOrNever(field.last_successful_fetch_at)}</dd>
                                                 <dt>Last changed</dt>
-                                                <dd>{formatEvidenceDate(field.last_changed_at)}</dd>
+                                                <dd>{dateOrNever(field.last_changed_at)}</dd>
                                                 <dt>Last verified</dt>
-                                                <dd>{formatEvidenceDate(field.last_verified_at)}</dd>
+                                                <dd>{dateOrNever(field.last_verified_at)}</dd>
                                             </dl>
                                         </details>
                                     </span>
@@ -207,8 +201,8 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                     <p className="text-muted small mb-2">
                         Observed but not accepted. These are not verified and do not change the facts above.
                     </p>
-                    {pending.map(item => (
-                        <div className="row mb-2 evidence-pending-item" key={item.field_key}
+                    {pending.map((item, index) => (
+                        <div className="row mb-2 evidence-pending-item" key={`${item.field_key}-${index}`}
                              data-testid={`pending-review-${item.field_key}`}>
                             <div className="col-5 text-end fw-bold">{fieldKeyLabel(item.field_key)}:</div>
                             <div className="col-7">

@@ -43,10 +43,19 @@ describe('EvidenceBadge', () => {
     });
 
     test('formatEvidenceDate formats in the reader\'s time zone, not UTC', () => {
-        const spy = jest.spyOn(Date.prototype, 'toLocaleDateString');
-        expect(formatEvidenceDate('2024-08-08T03:00:00Z')).toBe('Aug 8, 2024');
-        expect(spy.mock.calls[0][1]).not.toHaveProperty('timeZone');
-        spy.mockRestore();
+        // Simulate a reader in Los Angeles whatever TZ the runner uses: 03:00Z
+        // is still Aug 7 there. A formatter that pinned timeZone to UTC would
+        // read Aug 8.
+        const original = Date.prototype.toLocaleDateString;
+        const spy = jest.spyOn(Date.prototype, 'toLocaleDateString').mockImplementation(
+            function (this: Date, locale?: Intl.LocalesArgument, options?: Intl.DateTimeFormatOptions) {
+                return original.call(this, locale, {timeZone: 'America/Los_Angeles', ...options});
+            });
+        try {
+            expect(formatEvidenceDate('2024-08-08T03:00:00Z')).toBe('Aug 7, 2024');
+        } finally {
+            spy.mockRestore();
+        }
     });
 
     test('no other component renders the status vocabulary', () => {
@@ -57,20 +66,48 @@ describe('EvidenceBadge', () => {
                 const full = path.join(dir, entry.name);
                 if (entry.isDirectory()) {
                     if (entry.name !== 'evidence' && entry.name !== 'e2e') walk(full);
-                } else if (/\.tsx$/.test(entry.name) && !/\.test\./.test(entry.name)) {
+                } else if (/\.tsx?$/.test(entry.name) && !/\.test\./.test(entry.name) && entry.name !== 'labels.ts') {
                     files.push(full);
                 }
             }
         };
         walk(root);
-        const phrases = Object.values(EVIDENCE_STATUS_META).map(meta => `>${meta.label}<`);
+        const labels = Object.values(EVIDENCE_STATUS_META).map(meta => meta.label);
+        const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // JSX text containing the word (also with extra text around it), and a
+        // string or template literal that is exactly the word. "Unknown" as a
+        // bare literal is also generic English (date fallbacks), so only the
+        // JSX-text form is checked for it.
+        // Plain-text uses that cannot render a badge (an <option>, a live-region
+        // announcement, a section heading naming a different noun). Anything
+        // new must be added here deliberately.
+        const allowed: Record<string, string[]> = {
+            'CompanyCorrectionForm.tsx': ['Verified', 'Stale', 'Pending review'],
+        };
+        const patterns = labels.map(label => ({
+            label,
+            jsx: new RegExp(`>[^<>{}]*\\b${escape(label)}\\b[^<>{}]*<`),
+            literal: label === 'Unknown' ? null : new RegExp(`(['"\`])${escape(label)}\\1`),
+        }));
         for (const file of files) {
-            const source = fs.readFileSync(file, 'utf8');
-            for (const phrase of phrases) {
-                expect({file: path.basename(file), phrase, found: source.replace(/>\s+/g, '>').replace(/\s+</g, '<').includes(phrase)})
-                    .toEqual({file: path.basename(file), phrase, found: false});
+            const source = fs.readFileSync(file, 'utf8').replace(/>\s+/g, '>').replace(/\s+</g, '<');
+            for (const {label, jsx, literal} of patterns) {
+                if (allowed[path.basename(file)]?.includes(label)) continue;
+                expect({file: path.basename(file), label, jsx: jsx.test(source)})
+                    .toEqual({file: path.basename(file), label, jsx: false});
+                if (literal) {
+                    expect({file: path.basename(file), label, literal: literal.test(source)})
+                        .toEqual({file: path.basename(file), label, literal: false});
+                }
             }
         }
+    });
+
+    test('the vocabulary scan catches braces, template literals and surrounding text', () => {
+        const jsx = new RegExp('>[^<>{}]*\\bStale\\b[^<>{}]*<');
+        expect(jsx.test('<b>Stale facts</b>')).toBe(true);
+        expect(/(['"`])Stale\1/.test("const x = {'Stale'}")).toBe(true);
+        expect(/(['"`])Stale\1/.test('const x = `Stale`')).toBe(true);
     });
 });
 
@@ -126,14 +163,14 @@ describe('EvidenceDetails', () => {
     });
 
     test('verified row has a validated link with safe attributes', () => {
-        render(<EvidenceDetails evidence={evidence()} ratingCoverage={{covered: 1, total: 2}}
+        render(<EvidenceDetails evidence={evidence()}
                                 renderFieldAction={key => <button>fix {key}</button>}/>);
         const link = screen.getByTestId('field-source-link-rto_policy');
         expect(link).toHaveAttribute('href', 'https://example.com/about');
         expect(link).toHaveAttribute('target', '_blank');
         expect(link).toHaveAttribute('rel', 'noopener noreferrer nofollow');
         expect(link).toHaveTextContent('example.com (opens in a new tab)');
-        expect(screen.getByTestId('coverage-rating')).toHaveTextContent('1 of 2 rating dimensions');
+        expect(screen.queryByTestId('coverage-rating')).toBeNull();
         expect(screen.getByTestId('coverage-facts')).toHaveTextContent('1 of 7 tracked facts');
         expect(screen.getByTestId('field-status-rto_policy')).toHaveTextContent('Verified');
         expect(screen.queryByTestId('field-stale-rto_policy')).toBeNull();

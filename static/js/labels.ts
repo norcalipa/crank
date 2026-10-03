@@ -51,7 +51,7 @@ export const formatEvidenceDate = (iso: string | null | undefined, long = false)
     if (!iso) return 'Unknown';
     const date = new Date(iso);
     if (Number.isNaN(date.getTime())) return 'Unknown';
-    return date.toLocaleDateString('en-US', {
+    return date.toLocaleDateString(undefined, {
         year: 'numeric', month: long ? 'long' : 'short', day: 'numeric',
     });
 };
