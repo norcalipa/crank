@@ -351,4 +351,9 @@ describe('rankings responsive layout, name clamping and disclosure (issue #478 v
     it('bounds the empty-state panel', () => {
         expect(popupCss).toMatch(/\.organization-empty-state\s*\{[^}]*max-width:\s*48rem[^}]*padding:\s*1\.25rem/);
     });
+
+    it('never truncates the assistant disclaimer in the panel', () => {
+        expect(popupCss).toMatch(/\.assistant-panel-body #job-search-chat \.chat-note\s*\{/);
+        expect(popupCss).not.toMatch(/\.chat-note-text\s*\{[^}]*line-clamp/);
+    });
 });

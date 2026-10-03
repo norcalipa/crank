@@ -22,6 +22,33 @@ async function ask(page: Page, text: string): Promise<void> {
     await page.getByRole('button', {name: 'Send message'}).click();
 }
 
+async function postJson(page: Page, url: string, body: unknown): Promise<{status: number; body: any}> {
+    return page.evaluate(async ({url: target, body: payload}) => {
+        const cookie = document.cookie.split('; ').find((row) => row.startsWith('csrftoken='));
+        const res = await fetch(target, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': cookie ? decodeURIComponent(cookie.slice('csrftoken='.length)) : '',
+            },
+            body: JSON.stringify(payload),
+        });
+        return {status: res.status, body: await res.json()};
+    }, {url, body});
+}
+
+async function setWorkModes(page: Page, modes: string[]): Promise<void> {
+    const proposed = await postJson(page, '/api/agent/preferences/propose/', {
+        patch: {set: {'work_location.modes': modes}}, scope: 'account',
+    });
+    expect(proposed.status).toBe(200);
+    const applied = await postJson(page, '/api/agent/preferences/apply/', {
+        proposal: proposed.body.token, decision: 'apply',
+    });
+    expect(applied.status).toBeLessThan(300);
+}
+
 const applyRemote = (page: Page) => page.getByRole('button', {name: 'Apply remote filter'});
 
 test.describe('assistant actions (issue #484)', () => {
@@ -101,20 +128,51 @@ test.describe('assistant actions (issue #484)', () => {
         const button = applyRemote(page);
         await expect(button).toBeDisabled();
         await expect(page.getByTestId('assistant-actions-stale')).toHaveText('This suggestion was for an earlier view.');
+        // Changing the view can nudge the log off its bottom, in which case the
+        // reply is announced by the jump pill instead of being followed.
+        const pill = page.getByTestId('jump-to-latest');
+        if (await pill.count() > 0) {
+            await pill.click();
+        }
         await expect(page.getByTestId('assistant-actions-stale')).toBeInViewport({ratio: 1});
         await button.click({force: true});
         expect(new URL(page.url()).searchParams.has('rto')).toBe(false);
     });
 
-    test('Back after applying leaves an older reply disabled', async ({page}) => {
+    test('Back after applying removes the filter, so the same suggestion can be applied again', async ({page}) => {
         await login(page);
         await openAssistant(page);
         await ask(page, 'Show only remote companies');
         await applyRemote(page).click();
         await expect(page.getByTestId('filter-chip-rto')).toBeVisible();
+        await expect(page.getByRole('button', {name: 'Remote filter applied'})).toBeDisabled();
         await page.goBack();
         await expect(page.getByTestId('filter-chip-rto')).toHaveCount(0);
+        // The filter is gone, so the button no longer claims it is applied.
+        await expect(page.getByRole('button', {name: 'Remote filter applied'})).toHaveCount(0);
+        await expect(applyRemote(page)).toBeEnabled();
+        await applyRemote(page).click();
+        await expect(page.getByTestId('filter-chip-rto')).toBeVisible();
+        expect(new URL(page.url()).searchParams.get('rto')).toBe('R');
+    });
+
+    test('applying one action leaves the other action of the same reply usable', async ({page}) => {
+        await login(page);
+        await page.getByRole('button', {name: /View details for E2E Beta/}).first().click();
+        await page.getByRole('link', {name: /Ask the assistant about E2E Beta/}).click();
+        await expect(page.getByTestId('assistant-panel')).toBeVisible();
+        await ask(page, 'Show only remote companies and open it');
+        const open = page.getByRole('button', {name: /^Open E2E Beta/});
+        await expect(applyRemote(page)).toBeVisible();
+        await expect(open).toBeVisible();
+        await applyRemote(page).click();
+        await expect(page.getByTestId('filter-chip-rto')).toBeVisible();
         await expect(page.getByRole('button', {name: 'Remote filter applied'})).toBeDisabled();
+        await expect(open).toBeEnabled();
+        await expect(page.getByTestId('assistant-actions-stale')).toHaveText('');
+        await open.click();
+        await expect(page.getByRole('dialog')).toBeVisible();
+        await expect(page.getByRole('button', {name: /^Opened E2E Beta/})).toBeDisabled();
     });
 
     test('an open_company suggestion reopens the company dialog from the assistant', async ({page}) => {
@@ -155,6 +213,49 @@ test.describe('assistant actions (issue #484)', () => {
         await expect(page.getByTestId('assistant-action-already')).toContainText('Already one of your requirements');
         await expect(page.getByRole('button', {name: 'Save as a requirement'})).toHaveCount(0);
         await expect(page.getByTestId('assistant-action-review')).toHaveCount(0);
+    });
+
+    test('save as a requirement through the real API: Cancel writes nothing, Save writes, Undo restores', async ({page}) => {
+        await login(page, PREFS_USER, E2E_PASSWORD);
+        await page.goto('/');
+        // Move the account off remote so there is something to save; put it back at the end.
+        await setWorkModes(page, ['hybrid']);
+        try {
+            await page.goto('/');
+            let applies = 0;
+            let undos = 0;
+            page.on('request', (request) => {
+                if (request.method() !== 'POST') {
+                    return;
+                }
+                applies += request.url().includes('/api/agent/preferences/apply/') ? 1 : 0;
+                undos += request.url().includes('/api/agent/preferences/undo/') ? 1 : 0;
+            });
+            await openAssistant(page);
+            await ask(page, 'Show only remote companies');
+            await applyRemote(page).click();
+            const follow = page.getByRole('button', {name: 'Save as a requirement'});
+            await follow.click();
+            const review = page.getByTestId('assistant-action-review');
+            await expect(review).toContainText('Work arrangement');
+            await review.getByRole('button', {name: 'Cancel'}).click();
+            await expect(review).toHaveCount(0);
+            await expect(follow).toBeFocused();
+            expect(applies).toBe(0);
+
+            await follow.click();
+            await review.getByRole('button', {name: 'Save', exact: true}).click();
+            const saved = page.getByTestId('assistant-action-saved');
+            await expect(saved).toContainText('Saved to your account.');
+            await expect(saved).toBeFocused();
+            expect(applies).toBe(1);
+
+            await saved.getByRole('button', {name: 'Undo'}).click();
+            await expect(saved).toContainText('Change undone.');
+            expect(undos).toBe(1);
+        } finally {
+            await setWorkModes(page, ['remote']);
+        }
     });
 
     test('the save card confirm button is fully visible at 320px and no false jump pill shows', async ({page}) => {

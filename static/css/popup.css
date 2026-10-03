@@ -3869,9 +3869,14 @@ span.priority-chip-button { cursor: default; }
     color: #fecaca;
     row-gap: 0.375rem;
 }
-.assistant-action-error .assistant-action-retry {
+.assistant-action-error .assistant-action-retry,
+.assistant-action-note .assistant-action-undo {
     grid-column: 2;
     justify-self: start;
+}
+.assistant-action-note[tabindex='-1']:focus-visible {
+    outline: 2px solid #7dd3fc;
+    outline-offset: 2px;
 }
 .chat-bubble-assistant .btn-link {
     color: #7dd3fc;
@@ -3967,12 +3972,6 @@ span.priority-chip-button { cursor: default; }
 .assistant-panel-body #job-search-chat .chat-note {
     padding: 0.25rem 0.5rem;
     font-size: 0.75rem;
-}
-.assistant-panel-body #job-search-chat .chat-note-text {
-    display: -webkit-box;
-    -webkit-line-clamp: 1;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
 }
 @media (max-width: 767.98px) {
     .organization-empty-state {
