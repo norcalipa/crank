@@ -6,6 +6,7 @@ import html
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
@@ -23,7 +24,7 @@ from crank.services.company_evidence import (
     FIELD_FRESHNESS_POLICY,
     TRACKED_FIELD_COUNT,
 )
-from crank.views.index import freshness_windows
+from crank.views.index import freshness_windows, tracked_field_names
 from crank.services.scores import (
     algorithm_results_cache_key,
     organization_provenance_api_cache_key,
@@ -305,6 +306,26 @@ class LegendParityTests(TestCase):
                 sorted(labels),
             )
         self.assertIn(f"How many of the {TRACKED_FIELD_COUNT} tracked facts", page)
+
+    def test_fact_coverage_names_come_from_field_key_choices(self):
+        page = self._page()
+        names = ", ".join(str(label) for _key, label in CompanyFieldEvidence.FieldKey.choices)
+        self.assertEqual(tracked_field_names().replace(" and ", ", ").lower(), names.lower())
+        self.assertIn(f"tracked facts ({tracked_field_names()}) have accepted evidence", page)
+        stand_in = SimpleNamespace(FieldKey=SimpleNamespace(choices=[("a", "Alpha"), ("b", "Beta")]))
+        with patch("crank.views.index.CompanyFieldEvidence", stand_in):
+            self.assertEqual(tracked_field_names(), "Alpha and beta")
+
+    def test_static_fixture_legends_match_the_rendered_legend(self):
+        def section(markup):
+            start = markup.index("<dt>Fact coverage</dt>")
+            end = markup.index("</ul>", markup.index("evidence-legend-windows"))
+            return " ".join(re.sub(r"\s*\n\s*", " ", markup[start:end]).split())
+
+        rendered = section(self._page())
+        root = Path(__file__).resolve().parents[3] / "e2e/fixtures"
+        for name in ("organization-list.html", "organization-list-paged.html"):
+            self.assertEqual(section((root / name).read_text()), rendered, name)
 
     def test_windows_group_unlisted_keys_under_the_default(self):
         with patch.dict(FIELD_FRESHNESS_POLICY, clear=True):

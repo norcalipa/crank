@@ -30,6 +30,20 @@ from crank.forms.organization_filter import OrganizationFilterForm
 COMPANY_ID_PLACEHOLDER = "__COMPANY_ID__"
 
 
+def _join_labels(labels):
+    """``"A, b and c"``: sentence-case the labels, keeping leading acronyms."""
+    labels = [
+        label if index == 0 or label[:2].isupper() else label[0].lower() + label[1:]
+        for index, label in enumerate(labels)
+    ]
+    return labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} and {labels[-1]}"
+
+
+def tracked_field_names():
+    """The tracked fact names for the legend, from ``FieldKey.choices``."""
+    return _join_labels([str(label) for _key, label in CompanyFieldEvidence.FieldKey.choices])
+
+
 def freshness_windows():
     """``[{"days": n, "fields": "A, b and c"}]`` from ``FIELD_FRESHNESS_POLICY``.
 
@@ -39,15 +53,7 @@ def freshness_windows():
     by_days: dict[int, list[str]] = {}
     for key, label in CompanyFieldEvidence.FieldKey.choices:
         by_days.setdefault(FIELD_FRESHNESS_POLICY.get(key, DEFAULT_FRESHNESS_DAYS), []).append(str(label))
-    windows = []
-    for days in sorted(by_days):
-        labels = [
-            label if index == 0 or label[:2].isupper() else label[0].lower() + label[1:]
-            for index, label in enumerate(by_days[days])
-        ]
-        joined = labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} and {labels[-1]}"
-        windows.append({'days': days, 'fields': joined})
-    return windows
+    return [{'days': days, 'fields': _join_labels(by_days[days])} for days in sorted(by_days)]
 
 
 class IndexView(generic.ListView):
@@ -189,6 +195,7 @@ class IndexView(generic.ListView):
         ]
         context['freshness_windows'] = freshness_windows()
         context['tracked_field_count'] = TRACKED_FIELD_COUNT
+        context['tracked_field_names'] = tracked_field_names()
         context['current_algorithm_id'] = self.algorithm.id if self.algorithm else None
         context['form'] = OrganizationFilterForm(
             initial={'accelerated_vesting': self.request.session.get('accelerated_vesting')}, request=self.request)
