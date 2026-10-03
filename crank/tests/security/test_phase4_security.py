@@ -909,6 +909,54 @@ class ScopePinningTests(TestCase):
         assert not JobSearchConversation.objects.filter(pk=conversation).exists()
         assert not JobSearchMessage.objects.filter(conversation_id=conversation).exists()
 
+    def test_reset_and_delete_leave_priorities_and_matches_unchanged(self):
+        """Issue #483 AC7: the in-panel confirm copy says neither action
+        touches saved priorities or job matches; pin that for both."""
+        now = timezone.now()
+        source = JobSourceCatalog.objects.create(
+            name="Confirm Copy Source",
+            adapter_key="fixture.v1",
+            base_url="https://jobs.example.test",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+        )
+        organization = Organization.objects.create(name="Confirm Copy Org", public=True, status=1)
+        listing = JobListing.all_objects.create(
+            source=source,
+            external_id="confirm-copy-1",
+            canonical_url="https://scope.example.test/confirm-copy-1",
+            employer_name=organization.name,
+            title="Engineer",
+            first_seen_at=now - timedelta(days=1),
+            last_seen_at=now,
+            organization=organization,
+        )
+        match = JobMatch.objects.create(
+            user=self.alice,
+            listing=listing,
+            organization=organization,
+            preference_version=1,
+            ranker_version="1",
+            score=1,
+            first_matched_at=now,
+            last_matched_at=now,
+        )
+        preferences.apply_patch_to_user(self.alice, {"set": {"notes": "keep me"}})
+        before = UserPreference.objects.get(user=self.alice).preferences
+
+        first = self._start_conversation()
+        assert self._talk(first, "history").status_code == 201
+        resp = self.client.post(reverse("agent-conversation-reset", args=[first]))
+        assert resp.status_code == 201
+        second = resp.json()["id"]
+        assert self.client.post(reverse("agent-conversation-delete", args=[second])).status_code == 200
+
+        assert UserPreference.objects.get(user=self.alice).preferences == before
+        match.refresh_from_db()
+        assert match.seen_at is None
+        assert match.dismissed is False
+        assert JobMatch.objects.filter(user=self.alice).count() == 1
+
     def test_preference_reset_is_independent_of_conversation_reset(self):
         conversation = self._start_conversation()
         assert self._talk(conversation, "hello").status_code == 201

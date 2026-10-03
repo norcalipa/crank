@@ -61,6 +61,7 @@ test.describe('viewport matrix — chat', () => {
             await expect(composer).toBeVisible();
             const box = await rectOf(page, 'textarea[aria-label="Message"]');
             expect(box.width, `composer width ${box.width}px at ${width}px`).toBeGreaterThanOrEqual(160);
+            await expect(composer).toBeEnabled();
             await composer.scrollIntoViewIfNeeded();
             await composer.focus();
             await expect(composer).toBeFocused();
