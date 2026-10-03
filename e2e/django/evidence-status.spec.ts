@@ -31,7 +31,7 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
             const beta = list.getByRole('button', {name: 'View details for E2E Beta Labs'}).locator('visible=true').first();
             await expect(beta).toContainText('2 of 2');
             await expect(beta).toContainText('Stale');
-            await expect(beta).toContainText('0 verified · 2 stale · 5 unknown');
+            await expect(beta).toContainText('0 of 7 verified · 2 stale · 5 unknown');
             await expect(beta).toContainText('Pending review');
             const gamma = list.getByRole('button', {name: 'View details for E2E Gamma Works'}).locator('visible=true').first();
             await expect(gamma).toContainText('1 of 2');

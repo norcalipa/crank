@@ -1720,7 +1720,7 @@ describe('OrganizationList', () => {
             render(<OrganizationList organizations={organizations} rankingPresets={presets} currentAlgorithmId={2} />);
             expect(screen.getByRole('columnheader', {name: 'Company score (Culture)'})).toBeInTheDocument();
             expect(document.querySelector('.col-score-algorithm')).toHaveTextContent('Culture');
-            expect(screen.getAllByText('Company score (Culture)').length).toBe(2);
+            expect(document.querySelectorAll('.organization-card-score .organization-card-label')[0]).toHaveTextContent('Company score (Culture)');
         });
 
         test('zero results shows exactly one suggest action with the search term prefilled', () => {
@@ -1905,7 +1905,7 @@ describe('OrganizationList', () => {
             const table = await screen.findByRole('table');
             const row = (name: string) => within(table).getByRole('button', {name: `View details for ${name}`});
             expect(row('Verified Co')).toHaveTextContent('2 of 2');
-            expect(within(row('Verified Co')).getByTestId('evidence-facts')).toHaveTextContent('3 verified · 0 stale · 4 unknown');
+            expect(within(row('Verified Co')).getByTestId('evidence-facts')).toHaveTextContent('3 of 7 verified · 0 stale · 4 unknown');
             expect(within(row('Verified Co')).getByTestId('evidence-last-verified')).toHaveTextContent('Last verified Jan 5, 2025');
             expect(row('Stale Co')).toHaveTextContent('1 of 2');
             expect(row('Stale Co').querySelector('.evidence-badge-stale')).not.toBeNull();

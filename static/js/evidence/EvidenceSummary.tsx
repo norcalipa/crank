@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
-import {EvidenceSummaryData, formatEvidenceDate} from '../labels';
+import {EvidenceStatusKey, EvidenceSummaryData, formatEvidenceDate} from '../labels';
 import EvidenceBadge from './EvidenceBadge';
 
 interface EvidenceSummaryProps {
@@ -20,12 +20,18 @@ const EvidenceSummary: React.FC<EvidenceSummaryProps> = ({evidence, variant = 'r
             </div>
         );
     }
-    const headline = evidence.stale > 0 ? 'stale' : evidence.verified > 0 ? 'verified' : 'unknown';
+    // "Verified" only when every tracked fact is verified; a partly unknown
+    // profile leads with its counts instead of a verdict.
+    const headline: EvidenceStatusKey | null = evidence.stale > 0
+        ? 'stale'
+        : evidence.verified + evidence.stale === 0
+            ? 'unknown'
+            : evidence.verified === evidence.total ? 'verified' : null;
     return (
         <div className={`evidence-summary evidence-summary-${variant}`} data-testid="evidence-summary">
-            <EvidenceBadge status={headline}/>
-            <span className="evidence-summary-facts" data-testid="evidence-facts">
-                {evidence.verified} verified · {evidence.stale} stale · {evidence.unknown} unknown
+            {headline && <EvidenceBadge status={headline}/>}
+            <span className="evidence-summary-facts fw-semibold" data-testid="evidence-facts">
+                {evidence.verified} of {evidence.total} verified · {evidence.stale} stale · {evidence.unknown} unknown
             </span>
             <span className="evidence-summary-fresh" data-testid="evidence-last-verified">
                 {evidence.last_verified_at

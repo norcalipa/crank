@@ -288,7 +288,7 @@ describe('blocking-dialog close targets and row focus perimeter (issue #464 r2)'
         expect(rule![0]).toMatch(/padding:\s*0/);
         // The keyboard focus indicator survives the larger control.
         expect(popupCss).toMatch(
-            /\.popup-details \.card-header \.btn-close:focus-visible\s*\{[^}]*outline:\s*3px solid var\(--bs-warning\)/,
+            /\.popup-details \.card-header \.btn-close:focus-visible\s*\{[^}]*outline:\s*3px solid #93c5fd/,
         );
     });
 
