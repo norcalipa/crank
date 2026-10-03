@@ -276,6 +276,25 @@ test.describe('assistant actions (issue #484)', () => {
         await expect(review).toBeVisible();
         await expect(review).toContainText('Work arrangement');
         const save = review.getByRole('button', {name: 'Save', exact: true});
+        await page.waitForTimeout(1000);
+        console.log('DIAG320', JSON.stringify(await page.evaluate(() => {
+            const rect = (el: Element | null) => el && ((r) => [Math.round(r.top), Math.round(r.bottom), Math.round(r.height)])(el.getBoundingClientRect());
+            const chain: unknown[] = [];
+            for (let n: HTMLElement | null = document.querySelector('[role="log"]'); n; n = n.parentElement) {
+                const cs = getComputedStyle(n);
+                if (/(auto|scroll|overlay)/.test(cs.overflowY)) {
+                    chain.push([n.tagName, String(n.className).slice(0, 40), n.scrollTop, n.scrollHeight, n.clientHeight]);
+                }
+            }
+            return {
+                vh: innerHeight, bubbles: document.querySelectorAll('.chat-bubble-assistant').length,
+                review: rect(document.querySelector('[data-testid="assistant-action-review"]')),
+                save: rect(document.querySelector('[data-testid="assistant-action-review"] .btn-primary')),
+                log: rect(document.querySelector('[role="log"]')), chain,
+                pill: document.querySelectorAll('[data-testid="jump-to-latest"]').length,
+                text: document.querySelector('[data-testid="assistant-action-review"]')?.textContent?.slice(0, 200),
+            };
+        })));
         await expect(save).toBeInViewport({ratio: 1});
         const log = await page.getByRole('log').boundingBox();
         const box = await save.boundingBox();
