@@ -2830,6 +2830,14 @@ body.app-nav-drawer-open {
     min-height: 0;
 }
 
+.popup-details .card-body :is(a, button, summary) {
+    scroll-margin-block: .75rem;
+}
+
+.popup-details h3[tabindex="-1"]:focus {
+    outline: none;
+}
+
 .popup-details-grid {
     display: grid;
     grid-template-columns: minmax(0, 2fr) minmax(12rem, 1fr);

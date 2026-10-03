@@ -130,3 +130,30 @@ for (const [width, height] of [[1280, 900], [375, 800], [320, 800]] as const) {
         expect(after.bottom).toBeLessThanOrEqual(after.innerHeight);
     });
 }
+
+test('a focused Retry stays inside the card body when scores arrive late at 320px', async ({page}) => {
+    await page.setViewportSize({width: 320, height: 800});
+    await page.route('**/api/organizations/*/provenance/', route => route.abort());
+    await page.route('**/api/organizations/*/scores/', async route => {
+        await new Promise(resolve => setTimeout(resolve, 800));
+        await route.continue();
+    });
+    const dialog = await openDialog(page, 'E2E Beta Labs');
+    const retry = dialog.getByRole('button', {name: 'Retry'});
+    await retry.focus();
+    const loadingBox = (await retry.boundingBox())!;
+    await expect(dialog.getByText('Loading scores')).toHaveCount(0);
+    expect(Math.abs((await retry.boundingBox())!.y - loadingBox.y)).toBeLessThanOrEqual(1);
+    const [box, body] = await Promise.all([retry.boundingBox(), dialog.locator('.card-body').boundingBox()]);
+    expect(box!.y + box!.height + 5).toBeLessThanOrEqual(body!.y + body!.height);
+});
+
+test('Retry keeps keyboard focus in the dialog through a failed retry', async ({page}) => {
+    await page.route('**/api/organizations/*/provenance/', route => route.abort());
+    const dialog = await openDialog(page, 'E2E Beta Labs');
+    const retry = dialog.getByRole('button', {name: 'Retry'});
+    await retry.focus();
+    await page.keyboard.press('Enter');
+    await expect(retry).toBeFocused();
+    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('BUTTON');
+});

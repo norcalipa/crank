@@ -135,8 +135,11 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     const [provenanceLoading, setProvenanceLoading] = React.useState(false);
     const [provenanceFailed, setProvenanceFailed] = React.useState(false);
     const [provenanceAttempt, setProvenanceAttempt] = React.useState(0);
+    const [retryFocusTick, setRetryFocusTick] = React.useState(0);
     const [pendingCorrections, setPendingCorrections] = React.useState<PendingCorrection[]>([]);
     const closeButtonRef = React.useRef<HTMLButtonElement>(null);
+    const freshnessHeadingRef = React.useRef<HTMLHeadingElement>(null);
+    const retryRef = React.useRef<HTMLButtonElement>(null);
     const dialogRef = React.useRef<HTMLDivElement>(null);
     // Element that had focus when the dialog opened (the trigger). Restored on
     // close so keyboard and pointer users return to where they left off.
@@ -180,6 +183,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                     setProvenance(null);
                     setProvenanceFailed(true);
                     setProvenanceLoading(false);
+                    if (provenanceAttempt > 0) setRetryFocusTick(tick => tick + 1);
                 });
             return () => {
                 cancelled = true;
@@ -189,6 +193,11 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         setProvenanceFailed(false);
         return undefined;
     }, [organization, visible, provenanceAttempt]);
+
+    // A retry the user started that fails again hands focus back to Retry (never on the first failure).
+    React.useEffect(() => {
+        if (retryFocusTick > 0) retryRef.current?.focus();
+    }, [retryFocusTick]);
 
     // The requester's own pending suggestions (issue #477). Only fetched when
     // signed in; a failure simply hides the list.
@@ -370,6 +379,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
     // The grid shows profile columns; evidence rows are a separate record (#477),
     // so a field's evidence status describes the shown value only when the
     // accepted evidence value is that value. Otherwise the grid says so.
+    const clip = (text: string, max = 60) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
     const normalizeFact = (value: string) => {
         const text = value.trim().toLowerCase();
         return ({true: 'yes', false: 'no'} as Record<string, string>)[text] ?? text;
@@ -388,7 +398,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                 {review && <>{' '}<EvidenceBadge status={review}/></>}
                 {row && !agreeing && (
                     <span className="d-block small text-muted" data-testid={`profile-differs-${key}`}>
-                        Differs from the sourced value under Field evidence
+                        Sourced value: “{clip(row.value)}” (see Field evidence)
                     </span>
                 )}
             </>
@@ -563,7 +573,16 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                                 </div>
                             )}
                             {loading ? (
-                                <p>Loading scores...</p>
+                                <table className="table table-dark" aria-busy="true" data-testid="scores-loading">
+                                    <tbody>
+                                        {Array.from({length: Math.max(1, ratingCoverage?.covered ?? 1)}, (_, i) => (
+                                            <tr key={i}>
+                                                <td className="w-75 text-body-secondary">{i === 0 ? 'Loading scores...' : '\u00a0'}</td>
+                                                <td className="text-end w-25">{'\u00a0'}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
                             ) : (
                                 <table className="table table-dark">
                                     <tbody>
@@ -590,7 +609,7 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                     <hr className="my-3" />
                     <div className="row">
                         <div className="col-12">
-                            <h3 className="h5 mt-3 mb-2">Data Freshness & Sources</h3>
+                            <h3 ref={freshnessHeadingRef} tabIndex={-1} className="h5 mt-3 mb-2">Data Freshness & Sources</h3>
                             {provenanceLoading ? (
                                 <EvidenceSkeleton/>
                             ) : provenance ? (
@@ -690,9 +709,12 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
                             ) : (
                                 <div className="alert alert-warning evidence-unavailable mb-0" role="alert" data-testid="provenance-unavailable">
                                     <p className="mb-2">Evidence unavailable — try again</p>
-                                    <button type="button" className="btn btn-outline-light evidence-retry"
+                                    <button type="button" ref={retryRef} className="btn btn-outline-light evidence-retry"
                                             data-testid="provenance-retry"
-                                            onClick={() => setProvenanceAttempt(attempt => attempt + 1)}>
+                                            onClick={() => {
+                                                freshnessHeadingRef.current?.focus({preventScroll: true});
+                                                setProvenanceAttempt(attempt => attempt + 1);
+                                            }}>
                                         Retry
                                     </button>
                                 </div>
