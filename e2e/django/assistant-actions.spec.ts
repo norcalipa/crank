@@ -269,14 +269,33 @@ test.describe('assistant actions (issue #484)', () => {
             }),
         }));
         await openAssistant(page);
+        await page.evaluate(() => {
+            const w = window as unknown as {__sc: unknown[]};
+            w.__sc = [];
+            const t = performance.now.bind(performance);
+            const log = document.querySelector('[role="log"]') as HTMLElement;
+            log.addEventListener('scroll', () => w.__sc.push(['scroll', Math.round(t()), log.scrollTop]));
+            const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop')!;
+            Object.defineProperty(Element.prototype, 'scrollTop', {
+                configurable: true, get: desc.get,
+                set(this: Element, v: number) { w.__sc.push(['set', Math.round(t()), (this as HTMLElement).className.toString().slice(0, 20), v]); desc.set!.call(this, v); },
+            });
+            const orig = Element.prototype.scrollTo;
+            Element.prototype.scrollTo = function (this: Element, ...a: unknown[]) { w.__sc.push(['scrollTo', Math.round(t()), JSON.stringify(a)]); return (orig as (...x: unknown[]) => void).apply(this, a); } as typeof orig;
+        });
+        const mark = (label: string) => page.evaluate((l) => (window as unknown as {__sc: unknown[]}).__sc.push(['mark', Math.round(performance.now()), l]), label);
         await ask(page, 'Show only remote companies');
+        await mark('asked');
         await applyRemote(page).click();
+        await mark('applied');
         await page.getByRole('button', {name: 'Save as a requirement'}).click();
+        await mark('save-clicked');
         const review = page.getByTestId('assistant-action-review');
         await expect(review).toBeVisible();
         await expect(review).toContainText('Work arrangement');
         const save = review.getByRole('button', {name: 'Save', exact: true});
         await page.waitForTimeout(1000);
+        console.log('SC320', JSON.stringify(await page.evaluate(() => (window as unknown as {__sc: unknown[]}).__sc)));
         console.log('DIAG320', JSON.stringify(await page.evaluate(() => {
             const rect = (el: Element | null) => el && ((r) => [Math.round(r.top), Math.round(r.bottom), Math.round(r.height)])(el.getBoundingClientRect());
             const chain: unknown[] = [];
