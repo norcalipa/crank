@@ -288,6 +288,86 @@ describe('AssistantActions', () => {
         });
     });
 
+    describe('the reveal follows a card that is still growing', () => {
+        const original = globalThis.ResizeObserver;
+        let observers: Array<{callback: () => void; observe: jest.Mock; disconnect: jest.Mock}>;
+        let geometry: {bottom: number};
+        let spy: jest.SpyInstance;
+        let log: HTMLElement;
+        let view: ReturnType<typeof render>;
+
+        beforeEach(() => {
+            jest.useFakeTimers();
+            observers = [];
+            geometry = {bottom: 180};
+            globalThis.ResizeObserver = class {
+                observe = jest.fn();
+                disconnect = jest.fn();
+                constructor(public callback: () => void) {
+                    observers.push(this);
+                }
+            } as unknown as typeof ResizeObserver;
+            registerFilterTarget(() => true);
+            log = document.createElement('div');
+            log.setAttribute('role', 'log');
+            log.innerHTML = '<div class="chat-bubble-assistant"></div>';
+            document.body.appendChild(log);
+            spy = jest.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+                if (this === log) return {top: 0, bottom: 100} as DOMRect;
+                if (this.classList.contains('assistant-action-btn')) return {top: 0, bottom: 60} as DOMRect;
+                return {top: 50, bottom: geometry.bottom} as DOMRect;
+            });
+            view = render(<AssistantActions turn={turn([remote])} />, {
+                container: (log.firstElementChild as HTMLElement).appendChild(document.createElement('div')),
+            });
+            act(() => {
+                setWorkspaceContext({surface: 'rankings', page: 2});
+            });
+        });
+
+        afterEach(() => {
+            jest.useRealTimers();
+            globalThis.ResizeObserver = original;
+            spy.mockRestore();
+            log.remove();
+        });
+
+        test('re-applies the reveal when the bubble grows after the first scroll', () => {
+            expect(log.scrollTop).toBe(88);
+            expect(observers[0].observe).toHaveBeenCalledWith(log.firstElementChild);
+            geometry.bottom = 200;
+            observers[0].callback();
+            expect(log.scrollTop).toBe(196);
+        });
+
+        test('stops following once the reader scrolls', () => {
+            log.dispatchEvent(new Event('wheel'));
+            expect(observers[0].disconnect).toHaveBeenCalled();
+        });
+
+        test('stops following after a moment', () => {
+            expect(observers[0].disconnect).not.toHaveBeenCalled();
+            act(() => {
+                jest.advanceTimersByTime(1000);
+            });
+            expect(observers[0].disconnect).toHaveBeenCalled();
+        });
+
+        test('stops following when the reply unmounts', () => {
+            view.unmount();
+            expect(observers[0].disconnect).toHaveBeenCalled();
+        });
+
+        test('works without ResizeObserver', () => {
+            delete (globalThis as {ResizeObserver?: unknown}).ResizeObserver;
+            geometry.bottom = 190;
+            act(() => {
+                setWorkspaceContext({surface: 'rankings', page: 5});
+            });
+            expect(observers).toHaveLength(1);
+        });
+    });
+
     test('applied actions never show the stale message', () => {
         registerFilterTarget(() => true);
         render(<AssistantActions turn={turn([remote])} />);

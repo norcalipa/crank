@@ -299,10 +299,30 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
                 return;
             }
         }
-        const overflow = bubble.getBoundingClientRect().bottom - scrollerRect.bottom + 8;
-        if (overflow > 0) {
-            scroller.scrollTop += overflow;
+        const reveal = () => {
+            const overflow = bubble.getBoundingClientRect().bottom - scroller.getBoundingClientRect().bottom + 8;
+            if (overflow > 0) {
+                scroller.scrollTop += overflow;
+            }
+        };
+        reveal();
+        if (typeof ResizeObserver === 'undefined') {
+            return;
         }
+        // The card may still be growing (a scroll past the current end is clamped), so
+        // follow its height for a moment, until the reader scrolls on their own.
+        const observer = new ResizeObserver(reveal);
+        observer.observe(bubble);
+        const stop = () => observer.disconnect();
+        const timer = window.setTimeout(stop, 1000);
+        scroller.addEventListener('wheel', stop, {passive: true});
+        scroller.addEventListener('touchstart', stop, {passive: true});
+        return () => {
+            stop();
+            window.clearTimeout(timer);
+            scroller.removeEventListener('wheel', stop);
+            scroller.removeEventListener('touchstart', stop);
+        };
     }, [applied, requirement, saveable, staleShown, notFound]);
     if (!turn || turn.actions.length === 0) {
         return null;
