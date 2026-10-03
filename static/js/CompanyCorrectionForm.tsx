@@ -87,7 +87,7 @@ export const describeCurrentValue = (
         ? (provenance.data.fields || []).find(item => item.field_key === fieldKey)
         : undefined;
     if (row) {
-        const date = formatEvidenceDate(row.last_verified_at);
+        const date = row.last_verified_at ? formatEvidenceDate(row.last_verified_at) : 'never';
         const source = row.source_domain ? `from ${row.source_domain} · ` : '';
         const verified = `${source}last verified ${date}`;
         return {
