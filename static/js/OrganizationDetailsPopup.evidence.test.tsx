@@ -25,12 +25,13 @@ const field = (key: string, overrides: Record<string, unknown> = {}) => ({
 
 const payload = (overrides: Record<string, unknown> = {}) => ({
     organization_id: 1, organization_modified: '2025-03-01T00:00:00Z', organization_created: '2024-06-01T00:00:00Z',
-    latest_observation: null, evidence_schema: 2,
+    latest_observation: null, evidence_schema: 3,
     displayed_values: {rto_policy: 'Remote', funding_round: 'Seed', accelerated_vesting: 'No'},
     fields: [field('rto_policy', {status: 'stale', stale: true, review: 'conflicted'})],
     unverified_fields: ['funding_round'],
     pending_review: [{field_key: 'rto_policy', review: 'conflicted', observed_at: '2025-03-01T00:00:00Z',
         source_domain: 'rival.com', observed_value: 'In office'}],
+    pending_review_total: 1, pending_review_more: 0, review_by_field: {rto_policy: 'conflicted'},
     summary: {verified: 0, stale: 1, unknown: 6, total: 7, fact_coverage: 1,
         last_verified_at: '2025-01-10T12:00:00Z', pending_review: 1},
     ...overrides,
@@ -118,6 +119,7 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
             unverified_fields: ['rto_policy', 'funding_round'],
             pending_review: [{field_key: 'funding_round', review: 'pending', observed_at: '2025-03-01T00:00:00Z',
                 source_domain: 'x.example', observed_value: 'Series A'}],
+            review_by_field: {funding_round: 'pending'},
         })));
         open();
         await screen.findByTestId('coverage-summary');
@@ -155,7 +157,7 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
     test('Accelerated Vesting shows its stale and conflicting state in the grid', async () => {
         mockProvenance(() => ok(payload({
             fields: [field('accelerated_vesting', {status: 'stale', stale: true, review: 'conflicted'})],
-            unverified_fields: [], pending_review: [],
+            unverified_fields: [], pending_review: [], review_by_field: {accelerated_vesting: 'conflicted'},
         })));
         open();
         await screen.findByTestId('coverage-summary');
@@ -271,10 +273,31 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
                 {field_key: 'rto_policy', review: 'conflicted', observed_at: '2025-02-01T00:00:00Z',
                     source_domain: 'jobs.p.test', observed_value: 'Remote'},
             ],
+            review_by_field: {rto_policy: 'conflicted'},
         })));
         open();
         await screen.findByTestId('coverage-summary');
         expect(gridRow('RTO Policy').querySelector('.evidence-badge-conflicted')).not.toBeNull();
+    });
+
+    test('a capped pending list says how many more exist, and the grid still shows a conflict that was cut', async () => {
+        mockProvenance(() => ok(payload({
+            fields: [], unverified_fields: ['rto_policy'],
+            pending_review: [{field_key: 'rto_policy', review: 'pending', observed_at: '2025-03-01T00:00:00Z',
+                source_domain: 'p.test', observed_value: 'Hybrid'}],
+            pending_review_total: 41, pending_review_more: 40, review_by_field: {rto_policy: 'conflicted'},
+        })));
+        open();
+        await screen.findByTestId('coverage-summary');
+        expect(screen.getByTestId('pending-review-more')).toHaveTextContent('and 40 more not shown');
+        expect(gridRow('RTO Policy').querySelector('.evidence-badge-conflicted')).not.toBeNull();
+    });
+
+    test('a complete pending list shows no more-indicator', async () => {
+        mockProvenance(() => ok(payload()));
+        open();
+        await screen.findByTestId('coverage-summary');
+        expect(screen.queryByTestId('pending-review-more')).toBeNull();
     });
 
     test('null check-history timestamps read Never, not Unknown', async () => {

@@ -84,6 +84,14 @@ describe('CompanyCorrectionForm', () => {
             expect(await screen.findByTestId('correction-current-text')).toHaveTextContent(/Austin.*last verified.*Stale/);
         });
 
+        test('labels the current row "Accepted evidence", never "Verified evidence", so a stale row reads coherently', async () => {
+            renderForm({...baseContext, fieldKey: 'locations'});
+            const text = await screen.findByTestId('correction-current-text');
+            expect(text).toHaveTextContent(/^Accepted evidence/);
+            expect(text).not.toHaveTextContent('Verified evidence');
+            expect(text).toHaveTextContent('Stale');
+        });
+
         test('says so when there is no verified value and invites a first suggestion', async () => {
             renderForm({...baseContext, fieldKey: 'funding_round'});
             expect(await screen.findByTestId('correction-current-text')).toHaveTextContent('No verified value on record');

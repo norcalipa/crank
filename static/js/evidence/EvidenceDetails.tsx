@@ -34,6 +34,9 @@ export interface EvidenceData {
     fields?: EvidenceField[];
     unverified_fields?: string[];
     pending_review?: PendingReviewItem[];
+    pending_review_total?: number;
+    pending_review_more?: number;
+    review_by_field?: Record<string, 'pending' | 'conflicted'>;
     summary?: EvidenceSummaryData;
 }
 
@@ -220,6 +223,11 @@ const EvidenceDetails: React.FC<EvidenceDetailsProps> = ({
                             </div>
                         </div>
                     ))}
+                    {(evidence.pending_review_more ?? 0) > 0 && (
+                        <p className="text-muted small mb-0" data-testid="pending-review-more">
+                            and {evidence.pending_review_more} more not shown
+                        </p>
+                    )}
                 </div>
             )}
         </div>

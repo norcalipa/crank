@@ -472,7 +472,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         if (current.kind === 'verified') {
             return (
                 <span data-testid="correction-current-text">
-                    <span className="small text-body-secondary d-block">Verified evidence</span>
+                    <span className="small text-body-secondary d-block">Accepted evidence</span>
                     <span className="fw-semibold me-2">{current.value}</span>
                     <span className="small text-body-secondary d-inline-block">
                         {current.domain && <><span className="text-nowrap">{current.domain},</span>{' '}</>}
@@ -551,7 +551,7 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                                 <span data-testid="correction-saved-proposed">{saved?.proposed_value}</span>
                                 <EvidenceBadge status="pending"/>
                             </dd>
-                            <dt>Verified evidence</dt>
+                            <dt>Accepted evidence</dt>
                             <dd className="mb-0">
                                 <span data-testid="correction-saved-current">
                                     {saved?.current_value || 'No verified value on record'}
