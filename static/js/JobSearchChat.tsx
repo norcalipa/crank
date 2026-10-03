@@ -242,20 +242,27 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
     }, [initError]);
     const headingRef = React.useRef<HTMLHeadingElement>(null);
+    // Programmatic focus into the composer never scrolls: it sits in the pinned
+    // band, so it is always visible, and a scroll here would move the panel
+    // body by the band's height and race the history scroll (issue #483).
+    const focusComposer = () => composerRef.current?.focus({preventScroll: true});
     // After load the focus belongs in the chat. The sheet keeps the keyboard
     // down, so it lands on the Conversation heading instead of the composer.
-    // Focus that the reader already moved inside the chat (or into a dialog
-    // opened from it) while the timer waited is theirs; the load never takes it.
+    // Focus that the reader already moved inside the chat (the composer
+    // included) or into a dialog other than the one hosting the chat (the
+    // sheet itself) while the timer waited is theirs; the load never takes it.
     const focusAfterLoad = () => {
         if (!autoFocusRef.current) return;
         window.setTimeout(() => {
             const active = document.activeElement;
+            const hostDialog = cardRef.current?.closest('[role="dialog"]') ?? null;
+            const activeDialog = active instanceof HTMLElement ? active.closest('[role="dialog"]') : null;
             const claimed = active instanceof HTMLElement && active !== document.body
-                && active !== headingRef.current && active !== composerRef.current
-                && (!!cardRef.current?.contains(active) || !!active.closest('[role="dialog"]'));
+                && active !== headingRef.current
+                && (!!cardRef.current?.contains(active) || (activeDialog !== null && activeDialog !== hostDialog));
             if (claimed) return;
             if (props.workspaceMode === 'sheet') headingRef.current?.focus({preventScroll: true});
-            else composerRef.current?.focus();
+            else focusComposer();
         }, 0);
     };
     // After New conversation or Delete, the sheet keeps the keyboard down by
@@ -265,7 +272,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         window.setTimeout(() => {
             const composer = composerRef.current;
             if (props.workspaceMode !== 'sheet' && composer && !composer.disabled) {
-                composer.focus();
+                focusComposer();
                 return;
             }
             const cta = cardRef.current?.querySelector<HTMLElement>('[data-testid="empty-history-cta"]');
@@ -372,15 +379,15 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         // Record where the reader is before the scroll owner changes under them.
         if (scrollsPanel !== (card.getAttribute('data-scroll-owner') === 'panel')) captureAnchorRef.current();
         setPanelScroll(scrollsPanel);
-        // Keep keyboard/programmatic scroll-into-view clear of the pinned header
-        // and composer band while the panel body is the scroller.
-        if (panelBody) {
-            // The footer is not rendered while the init error shows.
-            const headerHeight = card.querySelector('.card-header')?.getBoundingClientRect().height ?? 0;
-            const footerHeight = card.querySelector<HTMLElement>('.chat-footer')?.offsetHeight ?? 0;
-            panelBody.style.scrollPaddingTop = scrollsPanel ? `${Math.round(headerHeight)}px` : '';
-            panelBody.style.scrollPaddingBottom = scrollsPanel ? `${footerHeight + 8}px` : '';
-        }
+        // Keep scroll-into-view of transcript content clear of the pinned header
+        // and composer band while the panel body is the scroller. This is a
+        // scroll-margin on the content, not scroll-padding on the body: padding
+        // would also move the panel whenever focus lands inside a band.
+        // The footer is not rendered while the init error shows.
+        const headerHeight = card.querySelector('.card-header')?.getBoundingClientRect().height ?? 0;
+        const footerHeight = card.querySelector<HTMLElement>('.chat-footer')?.offsetHeight ?? 0;
+        card.style.setProperty('--chat-band-top', scrollsPanel ? `${Math.round(headerHeight)}px` : '0px');
+        card.style.setProperty('--chat-band-bottom', scrollsPanel ? `${footerHeight + 8}px` : '0px');
         const resolvedHeight = Math.max(computed, MIN_CARD_PX, floor);
         const noticesBase = scrollsPanel && panelBody && panelBody.clientHeight > 0 ? panelBody.clientHeight : resolvedHeight;
         setNoticesMax(Math.max(MIN_NOTICES_PX, Math.round(noticesBase * 0.4)));
@@ -1149,9 +1156,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             // conversation: a mid-flight switch must not wipe the new draft.
             if (conversationIdRef.current === turnConversationId && !keepDraftRef.current) {
                 setInput('');
-                window.setTimeout(() => composerRef.current?.focus(), 0);
+                window.setTimeout(focusComposer, 0);
             } else if (conversationIdRef.current === turnConversationId) {
-                window.setTimeout(() => composerRef.current?.focus(), 0);
+                window.setTimeout(focusComposer, 0);
             }
         }
     };
@@ -1205,7 +1212,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const handleEditAsNew = (message: ChatMessage) => {
         setInput(message.content);
         writeComposerDraft(conversationId, message.content);
-        composerRef.current?.focus();
+        focusComposer();
     };
 
     const handleStopWaiting = () => {
@@ -1276,7 +1283,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         } finally {
             setLoading(false);
             // Defer focus past the React commit (see above).
-            window.setTimeout(() => composerRef.current?.focus(), 0);
+            window.setTimeout(focusComposer, 0);
         }
     };
 
@@ -1618,7 +1625,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                     authenticated={effectiveAuthenticated}
                     workspaceMode={props.workspaceMode}
                     scrollOwner={panelScroll ? 'panel' : 'transcript'}
-                    onAskFirstQuestion={() => composerRef.current?.focus()}
+                    onAskFirstQuestion={focusComposer}
                     onCheckResponse={(m) => void handleCheckResponse(m)}
                     onRetryMessage={(m) => handleRetryMessage(m)}
                     onEditAsNew={handleEditAsNew}

@@ -51,12 +51,17 @@ function revealAbovePinnedRow(target: HTMLElement | null, context: HTMLElement |
     const stackRect = stack.getBoundingClientRect();
     const dismiss = target.closest('.chat-confirm-panel')?.querySelector<HTMLElement>('.chat-confirm-dismiss');
     const limit = Math.min(stackRect.bottom, dismiss ? dismiss.getBoundingClientRect().top : stackRect.bottom);
-    const hidden = target.getBoundingClientRect().bottom - limit;
+    // A target inside the pinned row is always visible; only the context above
+    // it needs bringing into view.
+    const pinned = !!dismiss && dismiss.contains(target);
+    const hidden = pinned ? 0 : target.getBoundingClientRect().bottom - limit;
     if (hidden > 0) stack.scrollTop += hidden + 4;
     if (!context) return;
     const above = stackRect.top - context.getBoundingClientRect().top;
-    const room = limit - target.getBoundingClientRect().bottom;
+    const room = pinned ? above : limit - target.getBoundingClientRect().bottom;
     if (above > 0 && room > 0) stack.scrollTop -= Math.min(above, room);
+    const below = context.getBoundingClientRect().bottom - limit;
+    if (pinned && below > 0) stack.scrollTop += below + 4;
 }
 
 export function ConversationMenu({
@@ -312,7 +317,20 @@ export function ConversationMenu({
                         {deleting ? DELETE_CONVERSATION_COPY : NEW_CONVERSATION_COPY}
                     </p>
                     {failure && <InlineError message={failure} id="chat-confirm-failure" ref={failureRef}/>}
-                    <div className="chat-confirm-actions">
+                    {deleting && (
+                        <div className="chat-confirm-actions">
+                            <button
+                                type="button"
+                                className="btn btn-sm btn-link chat-focus"
+                                disabled={working || !hasMessages}
+                                onClick={() => void runExport(true)}
+                                data-testid="confirm-export-first"
+                            >
+                                Export first
+                            </button>
+                        </div>
+                    )}
+                    <div className="chat-confirm-dismiss">
                         <button
                             type="button"
                             ref={confirmButtonRef}
@@ -328,19 +346,6 @@ export function ConversationMenu({
                                     ? deleting ? 'Try deleting again' : 'Try again'
                                     : deleting ? 'Delete conversation' : 'Start new conversation'}
                         </button>
-                        {deleting && (
-                            <button
-                                type="button"
-                                className="btn btn-sm btn-link chat-focus"
-                                disabled={working || !hasMessages}
-                                onClick={() => void runExport(true)}
-                                data-testid="confirm-export-first"
-                            >
-                                Export first
-                            </button>
-                        )}
-                    </div>
-                    <div className="chat-confirm-dismiss">
                         <button
                             type="button"
                             className="btn btn-sm btn-outline-light chat-focus"

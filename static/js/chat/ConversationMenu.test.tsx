@@ -136,13 +136,18 @@ describe('ConversationMenu', () => {
         );
     });
 
-    test('only the safe dismiss action sits in the pinned row; the confirm action scrolls with the explanation', () => {
+    test('the confirm action sits beside Cancel in the pinned row; only Export first scrolls with the copy', () => {
         setup();
         fireEvent.click(more());
         fireEvent.click(screen.getByTestId('conversation-delete'));
         const pinned = screen.getByTestId('confirm-cancel').closest('.chat-confirm-dismiss')!;
-        expect(pinned.querySelectorAll('button')).toHaveLength(1);
-        expect(screen.getByTestId('confirm-action').closest('.chat-confirm-dismiss')).toBeNull();
+        expect(Array.from(pinned.querySelectorAll('button')).map((b) => b.dataset.testid)).toEqual(['confirm-action', 'confirm-cancel']);
+        expect(screen.getByTestId('confirm-export-first').closest('.chat-confirm-dismiss')).toBeNull();
+        fireEvent.click(screen.getByTestId('confirm-cancel'));
+        fireEvent.click(more());
+        fireEvent.click(screen.getByTestId('conversation-new'));
+        expect(screen.getByTestId('confirm-panel').querySelector('.chat-confirm-actions')).toBeNull();
+        expect(screen.getByTestId('confirm-action').closest('.chat-confirm-dismiss')).not.toBeNull();
     });
 
     test('a double click on the confirm button submits once', async () => {
@@ -214,29 +219,27 @@ describe('ConversationMenu', () => {
             });
         };
 
-        test('scrolls the stack until the retry button clears the pinned row', async () => {
-            layOut(160, 100, '#chat-confirm-failure');
+        test('a failure hidden under the pinned row is scrolled up; the pinned retry itself needs no scroll', async () => {
+            layOut(160, 160, '#chat-confirm-failure');
             setup({onDeleteConversation: jest.fn().mockResolvedValue('Could not delete the conversation.')});
             fireEvent.click(more());
             fireEvent.click(screen.getByTestId('conversation-delete'));
             fireEvent.click(screen.getByTestId('confirm-action'));
             await screen.findByRole('alert');
             const stack = document.querySelector('.chat-panel-stack') as HTMLElement;
-            // The button's bottom (190) is 40px under the row's top (150), plus 4px of air; the
-            // failure (now at 56) is still inside the stack, so nothing pulls it back.
+            // The failure's bottom (190) is 40px under the row's top (150), plus 4px of air.
             await waitFor(() => expect(stack.scrollTop).toBe(44));
+            expect(screen.getByTestId('confirm-action')).toHaveFocus();
         });
 
-        test('a failure that scrolled off the top is pulled back only as far as the retry stays visible', async () => {
-            layOut(160, -60, '#chat-confirm-failure');
+        test('a failure that already clears the pinned row leaves the stack where it is', async () => {
+            layOut(160, 20, '#chat-confirm-failure');
             setup({onDeleteConversation: jest.fn().mockResolvedValue('Could not delete the conversation.')});
             fireEvent.click(more());
             fireEvent.click(screen.getByTestId('conversation-delete'));
             fireEvent.click(screen.getByTestId('confirm-action'));
             await screen.findByRole('alert');
-            const stack = document.querySelector('.chat-panel-stack') as HTMLElement;
-            // 44px down hides the failure at -104; only 4px of slack remains above the row to pull it back.
-            await waitFor(() => expect(stack.scrollTop).toBe(40));
+            expect((document.querySelector('.chat-panel-stack') as HTMLElement).scrollTop).toBe(0);
         });
 
         test('an export error retry is revealed the same way', async () => {

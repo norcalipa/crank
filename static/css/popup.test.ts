@@ -382,7 +382,14 @@ describe('chat layering and pinned rows (issue #483 adversarial review round 1)'
         );
     });
 
-    it('pins only the dismiss row of an inline panel and caps footer notices against the card, falling back to 40% of the view', () => {
+    it('keeps transcript scroll-into-view clear of the bands with a content margin, never panel-body scroll-padding', () => {
+        expect(popupCss).toMatch(
+            /#job-search-chat > \[data-scroll-owner='panel'\] \[role='log'\] :is\(article, a, button\)\s*\{[^}]*scroll-margin-top:\s*var\(--chat-band-top[^}]*scroll-margin-bottom:\s*var\(--chat-band-bottom/,
+        );
+        expect(popupCss).not.toMatch(/\.assistant-panel-body[^{]*\{[^}]*scroll-padding/);
+    });
+
+    it('pins the action row of an inline panel and caps footer notices against the card, falling back to 40% of the view', () => {
         expect(rule('.chat-confirm-dismiss')).toMatch(/position:\s*sticky/);
         expect(popupCss).not.toMatch(/\.chat-panel-stack \.chat-confirm-actions\s*\{/);
         expect(rule('.chat-footer-notices')).toMatch(/max-height:\s*var\(--chat-notices-max,\s*40dvh\)/);

@@ -410,6 +410,14 @@ test.describe('200% zoom', () => {
     });
 });
 
+const expectPanelAtLatest = async (page: Page) => {
+    await expect.poll(() => page.evaluate(() => {
+        const panel = document.querySelector('.assistant-panel-body') as HTMLElement;
+        return panel.scrollHeight - panel.clientHeight - panel.scrollTop;
+    }), {message: 'the panel opens at the latest message'}).toBeLessThanOrEqual(2);
+    await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+};
+
 test.describe('scroll position across a viewport resize (issue #483)', () => {
     test.skip(({browserName}) => browserName !== 'chromium', 'resize anchoring is verified in Chromium');
 
@@ -488,6 +496,7 @@ test.describe('scroll position across a viewport resize (issue #483)', () => {
         const card = page.getByTestId('job-search-chat');
         await expect(card).toHaveAttribute('data-scroll-owner', 'panel');
         await expect(page.getByRole('log').locator('article').first()).toBeVisible();
+        await expectPanelAtLatest(page);
         const read = () => page.evaluate(() => {
             const panel = document.querySelector('.assistant-panel-body') as HTMLElement;
             const header = document.querySelector('.card-header') as HTMLElement;
@@ -512,6 +521,65 @@ test.describe('scroll position across a viewport resize (issue #483)', () => {
         }, before.index);
         expect(Math.abs(after - before.offset)).toBeLessThanOrEqual(6);
     });
+
+    for (const size of [{width: 375, height: 420}, {width: 320, height: 420}]) {
+        test(`panel mode loads at the latest message, ${size.width}x${size.height}`, async ({page}) => {
+            await page.setViewportSize(size);
+            await mockJobSearchApi(page, 'long');
+            await page.goto(`${PANEL_CHAT_FIXTURE}?priorities=120`);
+            await expect(page.getByTestId('job-search-chat')).toHaveAttribute('data-scroll-owner', 'panel');
+            await expect(page.getByRole('log').locator('article').first()).toBeVisible();
+            await expectPanelAtLatest(page);
+        });
+    }
+
+    test('focusing into the pinned bands does not scroll the panel', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 420});
+        await mockJobSearchApi(page, 'long');
+        await page.goto(`${PANEL_CHAT_FIXTURE}?priorities=120`);
+        await expect(page.getByTestId('job-search-chat')).toHaveAttribute('data-scroll-owner', 'panel');
+        await expectPanelAtLatest(page);
+        await page.mouse.move(150, 300);
+        await page.mouse.wheel(0, -700);
+        await page.waitForTimeout(300);
+        const scrollTop = () => page.evaluate(() => (document.querySelector('.assistant-panel-body') as HTMLElement).scrollTop);
+        const before = await scrollTop();
+        expect(before).toBeGreaterThan(0);
+        for (const focusTarget of ['conversation-more', 'jump-to-latest']) {
+            await page.getByTestId(focusTarget).focus();
+            await page.waitForTimeout(150);
+            expect(Math.abs((await scrollTop()) - before), `focus on ${focusTarget}`).toBeLessThanOrEqual(2);
+        }
+        await page.locator('textarea[aria-label="Message"]').focus();
+        await page.waitForTimeout(150);
+        expect(Math.abs((await scrollTop()) - before)).toBeLessThanOrEqual(2);
+    });
+
+    for (const size of [{width: 320, height: 420}, {width: 320, height: 640}]) {
+        for (const [trigger, label] of [['conversation-new', 'new'], ['conversation-delete', 'delete']]) {
+            test(`the ${label} confirm shows its action and Cancel together on open, ${size.width}x${size.height}`, async ({page}) => {
+                await page.setViewportSize(size);
+                await mockJobSearchApi(page, 'long');
+                await page.goto(`${PANEL_CHAT_FIXTURE}?priorities=120`);
+                if (size.height < 500) await expect(page.getByTestId('job-search-chat')).toHaveAttribute('data-scroll-owner', 'panel');
+                await expect(page.getByRole('log').locator('article').first()).toBeVisible();
+                await page.getByTestId('conversation-more').click();
+                await page.getByTestId(trigger).click();
+                await expect(page.getByTestId('confirm-panel')).toBeVisible();
+                await page.waitForTimeout(300);
+                for (const id of ['confirm-action', 'confirm-cancel']) {
+                    const topmost = await page.getByTestId(id).evaluate((el) => {
+                        const r = el.getBoundingClientRect();
+                        return [r.top + 2, r.top + r.height / 2, r.bottom - 2].map((y) => {
+                            const hit = document.elementFromPoint(r.left + r.width / 2, y);
+                            return !!hit && (hit === el || el.contains(hit));
+                        });
+                    });
+                    expect(topmost, id).toEqual([true, true, true]);
+                }
+            });
+        }
+    }
 
     test('after a failed delete in panel mode the focused retry is topmost, not under the pinned Cancel row', async ({page}) => {
         await page.setViewportSize({width: 320, height: 420});

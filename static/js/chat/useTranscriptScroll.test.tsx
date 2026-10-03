@@ -38,6 +38,13 @@ const metrics = (el: HTMLElement, m: {scrollHeight: number; scrollTop: number; c
 };
 const rect = (bottom: number) => ({bottom, top: bottom - 10, left: 0, right: 0, width: 0, height: 10, x: 0, y: 0, toJSON: () => ''});
 
+// A write that does not move the scroller arms no window, so tests that need an
+// armed one start from a scroller that is away from the bottom and follow it.
+const armFollow = (scroller: HTMLElement) => {
+    metrics(scroller, {scrollHeight: 2000, scrollTop: 0, clientHeight: 200});
+    act(() => { fireEvent.click(screen.getByText('latest')); });
+};
+
 describe('useTranscriptScroll', () => {
     let now = 1_000_000;
     beforeEach(() => {
@@ -105,6 +112,7 @@ describe('useTranscriptScroll', () => {
     test('content growing during a follow-scroll does not disarm following; only an upward move does', () => {
         render(<Harness assistantCount={1} owner="transcript"/>);
         const log = screen.getByTestId('log');
+        armFollow(log);
         metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 200});
         fireEvent.scroll(log);
         expect(screen.getByTestId('state')).toHaveTextContent('false:0');
@@ -116,6 +124,28 @@ describe('useTranscriptScroll', () => {
         fireEvent.wheel(log);
         metrics(log, {scrollHeight: 1400, scrollTop: 700, clientHeight: 200});
         fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+    });
+
+    test('a write that leaves the scroller where it is arms no window, panel scroller included', () => {
+        render(<Harness assistantCount={1} owner="panel"/>);
+        const panel = screen.getByTestId('panel');
+        const log = screen.getByTestId('log');
+        const footer = screen.getByTestId('footer');
+        const panelScrollTo = jest.fn();
+        panel.scrollTo = panelScrollTo;
+        jest.spyOn(panel, 'getBoundingClientRect').mockReturnValue(rect(500) as DOMRect);
+        jest.spyOn(footer, 'getBoundingClientRect').mockReturnValue(rect(500) as DOMRect);
+        const logRect = jest.spyOn(log, 'getBoundingClientRect').mockReturnValue(rect(500) as DOMRect);
+        // Already at the end (target 1500): following it again changes nothing.
+        metrics(panel, {scrollHeight: 2000, scrollTop: 1500, clientHeight: 500});
+        act(() => { fireEvent.click(screen.getByText('latest')); });
+        expect(panelScrollTo).toHaveBeenCalledWith({top: 2000, behavior: 'auto'});
+        // 250ms later a jump to an older turn (no input event) must read as the reader leaving.
+        now += 250;
+        logRect.mockReturnValue(rect(900) as DOMRect);
+        metrics(panel, {scrollHeight: 2000, scrollTop: 600, clientHeight: 500});
+        fireEvent.scroll(panel);
         expect(screen.getByTestId('state')).toHaveTextContent('true:0');
     });
 
@@ -146,6 +176,7 @@ describe('useTranscriptScroll', () => {
     test('our own smooth scroll, still moving, does not end following; once it settles any move away does', () => {
         render(<Harness assistantCount={1} owner="transcript"/>);
         const log = screen.getByTestId('log');
+        armFollow(log);
         metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 200});
         fireEvent.scroll(log);
         metrics(log, {scrollHeight: 1000, scrollTop: 500, clientHeight: 200});
@@ -182,6 +213,23 @@ describe('useTranscriptScroll', () => {
         metrics(log, {scrollHeight: 2000, scrollTop: 300, clientHeight: 200});
         fireEvent.scroll(log);
         expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+    });
+
+    test('focus landing in the pinned composer band does not end a write that is still settling', () => {
+        render(<Harness assistantCount={1} owner="panel"/>);
+        const panel = screen.getByTestId('panel');
+        const log = screen.getByTestId('log');
+        jest.spyOn(panel, 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
+        jest.spyOn(screen.getByTestId('footer'), 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
+        const logRect = jest.spyOn(log, 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
+        armFollow(panel);
+        // The composer takes focus (load focus) before the write's own scroll event arrives.
+        fireEvent.focusIn(screen.getByTestId('composer'));
+        // Content landed meanwhile, so the end is out of view when the clamped scroll reports.
+        logRect.mockReturnValue(rect(900) as DOMRect);
+        metrics(panel, {scrollHeight: 2000, scrollTop: 16, clientHeight: 200});
+        fireEvent.scroll(panel);
+        expect(screen.getByTestId('state')).toHaveTextContent('false:0');
     });
 
     test('switching the scroll owner restores the reader\'s place instead of landing at the oldest messages', () => {
@@ -297,6 +345,7 @@ describe('useTranscriptScroll', () => {
         render(<Harness assistantCount={1} owner="panel"/>);
         const log = screen.getByTestId('log');
         const panel = screen.getByTestId('panel');
+        armFollow(panel);
         jest.spyOn(panel, 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
         jest.spyOn(screen.getByTestId('footer'), 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
         const logRect = jest.spyOn(log, 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
@@ -367,6 +416,7 @@ describe('useTranscriptScroll', () => {
     test('a scrollbar drag cuts a smooth follow-scroll short and ends following', () => {
         render(<Harness assistantCount={1} owner="transcript"/>);
         const log = screen.getByTestId('log');
+        armFollow(log);
         metrics(log, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
         fireEvent.scroll(log);
         expect(screen.getByTestId('state')).toHaveTextContent('false:0');

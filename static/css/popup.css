@@ -3343,10 +3343,11 @@ body.assistant-open .app-content .table-responsive,
     border-color: #f87171;
 }
 
-/* The stack is capped to the transcript band and scrolls. Only the safe
-   dismiss action is pinned, so the explanation, the failure text and the
-   confirm button stay in the scrolling body above it. */
+/* The stack is capped to the transcript band and scrolls. The pinned row
+   carries the panel's actions (the confirm button beside Cancel), so both stay
+   visible when the stack is short; the heading, copy and failure text scroll. */
 .chat-confirm-dismiss {
+    gap: .5rem;
     position: sticky;
     bottom: 0;
     z-index: 1;
@@ -3499,6 +3500,14 @@ body.assistant-open .app-content .table-responsive,
     padding-top: .5rem;
     background: #111722;
     border-top: 1px solid rgba(255, 255, 255, .10);
+}
+
+/* Scroll-into-view of transcript content stays clear of the pinned bands. It is
+   a margin on the content, not padding on the panel body: padding would also
+   scroll the panel whenever focus lands on something inside a band. */
+#job-search-chat > [data-scroll-owner='panel'] [role='log'] :is(article, a, button) {
+    scroll-margin-top: var(--chat-band-top, 0);
+    scroll-margin-bottom: var(--chat-band-bottom, 0);
 }
 
 #job-search-chat .chat-loading-status {

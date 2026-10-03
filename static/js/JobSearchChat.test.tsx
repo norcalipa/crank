@@ -321,9 +321,13 @@ describe('JobSearchChat', () => {
             expect(chat).toHaveAttribute('data-scroll-owner', owner);
             expect(log).toHaveAttribute('data-scroll-owner', owner);
             expect(log).toHaveStyle({overflowY: inPanel ? 'visible' : 'auto'});
-            // Panel-scroll mode keeps scroll-into-view clear of the pinned bars.
-            expect(chat.parentElement!.style.scrollPaddingBottom).toBe(inPanel ? '8px' : '');
-            expect(chat.parentElement!.style.scrollPaddingTop).toBe(inPanel ? '0px' : '');
+            // Panel-scroll mode keeps scroll-into-view of the transcript clear of the pinned
+            // bars with a margin on the content; the panel body itself gets no scroll-padding,
+            // which would scroll it whenever focus lands inside a band.
+            expect(chat.style.getPropertyValue('--chat-band-bottom')).toBe(inPanel ? '8px' : '0px');
+            expect(chat.style.getPropertyValue('--chat-band-top')).toBe('0px');
+            expect(chat.parentElement!.style.scrollPaddingBottom).toBe('');
+            expect(chat.parentElement!.style.scrollPaddingTop).toBe('');
         });
 
         test('observes the parent for match-panel resizes when ResizeObserver is available', async () => {
@@ -571,6 +575,82 @@ describe('JobSearchChat', () => {
             } finally {
                 spy.mockRestore();
                 dialog.remove();
+            }
+        });
+
+        describe('load-time focus inside the sheet dialog', () => {
+            const realSetTimeout = window.setTimeout;
+            let held: Array<() => void>;
+            let spy: jest.SpyInstance;
+            let sheet: HTMLElement;
+            beforeEach(() => {
+                held = [];
+                spy = jest.spyOn(window, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
+                    if (ms === 0 && typeof fn === 'function' && String(fn).includes('workspaceMode')) { held.push(fn); return 0 as unknown as number; }
+                    return realSetTimeout(fn, ms, ...rest);
+                }) as typeof window.setTimeout);
+                sheet = document.createElement('div');
+                sheet.setAttribute('role', 'dialog');
+                document.body.append(sheet);
+            });
+            afterEach(() => {
+                spy.mockRestore();
+                sheet.remove();
+            });
+            const mountInSheet = async () => {
+                const back = document.createElement('button');
+                const mount = document.createElement('div');
+                const nested = document.createElement('div');
+                nested.setAttribute('role', 'dialog');
+                const nestedButton = document.createElement('button');
+                nested.append(nestedButton);
+                sheet.append(back, mount, nested);
+                (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+                (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+                setWorkspaceAccount({status: 'authenticated', key: 'tester'});
+                render(<JobSearchChat workspaceMode="sheet" autoFocusComposer/>, {container: mount});
+                await screen.findByTestId('empty-history-cta');
+                return {back, nestedButton};
+            };
+
+            test('the sheet\'s own Back to results focus gives way to the heading', async () => {
+                const {back} = await mountInSheet();
+                back.focus();
+                held.splice(0).forEach((fn) => fn());
+                expect(screen.getByRole('heading', {name: 'Conversation'})).toHaveFocus();
+            });
+
+            test('a dialog nested in the sheet keeps the focus the reader put there', async () => {
+                const {nestedButton} = await mountInSheet();
+                nestedButton.focus();
+                held.splice(0).forEach((fn) => fn());
+                expect(nestedButton).toHaveFocus();
+            });
+
+            test('a composer the reader already holds is not moved to the heading', async () => {
+                await mountInSheet();
+                const composer = screen.getByLabelText('Message');
+                composer.focus();
+                held.splice(0).forEach((fn) => fn());
+                expect(composer).toHaveFocus();
+            });
+        });
+
+        test('the load focus puts the composer in focus without scrolling the panel', async () => {
+            const focus = jest.spyOn(HTMLElement.prototype, 'focus');
+            try {
+                (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+                (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+                setWorkspaceAccount({status: 'authenticated', key: 'tester'});
+                render(<JobSearchChat workspaceMode="drawer" autoFocusComposer/>);
+                await screen.findByTestId('empty-history');
+                const composer = screen.getByLabelText('Message');
+                await waitFor(() => expect(composer).toHaveFocus());
+                const calls = focus.mock.contexts.map((c, i) => [c, focus.mock.calls[i][0]] as const).filter(([c]) => c === composer);
+                expect(calls.length).toBeGreaterThan(0);
+                calls.forEach(([, options]) => expect(options).toEqual({preventScroll: true}));
+            } finally {
+                focus.mockRestore();
             }
         });
 
@@ -3565,6 +3645,7 @@ describe('signed-out visitor and account-switch purge (issue #465)', () => {
         fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'in flight'}});
         fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
         await postedKeyAfterSend(mock);
+        expect(getWorkspaceSnapshot().conversationId).toBe(42);
 
         act(() => {
             document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
@@ -3572,6 +3653,8 @@ describe('signed-out visitor and account-switch purge (issue #465)', () => {
 
         expect(abortSpy).toHaveBeenCalled();
         await waitFor(() => expect(screen.getByLabelText('Message')).toHaveValue(''));
+        // The previous account's conversation id must not outlive the purge.
+        expect(getWorkspaceSnapshot().conversationId).toBeNull();
         expect(screen.queryByText('in flight')).not.toBeInTheDocument();
         settlePost(new Response(null, {status: 499}));
     });

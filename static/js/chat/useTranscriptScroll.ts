@@ -49,9 +49,17 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
     // later scroll with no input behind it (find-in-page, a screen-reader
     // cursor) is not mistaken for one of our own writes.
     const programmaticTargetRef = React.useRef<number | null>(null);
+    // A write that will not move the scroller fires no scroll event, so it must
+    // not arm a window that nothing would ever close.
     const markProgrammatic = (scroller?: HTMLElement | null, target?: number) => {
+        const resolved = target ?? (scroller ? scroller.scrollHeight - scroller.clientHeight : null);
+        if (scroller && resolved !== null && Math.abs(scroller.scrollTop - resolved) <= 2) {
+            programmaticUntilRef.current = 0;
+            programmaticTargetRef.current = null;
+            return;
+        }
         programmaticUntilRef.current = Date.now() + PROGRAMMATIC_WINDOW_MS;
-        programmaticTargetRef.current = target ?? (scroller ? scroller.scrollHeight - scroller.clientHeight : null);
+        programmaticTargetRef.current = resolved;
     };
 
     // The top edge of what the reader can see: the scroller's own top, or in
@@ -155,6 +163,11 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         // they still read as following (issue #483). Input that scrolls cancels
         // the programmatic window so it can interrupt a smooth scroll.
         const cancelProgrammatic = (e?: Event) => {
+            // Only focus inside the transcript can scroll the reader away. Focus in
+            // the pinned bands (composer, More, the pill) is already in view, and
+            // cancelling on it would turn a load-time write's own late scroll event
+            // into "the reader scrolled away".
+            if (e?.type === 'focusin' && !historyRef.current?.contains(e.target as Node)) return;
             if (e?.type === 'keydown') {
                 if (!SCROLL_KEYS.has((e as KeyboardEvent).key)) return;
                 if ((e.target as HTMLElement).closest('textarea, input, select, button, [contenteditable="true"]')) return;
