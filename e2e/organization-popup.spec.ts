@@ -56,6 +56,7 @@ function provenanceStub(kind: 'populated' | 'stale' | 'pending' | 'long') {
     const base = {
         organization_id: 1, organization_modified: iso(1), organization_created: iso(400), latest_observation: null,
         evidence_schema: 2, unverified_fields: [], pending_review: [] as unknown[],
+        displayed_values: {rto_policy: 'Hybrid', accelerated_vesting: 'No'},
         summary: {verified: 2, stale: 0, unknown: 5, total: 7, fact_coverage: 2, last_verified_at: iso(2), pending_review: 0},
     };
     if (kind === 'stale') {
@@ -533,16 +534,34 @@ test.describe('evidence states in the details dialog (#473a, fixture tier)', () 
         await expect(page.getByRole('dialog').getByTestId('rating-coverage')).toContainText('of');
     });
 
-    test('rows and cards expose their evidence summary as the accessible description', async ({page, browserName}) => {
-        test.skip(browserName !== 'chromium', 'CDP accessibility tree is Chromium-only');
-        await page.goto(POPUP_FIXTURE);
-        const row = page.locator('tr.organization-row').first();
-        await expect(row).toHaveAttribute('aria-describedby', /organization-summary-\d+/);
+    const describedNodes = async (page: Page, roles: string[]) => {
         const client = await page.context().newCDPSession(page);
         const {nodes} = await client.send('Accessibility.getFullAXTree');
-        const described = nodes.filter((n: any) => n.role?.value === 'row' || n.role?.value === 'button')
+        return nodes.filter((n: any) => roles.includes(n.role?.value))
             .filter((n: any) => /Rating coverage \d+ of \d+/.test(n.description?.value ?? ''));
-        expect(described.length).toBeGreaterThan(0);
+    };
+
+    test('table rows expose their evidence summary as the accessible description', async ({page, browserName}) => {
+        test.skip(browserName !== 'chromium', 'CDP accessibility tree is Chromium-only');
+        await page.goto(POPUP_FIXTURE);
+        await expect(page.locator('tr.organization-row').first()).toHaveAttribute('aria-describedby', /organization-summary-\d+/);
+        await expect(page.locator('.organization-cards')).toBeHidden();
+        expect((await describedNodes(page, ['row', 'button'])).length).toBeGreaterThan(0);
+    });
+
+    test('cards expose their evidence summary as the accessible description', async ({page, browserName}) => {
+        test.skip(browserName !== 'chromium', 'CDP accessibility tree is Chromium-only');
+        await page.setViewportSize({width: 375, height: 800});
+        await page.goto(POPUP_FIXTURE);
+        const card = page.locator('.organization-card').first();
+        await expect(card).toBeVisible();
+        await expect(card).toHaveAttribute('aria-describedby', /organization-card-summary-\d+/);
+        await expect(page.locator('tr.organization-row').first()).toBeHidden();
+        // Only cards are rendered at this width, so every described node is a card.
+        const described = await describedNodes(page, ['button']);
+        const cards = await page.locator('.organization-card').count();
+        expect(cards).toBeGreaterThan(0);
+        expect(described.length).toBe(cards);
     });
 });
 
