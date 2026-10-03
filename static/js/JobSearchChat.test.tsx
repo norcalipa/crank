@@ -543,7 +543,7 @@ describe('JobSearchChat', () => {
             (global.fetch as jest.Mock).mockReturnValueOnce(new Promise((resolve) => { resolveReply = resolve; }));
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            await screen.findByTestId('pending-status', undefined, {timeout: 5000});
+            await screen.findByTestId('pending-status', undefined, {timeout: 2500});
             setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
             fireEvent.scroll(history);
             expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
@@ -559,16 +559,39 @@ describe('JobSearchChat', () => {
             expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
         });
 
-        test('frames of our own smooth scroll are ignored until the reader wheels or touches the log', async () => {
+        test('mid-flight frames of our own smooth scroll leave the log following, so appended content still auto-scrolls', async () => {
             window.matchMedia = jest.fn().mockReturnValue({matches: false} as MediaQueryList);
             await renderChat([assistantMessage(1, 'older'), assistantMessage(2, 'latest')]);
             const history = screen.getByLabelText('Message history');
             await waitFor(() => expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({behavior: 'smooth'})));
+            // A frame partway through our own smooth scroll: far from the bottom, not the reader's doing.
             setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
             fireEvent.scroll(history);
-            fireEvent.wheel(history);
-            fireEvent.touchStart(history);
+            scrollTo.mockClear();
+
+            (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+            (global.fetch as jest.Mock).mockResolvedValueOnce(
+                jsonResponse({message: assistantMessage(3, 'reply'), preferences_changed: false}, 201));
+            fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+            await screen.findByText('reply');
+            expect(scrollTo).toHaveBeenCalled();
+            expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
+        });
+
+        test('mid-flight frames of our own smooth scroll leave the log following, so a retry still auto-scrolls', async () => {
+            window.matchMedia = jest.fn().mockReturnValue({matches: false} as MediaQueryList);
+            await renderChat([assistantMessage(1, 'older'), userTurn('saved question', '123e4567-e89b-42d3-a456-426614174000', 'failed', 2)]);
+            const history = screen.getByLabelText('Message history');
+            await waitFor(() => expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({behavior: 'smooth'})));
+            // A frame partway through our own smooth scroll: far from the bottom, not the reader's doing.
+            setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
             fireEvent.scroll(history);
+            scrollTo.mockClear();
+
+            (global.fetch as jest.Mock).mockImplementation(() => new Promise<Response>(() => undefined));
+            fireEvent.click(screen.getByTestId('retry-response-button'));
+            await waitFor(() => expect(scrollTo).toHaveBeenCalled());
             expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
         });
 
@@ -1008,7 +1031,7 @@ describe('additional JobSearchChat coverage', () => {
                 .mockResolvedValueOnce(jsonResponse({detail: 'down'}, 503))
                 .mockResolvedValueOnce(jsonResponse(emptyConversation(11), 201));
             render(<JobSearchChat/>);
-            await screen.findByText(/restore your previous conversation/i, {}, {timeout: 5000});
+            await screen.findByText(/restore your previous conversation/i, {}, {timeout: 2500});
             const startBtn = screen.getByRole('button', {name: 'Start a conversation'});
             fireEvent.click(startBtn);
             await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled(), {timeout: 3000});

@@ -294,8 +294,8 @@ test.describe('assistant actions (issue #484)', () => {
         }
     });
 
-    test('the save card confirm button is fully visible at 320px and no false jump pill shows', async ({page}) => {
-        await page.setViewportSize({width: 320, height: 800});
+    async function openSaveCard(page: Page, height: number) {
+        await page.setViewportSize({width: 320, height});
         await login(page);
         await page.route('**/api/agent/preferences/propose/', (route) => route.fulfill({
             status: 200, contentType: 'application/json', body: JSON.stringify({
@@ -311,8 +311,16 @@ test.describe('assistant actions (issue #484)', () => {
         const review = page.getByTestId('assistant-action-review');
         await expect(review).toBeVisible();
         await expect(review).toContainText('Work arrangement');
-        const save = review.getByRole('button', {name: 'Save', exact: true});
-        const heading = review.getByRole('heading', {name: 'Save as a requirement?'});
+        return {
+            review,
+            save: review.getByRole('button', {name: 'Save', exact: true}),
+            heading: review.getByRole('heading', {name: 'Save as a requirement?'}),
+            changes: review.getByText('Work arrangement'),
+        };
+    }
+
+    test('the save card confirm button is fully visible at 320x800 and no false jump pill shows', async ({page}) => {
+        const {save, heading} = await openSaveCard(page, 800);
         await expect(heading).toBeFocused();
         // Both the focused heading and the confirm button stay visible and uncovered.
         await expectUnobstructed(page, heading);
@@ -325,6 +333,52 @@ test.describe('assistant actions (issue #484)', () => {
         await expectUnobstructed(page, heading);
         await expectUnobstructed(page, save);
     });
+
+    // Real phones: the transcript is 126-211px tall, shorter than the 223px card,
+    // so the heading and Save cannot both show. Save and the change list win, and
+    // focus lands on something the reader can see.
+    for (const height of [568, 640]) {
+        test(`the save card at 320x${height} keeps Save and the changes visible, focus visible, and a scrolled-up reader in place`, async ({page}) => {
+            const {save, heading, changes} = await openSaveCard(page, height);
+            await expectUnobstructed(page, save);
+            await expectUnobstructed(page, changes);
+            await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+
+            const focus = await page.evaluate(() => {
+                const el = document.activeElement as HTMLElement | null;
+                const log = document.querySelector('[role="log"]') as HTMLElement;
+                if (!el || !log) {
+                    return {visible: false, label: 'none'};
+                }
+                const rect = el.getBoundingClientRect();
+                const bounds = log.getBoundingClientRect();
+                const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+                return {
+                    visible: rect.bottom > bounds.top && rect.top < bounds.bottom && !!hit && (hit === el || el.contains(hit)),
+                    label: el.tagName === 'H3' || el.tagName === 'H4' ? 'heading' : (el.textContent ?? '').trim(),
+                };
+            });
+            expect(focus.visible).toBe(true);
+            if (focus.label === 'heading') {
+                await page.keyboard.press('Tab');
+            }
+            await expect(save).toBeFocused();
+            await expectUnobstructed(page, save);
+            await expect(heading).toHaveCount(1);
+
+            // A reader who scrolls up is not pulled back.
+            const log = page.getByRole('log');
+            await log.hover();
+            await page.mouse.wheel(0, -400);
+            await expect.poll(() => log.evaluate((el) => el.scrollTop)).toBeLessThan(
+                await log.evaluate((el) => el.scrollHeight) - 400,
+            );
+            const top = await log.evaluate((el) => el.scrollTop);
+            await page.waitForTimeout(1500);
+            expect(await log.evaluate((el) => el.scrollTop)).toBe(top);
+            await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+        });
+    }
 
     test('actions and the RTO chip fit at 375px', async ({page}) => {
         await page.setViewportSize({width: 375, height: 800});
