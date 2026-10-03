@@ -244,9 +244,16 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const headingRef = React.useRef<HTMLHeadingElement>(null);
     // After load the focus belongs in the chat. The sheet keeps the keyboard
     // down, so it lands on the Conversation heading instead of the composer.
+    // Focus that the reader already moved inside the chat (or into a dialog
+    // opened from it) while the timer waited is theirs; the load never takes it.
     const focusAfterLoad = () => {
         if (!autoFocusRef.current) return;
         window.setTimeout(() => {
+            const active = document.activeElement;
+            const claimed = active instanceof HTMLElement && active !== document.body
+                && active !== headingRef.current && active !== composerRef.current
+                && (!!cardRef.current?.contains(active) || !!active.closest('[role="dialog"]'));
+            if (claimed) return;
             if (props.workspaceMode === 'sheet') headingRef.current?.focus({preventScroll: true});
             else composerRef.current?.focus();
         }, 0);
@@ -272,6 +279,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const MIN_CARD_PX = 320;
     const MIN_TRANSCRIPT_PX = 128;
     const MIN_STACK_PX = 96;
+    const MIN_NOTICES_PX = 64;
     const loadAvailability = React.useCallback(async () => {
         if (availabilityRequested.current) return;
         availabilityRequested.current = true;
@@ -314,6 +322,9 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const [stackMax, setStackMax] = React.useState<number | null>(null);
     // rAF bookkeeping so resize/orientation/keyboard bursts coalesce into at most
     // one measure per frame instead of thrashing layout on every event.
+    // Footer notices never take more than 40% of the card (or, when the panel
+    // scrolls, of the panel's visible height), not of the viewport.
+    const [noticesMax, setNoticesMax] = React.useState<number | null>(null);
     const rafIdRef = React.useRef<number | null>(null);
     const rafPendingRef = React.useRef(false);
 
@@ -370,7 +381,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             panelBody.style.scrollPaddingTop = scrollsPanel ? `${Math.round(headerHeight)}px` : '';
             panelBody.style.scrollPaddingBottom = scrollsPanel ? `${footerHeight + 8}px` : '';
         }
-        setCardHeight(Math.max(computed, MIN_CARD_PX, floor));
+        const resolvedHeight = Math.max(computed, MIN_CARD_PX, floor);
+        const noticesBase = scrollsPanel && panelBody && panelBody.clientHeight > 0 ? panelBody.clientHeight : resolvedHeight;
+        setNoticesMax(Math.max(MIN_NOTICES_PX, Math.round(noticesBase * 0.4)));
+        setCardHeight(resolvedHeight);
     }, []);
 
     // Coalesce high-frequency resize/viewport events (fired many times per second
@@ -445,13 +459,16 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     }, [initError, scheduleMeasure]);
 
     const chatCardStyle = React.useMemo<React.CSSProperties>(() => {
-        const vars = (stackMax === null ? {} : {'--chat-stack-max': `${stackMax}px`}) as React.CSSProperties;
+        const vars = {
+            ...(stackMax === null ? {} : {'--chat-stack-max': `${stackMax}px`}),
+            ...(noticesMax === null ? {} : {'--chat-notices-max': `${noticesMax}px`}),
+        } as React.CSSProperties;
         if (panelScroll) return {...vars, height: 'auto'};
         if (cardHeight !== null) {
             return {...vars, height: `${cardHeight}px`, minHeight: '20rem'};
         }
         return {...vars, minHeight: '20rem'};
-    }, [cardHeight, panelScroll, stackMax]);
+    }, [cardHeight, panelScroll, stackMax, noticesMax]);
 
     const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend, captureAnchor} = useTranscriptScroll({
         messagesLength: messages.length,

@@ -42,6 +42,23 @@ const InlineError = React.forwardRef<HTMLParagraphElement, {message: string; id?
     );
 });
 
+// Scroll the panel stack so `target` sits above the pinned dismiss row, then
+// bring `context` (the failure text) into view only as far as that keeps the
+// target uncovered.
+function revealAbovePinnedRow(target: HTMLElement | null, context: HTMLElement | null) {
+    const stack = target?.closest<HTMLElement>('.chat-panel-stack');
+    if (!target || !stack) return;
+    const stackRect = stack.getBoundingClientRect();
+    const dismiss = target.closest('.chat-confirm-panel')?.querySelector<HTMLElement>('.chat-confirm-dismiss');
+    const limit = Math.min(stackRect.bottom, dismiss ? dismiss.getBoundingClientRect().top : stackRect.bottom);
+    const hidden = target.getBoundingClientRect().bottom - limit;
+    if (hidden > 0) stack.scrollTop += hidden + 4;
+    if (!context) return;
+    const above = stackRect.top - context.getBoundingClientRect().top;
+    const room = limit - target.getBoundingClientRect().bottom;
+    if (above > 0 && room > 0) stack.scrollTop -= Math.min(above, room);
+}
+
 export function ConversationMenu({
     title, hasConversation, hasMessages, pending,
     onExport, onNewConversation, onDeleteConversation,
@@ -107,15 +124,15 @@ export function ConversationMenu({
     }, [aboutOpen]);
     React.useEffect(() => {
         if (!failure) return;
-        // The reader needs the failure text and the retry button together: put
-        // the button in focus without scrolling, then bring the message into view.
+        // The focused retry must be visible above the pinned dismiss row, with
+        // the failure text above it when both fit.
         confirmButtonRef.current?.focus({preventScroll: true});
-        failureRef.current?.scrollIntoView?.({block: 'nearest'});
+        revealAbovePinnedRow(confirmButtonRef.current, failureRef.current);
     }, [failure]);
     React.useEffect(() => {
         if (!exportError) return;
-        exportPanelRef.current?.scrollIntoView?.({block: 'nearest'});
         exportRetryRef.current?.focus({preventScroll: true});
+        revealAbovePinnedRow(exportRetryRef.current, exportPanelRef.current);
     }, [exportError]);
 
     // A turn that starts while the menu is open disables the destructive

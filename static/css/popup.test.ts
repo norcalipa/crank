@@ -382,9 +382,9 @@ describe('chat layering and pinned rows (issue #483 adversarial review round 1)'
         );
     });
 
-    it('pins only the dismiss row of an inline panel and caps footer notices at 40% of the view', () => {
+    it('pins only the dismiss row of an inline panel and caps footer notices against the card, falling back to 40% of the view', () => {
         expect(rule('.chat-confirm-dismiss')).toMatch(/position:\s*sticky/);
         expect(popupCss).not.toMatch(/\.chat-panel-stack \.chat-confirm-actions\s*\{/);
-        expect(rule('.chat-footer-notices')).toMatch(/max-height:\s*40dvh/);
+        expect(rule('.chat-footer-notices')).toMatch(/max-height:\s*var\(--chat-notices-max,\s*40dvh\)/);
     });
 });

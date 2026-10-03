@@ -6,6 +6,7 @@
 import {test, expect, Page} from '@playwright/test';
 
 const CHAT_FIXTURE = '/e2e/fixtures/job-search-chat.html';
+const PANEL_CHAT_FIXTURE = '/e2e/fixtures/job-search-chat-panel.html';
 const ORG_FIXTURE = '/e2e/fixtures/organization-list.html';
 
 interface ConversationFixture {
@@ -436,5 +437,102 @@ test.describe('scroll position across a viewport resize (issue #483)', () => {
             return rect.bottom > 0 && rect.top < window.innerHeight;
         }, readerArticle);
         expect(inView).toBe(true);
+    });
+
+    for (const priorities of [120, 400]) {
+        test(`transcript to panel flip keeps the reader's place with ${priorities}px above the card`, async ({page}) => {
+            await page.setViewportSize({width: 375, height: 1100});
+            await mockJobSearchApi(page, 'long');
+            await page.goto(`${PANEL_CHAT_FIXTURE}?priorities=${priorities}`);
+            const card = page.getByTestId('job-search-chat');
+            const log = page.getByRole('log');
+            await expect(log.locator('article').first()).toBeVisible();
+            await expect(card).toHaveAttribute('data-scroll-owner', 'transcript');
+            const box = (await log.boundingBox())!;
+            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+            await page.mouse.wheel(0, -700);
+            await page.waitForTimeout(300);
+            const measure = () => page.evaluate((index) => {
+                const articles = Array.from(document.querySelectorAll('[role="log"] article'));
+                const header = document.querySelector('.card-header') as HTMLElement;
+                const owner = document.querySelector('[data-testid="job-search-chat"]')!.getAttribute('data-scroll-owner');
+                const scroller = owner === 'panel' ? document.querySelector('.assistant-panel-body')! : document.querySelector('[role="log"]')!;
+                const top = owner === 'panel'
+                    ? scroller.getBoundingClientRect().top + header.offsetHeight
+                    : scroller.getBoundingClientRect().top;
+                const pick = index === null
+                    ? articles.findIndex((a) => a.getBoundingClientRect().bottom > top + 1)
+                    : index;
+                return {index: pick, offset: articles[pick].getBoundingClientRect().top - top, owner};
+            }, null as number | null);
+            const before = await measure();
+            await page.setViewportSize({width: 375, height: 420});
+            await expect(card).toHaveAttribute('data-scroll-owner', 'panel');
+            await page.waitForTimeout(400);
+            const after = await page.evaluate(({index}) => {
+                const articles = Array.from(document.querySelectorAll('[role="log"] article'));
+                const header = document.querySelector('.card-header') as HTMLElement;
+                const panel = document.querySelector('.assistant-panel-body')!;
+                const top = panel.getBoundingClientRect().top + header.offsetHeight;
+                return articles[index].getBoundingClientRect().top - top;
+            }, {index: before.index});
+            expect(before.owner).toBe('transcript');
+            expect(Math.abs(after - before.offset)).toBeLessThanOrEqual(6);
+        });
+    }
+
+    test('panel to transcript flip keeps the reader\'s place', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 420});
+        await mockJobSearchApi(page, 'long');
+        await page.goto(`${PANEL_CHAT_FIXTURE}?priorities=120`);
+        const card = page.getByTestId('job-search-chat');
+        await expect(card).toHaveAttribute('data-scroll-owner', 'panel');
+        await expect(page.getByRole('log').locator('article').first()).toBeVisible();
+        const read = () => page.evaluate(() => {
+            const panel = document.querySelector('.assistant-panel-body') as HTMLElement;
+            const header = document.querySelector('.card-header') as HTMLElement;
+            const owner = document.querySelector('[data-testid="job-search-chat"]')!.getAttribute('data-scroll-owner');
+            const scroller = owner === 'panel' ? panel : document.querySelector('[role="log"]')!;
+            const top = owner === 'panel' ? Math.max(panel.getBoundingClientRect().top, header.getBoundingClientRect().bottom) : scroller.getBoundingClientRect().top;
+            const articles = Array.from(document.querySelectorAll('[role="log"] article'));
+            const index = articles.findIndex((a) => a.getBoundingClientRect().bottom > top + 1);
+            return {index, offset: articles[index].getBoundingClientRect().top - top};
+        });
+        await page.mouse.move(150, 300);
+        await page.mouse.wheel(0, -500);
+        await page.waitForTimeout(300);
+        const before = await read();
+        expect(before.index).toBeGreaterThan(0);
+        await page.setViewportSize({width: 375, height: 900});
+        await expect(card).toHaveAttribute('data-scroll-owner', 'transcript');
+        await page.waitForTimeout(400);
+        const after = await page.evaluate((index) => {
+            const log = document.querySelector('[role="log"]')!;
+            return document.querySelectorAll('[role="log"] article')[index].getBoundingClientRect().top - log.getBoundingClientRect().top;
+        }, before.index);
+        expect(Math.abs(after - before.offset)).toBeLessThanOrEqual(6);
+    });
+
+    test('after a failed delete in panel mode the focused retry is topmost, not under the pinned Cancel row', async ({page}) => {
+        await page.setViewportSize({width: 320, height: 420});
+        await mockJobSearchApi(page, 'long');
+        await page.route('**/api/agent/conversations/*/delete/**', (route) => route.fulfill({status: 500, contentType: 'application/json', body: '{}'}));
+        await page.goto(`${PANEL_CHAT_FIXTURE}?priorities=120`);
+        await expect(page.getByTestId('job-search-chat')).toHaveAttribute('data-scroll-owner', 'panel');
+        await page.getByTestId('conversation-more').click();
+        await page.getByTestId('conversation-delete').click();
+        await page.getByTestId('confirm-action').click();
+        const retry = page.getByTestId('confirm-action');
+        await expect(page.getByRole('alert').filter({hasText: /delete/i})).toBeVisible();
+        await expect(retry).toBeFocused();
+        await page.waitForTimeout(300);
+        const topmost = await retry.evaluate((el) => {
+            const r = el.getBoundingClientRect();
+            return [r.top + 2, r.top + r.height / 2, r.bottom - 2].map((y) => {
+                const hit = document.elementFromPoint(r.left + r.width / 2, y);
+                return !!hit && (hit === el || el.contains(hit));
+            });
+        });
+        expect(topmost).toEqual([true, true, true]);
     });
 });

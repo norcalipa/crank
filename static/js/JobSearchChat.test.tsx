@@ -214,6 +214,40 @@ describe('JobSearchChat', () => {
             expect(chat.style.getPropertyValue('--chat-stack-max')).toBe('288px');
         });
 
+        test('caps footer notices at 40% of the card, or of the panel body when the panel scrolls', async () => {
+            await renderChat();
+            const chat = screen.getByTestId('job-search-chat');
+            await act(async () => { await flushRaf(); });
+            // 752px card -> 301px.
+            expect(chat.style.getPropertyValue('--chat-notices-max')).toBe('301px');
+        });
+
+        test('caps footer notices at 40% of the panel body when the panel scrolls', async () => {
+            const panelBody = document.createElement('div');
+            panelBody.className = 'assistant-panel-body';
+            Object.defineProperty(panelBody, 'clientHeight', {configurable: true, value: 250});
+            const container = document.createElement('div');
+            panelBody.append(container);
+            document.body.appendChild(panelBody);
+            window.innerHeight = 100;
+            try {
+                (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+                (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42, [])));
+                render(<JobSearchChat/>, {container});
+                await within(container).findByLabelText('Message');
+                const inPanel = within(container).getByTestId('job-search-chat');
+                await act(async () => {
+                    fireEvent(window, new Event('resize'));
+                    await flushRaf();
+                });
+                // Small viewport inside a panel: the card floor forces the panel to scroll, so the
+                // cap follows the panel's 250px, not the viewport.
+                expect(inPanel.style.getPropertyValue('--chat-notices-max')).toBe('100px');
+            } finally {
+                panelBody.remove();
+            }
+        });
+
         test('measures the stack cap without a composer (init error state)', async () => {
             (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
             (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse({detail: 'boom'}, 500));
@@ -489,6 +523,55 @@ describe('JobSearchChat', () => {
             view.unmount();
             view = await mountWith(<JobSearchChat workspaceMode="drawer" autoFocusComposer/>);
             await waitFor(() => expect(screen.getByLabelText('Message')).toHaveFocus());
+        });
+
+        test('the load-time focus never takes focus the reader already put inside the chat or a dialog', async () => {
+            const realSetTimeout = window.setTimeout;
+            const held: Array<() => void> = [];
+            const spy = jest.spyOn(window, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
+                if (ms === 0 && typeof fn === 'function' && String(fn).includes('workspaceMode')) { held.push(fn); return 0 as unknown as number; }
+                return realSetTimeout(fn, ms, ...rest);
+            }) as typeof window.setTimeout);
+            try {
+                (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+                (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+                setWorkspaceAccount({status: 'authenticated', key: 'tester'});
+                render(<JobSearchChat workspaceMode="sheet" autoFocusComposer/>);
+                const cta = await screen.findByTestId('empty-history-cta');
+                cta.focus();
+                held.splice(0).forEach((fn) => fn());
+                expect(cta).toHaveFocus();
+                expect(screen.getByRole('heading', {name: 'Conversation'})).not.toHaveFocus();
+            } finally {
+                spy.mockRestore();
+            }
+        });
+
+        test('the load-time focus leaves focus inside an open dialog alone', async () => {
+            const realSetTimeout = window.setTimeout;
+            const held: Array<() => void> = [];
+            const spy = jest.spyOn(window, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
+                if (ms === 0 && typeof fn === 'function' && String(fn).includes('workspaceMode')) { held.push(fn); return 0 as unknown as number; }
+                return realSetTimeout(fn, ms, ...rest);
+            }) as typeof window.setTimeout);
+            const dialog = document.createElement('div');
+            dialog.setAttribute('role', 'dialog');
+            const close = document.createElement('button');
+            dialog.append(close);
+            document.body.append(dialog);
+            try {
+                (global.fetch as jest.Mock).mockResolvedValueOnce(statusResponse('ready'));
+                (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(emptyConversation(42)));
+                setWorkspaceAccount({status: 'authenticated', key: 'tester'});
+                render(<JobSearchChat workspaceMode="sheet" autoFocusComposer/>);
+                await screen.findByTestId('empty-history-cta');
+                close.focus();
+                held.splice(0).forEach((fn) => fn());
+                expect(close).toHaveFocus();
+            } finally {
+                spy.mockRestore();
+                dialog.remove();
+            }
         });
 
         test('a conversation created on first load also leaves a restored panel unfocused (issue #479)', async () => {

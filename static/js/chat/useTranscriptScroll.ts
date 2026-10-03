@@ -45,8 +45,13 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         return history;
     };
 
-    const markProgrammatic = () => {
+    // The window also ends as soon as a scroll event reaches `target`, so a
+    // later scroll with no input behind it (find-in-page, a screen-reader
+    // cursor) is not mistaken for one of our own writes.
+    const programmaticTargetRef = React.useRef<number | null>(null);
+    const markProgrammatic = (scroller?: HTMLElement | null, target?: number) => {
         programmaticUntilRef.current = Date.now() + PROGRAMMATIC_WINDOW_MS;
+        programmaticTargetRef.current = target ?? (scroller ? scroller.scrollHeight - scroller.clientHeight : null);
     };
 
     // The top edge of what the reader can see: the scroller's own top, or in
@@ -57,6 +62,16 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         if (scroller === history) return rect.top;
         const header = history?.closest('section')?.querySelector<HTMLElement>('.card-header');
         return Math.max(rect.top, header ? header.getBoundingClientRect().bottom : rect.top);
+    };
+
+    // Where the visible top will be once the panel has scrolled far enough for
+    // the sticky header to stick: the scroller's top plus the header's height.
+    // Before the first write the header may still sit unstuck lower down.
+    const stuckTop = (scroller: HTMLElement): number => {
+        const history = historyRef.current;
+        if (scroller === history) return scroller.getBoundingClientRect().top;
+        const header = history?.closest('section')?.querySelector<HTMLElement>('.card-header');
+        return scroller.getBoundingClientRect().top + (header ? header.offsetHeight : 0);
     };
 
     // Remember the first message the reader can see, and how far below the
@@ -102,7 +117,7 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
     const scrollToLatest = (behavior: ScrollBehavior = prefersReducedMotion() || scrollOwner === 'panel' ? 'auto' : 'smooth') => {
         const scroller = getScroller();
         if (!scroller) return;
-        markProgrammatic();
+        markProgrammatic(scroller);
         if (typeof scroller.scrollTo === 'function') {
             scroller.scrollTo({top: scroller.scrollHeight, behavior});
         } else {
@@ -125,7 +140,7 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         followNextAppendRef.current = false;
         const scroller = getScroller();
         if (!scroller) return;
-        markProgrammatic();
+        markProgrammatic(scroller);
         scroller.scrollTop = scroller.scrollHeight;
     }, [messagesLength, pending]);
 
@@ -149,6 +164,10 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         const handleScroll = () => {
             const atBottom = isNearBottom();
             const ownScroll = Date.now() < programmaticUntilRef.current;
+            const target = programmaticTargetRef.current;
+            if (ownScroll && target !== null && Math.abs(scroller.scrollTop - target) <= 2) {
+                programmaticUntilRef.current = 0;
+            }
             const nearBottom = atBottom || (ownScroll && nearBottomRef.current);
             nearBottomRef.current = nearBottom;
             setShowJumpToLatest(!nearBottom);
@@ -184,8 +203,8 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         anchorRef.current = null;
         const scroller = getScroller();
         if (anchor && scroller && anchor.element.isConnected) {
-            markProgrammatic();
-            scroller.scrollTop += anchor.element.getBoundingClientRect().top - visibleTop(scroller) - anchor.offset;
+            markProgrammatic(null);
+            scroller.scrollTop += anchor.element.getBoundingClientRect().top - stuckTop(scroller) - anchor.offset;
         }
         setShowJumpToLatest(true);
     }, [scrollOwner]);

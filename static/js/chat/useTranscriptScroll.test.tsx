@@ -83,6 +83,25 @@ describe('useTranscriptScroll', () => {
         expect(log.scrollTop).toBe(1300);
     });
 
+    test('the programmatic window ends once the scroll reaches its target, so a later input-less scroll stops following', () => {
+        const {rerender} = render(<Harness assistantCount={2} owner="transcript"/>);
+        const log = screen.getByTestId('log');
+        metrics(log, {scrollHeight: 1000, scrollTop: 800, clientHeight: 200});
+        fireEvent.scroll(log);
+        fireEvent.click(screen.getByText('follow'));
+        metrics(log, {scrollHeight: 1300, scrollTop: 800, clientHeight: 200});
+        rerender(<Harness assistantCount={2} extra={1} owner="transcript"/>);
+        // Our own write lands on the bottom (target 1100): the window closes there.
+        metrics(log, {scrollHeight: 1300, scrollTop: 1100, clientHeight: 200});
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('false:0');
+        // 250ms later, find-in-page jumps to an older message with no input event.
+        now += 250;
+        metrics(log, {scrollHeight: 1300, scrollTop: 300, clientHeight: 200});
+        fireEvent.scroll(log);
+        expect(screen.getByTestId('state')).toHaveTextContent('true:0');
+    });
+
     test('content growing during a follow-scroll does not disarm following; only an upward move does', () => {
         render(<Harness assistantCount={1} owner="transcript"/>);
         const log = screen.getByTestId('log');
@@ -183,13 +202,20 @@ describe('useTranscriptScroll', () => {
         a2.mockReturnValue({...rect(220), top: 120} as DOMRect);
         fireEvent.click(screen.getByText('capture'));
 
-        // In panel mode the view starts below the pinned header (bottom 160); a2 now sits at 500.
+        // Panel mode with a sticky header: a 120px priorities block sits above it, so the
+        // header is unstuck (top 120) at scrollTop 0 and sticks to the panel top once scrolled.
+        const header = screen.getByTestId('header');
+        Object.defineProperty(header, 'offsetHeight', {configurable: true, value: 40});
         metrics(panel, {scrollHeight: 3000, scrollTop: 0, clientHeight: 500});
         jest.spyOn(panel, 'getBoundingClientRect').mockReturnValue({...rect(600), top: 0} as DOMRect);
-        jest.spyOn(screen.getByTestId('header'), 'getBoundingClientRect').mockReturnValue(rect(160) as DOMRect);
-        a2.mockReturnValue({...rect(520), top: 500} as DOMRect);
+        const headerTop = () => Math.max(120 - panel.scrollTop, 0);
+        jest.spyOn(header, 'getBoundingClientRect').mockImplementation(
+            () => ({...rect(headerTop() + 40), top: headerTop()}) as DOMRect,
+        );
+        a2.mockImplementation(() => ({...rect(520 - panel.scrollTop), top: 500 - panel.scrollTop}) as DOMRect);
         rerender(<Harness assistantCount={2} owner="panel"/>);
-        expect(panel.scrollTop).toBe(500 - 160 - 20);
+        // a2 must sit 20px below the stuck header's bottom (40), not below the unstuck one (160).
+        expect(500 - panel.scrollTop).toBe(40 + 20);
         expect(screen.getByTestId('state')).toHaveTextContent('true:0');
     });
 
@@ -248,6 +274,8 @@ describe('useTranscriptScroll', () => {
         jest.spyOn(panel, 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
         jest.spyOn(screen.getByTestId('footer'), 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
         const logRect = jest.spyOn(log, 'getBoundingClientRect').mockReturnValue(rect(600) as DOMRect);
+        // Mid-way through our own scroll: it has not reached its target yet.
+        metrics(panel, {scrollHeight: 2000, scrollTop: 500, clientHeight: 200});
         fireEvent.scroll(panel);
         const composer = screen.getByTestId('composer');
         fireEvent.keyDown(composer, {key: 'a'});

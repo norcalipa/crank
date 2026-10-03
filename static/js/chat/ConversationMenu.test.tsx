@@ -129,16 +129,11 @@ describe('ConversationMenu', () => {
         fireEvent.click(screen.getByTestId('conversation-delete'));
         const confirm = screen.getByTestId('confirm-action');
         expect(confirm).toHaveAccessibleDescription(DELETE_CONVERSATION_COPY);
-        const scrollIntoView = jest.fn();
-        Element.prototype.scrollIntoView = scrollIntoView;
         fireEvent.click(confirm);
         await screen.findByRole('alert');
         expect(screen.getByTestId('confirm-action')).toHaveAccessibleDescription(
             `${DELETE_CONVERSATION_COPY} Could not delete the conversation.`,
         );
-        // The failure text is brought into view next to the focused retry button.
-        expect(scrollIntoView).toHaveBeenCalledWith({block: 'nearest'});
-        delete (Element.prototype as {scrollIntoView?: unknown}).scrollIntoView;
     });
 
     test('only the safe dismiss action sits in the pinned row; the confirm action scrolls with the explanation', () => {
@@ -178,23 +173,80 @@ describe('ConversationMenu', () => {
         expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
     });
 
-    test('an export error reveals itself, focuses retry without scrolling, and can be dismissed', async () => {
-        const scrollIntoView = jest.fn();
-        const original = Element.prototype.scrollIntoView;
-        Element.prototype.scrollIntoView = scrollIntoView;
-        try {
+    test('an export error focuses retry without scrolling the page, and can be dismissed', async () => {
+        setup({onExport: jest.fn().mockResolvedValue('Could not export your conversation.')});
+        fireEvent.click(more());
+        fireEvent.click(screen.getByTestId('conversation-export'));
+        await screen.findByTestId('export-error');
+        expect(screen.getByRole('button', {name: 'Try export again'})).toHaveFocus();
+        fireEvent.click(screen.getByTestId('export-error-dismiss'));
+        expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
+        expect(more()).toHaveFocus();
+    });
+
+    describe('revealing the focused retry above the pinned dismiss row', () => {
+        const box = (top: number, bottom: number) => ({top, bottom, left: 0, right: 0, width: 0, height: bottom - top, x: 0, y: top, toJSON: () => ''}) as DOMRect;
+        // The stack spans 0-200 with its dismiss row pinned at 150-200. The focused retry and
+        // the context element sit at natural (unscrolled) positions and move with scrollTop.
+        let scrollTops: WeakMap<object, number>;
+        beforeEach(() => {
+            scrollTops = new WeakMap();
+            Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+                configurable: true,
+                get(this: HTMLElement) { return scrollTops.get(this) ?? 0; },
+                set(this: HTMLElement, v: number) { scrollTops.set(this, v); },
+            });
+        });
+        afterEach(() => {
+            delete (HTMLElement.prototype as {scrollTop?: unknown}).scrollTop;
+            jest.restoreAllMocks();
+        });
+        const layOut = (target: number, context: number, contextSelector: string) => {
+            const real = HTMLElement.prototype.getBoundingClientRect;
+            jest.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+                const stack = document.querySelector<HTMLElement>('.chat-panel-stack');
+                if (this === stack) return box(0, 200);
+                if (this.classList.contains('chat-confirm-dismiss')) return box(150, 200);
+                const scrolled = stack ? stack.scrollTop : 0;
+                if (this === document.activeElement) return box(target - scrolled, target - scrolled + 30);
+                if (this.matches(contextSelector)) return box(context - scrolled, context - scrolled + 30);
+                return real.call(this);
+            });
+        };
+
+        test('scrolls the stack until the retry button clears the pinned row', async () => {
+            layOut(160, 100, '#chat-confirm-failure');
+            setup({onDeleteConversation: jest.fn().mockResolvedValue('Could not delete the conversation.')});
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId('conversation-delete'));
+            fireEvent.click(screen.getByTestId('confirm-action'));
+            await screen.findByRole('alert');
+            const stack = document.querySelector('.chat-panel-stack') as HTMLElement;
+            // The button's bottom (190) is 40px under the row's top (150), plus 4px of air; the
+            // failure (now at 56) is still inside the stack, so nothing pulls it back.
+            await waitFor(() => expect(stack.scrollTop).toBe(44));
+        });
+
+        test('a failure that scrolled off the top is pulled back only as far as the retry stays visible', async () => {
+            layOut(160, -60, '#chat-confirm-failure');
+            setup({onDeleteConversation: jest.fn().mockResolvedValue('Could not delete the conversation.')});
+            fireEvent.click(more());
+            fireEvent.click(screen.getByTestId('conversation-delete'));
+            fireEvent.click(screen.getByTestId('confirm-action'));
+            await screen.findByRole('alert');
+            const stack = document.querySelector('.chat-panel-stack') as HTMLElement;
+            // 44px down hides the failure at -104; only 4px of slack remains above the row to pull it back.
+            await waitFor(() => expect(stack.scrollTop).toBe(40));
+        });
+
+        test('an export error retry is revealed the same way', async () => {
+            layOut(160, 0, '[data-testid="export-error"]');
             setup({onExport: jest.fn().mockResolvedValue('Could not export your conversation.')});
             fireEvent.click(more());
             fireEvent.click(screen.getByTestId('conversation-export'));
             await screen.findByTestId('export-error');
-            expect(scrollIntoView).toHaveBeenCalledWith({block: 'nearest'});
-            expect(screen.getByRole('button', {name: 'Try export again'})).toHaveFocus();
-            fireEvent.click(screen.getByTestId('export-error-dismiss'));
-            expect(screen.queryByTestId('export-error')).not.toBeInTheDocument();
-            expect(more()).toHaveFocus();
-        } finally {
-            Element.prototype.scrollIntoView = original;
-        }
+            await waitFor(() => expect((document.querySelector('.chat-panel-stack') as HTMLElement).scrollTop).toBe(40));
+        });
     });
 
     test('the destructive item sits below a separator, after About', () => {

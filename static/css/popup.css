@@ -3450,10 +3450,11 @@ body.assistant-open .app-content .table-responsive,
 }
 
 /* Footer notices (status plus a long error) never take more than 40% of the
-   view; they scroll inside instead of pushing the composer out (issue #483). */
+   card (--chat-notices-max, measured against the card or the panel); they
+   scroll inside instead of pushing the composer out (issue #483). */
 .chat-footer-notices {
     max-height: 40vh;
-    max-height: 40dvh;
+    max-height: var(--chat-notices-max, 40dvh);
     overflow-y: auto;
     overscroll-behavior: contain;
 }
