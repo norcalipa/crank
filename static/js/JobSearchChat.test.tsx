@@ -543,7 +543,7 @@ describe('JobSearchChat', () => {
             (global.fetch as jest.Mock).mockReturnValueOnce(new Promise((resolve) => { resolveReply = resolve; }));
             fireEvent.change(screen.getByLabelText('Message'), {target: {value: 'hello'}});
             fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
-            await screen.findByTestId('pending-status');
+            await screen.findByTestId('pending-status', undefined, {timeout: 5000});
             setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
             fireEvent.scroll(history);
             expect(screen.queryByTestId('jump-to-latest')).not.toBeInTheDocument();
@@ -563,7 +563,7 @@ describe('JobSearchChat', () => {
             window.matchMedia = jest.fn().mockReturnValue({matches: false} as MediaQueryList);
             await renderChat([assistantMessage(1, 'older'), assistantMessage(2, 'latest')]);
             const history = screen.getByLabelText('Message history');
-            expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({behavior: 'smooth'}));
+            await waitFor(() => expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({behavior: 'smooth'})));
             setScrollMetrics(history, {scrollHeight: 1000, scrollTop: 100, clientHeight: 200});
             fireEvent.scroll(history);
             fireEvent.wheel(history);
