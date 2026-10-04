@@ -195,6 +195,27 @@ def _request_id(request):
     return rid[:128]
 
 
+def _turn_event(phase, **attrs):
+    """Emit one bounded ``assistant_turn`` lifecycle event (issue #482)."""
+    monitoring.record_event("assistant_turn", {"phase": phase, **attrs})
+
+
+def _turn_failed(reason_code):
+    _turn_event(
+        "failed",
+        reason_code=reason_code,
+        failure_stage=monitoring.failure_stage_for(reason_code),
+    )
+
+
+def _turn_rejected(reason_code):
+    _turn_event(
+        "rejected",
+        reason_code=reason_code,
+        failure_stage=monitoring.failure_stage_for(reason_code),
+    )
+
+
 def _error(request, status, error_type, message, request_id, extra=None):
     """Return the stable error envelope used by every failing request.
 
@@ -332,6 +353,15 @@ def _release_failed_turn(turn_id, failure_code=""):
         )
 
 
+def _turn_interrupted(turns=1):
+    _turn_event(
+        "failed",
+        reason_code="worker_interrupted",
+        failure_stage=monitoring.failure_stage_for("worker_interrupted"),
+        turns=turns,
+    )
+
+
 def _reap_stale_turns(conversation):
     """Recover turns whose worker lease expired (issue #458).
 
@@ -340,7 +370,7 @@ def _reap_stale_turns(conversation):
     it failed-and-retryable instead of returning ``turn_in_progress`` forever
     after a crashed/interrupted worker.
     """
-    JobSearchTurn.objects.filter(
+    reaped = JobSearchTurn.objects.filter(
         conversation=conversation,
         delivery_state=JobSearchTurn.DeliveryState.PENDING,
     ).filter(
@@ -351,6 +381,8 @@ def _reap_stale_turns(conversation):
         lease_expires_at=None,
         modified=timezone.now(),
     )
+    if reaped:
+        _turn_interrupted(reaped)
 
 
 def _claim_turn(conversation, turn_key):
@@ -424,9 +456,13 @@ def _claim_turn(conversation, turn_key):
                 locked.save(update_fields=[
                     "delivery_state", "failure_code", "lease_expires_at", "modified",
                 ])
+                _turn_interrupted()
             return locked, "retry_limited", None
         # Failed or stale-pending claim: take over the turn for a new bounded
         # provider attempt (each takeover is a real provider execution).
+        # A takeover of a still-PENDING claim is a crashed worker's turn
+        # recovered by the client's same-key retry: count it as interrupted.
+        was_interrupted = locked.delivery_state == JobSearchTurn.DeliveryState.PENDING
         locked.delivery_state = JobSearchTurn.DeliveryState.PENDING
         locked.failure_code = ""
         locked.attempt_count += 1
@@ -435,6 +471,8 @@ def _claim_turn(conversation, turn_key):
             "delivery_state", "failure_code", "attempt_count",
             "lease_expires_at", "modified",
         ])
+        if was_interrupted:
+            _turn_interrupted()
         return locked, "claimed", None
 
 
@@ -553,6 +591,8 @@ def agent_conversation_detail(request, conversation_id):
             "Invalid message: {}".format(_files_to_json(serializer.errors)),
             request_id,
         )
+    turn_started = time.monotonic()
+    turn_started_at = timezone.now()
     message_text = serializer.validated_data["content"]
     idempotency_key = serializer.validated_data["idempotency_key"]
     raw_context = serializer.validated_data.get("context")
@@ -564,6 +604,7 @@ def agent_conversation_detail(request, conversation_id):
         idempotency_key=idempotency_key, role=JobSearchMessage.Role.ASSISTANT
     ).first()
     if existing_assistant:
+        _turn_event("replayed")
         return JsonResponse(
             {
                 "message": serialize_message(existing_assistant),
@@ -578,6 +619,7 @@ def agent_conversation_detail(request, conversation_id):
     # stays free. The check happens before any persistence, so a throttled
     # request leaves no turn behind.
     if _check_rate_limit(request):
+        _turn_rejected("rate_limited")
         return _error(
             request, 429, "rate_limited",
             "Too many messages. Try again shortly.", request_id,
@@ -591,12 +633,14 @@ def agent_conversation_detail(request, conversation_id):
     # stale pending claims are recovered instead of stranding the turn.
     turn, outcome, replay_message = _claim_turn(conversation, idempotency_key)
     if outcome == "in_progress":
+        _turn_rejected("turn_in_progress")
         return _error(
             request, 409, "turn_in_progress",
             "This response is still being generated. Please wait a moment.",
             request_id,
         )
     if outcome == "completed":
+        _turn_event("replayed")
         return JsonResponse(
             {
                 "message": serialize_message(replay_message),
@@ -605,6 +649,7 @@ def agent_conversation_detail(request, conversation_id):
             headers={"X-Request-ID": request_id},
         )
     if outcome == "retry_limited":
+        _turn_rejected("retry_limited")
         return _error(
             request, 429, "retry_limit_reached",
             "This response couldn't be delivered after {} attempts. Please edit "
@@ -613,6 +658,10 @@ def agent_conversation_detail(request, conversation_id):
             ),
             request_id,
         )
+
+    _turn_event(
+        "attempted", attempt=turn.attempt_count, retry=turn.attempt_count > 1
+    )
 
     # Persist the user turn once (even across failed provider calls). Only
     # the anchor-claim owner can be here for a fresh key — the anchor race
@@ -625,6 +674,8 @@ def agent_conversation_detail(request, conversation_id):
         role=JobSearchMessage.Role.USER,
         defaults={"content": message_text},
     )
+    if _user_created:
+        _turn_event("saved")
 
     # Guarded reply persistence (issue #487 review round 2, MAJOR-1): the
     # hook below is invoked by the orchestrator INSIDE the same database
@@ -705,6 +756,7 @@ def agent_conversation_detail(request, conversation_id):
             pref_extras = None
     except AssistantUnavailable:
         _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.FAILED, JobSearchTurn.FailureCode.ASSISTANT_UNAVAILABLE)
+        _turn_failed("assistant_unavailable")
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "assistant_unavailable",
@@ -718,6 +770,7 @@ def agent_conversation_detail(request, conversation_id):
         )
     except ServiceTimeout:
         _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.FAILED, JobSearchTurn.FailureCode.PROVIDER_TIMEOUT)
+        _turn_failed("provider_timeout")
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "provider_timeout",
@@ -730,6 +783,7 @@ def agent_conversation_detail(request, conversation_id):
         )
     except ServiceCostLimit:
         _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.FAILED, JobSearchTurn.FailureCode.COST_LIMIT)
+        _turn_failed("cost_limit")
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "cost_limit",
@@ -743,6 +797,7 @@ def agent_conversation_detail(request, conversation_id):
         )
     except ServiceInvalidOutput:
         _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.FAILED, JobSearchTurn.FailureCode.INVALID_OUTPUT)
+        _turn_failed("invalid_output")
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "invalid_output",
@@ -757,6 +812,7 @@ def agent_conversation_detail(request, conversation_id):
         # No dedicated failure code: the turn is simply failed-and-retryable
         # (the code is internal; clients read only the delivery state).
         _release_failed_turn(turn.pk)
+        _turn_failed("preference_stale")
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "preference_stale",
@@ -777,6 +833,7 @@ def agent_conversation_detail(request, conversation_id):
         )
     except ServicePreferenceVersionUnavailable:
         _release_failed_turn(turn.pk)
+        _turn_failed("preference_version_unavailable")
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "preference_version_unavailable",
@@ -794,6 +851,7 @@ def agent_conversation_detail(request, conversation_id):
         )
     except ServiceConversationClosed:
         _release_failed_turn(turn.pk, JobSearchTurn.FailureCode.CONVERSATION_GONE)
+        _turn_failed("conversation_gone")
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "conversation_closed",
@@ -811,6 +869,7 @@ def agent_conversation_detail(request, conversation_id):
         )
     except JobSearchServiceError:
         _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.FAILED, JobSearchTurn.FailureCode.SERVICE_ERROR)
+        _turn_failed("service_error")
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "service_error",
@@ -824,6 +883,7 @@ def agent_conversation_detail(request, conversation_id):
     except Exception:
         logger.exception("unexpected job_search error")
         _finalize_turn(turn.pk, JobSearchTurn.DeliveryState.FAILED, JobSearchTurn.FailureCode.UNEXPECTED_ERROR)
+        _turn_failed("unexpected_error")
         monitoring.record_event("interactive_call", {
             "status": "error",
             "reason_code": "unexpected_error",
@@ -865,6 +925,7 @@ def agent_conversation_detail(request, conversation_id):
         # (and with it the anchor) was deleted.
 
         def _conversation_closed():
+            _turn_failed("conversation_gone")
             monitoring.record_event("interactive_call", {
                 "status": "error",
                 "reason_code": "conversation_closed",
@@ -943,6 +1004,14 @@ def agent_conversation_detail(request, conversation_id):
     # claim the transition atomically with a conditional update that flips
     # ``helpfulness_gap_emitted`` false -> true; exactly one concurrent
     # request wins the update and emits, the rest see no row to claim.
+    turn_latency_ms = int((time.monotonic() - turn_started) * 1000)
+    has_results = bool(assistant_message.results_json)
+    _turn_event(
+        "replied",
+        results=has_results,
+        latency_ms=turn_latency_ms,
+        latency_bucket=monitoring.latency_bucket(turn_latency_ms),
+    )
     assistant_qs = JobSearchMessage.objects.filter(
         conversation=attach_conversation, role=JobSearchMessage.Role.ASSISTANT
     )
@@ -958,6 +1027,43 @@ def agent_conversation_detail(request, conversation_id):
             {
                 "turns_without_result": assistant_turns - result_cards,
                 "empty_result": True,
+            },
+        )
+
+    # Time to first useful result (issue #482): exactly one emission per
+    # conversation, claimed with a conditional update like the gap above.
+    # ``first_result_at`` has no backfill, so a conversation that already had
+    # result replies before deployment claims the marker silently: only a
+    # reply with no result-bearing predecessor from before this request
+    # emits (concurrent same-conversation turns are not predecessors).
+    now = timezone.now()
+    # A retry reuses the original user row; after an idle gap the clock
+    # restarts at this request rather than counting the idle time.
+    timer_anchor = user_message.created
+    if turn_started_at - timer_anchor > FIRST_RESULT_SESSION_GAP:
+        timer_anchor = turn_started_at
+    if (
+        has_results
+        and conversation.first_result_at is None
+        and JobSearchConversation.objects.filter(
+            pk=conversation.pk, first_result_at__isnull=True
+        ).update(first_result_at=now)
+        and not assistant_qs.exclude(results_json="")
+        .filter(pk__lt=assistant_message.pk, created__lt=turn_started_at)
+        .exists()
+    ):
+        monitoring.record_event(
+            "assistant_first_result",
+            {
+                "seconds_to_first_result": max(
+                    0,
+                    int(
+                        (
+                            now - _session_start(conversation, timer_anchor)
+                        ).total_seconds()
+                    ),
+                ),
+                "turns_to_first_result": assistant_turns,
             },
         )
 
@@ -1106,9 +1212,77 @@ def agent_conversation_delete(request, conversation_id):
     )
 
 
+FIRST_RESULT_SESSION_GAP = timedelta(minutes=30)
+
+
+def _session_start(conversation, anchor):
+    """Start of the user's current chat session: the earliest user message
+    reachable from ``anchor`` without an idle gap over 30 minutes. Counting
+    from ``conversation.created`` would report weeks for resumed or
+    pre-deploy conversations; ``turns_to_first_result`` stays whole-conversation."""
+    start = anchor
+    for created in (
+        JobSearchMessage.objects.filter(
+            conversation=conversation,
+            role=JobSearchMessage.Role.USER,
+            created__lt=anchor,
+        )
+        .order_by("-created")
+        .values_list("created", flat=True)
+        .iterator()
+    ):
+        if start - created > FIRST_RESULT_SESSION_GAP:
+            break
+        start = created
+    return start
+
+
+def _token_origin(token, allowed):
+    """Which surface issued a client-held token: an allowlisted label or
+    ``proposal`` (the chat flow, whose tokens predate the label)."""
+    origin = token.get("origin") if isinstance(token, dict) else None
+    return origin if origin in allowed else "proposal"
+
+
+def _preference_decision_event(response, *, decision, scope, ok_status, origin):
+    """Emit one bounded ``preference_decision`` event for any outcome."""
+    code = response.status_code
+    if code < 300:
+        status = ok_status
+    elif code == 409:
+        status = "stale"
+    elif code in (400, 403):
+        status = "invalid"
+    else:
+        status = "failed"
+    monitoring.record_event(
+        "preference_decision",
+        {
+            "decision": decision,
+            "scope": scope,
+            "status": status,
+            "origin": origin,
+        },
+    )
+
+
 @login_required
 @require_POST
 def agent_preference_apply(request):
+    """Apply or dismiss a proposal, counting every outcome (issue #482)."""
+    meta = {"decision": "apply", "scope": "account", "origin": "proposal"}
+    response = _agent_preference_apply(request, meta)
+    _preference_decision_event(
+        response,
+        decision=meta["decision"],
+        scope=meta["scope"],
+        ok_status="dismissed" if meta["decision"] == "dismiss" else "applied",
+        origin=meta["origin"],
+    )
+    return response
+
+
+def _agent_preference_apply(request, meta):
     """Apply or dismiss a chat-turn preference proposal (issue #466 review).
 
     The chat turn never persists a model-proposed patch; it returns a
@@ -1142,7 +1316,11 @@ def agent_preference_apply(request):
     decision = payload.get("decision", "apply")
     from crank.services import preferences as pref_services
 
+    meta["origin"] = _token_origin(token, ("proposal", "direct"))
     if decision == "dismiss":
+        meta["decision"] = "dismiss"
+        if isinstance(token, dict) and token.get("scope") in ("account", "search"):
+            meta["scope"] = token["scope"]
         return JsonResponse(
             {"dismissed": True}, headers={"X-Request-ID": request_id}
         )
@@ -1162,6 +1340,7 @@ def agent_preference_apply(request):
             request, 400, "invalid_request",
             "The preference proposal is no longer valid.", request_id,
         )
+    meta["scope"] = scope
     patch = token["patch"]
     try:
         pref_services.validate_patch(patch)
@@ -1261,13 +1440,18 @@ def agent_preference_apply(request):
             "We couldn't update your preferences right now. Please retry.",
             request_id,
         )
+    undo = result.get("undo")
+    if isinstance(undo, dict):
+        # The undo token carries its issuer so a later undo is attributed to
+        # the surface (chat proposal vs priorities editor) that made the change.
+        undo = {**undo, "origin": meta["origin"]}
     return JsonResponse(
         {
             "applied": bool(result.get("changed")),
             "scope": "account",
             "revision": result.get("revision"),
             "changes": result.get("changes"),
-            "undo": result.get("undo"),
+            "undo": undo,
         },
         headers={"X-Request-ID": request_id},
     )
@@ -1276,6 +1460,20 @@ def agent_preference_apply(request):
 @login_required
 @require_POST
 def agent_preference_undo(request):
+    """Undo a preference change, counting every outcome (issue #482)."""
+    meta = {"origin": "proposal"}
+    response = _agent_preference_undo(request, meta)
+    _preference_decision_event(
+        response,
+        decision="undo",
+        scope="account",
+        ok_status="undone",
+        origin=meta["origin"],
+    )
+    return response
+
+
+def _agent_preference_undo(request, meta):
     """Apply a client-held undo token under its revision precondition (issue #466).
 
     The token is an ordinary owner-scoped preference patch: it is re-validated
@@ -1289,6 +1487,7 @@ def agent_preference_undo(request):
     if error:
         return error
     token = payload.get("undo")
+    meta["origin"] = _token_origin(token, ("proposal", "direct", "reset"))
     from crank.services import preferences as pref_services
 
     if isinstance(token, dict) and not pref_services.token_owner_matches(

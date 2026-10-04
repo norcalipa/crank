@@ -88,6 +88,17 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         // The sticky dialog header's z-index: 1 stacks the header above the
         // card body content inside the dialog's own stacking context only.
         {selector: /^\.popup-details \.card-header$/, value: '1'},
+        // The chat More menu floats over the transcript inside the assistant
+        // card only; it never competes with the page-level layers (issue #483).
+        {selector: /^\.chat-more-menu$/, value: '7'},
+        // Chat card-local stacking: header, panel overlay and pinned footer
+        // order themselves inside the assistant card only (issue #483).
+        {selector: /^#job-search-chat \.card-header$/, value: '4'},
+        {selector: /^\.chat-panel-stack$/, value: '6'},
+        {selector: /^#job-search-chat \.chat-footer > \.chat-jump-row$/, value: '2'},
+        {selector: /^\.chat-confirm-dismiss$/, value: '1'},
+        {selector: /^\.assistant-panel #job-search-chat > section\[data-scroll-owner='panel'\] > \.card-header$/, value: '4'},
+        {selector: /^#job-search-chat > \[data-scroll-owner='panel'\] \.chat-footer$/, value: '3'},
     ];
 
     // Splits a stylesheet into (selector, declarations) rules. Pairing both
@@ -351,9 +362,38 @@ describe('rankings responsive layout, name clamping and disclosure (issue #478 v
     it('bounds the empty-state panel', () => {
         expect(popupCss).toMatch(/\.organization-empty-state\s*\{[^}]*max-width:\s*48rem[^}]*padding:\s*1\.25rem/);
     });
+});
 
-    it('never truncates the assistant disclaimer in the panel', () => {
-        expect(popupCss).toMatch(/\.assistant-panel-body #job-search-chat \.chat-note\s*\{/);
-        expect(popupCss).not.toMatch(/\.chat-note-text\s*\{[^}]*line-clamp/);
+describe('chat layering and pinned rows (issue #483 adversarial review round 1)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const rule = (selector: string): string => {
+        const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return popupCss.match(new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]*)\\}`))![1];
+    };
+    const zIndex = (selector: string): number => Number(rule(selector).match(/z-index:\s*(\d+)/)![1]);
+
+    it('layers the More menu above the inline panel stack, which it shares a stacking context with', () => {
+        expect(zIndex('.chat-more-menu')).toBeGreaterThan(zIndex('.chat-panel-stack'));
+    });
+
+    it('keeps the jump pill in the band flow in panel mode so the sticky header cannot cover it', () => {
+        expect(popupCss).toMatch(
+            /#job-search-chat > \[data-scroll-owner='panel'\] \.chat-footer > \.chat-jump-row\s*\{[^}]*position:\s*static/,
+        );
+    });
+
+    it('keeps transcript scroll-into-view clear of the bands: content margin above, panel-body scroll-padding below', () => {
+        expect(popupCss).toMatch(
+            /#job-search-chat > \[data-scroll-owner='panel'\] \[role='log'\] :is\(article, a, button\)\s*\{[^}]*scroll-margin-top:\s*var\(--chat-band-top/,
+        );
+        expect(popupCss).toMatch(
+            /\.assistant-panel-body:has\(#job-search-chat > \[data-scroll-owner='panel'\]\)\s*\{[^}]*scroll-padding-bottom:\s*var\(--chat-band-bottom/,
+        );
+    });
+
+    it('pins the action row of an inline panel and caps footer notices against the card, falling back to 40% of the view', () => {
+        expect(rule('.chat-confirm-dismiss')).toMatch(/position:\s*sticky/);
+        expect(popupCss).not.toMatch(/\.chat-panel-stack \.chat-confirm-actions\s*\{/);
+        expect(rule('.chat-footer-notices')).toMatch(/max-height:\s*var\(--chat-notices-max,\s*40dvh\)/);
     });
 });

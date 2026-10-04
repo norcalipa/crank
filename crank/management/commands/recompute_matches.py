@@ -83,6 +83,7 @@ class Command(AgentRunCommand):
                     "stage": "match_recompute",
                     "status": "deadline" if counts["deadline_reached"] else "completed",
                     "reason_code": "deadline" if counts["deadline_reached"] else "none",
+                    **({"failure_stage": "matching"} if counts["users_failed"] else {}),
                 },
             )
         return counts

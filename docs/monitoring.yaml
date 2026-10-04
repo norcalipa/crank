@@ -12,16 +12,30 @@ allowed_event_names:
   - crawl_run_started
   - crawl_run_completed
   - crawl_run_failed
+  - crawl_run_skipped
   - inventory_health
   - job_search_turn
   - job_search_tool_invocation
   - job_search_helpfulness_gap
+  - assistant_turn
+  - assistant_first_result
+  - availability_state
+  - preference_decision
+  - pipeline_health
+  - publication_sweep
 facets:
   - run_type
   - stage
   - source_key
   - reason_code
   - tool
+  - phase
+  - state
+  - surface
+  - failure_stage
+  - decision
+  - origin
+  - status
 widgets:
   - name: Last successful scheduled run
     nrql: >-
@@ -78,9 +92,92 @@ widgets:
       sum(skipped_policy), max(oldest_due_age_hours)
       FROM CrankOperation WHERE event_name = 'scheduled_run'
       SINCE 24 hours ago
+  - name: Assistant turn funnel
+    nrql: >-
+      SELECT count(*) FROM CrankOperation WHERE event_name = 'assistant_turn'
+      FACET phase, failure_stage, reason_code SINCE 7 days ago
+  - name: Assistant availability states
+    nrql: >-
+      SELECT count(*) FROM CrankOperation WHERE event_name = 'availability_state'
+      FACET surface, state SINCE 7 days ago
+  - name: Time to first result
+    nrql: >-
+      SELECT percentile(seconds_to_first_result, 50, 90), average(turns_to_first_result)
+      FROM CrankOperation WHERE event_name = 'assistant_first_result' SINCE 14 days ago
+  - name: Preference decisions
+    nrql: >-
+      SELECT count(*) FROM CrankOperation WHERE event_name = 'preference_decision'
+      FACET decision, origin, status SINCE 7 days ago
+  - name: Publication-to-match lag
+    nrql: >-
+      SELECT max(publication_lag_max_seconds), sum(publication_lag_count)
+      FROM CrankOperation WHERE event_name = 'matching_batch' SINCE 14 days ago
+  - name: Pipeline backlog and evidence freshness gauges
+    nrql: >-
+      SELECT latest(queued_runs), latest(oldest_queued_age_seconds), latest(outbox_pending),
+      latest(outbox_oldest_age_seconds), latest(observations_pending),
+      latest(unresolved_employers), latest(users_without_generation),
+      latest(accepted_evidence_rows), latest(evidence_stale_rows),
+      latest(evidence_oldest_verified_days), latest(organizations_with_evidence),
+      latest(organizations_active) FROM CrankOperation
+      WHERE event_name = 'pipeline_health' SINCE 24 hours ago
+  - name: Publication sweep
+    nrql: >-
+      SELECT count(*), sum(processed), sum(keys_deleted), max(outbox_oldest_age_seconds)
+      FROM CrankOperation WHERE event_name = 'publication_sweep' FACET status SINCE 24 hours ago
+metrics:
+  - name: assistant_turn_success_rate
+    event: assistant_turn
+    definition: replied turns divided by attempted turns, by failure_stage
+    dimensions: [phase, failure_stage]
+    owner: maintainer (crank.fyi)
+    runbook: docs/monitoring.md#assistant-and-data-freshness-metrics
+    baseline_only: true
+  - name: time_to_first_result
+    event: assistant_first_result
+    definition: seconds from the start of the current chat session (first user message after an idle gap over 30 minutes) to the conversation's first non-empty result; turns_to_first_result counts assistant turns across the whole conversation
+    dimensions: []
+    owner: maintainer (crank.fyi)
+    runbook: docs/monitoring.md#assistant-and-data-freshness-metrics
+    baseline_only: true
+  - name: availability_state_mix
+    event: availability_state
+    definition: count of served assistant availability states per surface
+    dimensions: [surface, state]
+    owner: maintainer (crank.fyi)
+    runbook: docs/monitoring.md#assistant-and-data-freshness-metrics
+    baseline_only: true
+  - name: preference_decision_outcomes
+    event: preference_decision
+    definition: apply, dismiss, undo and reset outcomes including stale and invalid, split by origin (proposal, direct, reset)
+    dimensions: [decision, origin, status]
+    owner: maintainer (crank.fyi)
+    runbook: docs/monitoring.md#assistant-and-data-freshness-metrics
+    baseline_only: true
+  - name: publication_to_match_lag
+    event: matching_batch
+    definition: seconds from the oldest publication in a revision window to the match generation that published it
+    dimensions: []
+    owner: maintainer (crank.fyi)
+    runbook: docs/monitoring.md#assistant-and-data-freshness-metrics
+    baseline_only: true
+  - name: evidence_staleness
+    event: pipeline_health
+    definition: accepted evidence rows past FIELD_FRESHNESS_POLICY over all accepted rows, plus oldest verification age in days
+    dimensions: []
+    owner: maintainer (crank.fyi)
+    runbook: docs/monitoring.md#assistant-and-data-freshness-metrics
+    baseline_only: true
+  - name: pipeline_backlog
+    event: pipeline_health
+    definition: queued runs, outbox, review and unresolved-employer backlog sizes and oldest ages
+    dimensions: []
+    owner: maintainer (crank.fyi)
+    runbook: docs/monitoring.md#assistant-and-data-freshness-metrics
+    baseline_only: true
 alerts:
   - name: repeated-failure
-    nrql: "SELECT count(*) FROM CrankOperation WHERE status = 'failed' SINCE 15 minutes ago"
+    nrql: "SELECT count(*) FROM CrankOperation WHERE status = 'failed' AND event_name NOT IN ('publication_sweep', 'preference_decision') SINCE 15 minutes ago"
     threshold: 3
     operator: above
     recovery: "Inspect sanitized AgentRun/SourceRun, then disable the affected source or capability."

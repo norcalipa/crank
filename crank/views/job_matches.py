@@ -21,7 +21,7 @@ from crank.empty_state import NO_MATCHES, derive_state
 from crank.models.job import JobListing
 from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.preference import UserPreference
-from crank.services import match_recompute, match_results
+from crank.services import match_recompute, match_results, monitoring
 from crank.services.job_matching import (
     MAX_MATCH_RESULTS,
     match_jobs,
@@ -351,6 +351,9 @@ def job_match_status(request):
     state = derive_state(user=request.user, match_count=match_count)
     is_staff = bool(request.user.is_staff)
     payload = state.to_dict(include_staff=is_staff)
+    monitoring.record_event(
+        "availability_state", {"surface": "job_matches", "state": state.state}
+    )
     if state.state == NO_MATCHES:
         payload["relaxation_preview"] = relaxation_preview(
             request.user,

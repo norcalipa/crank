@@ -7,7 +7,9 @@ from datetime import timedelta
 from unittest.mock import PropertyMock, patch
 
 from django.contrib.auth.models import User
+from django.db import connection
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from crank.admin_dashboard import _readiness_gates
@@ -1007,3 +1009,97 @@ class BacklogAndProgressTests(TestCase):
         AgentRun.objects.filter(pk=run.pk).update(counts=[1, 2])
         completed = ops.run_progress()["completed"]
         self.assertTrue(all(group["counts"] == [] for group in completed["stages"]))
+
+
+class EvidenceFreshnessTests(TestCase):
+    def setUp(self):
+        from crank.models.company_profile import CompanyFieldEvidence
+
+        self.model = CompanyFieldEvidence
+        self.now = timezone.now()
+
+    def evidence(self, org, field_key, verified_days_ago, state=None):
+        verified = None if verified_days_ago is None else self.now - timedelta(days=verified_days_ago)
+        return self.model.objects.create(
+            organization=org, field_key=field_key, value_text="v",
+            source_url="https://example.test/p", observed_at=self.now,
+            validation_version="v1", extractor_version="e1",
+            state=state or self.model.State.ACCEPTED, last_verified_at=verified,
+        )
+
+    def test_empty_database_is_all_zero(self):
+        gauges = ops.evidence_freshness(self.now)
+        self.assertEqual(
+            gauges,
+            {
+                "accepted_evidence_rows": 0, "evidence_stale_rows": 0,
+                "evidence_oldest_verified_days": 0, "organizations_with_evidence": 0,
+                "organizations_active": 0,
+            },
+        )
+
+    def test_policy_boundary_per_field_key(self):
+        from crank.services.company_evidence import FIELD_FRESHNESS_POLICY
+
+        for index, (field_key, days) in enumerate(FIELD_FRESHNESS_POLICY.items()):
+            org = Organization.objects.create(name="Org %d" % index)
+            self.evidence(org, field_key, days - 1)
+            fresh = ops.evidence_freshness(self.now)["evidence_stale_rows"]
+            self.evidence(Organization.objects.create(name="Old %d" % index), field_key, days + 1)
+            stale = ops.evidence_freshness(self.now)["evidence_stale_rows"]
+            self.assertEqual(stale, fresh + 1, field_key)
+
+    def test_never_verified_counts_stale_and_non_accepted_ignored(self):
+        org = Organization.objects.create(name="Acme")
+        self.evidence(org, "rto_policy", None)
+        self.evidence(org, "locations", 10)
+        self.evidence(org, "company_name", 1000, state=self.model.State.SUPERSEDED)
+        gauges = ops.evidence_freshness(self.now)
+        self.assertEqual(gauges["accepted_evidence_rows"], 2)
+        self.assertEqual(gauges["evidence_stale_rows"], 1)
+        self.assertEqual(gauges["evidence_oldest_verified_days"], 10)
+        self.assertEqual(gauges["organizations_with_evidence"], 1)
+        self.assertEqual(gauges["organizations_active"], 1)
+
+    def test_unlisted_field_key_uses_default_window(self):
+        from crank.services.company_evidence import DEFAULT_FRESHNESS_DAYS
+
+        org = Organization.objects.create(name="Acme")
+        self.evidence(org, "unlisted_key", DEFAULT_FRESHNESS_DAYS + 1)
+        self.evidence(org, "unlisted_two", DEFAULT_FRESHNESS_DAYS - 1)
+        self.assertEqual(ops.evidence_freshness(self.now)["evidence_stale_rows"], 1)
+
+    def test_single_aggregate_plus_org_count_queries(self):
+        org = Organization.objects.create(name="Acme")
+        self.evidence(org, "rto_policy", 1)
+        with CaptureQueriesContext(connection) as queries:
+            ops.evidence_freshness(self.now)
+        self.assertEqual(len(queries), 2)
+
+    def test_default_now(self):
+        self.assertEqual(ops.evidence_freshness()["accepted_evidence_rows"], 0)
+
+
+class HealthGaugesTests(TestCase):
+    def test_flat_int_gauges_and_stage_keys_unchanged(self):
+        before = tuple(ops.STAGES)
+        gauges = ops.health_gauges()
+        self.assertEqual(before, tuple(ops.STAGES))
+        for key, value in gauges.items():
+            self.assertIsInstance(value, int, key)
+            self.assertNotIsInstance(value, bool, key)
+        from crank.services import monitoring
+
+        payload = monitoring.event_attributes("pipeline_health", dict(gauges, healthy=True))
+        self.assertEqual(set(payload) - {"event_name", "healthy"}, set(gauges))
+
+    def test_reports_queue_and_outbox_sizes(self):
+        AgentRun.objects.create(run_type=AgentRun.RunType.JOB_PIPELINE, status=AgentRun.Status.PENDING)
+        PublicationEvent.objects.create(
+            target_type=list(PublicationEvent.TargetType)[0], target_id=1,
+            event_kind=PublicationEvent.EventKind.CREATED,
+        )
+        gauges = ops.health_gauges()
+        self.assertEqual(gauges["queued_runs"], 1)
+        self.assertEqual(gauges["outbox_pending"], 1)
+        self.assertGreaterEqual(gauges["oldest_queued_age_seconds"], 0)

@@ -132,6 +132,7 @@ class OrchestratorResult:
     actions_dropped: int = 0
     action_drop_reasons: tuple = ()
     exposed_organization_ids: frozenset = frozenset()
+    availability_state: str | None = None
 
 
 class JobSearchOrchestrator:
@@ -264,6 +265,7 @@ class JobSearchOrchestrator:
                     if page_context is None
                     else "stale" if page_context.stale else "fresh"
                 ),
+                "availability_state": result.availability_state,
                 "actions_dropped": result.actions_dropped,
                 "action_drop_reasons": ",".join(result.action_drop_reasons),
                 "latency_ms": latency_ms,
@@ -505,6 +507,7 @@ class JobSearchOrchestrator:
             actions_dropped=len(action_drops),
             action_drop_reasons=tuple(sorted(set(action_drops))),
             exposed_organization_ids=frozenset(known_ids),
+            availability_state=(model_context.availability or {}).get("state"),
         )
 
     def _propose_preference_patch(

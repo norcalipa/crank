@@ -507,8 +507,12 @@ export function openWorkspaceCompany(organizationId: number): CompanyOpenOutcome
     return target(organizationId) === true ? 'opened' : 'not-found';
 }
 
+const MAX_WIRE_ID = 2 ** 31 - 1;
+const isWireId = (value: number): boolean => Number.isInteger(value) && value > 0 && value <= MAX_WIRE_ID;
+
 // Maps the live context to the snake_case wire shape. Names and search text
-// are display-only and are never sent.
+// are display-only and are never sent. Values the server's serializer would
+// reject (out-of-range ids) are left out so one bad field cannot 400 the turn.
 export function buildWireContext(snapshot: WorkspaceSnapshot): WireContext | undefined {
     const context = snapshot.context;
     if (!context) {
@@ -518,16 +522,17 @@ export function buildWireContext(snapshot: WorkspaceSnapshot): WireContext | und
     if (context.surface !== undefined) {
         wire.surface = context.surface;
     }
-    if (context.organizationId !== undefined && context.organizationId > 0) {
+    if (context.organizationId !== undefined && isWireId(context.organizationId)) {
         wire.organization_id = context.organizationId;
     }
-    if (context.jobId !== undefined) {
+    if (context.jobId !== undefined && isWireId(context.jobId)) {
         wire.job_id = context.jobId;
     }
-    if (context.comparisonIds && context.comparisonIds.length > 0) {
-        wire.comparison_ids = [...context.comparisonIds];
+    const comparisonIds = [...new Set((context.comparisonIds ?? []).filter(isWireId))].slice(0, 4);
+    if (comparisonIds.length > 0) {
+        wire.comparison_ids = comparisonIds;
     }
-    if (context.algorithmId !== undefined) {
+    if (context.algorithmId !== undefined && isWireId(context.algorithmId)) {
         wire.algorithm_id = context.algorithmId;
     }
     if (context.page !== undefined && context.page > 0) {

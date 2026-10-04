@@ -232,8 +232,9 @@ test.describe('navigation state (issue #479)', () => {
         await expect(other.locator('article[aria-label="Your message"]', {hasText: 'first conversation marker'}).first()).toBeVisible();
         await other.locator('textarea[aria-label="Message"]').fill('tab B unsent draft');
 
-        page.once('dialog', (dialog) => dialog.accept());
-        await page.getByRole('button', {name: 'New conversation'}).click();
+        await page.getByRole('button', {name: 'More'}).click();
+        await page.getByRole('menuitem', {name: 'New conversation'}).click();
+        await page.getByRole('button', {name: 'Start new conversation'}).click();
         await expect(page.locator('article[aria-label="Your message"]')).toHaveCount(0);
 
         await other.reload();
@@ -256,8 +257,9 @@ test.describe('navigation state (issue #479)', () => {
         await other.goto('/chat/');
         await expect(other.locator('article[aria-label="Your message"]', {hasText: 'doomed conversation marker'}).first()).toBeVisible();
 
-        page.once('dialog', (dialog) => dialog.accept());
-        await page.getByRole('button', {name: 'Delete conversation'}).click();
+        await page.getByRole('button', {name: 'More'}).click();
+        await page.getByRole('menuitem', {name: 'Delete conversation…'}).click();
+        await page.getByRole('button', {name: 'Delete conversation', exact: true}).click();
         await expect(page.locator('article[aria-label="Your message"]')).toHaveCount(0);
 
         await other.reload();

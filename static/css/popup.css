@@ -1174,22 +1174,6 @@ body.app-nav-drawer-open {
         padding-bottom: .25rem;
     }
 
-    /* The static "Conversation" heading costs a full wrapped row on phones
-       without adding information; keep it in the accessibility tree (the
-       section is still labelled by it) but visually hidden, and spend the
-       reclaimed row on the history yield instead. */
-    #job-search-chat .card-header h2 {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        margin: -1px;
-        padding: 0;
-        border: 0;
-        overflow: hidden;
-        clip: rect(0, 0, 0, 0);
-        white-space: nowrap;
-    }
-
     #job-search-chat .card-header .btn {
         padding: .2rem .45rem;
         font-size: .8125rem;
@@ -2302,6 +2286,13 @@ body.app-nav-drawer-open {
     min-height: 0;
 }
 
+/* Panel-scroll mode (issue #483): the panel body is the one scroller, so the
+   chat keeps its natural height instead of shrinking inside it. */
+.assistant-panel-body #job-search-chat:has(> [data-scroll-owner='panel']) {
+    flex: 0 0 auto;
+    min-height: auto;
+}
+
 /* Shape-matched loading skeleton for the lazy chat chunk: mirrors the
    header/history/composer stack the real chat renders. */
 .assistant-loading {
@@ -2388,7 +2379,8 @@ body.app-nav-drawer-open {
        conversation and the input so the layout reads as one continuous
        column flowing into the composer. */
     body.assistant-docked #job-search-chat form {
-        margin: 0 -1rem -1rem;
+        margin: 0 0 -1rem;
+        border-radius: 0 0 .375rem .375rem;
         padding: .875rem 1rem;
         background: #111722;
         border-top: 1px solid rgba(255, 255, 255, .10);
@@ -2627,7 +2619,8 @@ body.app-nav-drawer-open {
        surface with a top border so the input never floats against the
        viewport edge, plus explicit safe-area padding. */
     .assistant-panel--sheet #job-search-chat form {
-        margin: 0 -.75rem calc(-1 * (max(.75rem, env(safe-area-inset-bottom)) + .5rem));
+        margin: 0 0 calc(-1 * (max(.75rem, env(safe-area-inset-bottom)) + .5rem));
+        border-radius: 0 0 .375rem .375rem;
         padding: .75rem .75rem calc(.75rem + env(safe-area-inset-bottom));
         background: #111722;
         border-top: 1px solid rgba(255, 255, 255, .10);
@@ -2706,7 +2699,7 @@ body.app-nav-drawer-open {
     }
 
     .assistant-panel--sheet #job-search-chat form {
-        margin: 0 10px;
+        margin: 0;
         padding: 8px 10px;
         min-height: 44px;
         padding-bottom: max(12px, env(safe-area-inset-bottom));
@@ -3253,15 +3246,335 @@ body.assistant-open .app-content .table-responsive,
     gap: .5rem;
 }
 
-.chat-conversation-actions {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
+.chat-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     gap: .5rem;
     flex: 1 1 100%;
+    position: relative;
 }
 
-.chat-conversation-actions .btn-outline-danger {
-    grid-column: 1 / -1;
+.chat-more {
+    position: relative;
+    margin-left: auto;
+}
+
+.chat-more-button {
+    min-height: 2.25rem;
+    display: inline-flex;
+    align-items: center;
+    gap: .375rem;
+}
+
+.chat-more-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + .25rem);
+    z-index: 7;
+    min-width: 14rem;
+    max-width: calc(100vw - 2rem);
+    display: flex;
+    flex-direction: column;
+    padding: .25rem;
+    border: 1px solid rgba(148, 163, 184, 0.45);
+    border-radius: .5rem;
+    background-color: #0f172a;
+    box-shadow: 0 .5rem 1rem rgba(0, 0, 0, .45);
+}
+
+.chat-more-item {
+    min-height: 2.75rem;
+    padding: .375rem .75rem;
+    border: 0;
+    border-radius: .375rem;
+    background: transparent;
+    color: #e2e8f0;
+    text-align: left;
+}
+
+.chat-more-item:hover:not(:disabled),
+.chat-more-item:focus-visible {
+    background-color: rgba(148, 163, 184, 0.22);
+}
+
+.chat-more-item:disabled {
+    color: #94a3b8;
+    cursor: not-allowed;
+}
+
+.chat-more-item-danger:not(:disabled) {
+    color: #fca5a5;
+}
+
+/* Inline panels overlay the transcript instead of resizing it, so opening one
+   never changes the scroll owner or pushes the composer away (issue #483). */
+#job-search-chat .card-header {
+    position: relative;
+    z-index: 4;
+}
+
+.chat-panel-stack {
+    max-height: var(--chat-stack-max, none);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scroll-padding-bottom: 4rem;
+    position: absolute;
+    top: calc(100% + .25rem);
+    left: 0;
+    right: 0;
+    z-index: 6;
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+}
+
+.chat-confirm-panel {
+    padding: .75rem;
+    border: 1px solid rgba(148, 163, 184, 0.45);
+    border-radius: .5rem;
+    background-color: #0f172a;
+    box-shadow: 0 .5rem 1rem rgba(0, 0, 0, .45);
+    color: #e2e8f0;
+    scroll-margin-top: .75rem;
+}
+
+.chat-confirm-panel-danger {
+    border-color: #f87171;
+}
+
+/* The stack is capped to the transcript band and scrolls. The pinned row
+   carries the panel's actions (the confirm button beside Cancel), so both stay
+   visible when the stack is short; the heading, copy and failure text scroll. */
+.chat-confirm-dismiss {
+    gap: .5rem;
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    display: flex;
+    margin: 0 -.75rem -.75rem;
+    padding: .375rem .75rem .5rem;
+    background: #0f172a;
+    border-radius: 0 0 .5rem .5rem;
+    box-shadow: 0 -.5rem .5rem -.5rem rgba(0, 0, 0, .75);
+}
+
+.chat-confirm-actions + .chat-confirm-dismiss {
+    margin-top: .5rem;
+}
+
+.chat-confirm-heading {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #f8f9fa;
+    margin: 0 0 .375rem;
+}
+
+.chat-confirm-heading:focus {
+    outline: none;
+}
+
+.chat-confirm-copy {
+    margin: 0 0 .5rem;
+    font-size: .875rem;
+    color: #cbd5e1;
+}
+
+.chat-confirm-error {
+    display: flex;
+    gap: .375rem;
+    align-items: flex-start;
+    margin: 0 0 .5rem;
+    padding: .375rem .5rem;
+    border-radius: .375rem;
+    background: #2c0b0e;
+    font-size: .875rem;
+    color: #ea868f;
+}
+
+.chat-more-separator {
+    height: 1px;
+    margin: .25rem .5rem;
+    background: rgba(148, 163, 184, .30);
+}
+
+.assistant-panel .chat-more-button {
+    color: #dee2e6;
+    border-color: #6c757d;
+}
+
+.assistant-panel .chat-more-button[aria-expanded='true'] {
+    background-color: rgba(148, 163, 184, .22);
+    border-color: #adb5bd;
+}
+
+.chat-footer {
+    padding-bottom: calc(.25rem + env(safe-area-inset-bottom));
+}
+
+.chat-disclaimer {
+    margin-top: .375rem;
+    font-size: .75rem;
+    line-height: 1.35;
+    color: #b8c0cc;
+}
+
+.chat-pref-alert {
+    padding: .375rem .75rem;
+    font-size: .8125rem;
+    margin-bottom: .5rem;
+}
+
+#job-search-chat .chat-transcript-wrap {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* The jump pill lives in the footer and floats over the transcript bottom, so
+   showing it never takes layout height and, in panel-scroll mode, it rides
+   with the sticky composer band. */
+#job-search-chat .chat-footer {
+    position: relative;
+}
+
+#job-search-chat .chat-footer > .chat-jump-row {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: calc(100% + 1.5rem);
+    margin: 0;
+    pointer-events: none;
+    z-index: 2;
+}
+
+/* Footer notices (status plus a long error) never take more than 40% of the
+   card (--chat-notices-max, measured against the card or the panel); they
+   scroll inside instead of pushing the composer out (issue #483). */
+.chat-footer-notices {
+    max-height: 40vh;
+    max-height: var(--chat-notices-max, 40dvh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+#job-search-chat .chat-jump-row .btn {
+    pointer-events: auto;
+    box-shadow: 0 .25rem .75rem rgba(0, 0, 0, .5);
+}
+
+/* Panel-scroll mode: pin the header (with More) and the composer band (which
+   carries the jump pill) so they stay reachable whatever the reader has scrolled to. */
+.assistant-panel #job-search-chat > section[data-scroll-owner='panel'] > .card-header {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    background: #212529;
+}
+
+/* The sticky bars must sit flush with the scrollport, so the scroller keeps no
+   block padding of its own while the panel body scrolls. */
+.assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) {
+    padding-block: 0;
+}
+
+.assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) > :first-child {
+    margin-top: .75rem;
+}
+
+/* In panel mode the sticky header can sit right above the band, so a pill
+   floating above the band would be painted over by it. Keep it in the band's
+   own flow instead. */
+#job-search-chat > [data-scroll-owner='panel'] .chat-footer > .chat-jump-row {
+    position: static;
+    margin: 0 0 .5rem;
+}
+
+#job-search-chat > [data-scroll-owner='panel'] .chat-footer {
+    padding-bottom: calc(.5rem + env(safe-area-inset-bottom));
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
+    padding-top: .5rem;
+    background: #111722;
+    border-top: 1px solid rgba(255, 255, 255, .10);
+}
+
+/* Scroll-into-view of transcript content stays clear of the pinned bands: a
+   margin on the content for the top, and scroll-padding on the panel body (the
+   scroller) for the footer, so reveals made by the browser (focus, find) also
+   stop above the footer. */
+.assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) {
+    scroll-padding-bottom: var(--chat-band-bottom, 0px);
+}
+
+#job-search-chat > [data-scroll-owner='panel'] [role='log'] :is(article, a, button) {
+    scroll-margin-top: var(--chat-band-top, 0);
+}
+
+#job-search-chat .chat-loading-status {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100%;
+}
+
+/* Scroll cue at the transcript edges (same technique as .priorities-scroll). */
+#job-search-chat .chat-transcript {
+    background-image:
+        linear-gradient(#212529 30%, rgba(33, 37, 41, 0)),
+        linear-gradient(rgba(33, 37, 41, 0), #212529 70%),
+        radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.55), transparent),
+        radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.55), transparent);
+    background-position: top, bottom, top, bottom;
+    background-size: 100% 24px, 100% 24px, 100% 8px, 100% 8px;
+    background-repeat: no-repeat;
+    background-attachment: local, local, scroll, scroll;
+}
+
+.chat-confirm-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .5rem;
+}
+
+@media (max-width: 575.98px) {
+    .chat-confirm-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .chat-confirm-actions .btn,
+    .chat-confirm-dismiss .btn {
+        min-height: 2.75rem;
+    }
+
+    .chat-confirm-dismiss .btn {
+        flex: 1 1 auto;
+    }
+
+    .chat-confirm-actions > :only-child {
+        grid-column: 1 / -1;
+    }
+
+    .chat-confirm-actions .btn-link {
+        border: 1px solid #adb5bd;
+        color: #f8f9fa;
+        text-decoration: none;
+    }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .chat-more-menu {
+        animation: chat-more-in .12s ease-out;
+    }
+}
+
+@keyframes chat-more-in {
+    from { opacity: 0; transform: translateY(-.25rem); }
+    to { opacity: 1; transform: none; }
 }
 
 /* One focus ring on the composer: the outline from .chat-focus; Bootstrap's
@@ -3944,20 +4257,6 @@ span.priority-chip-button { cursor: default; }
 .assistant-action .pref-change-new {
     white-space: nowrap;
 }
-@container assistant-panel (max-width: 30rem) {
-    .assistant-panel-body #job-search-chat .chat-conversation-actions {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 0.25rem;
-    }
-    .assistant-panel-body #job-search-chat .chat-conversation-actions .btn,
-    .assistant-panel-body #job-search-chat .chat-conversation-actions .btn-outline-danger {
-        grid-column: auto;
-        min-height: 44px;
-        padding-inline: 0.25rem;
-        font-size: 0.75rem;
-        line-height: 1.1;
-    }
-}
 .assistant-panel-body .priorities-section .priorities-title {
     position: absolute;
     width: 1px;
@@ -3969,10 +4268,6 @@ span.priority-chip-button { cursor: default; }
     clip: rect(0, 0, 0, 0);
     white-space: nowrap;
 }
-.assistant-panel-body #job-search-chat .chat-note {
-    padding: 0.25rem 0.5rem;
-    font-size: 0.75rem;
-}
 @media (max-width: 767.98px) {
     .organization-empty-state {
         margin-bottom: 5rem;
@@ -3982,5 +4277,123 @@ span.priority-chip-button { cursor: default; }
     .assistant-action-btn,
     .assistant-action-save {
         transition: none;
+    }
+}
+
+/* Conversation heading: one weight everywhere, including the sheet. */
+#job-search-chat .card-header h2#job-search-chat-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #f8f9fa;
+}
+
+/* Retry on an error panel reads as a button, not a field. */
+.chat-confirm-actions .btn-outline-light {
+    background: transparent;
+    border-color: #adb5bd;
+    color: #f8f9fa;
+}
+
+/* Overlay stack aligns to the transcript inset. */
+@media (min-width: 768px) {
+    .chat-panel-stack {
+        left: 1rem;
+        right: 1rem;
+    }
+}
+
+@media (max-width: 767.98px) {
+    .chat-panel-stack {
+        left: .75rem;
+        right: .75rem;
+    }
+}
+
+/* Drawer gets the same anchored composer band as the docked layout. */
+@media (min-width: 768px) and (max-width: 1279.98px) {
+    .assistant-panel--drawer #job-search-chat form {
+        margin: 0 0 -1rem;
+        border-radius: 0 0 .375rem .375rem;
+        padding: .875rem 1rem;
+        background: #111722;
+        border-top: 1px solid rgba(255, 255, 255, .10);
+    }
+}
+
+#job-search-chat form {
+    container: chat-composer / inline-size;
+}
+
+@container chat-composer (max-width: 26rem) {
+    .chat-composer-pending .chat-send > span {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    .chat-composer-pending .chat-send {
+        width: 2.75rem;
+        padding-inline: 0;
+    }
+}
+
+@container chat-composer (max-width: 21rem) {
+    .chat-composer-pending .chat-stop > span {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    .chat-composer-pending .chat-stop {
+        width: 2.75rem;
+        padding-inline: 0;
+        justify-content: center;
+    }
+}
+
+#job-search-chat form .chat-disclaimer {
+    margin: .5rem 0 0;
+    padding-inline: .25rem;
+}
+
+/* Shortest sheets (320x640): win back transcript height and keep panels
+   above the composer band. */
+@media (max-width: 340px) {
+    .assistant-panel--sheet #job-search-chat .chat-pref-alert {
+        padding: .25rem .5rem;
+        margin-bottom: .25rem;
+    }
+
+    .assistant-panel--sheet .priorities-sidebar {
+        padding-block: .25rem .5rem;
+    }
+
+    .assistant-panel--sheet #job-search-chat .card-header {
+        padding-block: .25rem;
+    }
+
+    .assistant-panel--sheet #job-search-chat form {
+        padding-top: .5rem;
+    }
+
+    .assistant-panel--sheet #job-search-chat .chat-footer {
+        padding-bottom: 0;
+    }
+
+    .assistant-panel--sheet #job-search-chat .chat-transcript {
+        margin-bottom: .5rem !important;
+        padding: .5rem !important;
     }
 }

@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<!-- Copyright (c) 2024 Isaac Adams -->
+<!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Job Search Chat — E2E fixture</title>
+    <link rel="stylesheet" href="/static/css/bootstrap.min.css">
+    <link rel="stylesheet" href="/static/css/popup.css">
+</head>
+<body>
+    <!-- Assistant panel wrapper (issue #483): the chat sits under a priorities block inside
+         .assistant-panel-body, so a short viewport makes the panel body the one scroller.
+         ?priorities=<px> sets the height of the block above the chat card. -->
+    <div class="assistant-panel assistant-panel--sheet" style="position: fixed; inset: 0;">
+        <div class="assistant-panel-inner">
+            <div class="assistant-panel-header"><h2 class="assistant-panel-title">Assistant</h2></div>
+            <div class="assistant-panel-body" data-testid="assistant-panel-body">
+                <div data-testid="priorities-sidebar" id="priorities-block">Your priorities</div>
+                <div id="job-search-chat"></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        (function () {
+            var px = new URLSearchParams(location.search).get('priorities') || '120';
+            document.getElementById('priorities-block').style.cssText =
+                'height:' + px + 'px;margin-bottom:.75rem;padding:.75rem;border:1px solid #6c757d;border-radius:.5rem;';
+        })();
+    </script>
+    <div id="suggest-company-host"></div>
+    <script src="/static/dist/e2e.js"></script>
+</body>
+</html>
