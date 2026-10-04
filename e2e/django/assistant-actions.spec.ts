@@ -30,8 +30,12 @@ async function expectPillFollowsPosition(page: Page): Promise<void> {
             const log = document.querySelector('[role="log"]') as HTMLElement;
             const panel = log.closest('.assistant-panel-body') as HTMLElement | null;
             const owner = document.querySelector('#job-search-chat > [data-scroll-owner]')?.getAttribute('data-scroll-owner');
-            const el = owner === 'panel' && panel ? panel : log;
-            return el.scrollHeight - el.clientHeight - el.scrollTop > 48;
+            if (owner === 'panel' && panel) {
+                // Panel mode: the log's bottom edge relative to the pinned footer, as the hook measures it.
+                const footer = log.closest('section')!.querySelector('.chat-footer') as HTMLElement;
+                return log.getBoundingClientRect().bottom - footer.getBoundingClientRect().top > 48;
+            }
+            return log.scrollHeight - log.clientHeight - log.scrollTop > 48;
         });
         const shown = await page.getByTestId('jump-to-latest').count();
         return shown === (away ? 1 : 0);
