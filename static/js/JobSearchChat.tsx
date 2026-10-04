@@ -978,6 +978,13 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 } catch {
                     // Non-JSON error (proxy/gateway): treated as uncertain below.
                 }
+                // A purge or conversation switch can land while the error body
+                // is read, after abort() no longer has any effect: nothing may
+                // be resent into, or written to, the view that replaced it.
+                if (conversationIdRef.current !== turnConversationId) {
+                    clearInflightTurn(turnConversationId, key);
+                    return;
+                }
                 if (serverType === 'invalid_context') {
                     // Client/serializer drift would otherwise block every send
                     // from this view. Send the same turn once more without the

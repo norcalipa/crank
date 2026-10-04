@@ -4817,6 +4817,99 @@ describe('validated page context and assistant actions (issue #484)', () => {
         expect(screen.queryByText('First')).not.toBeInTheDocument();
     });
 
+    // A response whose body read is held open: the fetch has resolved (abort()
+    // can no longer stop it) and the component is awaiting res.json().
+    function heldJsonResponse(payload: unknown, status: number) {
+        let release: () => void = () => {};
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        const res = jsonResponse(payload, status);
+        const realJson = res.json.bind(res);
+        const json = jest.fn(() => gate.then(() => realJson()));
+        res.json = json;
+        return {res, json, release: () => release()};
+    }
+
+    async function purgeWhileBodyIsRead(text: string, payload: unknown, status: number) {
+        const mock = global.fetch as jest.Mock;
+        const settle = holdNextFetch(mock);
+        fireEvent.change(screen.getByLabelText('Message'), {target: {value: text}});
+        fireEvent.click(screen.getByRole('button', {name: 'Send message'}));
+        const key = await postedKeyAfterSend(mock);
+        const held = heldJsonResponse(payload, status);
+        settle(held.res);
+        await waitFor(() => expect(held.json).toHaveBeenCalled());
+        // The purge lands mid-read; the next account's resume answers empty.
+        mock.mockResolvedValueOnce(jsonResponse(emptyConversation(43)));
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await waitFor(() => expect(mock.mock.calls.some(([url]) => String(url) === '/api/agent/conversations/')).toBe(true));
+        const callsAtPurge = mock.mock.calls.length;
+        await act(async () => {
+            held.release();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+        return {mock, key, callsAtPurge};
+    }
+
+    test.each([
+        ['invalid_context', 400],
+        ['conversation_closed', 409],
+    ])('a purge while the %s error body is read resends nothing and writes nothing', async (type, status) => {
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'rankings', page: 2}));
+        const {mock, key, callsAtPurge} = await purgeWhileBodyIsRead(
+            'previous account question',
+            {error: {type, message: 'Rejected', request_id: 'r1'}},
+            status,
+        );
+        // No resend, no switch to the new session's conversation.
+        expect(mock.mock.calls.length).toBe(callsAtPurge);
+        expect(postBodies(mock, messageUrl())).toHaveLength(1);
+        expect(postBodies(mock, '/api/agent/conversations/43/')).toHaveLength(0);
+        // Nothing of the previous account reaches the purged view or storage.
+        expect(screen.queryByText('previous account question')).not.toBeInTheDocument();
+        expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('retry-button')).not.toBeInTheDocument();
+        expect(screen.getByLabelText('Message')).toHaveValue('');
+        expect(window.localStorage.getItem(inflightKeyFor(42, key))).toBeNull();
+        expect(Object.keys(window.localStorage).filter((k) => k.startsWith('crank:jobsearch:inflight:'))).toEqual([]);
+        expect(warn).not.toHaveBeenCalled();
+    });
+
+    test('a reply read after a purge renders neither the reply nor its actions', async () => {
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'rankings'}));
+        const revision = getWorkspaceSnapshot().contextRevision;
+        await purgeWhileBodyIsRead('only remote', {
+            message: assistantMessage(99, 'Late reply'), preferences_changed: false,
+            context: {revision}, actions: [remoteAction],
+        }, 201);
+        expect(screen.queryByText('Late reply')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('assistant-actions')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Apply remote filter'})).not.toBeInTheDocument();
+    });
+
+    test('a purge drops the stored actions, not only the messages that show them', async () => {
+        await renderChat([]);
+        act(() => setWorkspaceContext({surface: 'rankings'}));
+        const revision = getWorkspaceSnapshot().contextRevision;
+        const first = await send('only remote', {
+            message: assistantMessage(99, 'First'), preferences_changed: false,
+            context: {revision}, actions: [remoteAction],
+        });
+        first.settle();
+        await screen.findByRole('button', {name: 'Apply remote filter'});
+        // The next session's transcript reuses the message id: only clearing
+        // the actions themselves keeps the old buttons off it.
+        (global.fetch as jest.Mock).mockResolvedValueOnce(jsonResponse(
+            emptyConversation(43, [userMessage('other question'), assistantMessage(99, 'Other account reply')]),
+        ));
+        act(() => { document.dispatchEvent(new CustomEvent('crank:private-state-purged')); });
+        await screen.findByText('Other account reply');
+        expect(screen.queryByTestId('assistant-actions')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Apply remote filter'})).not.toBeInTheDocument();
+    });
+
     test('an account switch purge also clears the sent-context snapshots', async () => {
         const snapshotMaps = new Set<Map<string, unknown>>();
         const realSet = Map.prototype.set;
