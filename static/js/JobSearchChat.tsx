@@ -1,869 +1,88 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
-import {createRoot} from 'react-dom/client';
 
-import {purgePrivateClientState} from './authIntent';
 import {preferencePathLabel, preferenceValueLabel} from './priorities/format';
 import {MATCH_CAP} from './priorities/api';
 import {patchFitsEditor} from './priorities/patch';
-import {ChangeList} from './priorities/ReviewChanges';
 import {prioritiesSurface} from './priorities/surface';
 import {
     describeWorkspaceContext,
     getWorkspaceSnapshot,
     setWorkspaceConversation,
-    subscribeWorkspace,
     setPrioritiesEditorOpen,
     setPrioritiesRevision,
 } from './workspace/store';
-import {accountDigest} from './workspace/persistence';
+import {Transcript} from './chat/Transcript';
+import {Composer} from './chat/Composer';
+import {JumpToLatest} from './chat/JumpToLatest';
+import {useTranscriptScroll} from './chat/useTranscriptScroll';
+import {useAccountGate} from './chat/useAccountGate';
+import {ConversationMenu} from './chat/ConversationMenu';
+import {
+    csrfFetch,
+    newId,
+    PRE_PERSISTENCE_ERROR_TYPES,
+    POST_PERSISTENCE_ERROR_TYPES,
+} from './chat/transport';
+import {
+    clearInflightTurn,
+    clearInflightTurns,
+    clearPendingDraft,
+    LAST_ACCOUNT_KEY,
+    readComposerDraft,
+    readComposerDraftTs,
+    readInflightTurns,
+    readPendingDraft,
+    reconcileAccountKey,
+    writeComposerDraft,
+    writeInflightTurn,
+    writePendingDraft,
+} from './chat/storage';
+import type {InFlightTurn} from './chat/storage';
+import {hasResults} from './chat/ResultCards';
+import {
+    AssistantStatusNotice,
+    isGatedState,
+    PreferenceChangeNotice,
+    PreferenceProposalNotice,
+} from './chat/notices';
+import type {
+    ApiError,
+    AssistantState,
+    AssistantStatus,
+    AvailabilityPayload,
+    ChatMessage,
+    Conversation,
+    JobResult,
+    OrganizationResult,
+    PreferenceChange,
+    PreferenceProposal,
+    PreferenceProposalToken,
+    PreferenceUndoState,
+    PreferenceUndoToken,
+    StructuredResults,
+    SubmitResponse,
+} from './chat/types';
 
-export interface JobResult {
-    id: number;
-    title: string;
-    organization_name: string;
-    location: string;
-    remote: boolean;
-    compensation: {
-        min: number | null;
-        max: number | null;
-        currency: string;
-        interval: string;
-    } | null;
-    canonical_url: string;
-    observed_at: string | null;
-    updated_at: string | null;
-}
-
-export interface OrganizationResult {
-    id: number;
-    name: string;
-    url: string;
-    funding_round: string;
-    rto_policy: string;
-}
-
-export interface StructuredResults {
-    jobs: JobResult[];
-    organizations: OrganizationResult[];
-}
-
-export interface ChatMessage {
-    id: number;
-    role: 'user' | 'assistant';
-    content: string;
-    preferences_changed: boolean;
-    created: string | null;
-    results: StructuredResults | null;
-    // Turn delivery state (issue #458): present on user messages only.
-    idempotency_key?: string;
-    delivery_state?: 'pending' | 'completed' | 'failed';
-    // Whether the per-turn retry cap still allows a retry (server-driven).
-    retry_available?: boolean;
-}
-
-/** Canonical availability payload from /api/job-matches/status/ (issue #476). */
-export interface AvailabilityPayload {
-    state: string;
-    title: string;
-    message: string;
-    refreshing?: boolean;
-}
-
-interface Conversation {
-    id: number;
-    active: boolean;
-    created: string | null;
-    modified: string | null;
-    messages: ChatMessage[];
-    preferences_changed: boolean;
-}
-
-/** Field-level preference diff entry (issue #466): one changed path with
- * its previous and current values, as returned by the turn endpoint. */
-export interface PreferenceChange {
-    path: string;
-    old: unknown;
-    new: unknown;
-}
-
-/** Opaque undo token (issue #466 review): the full pre-apply document plus
- * the post-apply revision it may be restored against. Client-held only; the
- * server re-validates it owner-scoped under the revision precondition. */
-export interface PreferenceUndoToken {
-    expected_revision: number;
-    document: Record<string, unknown>;
-}
-
-/** Client-held proposal token (issue #466 review): the model-proposed patch,
- * its scope, and the base revision the apply must be preconditioned on. */
-export interface PreferenceProposalToken {
-    patch: Record<string, unknown>;
-    scope: 'account' | 'search';
-    base_revision: number;
-}
-
-/** Read-only preference proposal (issue #466 review): the chat turn never
- * persists a model-proposed patch; the user applies or dismisses it. */
-export interface PreferenceProposal {
-    id: string;
-    scope: 'account' | 'search';
-    changes: PreferenceChange[];
-    change_count: number;
-    base_revision: number;
-    unsupported_criteria: string[];
-    // The saved currency the proposal's money values are shown in.
-    currency?: string | null;
-    token: PreferenceProposalToken;
-}
-
-interface SubmitResponse {
-    message: ChatMessage;
-    preferences_changed: boolean;
-    // Additive (issue #466 review): present only when the turn produced a
-    // read-only preference proposal through an orchestrator-backed provider.
-    preference_proposal?: PreferenceProposal | null;
-}
-
-/** Undo lifecycle for the preference-change notice (issue #466). */
-export type PreferenceUndoState = 'idle' | 'pending' | 'done' | 'error';
-
-interface ApiError {
-    error?: {type?: string; message?: string; request_id?: string};
-}
-
-export type AssistantState =
-    | 'signed_out'
-    | 'replies_disabled'
-    | 'temporarily_unavailable'
-    | 'inventory_unavailable'
-    | 'refreshing'
-    | 'ready';
-
-export interface AssistantStatus {
-    state: AssistantState;
-    actions: string[];
-    checked_at: string;
-}
-
-function getCookie(name: string): string {
-    const match = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
-    return match ? decodeURIComponent(match[2]) : '';
-}
-
-// Durable in-flight turn markers (issue #458). Written before a submission
-// resolves so a request that never received a response survives reload and
-// navigation, and reconciled against the server on the next load: the server
-// is the single source of truth, the markers only cover the window it cannot
-// see. Each turn gets its own storage key (conversation id + turn key) so
-// concurrent turns or tabs never overwrite each other's recovery state and
-// resolving one turn never clears another turn's marker.
-interface InFlightTurn {conversationId: number; content: string; key: string; ts: number}
-
-const INFLIGHT_PREFIX = 'crank:jobsearch:inflight:';
-// Markers older than a day cannot still be in flight; prune them so storage
-// cannot grow without bound.
-const INFLIGHT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-function inflightStorageKey(conversationId: number, key: string): string {
-    return `${INFLIGHT_PREFIX}${conversationId}:${key}`;
-}
-
-function draftKey(conversationId: number): string {
-    return `crank:jobsearch:draft:${conversationId}`;
-}
-
-// Draft typed before the first conversation exists (issue #465): a
-// signed-out visitor has no conversation id to key a draft against, so this
-// single slot holds their in-progress text until the first conversation
-// created after sign-in adopts it. Never sent anywhere — draft text stays
-// out of every URL, including the sign-in `next`.
-const PENDING_DRAFT_KEY = 'crank:jobsearch:draft:pending';
-
-function readPendingDraft(): string {
-    try {
-        return window.localStorage.getItem(PENDING_DRAFT_KEY) || '';
-    } catch {
-        return '';
-    }
-}
-
-function writePendingDraft(text: string): void {
-    try {
-        if (text) {
-            window.localStorage.setItem(PENDING_DRAFT_KEY, text);
-        } else {
-            window.localStorage.removeItem(PENDING_DRAFT_KEY);
-        }
-    } catch {
-        // Storage unavailable; the draft stays memory-only.
-    }
-}
-
-function clearPendingDraft(): void {
-    try {
-        window.localStorage.removeItem(PENDING_DRAFT_KEY);
-    } catch {
-        // Storage unavailable; nothing durable to clear.
-    }
-}
-
-// Name of the account that last wrote private artefacts into this browser's
-// storage. Written by both the synchronous server-rendered reconciliation
-// below and the asynchronous whoami hydration, which agree on the value
-// (a digest of Django's username) so either can detect a switch the other
-// missed. A legacy raw username is read as the same account and rewritten.
-export const LAST_ACCOUNT_KEY = 'crank:last-account';
-
-/**
- * Purge every private artefact when `accountKey` differs from the account
- * that last used this browser, then record `accountKey` as the current one.
- * Returns whether a purge happened.
- *
- * Deliberately synchronous (issue #465 AC-9/10): the resume fetch and
- * `adoptPendingDraft()` read storage from mount effects, so any check that
- * waits on the async whoami round trip loses the race and the previous
- * account's pending draft can surface in the new account's conversation.
- * An empty `accountKey` (signed-out render, or a caller with no trusted
- * discriminator) is a no-op — there is nothing to compare against, and
- * sign-out purges on its way out.
- */
-export function reconcileAccountKey(accountKey: string): boolean {
-    if (!accountKey) return false;
-    const digest = accountDigest(accountKey);
-    let lastAccount: string | null = null;
-    try {
-        lastAccount = window.localStorage.getItem(LAST_ACCOUNT_KEY);
-    } catch {
-        // Storage unavailable: nothing durable was stored for any account,
-        // so there is nothing to leak and nothing to record.
-        return false;
-    }
-    // A pre-digest raw username for the same account is not a switch; it is
-    // rewritten as a digest below.
-    const switched = !!lastAccount && lastAccount !== digest && lastAccount !== accountKey;
-    if (switched) {
-        purgePrivateClientState();
-    }
-    try {
-        window.localStorage.setItem(LAST_ACCOUNT_KEY, digest);
-    } catch {
-        // Storage unavailable; switch detection cannot persist across
-        // reloads, but nothing durable exists to expose either.
-    }
-    return switched;
-}
-
-// Timestamp of the last composer-draft write (issue #458 r2): lets
-// reconciliation tell a marker written at a failed send apart from a draft
-// the user typed/edited afterwards, so surfacing a recovered marker never
-// clobbers the user's latest typing. A draft stored without a timestamp
-// (legacy) counts as older than any marker.
-function draftTsKey(conversationId: number): string {
-    return `crank:jobsearch:draftts:${conversationId}`;
-}
-
-function readComposerDraftTs(conversationId: number): number {
-    try {
-        return Number(window.localStorage.getItem(draftTsKey(conversationId))) || 0;
-    } catch {
-        return 0;
-    }
-}
-
-function writeInflightTurn(turn: InFlightTurn): void {
-    try {
-        window.localStorage.setItem(
-            inflightStorageKey(turn.conversationId, turn.key),
-            JSON.stringify(turn),
-        );
-    } catch {
-        // Storage unavailable (private mode/quota); the turn still works,
-        // it just is not durable across reloads.
-    }
-}
-
-function clearInflightTurn(conversationId: number, key: string): void {
-    try {
-        window.localStorage.removeItem(inflightStorageKey(conversationId, key));
-    } catch {
-        // Storage unavailable; nothing durable to clear.
-    }
-}
-
-// Clear every marker belonging to one conversation (reset/delete/gone).
-// Markers are keyed per conversation, so this can never destroy another
-// conversation's recovery state.
-function clearInflightTurns(conversationId: number): void {
-    try {
-        const doomed: string[] = [];
-        for (let i = 0; i < window.localStorage.length; i++) {
-            const storageKey = window.localStorage.key(i);
-            if (storageKey && storageKey.startsWith(`${INFLIGHT_PREFIX}${conversationId}:`)) {
-                doomed.push(storageKey);
-            }
-        }
-        doomed.forEach((storageKey) => window.localStorage.removeItem(storageKey));
-    } catch {
-        // Storage unavailable; nothing durable to clear.
-    }
-}
-
-// Every still-live marker for a conversation, pruning stale/corrupt ones.
-function readInflightTurns(conversationId: number): InFlightTurn[] {
-    const turns: InFlightTurn[] = [];
-    try {
-        const expired: string[] = [];
-        const now = Date.now();
-        for (let i = 0; i < window.localStorage.length; i++) {
-            const storageKey = window.localStorage.key(i);
-            if (!storageKey || !storageKey.startsWith(INFLIGHT_PREFIX)) continue;
-            try {
-                const turn = JSON.parse(
-                    window.localStorage.getItem(storageKey) || '',
-                ) as InFlightTurn;
-                if (!turn || typeof turn.conversationId !== 'number' || typeof turn.key !== 'string') {
-                    expired.push(storageKey);
-                    continue;
-                }
-                if (now - (turn.ts || 0) > INFLIGHT_MAX_AGE_MS) {
-                    expired.push(storageKey);
-                    continue;
-                }
-                if (turn.conversationId === conversationId) turns.push(turn);
-            } catch {
-                expired.push(storageKey);
-            }
-        }
-        expired.forEach((storageKey) => window.localStorage.removeItem(storageKey));
-    } catch {
-        // Storage unavailable; markers simply are not durable.
-    }
-    return turns;
-}
-
-// Typed error envelopes that mean the request never persisted a turn: the
-// server has no trace of it, so the UI must never claim "your message is
-// saved" for these — the text stays an unsent draft instead (issue #458).
-const PRE_PERSISTENCE_ERROR_TYPES = new Set([
-    'rate_limited',
-    'invalid_message',
-    'malformed_json',
-    'payload_too_large',
-    'invalid_request',
-    'not_found',
-]);
-// Typed envelopes the server returns only AFTER the user turn is persisted;
-// for these the failed-turn UI ("your message is saved; retry") is honest.
-const POST_PERSISTENCE_ERROR_TYPES = new Set([
-    'assistant_unavailable',
-    'provider_timeout',
-    'cost_limit',
-    'invalid_output',
-    'service_error',
-    'unexpected_error',
-]);
-
-function readComposerDraft(conversationId: number): string {
-    try {
-        return window.localStorage.getItem(draftKey(conversationId)) || '';
-    } catch {
-        return '';
-    }
-}
-
-function writeComposerDraft(conversationId: number | null, text: string): void {
-    if (conversationId === null) return;
-    try {
-        if (text) {
-            window.localStorage.setItem(draftKey(conversationId), text);
-            window.localStorage.setItem(draftTsKey(conversationId), String(Date.now()));
-        } else {
-            window.localStorage.removeItem(draftKey(conversationId));
-            window.localStorage.removeItem(draftTsKey(conversationId));
-        }
-    } catch {
-        // Storage unavailable; the draft stays memory-only.
-    }
-}
-
-function newId(): string {
-    const cryptoObj = typeof crypto !== 'undefined' ? crypto : null;
-    if (cryptoObj && typeof cryptoObj.randomUUID === 'function') {
-        return cryptoObj.randomUUID();
-    }
-    // Fallback for older runtimes/tests without crypto.randomUUID.
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-        const r = (Math.random() * 16) | 0;
-        const v = c === 'x' ? r : (r & 0x3) | 0x8;
-        return v.toString(16);
-    });
-}
-
-async function csrfFetch(url: string, init: RequestInit = {}): Promise<Response> {
-    const method = (init.method || 'GET').toUpperCase();
-    const headers: Record<string, string> = {...(init.headers as Record<string, string> || {})};
-    if (method !== 'GET' && method !== 'HEAD') {
-        const token = getCookie('csrftoken');
-        if (token) {
-            headers['X-CSRFToken'] = token;
-        }
-        headers['Content-Type'] = 'application/json';
-    }
-    return fetch(url, {...init, headers});
-}
 
 export {preferencePathLabel, preferenceValueLabel};
+export {PreferenceChangeNotice, PreferenceProposalNotice, reconcileAccountKey, LAST_ACCOUNT_KEY};
+export type {
+    AssistantState,
+    AssistantStatus,
+    AvailabilityPayload,
+    ChatMessage,
+    JobResult,
+    OrganizationResult,
+    PreferenceChange,
+    PreferenceProposal,
+    PreferenceProposalToken,
+    PreferenceUndoState,
+    PreferenceUndoToken,
+    StructuredResults,
+};
 
-/** Preference-change notice (issue #466): the field-level diff of what the
- * assistant just changed, with a one-click Undo. Four rendered states:
- * populated (diff list + Undo), loading (undo request in flight), empty
- * (update reported but no field diff), and error (undo rejected, e.g. a
- * stale-revision conflict). */
-export function PreferenceChangeNotice({changes, undoState, undoError, undoErrorType, onUndo, onDismiss, onReview}: {
-    changes: PreferenceChange[];
-    undoState: PreferenceUndoState;
-    undoError: string | null;
-    // Server error type of the failed undo (issue #466 review): the review
-    // action is stale-only; other failures stay retry-oriented.
-    undoErrorType: string | null;
-    onUndo: () => void;
-    onDismiss: () => void;
-    // Stale-conflict recovery (issue #466 round 2): focus the composer so the
-    // user can ask the assistant for the current preferences.
-    onReview?: () => void;
-}) {
-    if (undoState === 'done') {
-        return (
-            <div className="alert alert-success pref-change-notice"
-                 role="status" aria-label="Preference update undone" data-testid="preference-change-undone">
-                <div className="pref-change-header">
-                    <span className="pref-change-summary">
-                        <i className="fa-solid fa-rotate-left me-1" aria-hidden="true"></i>
-                        The preference update was undone.
-                    </span>
-                    <button type="button" className="pref-change-dismiss" aria-label="Dismiss undo notice"
-                            onClick={onDismiss}>
-                        <i className="fa-solid fa-xmark" aria-hidden="true"></i>
-                    </button>
-                </div>
-            </div>
-        );
-    }
-    const pending = undoState === 'pending';
-    // Only a server-confirmed stale revision renders the stale-only review
-    // action (issue #466 review): connectivity/5xx failures keep the
-    // retry-oriented Undo path instead.
-    const staleConflict = undoState === 'error' && (undoErrorType === 'preference_stale' || undoErrorType === 'forbidden');
-    const emptyDiff = changes.length === 0;
-    return (
-        <div className="alert alert-success pref-change-notice" role="status"
-             aria-label="Preference update details" data-testid="preference-change-notice">
-            <div className="pref-change-header">
-                <span className="pref-change-summary">
-                    <i className="fa-solid fa-circle-check me-1" aria-hidden="true"></i>
-                    Your saved preferences were updated based on this conversation.
-                </span>
-                <button type="button" className="pref-change-dismiss" aria-label="Dismiss preference notice"
-                        onClick={onDismiss}>
-                    <i className="fa-solid fa-xmark" aria-hidden="true"></i>
-                </button>
-            </div>
-            {!emptyDiff ? (
-                <ChangeList changes={changes} label="Changed preferences"/>
-            ) : (
-                <p className="pref-change-empty" data-testid="preference-change-empty">
-                    The update did not change any individual preference fields.
-                </p>
-            )}
-            {undoState === 'error' && undoError && (
-                <div className="pref-change-error" role="alert" data-testid="preference-undo-error">
-                    <i className="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>
-                    {undoError}
-                </div>
-            )}
-            <div className="chat-actions mt-2" role="group" aria-label="Preference update actions">
-                {staleConflict && onReview && (
-                    // After a stale conflict the undo token is dead, so the
-                    // primary recovery is reviewing the current preferences
-                    // (focuses the composer); Undo drops to secondary.
-                    <button type="button" className="chat-btn chat-btn-primary pref-review-btn"
-                            onClick={onReview} data-testid="preference-review-button">
-                        <i className="fa-solid fa-list-check me-1" aria-hidden="true"></i>
-                        Review current preferences
-                    </button>
-                )}
-                <button type="button" className="chat-btn chat-btn-secondary chat-focus pref-undo-btn"
-                        onClick={onUndo} disabled={pending || (undoState === 'error' && undoErrorType === 'forbidden')}
-                        aria-label={pending ? 'Undoing preference update' : 'Undo preference update'}
-                        aria-busy={pending} data-testid="preference-undo-button">
-                    {pending ? (
-                        <>
-                            <span className="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
-                            Undoing…
-                        </>
-                    ) : emptyDiff ? (
-                        // Empty diff: say what the undo restores.
-                        <>
-                            <i className="fa-solid fa-rotate-left me-1" aria-hidden="true"></i>
-                            Restore previous preferences
-                        </>
-                    ) : (
-                        <>
-                            <i className="fa-solid fa-rotate-left me-1" aria-hidden="true"></i>
-                            Undo this update
-                        </>
-                    )}
-                </button>
-            </div>
-        </div>
-    );
-}
-
-/** Preference proposal notice (issue #466 review): the read-only field-level
- * diff of a model-proposed change with Apply/Dismiss. Nothing is persisted
- * until the user explicitly applies; a this-search-only proposal is labelled
- * as never saved. */
-export function PreferenceProposalNotice({proposal, state, error, errorType, onDecision, onReview, onEdit, onSearchOnly}: {
-    proposal: PreferenceProposal;
-    state: 'idle' | 'pending' | 'error';
-    error: string | null;
-    errorType: string | null;
-    onDecision: (decision: 'apply' | 'dismiss') => void;
-    onReview?: () => void;
-    // Issue #480: open the inline priorities editor / apply to one search only.
-    onEdit?: () => void;
-    onSearchOnly?: () => void;
-}) {
-    const pending = state === 'pending';
-    const isSearch = proposal.scope === 'search';
-    const staleConflict = state === 'error' && (errorType === 'preference_stale' || errorType === 'forbidden');
-    const tokenExpired = state === 'error' && errorType === 'forbidden';
-    return (
-        <div className="alert alert-warning pref-change-notice" role="status"
-             aria-label="Proposed preference change" data-testid="preference-proposal-notice">
-            <div className="pref-change-header">
-                <span className="pref-change-summary">
-                    <i className="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>
-                    {isSearch
-                        ? 'The assistant suggests a filter for this search only — it will not be saved.'
-                        : 'The assistant suggests updating your saved preferences.'}
-                </span>
-                <button type="button" className="pref-change-dismiss" aria-label="Dismiss preference proposal"
-                        onClick={() => onDecision('dismiss')} disabled={pending}>
-                    <i className="fa-solid fa-xmark" aria-hidden="true"></i>
-                </button>
-            </div>
-            {proposal.changes.length > 0 ? (
-                <ChangeList changes={proposal.changes} currency={proposal.currency} label="Proposed preference changes"/>
-            ) : (
-                <p className="pref-change-empty" data-testid="preference-proposal-empty">
-                    The suggestion does not change any individual preference fields.
-                </p>
-            )}
-            {state === 'error' && error && (
-                <div className="pref-change-error" role="alert" data-testid="preference-proposal-error">
-                    <i className="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>
-                    {error}
-                </div>
-            )}
-            <div className="chat-actions mt-2" role="group" aria-label="Preference proposal actions">
-                {staleConflict && onReview && (
-                    <button type="button" className="chat-btn chat-btn-primary pref-review-btn"
-                            onClick={onReview} data-testid="preference-proposal-review-button">
-                        <i className="fa-solid fa-list-check me-1" aria-hidden="true"></i>
-                        Review current preferences
-                    </button>
-                )}
-                <button type="button" className="chat-btn chat-btn-primary chat-focus pref-apply-btn"
-                        onClick={() => onDecision('apply')} disabled={pending || tokenExpired}
-                        aria-label={pending ? 'Applying preference proposal' : 'Apply preference proposal'}
-                        aria-busy={pending} data-testid="preference-apply-button">
-                    {pending ? (
-                        <>
-                            <span className="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
-                            Applying…
-                        </>
-                    ) : (
-                        <>
-                            <i className="fa-solid fa-check me-1" aria-hidden="true"></i>
-                            {isSearch ? 'Apply to this search' : 'Apply'}
-                        </>
-                    )}
-                </button>
-                {onEdit && (
-                    <button type="button" className="chat-btn chat-btn-secondary chat-focus"
-                            onClick={onEdit} disabled={pending} data-testid="preference-proposal-edit-button">
-                        Edit
-                    </button>
-                )}
-                {onSearchOnly && !isSearch && (
-                    <button type="button" className="chat-btn chat-btn-secondary chat-focus"
-                            onClick={onSearchOnly} disabled={pending}
-                            data-testid="preference-proposal-search-only-button">
-                        This search only
-                    </button>
-                )}
-                <button type="button" className="chat-btn chat-btn-secondary chat-focus pref-dismiss-btn"
-                        onClick={() => onDecision('dismiss')} disabled={pending}
-                        data-testid="preference-proposal-dismiss-button">
-                    Dismiss
-                </button>
-            </div>
-        </div>
-    );
-}
-
-function formatCompensation(comp: JobResult['compensation']): string {
-    if (!comp) return '';
-    const parts: string[] = [];
-    const fmt = (v: number | null) => v !== null ? v.toLocaleString() : '';
-    if (comp.min !== null && comp.max !== null) {
-        parts.push(`${fmt(comp.min)}-${fmt(comp.max)}`);
-    } else if (comp.min !== null) {
-        parts.push(`${fmt(comp.min)}+`);
-    } else if (comp.max !== null) {
-        parts.push(`up to ${fmt(comp.max)}`);
-    }
-    if (comp.currency) parts.push(comp.currency);
-    if (comp.interval) parts.push(comp.interval);
-    return parts.join(' ');
-}
-
-function fundingRoundLabel(code: string): string {
-    const map: Record<string, string> = {
-        S: 'Seed', A: 'Series A', B: 'Series B', C: 'Series C',
-        D: 'Series D', E: 'Series E', F: 'Series F',
-        X: 'Late Stage', O: 'IPO', P: 'Pre-IPO',
-    };
-    return map[code] || code || '';
-}
-
-function rtoPolicyLabel(code: string): string {
-    const map: Record<string, string> = {
-        R: 'Remote', H: 'Hybrid', O: 'On-site',
-    };
-    return map[code] || code || '';
-}
-
-// States in which submitting a message would be futile: the assistant cannot
-// answer at all (administratively disabled) or has nothing to search.
-// Gating is advisory-only: the POST path remains authoritative and a failed
-// status fetch never gates the composer (issue #457).
-const GATED_STATES: AssistantState[] = ['replies_disabled', 'inventory_unavailable'];
-
-function isGatedState(state: AssistantState | undefined): boolean {
-    return state !== undefined && GATED_STATES.includes(state);
-}
-
-// Re-checking is only meaningful for transient conditions; a fixed policy
-// state (replies_disabled) is not expected to flip by re-fetching.
-const RETRYABLE_STATES: AssistantState[] = ['temporarily_unavailable', 'refreshing'];
-
-function AssistantStatusNotice({status, onRetry, checking}: {
-    status: AssistantStatus;
-    onRetry: () => void;
-    checking: boolean;
-}) {
-    // No notice for the healthy baseline. `signed_out` is now reachable on
-    // /chat/ (issue #465 made the page public) but adds nothing actionable
-    // here: the dedicated signed-out introduction below already explains the
-    // state and offers the sign-in CTA.
-    if (status.state === 'ready' || status.state === 'signed_out') return null;
-
-    // Short scannable state label plus one supporting sentence: the state and
-    // the next action should be readable at a glance, especially on mobile.
-    const copy: Record<string, {title: string; body: string}> = {
-        replies_disabled: {
-            title: 'Assistant unavailable',
-            body: 'Replies are paused right now. Saved preferences remain ' +
-                'available — update them here once replies resume.',
-        },
-        inventory_unavailable: {
-            title: 'Assistant unavailable',
-            body: 'No active job listings to search right now. Saved preferences ' +
-                'are still available — update them here once listings return.',
-        },
-        temporarily_unavailable: {
-            title: 'Assistant temporarily unavailable',
-            body: 'Check again in a moment.',
-        },
-        refreshing: {
-            title: 'Assistant refreshing',
-            body: 'Job listings are being refreshed; the assistant will be back shortly.',
-        },
-    };
-    const text = copy[status.state];
-    if (!text) return null;
-
-    const canRetry = RETRYABLE_STATES.includes(status.state);
-    const browseRankings = status.actions.includes('browse_rankings');
-
-    return (
-        <div
-            className="alert alert-danger assistant-status-notice py-2 px-3"
-            role="alert"
-            data-testid="assistant-status-notice"
-            data-status-state={status.state}
-            aria-label="Assistant availability"
-        >
-            <div className="d-flex align-items-start gap-2">
-                <i className="fa-solid fa-circle-exclamation mt-1" aria-hidden="true"></i>
-                <div>
-                    <strong className="d-block">{text.title}</strong>
-                    <span className="d-block small">{text.body}</span>
-                </div>
-            </div>
-            {(browseRankings || canRetry) && (
-                <div className="assistant-status-notice-actions d-flex flex-wrap gap-2 mt-1">
-                    {browseRankings && (
-                        <a href="/" className="alert-link assistant-status-notice-action">
-                            Browse company rankings
-                        </a>
-                    )}
-                    {canRetry && (
-                        <button
-                            type="button"
-                            // btn-danger is the semantic recovery action: solid,
-                            // high-emphasis, and clearly the way out of the
-                            // unavailable state (visual review #472 round 1).
-                            className="btn btn-danger assistant-status-notice-action"
-                            onClick={onRetry}
-                            disabled={checking}
-                            data-testid="assistant-status-retry"
-                        >
-                            Check again
-                        </button>
-                    )}
-                </div>
-            )}
-        </div>
-    );
-}
-
-function JobCard({job}: {job: JobResult}) {
-    const comp = formatCompensation(job.compensation);
-    const freshness = job.observed_at
-        ? new Date(job.observed_at).toLocaleDateString(undefined, {month: 'short', day: 'numeric'})
-        : '';
-    return (
-        <article
-            className="job-card border rounded p-2 mb-2"
-            tabIndex={0}
-            role="article"
-            aria-label={`Job: ${job.title} at ${job.organization_name}`}
-            style={{maxWidth: '100%', overflow: 'hidden'}}
-        >
-            <div className="d-flex justify-content-between align-items-start flex-wrap">
-                <strong className="text-break" style={{maxWidth: '100%'}}>{job.title}</strong>
-                {freshness && <small className="text-muted text-nowrap ms-2">{freshness}</small>}
-            </div>
-            <div className="text-muted small">
-                {job.organization_name}{job.location ? ` · ${job.location}` : ''}
-                {job.remote ? ' · Remote' : ''}
-            </div>
-            {comp && <div className="small">{comp}</div>}
-            {job.canonical_url && (
-                <a
-                    href={job.canonical_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="small d-inline-block mt-1"
-                    aria-label={`Open listing for ${job.title} (opens in a new tab)`}
-                >
-                    View listing ↗
-                </a>
-            )}
-        </article>
-    );
-}
-
-function OrgCard({org}: {org: OrganizationResult}) {
-    const funding = fundingRoundLabel(org.funding_round);
-    const rto = rtoPolicyLabel(org.rto_policy);
-    return (
-        <article
-            className="org-card border rounded p-2 mb-2"
-            tabIndex={0}
-            role="article"
-            aria-label={`Organization: ${org.name}`}
-            style={{maxWidth: '100%', overflow: 'hidden'}}
-        >
-            <strong className="text-break" style={{maxWidth: '100%'}}>{org.name}</strong>
-            <div className="text-muted small">
-                {funding && <span>{funding}</span>}
-                {funding && rto && ' · '}
-                {rto && <span>{rto}</span>}
-            </div>
-            <div className="org-card-actions d-flex flex-wrap align-items-center column-gap-3 mt-1">
-            {org.url && (
-                <a
-                    href={org.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label={`View details for ${org.name} (opens in a new tab)`}
-                >
-                    Details ↗
-                </a>
-            )}
-            <button
-                type="button"
-                className="btn btn-link p-0 correction-action"
-                data-testid={`suggest-correction-org-${org.id}`}
-                onClick={() => window.dispatchEvent(new CustomEvent('crank:suggest-company', {
-                    detail: {kind: 'correction', source: 'assistant', organizationId: org.id, companyName: org.name},
-                }))}
-            >
-                <i className="fa-solid fa-pen-to-square" aria-hidden="true"></i>
-                Suggest a correction<span className="visually-hidden"> for {org.name}</span>
-            </button>
-            </div>
-        </article>
-    );
-}
-
-function ResultCards({results}: {results: StructuredResults}) {
-    const hasJobs = results.jobs && results.jobs.length > 0;
-    const hasOrgs = results.organizations && results.organizations.length > 0;
-    if (!hasJobs && !hasOrgs) return null;
-    return (
-        <div className="mt-2" data-testid="result-cards">
-            {hasJobs && (
-                <div>
-                    <h3 className="h6 small text-muted mb-1">Job Listings</h3>
-                    {results.jobs.map((job) => (
-                        <JobCard key={`job-${job.id}`} job={job} />
-                    ))}
-                </div>
-            )}
-            {hasOrgs && (
-                <div>
-                    <h3 className="h6 small text-muted mb-1">Organizations</h3>
-                    {results.organizations.map((org) => (
-                        <OrgCard key={`org-${org.id}`} org={org} />
-                    ))}
-                </div>
-            )}
-        </div>
-    );
-}
-
-function hasResults(results: StructuredResults | null): boolean {
-    if (!results) return false;
-    return (results.jobs?.length || 0) + (results.organizations?.length || 0) > 0;
-}
-
-/** Compact availability notice so an empty reply is never silently unexplained. */
-function AvailabilityNotice({availability}: {availability: AvailabilityPayload}) {
-    return (
-        <div className="availability-notice border rounded p-2 mt-2 small"
-             role="status" aria-live="polite" data-testid="availability-notice">
-            <i className="fa-solid fa-circle-info me-1" aria-hidden="true"></i>
-            <strong>{availability.title}</strong> — {availability.message}
-        </div>
-    );
-}
 
 export interface JobSearchChatProps {
     // Hydrated server-side from `crank.auth.visitor_state` (issue #465):
@@ -912,37 +131,12 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // retain the legacy create-on-mount contract for compatibility; the
     // prop-less workspace/test mount uses the issue #472 default of false.
     const createOnMount = props.createOnMount ?? props.isAuthenticated !== undefined;
-    // Cross-account purge, synchronously, before the first render commits
-    // (issue #465 review round 2). Conversation resume and
-    // adoptPendingDraft() both read local storage from mount effects, which
-    // run long before the async whoami hydration below can compare
-    // `crank:last-account`; until it resolved, the *previous* account's
-    // pending draft could be adopted into the new account's conversation.
-    // Reconciling the trusted server-rendered key here happens first, so
-    // there is nothing stale left to read. Idempotent: the second call of a
-    // StrictMode double render sees the key already stored.
-    const accountGuardRef = React.useRef(false);
-    if (!accountGuardRef.current) {
-        accountGuardRef.current = true;
-        reconcileAccountKey(accountKey || (props.workspaceMode !== undefined
-            && getWorkspaceSnapshot().account.status === 'authenticated'
-            ? getWorkspaceSnapshot().account.key
-            : ''));
-    }
-    // Account gate (issue #479): a lazily mounted workspace chat has no
-    // server-rendered accountKey, so until the shared store knows the account
-    // (crank:auth-hydrated) it must not adopt a pending draft or read stored
-    // drafts. The store is read at mount, so a mount after hydration is not
-    // left waiting for an event it can no longer receive.
-    const workspaceAccount = React.useSyncExternalStore(
-        subscribeWorkspace,
-        () => getWorkspaceSnapshot().account,
-    );
-    const accountPending = props.workspaceMode !== undefined
-        && !accountKey
-        && workspaceAccount.status === 'unknown';
-
-    const [effectiveAuthenticated, setEffectiveAuthenticated] = React.useState(isAuthenticated);
+    const {accountPending, effectiveAuthenticated, setEffectiveAuthenticated, workspaceAccount} = useAccountGate({
+        isAuthenticated,
+        accountKey,
+        workspaceMode: props.workspaceMode,
+        onPurge: () => resetForPurge(),
+    });
 
     const [conversationId, setConversationId] = React.useState<number | null>(null);
     const [messages, setMessages] = React.useState<ChatMessage[]>([]);
@@ -961,7 +155,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // Data note is collapsed by default so the conversation owns the viewport;
     // the details stay available to sighted users via the toggle and to screen
     // readers via the visually-hidden fallback.
-    const [dataNoteOpen, setDataNoteOpen] = React.useState(false);
     const [preferencesChanged, setPreferencesChanged] = React.useState(false);
     const [prefDismissed, setPrefDismissed] = React.useState(false);
     // Issue #466: the latest applied field-level diff and its undo token.
@@ -1030,10 +223,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     // client's wait; the server may still complete and is reconciled via GET.
     const abortRef = React.useRef<AbortController | null>(null);
     const statusRef = React.useRef<HTMLDivElement>(null);
-    const historyRef = React.useRef<HTMLDivElement>(null);
 
-    // Auto-resize the composer textarea up to a bounded max rows.
-    const MAX_COMPOSER_ROWS = 6;
     const composerRef = React.useRef<HTMLTextAreaElement>(null);
     const initErrorActionRef = React.useRef<HTMLButtonElement>(null);
     const refocusInitErrorRef = React.useRef(false);
@@ -1051,33 +241,52 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             initErrorActionRef.current?.focus();
         }
     }, [initError]);
+    const headingRef = React.useRef<HTMLHeadingElement>(null);
+    // Programmatic focus into the composer never scrolls: it sits in the pinned
+    // band, so it is always visible, and a scroll here would move the panel
+    // body by the band's height and race the history scroll (issue #483).
+    const focusComposer = () => composerRef.current?.focus({preventScroll: true});
+    // After load the focus belongs in the chat. The sheet keeps the keyboard
+    // down, so it lands on the Conversation heading instead of the composer.
+    // Focus that the reader already moved inside the chat (the composer
+    // included) or into a dialog other than the one hosting the chat (the
+    // sheet itself) while the timer waited is theirs; the load never takes it.
+    const focusAfterLoad = () => {
+        if (!autoFocusRef.current) return;
+        window.setTimeout(() => {
+            const active = document.activeElement;
+            const hostDialog = cardRef.current?.closest('[role="dialog"]') ?? null;
+            const activeDialog = active instanceof HTMLElement ? active.closest('[role="dialog"]') : null;
+            const claimed = active instanceof HTMLElement && active !== document.body
+                && active !== headingRef.current
+                && (!!cardRef.current?.contains(active) || (activeDialog !== null && activeDialog !== hostDialog));
+            if (claimed) return;
+            if (props.workspaceMode === 'sheet') headingRef.current?.focus({preventScroll: true});
+            else focusComposer();
+        }, 0);
+    };
+    // After New conversation or Delete, the sheet keeps the keyboard down by
+    // focusing the empty state's call to action; elsewhere the composer takes
+    // focus, falling back to that call to action while the composer is disabled.
+    const focusAfterHistoryAction = () => {
+        window.setTimeout(() => {
+            const composer = composerRef.current;
+            if (props.workspaceMode !== 'sheet' && composer && !composer.disabled) {
+                focusComposer();
+                return;
+            }
+            const cta = cardRef.current?.querySelector<HTMLElement>('[data-testid="empty-history-cta"]');
+            (cta ?? headingRef.current)?.focus({preventScroll: true});
+        }, 0);
+    };
     const autoFocusRef = React.useRef(true);
     autoFocusRef.current = props.workspaceMode === undefined || !!props.autoFocusComposer;
     // Shared floor for the measured card height; must stay in sync with the
     // `20rem` inline minHeight below (16px rem * 20) so the two cannot drift.
     const MIN_CARD_PX = 320;
     const MIN_TRANSCRIPT_PX = 128;
-    const adjustComposerHeight = React.useCallback(() => {
-        const ta = composerRef.current;
-        if (!ta) return;
-        ta.style.height = 'auto';
-        if (!ta.value) {
-            ta.style.overflowY = 'hidden';
-            return;
-        }
-        const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 24;
-        const maxHeight = lineHeight * MAX_COMPOSER_ROWS;
-        const desired = Math.min(ta.scrollHeight, maxHeight);
-        ta.style.height = `${desired}px`;
-        ta.style.overflowY = ta.scrollHeight > maxHeight ? 'auto' : 'hidden';
-    }, []);
-    // Adjust the composer on mount and on every keystroke/content reset. This
-    // only invokes the (stable) adjuster; it does *not* (re)register the passive
-    // window/font listeners below, so typing does not recreate them each key.
-    React.useEffect(() => {
-        adjustComposerHeight();
-    }, [adjustComposerHeight, input]);
-
+    const MIN_STACK_PX = 96;
+    const MIN_NOTICES_PX = 64;
     const loadAvailability = React.useCallback(async () => {
         if (availabilityRequested.current) return;
         availabilityRequested.current = true;
@@ -1111,36 +320,18 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         return null;
     }, [messages]);
 
-    // Register the long-lived listeners exactly once: window/viewport resize plus
-    // a one-shot document.fonts.ready hook so the height is re-measured once web
-    // fonts finish loading (the initial measure uses a fallback line-height before
-    // the real face paints). Because adjustComposerHeight is stable and the only
-    // dependency, these listeners are never re-registered per keystroke.
-    React.useEffect(() => {
-        // Defensive/idempotent mount-time measure: Effect 1 already runs
-        // adjustComposerHeight when the input state settles, but this guarantees
-        // the height is correct before the font/resize listeners are registered
-        // — the two effects are intentionally order-independent.
-        adjustComposerHeight();
-        let cancelled = false;
-        if (document.fonts && typeof document.fonts.ready?.then === 'function') {
-            const reflow = () => { if (!cancelled) adjustComposerHeight(); };
-            void document.fonts.ready.then(reflow, reflow);
-        }
-        window.addEventListener('resize', adjustComposerHeight);
-        window.visualViewport?.addEventListener('resize', adjustComposerHeight);
-        return () => {
-            cancelled = true;
-            window.removeEventListener('resize', adjustComposerHeight);
-            window.visualViewport?.removeEventListener('resize', adjustComposerHeight);
-        };
-    }, [adjustComposerHeight]);
     const cardRef = React.useRef<HTMLElement>(null);
-    const nearBottomRef = React.useRef(true);
-    const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
+    const [panelScroll, setPanelScroll] = React.useState(false);
+    const captureAnchorRef = React.useRef<() => void>(() => undefined);
     const [cardHeight, setCardHeight] = React.useState<number | null>(null);
+    // Room between the header and the composer band: inline panels scroll
+    // inside it instead of covering the composer.
+    const [stackMax, setStackMax] = React.useState<number | null>(null);
     // rAF bookkeeping so resize/orientation/keyboard bursts coalesce into at most
     // one measure per frame instead of thrashing layout on every event.
+    // Footer notices never take more than 40% of the card (or, when the panel
+    // scrolls, of the panel's visible height), not of the viewport.
+    const [noticesMax, setNoticesMax] = React.useState<number | null>(null);
     const rafIdRef = React.useRef<number | null>(null);
     const rafPendingRef = React.useRef(false);
 
@@ -1155,7 +346,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         const viewportHeight = viewport ? viewport.height : window.innerHeight;
         // Clamp so a negative offset when the page is scrolled cannot inflate the
         // card past the viewport (which would bury the composer below the fold).
-        const top = Math.max(0, card.getBoundingClientRect().top);
+        // Inside the assistant panel add back the panel's own scroll offset so the
+        // height does not depend on how far the reader has scrolled it (which would
+        // oversize the card and nest a second scrollbar, issue #483).
+        const panelBody = card.closest<HTMLElement>('.assistant-panel-body');
+        const top = Math.max(0, card.getBoundingClientRect().top + (panelBody ? panelBody.scrollTop : 0));
         // Respect the device home-indicator inset (iPhone X+). env() is exposed as
         // a CSS custom property (popup.css) since it isn't directly readable.
         let safeAreaBottom = 0;
@@ -1174,7 +369,29 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         // the history. On the page the history alone yields (no page scroll).
         const log = historyRef.current;
         const floor = log && card.closest('.assistant-panel-body') ? card.offsetHeight - log.offsetHeight + MIN_TRANSCRIPT_PX : 0;
-        setCardHeight(Math.max(computed, MIN_CARD_PX, floor));
+        // When the panel is too short to give the transcript a usable height the
+        // panel body becomes the one scroller and the transcript grows to its
+        // content, instead of nesting two scrollbars (issue #483).
+        const headerBottom = card.querySelector('.card-header')?.getBoundingClientRect().bottom ?? 0;
+        const formTop = card.querySelector('form')?.getBoundingClientRect().top ?? 0;
+        setStackMax(Math.max(MIN_STACK_PX, formTop - headerBottom - 12));
+        const scrollsPanel = floor > 0 && computed < floor;
+        // Record where the reader is before the scroll owner changes under them.
+        if (scrollsPanel !== (card.getAttribute('data-scroll-owner') === 'panel')) captureAnchorRef.current();
+        setPanelScroll(scrollsPanel);
+        // Keep scroll-into-view of transcript content clear of the pinned header
+        // and composer band while the panel body is the scroller. This is a
+        // scroll-margin on the content, not scroll-padding on the body: padding
+        // would also move the panel whenever focus lands inside a band.
+        // The footer is not rendered while the init error shows.
+        const headerHeight = card.querySelector('.card-header')?.getBoundingClientRect().height ?? 0;
+        const footerHeight = card.querySelector<HTMLElement>('.chat-footer')?.offsetHeight ?? 0;
+        card.style.setProperty('--chat-band-top', scrollsPanel ? `${Math.round(headerHeight)}px` : '0px');
+        card.style.setProperty('--chat-band-bottom', scrollsPanel ? `${footerHeight + 8}px` : '0px');
+        const resolvedHeight = Math.max(computed, MIN_CARD_PX, floor);
+        const noticesBase = scrollsPanel && panelBody && panelBody.clientHeight > 0 ? panelBody.clientHeight : resolvedHeight;
+        setNoticesMax(Math.max(MIN_NOTICES_PX, Math.round(noticesBase * 0.4)));
+        setCardHeight(resolvedHeight);
     }, []);
 
     // Coalesce high-frequency resize/viewport events (fired many times per second
@@ -1202,6 +419,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         if (typeof ResizeObserver !== 'undefined' && cardRef.current?.parentElement) {
             observer = new ResizeObserver(scheduleMeasure);
             observer.observe(cardRef.current.parentElement);
+            // Inline confirmations grow the header; re-measure so the
+            // transcript floor / single-scroller decision follows (issue #483).
+            const header = cardRef.current.querySelector('.card-header');
+            if (header) observer.observe(header);
             // The priorities block above the chat (assistant panel) resizes as
             // its steps change; the card height depends on its offset.
             // The block can mount after the chat (it waits for sign-in
@@ -1233,81 +454,37 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         };
     }, [scheduleMeasure]);
 
+    // The footer unmounts while the init error shows and a new one mounts when
+    // the conversation starts, so it is observed per mount, not once.
+    React.useEffect(() => {
+        const footer = cardRef.current?.querySelector('.chat-footer');
+        if (!footer || typeof ResizeObserver === 'undefined') return undefined;
+        const footerObserver = new ResizeObserver(scheduleMeasure);
+        footerObserver.observe(footer);
+        scheduleMeasure();
+        return () => footerObserver.disconnect();
+    }, [initError, scheduleMeasure]);
+
     const chatCardStyle = React.useMemo<React.CSSProperties>(() => {
+        const vars = {
+            ...(stackMax === null ? {} : {'--chat-stack-max': `${stackMax}px`}),
+            ...(noticesMax === null ? {} : {'--chat-notices-max': `${noticesMax}px`}),
+        } as React.CSSProperties;
+        if (panelScroll) return {...vars, height: 'auto'};
         if (cardHeight !== null) {
-            return {height: `${cardHeight}px`, minHeight: '20rem'};
+            return {...vars, height: `${cardHeight}px`, minHeight: '20rem'};
         }
-        return {minHeight: '20rem'};
-    }, [cardHeight]);
+        return {...vars, minHeight: '20rem'};
+    }, [cardHeight, panelScroll, stackMax, noticesMax]);
 
-    const prefersReducedMotion = (): boolean => (
-        typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    );
-
-    const isNearBottom = (element: HTMLDivElement): boolean => (
-        element.scrollHeight - element.scrollTop - element.clientHeight <= 48
-    );
-
-    const scrollToLatest = (behavior: ScrollBehavior = prefersReducedMotion() ? 'auto' : 'smooth') => {
-        const history = historyRef.current;
-        if (!history) return;
-        if (typeof history.scrollTo === 'function') {
-            history.scrollTo({top: history.scrollHeight, behavior});
-        } else {
-            history.scrollTop = history.scrollHeight;
-        }
-        nearBottomRef.current = true;
-        setShowJumpToLatest(false);
-    };
-
-    // Keep the latest content visible only while the reader is already at the bottom.
-    React.useEffect(() => {
-        const history = historyRef.current;
-        if (!history) return;
-        const handleScroll = () => {
-            const nearBottom = isNearBottom(history);
-            nearBottomRef.current = nearBottom;
-            setShowJumpToLatest(!nearBottom);
-        };
-        history.addEventListener('scroll', handleScroll, {passive: true});
-        return () => history.removeEventListener('scroll', handleScroll);
-    }, []);
-
-    // Initial history, optimistic turns, replies, and the pending indicator all append
-    // content to the same viewport. Do not interrupt someone reading older messages.
-    React.useEffect(() => {
-        // Empty history (visual review #472 round 5): never auto-scroll — the
-        // empty state stays anchored at the top of the log so its lead is
-        // visible on first open, even on the shortest sheet viewports.
-        // Auto-scroll resumes once a conversation exists or content is added.
-        if (messages.length === 0) {
-            return;
-        }
-        if (loading || !nearBottomRef.current) {
-            if (!nearBottomRef.current) setShowJumpToLatest(true);
-            return;
-        }
-        scrollToLatest();
-    }, [messages.length, pending, loading]);
-
-    // Visual viewport changes cover mobile keyboards and orientation changes. Preserve
-    // the reader's position when they are browsing older messages.
-    React.useEffect(() => {
-        const handleViewportResize = () => {
-            const history = historyRef.current;
-            if (!history) return;
-            const nearBottom = isNearBottom(history);
-            nearBottomRef.current = nearBottom;
-            setShowJumpToLatest(!nearBottom);
-            if (nearBottom) scrollToLatest('auto');
-        };
-        window.addEventListener('resize', handleViewportResize);
-        window.visualViewport?.addEventListener('resize', handleViewportResize);
-        return () => {
-            window.removeEventListener('resize', handleViewportResize);
-            window.visualViewport?.removeEventListener('resize', handleViewportResize);
-        };
-    }, []);
+    const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend, captureAnchor} = useTranscriptScroll({
+        messagesLength: messages.length,
+        assistantCount: messages.filter((m) => m.role === 'assistant').length,
+        scrollOwner: panelScroll ? 'panel' : 'transcript',
+        pending,
+        loading,
+    });
+    captureAnchorRef.current = captureAnchor;
 
     // Advisory availability check (issue #457). Runs on mount and is re-run
     // before each send and from the notice's retry affordance. A failed check
@@ -1431,9 +608,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                         // conversationId/loading commit) and is silently
                         // dropped, leaving the composer unfocused (CI: 400%
                         // zoom composer-focus race).
-                        if (props.workspaceMode !== 'sheet' && autoFocusRef.current) {
-                            window.setTimeout(() => composerRef.current?.focus(), 0);
-                        }
+                        focusAfterLoad();
                     } catch {
                         if (stale()) return;
                         setInitError('Could not start a conversation. Please try again.');
@@ -1453,12 +628,8 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 adoptPendingDraft(data.id);
                 setLoading(false);
                 // Defer focus past the React commit (see above): the textarea
-                // is disabled until conversationId/loading land. The mobile
-                // sheet keeps focus on its Back control instead of raising
-                // the keyboard.
-                if (props.workspaceMode !== 'sheet' && autoFocusRef.current) {
-                    window.setTimeout(() => composerRef.current?.focus(), 0);
-                }
+                // is disabled until conversationId/loading land.
+                focusAfterLoad();
             })
             .catch(() => {
                 if (stale()) return;
@@ -1522,36 +693,6 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setPurgeGeneration((g) => g + 1);
         }
     };
-
-    React.useEffect(() => {
-        // Sign-out (issue #465 AC-9): app-nav.js purges storage and
-        // dispatches this directly before its redirect.
-        const handlePurged = () => resetForPurge();
-        // Account switch while this page is already open (issue #465 AC-9):
-        // app-nav.js's whoami hydration dispatches this on every load, and
-        // it is the only signal for a switch that happened after the server
-        // rendered `accountKey`. The load-time case is already handled
-        // synchronously by reconcileAccountKey() above — this covers the
-        // rest, using the same comparison so the two cannot disagree.
-        const handleHydrated = (e: Event) => {
-            const detail = (e as CustomEvent).detail as {authenticated?: boolean; username?: string; unobserved?: boolean} | undefined;
-            // A failed whoami says nothing about the account: keep the
-            // current auth state so the signed-in draft never moves to the
-            // shared anonymous `pending` slot.
-            if (!detail || detail.unobserved) return;
-            setEffectiveAuthenticated(!!detail.authenticated);
-            if (!detail.authenticated || !detail.username) return;
-            if (reconcileAccountKey(detail.username)) {
-                resetForPurge();
-            }
-        };
-        document.addEventListener('crank:private-state-purged', handlePurged);
-        document.addEventListener('crank:auth-hydrated', handleHydrated);
-        return () => {
-            document.removeEventListener('crank:private-state-purged', handlePurged);
-            document.removeEventListener('crank:auth-hydrated', handleHydrated);
-        };
-    }, [effectiveAuthenticated]);
 
     // Announce new assistant content to assistive tech.
     React.useEffect(() => {
@@ -1746,6 +887,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setRetryKey(key);
         } else {
             setMessages((prev) => [...prev, optimisticUser]);
+            followNextAppend();
         }
 
         const controller = new AbortController();
@@ -2014,11 +1156,19 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             // conversation: a mid-flight switch must not wipe the new draft.
             if (conversationIdRef.current === turnConversationId && !keepDraftRef.current) {
                 setInput('');
-                window.setTimeout(() => composerRef.current?.focus(), 0);
+                window.setTimeout(focusComposer, 0);
             } else if (conversationIdRef.current === turnConversationId) {
-                window.setTimeout(() => composerRef.current?.focus(), 0);
+                window.setTimeout(focusComposer, 0);
             }
         }
+    };
+
+    const handleJumpToLatest = () => {
+        scrollToLatest('auto');
+        // Focus the newest turn, not the composer: that would raise the phone
+        // keyboard, and the composer is disabled while a reply is pending.
+        const articles = historyRef.current?.querySelectorAll<HTMLElement>('article');
+        (articles && articles.length ? articles[articles.length - 1] : historyRef.current)?.focus({preventScroll: true});
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -2062,7 +1212,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
     const handleEditAsNew = (message: ChatMessage) => {
         setInput(message.content);
         writeComposerDraft(conversationId, message.content);
-        composerRef.current?.focus();
+        focusComposer();
     };
 
     const handleStopWaiting = () => {
@@ -2086,15 +1236,31 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         }
     };
 
-    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-        if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            const content = input.trim();
-            if (content && isReady && !composerGated) {
-                // Explicit send resolves the surfaced recovery draft (see
-                // submitTurn).
-                void submitTurn(content);
-            }
+    const handleComposerChange = (value: string) => {
+        setInput(value);
+        if (effectiveAuthenticated) {
+            writeComposerDraft(conversationId, value);
+        } else {
+            // Sensitive draft text (issue #465 AC-8): kept client-side only,
+            // in a pre-conversation slot since a signed-out visitor has no
+            // conversation id to key it against. Never sent anywhere,
+            // including the sign-in `next`.
+            writePendingDraft(value);
+        }
+        // Explicit discard (issue #458 r2): emptying the composer throws the
+        // surfaced recovery draft away for good — other unsent turns stay
+        // recoverable in storage.
+        if (value === '') {
+            clearSurfacedDraft();
+        }
+    };
+
+    const handleSend = () => {
+        const content = input.trim();
+        if (content && isReady && !composerGated) {
+            // Explicit send resolves the surfaced recovery draft (see
+            // submitTurn).
+            void submitTurn(content);
         }
     };
 
@@ -2117,12 +1283,12 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         } finally {
             setLoading(false);
             // Defer focus past the React commit (see above).
-            window.setTimeout(() => composerRef.current?.focus(), 0);
+            window.setTimeout(focusComposer, 0);
         }
     };
 
-    const handleExport = async () => {
-        if (!conversationId) return;
+    const handleExport = async (): Promise<string | null> => {
+        if (!conversationId) return null;
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/export/`);
             if (!res.ok) throw new Error('export-failed');
@@ -2132,14 +1298,14 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             a.download = `job-search-${conversationId}.json`;
             a.click();
             URL.revokeObjectURL(a.href);
+            return null;
         } catch {
-            setError('Could not export your conversation.');
+            return 'Could not export your conversation.';
         }
     };
 
-    const handleReset = async () => {
-        if (!conversationId) return;  // # pragma: no cover - button is disabled without a conversation
-        if (!window.confirm('Start a new conversation? Your current history will be archived. Your saved priorities are not changed.')) return;
+    const handleReset = async (): Promise<string | null> => {
+        if (!conversationId) return null;  // # pragma: no cover - menu item is disabled without a conversation
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/reset/`, {method: 'POST'});
             if (!res.ok) throw new Error('reset-failed');
@@ -2155,15 +1321,15 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setPreferencesChanged(false);
             setPrefDismissed(false);
             setError(null);
-            composerRef.current?.focus();
+            focusAfterHistoryAction();
+            return null;
         } catch {
-            setError('Could not reset the conversation.');
+            return 'Could not reset the conversation.';
         }
     };
 
-    const handleDelete = async () => {
-        if (!conversationId) return;
-        if (!window.confirm('Delete this conversation permanently? This cannot be undone.')) return;
+    const handleDelete = async (): Promise<string | null> => {
+        if (!conversationId) return null;
         try {
             const res = await csrfFetch(`/api/agent/conversations/${conversationId}/delete/`, {method: 'POST'});
             if (!res.ok) throw new Error('delete-failed');
@@ -2175,9 +1341,10 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
             setPreferencesChanged(false);
             setPrefDismissed(false);
             setError(null);
-            composerRef.current?.focus();
+            focusAfterHistoryAction();
+            return null;
         } catch {
-            setError('Could not delete the conversation.');
+            return 'Could not delete the conversation.';
         }
     };
 
@@ -2316,36 +1483,21 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         <section className="card bg-dark d-flex flex-column" data-testid="job-search-chat"
                  aria-labelledby="job-search-chat-title"
                  ref={cardRef}
+                 data-scroll-owner={panelScroll ? 'panel' : 'transcript'}
                  style={chatCardStyle}>
-            <div className="card-header d-flex justify-content-between align-items-center">
-                <h2 id="job-search-chat-title" className="h6 mb-0">Conversation</h2>
-                <div className="chat-conversation-actions" role="group" aria-label="Conversation controls">
-                    <button type="button" className="btn btn-sm btn-outline-light" onClick={handleExport}
-                            disabled={!conversationId || !messages.length}>Export chat</button>
-                    <button type="button" className="btn btn-sm btn-outline-light" onClick={handleReset}
-                            disabled={!conversationId || pending}>New conversation</button>
-                    <button type="button" className="btn btn-sm btn-outline-danger" onClick={handleDelete}
-                            disabled={!conversationId || pending}>Delete conversation</button>
-                </div>
+            <div className="card-header d-flex flex-wrap align-items-center">
+                <ConversationMenu
+                    title={<h2 id="job-search-chat-title" className="h6 mb-0" tabIndex={-1} ref={headingRef}>Conversation</h2>}
+                    hasConversation={!!conversationId}
+                    hasMessages={messages.length > 0}
+                    pending={pending}
+                    onExport={handleExport}
+                    onNewConversation={handleReset}
+                    onDeleteConversation={handleDelete}
+                />
             </div>
 
             <div className="card-body d-flex flex-column" style={{minHeight: 0}}>
-                <div id="job-search-data-note" className="chat-note" role="note">
-                    <div className="chat-note-row">
-                        <i className="fa-solid fa-circle-info chat-status-icon" aria-hidden="true"></i>
-                        <span className="chat-note-text">The assistant is automated and can be wrong. Check important details yourself.</span>
-                        <button type="button" className="chat-note-toggle chat-focus" aria-expanded={dataNoteOpen}
-                                aria-controls="job-search-data-note-details" onClick={() => setDataNoteOpen((o) => !o)}
-                                data-testid="data-note-toggle">
-                            {dataNoteOpen ? 'Hide details' : 'Details'}
-                        </button>
-                    </div>
-                    <div id="job-search-data-note-details" className={dataNoteOpen ? 'chat-note-details' : 'visually-hidden'}>
-                        Your messages and preference updates are saved to your account; use Export, New conversation, or Delete
-                        above to manage them.
-                    </div>
-                </div>
-
                 {prefProposal && !prefDismissed && (
                     <PreferenceProposalNotice
                         proposal={prefProposal}
@@ -2411,11 +1563,11 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 )}
 
                 {!revealingPrefChanges && revealingPrefs && (
-                    <div className="alert alert-success d-flex justify-content-between align-items-center"
+                    <div className="alert alert-success chat-pref-alert d-flex justify-content-between align-items-center"
                          role="status" aria-label="Preference update" aria-describedby="preference-update-help">
                         <span>
                             <i className="fa-solid fa-circle-check me-1"></i>
-                            Your saved preferences were updated based on this conversation.
+                            Preferences updated.
                         </span>
                         <span id="preference-update-help" className="visually-hidden">
                             You can correct or remove a preference by telling the assistant what to change.
@@ -2460,228 +1612,75 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
                 )}
 
                 {!initError && (
-                <div className="d-flex flex-column flex-grow-1" style={{minHeight: 0}}>
-                    <div className="bg-dark chat-transcript rounded p-3 mb-3 flex-grow-1" style={{minHeight: 0, overflowY: 'auto'}}
-                         ref={historyRef} role="log" aria-live="polite" aria-label="Message history" aria-busy={pending}>
-                        {effectiveAuthenticated && loading && (
-                            <div className="text-muted chat-loading-status" role="status" aria-live="polite"
-                                 data-testid="chat-loading">
-                                <i className="fa-solid fa-spinner fa-spin me-2" aria-hidden="true"></i>Loading conversation…
-                            </div>
-                        )}
-                        {effectiveAuthenticated && messages.length === 0 && !loading && (
-                            <div data-testid="empty-history">
-                                <p className="empty-history-lead mb-2">
-                                    Ask about compensation, work location, funding, or culture to get started.
-                                </p>
-                                <p className="empty-history-note small mb-3">
-                                    <i className="fa-solid fa-circle-info me-1"></i>
-                                    {props.workspaceMode === 'sheet'
-                                        ? 'Tap Back to results to view job-match status and results.'
-                                        : 'Job-match status and results appear in the Job Matches panel.'}
-                                </p>
-                                <button type="button" className="btn btn-primary empty-history-cta"
-                                        data-testid="empty-history-cta"
-                                        onClick={() => composerRef.current?.focus()}>
-                                    <i className="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>
-                                    Ask your first question
-                                </button>
-                            </div>
-                        )}
-                        {messages.map((m) => (
-                            <article key={m.id} aria-label={m.role === 'user' ? 'Your message' : 'Assistant message'}
-                                     className={`d-flex flex-column ${m.role === 'user' ? 'align-items-end' : 'align-items-start'} mb-2`}>
-                                <div className={`chat-bubble ${m.role === 'user' ? 'chat-bubble-user' : 'chat-bubble-assistant'}`}
-                                     style={{maxWidth: '80%', wordBreak: 'break-word'}}>
-                                    <div style={{whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>{m.content}</div>
-                                    {m.role === 'assistant' && staleNotes[m.id] && (
-                                        <div className="chat-stale-context-note small mt-1"
-                                             data-testid="stale-context-note">
-                                            {staleNotes[m.id]}
-                                        </div>
-                                    )}
-                                    {m.role === 'assistant' && m.results && (
-                                        <ResultCards results={m.results} />
-                                    )}
-                                    {m.role === 'assistant' && m.id === lastAssistantId && !hasResults(m.results) && availability && availability.state !== 'ok' && (
-                                        <AvailabilityNotice availability={availability} />
-                                    )}
-                                    {m.role === 'user' && m.delivery_state === 'pending' && retryKey !== m.idempotency_key && (
-                                        <div className="chat-retry-panel mt-2" data-testid="pending-turn">
-                                            <div className="chat-status-row" role="status">
-                                                <i className="fa-solid fa-hourglass-half chat-status-icon" aria-hidden="true"></i>
-                                                <div>
-                                                    <div>The response has not arrived yet.</div>
-                                                </div>
-                                            </div>
-                                            <div className="chat-actions mt-3" role="group" aria-label="Pending turn actions">
-                                                <button type="button" className="chat-btn chat-btn-primary chat-focus"
-                                                        onClick={() => void handleCheckResponse(m)}
-                                                        aria-label="Check for response" data-testid="check-response-button">
-                                                    Check for response
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
-                                    {m.role === 'user' && retryKey !== null && m.idempotency_key === retryKey && m.delivery_state !== 'completed' && (
-                                        <div className="chat-retry-panel mt-2" data-testid="retrying-turn">
-                                            <div className="chat-status-row" role="status">
-                                                <i className="fa-solid fa-spinner fa-spin chat-status-icon" aria-hidden="true"></i>
-                                                <div>
-                                                    <div>Retrying response…</div>
-                                                </div>
-                                            </div>
-                                            <div className="chat-actions mt-3" role="group" aria-label="Failed turn actions">
-                                                <button type="button" className="chat-btn chat-btn-primary" disabled
-                                                        aria-label="Retrying response" data-testid="retry-response-button">
-                                                    Retrying…
-                                                </button>
-                                                <button type="button" className="chat-btn chat-btn-secondary" disabled
-                                                        aria-label="Edit as new message" data-testid="edit-as-new-button">
-                                                    Edit as new message
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                                {m.role === 'user' && m.delivery_state === 'failed' && retryKey !== m.idempotency_key && (
-                                    <div className="chat-failure-panel chat-failure-panel--outside" data-testid="failed-turn">
-                                        <div className="chat-status-row" role="status">
-                                            <i className="fa-solid fa-triangle-exclamation chat-status-icon" aria-hidden="true"></i>
-                                            <div>
-                                                {m.retry_available === false ? (
-                                                    <div>Response failed after several retries. Your message is saved.</div>
-                                                ) : (
-                                                    <div>Response failed. Your message is saved; retries are limited.</div>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <div className="chat-actions mt-3" role="group" aria-label="Failed turn actions">
-                                            {m.retry_available === false ? (
-                                                <button type="button" className="chat-btn chat-btn-primary chat-focus" disabled
-                                                        aria-label="Retry limit reached" data-testid="retry-response-button">
-                                                    Retry limit reached
-                                                </button>
-                                            ) : (
-                                                <button type="button" className="chat-btn chat-btn-primary chat-focus"
-                                                        onClick={() => handleRetryMessage(m)}
-                                                        aria-label="Retry response" data-testid="retry-response-button">
-                                                    Retry response
-                                                </button>
-                                            )}
-                                            <button type="button" className="chat-btn chat-btn-secondary chat-focus"
-                                                    onClick={() => handleEditAsNew(m)}
-                                                    aria-label="Edit as new message" data-testid="edit-as-new-button">
-                                                Edit as new message
-                                            </button>
-                                        </div>
-                                    </div>
-                                )}
-                            </article>
-                        ))}
-                        {pending && (
-                            <div className="text-muted" role="status" aria-live="polite" data-testid="pending-status">
-                                <i className="fa-solid fa-spinner fa-spin me-1"></i>Assistant is typing…
-                            </div>
-                        )}
-                    </div>
-                    {showJumpToLatest && (
-                        /* Reserved footer slot (round-2 critique): the control
-                           sits in its own row below the history instead of
-                           floating over message content. */
-                        <div className="flex-shrink-0 text-end mb-2">
-                            <button type="button" className="btn btn-sm btn-primary"
-                                    onClick={() => scrollToLatest('auto')} aria-label="Jump to latest message"
-                                    data-testid="jump-to-latest">
-                                New messages · Jump to latest
-                            </button>
-                        </div>
-                    )}
+                <div className="chat-transcript-wrap">
+                <Transcript
+                    historyRef={historyRef}
+                    messages={messages}
+                    staleNotes={staleNotes}
+                    lastAssistantId={lastAssistantId}
+                    availability={availability}
+                    retryKey={retryKey}
+                    pending={pending}
+                    loading={loading}
+                    authenticated={effectiveAuthenticated}
+                    workspaceMode={props.workspaceMode}
+                    scrollOwner={panelScroll ? 'panel' : 'transcript'}
+                    onAskFirstQuestion={focusComposer}
+                    onCheckResponse={(m) => void handleCheckResponse(m)}
+                    onRetryMessage={(m) => handleRetryMessage(m)}
+                    onEditAsNew={handleEditAsNew}
+                />
                 </div>
                 )}
 
                 {!initError && (
-                <div className="flex-shrink-0" style={{paddingBottom: 'calc(0.25rem + env(safe-area-inset-bottom))'}}>
-                    {assistantStatus && (
-                        <AssistantStatusNotice
-                            status={assistantStatus}
-                            checking={statusChecking}
-                            onRetry={() => { void refreshStatus(); }}
-                        />
+                <div className="chat-footer flex-shrink-0">
+                    {showJumpToLatest && (
+                        <JumpToLatest unreadCount={unreadCount} onJump={handleJumpToLatest}/>
                     )}
-
-                    {error && (
-                        <div className="alert alert-danger d-flex justify-content-between align-items-center"
-                             role="alert" data-testid="chat-error" data-error-type={errorType || undefined}>
-                            <span className="flex-grow-1 me-2">{error}</span>
-                            {retrying && (
-                                <button type="button"
-                                        className="btn btn-sm btn-outline-danger ms-2 flex-shrink-0 text-nowrap chat-focus"
-                                        onClick={handleRetry} disabled={pending} data-testid="retry-button">
-                                    Retry
-                                </button>
-                            )}
-                        </div>
-                    )}
-
-                    <form onSubmit={handleSubmit} aria-busy={pending}>
-                        {/* chat-composer-pending (round-2 critique): while the Stop
-                            control renders, compact Send to an icon-only 44px target on
-                            narrow screens so the row never clips the placeholder. */}
-                        <div className={`input-group${pending ? ' chat-composer-pending' : ''}`}>
-                            <textarea
-                                ref={composerRef}
-                                className="form-control chat-focus"
-                                placeholder="Type your message…"
-                                aria-label="Message"
-                                data-testid="assistant-composer"
-                                aria-describedby={!effectiveAuthenticated ? 'job-search-signed-out-reason' : undefined}
-                                value={input}
-                                onChange={(e) => {
-                                    setInput(e.target.value);
-                                    if (effectiveAuthenticated) {
-                                        writeComposerDraft(conversationId, e.target.value);
-                                    } else {
-                                        // Sensitive draft text (issue #465 AC-8):
-                                        // kept client-side only, in a
-                                        // pre-conversation slot since a
-                                        // signed-out visitor has no
-                                        // conversation id to key it against.
-                                        // Never sent anywhere, including the
-                                        // sign-in `next`.
-                                        writePendingDraft(e.target.value);
-                                    }
-                                    // Explicit discard (issue #458 r2): emptying the
-                                    // composer throws the surfaced recovery draft
-                                    // away for good — other unsent turns stay
-                                    // recoverable in storage.
-                                    if (e.target.value === '') {
-                                        clearSurfacedDraft();
-                                    }
-                                }}
-                                onKeyDown={handleKeyDown}
-                                disabled={effectiveAuthenticated ? ((createOnMount && !conversationId) || pending || composerGated) : pending}
-                                autoComplete="off"
-                                rows={1}
-                                style={{resize: 'none', overflowY: 'hidden'}}
+                    <div className="chat-footer-notices">
+                        {assistantStatus && (
+                            <AssistantStatusNotice
+                                status={assistantStatus}
+                                checking={statusChecking}
+                                onRetry={() => { void refreshStatus(); }}
                             />
-                            <button type="submit" className="btn btn-primary chat-send chat-focus"
-                                    disabled={!effectiveAuthenticated || (createOnMount && !conversationId) || pending || composerGated || !input.trim()}
-                                    aria-label="Send message" aria-describedby={!effectiveAuthenticated ? 'job-search-signed-out-reason' : undefined}>
-                                <i className="fa-solid fa-paper-plane" aria-hidden="true"></i>
-                                <span>Send</span>
-                            </button>
-                            {pending && (
-                                <button type="button" className="btn btn-outline-light chat-stop chat-focus" onClick={handleStopWaiting}
-                                        aria-label="Stop waiting for response" data-testid="stop-button">
-                                    <i className="fa-solid fa-circle-stop" aria-hidden="true"></i>
-                                    <span>Stop</span>
-                                </button>
-                            )}
-                        </div>
-                    </form>
+                        )}
+
+                        {error && (
+                            <div className="alert alert-danger d-flex justify-content-between align-items-center"
+                                 role="alert" data-testid="chat-error" data-error-type={errorType || undefined}>
+                                <span className="flex-grow-1 me-2">{error}</span>
+                                {retrying && (
+                                    <button type="button"
+                                            className="btn btn-sm btn-outline-danger ms-2 flex-shrink-0 text-nowrap chat-focus"
+                                            onClick={handleRetry} disabled={pending} data-testid="retry-button">
+                                        Retry
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    <Composer
+                        textareaRef={composerRef}
+                        value={input}
+                        pending={pending}
+                        authenticated={effectiveAuthenticated}
+                        textareaDisabled={effectiveAuthenticated ? ((createOnMount && !conversationId) || pending || composerGated) : pending}
+                        sendDisabled={!effectiveAuthenticated || (createOnMount && !conversationId) || pending || composerGated || !input.trim()}
+                        onChange={handleComposerChange}
+                        onSubmit={handleSubmit}
+                        onEnter={handleSend}
+                        onStop={handleStopWaiting}
+                    />
                 </div>
                 )}
+
+                <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true"
+                     data-testid="new-messages-status">
+                    {unreadCount > 0 ? `${unreadCount} new ${unreadCount === 1 ? 'message' : 'messages'}` : ''}
+                </div>
 
                 {/* Screen-reader-only live region for pending/error transitions. */}
                 <div ref={statusRef} className="visually-hidden" role="status" aria-live="assertive">

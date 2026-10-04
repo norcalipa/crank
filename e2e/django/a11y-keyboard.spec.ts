@@ -75,8 +75,10 @@ test.describe('live regions and landmarks', () => {
         // (distinct from the preference notice, also role=status, which only
         // renders after a preference-changing turn).
         await expect(
-            page.locator('section[data-testid="job-search-chat"] .visually-hidden[role="status"]'),
+            page.locator('section[data-testid="job-search-chat"] .visually-hidden[role="status"][aria-live="assertive"]'),
         ).toHaveCount(1);
+        // A second, polite region announces "N new messages" while the reader is scrolled away (#483).
+        await expect(page.getByTestId('new-messages-status')).toHaveAttribute('aria-live', 'polite');
     });
 
     test('pending turn flips the live status and announces completion', async ({page}) => {
