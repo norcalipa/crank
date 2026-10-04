@@ -102,9 +102,12 @@ async function renderChat(existingMessages: ChatMessage[] = []) {
         jsonResponse(emptyConversation(42, existingMessages)),
     );
     render(<JobSearchChat/>);
-    // Wait until resume resolves and the input is enabled.
+    // Wait until resume resolves and the input is enabled. The composer is
+    // enabled while history is still loading, but a submit is dropped until
+    // loading clears, so wait for the loading indicator to go away too.
     await screen.findByLabelText('Message');
     await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+    await waitFor(() => expect(screen.queryByTestId('chat-loading')).not.toBeInTheDocument());
 }
 
 async function renderChatAs(existingMessages: ChatMessage[]) {
@@ -115,6 +118,7 @@ async function renderChatAs(existingMessages: ChatMessage[]) {
     const instance = render(<JobSearchChat/>);
     await screen.findByLabelText('Message');
     await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+    await waitFor(() => expect(screen.queryByTestId('chat-loading')).not.toBeInTheDocument());
     return instance;
 }
 
