@@ -3502,16 +3502,14 @@ body.assistant-open .app-content .table-responsive,
     border-top: 1px solid rgba(255, 255, 255, .10);
 }
 
-/* Scroll-into-view of transcript content stays clear of the pinned bands: a
-   margin on the content for the top, and scroll-padding on the panel body (the
-   scroller) for the footer, so reveals made by the browser (focus, find) also
-   stop above the footer. */
-.assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) {
-    scroll-padding-bottom: var(--chat-band-bottom, 0px);
-}
-
-#job-search-chat > [data-scroll-owner='panel'] [role='log'] :is(article, a, button) {
+/* Scroll-into-view of transcript content stays clear of the pinned bands. It is
+   a margin on the content, not scroll-padding on the panel body: padding would
+   also scroll the panel whenever focus lands on something inside a band. The
+   headings and tabindex targets the assistant focuses (the save card) are
+   included, not just links and buttons. */
+#job-search-chat > [data-scroll-owner='panel'] [role='log'] :is(article, a, button, h3, h4, [tabindex]) {
     scroll-margin-top: var(--chat-band-top, 0);
+    scroll-margin-bottom: var(--chat-band-bottom, 0);
 }
 
 #job-search-chat .chat-loading-status {

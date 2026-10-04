@@ -398,14 +398,14 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         if (scrollsPanel !== (card.getAttribute('data-scroll-owner') === 'panel')) captureAnchorRef.current();
         setPanelScroll(scrollsPanel);
         // Keep scroll-into-view of transcript content clear of the pinned header
-        // and composer band while the panel body is the scroller.
+        // and composer band while the panel body is the scroller. This is a
+        // scroll-margin on the content, not scroll-padding on the body: padding
+        // would also move the panel whenever focus lands inside a band.
         // The footer is not rendered while the init error shows.
         const headerHeight = card.querySelector('.card-header')?.getBoundingClientRect().height ?? 0;
         const footerHeight = card.querySelector<HTMLElement>('.chat-footer')?.offsetHeight ?? 0;
         card.style.setProperty('--chat-band-top', scrollsPanel ? `${Math.round(headerHeight)}px` : '0px');
         card.style.setProperty('--chat-band-bottom', scrollsPanel ? `${footerHeight + 8}px` : '0px');
-        // The panel body is the scroller here, so its scroll-padding carries the footer height.
-        panelBody?.style.setProperty('--chat-band-bottom', scrollsPanel ? `${footerHeight + 8}px` : '0px');
         const resolvedHeight = Math.max(computed, MIN_CARD_PX, floor);
         const noticesBase = scrollsPanel && panelBody && panelBody.clientHeight > 0 ? panelBody.clientHeight : resolvedHeight;
         setNoticesMax(Math.max(MIN_NOTICES_PX, Math.round(noticesBase * 0.4)));

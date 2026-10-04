@@ -382,13 +382,11 @@ describe('chat layering and pinned rows (issue #483 adversarial review round 1)'
         );
     });
 
-    it('keeps transcript scroll-into-view clear of the bands: content margin above, panel-body scroll-padding below', () => {
+    it('keeps transcript scroll-into-view clear of the bands with a content margin, never panel-body scroll-padding', () => {
         expect(popupCss).toMatch(
-            /#job-search-chat > \[data-scroll-owner='panel'\] \[role='log'\] :is\(article, a, button\)\s*\{[^}]*scroll-margin-top:\s*var\(--chat-band-top/,
+            /#job-search-chat > \[data-scroll-owner='panel'\] \[role='log'\] :is\([^)]*h3[^)]*\[tabindex\]\)\s*\{[^}]*scroll-margin-top:\s*var\(--chat-band-top[^}]*scroll-margin-bottom:\s*var\(--chat-band-bottom/,
         );
-        expect(popupCss).toMatch(
-            /\.assistant-panel-body:has\(#job-search-chat > \[data-scroll-owner='panel'\]\)\s*\{[^}]*scroll-padding-bottom:\s*var\(--chat-band-bottom/,
-        );
+        expect(popupCss).not.toMatch(/\.assistant-panel-body[^{]*\{[^}]*scroll-padding/);
     });
 
     it('pins the action row of an inline panel and caps footer notices against the card, falling back to 40% of the view', () => {

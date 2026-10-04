@@ -404,12 +404,13 @@ test.describe('assistant actions (issue #484)', () => {
         await expect(page.locator('#job-search-chat > [data-scroll-owner="panel"]')).toHaveCount(1);
         await expectUnobstructed(page, save);
         await expectUnobstructed(page, review.getByText('Work arrangement'));
+        // The browser's own reveals (focus, find) also stop above the pinned footer.
         const clear = await page.evaluate(() => {
-            const body = document.querySelector('.assistant-panel-body') as HTMLElement;
+            const heading = document.querySelector('[data-testid="assistant-action-review"] h3, [data-testid="assistant-action-review"] h4') as HTMLElement;
             const footer = document.querySelector('#job-search-chat .chat-footer') as HTMLElement;
-            return {padding: parseFloat(getComputedStyle(body).scrollPaddingBottom), footer: footer.getBoundingClientRect().height};
+            return {margin: parseFloat(getComputedStyle(heading).scrollMarginBottom), footer: footer.getBoundingClientRect().height};
         });
-        expect(clear.padding).toBeGreaterThanOrEqual(clear.footer - 1);
+        expect(clear.margin).toBeGreaterThanOrEqual(clear.footer);
         await expectPillFollowsPosition(page);
     });
 
