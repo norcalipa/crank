@@ -221,6 +221,23 @@ class ScoreGatheringServiceTests(TestCase):
             {AgentRun.Status.SUCCEEDED, AgentRun.Status.FAILED},
         )
 
+    def test_failed_source_event_carries_source_failure_stage(self):
+        failed = self.source("failed")
+        succeeded = self.source("succeeded")
+        adapters = {
+            failed.pk: FakeAdapter(failed, error=RuntimeError("upstream unavailable")),
+            succeeded.pk: FakeAdapter(succeeded, [observation()]),
+        }
+        with patch(
+            "crank.services.score_gathering.build_adapter",
+            side_effect=lambda source: adapters[source.pk],
+        ), patch("newrelic.agent.record_custom_event") as vendor:
+            gather_scores(self.make_run(), resolution_config=self.config)
+        events = [c.args[1] for c in vendor.call_args_list if c.args[1].get("event_name") == "source_stage"]
+        by_status = {e["status"]: e for e in events}
+        self.assertEqual(by_status["failed"]["failure_stage"], "source")
+        self.assertNotIn("failure_stage", by_status["succeeded"])
+
     def test_all_sources_failed_raises_with_aggregate_counts(self):
         source = self.source("failed")
         adapter = FakeAdapter(source, error=RuntimeError("upstream unavailable"))

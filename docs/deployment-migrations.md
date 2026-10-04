@@ -468,3 +468,22 @@ numbered merge migration if a head split remains, keeping
     correction is not overwritten by an unreviewed crawl) coexists with
     #525's rewrite of that function; the four crawl/manual-correction tests in
     `test_company_evidence.py` guard it.
+
+## Allocation: 0048 (issue #482)
+
+- **0048 → #482**, `0048_jobsearchconversation_first_result_at`, parent
+  `0047_companycorrection` (#477, merged first), so the crank chain is
+  0046 → 0047 → 0048 with a single leaf; the exact-leaf list in
+  `test_readiness_baseline` and the shape test in `test_source_freshness`
+  name 0048. Exactly one operation: `AddField
+  JobSearchConversation.first_result_at DateTimeField(null=True, blank=True)`.
+  On MySQL that is one `ALTER TABLE ... ADD COLUMN first_result_at datetime(6)
+  NULL` (no default, no index, no backfill).
+- Existing conversations stay `NULL`. The "time to first useful result"
+  metric is meaningful only for conversations created after deploy.
+- **Recovery if `migrate` is interrupted inside 0048.** `showmigrations crank`
+  lists 0048 unapplied. Run `SHOW COLUMNS FROM crank_jobsearchconversation LIKE
+  'first_result_at'`. If the column exists, run `migrate crank
+  0048_jobsearchconversation_first_result_at --fake`; otherwise rerun `migrate`.
+- **Rollback.** The nullable column persists harmlessly; older pods never read
+  it. Rollout is migrate, then deploy.

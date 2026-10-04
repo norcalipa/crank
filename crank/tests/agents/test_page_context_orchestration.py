@@ -565,3 +565,40 @@ def test_viewed_company_scores_survive_a_full_score_catalog():
     assert "organization_id=3 pay=4.0" in summaries
     ids = [int(m) for m in re.findall(r"organization_id=(\d+)", summaries)]
     assert ids == sorted(ids) and len(ids) == 3
+
+
+def _turn_event_for(availability_service):
+    from unittest.mock import patch
+
+    from crank.agents.job_search.service import JobSearchOrchestrator
+    from crank.tests.agents.test_golden_conversations import RecordingPreferenceService
+
+    orch = JobSearchOrchestrator(
+        gateway=ScriptedGateway({**BASE, "actions": []}),
+        preference_service=RecordingPreferenceService(),
+        org_datasource=lambda filters, limit: [ORG_ACME],
+        score_datasource=lambda ids, types, limit: [],
+        job_listing_datasource=lambda filters, limit: [],
+        availability_service=availability_service,
+        user=object(),
+    )
+    with patch("crank.agents.job_search.service.monitoring.record_event") as record:
+        result = orch.run(
+            user_prompt="x", conversation=[], preference_markdown=""
+        )
+    turn = next(c.args[1] for c in record.call_args_list if c.args[0] == "job_search_turn")
+    return result, turn
+
+
+def test_turn_telemetry_carries_availability_state():
+    result, turn = _turn_event_for(lambda user: {"state": "no_matches"})
+    assert result.availability_state == "no_matches"
+    assert turn["availability_state"] == "no_matches"
+
+
+def test_turn_telemetry_omits_availability_state_when_unknown():
+    from crank.services import monitoring
+
+    result, turn = _turn_event_for(lambda user: None)
+    assert result.availability_state is None
+    assert "availability_state" not in monitoring.event_attributes("job_search_turn", turn)
