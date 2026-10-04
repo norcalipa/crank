@@ -214,9 +214,9 @@ for (const vp of viewports) {
             const wrap = page.locator('.organization-table-wrap');
             const cards = page.locator('.organization-cards');
             // The table-to-card switch follows the results container width
-            // (issue #478): cards when it is at most 48rem (768px) wide.
+            // (issues #478, #473): cards when it is at most 56rem (896px) wide.
             const resultsWidth = await page.locator('.organization-results').evaluate((el) => el.getBoundingClientRect().width);
-            if (resultsWidth <= 768) {
+            if (resultsWidth <= 896) {
                 // Narrow results: cards are shown, table is hidden.
                 await expect(cards).toBeVisible();
                 await expect(wrap).toBeHidden();
