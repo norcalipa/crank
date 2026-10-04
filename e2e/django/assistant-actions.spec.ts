@@ -22,6 +22,22 @@ async function ask(page: Page, text: string): Promise<void> {
     await page.getByRole('button', {name: 'Send message'}).click();
 }
 
+// The adopted #542 rule: the jump pill shows exactly when the reader is more
+// than 48px from the bottom of whichever element scrolls the transcript.
+async function expectPillFollowsPosition(page: Page): Promise<void> {
+    await expect.poll(async () => {
+        const away = await page.evaluate(() => {
+            const log = document.querySelector('[role="log"]') as HTMLElement;
+            const panel = log.closest('.assistant-panel-body') as HTMLElement | null;
+            const owner = document.querySelector('#job-search-chat > [data-scroll-owner]')?.getAttribute('data-scroll-owner');
+            const el = owner === 'panel' && panel ? panel : log;
+            return el.scrollHeight - el.clientHeight - el.scrollTop > 48;
+        });
+        const shown = await page.getByTestId('jump-to-latest').count();
+        return shown === (away ? 1 : 0);
+    }, {message: 'the jump pill follows the 48px near-bottom rule'}).toBe(true);
+}
+
 async function postJson(page: Page, url: string, body: unknown): Promise<{status: number; body: any}> {
     return page.evaluate(async ({url: target, body: payload}) => {
         const cookie = document.cookie.split('; ').find((row) => row.startsWith('csrftoken='));
@@ -144,10 +160,9 @@ test.describe('assistant actions (issue #484)', () => {
         const button = applyRemote(page);
         await expect(button).toBeDisabled();
         await expect(page.getByTestId('assistant-actions-stale')).toHaveText('This suggestion was for an earlier view.');
-        // The reason is shown, in view, with no jump pill: the view change
-        // must not push the newest reply out of the transcript.
+        // The reason is shown, in view, and the pill agrees with the scroll position.
         await expectUnobstructed(page, page.getByTestId('assistant-actions-stale'));
-        await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+        await expectPillFollowsPosition(page);
         await button.click({force: true});
         expect(new URL(page.url()).searchParams.has('rto')).toBe(false);
     });
@@ -280,6 +295,8 @@ test.describe('assistant actions (issue #484)', () => {
             expect(applies).toBe(0);
 
             await follow.click();
+            // Save is armed ~500ms after the review mounts, so an accidental double activation cannot commit.
+            await page.waitForTimeout(700);
             await review.getByRole('button', {name: 'Save', exact: true}).click();
             const saved = page.getByTestId('assistant-action-saved');
             await expect(saved).toContainText('Saved to your account.');
@@ -319,13 +336,13 @@ test.describe('assistant actions (issue #484)', () => {
         };
     }
 
-    test('the save card confirm button is fully visible at 320x800 and no false jump pill shows', async ({page}) => {
+    test('the save card confirm button is fully visible at 320x800 and the jump pill follows the 48px rule', async ({page}) => {
         const {save, heading} = await openSaveCard(page, 800);
         await expect(heading).toBeFocused();
         // Both the focused heading and the confirm button stay visible and uncovered.
         await expectUnobstructed(page, heading);
         await expectUnobstructed(page, save);
-        await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+        await expectPillFollowsPosition(page);
         // Nothing keeps moving the transcript after it has settled.
         const top = await page.getByRole('log').evaluate((el) => el.scrollTop);
         await page.waitForTimeout(1500);
@@ -342,7 +359,7 @@ test.describe('assistant actions (issue #484)', () => {
             const {save, heading, changes} = await openSaveCard(page, height);
             await expectUnobstructed(page, save);
             await expectUnobstructed(page, changes);
-            await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+            await expectPillFollowsPosition(page);
 
             const focus = await page.evaluate(() => {
                 const el = document.activeElement as HTMLElement | null;
@@ -359,9 +376,11 @@ test.describe('assistant actions (issue #484)', () => {
                 };
             });
             expect(focus.visible).toBe(true);
-            if (focus.label === 'heading') {
-                await page.keyboard.press('Tab');
-            }
+            // The primary action is never the focus target: the heading when it
+            // fits, otherwise Cancel (Save stays one Tab away either way).
+            expect(['heading', 'Cancel']).toContain(focus.label);
+            await expect(save).not.toBeFocused();
+            await page.keyboard.press(focus.label === 'heading' ? 'Tab' : 'Shift+Tab');
             await expect(save).toBeFocused();
             await expectUnobstructed(page, save);
             await expect(heading).toHaveCount(1);
@@ -376,9 +395,23 @@ test.describe('assistant actions (issue #484)', () => {
             const top = await log.evaluate((el) => el.scrollTop);
             await page.waitForTimeout(1500);
             expect(await log.evaluate((el) => el.scrollTop)).toBe(top);
-            await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+            await expectPillFollowsPosition(page);
         });
     }
+
+    test('in panel scroll mode (320x420) the save card is scrolled clear of the sticky footer', async ({page}) => {
+        const {review, save} = await openSaveCard(page, 420);
+        await expect(page.locator('#job-search-chat > [data-scroll-owner="panel"]')).toHaveCount(1);
+        await expectUnobstructed(page, save);
+        await expectUnobstructed(page, review.getByText('Work arrangement'));
+        const clear = await page.evaluate(() => {
+            const body = document.querySelector('.assistant-panel-body') as HTMLElement;
+            const footer = document.querySelector('#job-search-chat .chat-footer') as HTMLElement;
+            return {padding: parseFloat(getComputedStyle(body).scrollPaddingBottom), footer: footer.getBoundingClientRect().height};
+        });
+        expect(clear.padding).toBeGreaterThanOrEqual(clear.footer - 1);
+        await expectPillFollowsPosition(page);
+    });
 
     test('actions and the RTO chip fit at 375px', async ({page}) => {
         await page.setViewportSize({width: 375, height: 800});

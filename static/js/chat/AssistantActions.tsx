@@ -36,6 +36,11 @@ export interface TurnActions {
     context?: WorkspaceContext | null;
 }
 
+// A double click or a held key on "Save as a requirement" must not reach the
+// Save that takes its place: Save ignores activations this soon after the
+// review card appears, so the change list is on screen before anything commits.
+export const SAVE_ARM_DELAY_MS = 500;
+
 const NOT_IN_LIST_MESSAGE = "That company isn't in the ranked list you're viewing.";
 
 const RTO_CODES: readonly string[] = ['R', 'H', 'O'];
@@ -323,6 +328,10 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
         subscribeWorkspace,
         () => getWorkspaceSnapshot().contextRevision,
     );
+    const prioritiesRevision = React.useSyncExternalStore(
+        subscribeWorkspace,
+        () => getWorkspaceSnapshot().prioritiesRevision,
+    );
     const [applied, setApplied] = React.useState<Record<number, boolean>>({});
     const [notFound, setNotFound] = React.useState<Record<number, boolean>>({});
     const [requirement, setRequirement] = React.useState<Record<number, RequirementState>>({});
@@ -332,6 +341,8 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
     }, []);
     const root = React.useRef<HTMLDivElement>(null);
     const focusNext = React.useRef<{index: number; kind: FocusKind} | null>(null);
+    const reviewShownAt = React.useRef<Record<number, number>>({});
+    const saving = React.useRef(false);
 
     // Staleness is per reply: the page context it was asked under, plus only
     // what its own clicks changed. Any other change (a newer selection, Back
@@ -363,22 +374,40 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
     // only offered when it would change something.
     const [saveable, setSaveable] = React.useState<Record<number, Proposal | 'already'>>({});
     const prefetched = React.useRef(new Set<number>());
+    // The answer depends on the saved priorities, so a change to them (an edit
+    // in the same panel, or this reply's own save or undo) drops it and the
+    // check runs again. A response for an older revision is discarded.
+    const revisionRef = React.useRef(prioritiesRevision);
+    React.useEffect(() => {
+        if (revisionRef.current === prioritiesRevision) {
+            return;
+        }
+        revisionRef.current = prioritiesRevision;
+        prefetched.current.clear();
+        setSaveable({});
+    }, [prioritiesRevision]);
     React.useEffect(() => {
         turn?.actions.forEach((action, index) => {
             if (action.type !== 'propose_filters' || !applied[index] || prefetched.current.has(index)) {
                 return;
             }
             prefetched.current.add(index);
+            const asked = prioritiesRevision;
             const controller = new AbortController();
             controllers.current.add(controller);
             proposePriorities(filtersToPatch(action), 'account', controller.signal)
-                .then((proposal) => setSaveable((prev) => ({
-                    ...prev, [index]: proposal.changes.length === 0 ? 'already' : proposal,
-                })))
+                .then((proposal) => {
+                    if (revisionRef.current !== asked) {
+                        return;
+                    }
+                    setSaveable((prev) => ({
+                        ...prev, [index]: proposal.changes.length === 0 ? 'already' : proposal,
+                    }));
+                })
                 .catch(() => undefined)
                 .finally(() => controllers.current.delete(controller));
         });
-    }, [turn, applied]);
+    }, [turn, applied, prioritiesRevision]);
 
     const staleShown = !!turn && stale
         && turn.actions.some((action, index) => !isDone(index, action));
@@ -438,10 +467,11 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
         const reveal = () => {
             const control = revealTarget(host);
             if (control && revealControl(control, scroller, host)) {
-                // The heading cannot share the view with the control: focus the card's primary action.
-                const primary = Array.from(host.querySelectorAll<HTMLElement>('.btn-primary')).pop() ?? control;
+                // The heading cannot share the view with the control: focus Cancel, never the
+                // committing Save, so a repeated Enter on "Save as a requirement" cannot confirm.
+                const cancel = host.querySelector<HTMLElement>('.priorities-review .chat-actions > button:last-child') ?? control;
                 ownFocus = true;
-                primary.focus({preventScroll: true});
+                cancel.focus({preventScroll: true});
                 ownFocus = false;
             }
             expectedTop = scroller.scrollTop;
@@ -537,6 +567,7 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
         setReq(index, {status: 'proposing'}, 'proposing');
         try {
             const proposal = await proposePriorities(filtersToPatch(action), 'account', controller.signal);
+            reviewShownAt.current[index] = Date.now();
             setReq(index, {status: 'review', proposal, applying: false, error: null, stale: false});
         } catch (err) {
             if (controller.signal.aborted) {
@@ -554,6 +585,7 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
     const openReview = (index: number, action: AssistantAction & {type: 'propose_filters'}) => {
         const cached = saveable[index];
         if (cached && cached !== 'already') {
+            reviewShownAt.current[index] = Date.now();
             setReq(index, {status: 'review', proposal: cached, applying: false, error: null, stale: false});
         } else {
             void propose(index, action);
@@ -561,6 +593,12 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
     };
 
     const save = async (index: number, state: Extract<RequirementState, {status: 'review'}>) => {
+        // Two steps, one flight: Save does nothing until the review has been on
+        // screen for a moment, and only one write can be in progress.
+        if (saving.current || Date.now() - (reviewShownAt.current[index] ?? 0) < SAVE_ARM_DELAY_MS) {
+            return;
+        }
+        saving.current = true;
         const controller = new AbortController();
         controllers.current.add(controller);
         const account = getWorkspaceSnapshot().account;
@@ -586,6 +624,7 @@ export default function AssistantActions({turn, announce = true}: AssistantActio
                 error: failure ? failure.message : GENERIC_ERROR_MESSAGE,
             });
         } finally {
+            saving.current = false;
             controllers.current.delete(controller);
         }
     };

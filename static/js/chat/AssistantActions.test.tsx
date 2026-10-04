@@ -5,7 +5,7 @@ import * as React from 'react';
 import {act, cleanup, fireEvent, render, screen, waitFor} from '@testing-library/react';
 import '@testing-library/jest-dom';
 import AssistantActions, {
-    STALE_MESSAGE, TurnActions, matchesReplyView, companyUrl, filterLabel, filterQuery, filtersToPatch, parseActions,
+    SAVE_ARM_DELAY_MS, STALE_MESSAGE, TurnActions, matchesReplyView, companyUrl, filterLabel, filterQuery, filtersToPatch, parseActions,
 } from './AssistantActions';
 import {
     clearWorkspaceContext, getWorkspaceSnapshot, registerCompanyTarget, registerFilterTarget, resetWorkspaceForTests, setPrioritiesRevision, setWorkspaceAccount, setWorkspaceContext,
@@ -32,6 +32,13 @@ const proposal = {
 function turn(actions: TurnActions['actions'], names?: Record<number, string>): TurnActions {
     return {actions, revision: getWorkspaceSnapshot().contextRevision, names, context: getWorkspaceSnapshot().context};
 }
+
+// Save ignores activations right after the review mounts; this presses it as a deliberate click.
+const clickSave = () => {
+    const spy = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + SAVE_ARM_DELAY_MS + 1);
+    fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+    spy.mockRestore();
+};
 
 const assign = jest.fn();
 const originalLocation = window.location;
@@ -464,7 +471,7 @@ describe('AssistantActions', () => {
             await act(async () => { resolve(proposal); });
             expect(await screen.findByTestId('assistant-action-review')).toBeInTheDocument();
             applyProposal.mockResolvedValue({revision: 5, changes: [], undo: null, scope: 'account'});
-            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            clickSave();
             expect(await screen.findByTestId('assistant-action-saved')).toHaveTextContent('Saved to your account.');
             expect(applyProposal).toHaveBeenCalledWith(proposal.token, expect.any(AbortSignal));
             expect(getWorkspaceSnapshot().prioritiesRevision).toBe(5);
@@ -486,7 +493,7 @@ describe('AssistantActions', () => {
             await screen.findByTestId('assistant-action-review');
             const before = getWorkspaceSnapshot().prioritiesRevision;
             applyProposal.mockResolvedValue({revision: null, changes: [], undo: null, scope: 'account'});
-            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            clickSave();
             await screen.findByTestId('assistant-action-saved');
             expect(getWorkspaceSnapshot().prioritiesRevision).toBe(before);
         });
@@ -533,7 +540,7 @@ describe('AssistantActions', () => {
             await screen.findByTestId('assistant-action-review');
             expect(revealed[revealed.length - 1].el).toBe(screen.getByRole('button', {name: 'Cancel'}));
             applyProposal.mockRejectedValueOnce(new Error('boom'));
-            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            clickSave();
             await screen.findByTestId('priorities-review-error');
             expect(revealed[revealed.length - 1].el.tagName).toBe('BUTTON');
             spy.mockRestore();
@@ -626,7 +633,7 @@ describe('AssistantActions', () => {
             rects.mockRestore();
         });
 
-        test('a heading that cannot share the view with the control hands focus to the primary action', async () => {
+        test('a heading that cannot share the view with the control hands focus to Cancel, never the committing Save', async () => {
             await applyFilter();
             const log = screen.getByTestId('assistant-actions').parentElement as HTMLElement;
             log.setAttribute('role', 'log');
@@ -638,8 +645,105 @@ describe('AssistantActions', () => {
             proposePriorities.mockResolvedValueOnce(proposal);
             fireEvent.click(screen.getByTestId('assistant-action-save'));
             await screen.findByTestId('assistant-action-review');
-            expect(document.activeElement).toBe(screen.getByRole('button', {name: /^Save$/}));
+            expect(document.activeElement).toBe(screen.getByRole('button', {name: 'Cancel'}));
+            expect(document.activeElement).not.toBe(screen.getByRole('button', {name: /^Save$/}));
             rects.mockRestore();
+        });
+
+        test('a double click on "Save as a requirement" shows the review and commits nothing', async () => {
+            await applyFilter();
+            proposePriorities.mockResolvedValue(proposal);
+            applyProposal.mockResolvedValue({revision: 5, changes: [], undo: null, scope: 'account'});
+            const trigger = screen.getByTestId('assistant-action-save');
+            fireEvent.click(trigger);
+            // The card renders where the trigger was; the second click of the pair lands on Save.
+            fireEvent.click(await screen.findByRole('button', {name: 'Save'}));
+            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            await act(async () => undefined);
+            expect(applyProposal).not.toHaveBeenCalled();
+            expect(screen.getByTestId('assistant-action-review')).toBeInTheDocument();
+        });
+
+        test('a held Enter on "Save as a requirement" cannot confirm the save', async () => {
+            await applyFilter();
+            proposePriorities.mockResolvedValue(proposal);
+            const trigger = screen.getByTestId('assistant-action-save');
+            trigger.focus();
+            fireEvent.keyDown(trigger, {key: 'Enter'});
+            fireEvent.click(trigger);
+            const save = await screen.findByRole('button', {name: 'Save'});
+            fireEvent.keyDown(save, {key: 'Enter', repeat: true});
+            fireEvent.click(save);
+            expect(applyProposal).not.toHaveBeenCalled();
+        });
+
+        test('Save is single-flight: a second press while the write is running sends one request', async () => {
+            await applyFilter();
+            proposePriorities.mockResolvedValue(proposal);
+            let finish: (value: unknown) => void = () => undefined;
+            applyProposal.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+            fireEvent.click(screen.getByTestId('assistant-action-save'));
+            await screen.findByTestId('assistant-action-review');
+            const saveButton = screen.getByRole('button', {name: 'Save'});
+            const spy = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + SAVE_ARM_DELAY_MS + 1);
+            fireEvent.click(saveButton);
+            fireEvent.click(saveButton);
+            spy.mockRestore();
+            expect(applyProposal).toHaveBeenCalledTimes(1);
+            await act(async () => { finish({revision: 5, changes: [], undo: null, scope: 'account'}); });
+        });
+
+        test('Save works once the review has been on screen past the delay', async () => {
+            await applyFilter();
+            proposePriorities.mockResolvedValue(proposal);
+            applyProposal.mockResolvedValue({revision: 5, changes: [], undo: null, scope: 'account'});
+            fireEvent.click(screen.getByTestId('assistant-action-save'));
+            await screen.findByTestId('assistant-action-review');
+            clickSave();
+            expect(await screen.findByTestId('assistant-action-saved')).toBeInTheDocument();
+            expect(applyProposal).toHaveBeenCalledTimes(1);
+        });
+
+        test('a priorities edit after Apply re-checks "already a requirement" and offers Save', async () => {
+            registerFilterTarget(() => true);
+            proposePriorities.mockResolvedValueOnce({...proposal, changes: []});
+            render(<AssistantActions turn={turn([remote])} />);
+            fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+            expect(await screen.findByTestId('assistant-action-already')).toBeInTheDocument();
+            proposePriorities.mockResolvedValueOnce(proposal);
+            act(() => setPrioritiesRevision(9));
+            expect(await screen.findByTestId('assistant-action-save')).toBeInTheDocument();
+            expect(screen.queryByTestId('assistant-action-already')).not.toBeInTheDocument();
+            expect(proposePriorities).toHaveBeenCalledTimes(2);
+        });
+
+        test('a priorities edit drops a cached proposal so the review shows the current change', async () => {
+            registerFilterTarget(() => true);
+            proposePriorities.mockResolvedValueOnce(proposal);
+            render(<AssistantActions turn={turn([remote])} />);
+            fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+            await screen.findByTestId('assistant-action-save');
+            const fresh = {...proposal, changes: [{path: 'work_location.modes', old: ['hybrid'], new: ['remote']}]};
+            proposePriorities.mockResolvedValueOnce(fresh);
+            act(() => setPrioritiesRevision(9));
+            await waitFor(() => expect(proposePriorities).toHaveBeenCalledTimes(2));
+            await act(async () => undefined);
+            fireEvent.click(screen.getByTestId('assistant-action-save'));
+            expect(await screen.findByTestId('assistant-action-review')).toHaveTextContent(/hybrid/i);
+            expect(proposePriorities).toHaveBeenCalledTimes(2);
+        });
+
+        test('a check that answers after the priorities moved on is discarded', async () => {
+            registerFilterTarget(() => true);
+            let late: (value: unknown) => void = () => undefined;
+            proposePriorities.mockReturnValueOnce(new Promise((resolve) => { late = resolve; }));
+            render(<AssistantActions turn={turn([remote])} />);
+            fireEvent.click(screen.getByRole('button', {name: 'Apply remote filter'}));
+            proposePriorities.mockResolvedValueOnce(proposal);
+            act(() => setPrioritiesRevision(9));
+            await act(async () => { late({...proposal, changes: []}); });
+            expect(screen.queryByTestId('assistant-action-already')).not.toBeInTheDocument();
+            expect(await screen.findByTestId('assistant-action-save')).toBeInTheDocument();
         });
 
         test('a prefetched proposal with no changes replaces the Save button with the already note', async () => {
@@ -677,11 +781,11 @@ describe('AssistantActions', () => {
             fireEvent.click(screen.getByTestId('assistant-action-save'));
             await screen.findByTestId('assistant-action-review');
             applyProposal.mockRejectedValueOnce(new Error('boom'));
-            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            clickSave();
             expect(await screen.findByTestId('priorities-review-error')).toHaveTextContent(prioritiesApi.GENERIC_ERROR_MESSAGE);
             const stale = new ApiFailure(409, 'preference_stale', 'Your priorities changed.', {}, 6);
             applyProposal.mockRejectedValueOnce(stale);
-            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            clickSave();
             const latest = await screen.findByRole('button', {name: 'Review latest'});
             proposePriorities.mockClear();
             proposePriorities.mockResolvedValueOnce(proposal);
@@ -703,7 +807,7 @@ describe('AssistantActions', () => {
                     s.addEventListener('abort', () => reject(new Error('aborted')));
                 });
             });
-            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            clickSave();
             unmount();
             await act(async () => { await Promise.resolve(); });
             expect(signal?.aborted).toBe(true);
@@ -925,7 +1029,7 @@ describe('focus, undo and scrolling after a save (issue #484 review)', () => {
     const saveWithUndo = async (undo: unknown = undoToken) => {
         await openReview();
         applyProposal.mockResolvedValue({revision: 5, changes: [], undo, scope: 'account'});
-        fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+        clickSave();
         await screen.findByTestId('assistant-action-saved');
     };
 
@@ -940,7 +1044,7 @@ describe('focus, undo and scrolling after a save (issue #484 review)', () => {
         await openReview();
         screen.getByRole('button', {name: 'Save'}).focus();
         applyProposal.mockResolvedValue({revision: 5, changes: [], undo: null, scope: 'account'});
-        fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+        clickSave();
         const note = await screen.findByTestId('assistant-action-saved');
         expect(document.activeElement).toBe(note);
         expect(screen.queryByTestId('assistant-action-undo')).not.toBeInTheDocument();
@@ -1022,7 +1126,7 @@ describe('focus, undo and scrolling after a save (issue #484 review)', () => {
         fireEvent.click(screen.getByTestId('assistant-action-save'));
         await screen.findByTestId('assistant-action-review');
         applyProposal.mockResolvedValue({revision: 5, changes: [], undo: undoToken, scope: 'account'});
-        fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+        clickSave();
         await screen.findByTestId('assistant-action-saved');
         let signal: AbortSignal | undefined;
         undoApplied.mockImplementation((_token, s: AbortSignal) => {
@@ -1052,7 +1156,7 @@ describe('focus, undo and scrolling after a save (issue #484 review)', () => {
             await saveToReview();
             let land: (value: unknown) => void = () => undefined;
             applyProposal.mockReturnValue(new Promise((resolve) => { land = resolve; }));
-            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            clickSave();
             act(() => {
                 setWorkspaceAccount({status: 'authenticated', key: 'someone-else'});
             });
@@ -1066,7 +1170,7 @@ describe('focus, undo and scrolling after a save (issue #484 review)', () => {
         test('Save records its revision when the account is unchanged', async () => {
             await saveToReview();
             applyProposal.mockResolvedValue({revision: 9, undo: null});
-            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            clickSave();
             await screen.findByTestId('assistant-action-saved');
             expect(getWorkspaceSnapshot().prioritiesRevision).toBe(9);
         });
@@ -1074,7 +1178,7 @@ describe('focus, undo and scrolling after a save (issue #484 review)', () => {
         test('Undo for the previous account does not record its revision', async () => {
             await saveToReview();
             applyProposal.mockResolvedValue({revision: 9, undo: {id: 'u1'}});
-            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            clickSave();
             await screen.findByTestId('assistant-action-saved');
             let land: (value: unknown) => void = () => undefined;
             undoApplied.mockReturnValue(new Promise((resolve) => { land = resolve; }));
@@ -1093,7 +1197,7 @@ describe('focus, undo and scrolling after a save (issue #484 review)', () => {
             await saveToReview();
             let land: (value: unknown) => void = () => undefined;
             applyProposal.mockReturnValue(new Promise((resolve) => { land = resolve; }));
-            fireEvent.click(screen.getByRole('button', {name: 'Save'}));
+            clickSave();
             cleanup();
             await act(async () => {
                 land({revision: 9, undo: null});

@@ -26,6 +26,8 @@ import {
     setWorkspaceEntity,
     subscribeWorkspace,
 } from './store';
+import * as fs from 'fs';
+import * as path from 'path';
 import {WORKSPACE_CONTEXT_EVENT, WORKSPACE_OPEN_EVENT} from './types';
 
 beforeEach(() => {
@@ -383,6 +385,16 @@ describe('validated page context (issue #484)', () => {
         expect(wire).not.toHaveProperty('filters');
         expect(wire).not.toHaveProperty('organization_id');
         expect(JSON.stringify(wire)).not.toMatch(/Secret|private/);
+    });
+
+    // The same fixture is validated by crank/tests/views/test_page_context_serializer.py.
+    const wireFixture = JSON.parse(
+        fs.readFileSync(path.join(__dirname, 'fixtures', 'wire-context.json'), 'utf8'),
+    ) as {cases: Array<{name: string; contextRevision: number; context: any; wire: unknown}>};
+
+    test.each(wireFixture.cases.map((c) => [c.name, c] as const))('wire fixture: %s', (_name, c) => {
+        const snapshot = {...getWorkspaceSnapshot(), context: c.context, contextRevision: c.contextRevision};
+        expect(buildWireContext(snapshot)).toEqual(c.wire);
     });
 
     test('buildWireContext keeps a minimal surface-only context', () => {
