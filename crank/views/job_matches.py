@@ -380,6 +380,43 @@ def job_match_status(request):
     return JsonResponse(payload)
 
 
+_CHANGED_EVIDENCE_STATES = frozenset({"superseded", "missing"})
+
+
+@login_required
+@require_POST
+def job_match_refresh(request):
+    """Recompute the requester's stored matches when they cite changed evidence.
+
+    The read endpoints stay read-only; this is the explicit action behind the
+    "Evidence changed" notice (issue #473). It recomputes only when the
+    committed generation on screen still rests on a fact that was replaced or
+    removed, so repeating the request once that is resolved does no work.
+    The recompute is forced because a deleted row does not advance the data
+    watermark. It runs inline like the preference hook, so it honors the same
+    operator switch. ``status`` is ``disabled``, ``not_needed`` or a
+    ``RecomputeStatus`` value; the client re-reads either way.
+    """
+    if not match_recompute.recompute_enabled():
+        return JsonResponse({"status": "disabled"})
+    rows, revision = _reads_context(request.user)
+    if revision is None:
+        return JsonResponse({"status": "not_needed"})
+    annotated = company_evidence.annotate_requirement_evidence(
+        [match.requirements for match in rows]
+    )
+    changed = any(
+        isinstance(requirement, dict)
+        and (requirement.get("evidence_status") or {}).get("state") in _CHANGED_EVIDENCE_STATES
+        for requirements in annotated
+        for requirement in requirements
+    )
+    if not changed:
+        return JsonResponse({"status": "not_needed"})
+    outcome = match_recompute.recompute_user(request.user, reason="refresh", force=True)
+    return JsonResponse({"status": outcome.status.value})
+
+
 @login_required
 @require_GET
 def job_match_ranked(request):
@@ -453,6 +490,7 @@ __all__ = [
     "job_match_dismiss",
     "job_match_list",
     "job_match_ranked",
+    "job_match_refresh",
     "job_match_seen",
     "job_match_status",
 ]
