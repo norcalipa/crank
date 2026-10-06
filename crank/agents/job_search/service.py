@@ -844,6 +844,7 @@ class JobSearchOrchestrator:
                         url=str(row.get("url", "")),
                         funding_round=str(row.get("funding_round", "")),
                         rto_policy=str(row.get("rto_policy", "")),
+                        evidence=tools.normalize_evidence_summary(row.get("evidence")),
                     )
                 )
 

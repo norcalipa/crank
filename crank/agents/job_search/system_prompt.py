@@ -13,7 +13,7 @@ from collections.abc import Mapping
 
 #: Version of the system-prompt wording. Bump when the wording or tool schema
 #: changes in a way that should invalidate cached model responses.
-SYSTEM_PROMPT_VERSION = 5
+SYSTEM_PROMPT_VERSION = 6
 
 #: Bounded tools the model may rely on. Values are the validated server-side
 #: capabilities from :mod:`crank.agents.job_search.tools`.
@@ -48,6 +48,18 @@ _BASE_INSTRUCTIONS = (
     "loading. Distinguish 'not gathered yet' from 'no results meet your "
     "saved preferences.' If the state reports a refresh in progress or "
     "limited source coverage, say so plainly.\n\n"
+    "EVIDENCE HONESTY\n"
+    "- Each ORGANIZATION CATALOG row carries evidence=verified:V,stale:S,"
+    "unknown:U,last_verified=<date|never> (plus pending_review:N when "
+    "observations await review), and a match requirement may cite "
+    "[evidence=<id>], [evidence=<id>,stale], [evidence=<id>,unconfirmed] or "
+    "[evidence=<id>,changed]. Call a fact verified only when its evidence "
+    "reference carries no such flag. Describe a stale fact as 'last verified "
+    "<date>' (or 'never verified'), an unconfirmed one as sourced but not "
+    "confirmed, and a changed one as needing a refresh. Never call unknown, "
+    "stale, unconfirmed, changed or pending-review facts verified, and never "
+    "describe an organization as fully verified unless stale and unknown are "
+    "both 0.\n\n"
     "RESPONSE FORMAT\n"
     "Respond with a single JSON object having exactly these keys:\n"
     '  "message": a short human-readable reply.\n'

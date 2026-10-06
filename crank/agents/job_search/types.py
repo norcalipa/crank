@@ -15,6 +15,7 @@ from typing import Any
 
 from crank.agents.job_search.actions import sanitize_actions
 from crank.agents.job_search.errors import InvalidModelOutputError
+from crank.agents.job_search.evidence_summary import normalize_evidence_summary
 
 #: Top-level keys that must all be present in the model's result object.
 _REQUIRED_KEYS = frozenset(
@@ -73,6 +74,9 @@ class OrganizationResult:
     url: str = ""
     funding_round: str = ""
     rto_policy: str = ""
+    #: Fact summary at reply time (issue #473); ``None`` for replies persisted
+    #: before it existed and for rows without one.
+    evidence: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -111,6 +115,7 @@ class StructuredResults:
                     "url": o.url,
                     "funding_round": o.funding_round,
                     "rto_policy": o.rto_policy,
+                    "evidence": o.evidence,
                 }
                 for o in self.organizations
             ],
@@ -169,6 +174,7 @@ class StructuredResults:
                     url=str(entry.get("url", "")),
                     funding_round=str(entry.get("funding_round", "")),
                     rto_policy=str(entry.get("rto_policy", "")),
+                    evidence=normalize_evidence_summary(entry.get("evidence")),
                 )
             )
         return cls(jobs=tuple(jobs), organizations=tuple(orgs))

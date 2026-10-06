@@ -942,9 +942,9 @@ describe('JobMatchPanel requirement figures and states (issue #467)', () => {
     test('renders three separately labelled figures with explicit scales', async () => {
         await renderPanel('ok', {count: 1, rankedJobs: [jobWithRequirements]});
         const card = screen.getByTestId('ranked-job-42');
-        expect(card).toHaveTextContent('Company score');
+        expect(card).toHaveTextContent('Company score (preset)');
         expect(card).toHaveTextContent('Fit');
-        expect(card).toHaveTextContent('Coverage');
+        expect(card).toHaveTextContent('Requirement coverage');
         // Round-3: each value carries its scale so the number reads on its own.
         expect(screen.getByTestId('job-42-company-score')).toHaveTextContent('4.2 / 5');
         expect(screen.getByTestId('job-42-fit-score')).toHaveTextContent('85.5 / 100');

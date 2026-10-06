@@ -14,6 +14,7 @@ from functools import lru_cache
 from typing import Any
 
 from crank.agents.jobs.ranking_config import DEFAULT_CONFIG, RankingConfig
+from crank.models.organization import Organization
 from crank.services.hidden_characters import is_hidden_character
 
 _WS = re.compile(r"\s+")
@@ -519,19 +520,14 @@ def _score_organization(listing: Any, criteria: JobCriteria, config: RankingConf
 
 
 #: Human-readable labels used by the single reason renderer.
-_FUNDING_LABELS = {
-    "S": "Seed",
-    "A": "Series A",
-    "B": "Series B",
-    "C": "Series C",
-    "D": "Series D",
-    "E": "Series E",
-    "F": "Series F",
-    "X": "Series G+",
-    "O": "Other Private",
-    "P": "Public",
+#: Derived from the model choices so every surface says the same words (#473).
+_FUNDING_LABELS = {code: str(label) for code, label in Organization.FundingRound.choices}
+_RTO_LABELS = {code: str(label) for code, label in Organization.RTOPolicy.choices}
+_MODE_LABELS = {
+    "remote": _RTO_LABELS["R"],
+    "hybrid": _RTO_LABELS["H"],
+    "in-office": _RTO_LABELS["O"],
 }
-_RTO_LABELS = {"R": "Remote", "H": "Hybrid", "O": "In-office"}
 
 #: Canonical criterion paths evaluated, in deterministic order.
 REQUIREMENT_ORDER = (
@@ -1018,7 +1014,7 @@ def _match_reason(outcome: RequirementOutcome) -> str | None:
     if path == "compensation.require_public_company":
         return "Public company"
     if path == "work_location.modes":
-        return {"remote": "Remote", "hybrid": "Hybrid", "in-office": "In-office"}.get(_normalized(observed), None)
+        return _MODE_LABELS.get(_normalized(observed), None)
     if path == "work_location.countries":
         return f"Located in {observed}" if observed else None
     if path == "work_location.max_in_office_days":

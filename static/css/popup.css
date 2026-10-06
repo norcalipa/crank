@@ -4384,3 +4384,35 @@ span.priority-chip-button { cursor: default; }
 .evidence-legend li + li { margin-top: .375rem; }
 .evidence-legend-windows { margin-top: .25rem; }
 .evidence-legend .evidence-badge { margin-inline-end: .25rem; }
+
+/* issue #473 evidence status: requirement chips and assistant cards */
+.job-match-chip {
+    flex-wrap: wrap;
+    max-inline-size: 100%;
+    overflow-wrap: anywhere;
+}
+
+/* A match or mismatch whose fact is stale, profile data or unconfirmed prose
+   keeps its outcome marker and ink but loses the solid fill, so it never
+   reads as the verified outcome. The dashed outline is the non-color cue. */
+.job-match-chip--unverified {
+    background-color: transparent;
+    border-style: dashed;
+}
+
+.job-match-chip--changed {
+    color: #e5e7eb; /* gray-200, ~12:1 on #212529 */
+    background-color: transparent;
+    border: 1px dashed rgba(229, 231, 235, 0.6);
+}
+
+.job-match-chip-qualifier { color: #e5e7eb; }
+
+.job-match-chip .evidence-badge {
+    padding: 0;
+    border: 0;
+    font-size: inherit;
+    white-space: normal;
+}
+
+.org-card .org-card-evidence { overflow-wrap: anywhere; }

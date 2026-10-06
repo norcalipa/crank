@@ -21,7 +21,7 @@ from crank.empty_state import NO_MATCHES, derive_state
 from crank.models.job import JobListing
 from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.preference import UserPreference
-from crank.services import match_recompute, match_results, monitoring
+from crank.services import company_evidence, match_recompute, match_results, monitoring
 from crank.services.job_matching import (
     MAX_MATCH_RESULTS,
     match_jobs,
@@ -80,14 +80,29 @@ def _reasons_from_stored_factors(requirements):
     return reasons_from_requirements(outcomes)
 
 
-def _match_payload(match, *, detail=False, user=None, revision=None):
-    """``revision`` overrides the per-row calculation with the shared,
+def _annotated_requirements(matches):
+    """Each match's stored requirements with a read-time ``evidence_status``.
+
+    One bulk evidence query for the whole response (issue #473); the stored
+    ``JobMatch.requirements`` are left untouched.
+    """
+    return company_evidence.annotate_requirement_evidence(
+        [o.as_dict() for o in outcomes_from_dicts(match.requirements)]
+        for match in matches
+    )
+
+
+def _match_payload(match, *, detail=False, user=None, revision=None, requirements=None):
+    """``requirements`` is this match's entry from :func:`_annotated_requirements`
+    (computed here for a single match). ``revision`` overrides the per-row calculation with the shared,
     generation-level block (issue #475 review, AC4): pass it whenever the
     match came from ``match_results.load_current`` so list/detail responses
     carry the identical ``revision`` block the ranked and assistant surfaces
     use, instead of recomputing from this one row's stamped fields."""
     current_revision, unsupported = _preference_meta(user)
     outcomes = outcomes_from_dicts(match.requirements)
+    if requirements is None:
+        requirements = _annotated_requirements([match])[0]
     if revision is None:
         stale = (
             match.preference_revision is not None
@@ -116,7 +131,7 @@ def _match_payload(match, *, detail=False, user=None, revision=None):
         "fit_score": match.score,
         "company_score": _company_score_of(match.organization),
         "coverage": coverage(outcomes),
-        "requirements": [o.as_dict() for o in outcomes],
+        "requirements": requirements,
         "unsupported": list(unsupported),
         "evidence_ids": list(match.evidence_ids or []),
         "revision": revision,
@@ -143,13 +158,15 @@ def _parse_page(request):
 
 
 def _pagination_response(page, user=None, revision=None):
+    matches = list(page.object_list)
+    annotated = _annotated_requirements(matches)
     return {
         "count": page.paginator.count,
         "next": page.next_page_number() if page.has_next() else None,
         "previous": page.previous_page_number() if page.has_previous() else None,
         "results": [
-            _match_payload(match, user=user, revision=revision)
-            for match in page.object_list
+            _match_payload(match, user=user, revision=revision, requirements=requirements)
+            for match, requirements in zip(matches, annotated)
         ],
     }
 
@@ -380,6 +397,10 @@ def job_match_ranked(request):
 
     job_results = match_jobs(request.user, limit=limit)
     org_results = match_organizations(request.user, limit=limit)
+    # Read-time evidence status for every requirement, one bulk query (#473).
+    annotated = iter(company_evidence.annotate_requirement_evidence(
+        [r.requirements for r in job_results] + [r.requirements for r in org_results]
+    ))
 
     return JsonResponse({
         "job_matches": [
@@ -396,7 +417,7 @@ def job_match_ranked(request):
                 "fit_score": r.fit_score,
                 "company_score": r.company_score,
                 "coverage": r.coverage,
-                "requirements": r.requirements,
+                "requirements": next(annotated),
                 "unsupported": r.unsupported,
                 "evidence_ids": r.evidence_ids,
                 "revision": r.revision(),
@@ -416,7 +437,7 @@ def job_match_ranked(request):
                 "fit_score": r.fit_score,
                 "company_score": r.company_score,
                 "coverage": r.coverage,
-                "requirements": r.requirements,
+                "requirements": next(annotated),
                 "unsupported": r.unsupported,
                 "evidence_ids": r.evidence_ids,
                 "revision": r.revision(),

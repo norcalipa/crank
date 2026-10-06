@@ -1,6 +1,8 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
+import EvidenceBadge from './evidence/EvidenceBadge';
+import {EVIDENCE_STATUS_META, formatEvidenceDate, fundingRoundLabel, rtoPolicyLabel} from './labels';
 import {installPositionTracking, restoreResultPosition} from './workspace/position';
 import {createLatestGuard} from './workspace/requests';
 import {
@@ -39,6 +41,15 @@ interface RequirementOutcome {
     observed?: string | number | null;
     source_kind?: string | null;
     source_id?: string | number | null;
+    // Read-time status of the backing fact (issue #473). Absent on listing
+    // data and on payloads cached before the field existed.
+    evidence_status?: RequirementEvidenceStatus | null;
+}
+
+interface RequirementEvidenceStatus {
+    state: 'verified' | 'sourced' | 'stale' | 'profile' | 'superseded' | 'missing';
+    last_verified_at: string | null;
+    source_domain: string | null;
 }
 
 interface RevisionBlock {
@@ -402,7 +413,7 @@ function ThreeFigures({fit, company, coverage, scope}: {fit: number | null | und
     return (
         <div className="job-match-figures mt-1" role="list" aria-label="Match figures">
             <span role="listitem" className="job-match-figure">
-                <span className="job-match-figure-label">Company score</span>
+                <span className="job-match-figure-label">Company score (preset)</span>
                 <strong className="job-match-figure-value" data-testid={`${scope}-company-score`}>{companyText}</strong>
             </span>
             <span role="listitem" className="job-match-figure">
@@ -410,7 +421,7 @@ function ThreeFigures({fit, company, coverage, scope}: {fit: number | null | und
                 <strong className="job-match-figure-value" data-testid={`${scope}-fit-score`}>{fitText}</strong>
             </span>
             <span role="listitem" className="job-match-figure">
-                <span className="job-match-figure-label">Coverage</span>
+                <span className="job-match-figure-label">Requirement coverage</span>
                 <strong className="job-match-figure-value" data-testid={`${scope}-coverage`}>{covText}</strong>
             </span>
         </div>
@@ -428,25 +439,99 @@ const REQUIREMENT_STATUS_META: Record<RequirementOutcome['status'], {marker: str
     unknown: {marker: '?', word: 'unknown', className: 'job-match-chip job-match-chip--unknown'},
 };
 
-/** Per-requirement chips in three visually distinct, non-color-duplicated states. */
+const evidenceChanged = (req: RequirementOutcome): boolean =>
+    req.evidence_status?.state === 'superseded' || req.evidence_status?.state === 'missing';
+
+const lastVerifiedText = (iso: string | null, long = false): string =>
+    iso ? `last verified ${formatEvidenceDate(iso, long)}` : 'never verified';
+
+/** The evidence qualifier after a chip's label (issue #473): what backs the
+ * outcome, in the shared vocabulary. `spoken` extends the chip's accessible
+ * name; `unverified` switches the chip off the solid outcome style, so a
+ * stale- or prose-backed match never looks like a verified one. */
+function chipQualifier(req: RequirementOutcome): {node: React.ReactNode; spoken: string; unverified: boolean} | null {
+    const evidence = req.evidence_status;
+    if (!evidence) return null;
+    if (evidence.state === 'stale') {
+        return {
+            node: <><EvidenceBadge status="stale"/> ({lastVerifiedText(evidence.last_verified_at)})</>,
+            spoken: `${EVIDENCE_STATUS_META.stale.label}, ${lastVerifiedText(evidence.last_verified_at, true)}`,
+            unverified: true,
+        };
+    }
+    // A requirement the engine could not decide has no fact to qualify.
+    if (req.status === 'unknown') return null;
+    if (evidence.state === 'verified') {
+        return {node: <EvidenceBadge status="verified"/>, spoken: EVIDENCE_STATUS_META.verified.label, unverified: false};
+    }
+    if (evidence.state === 'profile') {
+        return {node: <EvidenceBadge status="profile"/>, spoken: EVIDENCE_STATUS_META.profile.label, unverified: true};
+    }
+    return {node: 'Sourced, not confirmed', spoken: 'Sourced, not confirmed', unverified: true};
+}
+
+/** Per-requirement chips in three visually distinct, non-color-duplicated
+ * states, each qualified by the read-time status of the fact behind it. */
 function RequirementChips({requirements}: {requirements?: RequirementOutcome[]}) {
     if (!requirements || requirements.length === 0) {
         return null;
     }
     return (
-        <div className="mt-1" role="list" aria-label="Requirement outcomes">
+        <div className="job-match-chips mt-1" role="list" aria-label="Requirement outcomes">
             {requirements.map((req, idx) => {
+                const label = requirementLabel(req.path);
+                if (evidenceChanged(req)) {
+                    // The stored outcome rests on a fact that was replaced or
+                    // removed, so it is shown as neither match nor mismatch.
+                    return (
+                        <span key={idx} role="listitem"
+                              className="job-match-chip job-match-chip--changed me-1 mb-1 small fw-normal"
+                              data-testid={`requirement-${req.path}`}
+                              data-status={req.status}
+                              data-evidence-state={req.evidence_status!.state}
+                              aria-label={`${label}: evidence changed, refresh matches`}>
+                            <span aria-hidden="true">↻</span> {label}
+                            <span className="job-match-chip-qualifier"> · Evidence changed — refresh</span>
+                        </span>
+                    );
+                }
                 const meta = REQUIREMENT_STATUS_META[req.status] || REQUIREMENT_STATUS_META.unknown;
+                const qualifier = chipQualifier(req);
                 return (
                     <span key={idx} role="listitem"
-                          className={`${meta.className} me-1 mb-1 small fw-normal`}
+                          className={`${meta.className}${qualifier?.unverified ? ' job-match-chip--unverified' : ''} me-1 mb-1 small fw-normal`}
                           data-testid={`requirement-${req.path}`}
                           data-status={req.status}
-                          aria-label={`${requirementLabel(req.path)}: ${meta.word}`}>
-                        <span aria-hidden="true">{meta.marker}</span> {requirementLabel(req.path)}
+                          data-evidence-state={req.evidence_status?.state}
+                          aria-label={`${label}: ${meta.word}${qualifier ? `, ${qualifier.spoken}` : ''}`}>
+                        <span aria-hidden="true">{meta.marker}</span> {label}
+                        {qualifier && <span className="job-match-chip-qualifier"> · {qualifier.node}</span>}
                     </span>
                 );
             })}
+        </div>
+    );
+}
+
+/** One consolidated notice when any shown outcome rests on evidence that has
+ * since been replaced or removed (issue #473 AC9): the chips say which, and
+ * this carries the >=44px refresh action. */
+function EvidenceChangedNotice({matches, onRefresh}: {matches: {requirements?: RequirementOutcome[]}[]; onRefresh: () => void}) {
+    if (!matches.some((match) => (match.requirements || []).some(evidenceChanged))) {
+        return null;
+    }
+    return (
+        <div className="alert alert-warning py-2 small mb-3" role="status" aria-live="polite" data-testid="evidence-changed-notice">
+            <div className="job-match-stale-banner">
+                <Icon name="clock" className="job-match-stale-icon" />
+                <span className="job-match-stale-message">
+                    Some company evidence changed after these matches were computed. Refresh to re-check them.
+                </span>
+                <button type="button" className="btn btn-sm btn-outline-light job-match-stale-refresh" onClick={onRefresh}
+                        data-testid="evidence-changed-refresh">
+                    <Icon name="refresh-cw" className="me-1" />Refresh matches
+                </button>
+            </div>
         </div>
     );
 }
@@ -517,33 +602,6 @@ function ResultTimestamp({revision}: {revision?: RevisionBlock | null}) {
             <time dateTime={iso}>{d.toLocaleString(undefined, {dateStyle: 'medium', timeStyle: 'short'})}</time>
         </p>
     );
-}
-
-const RTO_LABELS: Record<string, string> = {
-    R: 'Remote',
-    H: 'Hybrid',
-    O: 'In-office',
-};
-
-const FUNDING_LABELS: Record<string, string> = {
-    S: 'Seed',
-    A: 'Series A',
-    B: 'Series B',
-    C: 'Series C',
-    D: 'Series D',
-    E: 'Series E',
-    F: 'Series F',
-    X: 'Series G+',
-    O: 'Other Private',
-    P: 'Public',
-};
-
-function fundingLabel(code: string): string {
-    return FUNDING_LABELS[code] || code || 'Unknown';
-}
-
-function rtoLabel(code: string): string {
-    return RTO_LABELS[code] || code || 'Unknown';
 }
 
 function inventoryText(inventory: NonNullable<EmptyStatePayload['inventory']>): string {
@@ -896,6 +954,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     <ResultNotices emptyState={emptyState!} />
                     <UnsupportedNotice unsupported={jobs[0]?.unsupported || orgs[0]?.unsupported} />
                     <StaleNotice revision={{stale: staleResults}} onRefresh={fetchStatus} />
+                    <EvidenceChangedNotice matches={[...jobs, ...orgs]} onRefresh={fetchStatus} />
                     <ResultTimestamp revision={resultRevision} />
                     {jobs.length > 0 && (
                         <div data-testid="ranked-job-matches" className="mb-3">
@@ -956,7 +1015,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                                                 <span className="fw-bold">{org.name}</span>
                                             )}
                                             <div className="text-muted small text-break">
-                                                {fundingLabel(org.funding_round)} · {rtoLabel(org.rto_policy)}
+                                                {fundingRoundLabel(org.funding_round, 'Unknown')} · {rtoPolicyLabel(org.rto_policy, 'Unknown')}
                                             </div>
                                         </div>
                                     </div>

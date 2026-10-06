@@ -1,6 +1,8 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
+import EvidenceSummary from '../evidence/EvidenceSummary';
+import {fundingRoundLabel, rtoPolicyLabel} from '../labels';
 import type {JobResult, OrganizationResult, StructuredResults} from './types';
 
 export function formatCompensation(comp: JobResult['compensation']): string {
@@ -18,26 +20,6 @@ export function formatCompensation(comp: JobResult['compensation']): string {
     if (comp.interval) parts.push(comp.interval);
     return parts.join(' ');
 }
-
-export function fundingRoundLabel(code: string): string {
-    const map: Record<string, string> = {
-        S: 'Seed', A: 'Series A', B: 'Series B', C: 'Series C',
-        D: 'Series D', E: 'Series E', F: 'Series F',
-        X: 'Late Stage', O: 'IPO', P: 'Pre-IPO',
-    };
-    return map[code] || code || '';
-}
-
-export function rtoPolicyLabel(code: string): string {
-    const map: Record<string, string> = {
-        R: 'Remote', H: 'Hybrid', O: 'On-site',
-    };
-    return map[code] || code || '';
-}
-
-// States in which submitting a message would be futile: the assistant cannot
-// answer at all (administratively disabled) or has nothing to search.
-// Gating is advisory-only: the POST path remains authoritative and a failed
 
 export function JobCard({job}: {job: JobResult}) {
     const comp = formatCompensation(job.compensation);
@@ -93,6 +75,18 @@ export function OrgCard({org}: {org: OrganizationResult}) {
                 {funding && rto && ' · '}
                 {rto && <span>{rto}</span>}
             </div>
+            {org.evidence ? (
+                <div className="org-card-evidence mt-1" data-testid={`org-evidence-${org.id}`}>
+                    <span className="visually-hidden">Fact status when this reply was written: </span>
+                    <EvidenceSummary evidence={org.evidence} variant="card"/>
+                </div>
+            ) : (
+                // A reply stored before fact status existed: say so rather
+                // than guess a status for it.
+                <div className="org-card-evidence text-muted small mt-1" data-testid={`org-evidence-${org.id}`}>
+                    Fact status was not recorded for this reply.
+                </div>
+            )}
             <div className="org-card-actions d-flex flex-wrap align-items-center column-gap-3 mt-1">
             {org.url && (
                 <a

@@ -13,7 +13,7 @@ from crank.agents.job_search.system_prompt import (
 
 class TestSystemPrompt:
     def test_version_is_current(self):
-        assert SYSTEM_PROMPT_VERSION == 5
+        assert SYSTEM_PROMPT_VERSION == 6
 
     def test_prompt_text_is_tied_to_its_version(self):
         """Changing prompt wording without bumping SYSTEM_PROMPT_VERSION fails here.
@@ -24,10 +24,10 @@ class TestSystemPrompt:
         import hashlib
 
         digests = {
-            5: {
-                (False, True): "9cd200f8f2c479bac14230095f778c2de2c7172ac08395e39ee94b99dc603955",
-                (True, True): "0634a17783fbe452928765d472acee34e283b6f4ef81b9e4e58db6f029ffe26e",
-                (True, False): "7a18ff8c8b5a63c990d93f4c349065c0fc180f6451434016112db94889fed0ce",
+            6: {
+                (False, True): "ecdb43b612ca177e9ac4147df738642a0978132e49b7bcbb49c608d543c84dee",
+                (True, True): "81ae046236bdda5387fea015da798c1d1a2940de70d9a0095e1422f20d923979",
+                (True, False): "44e0e0c401e628659f49e4e186743f12df17a00d102f7873cfeee6e62d605c30",
             },
         }
         for (with_context, with_actions), expected in digests[SYSTEM_PROMPT_VERSION].items():
@@ -65,12 +65,24 @@ class TestSystemPrompt:
         assert "- do not mention pricing" in text
 
     def test_prompt_id_is_stable(self):
-        assert prompt_id() == "job_search_system_v5"
+        assert prompt_id() == "job_search_system_v6"
         assert prompt_id(1) == "job_search_system_v1"
 
     def test_untrusted_markdown_warning(self):
         text = build_system_prompt()
         assert "untrusted" in text.lower()
+
+    def test_contains_evidence_honesty_rule(self):
+        """v6 tells the model how to word stale and unverified facts (issue #473)."""
+        text = build_system_prompt()
+        assert "EVIDENCE HONESTY" in text
+        assert "evidence=verified:V,stale:S,unknown:U,last_verified=<date|never>" in text
+        assert "[evidence=<id>,stale]" in text
+        assert "'last verified <date>'" in text
+        assert (
+            "Never call unknown, stale, unconfirmed, changed or pending-review "
+            "facts verified" in text
+        )
 
     def test_contains_availability_honesty_rule(self):
         """The prompt instructs honest availability reporting (issue #476)."""

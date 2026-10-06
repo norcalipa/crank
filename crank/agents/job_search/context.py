@@ -16,12 +16,45 @@ from dataclasses import dataclass
 _ELISION_MARK = "<elided...>"
 
 
+#: Read-time evidence states the model must not describe as verified.
+_EVIDENCE_FLAGS = {
+    "stale": ",stale",
+    "sourced": ",unconfirmed",
+    "superseded": ",changed",
+    "missing": ",changed",
+}
+
+
+def _evidence_flag(status: object) -> str:
+    """``,stale`` / ``,unconfirmed`` / ``,changed`` for a non-verified evidence row."""
+    if not isinstance(status, dict):
+        return ""
+    return _EVIDENCE_FLAGS.get(status.get("state"), "")
+
+
+def _evidence_summary_text(summary: object) -> str:
+    """``verified:V,stale:S,unknown:U,last_verified=<date|never>`` for a catalog row."""
+    if not isinstance(summary, dict):
+        return "not_provided"
+    text = "verified:{verified},stale:{stale},unknown:{unknown},last_verified={date}".format(
+        verified=summary.get("verified"),
+        stale=summary.get("stale"),
+        unknown=summary.get("unknown"),
+        date=str(summary.get("last_verified_at") or "never")[:10],
+    )
+    if summary.get("pending_review"):
+        text += ",pending_review:%s" % summary.get("pending_review")
+    return text
+
+
 def _requirements_text(requirements: object) -> str:
     """Render a compact ``path=status[source]`` list for the model context.
 
     Exposes the outcome's evidence id (``evidence=<id>``) and direct-field
     source (``source=<id>``) so the model can make a *validated* citation from
-    the bounded context rather than inventing one (issue #467 AC-11).
+    the bounded context rather than inventing one (issue #467 AC-11). An
+    evidence row that is not currently verified carries its read-time state
+    (``evidence=<id>,stale``), so the wording can agree with the chips (#473).
     """
     if not requirements:
         return "[]"
@@ -33,7 +66,7 @@ def _requirements_text(requirements: object) -> str:
         source_kind = req.get("source_kind")
         source_id = req.get("source_id")
         if source_kind == "evidence" and isinstance(source_id, int) and not isinstance(source_id, bool):
-            text += "[evidence=%s]" % source_id
+            text += "[evidence=%s%s]" % (source_id, _evidence_flag(req.get("evidence_status")))
         elif source_kind == "field" and source_id:
             text += "[source=%s]" % source_id
         parts.append(text)
@@ -89,11 +122,12 @@ class ModelContext:
         if self.organization_catalog:
             catalog_rows = [
                 "id={id} name={name!r} funding_round={funding_round} "
-                "rto_policy={rto_policy}".format(
+                "rto_policy={rto_policy} evidence={evidence}".format(
                     id=row.get("id"),
                     name=bounded_name(row.get("name", "")),
                     funding_round=row.get("funding_round", ""),
                     rto_policy=row.get("rto_policy", ""),
+                    evidence=_evidence_summary_text(row.get("evidence")),
                 )
                 for row in self.organization_catalog
             ]

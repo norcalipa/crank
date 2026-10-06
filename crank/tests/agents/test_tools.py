@@ -91,7 +91,8 @@ class TestResultLimits:
         rows = normalize_organization_rows([ORG_ROW])
         assert rows[0]["id"] == 1
         assert rows[0]["name"] == "Acme Inc"
-        assert set(rows[0]) == {"id", "name", "url", "funding_round", "rto_policy"}
+        assert set(rows[0]) == {"id", "name", "url", "funding_round", "rto_policy", "evidence"}
+        assert rows[0]["evidence"] is None
 
     def test_untrusted_content_passes_through_as_data_only(self):
         rows = normalize_organization_rows([ORG_ROW_UNTRUSTED])

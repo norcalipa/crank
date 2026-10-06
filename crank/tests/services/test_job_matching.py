@@ -804,7 +804,7 @@ class HelperFunctionTests(TestCase):
     def test_rto_label_known(self):
         assert _rto_label("R") == "Remote"
         assert _rto_label("H") == "Hybrid"
-        assert _rto_label("O") == "In-office"
+        assert _rto_label("O") == "In-Office"
 
     def test_rto_label_unknown_code(self):
         assert _rto_label("X") == "X"
@@ -827,7 +827,7 @@ class HelperFunctionTests(TestCase):
         from crank.agents.jobs.matching import RequirementOutcome, reasons_from_requirements
 
         outcomes = [RequirementOutcome("work_location.modes", "match", "in-office", "field", "organization.rto_policy")]
-        assert "In-office" in reasons_from_requirements(outcomes)
+        assert "In-Office" in reasons_from_requirements(outcomes)
 
     def test_reasons_from_requirements_salary(self):
         from crank.agents.jobs.matching import RequirementOutcome, reasons_from_requirements

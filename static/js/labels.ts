@@ -18,6 +18,38 @@ export const isCorrectableFieldKey = (key: unknown): key is string =>
 
 export const fieldKeyLabel = (key: string): string => CORRECTABLE_FIELD_LABELS[key] || key;
 
+// Funding-round and RTO-policy words, equal to Organization.FundingRound /
+// RTOPolicy on the server (pinned by crank/tests/test_frontend_label_parity.py).
+// Every surface reads these; no component keeps its own map (#473).
+export const FUNDING_ROUND_LABELS: Record<string, string> = {
+    S: 'Seed',
+    A: 'Series A',
+    B: 'Series B',
+    C: 'Series C',
+    D: 'Series D',
+    E: 'Series E',
+    F: 'Series F',
+    X: 'Series G or Later',
+    O: 'Other Private',
+    P: 'Public',
+};
+
+export const RTO_POLICY_LABELS: Record<string, string> = {
+    R: 'Remote',
+    H: 'Hybrid',
+    O: 'In-Office',
+};
+
+const codeLabel = (labels: Record<string, string>, code: string | null | undefined, fallback: string): string =>
+    (code && Object.prototype.hasOwnProperty.call(labels, code) ? labels[code] : code) || fallback;
+
+// An unrecognized code is shown as-is; an empty one reads as `fallback`.
+export const fundingRoundLabel = (code: string | null | undefined, fallback = ''): string =>
+    codeLabel(FUNDING_ROUND_LABELS, code, fallback);
+
+export const rtoPolicyLabel = (code: string | null | undefined, fallback = ''): string =>
+    codeLabel(RTO_POLICY_LABELS, code, fallback);
+
 export type EvidenceStatusKey = 'verified' | 'stale' | 'unknown' | 'profile' | 'pending' | 'conflicted';
 
 interface EvidenceStatusMeta {
