@@ -49,12 +49,15 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
             await expect(jobChip).toHaveClass(/job-match-chip--unverified/);
             await expect(jobChip.locator('.evidence-badge-verified')).toHaveCount(0);
 
-            // Beta's fact is 400 days old: the outcome stays, stale-qualified.
+            // Beta's fact is 400 days old and says Remote (the seed's displayed
+            // policy since #484): the match stays, stale-qualified, never verified.
             const betaChip = orgCard(page, 'E2E Beta Labs').getByTestId('requirement-work_location.modes');
+            await expect(betaChip).toHaveAttribute('data-status', 'match');
             await expect(betaChip).toHaveAttribute('data-evidence-state', 'stale');
             await expect(betaChip).toContainText(/Work mode · ! Stale \(last verified [A-Z][a-z]{2} \d{1,2}, \d{4}\)/);
             await expect(betaChip).toHaveClass(/job-match-chip--unverified/);
-            await expect(betaChip).toHaveAttribute('aria-label', /^Work mode: mismatch, Stale, last verified /);
+            await expect(betaChip.locator('.evidence-badge-verified')).toHaveCount(0);
+            await expect(betaChip).toHaveAttribute('aria-label', /^Work mode: match, Stale, last verified /);
 
             // Gamma has no fact at all: a plain unknown chip.
             const gammaChip = orgCard(page, 'E2E Gamma Works').getByTestId('requirement-work_location.modes');

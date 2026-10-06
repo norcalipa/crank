@@ -4,7 +4,7 @@ import * as React from 'react';
 import {createRoot} from "react-dom/client";
 import OrganizationDetailsPopup from './OrganizationDetailsPopup';
 import EvidenceSummary, {evidenceDescription} from './evidence/EvidenceSummary';
-import {EvidenceSummaryData} from './labels';
+import {EvidenceSummaryData, RTO_POLICY_LABELS} from './labels';
 import {closeSuggestCompany, COMPANY_OPEN_EVENT, openSuggestCompany} from './suggestCompany/controller';
 import {installPositionTracking, PositionAnchor, restoreResultPosition} from './workspace/position';
 import {
@@ -77,7 +77,6 @@ const ALLOWED_QUERY_PARAMS = ['search', 'accelerated_vesting', 'page', 'company'
 
 // Issue #484: `rto` is the only enum filter; any other value is ignored.
 const RTO_CODES: readonly string[] = ['R', 'H', 'O'];
-const RTO_FALLBACK_LABELS: Record<RtoPolicyCode, string> = {R: 'Remote', H: 'Hybrid', O: 'In-Office'};
 function parseRtoPolicy(value: string | null): RtoPolicyCode | '' {
     return value !== null && RTO_CODES.includes(value) ? value as RtoPolicyCode : '';
 }
@@ -647,7 +646,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         if (!searchTerm && !acceleratedVesting && !rtoPolicy) {
             return null;
         }
-        const rtoLabel = rtoPolicy ? (rtoPolicyChoices[rtoPolicy] ?? RTO_FALLBACK_LABELS[rtoPolicy]) : '';
+        const rtoLabel = rtoPolicy ? (rtoPolicyChoices[rtoPolicy] ?? RTO_POLICY_LABELS[rtoPolicy]) : '';
         return (<ul className="filter-chips" aria-label="Active filters">
             {searchTerm && <li><button type="button" className="filter-chip" data-testid="filter-chip-search"
                                        aria-label={`Remove filter: search "${searchTerm}"`} title={`Search: ${searchTerm}`}
