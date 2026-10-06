@@ -162,25 +162,32 @@ const PANEL_VIEWPORTS = [
 const COLLAPSED_MAX_PX = 72;
 const EXPANDED_MAX_SHARE = 0.6;
 
-/** Resets the saved priorities, then applies `patch` (if any) through the real API. Returns the chip count. */
+/** Resets the saved priorities, then applies `patch` (if any) through the real API. Returns the chip count.
+ *  The dev server's SQLite answers 409 "retry" while another request holds the write lock, so a write is retried. */
 async function setPriorities(page: Page, patch: object | null): Promise<number> {
     const result = await page.evaluate(async (todo) => {
         const csrf = document.cookie.split('; ').find((c) => c.startsWith('csrftoken='))?.split('=')[1] || '';
         const headers = {'Content-Type': 'application/json', 'X-CSRFToken': decodeURIComponent(csrf)};
         const send = (url: string, body: unknown) => fetch(url, {method: 'POST', headers, body: JSON.stringify(body)});
         const read = async () => (await fetch('/api/agent/preferences/')).json();
-        const current = await read();
-        if (current.chips.length > 0) {
-            const reset = await send('/api/agent/preferences/reset/', {expected_revision: current.revision});
-            if (!reset.ok) return {failed: `reset ${reset.status}`, chips: -1};
-        }
-        if (todo) {
+        const attempt = async (): Promise<string> => {
+            const current = await read();
+            if (current.chips.length > 0) {
+                const reset = await send('/api/agent/preferences/reset/', {expected_revision: current.revision});
+                if (!reset.ok) return `reset ${reset.status}`;
+            }
+            if (!todo) return '';
             const proposed = await send('/api/agent/preferences/propose/', {patch: todo, scope: 'account'});
-            if (!proposed.ok) return {failed: `propose ${proposed.status}`, chips: -1};
+            if (!proposed.ok) return `propose ${proposed.status}`;
             const applied = await send('/api/agent/preferences/apply/', {proposal: (await proposed.json()).token, decision: 'apply'});
-            if (!applied.ok) return {failed: `apply ${applied.status}`, chips: -1};
+            return applied.ok ? '' : `apply ${applied.status}`;
+        };
+        let failed = await attempt();
+        for (let retry = 0; retry < 3 && failed.endsWith(' 409'); retry += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 200));
+            failed = await attempt();
         }
-        return {failed: '', chips: (await read()).chips.length as number};
+        return {failed, chips: failed ? -1 : (await read()).chips.length as number};
     }, patch);
     expect(result.failed).toBe('');
     return result.chips;
@@ -194,6 +201,8 @@ async function openPanel(page: Page) {
     await expect(panel.or(opener).first()).toBeVisible();
     if (!(await panel.isVisible())) await opener.click();
     await expect(page.getByTestId('assistant-composer')).toBeVisible();
+    // The chat takes focus once when its history has loaded; let that pass before driving the keyboard.
+    await page.waitForLoadState('networkidle');
     const section = page.getByTestId('priorities-sidebar');
     await expect(section.getByRole('button', {name: /Edit priorities|Add priorities/})).toBeVisible();
     return section;
