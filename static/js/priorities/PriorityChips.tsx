@@ -23,9 +23,29 @@ function byImportance(a: PriorityChip, b: PriorityChip): number {
     return Number(!a.supported) - Number(!b.supported) || Number(b.hard) - Number(a.hard);
 }
 
-export default function PriorityChips({chips: unsorted, collapsedCount = 5, currency, readOnlyPaths, choicePaths, onEdit}: {
+/** The key to the chip marks. Each mark is listed only when `hard` / `unsupported` says a chip carries it. */
+export function PriorityChipLegendItems({hard = true, unsupported = true}: {hard?: boolean; unsupported?: boolean}) {
+    return (
+        <>
+            {hard && (
+                <span className="priority-chip-legend-item">
+                    <i className="fa-solid fa-lock" aria-hidden="true"></i>Requirement
+                </span>
+            )}
+            {unsupported && (
+                <span className="priority-chip-legend-item" title="Not used for matching yet">
+                    <span className="priority-chip-legend-dashed" aria-hidden="true"></span>Not used yet
+                </span>
+            )}
+        </>
+    );
+}
+
+export default function PriorityChips({chips: unsorted, collapsedCount = 5, currency, readOnlyPaths, choicePaths, legend = true, onEdit}: {
     chips: PriorityChip[];
     collapsedCount?: number;
+    // The sidebar shows the key in its row, before the chips, instead of after the list.
+    legend?: boolean;
     currency?: unknown;
     // Chips with no matching editor field are shown as plain text, not as edit buttons.
     readOnlyPaths?: ReadonlySet<string>;
@@ -82,15 +102,8 @@ export default function PriorityChips({chips: unsorted, collapsedCount = 5, curr
                         {expanded ? 'Show less' : `+${hidden} more`}
                     </button>
                 )}
-                {chips.some((chip) => chip.hard || !chip.supported) && (
-                    <p className="priority-chip-legend" data-testid="priority-chip-legend">
-                        <span className="priority-chip-legend-item">
-                            <i className="fa-solid fa-lock" aria-hidden="true"></i>Requirement
-                        </span>
-                        <span className="priority-chip-legend-item" title="Not used for matching yet">
-                            <span className="priority-chip-legend-dashed" aria-hidden="true"></span>Not used yet
-                        </span>
-                    </p>
+                {legend && chips.some((chip) => chip.hard || !chip.supported) && (
+                    <p className="priority-chip-legend" data-testid="priority-chip-legend"><PriorityChipLegendItems/></p>
                 )}
             </div>
         </>

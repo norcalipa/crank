@@ -140,18 +140,31 @@ function summaryValue(chip: SummaryChip, currency?: unknown, choicePaths?: Reado
     return /^(No|-?[\d,.]+)$/.test(value) ? `${chip.label}: ${value}` : value;
 }
 
-/** One-line summary for the collapsed sidebar row: "Requires: Remote, $150,000, +1 · 5 preferences".
- *  Values read as on the chips, in chip order (criteria the matcher uses first). Empty when nothing is saved. */
-export function prioritiesSummary(chips: SummaryChip[], currency?: unknown, choicePaths?: ReadonlySet<string>): string {
+export interface SummaryParts {
+    // Truncates first: "Requires: $150,000, Remote".
+    lead: string;
+    sep: string;
+    // Never truncates: the counts ("+2 \u00b7 6 preferences").
+    tail: string;
+}
+
+/** The collapsed row's summary in the three parts it is laid out in; joined they read as `prioritiesSummary`. */
+export function prioritiesSummaryParts(chips: SummaryChip[], currency?: unknown, choicePaths?: ReadonlySet<string>): SummaryParts {
     const required = chips.filter((chip) => chip.hard)
         .sort((a, b) => Number(!a.supported) - Number(!b.supported));
     const preferences = chips.length - required.length;
-    const parts: string[] = [];
-    if (required.length > 0) {
-        const named = required.slice(0, SUMMARY_REQUIREMENTS).map((chip) => summaryValue(chip, currency, choicePaths));
-        const more = required.length - named.length;
-        parts.push(`Requires: ${[...named, ...(more > 0 ? [`+${more}`] : [])].join(', ')}`);
-    }
-    if (preferences > 0) parts.push(`${preferences} ${preferences === 1 ? 'preference' : 'preferences'}`);
-    return parts.join(' \u00b7 ');
+    const counted = preferences > 0 ? `${preferences} ${preferences === 1 ? 'preference' : 'preferences'}` : '';
+    if (required.length === 0) return {lead: counted, sep: '', tail: ''};
+    const named = required.slice(0, SUMMARY_REQUIREMENTS).map((chip) => summaryValue(chip, currency, choicePaths));
+    const more = required.length - named.length;
+    const lead = `Requires: ${named.join(', ')}`;
+    if (more > 0) return {lead, sep: ', ', tail: [`+${more}`, ...(counted ? [counted] : [])].join(' \u00b7 ')};
+    return counted ? {lead, sep: ' \u00b7 ', tail: counted} : {lead, sep: '', tail: ''};
+}
+
+/** One-line summary for the collapsed sidebar row: "Requires: Remote, $150,000, +1 · 5 preferences".
+ *  Values read as on the chips, in chip order (criteria the matcher uses first). Empty when nothing is saved. */
+export function prioritiesSummary(chips: SummaryChip[], currency?: unknown, choicePaths?: ReadonlySet<string>): string {
+    const {lead, sep, tail} = prioritiesSummaryParts(chips, currency, choicePaths);
+    return `${lead}${sep}${tail}`;
 }

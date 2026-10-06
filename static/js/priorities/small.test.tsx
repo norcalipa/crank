@@ -6,7 +6,7 @@ import {fireEvent, render, screen} from '@testing-library/react';
 import PriorityChips from './PriorityChips';
 import ReviewChanges from './ReviewChanges';
 import AppliedChanges from './AppliedChanges';
-import {chipValueLabel, preferencePathLabel, preferenceValueLabel, prioritiesSummary} from './format';
+import {chipValueLabel, preferencePathLabel, preferenceValueLabel, prioritiesSummary, prioritiesSummaryParts} from './format';
 
 const changes = [{path: 'compensation.minimum_salary', old: 0, new: 150000}];
 
@@ -128,7 +128,15 @@ describe('PriorityChips', () => {
         rerender(<PriorityChips chips={make(2, {hard: true})} onEdit={jest.fn()}/>);
         expect(screen.getByTestId('priority-chip-legend')).toBeInTheDocument();
         rerender(<PriorityChips chips={make(2, {supported: false})} onEdit={jest.fn()}/>);
-        expect(screen.getByTestId('priority-chip-legend')).toBeInTheDocument();
+        // After the list, the key always names both marks.
+        expect(screen.getByTestId('priority-chip-legend')).toHaveTextContent('RequirementNot used yet');
+        expect(screen.getByTestId('priority-chip-legend').closest('.priority-chips-meta')).not.toBeNull();
+    });
+
+    test('legend={false} leaves the key to the caller', () => {
+        render(<PriorityChips chips={make(2, {hard: true})} legend={false} onEdit={jest.fn()}/>);
+        expect(screen.getAllByTestId('priority-chip')).toHaveLength(2);
+        expect(screen.queryByTestId('priority-chip-legend')).not.toBeInTheDocument();
     });
 });
 
@@ -308,5 +316,59 @@ describe('prioritiesSummary (collapsed sidebar row)', () => {
         const days = chipOf({path: 'work_location.max_in_office_days', label: 'In-office days', display: '2', hard: true});
         const flag = chipOf({path: 'compensation.require_public_company', label: 'Public company', display: 'No', hard: true});
         expect(prioritiesSummary([days, flag])).toBe('Requires: In-office days: 2, Public company: No');
+    });
+});
+
+describe('prioritiesSummaryParts (lead, separator, counts)', () => {
+    const chipOf = (over: Record<string, unknown>) => ({
+        path: 'culture', label: 'Culture', display: 'kind', hard: false, supported: true, ...over,
+    });
+    const req = (n: number) => chipOf({path: `r${n}`, display: `Need${n}`, hard: true});
+
+    test.each([
+        ['nothing saved', [], {lead: '', sep: '', tail: ''}],
+        ['preferences only', [chipOf({}), chipOf({path: 'industry'})], {lead: '2 preferences', sep: '', tail: ''}],
+        ['requirements only', [req(1), req(2)], {lead: 'Requires: Need1, Need2', sep: '', tail: ''}],
+        ['requirements and preferences', [req(1), chipOf({})], {lead: 'Requires: Need1', sep: ' \u00b7 ', tail: '1 preference'}],
+        ['more requirements than named', [req(1), req(2), req(3), req(4)], {lead: 'Requires: Need1, Need2', sep: ', ', tail: '+2'}],
+        ['more requirements and preferences', [req(1), req(2), req(3), chipOf({})],
+            {lead: 'Requires: Need1, Need2', sep: ', ', tail: '+1 \u00b7 1 preference'}],
+    ])('%s', (_name, chips, parts) => {
+        expect(prioritiesSummaryParts(chips)).toEqual(parts);
+        expect(prioritiesSummary(chips)).toBe(`${parts.lead}${parts.sep}${parts.tail}`);
+    });
+});
+
+describe('ReviewChanges compact (sidebar)', () => {
+    const changes = [{path: 'compensation.minimum_salary', old: 0, new: 150000}];
+    const handlers = () => ({onApply: jest.fn(), onCancel: jest.fn(), onEdit: jest.fn(), onApplySearchOnly: jest.fn()});
+    const labels = () => screen.getAllByRole('button').map((b) => b.textContent);
+
+    test('the change comes before the note and Cancel follows the primary action; every handler still fires', () => {
+        const h = handlers();
+        render(<ReviewChanges changes={changes} compact conflicts={['Salary']} {...h}/>);
+        expect(screen.getByTestId('priorities-review')).toHaveClass('priorities-review-compact');
+        expect(labels()).toEqual(['Apply to account', 'Cancel', 'Edit', 'This search only']);
+        const order = Array.from(screen.getByTestId('priorities-review').children).map((el) => el.className.split(' ').pop());
+        expect(order.indexOf('pref-change-list')).toBeLessThan(order.indexOf('priorities-scope-note'));
+        expect(order.indexOf('pref-change-conflict')).toBeLessThan(order.indexOf('pref-change-list'));
+        expect(order[order.length - 1]).toBe('chat-actions');
+        labels().forEach((name) => fireEvent.click(screen.getByRole('button', {name: name!})));
+        expect(h.onApply).toHaveBeenCalledTimes(1);
+        expect(h.onCancel).toHaveBeenCalledTimes(1);
+        expect(h.onEdit).toHaveBeenCalledTimes(1);
+        expect(h.onApplySearchOnly).toHaveBeenCalledTimes(1);
+    });
+
+    test('by default the note comes first and Cancel is last; compact without the optional actions is Apply then Cancel', () => {
+        const {unmount} = render(<ReviewChanges changes={changes} {...handlers()}/>);
+        expect(screen.getByTestId('priorities-review')).not.toHaveClass('priorities-review-compact');
+        expect(labels()).toEqual(['Apply to account', 'Edit', 'This search only', 'Cancel']);
+        const order = Array.from(screen.getByTestId('priorities-review').children).map((el) => el.className.split(' ').pop());
+        expect(order.indexOf('priorities-scope-note')).toBeLessThan(order.indexOf('pref-change-list'));
+        unmount();
+        render(<ReviewChanges changes={[]} compact onApply={jest.fn()} onCancel={jest.fn()}/>);
+        expect(labels()).toEqual(['Apply to account', 'Cancel']);
+        expect(screen.getByTestId('priorities-review-empty')).toBeInTheDocument();
     });
 });
