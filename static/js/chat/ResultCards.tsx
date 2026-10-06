@@ -2,7 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
 import EvidenceSummary from '../evidence/EvidenceSummary';
-import {fundingRoundLabel, rtoPolicyLabel} from '../labels';
+import {EvidenceSummaryData, fundingRoundLabel, rtoPolicyLabel} from '../labels';
 import type {JobResult, OrganizationResult, StructuredResults} from './types';
 
 export function formatCompensation(comp: JobResult['compensation']): string {
@@ -58,9 +58,19 @@ export function JobCard({job}: {job: JobResult}) {
     );
 }
 
+// Stored replies are served as persisted, so the summary is checked before
+// it is rendered as counts.
+const isEvidenceSummary = (value: unknown): value is EvidenceSummaryData => {
+    if (!value || typeof value !== 'object') return false;
+    const summary = value as Record<string, unknown>;
+    return ['verified', 'stale', 'unknown', 'total', 'pending_review']
+        .every((key) => Number.isInteger(summary[key]));
+};
+
 export function OrgCard({org}: {org: OrganizationResult}) {
     const funding = fundingRoundLabel(org.funding_round);
     const rto = rtoPolicyLabel(org.rto_policy);
+    const evidence = isEvidenceSummary(org.evidence) ? org.evidence : null;
     return (
         <article
             className="org-card border rounded p-2 mb-2"
@@ -75,14 +85,14 @@ export function OrgCard({org}: {org: OrganizationResult}) {
                 {funding && rto && ' · '}
                 {rto && <span>{rto}</span>}
             </div>
-            {org.evidence ? (
+            {evidence ? (
                 <div className="org-card-evidence mt-1" data-testid={`org-evidence-${org.id}`}>
                     <span className="visually-hidden">Fact status when this reply was written: </span>
-                    <EvidenceSummary evidence={org.evidence} variant="card"/>
+                    <EvidenceSummary evidence={evidence} variant="card"/>
                 </div>
             ) : (
-                // A reply stored before fact status existed: say so rather
-                // than guess a status for it.
+                // A reply stored before fact status existed (or with an
+                // unreadable one): say so rather than guess a status for it.
                 <div className="org-card-evidence text-muted small mt-1" data-testid={`org-evidence-${org.id}`}>
                     Fact status was not recorded for this reply.
                 </div>

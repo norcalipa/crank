@@ -58,8 +58,9 @@ describe('OrgCard (issue #473)', () => {
     });
 
     test('a reply stored before fact status existed still renders, without a guessed status', () => {
-        for (const evidence of [undefined, null]) {
-            const {unmount} = render(<OrgCard org={org({evidence})}/>);
+        const unreadable = [undefined, null, 'verified', {verified: 'all'}, {verified: 7}] as unknown[];
+        for (const evidence of unreadable) {
+            const {unmount} = render(<OrgCard org={org({evidence: evidence as OrganizationResult['evidence']})}/>);
             const note = screen.getByTestId('org-evidence-7');
             expect(note).toHaveTextContent('Fact status was not recorded for this reply.');
             expect(note.querySelector('.evidence-badge')).toBeNull();
