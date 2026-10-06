@@ -409,12 +409,13 @@ describe('job-match figures, notices and contained transcript (issue #473 visual
     it('puts the figure labels on one shared row and the values on the next', () => {
         expect(popupCss).toMatch(/#job-match-panel \.job-match-figures\s*\{[^}]*grid-template-rows:\s*auto auto/);
         expect(popupCss).toMatch(/#job-match-panel \.job-match-figure\s*\{[^}]*grid-row:\s*span 2;[^}]*grid-template-rows:\s*subgrid/);
+        expect(popupCss).toMatch(/#job-match-panel \.job-match-figure-label\s*\{[^}]*overflow-wrap:\s*anywhere/);
         // No fixed-height label row is left to overprint a three-line label.
         expect(popupCss).not.toMatch(/\.job-match-figure\s*\{[^}]*grid-template-rows:\s*2rem/);
     });
 
     it('lists the figures as label / value rows when the panel cannot hold three columns', () => {
-        const narrow = containerBlocks('20rem');
+        const narrow = containerBlocks('24rem');
         expect(narrow).toMatch(/\.job-match-figures\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[^}]*grid-template-rows:\s*none/);
         expect(narrow).toMatch(/\.job-match-figure\s*\{[^}]*grid-row:\s*auto;[^}]*align-items:\s*baseline/);
     });

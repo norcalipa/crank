@@ -1474,6 +1474,8 @@ body.app-nav-drawer-open {
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: rgba(248, 249, 250, 0.75);
+    /* Never leave the column, whatever font is in use. */
+    overflow-wrap: anywhere;
 }
 
 #job-match-panel .job-match-figure-value {
@@ -1491,10 +1493,11 @@ body.app-nav-drawer-open {
     }
 }
 
-/* Panels up to 20rem (320-368px phones and the ~308px column at 768px) cannot
-   hold "REQUIREMENT" in a third of their width, so the figures are listed as
-   label / value rows. */
-@container job-match (max-width: 20rem) {
+/* Panels up to 24rem (phones and the ~308px column at 768px) cannot hold
+   "REQUIREMENT" in a third of their width with room to spare (at 327px it
+   fits or spills by a pixel depending on the font), so the figures are
+   listed as label / value rows. */
+@container job-match (max-width: 24rem) {
     #job-match-panel .job-match-figures {
         grid-template-columns: minmax(0, 1fr);
         grid-template-rows: none;
