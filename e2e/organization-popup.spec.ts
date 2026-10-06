@@ -12,9 +12,9 @@ const POPUP_FIXTURE = '/e2e/fixtures/organization-popup.html';
 async function openDetailsDialog(page: Page): Promise<void> {
     // The rankings table is hidden at narrow widths; the mobile layout shows
     // cards instead. Pick whichever opener the current viewport renders.
-    const row = page.locator('tr.organization-row').first();
-    const card = page.locator('.organization-card').first();
-    const opener = (await row.isVisible()) ? row : card;
+    // Whichever is visible is resolved at each step rather than decided from
+    // one read during page load, when neither layout has settled yet.
+    const opener = page.locator('tr.organization-row:visible, .organization-card:visible').first();
     await expect(opener).toBeVisible();
     // Enter/Space on a company row opens the dialog (issue #464 validation).
     await opener.focus();
