@@ -226,12 +226,16 @@ for (const [width, height] of [[1280, 800], [375, 800], [320, 700]] as const) {
                 body.messages = messages;
                 await route.fulfill({response, json: body});
             };
+            // The first visit creates the account's conversation; wait for that
+            // to finish so the stored history below is what the reload reads.
             await page.goto('/chat/');
             await expect(page.getByRole('button', {name: 'Send message'})).toBeVisible();
+            await expect(page.getByTestId('chat-loading')).toHaveCount(0);
+            await page.waitForLoadState('networkidle');
             await page.route('**/api/agent/conversations/', withCards);
             await page.reload();
             const lastCard = page.getByRole('article', {name: 'Organization: E2E Card Co 6-3'});
-            await expect(lastCard).toBeVisible();
+            await expect(lastCard).toBeVisible({timeout: 15_000});
 
             const send = page.getByRole('button', {name: 'Send message'});
             const panelBody = page.locator('.assistant-panel-body');
