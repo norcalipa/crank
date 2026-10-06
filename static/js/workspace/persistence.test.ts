@@ -6,6 +6,7 @@ import {
     openAssistant,
     replaceWorkspaceState,
     resetWorkspaceForTests,
+    setPrioritiesRevision,
     setWorkspaceAccount,
     setWorkspaceContext,
 } from './store';
@@ -146,8 +147,10 @@ describe('workspace persistence', () => {
         teardown = installWorkspacePersistence();
         openAssistant({organizationId: 3});
         expect(record()?.context.organizationId).toBe(3);
+        setPrioritiesRevision(4);
         document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
         expect(record()).toBeNull();
+        expect(getWorkspaceSnapshot().prioritiesRevision).toBeNull();
         expect(getWorkspaceSnapshot().visibility).toBe('closed');
         expect(getWorkspaceSnapshot().context?.organizationId).toBeUndefined();
         expect(getWorkspaceSnapshot().account.status).toBe('unknown');

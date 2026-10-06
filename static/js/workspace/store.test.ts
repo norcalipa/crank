@@ -1,6 +1,8 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import {
+    applyWorkspaceFilters,
+    buildWireContext,
     clearWorkspaceContext,
     closeAssistant,
     describeWorkspaceContext,
@@ -10,6 +12,9 @@ import {
     minimizeAssistant,
     normalizeWorkspaceContext,
     openAssistant,
+    openWorkspaceCompany,
+    registerCompanyTarget,
+    registerFilterTarget,
     replaceWorkspaceState,
     resetPriorities,
     resetWorkspaceForTests,
@@ -21,6 +26,8 @@ import {
     setWorkspaceEntity,
     subscribeWorkspace,
 } from './store';
+import * as fs from 'fs';
+import * as path from 'path';
 import {WORKSPACE_CONTEXT_EVENT, WORKSPACE_OPEN_EVENT} from './types';
 
 beforeEach(() => {
@@ -316,5 +323,116 @@ describe('setWorkspaceEntity (issue #479 review round 2)', () => {
     test('an empty entity on an empty store leaves a null context', () => {
         setWorkspaceEntity({});
         expect(getWorkspaceSnapshot().context).toBeNull();
+    });
+});
+
+describe('validated page context (issue #484)', () => {
+    beforeEach(resetWorkspaceForTests);
+
+    test('normalizes algorithm id, filters and the two version counters', () => {
+        expect(normalizeWorkspaceContext({
+            algorithmId: 3, resultGeneration: 0, preferenceRevision: 7,
+            filters: {rtoPolicy: 'H', acceleratedVesting: true, extra: 1},
+        })).toEqual({
+            algorithmId: 3, resultGeneration: 0, preferenceRevision: 7,
+            filters: {rtoPolicy: 'H', acceleratedVesting: true},
+        });
+    });
+
+    test('drops hostile values for the new keys', () => {
+        expect(normalizeWorkspaceContext({
+            algorithmId: -1, resultGeneration: -2, preferenceRevision: 1.5,
+            filters: {rtoPolicy: 'Z', acceleratedVesting: 'yes'},
+        })).toEqual({filters: {}});
+        expect(normalizeWorkspaceContext({algorithmId: '3', filters: 'R'})).toEqual({});
+    });
+
+    test('an empty filters object replaces earlier filters', () => {
+        setWorkspaceContext({surface: 'rankings', filters: {rtoPolicy: 'R'}});
+        setWorkspaceContext({filters: {}});
+        expect(getWorkspaceSnapshot().context?.filters).toEqual({});
+    });
+
+    test('key order never bumps the revision; a real change does', () => {
+        setWorkspaceContext({surface: 'rankings', page: 2, algorithmId: 1});
+        const revision = getWorkspaceSnapshot().contextRevision;
+        setWorkspaceContext({algorithmId: 1, page: 2, surface: 'rankings'});
+        expect(getWorkspaceSnapshot().contextRevision).toBe(revision);
+        setWorkspaceContext({page: 3});
+        expect(getWorkspaceSnapshot().contextRevision).toBe(revision + 1);
+    });
+
+    test('buildWireContext is undefined without a context', () => {
+        expect(buildWireContext(getWorkspaceSnapshot())).toBeUndefined();
+    });
+
+    test('buildWireContext is snake_case and omits names, search text and empty filters', () => {
+        setWorkspaceContext({
+            surface: 'rankings', organizationId: 5, organizationName: 'Secret Co', searchTerm: 'private',
+            jobId: 9, comparisonIds: [1, 2], algorithmId: 3, page: 99999,
+            filters: {rtoPolicy: 'R', acceleratedVesting: true},
+            resultGeneration: 4, preferenceRevision: 8,
+        });
+        const snapshot = getWorkspaceSnapshot();
+        expect(buildWireContext(snapshot)).toEqual({
+            revision: snapshot.contextRevision, surface: 'rankings', organization_id: 5, job_id: 9,
+            comparison_ids: [1, 2], algorithm_id: 3, page: 10000,
+            filters: {rto_policy: 'R', accelerated_vesting: true},
+            preference_revision: 8, result_generation: 4,
+        });
+        setWorkspaceContext({filters: {}, organizationId: 0, comparisonIds: [1, 2]});
+        const wire = buildWireContext(getWorkspaceSnapshot());
+        expect(wire).not.toHaveProperty('filters');
+        expect(wire).not.toHaveProperty('organization_id');
+        expect(JSON.stringify(wire)).not.toMatch(/Secret|private/);
+    });
+
+    // The same fixture is validated by crank/tests/views/test_page_context_serializer.py.
+    const wireFixture = JSON.parse(
+        fs.readFileSync(path.join(__dirname, 'fixtures', 'wire-context.json'), 'utf8'),
+    ) as {cases: Array<{name: string; contextRevision: number; context: any; wire: unknown}>};
+
+    test.each(wireFixture.cases.map((c) => [c.name, c] as const))('wire fixture: %s', (_name, c) => {
+        const snapshot = {...getWorkspaceSnapshot(), context: c.context, contextRevision: c.contextRevision};
+        expect(buildWireContext(snapshot)).toEqual(c.wire);
+    });
+
+    test('buildWireContext keeps a minimal surface-only context', () => {
+        setWorkspaceContext({surface: 'chat'});
+        const snapshot = getWorkspaceSnapshot();
+        expect(buildWireContext(snapshot)).toEqual({revision: snapshot.contextRevision, surface: 'chat'});
+    });
+
+    test('with no filter target, applying reports false', () => {
+        expect(applyWorkspaceFilters({rtoPolicy: 'R'})).toBe(false);
+    });
+
+    test('the newest target wins, releasing it restores the previous one, and a decline reports false', () => {
+        const first = jest.fn(() => true);
+        const second = jest.fn(() => false);
+        const releaseFirst = registerFilterTarget(first);
+        const releaseSecond = registerFilterTarget(second);
+        expect(applyWorkspaceFilters({rtoPolicy: 'H'})).toBe(false);
+        expect(second).toHaveBeenCalledWith({rtoPolicy: 'H'});
+        expect(first).not.toHaveBeenCalled();
+        releaseSecond();
+        expect(applyWorkspaceFilters({rtoPolicy: 'H'})).toBe(true);
+        releaseFirst();
+        expect(applyWorkspaceFilters({rtoPolicy: 'H'})).toBe(false);
+    });
+
+    test('company targets: none navigates, the newest decides, a miss is not an open, release restores', () => {
+        expect(openWorkspaceCompany(5)).toBe('no-target');
+        const first = jest.fn(() => true);
+        const second = jest.fn(() => false);
+        const releaseFirst = registerCompanyTarget(first);
+        const releaseSecond = registerCompanyTarget(second);
+        expect(openWorkspaceCompany(5)).toBe('not-found');
+        expect(second).toHaveBeenCalledWith(5);
+        expect(first).not.toHaveBeenCalled();
+        releaseSecond();
+        expect(openWorkspaceCompany(5)).toBe('opened');
+        releaseFirst();
+        expect(openWorkspaceCompany(5)).toBe('no-target');
     });
 });

@@ -81,13 +81,13 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
             const data = await (await provenance).json();
             const byKey = Object.fromEntries(data.fields.map((f: {field_key: string}) => [f.field_key, f]));
             // The contract the grid depends on: the server's display label is the label the dialog renders.
-            expect(data.displayed_values.rto_policy).toBe('Hybrid');
+            expect(data.displayed_values.rto_policy).toBe('Remote');
             expect(byKey.rto_policy.agrees_with_displayed).toBe(true);
             expect(byKey.funding_round.agrees_with_displayed).toBe(false);
 
             const grid = dialog.getByTestId('popup-details-grid');
             const rto = grid.locator('.row').filter({hasText: 'RTO Policy'});
-            await expect(rto).toContainText('Hybrid');
+            await expect(rto).toContainText('Remote');
             await expect(rto).toContainText('Stale');
             await expect(rto).toContainText('Conflicting observation');
             await expect(rto).not.toContainText('Profile data');

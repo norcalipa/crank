@@ -1,6 +1,9 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 """Strict validation of the assistant page-context contract (issue #484)."""
+import json
+from pathlib import Path
+
 import pytest
 
 from crank.serializers.job_search import MAX_CONTEXT_BYTES, PageContextSerializer
@@ -75,3 +78,19 @@ def test_non_object_context_is_rejected():
 def test_oversized_context_is_rejected():
     big = {"revision": 1, "filters": {"rto_policy": "R"}, "pad": "x" * MAX_CONTEXT_BYTES}
     assert "Context is too large." in str(_errors(big))
+
+
+_WIRE_FIXTURE = Path(__file__).resolve().parents[3] / "static/js/workspace/fixtures/wire-context.json"
+_WIRE_CASES = json.loads(_WIRE_FIXTURE.read_text())["cases"]
+
+
+@pytest.mark.parametrize("case", _WIRE_CASES, ids=[c["name"] for c in _WIRE_CASES])
+def test_client_wire_context_fixture_is_accepted(case):
+    """Every shape buildWireContext produces (shared with the Jest suite) passes the serializer."""
+    ser = PageContextSerializer(data=case["wire"])
+    assert ser.is_valid(), ser.errors
+
+
+def test_client_wire_context_with_an_unknown_key_is_rejected():
+    ser = PageContextSerializer(data={**_WIRE_CASES[0]["wire"], "organization_name": "Secret Co"})
+    assert not ser.is_valid()

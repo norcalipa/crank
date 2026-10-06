@@ -16,6 +16,7 @@ export const PRE_PERSISTENCE_ERROR_TYPES = new Set([
     'payload_too_large',
     'invalid_request',
     'not_found',
+    'invalid_context',
 ]);
 // Typed envelopes the server returns only AFTER the user turn is persisted;
 // for these the failed-turn UI ("your message is saved; retry") is honest.

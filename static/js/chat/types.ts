@@ -106,6 +106,10 @@ export interface SubmitResponse {
     // Additive (issue #466 review): present only when the turn produced a
     // read-only preference proposal through an orchestrator-backed provider.
     preference_proposal?: PreferenceProposal | null;
+    // Additive (issue #484): typed UI actions and the page-context echo, both
+    // absent for context-less requests, replays and older servers.
+    actions?: unknown;
+    context?: {revision?: number} | null;
 }
 
 /** Undo lifecycle for the preference-change notice (issue #466). */
