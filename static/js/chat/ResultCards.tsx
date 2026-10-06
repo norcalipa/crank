@@ -87,7 +87,9 @@ export function OrgCard({org}: {org: OrganizationResult}) {
             </div>
             {evidence ? (
                 <div className="org-card-evidence mt-1" data-testid={`org-evidence-${org.id}`}>
-                    <span className="visually-hidden">Fact status when this reply was written: </span>
+                    {/* The summary is the reply-time snapshot stored with the
+                        message, so the label says so for every reader. */}
+                    <div className="org-card-evidence-label" data-testid="evidence-recorded-label">Facts when this reply was written</div>
                     <EvidenceSummary evidence={evidence} variant="card"/>
                 </div>
             ) : (

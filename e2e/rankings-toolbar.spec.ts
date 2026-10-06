@@ -32,7 +32,7 @@ test('How ranking works is collapsed by default and keyboard operable', async ({
     await disclosure.locator('summary').focus();
     await page.keyboard.press('Enter');
     await expect(page.getByTestId('ranking-definitions')).toBeVisible();
-    await expect(page.getByTestId('ranking-definitions')).toContainText('Personal fit');
+    await expect(page.getByTestId('ranking-definitions')).toContainText('Requirement coverage');
 });
 
 test('single page renders no pager', async ({page}) => {

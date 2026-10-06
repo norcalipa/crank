@@ -5,6 +5,7 @@ import {fireEvent, render, screen, waitFor, within} from '@testing-library/react
 import * as React from 'react';
 
 import JobMatchPanel from './JobMatchPanel';
+import {EVIDENCE_STATUS_META, MATCH_TERMS} from './labels';
 import {closeAssistant, resetWorkspaceForTests} from './workspace/store';
 
 // Requirement chips carry the read-time status of the fact behind each
@@ -160,9 +161,120 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
         const notices = screen.getAllByTestId('evidence-changed-notice');
         expect(notices).toHaveLength(1);
         expect(notices[0]).toHaveAttribute('role', 'status');
+        expect(notices[0]).toHaveTextContent('Refresh to re-check them.');
+        expect(changed).toHaveTextContent(MATCH_TERMS.changed.label);
+        expect(changed.querySelector('.job-match-chip-qualifier')).toHaveAttribute('title', MATCH_TERMS.changed.meaning);
+        expect(changed.querySelector('.job-match-chip-sep')).toHaveAttribute('aria-hidden', 'true');
+        expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/refresh/'))).toBe(false);
+    });
+
+    const changedJob = () => job([requirement('work_location.modes', 'match', status('superseded'))]);
+    const settledJob = () => job([requirement('work_location.modes', 'match', status('verified', '2026-09-01T00:00:00Z'))]);
+
+    /** Serves `first` until the refresh POST has been answered, then `second`. */
+    function mockRefresh(first: unknown, second: unknown, refresh: () => Promise<Response>) {
+        let refreshed = false;
+        const calls: {url: string; method: string}[] = [];
+        global.fetch = jest.fn((url: string, init: RequestInit = {}) => {
+            calls.push({url, method: init.method || 'GET'});
+            if (url.includes('/api/job-matches/refresh/')) {
+                return refresh().finally(() => { refreshed = true; });
+            }
+            if (url.includes('/api/job-matches/status/')) {
+                return Promise.resolve(json({state: 'ok', title: 'Matches', message: '', actions: []}));
+            }
+            if (url.includes('/api/job-matches/ranked/')) {
+                return Promise.resolve(json({job_matches: [refreshed ? second : first], organization_matches: []}));
+            }
+            return Promise.resolve(json({count: 1, next: null, previous: null, results: []}));
+        }) as unknown as typeof fetch;
+        return calls;
+    }
+
+    test('the notice refresh asks for a recompute, then re-reads and returns focus to the heading', async () => {
+        document.cookie = 'csrftoken=tok473';
+        const calls = mockRefresh(changedJob(), settledJob(), () => Promise.resolve(json({status: 'published'})));
+        render(<JobMatchPanel/>);
+        const button = within(await screen.findByTestId('evidence-changed-notice')).getByRole('button', {name: 'Refresh matches'});
+        button.focus();
+        const before = calls.length;
+        fireEvent.click(button);
+
+        await waitFor(() => expect(screen.queryByTestId('evidence-changed-notice')).not.toBeInTheDocument());
+        await waitFor(() => expect(chip('work_location.modes')).toHaveTextContent('✓ Work mode · ✓ Verified'));
+        const after = calls.slice(before);
+        // The recompute is requested first; the three reads follow it.
+        expect(after[0]).toEqual({url: '/api/job-matches/refresh/', method: 'POST'});
+        expect(after.slice(1).every((call) => call.method === 'GET')).toBe(true);
+        expect(after.filter((call) => call.url.includes('/ranked/'))).toHaveLength(1);
+        const post = (global.fetch as jest.Mock).mock.calls.find(([url]) => String(url).includes('/refresh/'));
+        expect(post[1].headers['X-CSRFToken']).toBe('tok473');
+        // Focus is not dropped to <body> when the list (and the button) reloads.
+        const heading = screen.getByRole('heading', {name: 'Your Job Matches'});
+        await waitFor(() => expect(heading).toHaveFocus());
+        expect(heading).toHaveAttribute('tabindex', '-1');
+    });
+
+    test('a refresh that could not re-check says so and keeps one notice', async () => {
+        const calls = mockRefresh(changedJob(), changedJob(), () => Promise.reject(new Error('offline')));
+        render(<JobMatchPanel/>);
+        fireEvent.click(within(await screen.findByTestId('evidence-changed-notice')).getByRole('button', {name: 'Refresh matches'}));
+
+        await waitFor(() => expect(screen.getByTestId('evidence-changed-notice'))
+            .toHaveTextContent('They could not be re-checked yet — try again in a moment.'));
+        // The failed request still re-reads, so the page shows the state as it is.
+        expect(calls.filter((call) => call.url.includes('/ranked/'))).toHaveLength(2);
+        expect(screen.getAllByTestId('evidence-changed-notice')).toHaveLength(1);
+        await waitFor(() => expect(screen.getByRole('heading', {name: 'Your Job Matches'})).toHaveFocus());
+    });
+
+    test('changed evidence replaces the stale banner instead of adding a second one', async () => {
+        const stale = {...changedJob(), revision: {stale: true, pending: true, generated_at: '2026-09-22T08:00:00Z'}};
+        await renderRanked([stale]);
+        expect(screen.getAllByTestId('evidence-changed-notice')).toHaveLength(1);
+        expect(screen.queryByTestId('stale-notice')).not.toBeInTheDocument();
+        expect(screen.getAllByRole('button', {name: 'Refresh matches'})).toHaveLength(1);
+    });
+
+    test('the stale banner alone still reloads without a recompute request and keeps focus', async () => {
+        const stale = {...settledJob(), revision: {stale: true, generated_at: '2026-09-22T08:00:00Z'}};
+        const fetchMock = await renderRanked([stale]);
+        expect(screen.queryByTestId('evidence-changed-notice')).not.toBeInTheDocument();
         const before = fetchMock.mock.calls.length;
-        fireEvent.click(within(notices[0]).getByRole('button', {name: 'Refresh matches'}));
-        await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(before));
+        fireEvent.click(within(screen.getByTestId('stale-notice')).getByRole('button', {name: 'Refresh matches'}));
+        await waitFor(() => expect(fetchMock.mock.calls.length).toBe(before + 3));
+        expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/refresh/'))).toBe(false);
+        await waitFor(() => expect(screen.getByRole('heading', {name: 'Your Job Matches'})).toHaveFocus());
+    });
+
+    test('the header refresh does not move focus to the heading', async () => {
+        await renderRanked([job([])]);
+        fireEvent.click(screen.getByTestId('job-match-refresh'));
+        await screen.findByTestId('ranked-job-matches');
+        expect(screen.getByRole('heading', {name: 'Your Job Matches'})).not.toHaveFocus();
+    });
+
+    test('the legend defines every job-card term from the shared vocabulary', async () => {
+        await renderRanked([job([
+            requirement('compensation.require_public_company', 'match', status('sourced', '2026-09-01T00:00:00Z')),
+        ])]);
+        const legend = screen.getByTestId('job-match-legend');
+        expect(legend.tagName).toBe('DETAILS');
+        expect(within(legend).getByText('What these labels mean')).toBeInTheDocument();
+        for (const term of Object.values(MATCH_TERMS)) {
+            expect(legend).toHaveTextContent(term.label);
+            expect(legend).toHaveTextContent(term.meaning);
+        }
+        for (const key of ['verified', 'stale', 'profile'] as const) {
+            expect(legend).toHaveTextContent(EVIDENCE_STATUS_META[key].meaning);
+        }
+        expect(legend).toHaveTextContent('A requirement with no qualifier was decided from the listing itself.');
+        // The chip and the figures point at the same definitions.
+        expect(chip('compensation.require_public_company').querySelector('.job-match-chip-qualifier-text'))
+            .toHaveAttribute('title', MATCH_TERMS.sourced.meaning);
+        const titles = Array.from(screen.getByTestId('ranked-job-42').querySelectorAll('.job-match-figure-label'))
+            .map((el) => el.getAttribute('title'));
+        expect(titles).toEqual([MATCH_TERMS.companyScore.meaning, MATCH_TERMS.fit.meaning, MATCH_TERMS.requirementCoverage.meaning]);
     });
 
     test('figures are labelled as preset score, fit and requirement coverage', async () => {

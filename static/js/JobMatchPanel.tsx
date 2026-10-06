@@ -2,7 +2,8 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
 import EvidenceBadge from './evidence/EvidenceBadge';
-import {EVIDENCE_STATUS_META, formatEvidenceDate, fundingRoundLabel, rtoPolicyLabel} from './labels';
+import {EVIDENCE_STATUS_META, MATCH_TERMS, formatEvidenceDate, fundingRoundLabel, rtoPolicyLabel} from './labels';
+import {csrfFetch} from './priorities/csrf';
 import {installPositionTracking, restoreResultPosition} from './workspace/position';
 import {createLatestGuard} from './workspace/requests';
 import {
@@ -413,15 +414,15 @@ function ThreeFigures({fit, company, coverage, scope}: {fit: number | null | und
     return (
         <div className="job-match-figures mt-1" role="list" aria-label="Match figures">
             <span role="listitem" className="job-match-figure">
-                <span className="job-match-figure-label">Company score (preset)</span>
+                <span className="job-match-figure-label" title={MATCH_TERMS.companyScore.meaning}>{MATCH_TERMS.companyScore.label}</span>
                 <strong className="job-match-figure-value" data-testid={`${scope}-company-score`}>{companyText}</strong>
             </span>
             <span role="listitem" className="job-match-figure">
-                <span className="job-match-figure-label">Fit</span>
+                <span className="job-match-figure-label" title={MATCH_TERMS.fit.meaning}>{MATCH_TERMS.fit.label}</span>
                 <strong className="job-match-figure-value" data-testid={`${scope}-fit-score`}>{fitText}</strong>
             </span>
             <span role="listitem" className="job-match-figure">
-                <span className="job-match-figure-label">Requirement coverage</span>
+                <span className="job-match-figure-label" title={MATCH_TERMS.requirementCoverage.meaning}>{MATCH_TERMS.requirementCoverage.label}</span>
                 <strong className="job-match-figure-value" data-testid={`${scope}-coverage`}>{covText}</strong>
             </span>
         </div>
@@ -467,7 +468,11 @@ function chipQualifier(req: RequirementOutcome): {node: React.ReactNode; spoken:
     if (evidence.state === 'profile') {
         return {node: <EvidenceBadge status="profile"/>, spoken: EVIDENCE_STATUS_META.profile.label, unverified: true};
     }
-    return {node: 'Sourced, not confirmed', spoken: 'Sourced, not confirmed', unverified: true};
+    return {
+        node: <span className="job-match-chip-qualifier-text" title={MATCH_TERMS.sourced.meaning}>{MATCH_TERMS.sourced.label}</span>,
+        spoken: MATCH_TERMS.sourced.label,
+        unverified: true,
+    };
 }
 
 /** Per-requirement chips in three visually distinct, non-color-duplicated
@@ -491,7 +496,10 @@ function RequirementChips({requirements}: {requirements?: RequirementOutcome[]})
                               data-evidence-state={req.evidence_status!.state}
                               aria-label={`${label}: evidence changed, refresh matches`}>
                             <span aria-hidden="true">↻</span> {label}
-                            <span className="job-match-chip-qualifier"> · Evidence changed — refresh</span>
+                            <span className="job-match-chip-sep" aria-hidden="true"> · </span>
+                            <span className="job-match-chip-qualifier" title={MATCH_TERMS.changed.meaning}>
+                                {MATCH_TERMS.changed.label} — refresh
+                            </span>
                         </span>
                     );
                 }
@@ -505,7 +513,10 @@ function RequirementChips({requirements}: {requirements?: RequirementOutcome[]})
                           data-evidence-state={req.evidence_status?.state}
                           aria-label={`${label}: ${meta.word}${qualifier ? `, ${qualifier.spoken}` : ''}`}>
                         <span aria-hidden="true">{meta.marker}</span> {label}
-                        {qualifier && <span className="job-match-chip-qualifier"> · {qualifier.node}</span>}
+                        {qualifier && <>
+                            <span className="job-match-chip-sep" aria-hidden="true"> · </span>
+                            <span className="job-match-chip-qualifier">{qualifier.node}</span>
+                        </>}
                     </span>
                 );
             })}
@@ -513,11 +524,16 @@ function RequirementChips({requirements}: {requirements?: RequirementOutcome[]})
     );
 }
 
+const anyEvidenceChanged = (matches: {requirements?: RequirementOutcome[]}[]): boolean =>
+    matches.some((match) => (match.requirements || []).some(evidenceChanged));
+
 /** One consolidated notice when any shown outcome rests on evidence that has
  * since been replaced or removed (issue #473 AC9): the chips say which, and
- * this carries the >=44px refresh action. */
-function EvidenceChangedNotice({matches, onRefresh}: {matches: {requirements?: RequirementOutcome[]}[]; onRefresh: () => void}) {
-    if (!matches.some((match) => (match.requirements || []).some(evidenceChanged))) {
+ * this carries the >=44px refresh action. It stands in for the stale banner,
+ * which the same change also raises. `retried` is set once a refresh has run;
+ * the notice is only still shown then if the re-check did not go through. */
+function EvidenceChangedNotice({matches, retried, onRefresh}: {matches: {requirements?: RequirementOutcome[]}[]; retried: boolean; onRefresh: () => void}) {
+    if (!anyEvidenceChanged(matches)) {
         return null;
     }
     return (
@@ -525,7 +541,10 @@ function EvidenceChangedNotice({matches, onRefresh}: {matches: {requirements?: R
             <div className="job-match-stale-banner">
                 <Icon name="clock" className="job-match-stale-icon" />
                 <span className="job-match-stale-message">
-                    Some company evidence changed after these matches were computed. Refresh to re-check them.
+                    Some company evidence changed after these matches were computed.{' '}
+                    {retried
+                        ? 'They could not be re-checked yet — try again in a moment.'
+                        : 'Refresh to re-check them.'}
                 </span>
                 <button type="button" className="btn btn-sm btn-outline-light job-match-stale-refresh" onClick={onRefresh}
                         data-testid="evidence-changed-refresh">
@@ -533,6 +552,40 @@ function EvidenceChangedNotice({matches, onRefresh}: {matches: {requirements?: R
                 </button>
             </div>
         </div>
+    );
+}
+
+const LEGEND_STATUSES = ['verified', 'stale', 'profile'] as const;
+
+/** The job-card vocabulary in one place (issue #473): the same definitions
+ * as "How ranking works" on the rankings page, which this page lacks. */
+function MatchLegend() {
+    return (
+        <details className="how-ranking-works job-match-legend" data-testid="job-match-legend">
+            <summary className="how-ranking-works-summary">What these labels mean</summary>
+            <div className="how-ranking-works-content">
+                <dl className="ranking-definitions mb-0">
+                    {[MATCH_TERMS.companyScore, MATCH_TERMS.fit, MATCH_TERMS.requirementCoverage].map((term) => (
+                        <React.Fragment key={term.label}>
+                            <dt>{term.label}</dt>
+                            <dd>{term.meaning}</dd>
+                        </React.Fragment>
+                    ))}
+                    <dt>Evidence behind a requirement</dt>
+                    <dd>
+                        <ul className="evidence-legend list-unstyled mb-0">
+                            {LEGEND_STATUSES.map((status) => (
+                                <li key={status}><EvidenceBadge status={status}/>: {EVIDENCE_STATUS_META[status].meaning}</li>
+                            ))}
+                            {[MATCH_TERMS.sourced, MATCH_TERMS.changed].map((term) => (
+                                <li key={term.label}><span className="evidence-badge">{term.label}</span>: {term.meaning}</li>
+                            ))}
+                            <li>A requirement with no qualifier was decided from the listing itself.</li>
+                        </ul>
+                    </dd>
+                </dl>
+            </div>
+        </details>
     );
 }
 
@@ -784,6 +837,35 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         fetchStatus();
     }, [fetchStatus]);
 
+    // A notice's Refresh unmounts with the list it reloads; focus goes to the
+    // panel heading once the reload settles instead of dropping to <body>.
+    const refocusRef = React.useRef(false);
+    React.useEffect(() => {
+        if (phase === 'loading' || !refocusRef.current) return;
+        refocusRef.current = false;
+        // Every phase renders the heading, so it is always there to take focus.
+        document.getElementById('job-match-panel-title')!.focus();
+    }, [phase]);
+    const reloadFromNotice = React.useCallback(() => {
+        refocusRef.current = true;
+        void fetchStatus();
+    }, [fetchStatus]);
+    // Stored matches that cite replaced evidence are only resolved by a
+    // recompute, so this asks for one before re-reading (issue #473). A
+    // failed request still re-reads: the notice then says it is not done.
+    const [recheckRequested, setRecheckRequested] = React.useState(false);
+    const recheckMatches = React.useCallback(async () => {
+        refocusRef.current = true;
+        setPhase('loading');
+        try {
+            await csrfFetch('/api/job-matches/refresh/', {method: 'POST'});
+        } catch {
+            // The re-read below reports the state as it is.
+        }
+        setRecheckRequested(true);
+        await fetchStatus();
+    }, [fetchStatus]);
+
     // Issue #480: a priorities write anywhere on the page refetches matches once.
     const seenPrioritiesRevision = React.useRef(getWorkspaceSnapshot().prioritiesRevision);
     React.useEffect(() => subscribeWorkspace(() => {
@@ -896,7 +978,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header">
-                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}>Your Job Matches</h2>
                 </div>
                 <div className="card-body">
                     <p className="text-muted mb-2" data-testid="job-match-signed-out">
@@ -915,7 +997,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header">
-                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}>Your Job Matches</h2>
                 </div>
                 <div className="card-body">
                     <div role="status" aria-live="polite" data-testid="job-match-loading">
@@ -940,7 +1022,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header">
-                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}>Your Job Matches</h2>
                 </div>
                 <div className="card-body">
                     <div className="alert alert-danger" role="alert" data-testid="job-match-error">
@@ -971,11 +1053,14 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         // whole result set (a single computation stamps every row).
         const staleResults = [...jobs, ...orgs].some((m) => m.revision?.stale);
         const resultRevision = jobs[0]?.revision || orgs[0]?.revision || null;
+        // An evidence change also makes the stored results stale; one notice
+        // (the one naming the cause) is shown, never both.
+        const evidenceChangedResults = anyEvidenceChanged([...jobs, ...orgs]);
         return (
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header d-flex justify-content-between align-items-center">
-                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}>Your Job Matches</h2>
                     <button type="button" className="btn btn-sm btn-outline-light"
                             onClick={fetchStatus} aria-label="Refresh match status"
                             data-testid="job-match-refresh">
@@ -985,8 +1070,9 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 <div className="card-body">
                     <ResultNotices emptyState={emptyState!} />
                     <UnsupportedNotice unsupported={jobs[0]?.unsupported || orgs[0]?.unsupported} />
-                    <StaleNotice revision={{stale: staleResults}} onRefresh={fetchStatus} />
-                    <EvidenceChangedNotice matches={[...jobs, ...orgs]} onRefresh={fetchStatus} />
+                    <StaleNotice revision={{stale: staleResults && !evidenceChangedResults}} onRefresh={reloadFromNotice} />
+                    <EvidenceChangedNotice matches={[...jobs, ...orgs]} retried={recheckRequested} onRefresh={recheckMatches} />
+                    <MatchLegend />
                     <ResultTimestamp revision={resultRevision} />
                     {jobs.length > 0 && (
                         <div data-testid="ranked-job-matches" className="mb-3">
@@ -1077,7 +1163,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header d-flex justify-content-between align-items-center">
-                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}>Your Job Matches</h2>
                     <button type="button" className="btn btn-sm btn-outline-light"
                             onClick={fetchStatus} aria-label="Refresh match status"
                             data-testid="job-match-refresh">
@@ -1086,7 +1172,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                 </div>
                 <div className="card-body">
                     <ResultNotices emptyState={emptyState!} />
-                    <StaleNotice revision={storedRevision} onRefresh={fetchStatus} />
+                    <StaleNotice revision={storedRevision} onRefresh={reloadFromNotice} />
                     <ResultTimestamp revision={storedRevision} />
                     <p className="mb-0" role="status" aria-live="polite">
                         <Icon name="check-circle" className="text-success me-1" />
@@ -1104,7 +1190,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                  aria-labelledby="job-match-panel-title">
             <div className="card-header d-flex justify-content-between align-items-center">
-                <h2 id="job-match-panel-title" className="job-match-panel-title mb-0">Your Job Matches</h2>
+                <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}>Your Job Matches</h2>
                 <button type="button" className="btn btn-sm btn-outline-light"
                         onClick={fetchStatus} aria-label="Refresh match status"
                         data-testid="job-match-refresh">

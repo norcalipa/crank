@@ -46,7 +46,11 @@ describe('OrgCard (issue #473)', () => {
         expect(within(evidence).getByTestId('evidence-facts')).toHaveTextContent('0 verified · 2 stale · 5 unknown');
         expect(within(evidence).getByTestId('evidence-last-verified')).toHaveTextContent('Last verified Aug 8, 2024');
         expect(within(evidence).getByTestId('evidence-pending')).toHaveTextContent('Pending review');
-        expect(evidence).toHaveTextContent('Fact status when this reply was written:');
+        // The reply-time snapshot is labelled for every reader, not only screen readers.
+        const label = within(evidence).getByTestId('evidence-recorded-label');
+        expect(label).toHaveTextContent('Facts when this reply was written');
+        expect(label).not.toHaveClass('visually-hidden');
+        expect(evidence.querySelector('.visually-hidden')).toBeNull();
     });
 
     test('an organization with no accepted evidence reads never verified', () => {

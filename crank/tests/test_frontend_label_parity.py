@@ -13,6 +13,7 @@ from crank.services import job_matching
 
 LABELS_TS = Path(settings.BASE_DIR) / "static" / "js" / "labels.ts"
 STATIC_JS = Path(settings.BASE_DIR) / "static" / "js"
+RANKINGS_TEMPLATE = Path(settings.BASE_DIR) / "templates" / "crank" / "index.html"
 
 _MAP_RE = r"export const %s: Record<string, string> = \{\n(?P<body>(?:    [A-Z]: '[^'\n]*',\n)+)\};\n"
 _ENTRY_RE = re.compile(r"    ([A-Z]): '([^'\n]*)',\n")
@@ -66,3 +67,34 @@ def test_no_component_keeps_a_private_funding_or_rto_map():
         if re.search(r"['\"]?[RHO]['\"]?: '(Remote|Hybrid|In-[Oo]ffice|On-site)'", text):
             offenders.append(f"{path.name}: RTO map")
     assert offenders == []
+
+
+_TERM_RE = re.compile(
+    r"    (\w+): \{\n        label: '([^'\n]*)',\n        meaning: '([^'\n]*)',\n    \},\n"
+)
+
+
+def test_match_terms_read_the_same_in_how_ranking_works():
+    """The job-card terms have one definition: labels.ts, repeated in the legend."""
+    body = re.search(
+        r"export const MATCH_TERMS: [^\n]* = \{\n(?P<body>.*?)\n\};\n",
+        LABELS_TS.read_text(encoding="utf-8"),
+        re.S,
+    ).group("body") + "\n"
+    terms = {key: (label, meaning) for key, label, meaning in _TERM_RE.findall(body)}
+    assert set(terms) == {"sourced", "changed", "companyScore", "fit", "requirementCoverage"}
+    assert _TERM_RE.sub("", body) == ""
+    legend = RANKINGS_TEMPLATE.read_text(encoding="utf-8")
+    for key in ("sourced", "changed"):
+        label, meaning = terms[key]
+        assert f'<span class="evidence-badge">{label}</span>: {meaning}</li>' in legend
+    for key, heading in (
+        ("companyScore", "Company score"),
+        ("fit", "Fit"),
+        ("requirementCoverage", "Requirement coverage"),
+    ):
+        label, meaning = terms[key]
+        assert label.startswith(heading)
+        assert re.search(
+            r"<dt>%s</dt>\s*<dd>[^<]*%s</dd>" % (re.escape(heading), re.escape(meaning)), legend
+        ), key

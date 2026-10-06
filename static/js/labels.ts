@@ -69,6 +69,32 @@ export const EVIDENCE_STATUS_META: Record<EvidenceStatusKey, EvidenceStatusMeta>
     conflicted: {label: 'Conflicting observation', marker: '\u26A0\uFE0E', meaning: 'A later observation disagrees. Not verified.'},
 };
 
+// Job-card terms that are not a fact status of their own: what a requirement
+// chip rests on, and the three figures. The cards, their legend and "How
+// ranking works" all read these (pinned by test_frontend_label_parity.py).
+export const MATCH_TERMS: Record<string, {label: string; meaning: string}> = {
+    sourced: {
+        label: 'Sourced, not confirmed',
+        meaning: 'An accepted, current source says this in its own words. Matching read it automatically and the reading has not been confirmed.',
+    },
+    changed: {
+        label: 'Evidence changed',
+        meaning: 'The fact behind this result was replaced or removed after matches were computed. Refresh matches to re-check it.',
+    },
+    companyScore: {
+        label: 'Company score (preset)',
+        meaning: 'The preset-weighted average of the rating dimensions. It is the same for everyone.',
+    },
+    fit: {
+        label: 'Fit',
+        meaning: 'Computed from your saved priorities and never mixed into the company score.',
+    },
+    requirementCoverage: {
+        label: 'Requirement coverage',
+        meaning: 'The share of your requirements that could be decided either way. It does not mean the facts behind them are verified.',
+    },
+};
+
 export interface EvidenceSummaryData {
     verified: number;
     stale: number;

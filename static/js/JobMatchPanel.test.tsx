@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import {render, screen, fireEvent, waitFor} from '@testing-library/react';
+import {render, screen, fireEvent, waitFor, within} from '@testing-library/react';
 import * as React from 'react';
 
 import JobMatchPanel from './JobMatchPanel';
@@ -1301,7 +1301,10 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
             await new Promise((resolve) => setTimeout(resolve, 20));
         });
         expect(screen.getByText('Fresh')).toBeInTheDocument();
-        expect(screen.queryByText('Stale')).not.toBeInTheDocument();
+        // Scoped to the results: the legend (issue #473) also defines the word "Stale".
+        const results = within(screen.getByTestId('ranked-job-matches'));
+        expect(results.getByText('Fresh')).toBeInTheDocument();
+        expect(results.queryByText('Stale')).not.toBeInTheDocument();
     });
 
     test('a superseded request that fails late does not surface an error', async () => {
