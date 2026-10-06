@@ -14,10 +14,10 @@ import {
     SESSION_EXPIRED_MESSAGE, applyProposal, proposePriorities, readPriorities, resetPriorities, undoApplied,
 } from './api';
 import AppliedChanges from './AppliedChanges';
-import PriorityChips, {PriorityChipsSkeleton} from './PriorityChips';
+import PriorityChips, {PriorityChipLegendItems, PriorityChipsSkeleton} from './PriorityChips';
 import PriorityEditor from './PriorityEditor';
 import ReviewChanges from './ReviewChanges';
-import {preferencePathLabel, prioritiesSummary} from './format';
+import {preferencePathLabel, prioritiesSummaryParts} from './format';
 import {Draft, DraftValue, buildPatch, conflictingPaths, emptyDraft, isDirty, patchToDraft} from './patch';
 import {prioritiesSurface, subscribeDesktop} from './surface';
 import {useWorkspace} from './useWorkspace';
@@ -46,6 +46,10 @@ const ScrollRegion: React.FC<{children: React.ReactNode}> = ({children}) => {
         </div>
     );
 };
+
+// The open sidebar block stays pinned above a scrolling panel only while the chat keeps this much
+// room under it: its header, its composer band and 8rem of transcript.
+export const PIN_ROOM_PX = 288;
 
 const STALE_COPY = 'Your priorities changed elsewhere. Review the latest before applying.';
 
@@ -101,6 +105,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const editButton = React.useRef<HTMLButtonElement>(null);
     const resetButton = React.useRef<HTMLButtonElement>(null);
     const confirmHeading = React.useRef<HTMLParagraphElement>(null);
+    const sectionRef = React.useRef<HTMLElement>(null);
 
     const beginWrite = () => {
         const controller = new AbortController();
@@ -238,6 +243,29 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     }, [step]);
 
     appliedRef.current = applied;
+
+    // Sidebar: tell the panel how tall the open block is and whether pinning it leaves the chat room.
+    // When it does not, the block scrolls away with the panel instead of covering the chat's bars.
+    const inSidebar = variant === 'sidebar' && authenticated;
+    React.useLayoutEffect(() => {
+        const section = sectionRef.current;
+        const panelBody = section?.closest<HTMLElement>('.assistant-panel-body');
+        if (!inSidebar || !section || !panelBody || typeof ResizeObserver === 'undefined') return undefined;
+        const sync = () => {
+            const open = section.querySelector('.priorities-scroll') !== null;
+            const height = open ? section.offsetHeight : 0;
+            panelBody.style.setProperty('--priorities-open-h', `${height}px`);
+            section.toggleAttribute('data-pinned', open && panelBody.clientHeight - height >= PIN_ROOM_PX);
+        };
+        const observer = new ResizeObserver(sync);
+        observer.observe(section);
+        observer.observe(panelBody);
+        sync();
+        return () => {
+            observer.disconnect();
+            panelBody.style.removeProperty('--priorities-open-h');
+        };
+    }, [inSidebar, step, expanded, phase]);
 
     const close = () => {
         if (applied) {
@@ -438,43 +466,59 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
 
     let body: React.ReactNode;
     if (phase === 'loading' && !snapshot) {
-        body = <div aria-busy="true"><PriorityChipsSkeleton/><span className="visually-hidden" role="status">Loading your priorities</span></div>;
-    } else if (phase === 'error' && !snapshot) {
+        // The sidebar's placeholder has the shape of the row that replaces it: title, summary, Edit.
         body = (
+            <div aria-busy="true">
+                {sidebar ? (
+                    <div className="priorities-summary-row priorities-summary-skeleton" aria-hidden="true" data-testid="priorities-summary-skeleton">
+                        <span className="priorities-summary-text">
+                            <span className="priorities-skeleton-bar priorities-skeleton-title"></span>
+                            <span className="priorities-skeleton-bar priorities-skeleton-summary"></span>
+                        </span>
+                        <span className="priorities-skeleton-bar priorities-skeleton-edit"></span>
+                    </div>
+                ) : <PriorityChipsSkeleton/>}
+                <span className="visually-hidden" role="status">Loading your priorities</span>
+            </div>
+        );
+    } else if (phase === 'error' && !snapshot) {
+        // An expired session is said once, by the sign-in line above.
+        body = sessionExpired ? null : (
             <div className="priorities-load-error" role="alert" data-testid="priorities-load-error">
                 <i className="fa-solid fa-triangle-exclamation priorities-load-error-icon" aria-hidden="true"></i>
                 <div className="priorities-load-error-text">
                     <strong>Couldn’t load your priorities.</strong>
                     {loadError && loadError !== GENERIC_ERROR_MESSAGE && <span className="d-block small">{loadError}</span>}
                 </div>
-                {!sessionExpired && (
-                    <button type="button" className="btn btn-sm btn-outline-light priorities-load-error-retry" onClick={() => void load()}>Try again</button>
-                )}
+                <button type="button" className="btn btn-sm btn-outline-light priorities-load-error-retry" onClick={() => void load()}>Try again</button>
             </div>
         );
     } else if (step === 'edit' && snapshot) {
         body = (
-            <ScrollRegion>
-                <PriorityEditor fields={fields} draft={draft} fieldErrors={fieldErrors} dirty={dirty}
-                                pending={busy} formError={formError} idPrefix={`priority-${variant}`}
-                                onChange={(path: string, value: DraftValue) =>
-                                    setDraft((d) => ({...d, values: {...d.values, [path]: value}}))}
-                                onToggleHard={(path, hard) =>
-                                    setDraft((d) => ({...d, hard: {...d.hard, [path]: hard}}))}
-                                onUndoClear={(path) => setDraft((d) => {
-                                    const values = {...d.values};
-                                    delete values[path];
-                                    return {...d, values};
-                                })}
-                                onReview={() => void startReview()} onCancel={close}/>
-            </ScrollRegion>
+            <>
+                {sidebar && <h3 className="priorities-step-title" data-testid="priorities-step-title">Edit priorities</h3>}
+                <ScrollRegion>
+                    <PriorityEditor fields={fields} draft={draft} fieldErrors={fieldErrors} dirty={dirty}
+                                    pending={busy} formError={formError} idPrefix={`priority-${variant}`}
+                                    onChange={(path: string, value: DraftValue) =>
+                                        setDraft((d) => ({...d, values: {...d.values, [path]: value}}))}
+                                    onToggleHard={(path, hard) =>
+                                        setDraft((d) => ({...d, hard: {...d.hard, [path]: hard}}))}
+                                    onUndoClear={(path) => setDraft((d) => {
+                                        const values = {...d.values};
+                                        delete values[path];
+                                        return {...d, values};
+                                    })}
+                                    onReview={() => void startReview()} onCancel={close}/>
+                </ScrollRegion>
+            </>
         );
     } else if (step === 'review' && proposal) {
         body = (
             <ScrollRegion>
                 <ReviewChanges key={proposal.id} changes={proposal.changes} labels={labels} currency={currency}
                                choicePaths={choicePaths} conflicts={conflicts} pending={busy || rebasing}
-                               error={reviewError} stale={stale}
+                               error={reviewError} stale={stale} compact={sidebar}
                                onApply={() => void apply('account')}
                                onApplySearchOnly={() => void apply('search')}
                                onEdit={() => setStep('edit')} onCancel={close}
@@ -520,6 +564,9 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             // One row: a disclosure with the summary, and Edit beside it (never nested in it).
             summaryRow = true;
             const open = expanded && chips.length > 0;
+            const summary = prioritiesSummaryParts(chips, currency, choicePaths);
+            const hard = chips.some((chip) => chip.hard);
+            const unsupported = chips.some((chip) => !chip.supported);
             body = (
                 <>
                     <div className="priorities-summary-row">
@@ -535,8 +582,22 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                                             <i className={`fa-solid fa-chevron-${open ? 'up' : 'down'} priorities-summary-chevron`} aria-hidden="true"></i>
                                         </span>
                                         <span className="priorities-summary" data-testid="priorities-summary">
-                                            {prioritiesSummary(chips, currency, choicePaths)}
+                                            <span className="priorities-summary-lead">{summary.lead}</span>
+                                            {summary.tail && (
+                                                <>
+                                                    <span className="priorities-summary-sep">{summary.sep}</span>
+                                                    <span className="priorities-summary-tail">{summary.tail}</span>
+                                                </>
+                                            )}
                                         </span>
+                                        {/* Open, the chips say what the summary did; its line holds the key to their marks
+                                            (each chip names its own status for assistive technology). */}
+                                        {open && (hard || unsupported) && (
+                                            <span className="priority-chip-legend priorities-summary-legend" aria-hidden="true"
+                                                  data-testid="priority-chip-legend">
+                                                <PriorityChipLegendItems hard={hard} unsupported={unsupported}/>
+                                            </span>
+                                        )}
                                     </span>
                                 </button>
                             ) : (
@@ -556,7 +617,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                         {open && (
                             <>
                                 <ScrollRegion>
-                                    <PriorityChips chips={chips} collapsedCount={chips.length}
+                                    <PriorityChips chips={chips} collapsedCount={chips.length} legend={false}
                                                    currency={currency} readOnlyPaths={readOnlyPaths} choicePaths={choicePaths}
                                                    onEdit={() => setPrioritiesEditorOpen(variant)}/>
                                 </ScrollRegion>
@@ -593,7 +654,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     }
 
     return (
-        <section className={className} aria-labelledby={titleId} data-testid={`priorities-${variant}`}>
+        <section className={className} aria-labelledby={titleId} data-testid={`priorities-${variant}`} ref={sectionRef}>
             {!summaryRow && <h2 id={titleId} className="h6 priorities-title">Your priorities</h2>}
             {sessionExpired && (
                 <p className="priorities-session-expired" role="alert" data-testid="priorities-session-expired">
