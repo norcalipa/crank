@@ -4036,6 +4036,9 @@ span.priority-chip-button { cursor: default; }
 @media (pointer: fine) {
     .priorities-sidebar .priorities-actions .btn { min-height: 2.25rem; }
 }
+/* With larger text the chat may still not fit and the panel body scrolls: the
+   open block stays in view above it instead of scrolling away with its row. */
+.priorities-sidebar:has(.priorities-scroll) { position: sticky; top: 0; z-index: 5; background: var(--bs-body-bg); }
 .priorities-sidebar > * { flex: 0 0 auto; }
 .priorities-sidebar .priorities-scroll { flex: 1 1 auto; min-height: 0; max-height: none; }
 .priorities-summary-row { display: flex; align-items: center; gap: 0.5rem; }
