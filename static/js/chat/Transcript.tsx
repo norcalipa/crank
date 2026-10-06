@@ -2,6 +2,8 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
 
+import AssistantActions from './AssistantActions';
+import type {TurnActions} from './AssistantActions';
 import {AvailabilityNotice} from './notices';
 import {hasResults, ResultCards} from './ResultCards';
 import type {ScrollOwner} from './useTranscriptScroll';
@@ -11,6 +13,8 @@ export interface TranscriptProps {
     historyRef: React.RefObject<HTMLDivElement>;
     messages: ChatMessage[];
     staleNotes: Record<number, string>;
+    turnActions: Record<number, TurnActions>;
+    newestActionsId: number | null;
     lastAssistantId: number | null;
     availability: AvailabilityPayload | null;
     retryKey: string | null;
@@ -26,7 +30,7 @@ export interface TranscriptProps {
 }
 
 export function Transcript({
-    historyRef, messages, staleNotes, lastAssistantId, availability, retryKey, pending, loading,
+    historyRef, messages, staleNotes, turnActions, newestActionsId, lastAssistantId, availability, retryKey, pending, loading,
     authenticated, workspaceMode, scrollOwner, onAskFirstQuestion,
     onCheckResponse, onRetryMessage, onEditAsNew,
 }: TranscriptProps) {
@@ -78,6 +82,9 @@ export function Transcript({
                             )}
                             {m.role === 'assistant' && m.id === lastAssistantId && !hasResults(m.results) && availability && availability.state !== 'ok' && (
                                 <AvailabilityNotice availability={availability} />
+                            )}
+                            {m.role === 'assistant' && turnActions[m.id] && (
+                                <AssistantActions turn={turnActions[m.id]} announce={m.id === newestActionsId} />
                             )}
                             {m.role === 'user' && m.delivery_state === 'pending' && retryKey !== m.idempotency_key && (
                                 <div className="chat-retry-panel mt-2" data-testid="pending-turn">

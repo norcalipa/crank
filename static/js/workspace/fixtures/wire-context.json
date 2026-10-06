@@ -1,0 +1,50 @@
+{
+  "cases": [
+    {
+      "name": "surface only",
+      "contextRevision": 1,
+      "context": {"surface": "chat"},
+      "wire": {"revision": 1, "surface": "chat"}
+    },
+    {
+      "name": "full rankings context drops names and search text",
+      "contextRevision": 7,
+      "context": {
+        "surface": "rankings", "organizationId": 5, "organizationName": "Secret Co", "searchTerm": "private",
+        "jobId": 9, "comparisonIds": [1, 2], "algorithmId": 3, "page": 2,
+        "filters": {"rtoPolicy": "R", "acceleratedVesting": true},
+        "resultGeneration": 4, "preferenceRevision": 8
+      },
+      "wire": {
+        "revision": 7, "surface": "rankings", "organization_id": 5, "job_id": 9,
+        "comparison_ids": [1, 2], "algorithm_id": 3, "page": 2,
+        "filters": {"rto_policy": "R", "accelerated_vesting": true},
+        "preference_revision": 8, "result_generation": 4
+      }
+    },
+    {
+      "name": "page is capped at 10000",
+      "contextRevision": 2,
+      "context": {"surface": "rankings", "page": 99999},
+      "wire": {"revision": 2, "surface": "rankings", "page": 10000}
+    },
+    {
+      "name": "ids above 2^31-1 and non-positive ids are left out",
+      "contextRevision": 3,
+      "context": {"surface": "company", "organizationId": 2147483648, "jobId": 0, "algorithmId": 2147483647},
+      "wire": {"revision": 3, "surface": "company", "algorithm_id": 2147483647}
+    },
+    {
+      "name": "comparison ids are filtered, de-duplicated and capped at four",
+      "contextRevision": 4,
+      "context": {"surface": "comparison", "comparisonIds": [1, 1, 2, 3, 4, 5, 2147483648]},
+      "wire": {"revision": 4, "surface": "comparison", "comparison_ids": [1, 2, 3, 4]}
+    },
+    {
+      "name": "an empty comparison list and empty filters are omitted",
+      "contextRevision": 5,
+      "context": {"surface": "rankings", "comparisonIds": [], "filters": {}},
+      "wire": {"revision": 5, "surface": "rankings"}
+    }
+  ]
+}

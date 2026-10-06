@@ -89,6 +89,10 @@ TARGET_ORGS: list[tuple[str, float]] = [
     ),
 ]
 
+#: Orgs seeded as Remote (all others are Hybrid), so the assistant's "only
+#: remote" filter (issue #484) keeps exactly one of the four rows.
+REMOTE_ORG_NAMES = frozenset({"E2E Beta Labs"})
+
 #: Second rating dimension, weighted by no algorithm, scored for Beta only so
 #: rating coverage reads "2 of 2" for Beta and "1 of 2" elsewhere (issue #473).
 EXTRA_SCORE_TYPE_NAME = "E2E Leadership"
@@ -253,6 +257,11 @@ class Command(BaseCommand):
         )
         orgs: dict[str, Organization] = {}
         for name, score_value in TARGET_ORGS:
+            rto_policy = (
+                Organization.RTOPolicy.REMOTE
+                if name in REMOTE_ORG_NAMES
+                else Organization.RTOPolicy.HYBRID
+            )
             org, _ = Organization.objects.get_or_create(
                 name=name,
                 defaults={
@@ -261,7 +270,7 @@ class Command(BaseCommand):
                     "gives_ratings": False,
                     "public": True,
                     "funding_round": Organization.FundingRound.PUBLIC,
-                    "rto_policy": Organization.RTOPolicy.HYBRID,
+                    "rto_policy": rto_policy,
                 },
             )
             _sync_fields(
@@ -272,7 +281,7 @@ class Command(BaseCommand):
                     "gives_ratings": False,
                     "public": True,
                     "funding_round": Organization.FundingRound.PUBLIC,
-                    "rto_policy": Organization.RTOPolicy.HYBRID,
+                    "rto_policy": rto_policy,
                     "status": 1,
                 },
             )
@@ -334,8 +343,10 @@ class Command(BaseCommand):
         beta_url = "https://e2e.example.test/beta/about"
         FieldKey = CompanyFieldEvidence.FieldKey
         State = CompanyFieldEvidence.State
+        # Beta's accepted RTO claim matches its displayed policy (Remote, see
+        # REMOTE_ORG_NAMES) so the grid shows agreement, not "Profile data".
         for field_key, value in (
-            (FieldKey.RTO_POLICY, "Hybrid"),
+            (FieldKey.RTO_POLICY, beta.get_rto_policy_display()),
             (FieldKey.FUNDING_ROUND, "Series B"),
         ):
             _seed_evidence(

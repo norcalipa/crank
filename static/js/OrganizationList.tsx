@@ -10,9 +10,12 @@ import {installPositionTracking, PositionAnchor, restoreResultPosition} from './
 import {
     clearWorkspaceContext,
     getWorkspaceSnapshot,
+    registerCompanyTarget,
+    registerFilterTarget,
     setWorkspaceContext,
     subscribeWorkspace,
 } from './workspace/store';
+import {RtoPolicyCode, WorkspaceFilters} from './workspace/types';
 
 interface ScoreDetail {
     type__name: string;
@@ -70,7 +73,14 @@ interface OrganizationListProps {
 // Query parameters the list preserves when it rewrites the URL; anything
 // else on the incoming URL is dropped (issue #479). The scoring preset lives
 // in the path (/algo/<id>/), not the query.
-const ALLOWED_QUERY_PARAMS = ['search', 'accelerated_vesting', 'page', 'company'];
+const ALLOWED_QUERY_PARAMS = ['search', 'accelerated_vesting', 'page', 'company', 'rto'];
+
+// Issue #484: `rto` is the only enum filter; any other value is ignored.
+const RTO_CODES: readonly string[] = ['R', 'H', 'O'];
+const RTO_FALLBACK_LABELS: Record<RtoPolicyCode, string> = {R: 'Remote', H: 'Hybrid', O: 'In-Office'};
+function parseRtoPolicy(value: string | null): RtoPolicyCode | '' {
+    return value !== null && RTO_CODES.includes(value) ? value as RtoPolicyCode : '';
+}
 
 function allowlistedParams(search: string): URLSearchParams {
     const params = new URLSearchParams();
@@ -90,6 +100,7 @@ interface OrganizationListState {
     currentPage: number;
     itemsPerPage: number;
     acceleratedVesting: boolean;
+    rtoPolicy: RtoPolicyCode | '';
     searchTerm: string;
     selectedOrganization: Organization | null;
     showPopup: boolean;
@@ -102,12 +113,13 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         const urlState = this.getUrlState();
         this.state = {
             organizations: props.organizations,
-            filteredOrganizations: this.filterOrganizations(props.organizations, urlState.searchTerm, urlState.acceleratedVesting),
+            filteredOrganizations: this.filterOrganizations(props.organizations, urlState.searchTerm, urlState.acceleratedVesting, urlState.rtoPolicy),
             fundingRoundChoices: {},
             rtoPolicyChoices: {},
             currentPage: urlState.currentPage,
             itemsPerPage: props.itemsPerPage || 15,
             acceleratedVesting: urlState.acceleratedVesting,
+            rtoPolicy: urlState.rtoPolicy,
             searchTerm: urlState.searchTerm,
             selectedOrganization: null,
             showPopup: false,
@@ -163,6 +175,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         restoreResultPosition(this.findOrganizationAnchor);
         this.restoredScrollY = window.scrollY;
         this.unsubscribeWorkspace = subscribeWorkspace(this.handleWorkspaceChange);
+        this.unregisterFilterTarget = registerFilterTarget(this.applyAssistantFilters);
+        this.unregisterCompanyTarget = registerCompanyTarget(this.openCompanyById);
     }
 
     componentDidUpdate(_prevProps: unknown, prevState: OrganizationListState) {
@@ -173,6 +187,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         }
         if (dialogChanged
             || prevState.searchTerm !== this.state.searchTerm
+            || prevState.acceleratedVesting !== this.state.acceleratedVesting
+            || prevState.rtoPolicy !== this.state.rtoPolicy
             || prevState.currentPage !== this.state.currentPage) {
             this.reportContext();
         }
@@ -183,8 +199,12 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         window.removeEventListener(COMPANY_OPEN_EVENT, this.handleCompanyOpenEvent);
         this.stopPositionTracking?.();
         this.unsubscribeWorkspace?.();
+        this.unregisterFilterTarget?.();
+        this.unregisterCompanyTarget?.();
     }
 
+    private unregisterFilterTarget?: () => void;
+    private unregisterCompanyTarget?: () => void;
     private stopPositionTracking?: () => void;
     private restoredAfterHydration = false;
     private restoredScrollY = 0;
@@ -252,14 +272,51 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         );
     };
 
+    // Applies assistant-proposed filters (issue #484), one history entry, on
+    // top of the current search; page resets to 1. Only enum values reach here.
+    applyAssistantFilters = (filters: WorkspaceFilters): boolean => {
+        const rtoPolicy = filters.rtoPolicy ?? this.state.rtoPolicy;
+        const acceleratedVesting = filters.acceleratedVesting === true || this.state.acceleratedVesting;
+        if (rtoPolicy === this.state.rtoPolicy && acceleratedVesting === this.state.acceleratedVesting) {
+            return true;
+        }
+        this.setState({
+            rtoPolicy,
+            acceleratedVesting,
+            filteredOrganizations: this.filterOrganizations(
+                this.state.organizations, this.state.searchTerm, acceleratedVesting, rtoPolicy),
+            currentPage: 1,
+        });
+        this.updateUrl(1, this.state.searchTerm, acceleratedVesting, false, rtoPolicy);
+        return true;
+    };
+
+    reportedFilters = (): WorkspaceFilters => {
+        const {acceleratedVesting, rtoPolicy} = this.state;
+        const filters: WorkspaceFilters = {};
+        if (rtoPolicy) {
+            filters.rtoPolicy = rtoPolicy;
+        }
+        if (acceleratedVesting) {
+            filters.acceleratedVesting = true;
+        }
+        return filters;
+    };
+
     reportContext = () => {
         const {showPopup, selectedOrganization, searchTerm, currentPage} = this.state;
+        const {currentAlgorithmId} = this.props;
+        const view = {
+            filters: this.reportedFilters(),
+            ...(currentAlgorithmId ? {algorithmId: currentAlgorithmId} : {}),
+        };
         if (showPopup && selectedOrganization) {
             this.reportedOrganizationId = selectedOrganization.id;
             setWorkspaceContext({
                 surface: 'company',
                 organizationId: selectedOrganization.id,
                 organizationName: selectedOrganization.name,
+                ...view,
             });
             return;
         }
@@ -271,8 +328,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         this.reportedOrganizationId = null;
         const keepsCompany = getWorkspaceSnapshot().context?.organizationId !== undefined;
         setWorkspaceContext(keepsCompany
-            ? {searchTerm, page: currentPage}
-            : {surface: 'rankings', searchTerm, page: currentPage});
+            ? {searchTerm, page: currentPage, ...view}
+            : {surface: 'rankings', searchTerm, page: currentPage, ...view});
     };
 
     handleWorkspaceChange = () => {
@@ -308,10 +365,17 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     handleCompanyOpenEvent = (event: Event) => {
         const organizationId = (event as CustomEvent).detail?.organizationId;
         if (!Number.isInteger(organizationId)) return;
+        this.openCompanyById(organizationId);
+    };
+
+    // Opens the dialog for an id in this list; false when it is not ranked here.
+    openCompanyById = (organizationId: number): boolean => {
         const organization = this.props.organizations.find((org) => org.id === organizationId);
-        if (organization) {
-            this.handleOrganizationClick(organization);
+        if (!organization) {
+            return false;
         }
+        this.handleOrganizationClick(organization);
+        return true;
     };
 
     getUrlState = () => {
@@ -320,12 +384,17 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         return {
             currentPage: Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1,
             searchTerm: params.get('search') || '',
-            acceleratedVesting: params.get('accelerated_vesting') === '1'
+            acceleratedVesting: params.get('accelerated_vesting') === '1',
+            rtoPolicy: parseRtoPolicy(params.get('rto'))
         };
     };
 
-    filterOrganizations = (organizations: Organization[], searchTerm: string, acceleratedVesting: boolean) => {
+    filterOrganizations = (organizations: Organization[], searchTerm: string, acceleratedVesting: boolean, rtoPolicy: RtoPolicyCode | '') => {
         let filteredOrganizations = organizations;
+
+        if (rtoPolicy) {
+            filteredOrganizations = filteredOrganizations.filter(org => org.rto_policy === rtoPolicy);
+        }
 
         if (acceleratedVesting) {
             filteredOrganizations = filteredOrganizations.filter(org => org.accelerated_vesting);
@@ -349,7 +418,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         return `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`;
     };
 
-    updateUrl = (pageNumber: number, searchTerm: string, acceleratedVesting: boolean, replace = false) => {
+    updateUrl = (pageNumber: number, searchTerm: string, acceleratedVesting: boolean, replace = false, rtoPolicy: RtoPolicyCode | '' = this.state.rtoPolicy) => {
         const params = allowlistedParams(window.location.search);
         params.set('page', pageNumber.toString());
         if (searchTerm) {
@@ -361,6 +430,11 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             params.set('accelerated_vesting', '1');
         } else {
             params.delete('accelerated_vesting');
+        }
+        if (rtoPolicy) {
+            params.set('rto', rtoPolicy);
+        } else {
+            params.delete('rto');
         }
         const query = params.toString();
         const url = `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`;
@@ -385,13 +459,15 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         const filteredOrganizations = this.filterOrganizations(
             this.state.organizations,
             urlState.searchTerm,
-            urlState.acceleratedVesting
+            urlState.acceleratedVesting,
+            urlState.rtoPolicy
         );
         const pageCount = Math.max(1, Math.ceil(filteredOrganizations.length / this.state.itemsPerPage));
         this.setState({
             currentPage: Math.min(urlState.currentPage, pageCount),
             searchTerm: urlState.searchTerm,
             acceleratedVesting: urlState.acceleratedVesting,
+            rtoPolicy: urlState.rtoPolicy,
             filteredOrganizations
         });
     };
@@ -407,33 +483,39 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
 
     handleFilterChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         const acceleratedVesting = event.target.checked;
-        const filteredOrganizations = this.filterOrganizations(this.state.organizations, this.state.searchTerm, acceleratedVesting);
+        const filteredOrganizations = this.filterOrganizations(this.state.organizations, this.state.searchTerm, acceleratedVesting, this.state.rtoPolicy);
         this.setState({acceleratedVesting, filteredOrganizations, currentPage: 1});
         this.updateUrl(1, this.state.searchTerm, acceleratedVesting);
     };
 
     handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
         const searchTerm = event.target.value;
-        const filteredOrganizations = this.filterOrganizations(this.state.organizations, searchTerm, this.state.acceleratedVesting);
+        const filteredOrganizations = this.filterOrganizations(this.state.organizations, searchTerm, this.state.acceleratedVesting, this.state.rtoPolicy);
         this.setState({searchTerm, filteredOrganizations, currentPage: 1});
         this.updateUrl(1, searchTerm, this.state.acceleratedVesting);
     };
 
     handleClearFilters = () => {
-        this.setState({searchTerm: '', acceleratedVesting: false, filteredOrganizations: this.state.organizations, currentPage: 1});
-        this.updateUrl(1, '', false);
+        this.setState({searchTerm: '', acceleratedVesting: false, rtoPolicy: '', filteredOrganizations: this.state.organizations, currentPage: 1});
+        this.updateUrl(1, '', false, false, '');
     };
 
     handleRemoveSearch = () => {
-        const filteredOrganizations = this.filterOrganizations(this.state.organizations, '', this.state.acceleratedVesting);
+        const filteredOrganizations = this.filterOrganizations(this.state.organizations, '', this.state.acceleratedVesting, this.state.rtoPolicy);
         this.setState({searchTerm: '', filteredOrganizations, currentPage: 1});
         this.updateUrl(1, '', this.state.acceleratedVesting);
     };
 
     handleRemoveAcceleratedVesting = () => {
-        const filteredOrganizations = this.filterOrganizations(this.state.organizations, this.state.searchTerm, false);
+        const filteredOrganizations = this.filterOrganizations(this.state.organizations, this.state.searchTerm, false, this.state.rtoPolicy);
         this.setState({acceleratedVesting: false, filteredOrganizations, currentPage: 1});
         this.updateUrl(1, this.state.searchTerm, false);
+    };
+
+    handleRemoveRtoPolicy = () => {
+        const filteredOrganizations = this.filterOrganizations(this.state.organizations, this.state.searchTerm, this.state.acceleratedVesting, '');
+        this.setState({rtoPolicy: '', filteredOrganizations, currentPage: 1});
+        this.updateUrl(1, this.state.searchTerm, this.state.acceleratedVesting, false, '');
     };
 
     // Switching preset navigates to the preset's page keeping only the
@@ -447,6 +529,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         }
         if (this.state.acceleratedVesting) {
             params.set('accelerated_vesting', '1');
+        }
+        if (this.state.rtoPolicy) {
+            params.set('rto', this.state.rtoPolicy);
         }
         const query = params.toString();
         return `${template.replace('__ALGORITHM_ID__', String(presetId))}${query ? `?${query}` : ''}`;
@@ -558,15 +643,21 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
     };
 
     renderChips = () => {
-        const {searchTerm, acceleratedVesting} = this.state;
-        if (!searchTerm && !acceleratedVesting) {
+        const {searchTerm, acceleratedVesting, rtoPolicy, rtoPolicyChoices} = this.state;
+        if (!searchTerm && !acceleratedVesting && !rtoPolicy) {
             return null;
         }
+        const rtoLabel = rtoPolicy ? (rtoPolicyChoices[rtoPolicy] ?? RTO_FALLBACK_LABELS[rtoPolicy]) : '';
         return (<ul className="filter-chips" aria-label="Active filters">
             {searchTerm && <li><button type="button" className="filter-chip" data-testid="filter-chip-search"
                                        aria-label={`Remove filter: search "${searchTerm}"`} title={`Search: ${searchTerm}`}
                                        onClick={this.handleRemoveSearch}>
                 <span className="filter-chip-text">Search: {searchTerm}</span> <span aria-hidden="true">×</span>
+            </button></li>}
+            {rtoPolicy && <li><button type="button" className="filter-chip" data-testid="filter-chip-rto"
+                                      aria-label={`Remove filter: RTO policy ${rtoLabel}`}
+                                      onClick={this.handleRemoveRtoPolicy}>
+                <span className="filter-chip-text">RTO policy: {rtoLabel}</span> <span aria-hidden="true">×</span>
             </button></li>}
             {acceleratedVesting && <li><button type="button" className="filter-chip" data-testid="filter-chip-accelerated-vesting"
                                                aria-label="Remove filter: first vesting in under 1 year"
@@ -584,6 +675,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             currentPage,
             itemsPerPage,
             acceleratedVesting,
+            rtoPolicy,
             searchTerm,
             selectedOrganization,
             showPopup,
@@ -703,7 +795,7 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
             {filteredOrganizations.length === 0 ? (<div className="alert alert-secondary organization-empty-state" role="alert">
                 <h2 className="h5">No organizations found</h2>
                 <p>There are no organizations that match your search or filters.</p>
-                {(searchTerm || acceleratedVesting) && <button type="button" className="btn btn-primary" onClick={this.handleClearFilters}>Clear search and filters</button>}
+                {(searchTerm || acceleratedVesting || rtoPolicy) && <button type="button" className="btn btn-primary" onClick={this.handleClearFilters}>Clear search and filters</button>}
                 {(this.props.canSuggestCompany || this.props.isAuthenticated) && <p className="mt-2 mb-0"><button type="button" className="btn btn-link p-0 suggest-company-empty" data-testid="suggest-company-empty-btn" onClick={() => this.handleOpenSuggestModal('rankings_empty')}>Suggest a company</button> for evaluation.</p>}
             </div>) : (<>
                 <div className="organization-results">

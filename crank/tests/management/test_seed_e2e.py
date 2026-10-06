@@ -19,6 +19,7 @@ from crank.management.commands.seed_e2e import (
     FIXTURE_SOURCE_NAME,
     PRESET_ALGORITHM_NAME,
     RATING_SOURCE_ORG_NAME,
+    REMOTE_ORG_NAMES,
     TARGET_ORGS,
 )
 from crank.models.company_profile import CompanyFieldEvidence, CompanyProfileObservation
@@ -125,6 +126,32 @@ class SeedE2ECommandTests(TestCase):
             serializers.serialize("json", qs, ensure_ascii=False) for qs in querysets
         )
 
+    def test_beta_is_the_only_remote_org_and_drift_is_repaired(self):
+        """Issue #484: "only remote" must keep exactly one of the four rows."""
+        call_command("seed_e2e", stdout=StringIO())
+        remote = Organization.RTOPolicy.REMOTE
+        self.assertEqual(REMOTE_ORG_NAMES, {"E2E Beta Labs"})
+        self.assertEqual(
+            set(
+                Organization.objects.filter(
+                    name__in=[name for name, _ in TARGET_ORGS], rto_policy=remote
+                ).values_list("name", flat=True)
+            ),
+            REMOTE_ORG_NAMES,
+        )
+        Organization.objects.filter(name="E2E Beta Labs").update(
+            rto_policy=Organization.RTOPolicy.IN_OFFICE
+        )
+        Organization.objects.filter(name="E2E Alpha Corp").update(rto_policy=remote)
+        call_command("seed_e2e", stdout=StringIO())
+        self.assertEqual(
+            Organization.objects.get(name="E2E Beta Labs").rto_policy, remote
+        )
+        self.assertEqual(
+            Organization.objects.get(name="E2E Alpha Corp").rto_policy,
+            Organization.RTOPolicy.HYBRID,
+        )
+
     def test_seeds_one_accepted_rto_policy_claim_for_alpha(self):
         call_command("seed_e2e", stdout=StringIO())
         call_command("seed_e2e", stdout=StringIO())
@@ -150,6 +177,12 @@ class SeedE2ECommandTests(TestCase):
         self.assertEqual(set(accepted.values_list("field_key", flat=True)), {"rto_policy", "funding_round"})
         for row in accepted:
             self.assertGreaterEqual((timezone.now() - row.last_verified_at).days, 399)
+        # Beta is the seeded Remote org (issue #484): its accepted RTO claim
+        # must agree with the policy the rankings display.
+        self.assertEqual(accepted.get(field_key="rto_policy").value_text, "Remote")
+        self.assertEqual(
+            Organization.objects.get(name="E2E Beta Labs").get_rto_policy_display(), "Remote"
+        )
         conflict = beta.get(state=CompanyFieldEvidence.State.CONFLICTED)
         self.assertEqual(conflict.field_key, "rto_policy")
         self.assertIsNone(conflict.last_verified_at)
