@@ -212,7 +212,7 @@ interface PanelMeasure {
     section: number;
     share: number;
     lines: number;
-    bodyScrollTop: number;
+    pinned: boolean;
     composerInViewport: boolean;
     toggleOnTop: boolean;
     scrollable: boolean;
@@ -240,7 +240,8 @@ async function measurePanel(page: Page): Promise<PanelMeasure> {
             section: section.offsetHeight,
             share: section.offsetHeight / body.clientHeight,
             lines: summary ? Math.round(summary.clientHeight / parseFloat(getComputedStyle(summary).lineHeight)) : 0,
-            bodyScrollTop: body.scrollTop,
+            // Where the system font is wider the chat may not fit and the panel body scrolls: the block must stay put.
+            pinned: box.top >= body.getBoundingClientRect().top - 1,
             composerInViewport: composer.top >= 0 && composer.bottom <= window.innerHeight
                 && composer.left >= 0 && composer.right <= window.innerWidth,
             toggleOnTop: toggle ? onTop(toggle) : true,
@@ -258,7 +259,7 @@ async function expectBounded(page: Page, bodyHeight: number): Promise<PanelMeasu
     // The composer is in view and the panel body has not scrolled the block (and its row) away.
     await expect.poll(async () => {
         const now = await measurePanel(page);
-        return now.composerInViewport && now.bodyScrollTop === 0;
+        return now.composerInViewport && now.pinned;
     }).toBe(true);
     const measure = await measurePanel(page);
     // One device pixel of rounding on the share.
