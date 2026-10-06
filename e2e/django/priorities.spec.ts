@@ -273,7 +273,9 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
         await login(page, PREFS_USER, E2E_PASSWORD);
     });
 
-    test.afterEach(async ({page}) => {
+    test.afterEach(async ({page}, testInfo) => {
+        // Hooks still run for a test the tier guard skipped (the fixture tier has no API to reset).
+        if (testInfo.status === 'skipped') return;
         await page.goto('/');
         await setPriorities(page, null);
     });
