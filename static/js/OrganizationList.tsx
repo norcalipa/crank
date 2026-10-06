@@ -3,6 +3,8 @@
 import * as React from 'react';
 import {createRoot} from "react-dom/client";
 import OrganizationDetailsPopup from './OrganizationDetailsPopup';
+import EvidenceSummary, {evidenceDescription} from './evidence/EvidenceSummary';
+import {EvidenceSummaryData} from './labels';
 import {closeSuggestCompany, COMPANY_OPEN_EVENT, openSuggestCompany} from './suggestCompany/controller';
 import {installPositionTracking, PositionAnchor, restoreResultPosition} from './workspace/position';
 import {
@@ -25,6 +27,9 @@ interface Organization {
     funding_round: string;
     rto_policy: string;
     profile_completeness: number;
+    rating_dimensions_covered?: number;
+    rating_dimensions_total?: number;
+    evidence?: EvidenceSummaryData | null;
     accelerated_vesting: boolean;
     url?: string;
     type?: string;
@@ -32,6 +37,13 @@ interface Organization {
     public?: boolean;
     avg_scores?: ScoreDetail[];
 }
+
+// "N of M" is exact when the server sent the dimension counts; a row without
+// them (old cache entry, fixture) falls back to the completeness percentage.
+const ratingCoverageText = (org: Organization): string =>
+    org.rating_dimensions_total !== undefined && org.rating_dimensions_covered !== undefined
+        ? `${org.rating_dimensions_covered} of ${org.rating_dimensions_total}`
+        : `${org.profile_completeness.toFixed(0)}%`;
 
 interface RankingPreset {
     id: number;
@@ -705,7 +717,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             <th className="col-score" aria-label={scoreLabel}>Company score{currentPreset && <>{' '}<span className="col-score-algorithm">{currentPreset.name}</span></>}</th>
                             <th className="col-funding">Funding Round</th>
                             <th className="col-rto">RTO Policy</th>
-                            <th className="col-profile">Profile Completeness</th>
+                            <th className="col-profile">Rating coverage</th>
+                            <th className="col-evidence">Evidence</th>
                         </tr>
                         </thead>
                         <tbody>
@@ -721,15 +734,17 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             tabIndex={0}
                             role="button"
                             aria-label={`View details for ${org.name}`}
+                            aria-describedby={`organization-summary-${org.id}`}
                             className="organization-row"
                             data-organization-id={org.id}
                         >
                             <td className="col-rank">{org.ranking}</td>
-                            <td className="col-name"><span className="organization-name" title={org.name}>{org.name}</span></td>
+                            <td className="col-name"><span className="organization-name" title={org.name}>{org.name}</span><span className="visually-hidden" id={`organization-summary-${org.id}`}>{evidenceDescription(ratingCoverageText(org), org.evidence)}</span></td>
                             <td className="col-score">{org.avg_score.toFixed(2)}</td>
                             <td className="col-funding">{choiceLabel(fundingRoundChoices, org.funding_round)}</td>
                             <td className="col-rto">{choiceLabel(rtoPolicyChoices, org.rto_policy)}</td>
-                            <td className="col-profile">{org.profile_completeness.toFixed(0)}%</td>
+                            <td className="col-profile">{ratingCoverageText(org)}</td>
+                            <td className="col-evidence"><EvidenceSummary evidence={org.evidence}/></td>
                         </tr>))}
                         </tbody>
                     </table>
@@ -750,12 +765,18 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                             tabIndex={0}
                             role="button"
                             aria-label={`View details for ${org.name}`}
+                            aria-describedby={`organization-card-summary-${org.id}`}
                         >
                             <div className="card-body">
+                                <span className="visually-hidden" id={`organization-card-summary-${org.id}`}>{evidenceDescription(ratingCoverageText(org), org.evidence)}</span>
                                 <h2 className="h5 organization-card-name" title={org.name}>{org.name}</h2>
                                 <div className="organization-card-score">
-                                    <span className="organization-card-label">{scoreLabel}</span>
+                                    <span className="organization-card-label">Company score{currentPreset && <span className="visually-hidden"> ({currentPreset.name})</span>}</span>
                                     #{org.ranking} · {org.avg_score.toFixed(2)}
+                                </div>
+                                <div>
+                                    <span className="organization-card-label">Rating coverage</span>
+                                    {ratingCoverageText(org)}
                                 </div>
                                 <div>
                                     <span className="organization-card-label">RTO policy</span>
@@ -765,9 +786,9 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                                     <span className="organization-card-label">Funding round</span>
                                     {choiceLabel(fundingRoundChoices, org.funding_round)}
                                 </div>
-                                <div>
-                                    <span className="organization-card-label">Profile completeness</span>
-                                    {org.profile_completeness.toFixed(0)}%
+                                <div className="organization-card-evidence">
+                                    <span className="organization-card-label">Facts</span>
+                                    <EvidenceSummary evidence={org.evidence} variant="card"/>
                                 </div>
                             </div>
                         </article>

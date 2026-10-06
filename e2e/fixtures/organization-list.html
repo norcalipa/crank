@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <!-- Copyright (c) 2024 Isaac Adams -->
 <!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
-<html lang="en">
+<html lang="en" data-bs-theme="dark">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -50,8 +50,29 @@
                                 <dd>The preset-weighted average of the rating dimensions. It is the same for everyone.</dd>
                                 <dt>Personal fit</dt>
                                 <dd>Shown only in Job Search matches. It is computed from your saved priorities and is never mixed into the company score.</dd>
-                                <dt>Profile completeness</dt>
-                                <dd>How many rating dimensions have at least one score for the company.</dd>
+                        <dt>Rating coverage</dt>
+                        <dd>How many of the active rating dimensions have at least one score for the company, shown as "N of M". A dimension with no score counts as missing, never as zero.</dd>
+                        <dt>Fact coverage</dt>
+                        <dd>How many of the 7 tracked facts (RTO policy, funding round, public status, accelerated vesting, locations, company name and company domain) have accepted evidence.</dd>
+                        <dt>Freshness</dt>
+                        <dd>"Last verified" is the most recent date a source was re-checked and still supported an accepted fact. Editing the company record does not re-verify facts. Each fact has its own re-check window:
+                            <ul class="mb-0 mt-1 ps-3 evidence-legend-windows">
+                                <li>RTO policy: 90 days</li>
+                                <li>Funding round, public status and locations: 180 days</li>
+                                <li>Accelerated vesting, company name and company domain: 365 days</li>
+                            </ul>
+                        </dd>
+                        <dt>Evidence status</dt>
+                        <dd>
+                            <ul class="evidence-legend list-unstyled mb-0" data-testid="evidence-legend">
+                                <li><span class="evidence-badge evidence-badge-verified"><span class="evidence-badge-marker" aria-hidden="true">&#10003;</span> Verified</span>: Accepted and re-checked within its freshness window.</li>
+                                <li><span class="evidence-badge evidence-badge-stale"><span class="evidence-badge-marker" aria-hidden="true">!</span> Stale</span>: Accepted, but not re-verified within its freshness window.</li>
+                                <li><span class="evidence-badge evidence-badge-unknown"><span class="evidence-badge-marker" aria-hidden="true">?</span> Unknown</span>: No accepted evidence for this fact.</li>
+                                <li><span class="evidence-badge evidence-badge-profile"><span class="evidence-badge-marker" aria-hidden="true">&bull;</span> Profile data</span>: Curated profile value without field-level evidence.</li>
+                                <li><span class="evidence-badge evidence-badge-pending"><span class="evidence-badge-marker" aria-hidden="true">&hellip;</span> Pending review</span>: An observation is waiting for review. Not verified.</li>
+                                <li><span class="evidence-badge evidence-badge-conflicted"><span class="evidence-badge-marker" aria-hidden="true">&#9888;&#xFE0E;</span> Conflicting observation</span>: A later observation disagrees. Not verified.</li>
+                            </ul>
+                        </dd>
                             </dl>
                         </div>
                     </details>
@@ -64,12 +85,12 @@
     </main>
     <script id="organization-data" type="application/json">
     [
-        {"id": 1, "name": "Acme Robotics", "ranking": 1, "avg_score": 4.82, "funding_round": "C", "rto_policy": "H", "profile_completeness": 96, "accelerated_vesting": true, "url": "https://acme.example", "type": "C"},
-        {"id": 2, "name": "Beacon Health", "ranking": 2, "avg_score": 4.71, "funding_round": "B", "rto_policy": "R", "profile_completeness": 91, "accelerated_vesting": false, "url": "https://beacon.example", "type": "C"},
-        {"id": 3, "name": "Civic Data Trust", "ranking": 3, "avg_score": 4.60, "funding_round": "A", "rto_policy": "O", "profile_completeness": 84, "accelerated_vesting": false, "url": "https://civic.example", "type": "N"},
-        {"id": 4, "name": "Dune Analytics Group", "ranking": 4, "avg_score": 4.55, "funding_round": "D", "rto_policy": "H", "profile_completeness": 88, "accelerated_vesting": true, "url": "https://dune.example", "type": "C"},
-        {"id": 5, "name": "Evergreen Bio", "ranking": 5, "avg_score": 4.43, "funding_round": "B", "rto_policy": "R", "profile_completeness": 79, "accelerated_vesting": false, "url": "https://evergreen.example", "type": "C"},
-        {"id": 6, "name": "Zephyr Quintessence NanotechnologicalBiopharmaceuticalResearchLaboratoriesInternationalHoldingsConsortium Limited", "ranking": 6, "avg_score": 4.31, "funding_round": "A", "rto_policy": "R", "profile_completeness": 72, "accelerated_vesting": false, "url": "https://zephyr.example", "type": "C"}
+        {"id": 1, "name": "Acme Robotics", "ranking": 1, "avg_score": 4.82, "funding_round": "C", "rto_policy": "H", "profile_completeness": 100, "rating_dimensions_total": 5, "rating_dimensions_covered": 5, "evidence": {"verified": 4, "stale": 0, "unknown": 3, "total": 7, "fact_coverage": 4, "last_verified_at": "2026-08-20T00:00:00Z", "pending_review": 0}, "accelerated_vesting": true, "url": "https://acme.example", "type": "C"},
+        {"id": 2, "name": "Beacon Health", "ranking": 2, "avg_score": 4.71, "funding_round": "B", "rto_policy": "R", "profile_completeness": 100, "rating_dimensions_total": 5, "rating_dimensions_covered": 5, "evidence": {"verified": 1, "stale": 2, "unknown": 4, "total": 7, "fact_coverage": 3, "last_verified_at": "2025-06-02T00:00:00Z", "pending_review": 1}, "accelerated_vesting": false, "url": "https://beacon.example", "type": "C"},
+        {"id": 3, "name": "Civic Data Trust", "ranking": 3, "avg_score": 4.60, "funding_round": "A", "rto_policy": "O", "profile_completeness": 80, "rating_dimensions_total": 5, "rating_dimensions_covered": 4, "evidence": {"verified": 0, "stale": 0, "unknown": 7, "total": 7, "fact_coverage": 0, "last_verified_at": null, "pending_review": 0}, "accelerated_vesting": false, "url": "https://civic.example", "type": "N"},
+        {"id": 4, "name": "Dune Analytics Group", "ranking": 4, "avg_score": 4.55, "funding_round": "D", "rto_policy": "H", "profile_completeness": 80, "rating_dimensions_total": 5, "rating_dimensions_covered": 4, "evidence": {"verified": 2, "stale": 0, "unknown": 5, "total": 7, "fact_coverage": 2, "last_verified_at": "2026-09-01T00:00:00Z", "pending_review": 0}, "accelerated_vesting": true, "url": "https://dune.example", "type": "C"},
+        {"id": 5, "name": "Evergreen Bio", "ranking": 5, "avg_score": 4.43, "funding_round": "B", "rto_policy": "R", "profile_completeness": 80, "rating_dimensions_total": 5, "rating_dimensions_covered": 4, "evidence": {"verified": 4, "stale": 0, "unknown": 3, "total": 7, "fact_coverage": 4, "last_verified_at": "2026-08-20T00:00:00Z", "pending_review": 0}, "accelerated_vesting": false, "url": "https://evergreen.example", "type": "C"},
+        {"id": 6, "name": "Zephyr Quintessence NanotechnologicalBiopharmaceuticalResearchLaboratoriesInternationalHoldingsConsortium Limited", "ranking": 6, "avg_score": 4.31, "funding_round": "A", "rto_policy": "R", "profile_completeness": 80, "rating_dimensions_total": 5, "rating_dimensions_covered": 4, "evidence": {"verified": 1, "stale": 2, "unknown": 4, "total": 7, "fact_coverage": 3, "last_verified_at": "2025-06-02T00:00:00Z", "pending_review": 1}, "accelerated_vesting": false, "url": "https://zephyr.example", "type": "C"}
     ]
     </script>
     <!-- Single shared "Suggest a company" host (issue #471): outside .app-shell/main.app-content per the modal isolation contract -->

@@ -8,7 +8,10 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 
 from crank.models.organization import Organization
 from crank.models.company_profile import CompanyProfileObservation
-from crank.services.company_evidence import displayed_field_values, field_evidence_payload
+from crank.services.company_evidence import (
+    EVIDENCE_SCHEMA_VERSION,
+    field_evidence_payload,
+)
 from crank.services.scores import (
     organization_api_cache_key,
     organization_provenance_api_cache_key,
@@ -53,15 +56,16 @@ def organization_provenance(request, pk):
       the four freshness timestamps, and a per-response ``stale`` flag.
     - ``unverified_fields``: registered field keys with no accepted evidence —
       missing evidence is explicit.
-    - Profile completeness percentage for trust context.
+    - ``summary`` / ``pending_review``: fact counts and open claims, kept
+      separate from the accepted ``fields`` (pending is never verified).
     """
     cache_key = organization_provenance_api_cache_key(pk)
     prov_data = cache.get(cache_key)
-    if prov_data and 'fields' not in prov_data:
+    if prov_data and prov_data.get('evidence_schema') != EVIDENCE_SCHEMA_VERSION:
         # Entry written before this deploy: the key is unchanged (the shared
         # constructor also drives outbox invalidation, so versioning it here
         # would desynchronize that), and the payload predates the evidence
-        # arrays. The frontend guards on ``provenance.fields``, so serving it
+        # status fields (or the evidence arrays altogether). The frontend guards on ``provenance.fields``, so serving it
         # would render the modal with no evidence section at all —
         # indistinguishable from "no evidence exists". Treat it as a miss and
         # rebuild once, instead of degrading for the rest of the TTL.
@@ -74,6 +78,7 @@ def organization_provenance(request, pk):
             'organization_modified': organization.modified.isoformat() if organization.modified else None,
             'organization_created': organization.created.isoformat() if organization.created else None,
             'latest_observation': None,
+            'evidence_schema': EVIDENCE_SCHEMA_VERSION,
         }
 
         latest_obs = (
@@ -96,7 +101,6 @@ def organization_provenance(request, pk):
             }
 
         prov_data.update(field_evidence_payload(organization))
-        prov_data['displayed_values'] = displayed_field_values(organization)
 
         cache.set(cache_key, prov_data, timeout=settings.CACHE_MIDDLEWARE_SECONDS)
 
