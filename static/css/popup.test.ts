@@ -99,10 +99,10 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         {selector: /^\.chat-confirm-dismiss$/, value: '1'},
         {selector: /^\.assistant-panel #job-search-chat > section\[data-scroll-owner='panel'\] > \.card-header$/, value: '4'},
         {selector: /^#job-search-chat > \[data-scroll-owner='panel'\] \.chat-footer$/, value: '3'},
-        // The open priorities block is pinned above the chat's pinned header
-        // (4) inside the assistant panel body only, for the case where that
-        // body scrolls (issue #480).
-        {selector: /^\.priorities-sidebar:has\(\.priorities-scroll\)$/, value: '5'},
+        // The open priorities block, where it is pinned (data-pinned), sits
+        // above the transcript inside the assistant panel body only; the
+        // chat's pinned header (4) is offset below it (issue #480).
+        {selector: /^\.priorities-sidebar\[data-pinned\]:has\(\.priorities-scroll\)$/, value: '5'},
     ];
 
     // Splits a stylesheet into (selector, declarations) rules. Pairing both

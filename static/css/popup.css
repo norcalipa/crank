@@ -3900,6 +3900,9 @@ body.assistant-open .app-content .table-responsive,
 .priority-chip-text { display: inline-flex; flex-wrap: wrap; column-gap: 0.375rem; min-width: 0; }
 .priority-chip-label { color: #adb5bd; overflow-wrap: normal; min-width: 0; }
 .priority-chip-value { font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+/* The sidebar list scrolls one way only: a long value wraps inside its chip. */
+.priorities-sidebar .priority-chip-button { max-width: 100%; }
+.priorities-sidebar .priority-chip-value { white-space: normal; flex-shrink: 1; overflow-wrap: anywhere; }
 .priority-chip-icon { font-size: 0.75rem; margin: 0; color: #adb5bd; }
 .priority-chip-lock { font-size: 0.75rem; }
 .priority-chip-lock, .priority-chip-icon { flex: 0 0 auto; }
@@ -4015,17 +4018,18 @@ span.priority-chip-button { cursor: default; }
 }
 /* Sidebar: one collapsed summary row; every expanded step is bounded to 60% of
    the panel body and scrolls inside, so the conversation keeps its height. The
-   bound also leaves the chat its floor (header, 8rem of transcript, composer),
-   so expanding never makes the panel body scroll this row out of view. */
+   bound also leaves the chat its floor (header, 8rem of transcript, composer;
+   the chat card's own minimum is 20rem), so expanding leaves the chat usable. */
 .priorities-sidebar {
-    --priorities-chat-floor: 19.5rem;
+    --priorities-chat-floor: 20rem;
+    --priorities-body-pad: 0px;
     flex: 0 0 auto;
     display: flex;
     flex-direction: column;
     min-height: 0;
     overflow-y: auto;
     max-height: 60%;
-    max-height: min(60%, max(9rem, calc(100% - var(--priorities-chat-floor))));
+    max-height: min(60%, max(11rem, calc(100% - var(--priorities-chat-floor) - var(--priorities-body-pad))));
     padding: 0.5rem 0.75rem;
     border-bottom: 1px solid #495057;
     margin-bottom: 0;
@@ -4033,14 +4037,31 @@ span.priority-chip-button { cursor: default; }
 @media (min-width: 768px) {
     .priorities-sidebar { --priorities-chat-floor: 20.5rem; padding-inline: 1rem; }
 }
+/* Panel-scroll mode drops the body's block padding, which the percentages
+   resolve against: take it off so the bound is the same in both modes. */
+.assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) > .priorities-sidebar { --priorities-body-pad: 1rem; }
+@media (min-width: 768px) {
+    .assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) > .priorities-sidebar { --priorities-body-pad: 1.5rem; }
+    body.assistant-docked .assistant-panel-body:has(#job-search-chat > [data-scroll-owner='panel']) > .priorities-sidebar { --priorities-body-pad: 2rem; }
+}
 @media (pointer: fine) {
     .priorities-sidebar .priorities-actions .btn { min-height: 2.25rem; }
 }
-/* With larger text the chat may still not fit and the panel body scrolls: the
-   open block stays in view above it instead of scrolling away with its row. */
-.priorities-sidebar:has(.priorities-scroll) { position: sticky; top: 0; z-index: 5; background: var(--bs-body-bg); }
+/* When the chat does not fit under the open block the panel body scrolls. The
+   block stays pinned only where that leaves the chat room (data-pinned, set by
+   the component); otherwise it scrolls away with the panel. */
+.priorities-sidebar[data-pinned]:has(.priorities-scroll) { position: sticky; top: 0; z-index: 5; background: var(--bs-body-bg); }
+/* The chat's own pinned header then sits below the block, never under it. */
+.assistant-panel-body:has(> .priorities-sidebar[data-pinned]) #job-search-chat > section[data-scroll-owner='panel'] > .card-header {
+    top: var(--priorities-open-h, 0px);
+}
+.assistant-panel-body:has(> .priorities-sidebar[data-pinned]) #job-search-chat > [data-scroll-owner='panel'] [role='log'] :is(article, a, button, h3, h4, [tabindex]) {
+    scroll-margin-top: calc(var(--chat-band-top, 0px) + var(--priorities-open-h, 0px));
+}
 .priorities-sidebar > * { flex: 0 0 auto; }
-.priorities-sidebar .priorities-scroll { flex: 1 1 auto; min-height: 0; max-height: none; }
+/* The one scroller of the block; it contains the chips' hidden text, so the section itself never scrolls. */
+.priorities-sidebar .priorities-scroll { position: relative; flex: 1 1 auto; min-height: 0; max-height: none; overflow-x: hidden; }
+.priorities-step-title { margin: 0 0 0.25rem; font-size: 0.875rem; font-weight: 600; line-height: 1.25; color: #f8f9fa; }
 .priorities-summary-row { display: flex; align-items: center; gap: 0.5rem; }
 .priorities-summary-heading { flex: 1 1 auto; min-width: 0; margin: 0; font-size: inherit; line-height: inherit; }
 .priorities-summary-toggle {
@@ -4062,23 +4083,44 @@ span.priority-chip-button { cursor: default; }
 .priorities-summary-chevron { margin-left: 0.375rem; font-size: 0.6875rem; color: #adb5bd; }
 .priorities-summary-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
 .priorities-summary-title { font-size: 0.875rem; font-weight: 600; line-height: 1.25; color: #f8f9fa; }
+/* The lead truncates with an ellipsis; the counts after it never do. */
 .priorities-summary {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 1;
-    line-clamp: 1;
-    overflow: hidden;
-    overflow-wrap: anywhere;
+    display: flex;
+    min-width: 0;
     font-size: 0.8125rem;
     font-weight: 400;
     line-height: 1.25;
     color: #ced4da;
 }
+.priorities-summary-lead { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.priorities-summary-sep,
+.priorities-summary-tail { flex: 0 0 auto; white-space: pre; }
 @media (max-width: 374.98px) {
-    .priorities-summary { -webkit-line-clamp: 2; line-clamp: 2; }
+    .priorities-summary { flex-direction: column; }
+    .priorities-summary-sep { display: none; }
+}
+/* Open, the chips say it: the summary's line holds the key to their marks. */
+.priorities-summary-toggle[aria-expanded='true'] .priorities-summary { display: none; }
+.priorities-summary-skeleton { min-height: 44px; }
+.priorities-summary-skeleton .priorities-summary-text { gap: 0.375rem; }
+.priorities-skeleton-bar {
+    display: block;
+    border-radius: 0.25rem;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.08) 25%, rgba(255, 255, 255, 0.16) 50%, rgba(255, 255, 255, 0.08) 75%);
+    background-size: 200% 100%;
+    animation: assistant-loading-shimmer 1.4s linear infinite;
+}
+.priorities-skeleton-title { width: 7rem; height: 0.875rem; }
+.priorities-skeleton-summary { width: min(14rem, 90%); height: 0.8125rem; }
+.priorities-skeleton-edit { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 0.375rem; }
+@media (prefers-reduced-motion: reduce) {
+    .priorities-skeleton-bar { animation: none; }
+}
+.priorities-summary-legend { font-weight: 400; line-height: 1.25; }
+@media (max-width: 374.98px) {
+    .priorities-summary-legend { flex-wrap: nowrap; gap: 0.5rem; font-size: 0.75rem; }
 }
 .priorities-summary-row .priorities-edit { flex: 0 0 auto; min-width: 44px; }
-.priorities-sidebar .priority-chips-skeleton { flex-wrap: nowrap; overflow: hidden; margin-bottom: 0; }
 /* The inline link keeps its line but takes a 44px target. */
 .priorities-sidebar .priorities-session-expired a { display: inline-block; padding-block: 0.6875rem; margin-block: -0.6875rem; }
 .priorities-details:not([hidden]) { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
@@ -4089,6 +4131,8 @@ span.priority-chip-button { cursor: default; }
     bottom: -6px;
     padding-block: 0.5rem 0.25rem;
     background: var(--bs-alert-bg, #2b3035);
+    border-top: 1px solid #495057;
+    box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.8);
 }
 .assistant-panel-body #job-search-chat { flex: 0 0 auto; }
 .priorities-main .priorities-scroll,
@@ -4178,6 +4222,28 @@ span.priority-chip-button { cursor: default; }
     bottom: -6px;
     background: #2b3035;
     padding-top: 0.5rem;
+}
+/* Sidebar review: the change comes first and one action row stays pinned
+   (Apply and Cancel); Edit and This search only are one short scroll below. */
+.priorities-sidebar .priorities-review-compact > .priorities-heading { margin-bottom: 0.25rem; }
+.priorities-sidebar .priorities-review-compact > .pref-change-list { margin-top: 0; }
+.priorities-sidebar .priorities-review-compact .pref-change-item:first-child { padding-top: 0; border-top: 0; }
+.priorities-sidebar .priorities-review-compact > .priorities-scope-note { margin: 0.5rem 0 0; }
+.priorities-sidebar .priorities-review-compact > .chat-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    bottom: calc(-2.75rem - 0.5rem - 6px);
+    border-top: 1px solid #495057;
+    box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.8);
+}
+.priorities-sidebar .priorities-review-compact > .chat-actions > .btn { min-width: 0; }
+.priorities-sidebar .priorities-review-compact > .chat-actions > .priorities-review-edit { justify-self: start; }
+.priorities-sidebar .priorities-review-compact > .chat-actions > .priorities-review-cancel,
+.priorities-sidebar .priorities-review-compact > .chat-actions > .priorities-review-edit { min-width: 44px; }
+@media (max-width: 767.98px) {
+    /* Sheets: no card chrome, so the diff gets the width and the height. */
+    .priorities-sidebar .priorities-review-compact { padding: 0; border: 0; background: transparent; }
+    .priorities-sidebar .priorities-review-compact > .chat-actions { margin-inline: -6px; padding-inline: 6px; background: #212529; }
 }
 @media (max-width: 400px) {
     .assistant-panel-body #job-search-chat .empty-history-note { display: none; }

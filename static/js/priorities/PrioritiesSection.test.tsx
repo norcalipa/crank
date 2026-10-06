@@ -3,7 +3,7 @@
 import '@testing-library/jest-dom';
 import * as React from 'react';
 import {act, fireEvent, render, screen, waitFor, within} from '@testing-library/react';
-import PrioritiesSection, {SidebarPriorities} from './PrioritiesSection';
+import PrioritiesSection, {PIN_ROOM_PX, SidebarPriorities} from './PrioritiesSection';
 import {prioritiesSurface, subscribeDesktop} from './surface';
 import {
     getWorkspaceSnapshot, resetWorkspaceForTests, setPrioritiesEditorOpen, setPrioritiesRevision,
@@ -1044,13 +1044,18 @@ describe('PrioritiesSection', () => {
             expect(details).toBeVisible();
             expect(within(details).getAllByTestId('priority-chip')).toHaveLength(10);
             expect(within(details).queryByRole('button', {name: /more/})).not.toBeInTheDocument();
-            expect(within(details).getByTestId('priority-chip-legend')).toBeInTheDocument();
+            // The key to the marks takes the summary's line in the row, before the chips; it is not read twice.
+            const legend = within(toggle).getByTestId('priority-chip-legend');
+            expect(legend).toHaveAttribute('aria-hidden', 'true');
+            expect(legend).toHaveTextContent('RequirementNot used yet');
+            expect(within(details).queryByTestId('priority-chip-legend')).not.toBeInTheDocument();
             expect(within(details).getByRole('button', {name: 'Reset priorities'})).toBeInTheDocument();
             expect(details.querySelector('.priorities-scroll .priority-chips')).not.toBeNull();
             expect(toggle).toHaveFocus();
             fireEvent.click(toggle);
             expect(toggle).toHaveAttribute('aria-expanded', 'false');
             expect(screen.queryByTestId('priority-chip')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('priority-chip-legend')).not.toBeInTheDocument();
             expect(toggle).toHaveFocus();
         });
 
@@ -1143,7 +1148,12 @@ describe('PrioritiesSection', () => {
             let release: (r: Response) => void = () => undefined;
             mockFetch({'/api/agent/preferences/': () => new Promise<Response>((r) => { release = r; }) as any});
             const {unmount} = render(<PrioritiesSection variant="sidebar" authenticated/>);
-            expect(screen.getByTestId('priority-chips-skeleton')).toBeInTheDocument();
+            // The placeholder has the row's shape (title, summary, Edit), not the chips'.
+            const skeleton = screen.getByTestId('priorities-summary-skeleton');
+            expect(skeleton).toHaveAttribute('aria-hidden', 'true');
+            expect(skeleton.querySelectorAll('.priorities-skeleton-bar')).toHaveLength(3);
+            expect(screen.queryByTestId('priority-chips-skeleton')).not.toBeInTheDocument();
+            expect(screen.getByText('Loading your priorities')).toHaveAttribute('role', 'status');
             expect(screen.queryByTestId('priorities-summary-toggle')).not.toBeInTheDocument();
             await act(async () => { release(json({error: {message: 'boom'}}, 500)); });
             expect(await screen.findByTestId('priorities-load-error')).toBeVisible();
@@ -1156,6 +1166,9 @@ describe('PrioritiesSection', () => {
             expect(await screen.findByTestId('priorities-session-expired')).toBeVisible();
             expect(screen.getByRole('link', {name: 'Sign in'})).toBeInTheDocument();
             expect(screen.queryByRole('button', {name: 'Try again'})).not.toBeInTheDocument();
+            // The expired session is said once: no second alert repeats it.
+            expect(screen.queryByTestId('priorities-load-error')).not.toBeInTheDocument();
+            expect(screen.getAllByRole('alert')).toHaveLength(1);
         });
 
         test('an account switch collapses the row again', async () => {
@@ -1177,6 +1190,204 @@ describe('PrioritiesSection', () => {
             expect(screen.getByRole('button', {name: 'Edit priorities'})).toHaveTextContent(/^Edit priorities$/);
             expect(screen.getByRole('button', {name: 'Reset priorities'})).toBeInTheDocument();
             expect(document.querySelector('.priorities-scroll')).toBeNull();
+        });
+    });
+
+    describe('visual round 2 (issue #480)', () => {
+        const pref = (n: number) => ({path: `p${n}`, label: `Pref ${n}`, display: `v${n}`, hard: false, supported: true});
+        const hard = (n: number) => ({path: `h${n}`, label: `Hard ${n}`, display: `Need${n}`, hard: true, supported: true});
+        const serve = (chips: unknown[]) => mockFetch({
+            '/api/agent/preferences/propose/': () => json(proposal),
+            '/api/agent/preferences/': () => json(snapshotBody(2, chips)),
+        });
+
+        describe('pinning the open block', () => {
+            // jsdom lays nothing out: the heights are given, and the observer is driven by hand.
+            const heights = {section: 0, body: 0};
+            const observers: Array<{run: () => void; observed: Element[]; disconnected: boolean}> = [];
+            const realOffset = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+            const realClient = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
+
+            beforeEach(() => {
+                observers.length = 0;
+                (global as any).ResizeObserver = class {
+                    private entry: {run: () => void; observed: Element[]; disconnected: boolean};
+                    constructor(run: () => void) { this.entry = {run, observed: [], disconnected: false}; observers.push(this.entry); }
+                    observe(el: Element) { this.entry.observed.push(el); }
+                    disconnect() { this.entry.disconnected = true; }
+                };
+                Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+                    configurable: true, get() { return (this as HTMLElement).matches('.priorities-sidebar') ? heights.section : 0; },
+                });
+                Object.defineProperty(Element.prototype, 'clientHeight', {
+                    configurable: true, get() { return (this as Element).matches('.assistant-panel-body') ? heights.body : 0; },
+                });
+            });
+            afterEach(() => {
+                delete (global as any).ResizeObserver;
+                Object.defineProperty(HTMLElement.prototype, 'offsetHeight', realOffset!);
+                Object.defineProperty(Element.prototype, 'clientHeight', realClient!);
+            });
+            const live = () => observers.filter((o) => !o.disconnected);
+            const panel = (node: React.ReactNode) => <div className="assistant-panel-body">{node}</div>;
+
+            test('the open block is pinned only while the chat keeps its room under it, and says how tall it is', async () => {
+                serve([chip, pref(1)]);
+                heights.section = 61;
+                heights.body = 800;
+                const {unmount} = render(panel(<PrioritiesSection variant="sidebar" authenticated/>));
+                const section = await screen.findByTestId('priorities-sidebar');
+                const body = section.parentElement!;
+                const toggle = await screen.findByTestId('priorities-summary-toggle');
+                // Collapsed: nothing is pinned and the chat's header keeps its own offset.
+                expect(section).not.toHaveAttribute('data-pinned');
+                expect(body.style.getPropertyValue('--priorities-open-h')).toBe('0px');
+                expect(live()).toHaveLength(1);
+                expect(live()[0].observed).toEqual([section, body]);
+
+                // Expanded with room to spare: pinned, and the panel knows the height to offset the chat header by.
+                heights.section = 400;
+                fireEvent.click(toggle);
+                expect(section).toHaveAttribute('data-pinned');
+                expect(body.style.getPropertyValue('--priorities-open-h')).toBe('400px');
+
+                // Exactly the room: still pinned. One pixel short (the panel shrank): it scrolls with the panel instead.
+                heights.body = 400 + PIN_ROOM_PX;
+                act(() => live()[0].run());
+                expect(section).toHaveAttribute('data-pinned');
+                heights.body = 400 + PIN_ROOM_PX - 1;
+                act(() => live()[0].run());
+                expect(section).not.toHaveAttribute('data-pinned');
+                expect(body.style.getPropertyValue('--priorities-open-h')).toBe('400px');
+
+                // The editor is an open step too; closing it unpins and clears the height.
+                heights.body = 800;
+                await openEditor('sidebar');
+                expect(section).toHaveAttribute('data-pinned');
+                fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
+                fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
+                heights.section = 61;
+                act(() => live()[0].run());
+                expect(section).not.toHaveAttribute('data-pinned');
+                expect(body.style.getPropertyValue('--priorities-open-h')).toBe('0px');
+
+                unmount();
+                expect(live()).toHaveLength(0);
+                expect(body.style.getPropertyValue('--priorities-open-h')).toBe('');
+            });
+
+            test('nothing is observed outside the panel, in the main block, or signed out', async () => {
+                serve([chip]);
+                heights.section = 400;
+                heights.body = 800;
+                const first = render(<PrioritiesSection variant="sidebar" authenticated/>);
+                fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
+                expect(screen.getByTestId('priorities-sidebar')).not.toHaveAttribute('data-pinned');
+                first.unmount();
+                const second = render(panel(<PrioritiesSection variant="main" authenticated/>));
+                await openEditor('main');
+                expect(screen.getByTestId('priorities-main')).not.toHaveAttribute('data-pinned');
+                second.unmount();
+                const {container} = render(panel(<PrioritiesSection variant="sidebar" authenticated={false}/>));
+                expect(container.querySelector('.priorities-section')).toBeNull();
+                expect(observers).toHaveLength(0);
+            });
+        });
+
+        test('without ResizeObserver the open block is simply not pinned', async () => {
+            serve([chip]);
+            render(<div className="assistant-panel-body"><PrioritiesSection variant="sidebar" authenticated/></div>);
+            fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
+            expect(screen.getByTestId('priorities-sidebar')).not.toHaveAttribute('data-pinned');
+            expect(screen.getByTestId('priorities-sidebar').parentElement!.style.getPropertyValue('--priorities-open-h')).toBe('');
+        });
+
+        test('the summary is laid out as a lead that may truncate and counts that never do; the text is one string', async () => {
+            serve([hard(1), hard(2), hard(3), pref(1), pref(2)]);
+            const {unmount} = render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const summary = await screen.findByTestId('priorities-summary');
+            expect(summary).toHaveTextContent(/^Requires: Need1, Need2, \+1 \u00b7 2 preferences$/);
+            expect(summary.querySelector('.priorities-summary-lead')).toHaveTextContent(/^Requires: Need1, Need2$/);
+            expect(summary.querySelector('.priorities-summary-sep')!.textContent).toBe(', ');
+            expect(summary.querySelector('.priorities-summary-tail')).toHaveTextContent(/^\+1 \u00b7 2 preferences$/);
+            // (jsdom's name computation puts a space between inline spans; browsers do not.)
+            expect(screen.getByTestId('priorities-summary-toggle'))
+                .toHaveAccessibleName(/^Your priorities Requires: Need1, Need2 ?, ?\+1 \u00b7 2 preferences$/);
+            unmount();
+
+            serve([pref(1), pref(2)]);
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const only = await screen.findByTestId('priorities-summary');
+            expect(only).toHaveTextContent(/^2 preferences$/);
+            expect(only.children).toHaveLength(1);
+            expect(only.querySelector('.priorities-summary-tail')).toBeNull();
+        });
+
+        test('the key names only the marks the chips carry, and is left out when none is marked', async () => {
+            serve([chip, pref(1)]);
+            const first = render(<PrioritiesSection variant="sidebar" authenticated/>);
+            fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
+            expect(screen.getByTestId('priority-chip-legend')).toHaveTextContent(/^Requirement$/);
+            first.unmount();
+
+            serve([chip2]);
+            const second = render(<PrioritiesSection variant="sidebar" authenticated/>);
+            fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
+            expect(screen.getByTestId('priority-chip-legend')).toHaveTextContent(/^Not used yet$/);
+            second.unmount();
+
+            serve([pref(1), pref(2)]);
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
+            expect(screen.getAllByTestId('priority-chip')).toHaveLength(2);
+            expect(screen.queryByTestId('priority-chip-legend')).not.toBeInTheDocument();
+        });
+
+        test('the sidebar editor is named by a visible heading outside its scroll region; the main editor keeps its title', async () => {
+            serve([chip]);
+            const first = render(<PrioritiesSection variant="sidebar" authenticated/>);
+            await openEditor('sidebar');
+            const title = screen.getByTestId('priorities-step-title');
+            expect(title).toHaveTextContent('Edit priorities');
+            expect(title.tagName).toBe('H3');
+            expect(title.closest('.priorities-scroll')).toBeNull();
+            expect(title.nextElementSibling).toHaveClass('priorities-scroll');
+            first.unmount();
+            act(() => resetWorkspaceForTests());
+            render(<PrioritiesSection variant="main" authenticated/>);
+            await openEditor('main');
+            expect(screen.queryByTestId('priorities-step-title')).not.toBeInTheDocument();
+        });
+
+        test('the sidebar review shows the change before the note and puts Cancel beside Apply; the main review is unchanged', async () => {
+            const names = (group: HTMLElement) => within(group).getAllByRole('button').map((b) => b.textContent);
+            serve([chip]);
+            const first = render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const form = await openEditor('sidebar');
+            fireEvent.change(within(form).getByRole('spinbutton', {name: /Minimum base salary/}), {target: {value: '150000'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            const review = await screen.findByTestId('priorities-review');
+            expect(review).toHaveClass('priorities-review-compact');
+            expect(names(within(review).getByRole('group', {name: 'Review actions'})))
+                .toEqual(['Apply to account', 'Cancel', 'Edit', 'This search only']);
+            const list = within(review).getByRole('list', {name: 'Proposed changes'});
+            const note = review.querySelector('.priorities-scope-note')!;
+            expect(list.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+            first.unmount();
+
+            act(() => resetWorkspaceForTests());
+            serve([chip]);
+            render(<PrioritiesSection variant="main" authenticated/>);
+            const mainForm = await openEditor('main');
+            fireEvent.change(within(mainForm).getByRole('spinbutton', {name: /Minimum base salary/}), {target: {value: '150000'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            const mainReview = await screen.findByTestId('priorities-review');
+            expect(mainReview).not.toHaveClass('priorities-review-compact');
+            expect(names(within(mainReview).getByRole('group', {name: 'Review actions'})))
+                .toEqual(['Apply to account', 'Edit', 'This search only', 'Cancel']);
+            const mainNote = mainReview.querySelector('.priorities-scope-note')!;
+            expect(mainNote.compareDocumentPosition(within(mainReview).getByRole('list', {name: 'Proposed changes'}))
+                & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         });
     });
 });
