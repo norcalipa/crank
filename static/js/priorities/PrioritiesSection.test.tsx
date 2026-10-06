@@ -578,7 +578,7 @@ describe('PrioritiesSection', () => {
             expect(prioritiesSurface()).toBe('main');
             matches = false;
             act(() => listeners.forEach((fn) => fn()));
-            expect(await screen.findAllByTestId('priority-chip')).toHaveLength(1);
+            expect(await screen.findByTestId('priorities-summary')).toHaveTextContent('Requires: $150,000');
             expect(prioritiesSurface()).toBe('sidebar');
             unmount();
             expect(listeners.size).toBe(0);
@@ -604,7 +604,7 @@ describe('PrioritiesSection', () => {
         const {container} = render(<SidebarPriorities/>);
         expect(container).toBeEmptyDOMElement();
         act(() => setWorkspaceAccount({status: 'authenticated', key: 'u'}));
-        expect(await screen.findAllByTestId('priority-chip')).toHaveLength(1);
+        expect(await screen.findByTestId('priorities-summary')).toHaveTextContent('Requires: $150,000');
         act(() => setWorkspaceAccount({status: 'anonymous', key: ''}));
         await waitFor(() => expect(container).toBeEmptyDOMElement());
     });
@@ -1004,6 +1004,179 @@ describe('PrioritiesSection', () => {
             const heading = await screen.findByRole('heading', {name: 'Review your changes'});
             await waitFor(() => expect(heading).toHaveFocus());
             expect(screen.getByTestId('priorities-announcement')).toHaveTextContent('Updated against your latest priorities.');
+        });
+    });
+
+    describe('collapsed sidebar row (issue #480)', () => {
+        const pref = (n: number) => ({path: `p${n}`, label: `Pref ${n}`, display: `v${n}`, hard: false, supported: true});
+        const many = [chip, chip2, ...Array.from({length: 8}, (_, i) => pref(i))];
+        const serve = (chips: unknown[] = many) => mockFetch({
+            '/api/agent/preferences/propose/': () => json(proposal),
+            '/api/agent/preferences/apply/': () => json({revision: 3, changes: proposal.changes, undo: {expected_revision: 3, document: {}}}),
+            '/api/agent/preferences/reset/': () => json({error: {type: 'server', message: 'nope'}}, 500),
+            '/api/agent/preferences/': () => json(snapshotBody(2, chips)),
+        });
+
+        test('is collapsed by default: one row with the summary and Edit, and no chip in the DOM', async () => {
+            serve();
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const toggle = await screen.findByTestId('priorities-summary-toggle');
+            expect(toggle).toHaveAttribute('aria-expanded', 'false');
+            expect(toggle).toHaveAccessibleName('Your priorities Requires: $150,000 \u00b7 9 preferences');
+            expect(screen.getByTestId('priorities-summary')).toHaveTextContent('Requires: $150,000 \u00b7 9 preferences');
+            expect(screen.queryByTestId('priority-chip')).not.toBeInTheDocument();
+            expect(screen.queryByRole('button', {name: 'Reset priorities'})).not.toBeInTheDocument();
+            expect(screen.getByRole('button', {name: 'Edit priorities'})).toBeInTheDocument();
+            expect(screen.getByRole('region', {name: 'Your priorities'})).toBe(screen.getByTestId('priorities-sidebar'));
+            expect(toggle.closest('h2')).not.toBeNull();
+            expect(document.querySelector('.priorities-title')).toBeNull();
+        });
+
+        test('the toggle expands to every chip, the legend and Reset, then collapses; focus stays on it', async () => {
+            serve();
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const toggle = await screen.findByTestId('priorities-summary-toggle');
+            const details = document.getElementById(toggle.getAttribute('aria-controls')!)!;
+            expect(details).not.toBeVisible();
+            toggle.focus();
+            fireEvent.click(toggle);
+            expect(toggle).toHaveAttribute('aria-expanded', 'true');
+            expect(details).toBeVisible();
+            expect(within(details).getAllByTestId('priority-chip')).toHaveLength(10);
+            expect(within(details).queryByRole('button', {name: /more/})).not.toBeInTheDocument();
+            expect(within(details).getByTestId('priority-chip-legend')).toBeInTheDocument();
+            expect(within(details).getByRole('button', {name: 'Reset priorities'})).toBeInTheDocument();
+            expect(details.querySelector('.priorities-scroll .priority-chips')).not.toBeNull();
+            expect(toggle).toHaveFocus();
+            fireEvent.click(toggle);
+            expect(toggle).toHaveAttribute('aria-expanded', 'false');
+            expect(screen.queryByTestId('priority-chip')).not.toBeInTheDocument();
+            expect(toggle).toHaveFocus();
+        });
+
+        test('Edit on the collapsed row opens the shared editor; Cancel returns focus to it', async () => {
+            serve();
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const form = await openEditor('sidebar');
+            expect(form.closest('.priorities-scroll')).not.toBeNull();
+            expect(screen.queryByTestId('priorities-summary-toggle')).not.toBeInTheDocument();
+            expect(screen.getByRole('heading', {name: 'Your priorities'})).toHaveClass('priorities-title');
+            fireEvent.click(within(form).getByRole('button', {name: 'Cancel'}));
+            await waitFor(() => expect(screen.getByRole('button', {name: 'Edit priorities'})).toHaveFocus());
+            expect(screen.getByTestId('priorities-summary-toggle')).toHaveAttribute('aria-expanded', 'false');
+        });
+
+        test('a chip in the expanded list opens the editor', async () => {
+            serve();
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
+            fireEvent.click(screen.getByRole('button', {name: /^Edit Minimum base salary/}));
+            expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
+            expect(await screen.findByRole('form', {name: 'Edit priorities'})).toBeInTheDocument();
+        });
+
+        test('the applied summary scrolls inside the section and Done returns focus to the row', async () => {
+            serve();
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const form = await openEditor('sidebar');
+            fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '150000'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            fireEvent.click(await screen.findByRole('button', {name: 'Apply to account'}));
+            const applied = await screen.findByTestId('priorities-applied');
+            expect(applied.closest('.priorities-scroll')).not.toBeNull();
+            fireEvent.click(within(applied).getByRole('button', {name: 'Done'}));
+            await waitFor(() => expect(screen.getByRole('button', {name: 'Edit priorities'})).toHaveFocus());
+        });
+
+        test('Keep priorities returns focus to Reset and the list stays expanded; a failed reset says so in the row', async () => {
+            serve();
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
+            fireEvent.click(screen.getByRole('button', {name: 'Reset priorities'}));
+            const confirm = screen.getByRole('group', {name: 'Confirm reset'});
+            expect(confirm.closest('.priorities-scroll')).not.toBeNull();
+            fireEvent.click(within(confirm).getByRole('button', {name: 'Keep priorities'}));
+            await waitFor(() => expect(screen.getByRole('button', {name: 'Reset priorities'})).toHaveFocus());
+            expect(screen.getByTestId('priorities-summary-toggle')).toHaveAttribute('aria-expanded', 'true');
+            fireEvent.click(screen.getByRole('button', {name: 'Reset priorities'}));
+            fireEvent.click(within(screen.getByRole('group', {name: 'Confirm reset'})).getByRole('button', {name: 'Reset priorities'}));
+            expect(await screen.findByTestId('priorities-view-error')).toHaveTextContent('nope');
+            expect(screen.getByTestId('priorities-summary-toggle')).toBeInTheDocument();
+            await waitFor(() => expect(screen.getByRole('button', {name: 'Reset priorities'})).toHaveFocus());
+        });
+
+        test('the summary follows a save made elsewhere on the page', async () => {
+            let chips: unknown[] = [chip];
+            mockFetch({'/api/agent/preferences/': () => json(snapshotBody(chips.length + 1, chips))});
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            expect(await screen.findByTestId('priorities-summary')).toHaveTextContent('Requires: $150,000');
+            chips = [chip, chip2];
+            act(() => setPrioritiesRevision(3));
+            await waitFor(() => expect(screen.getByTestId('priorities-summary')).toHaveTextContent('Requires: $150,000 \u00b7 1 preference'));
+        });
+
+        test('nothing saved: a plain title, "None saved yet" and Add, with no disclosure', async () => {
+            serve([]);
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            expect(await screen.findByTestId('priorities-empty')).toHaveTextContent('None saved yet');
+            expect(screen.getByRole('heading', {name: /Your priorities/})).toBeInTheDocument();
+            expect(screen.queryByTestId('priorities-summary-toggle')).not.toBeInTheDocument();
+            expect(screen.queryByRole('button', {name: 'Reset priorities'})).not.toBeInTheDocument();
+            fireEvent.click(screen.getByRole('button', {name: 'Add priorities'}));
+            expect(getWorkspaceSnapshot().prioritiesEditorOpenIn).toBe('sidebar');
+        });
+
+        test('an expanded list that empties falls back to the plain row', async () => {
+            let chips: unknown[] = [chip];
+            mockFetch({'/api/agent/preferences/': () => json(snapshotBody(chips.length + 1, chips))});
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
+            expect(screen.getAllByTestId('priority-chip')).toHaveLength(1);
+            chips = [];
+            act(() => setPrioritiesRevision(9));
+            expect(await screen.findByTestId('priorities-empty')).toBeInTheDocument();
+            expect(screen.queryByTestId('priority-chip')).not.toBeInTheDocument();
+            expect(document.getElementById('priorities-details-sidebar')).not.toBeVisible();
+        });
+
+        test('loading, load error and an expired session show outside the disclosure', async () => {
+            let release: (r: Response) => void = () => undefined;
+            mockFetch({'/api/agent/preferences/': () => new Promise<Response>((r) => { release = r; }) as any});
+            const {unmount} = render(<PrioritiesSection variant="sidebar" authenticated/>);
+            expect(screen.getByTestId('priority-chips-skeleton')).toBeInTheDocument();
+            expect(screen.queryByTestId('priorities-summary-toggle')).not.toBeInTheDocument();
+            await act(async () => { release(json({error: {message: 'boom'}}, 500)); });
+            expect(await screen.findByTestId('priorities-load-error')).toBeVisible();
+            expect(screen.getByRole('button', {name: 'Try again'})).toBeInTheDocument();
+            expect(screen.queryByTestId('priorities-summary-toggle')).not.toBeInTheDocument();
+            unmount();
+
+            mockFetch({'/api/agent/preferences/': () => json({error: {type: 'auth_required', message: 'x'}}, 401)});
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            expect(await screen.findByTestId('priorities-session-expired')).toBeVisible();
+            expect(screen.getByRole('link', {name: 'Sign in'})).toBeInTheDocument();
+            expect(screen.queryByRole('button', {name: 'Try again'})).not.toBeInTheDocument();
+        });
+
+        test('an account switch collapses the row again', async () => {
+            serve();
+            act(() => setWorkspaceAccount({status: 'authenticated', key: 'a'}));
+            render(<SidebarPriorities/>);
+            fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
+            expect(screen.getAllByTestId('priority-chip')).toHaveLength(10);
+            act(() => setWorkspaceAccount({status: 'authenticated', key: 'b'}));
+            expect(await screen.findByTestId('priorities-summary-toggle')).toHaveAttribute('aria-expanded', 'false');
+        });
+
+        test('the main block has no disclosure', async () => {
+            serve();
+            render(<PrioritiesSection variant="main" authenticated/>);
+            expect(await screen.findAllByTestId('priority-chip')).toHaveLength(5);
+            expect(screen.queryByTestId('priorities-summary-toggle')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('priorities-summary')).not.toBeInTheDocument();
+            expect(screen.getByRole('button', {name: 'Edit priorities'})).toHaveTextContent(/^Edit priorities$/);
+            expect(screen.getByRole('button', {name: 'Reset priorities'})).toBeInTheDocument();
+            expect(document.querySelector('.priorities-scroll')).toBeNull();
         });
     });
 });

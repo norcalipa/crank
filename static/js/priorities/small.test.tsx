@@ -6,7 +6,7 @@ import {fireEvent, render, screen} from '@testing-library/react';
 import PriorityChips from './PriorityChips';
 import ReviewChanges from './ReviewChanges';
 import AppliedChanges from './AppliedChanges';
-import {chipValueLabel, preferencePathLabel, preferenceValueLabel} from './format';
+import {chipValueLabel, preferencePathLabel, preferenceValueLabel, prioritiesSummary} from './format';
 
 const changes = [{path: 'compensation.minimum_salary', old: 0, new: 150000}];
 
@@ -273,5 +273,40 @@ describe('review wording (issue #480 round 1)', () => {
 
     test('values outside the known shapes fall back to String()', () => {
         expect(preferenceValueLabel(BigInt(7))).toBe('7');
+    });
+});
+
+describe('prioritiesSummary (collapsed sidebar row)', () => {
+    const chipOf = (over: Record<string, unknown>) => ({
+        path: 'culture', label: 'Culture', display: 'kind', hard: false, supported: true, ...over,
+    });
+    const salary = chipOf({path: 'compensation.minimum_salary', label: 'Minimum base salary', display: '150000', hard: true});
+    const modes = chipOf({path: 'work_location.modes', label: 'Work arrangement', display: 'remote', items: ['remote'], hard: true});
+
+    test('nothing saved, one preference and several preferences', () => {
+        expect(prioritiesSummary([])).toBe('');
+        expect(prioritiesSummary([chipOf({})])).toBe('1 preference');
+        expect(prioritiesSummary([chipOf({}), chipOf({path: 'industry'})])).toBe('2 preferences');
+    });
+
+    test('requirements come first with the chip formatting, then the preference count', () => {
+        expect(prioritiesSummary([salary])).toBe('Requires: $150,000');
+        expect(prioritiesSummary([chipOf({}), salary, modes], 'EUR', new Set(['work_location.modes'])))
+            .toBe('Requires: EUR 150,000, Remote \u00b7 1 preference');
+        expect(prioritiesSummary([salary, modes])).toBe('Requires: $150,000, remote');
+    });
+
+    test('more than two requirements end with +k; one the matcher does not use still counts, named last', () => {
+        const unused = chipOf({path: 'compensation.equity_liquidity_required', label: 'Equity liquidity', display: 'Yes', hard: true, supported: false});
+        const chips = [unused, salary, modes, chipOf({})];
+        expect(prioritiesSummary(chips)).toBe('Requires: $150,000, remote, +1 \u00b7 1 preference');
+        expect(chips[0]).toBe(unused);
+        expect(prioritiesSummary([unused, salary])).toBe('Requires: $150,000, Equity liquidity');
+    });
+
+    test('a value that says nothing alone is named by its field', () => {
+        const days = chipOf({path: 'work_location.max_in_office_days', label: 'In-office days', display: '2', hard: true});
+        const flag = chipOf({path: 'compensation.require_public_company', label: 'Public company', display: 'No', hard: true});
+        expect(prioritiesSummary([days, flag])).toBe('Requires: In-office days: 2, Public company: No');
     });
 });

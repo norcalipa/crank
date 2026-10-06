@@ -5,7 +5,8 @@
 // summary with Undo, and Reset priorities. One component serves the main
 // workspace and the assistant sidebar (`variant`); the workspace store
 // ensures at most one editor is open and carries the post-write revision so
-// other roots (job matches) refetch.
+// other roots (job matches) refetch. The sidebar shows one collapsed summary
+// row that expands to the chips, so the conversation below keeps its height.
 
 import * as React from 'react';
 import {
@@ -16,7 +17,7 @@ import AppliedChanges from './AppliedChanges';
 import PriorityChips, {PriorityChipsSkeleton} from './PriorityChips';
 import PriorityEditor from './PriorityEditor';
 import ReviewChanges from './ReviewChanges';
-import {preferencePathLabel} from './format';
+import {preferencePathLabel, prioritiesSummary} from './format';
 import {Draft, DraftValue, buildPatch, conflictingPaths, emptyDraft, isDirty, patchToDraft} from './patch';
 import {prioritiesSurface, subscribeDesktop} from './surface';
 import {useWorkspace} from './useWorkspace';
@@ -85,6 +86,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const [sessionExpired, setSessionExpired] = React.useState(false);
     const [rebasing, setRebasing] = React.useState(false);
     const [refreshed, setRefreshed] = React.useState(false);
+    const [expanded, setExpanded] = React.useState(false);
     const guard = React.useMemo(createLatestGuard, []);
     const mounted = React.useRef(true);
     const revisionRef = React.useRef<number | null>(null);
@@ -160,6 +162,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         setSessionExpired(false);
         setRebasing(false);
         setRefreshed(false);
+        setExpanded(false);
         setPhase('loading');
     }, [guard]);
 
@@ -416,6 +419,11 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const choicePaths = new Set(fields.filter((f) => f.choices).map((f) => f.path));
     const readOnlyPaths = new Set(fields.filter((f) => f.type === 'float_map').map((f) => f.path));
     const titleId = `priorities-title-${variant}`;
+    const detailsId = `priorities-details-${variant}`;
+    const sidebar = variant === 'sidebar';
+    // The sidebar is bounded to a share of the panel, so every step scrolls inside it.
+    const bounded = (node: React.ReactNode) => (sidebar ? <ScrollRegion>{node}</ScrollRegion> : node);
+    let summaryRow = false;
 
     // Signed out: the page's own sign-in prompt is the call to action; the main block says what signing in is for.
     if (!authenticated) {
@@ -474,15 +482,15 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             </ScrollRegion>
         );
     } else if (step === 'applied' && applied) {
-        body = (
+        body = bounded(
             <AppliedChanges changes={applied.result.changes} labels={labels} currency={currency}
                             choicePaths={choicePaths} summary={applied.summary}
                             canUndo={applied.result.undo !== null} undoPending={undoPending}
                             undoError={undoError} undone={undone} onUndo={() => void undo()}
-                            onDismiss={() => { focusAfter.current = 'edit'; setApplied(null); setStep('view'); }}/>
+                            onDismiss={() => { focusAfter.current = 'edit'; setApplied(null); setStep('view'); }}/>,
         );
     } else if (step === 'confirm-reset') {
-        body = (
+        body = bounded(
             <div className="priorities-card priorities-confirm" role="group" aria-label="Confirm reset">
                 <p className="priorities-heading mb-1" tabIndex={-1} ref={confirmHeading}>Reset priorities?</p>
                 <p>Reset all saved priorities to their defaults? Your conversations are not changed. Job matches will update.</p>
@@ -494,44 +502,99 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                     <button type="button" className="btn btn-sm btn-outline-light"
                             onClick={() => { focusAfter.current = 'reset'; setStep('view'); }} disabled={busy}>Keep priorities</button>
                 </div>
-            </div>
+            </div>,
         );
     } else {
         const chips = snapshot?.chips || [];
-        body = (
-            <>
-                {formError && (
-                    <div className="priorities-load-error" role="alert" data-testid="priorities-view-error">
-                        <i className="fa-solid fa-triangle-exclamation priorities-load-error-icon" aria-hidden="true"></i>
-                        <div className="priorities-load-error-text">{formError}</div>
-                    </div>
-                )}
-                {chips.length > 0 ? (
-                    <PriorityChips chips={chips} collapsedCount={variant === 'sidebar' ? 3 : 5}
-                                   currency={currency} readOnlyPaths={readOnlyPaths} choicePaths={choicePaths}
-                                   onEdit={() => setPrioritiesEditorOpen(variant)}/>
-                ) : (
-                    <p className="priorities-empty" data-testid="priorities-empty">
-                        No priorities saved yet. Add a few so job matches fit what you want.
-                    </p>
-                )}
-                <div className="priorities-actions" role="group" aria-label="Priorities actions">
-                    <button type="button" className="btn btn-sm btn-outline-primary priorities-edit" ref={editButton}
-                            onClick={() => setPrioritiesEditorOpen(variant)}>
-                        {chips.length > 0 ? 'Edit priorities' : 'Add priorities'}
-                    </button>
-                    {chips.length > 0 && (
-                        <button type="button" className="btn btn-sm btn-link link-danger priorities-reset" ref={resetButton}
-                                onClick={() => setStep('confirm-reset')}>Reset priorities</button>
-                    )}
-                </div>
-            </>
+        const viewError = formError && (
+            <div className="priorities-load-error" role="alert" data-testid="priorities-view-error">
+                <i className="fa-solid fa-triangle-exclamation priorities-load-error-icon" aria-hidden="true"></i>
+                <div className="priorities-load-error-text">{formError}</div>
+            </div>
         );
+        const resetAction = (
+            <button type="button" className="btn btn-sm btn-link link-danger priorities-reset" ref={resetButton}
+                    onClick={() => setStep('confirm-reset')}>Reset priorities</button>
+        );
+        if (sidebar) {
+            // One row: a disclosure with the summary, and Edit beside it (never nested in it).
+            summaryRow = true;
+            const open = expanded && chips.length > 0;
+            body = (
+                <>
+                    <div className="priorities-summary-row">
+                        <h2 className="priorities-summary-heading">
+                            {chips.length > 0 ? (
+                                <button type="button" className="priorities-summary-toggle"
+                                        data-testid="priorities-summary-toggle"
+                                        aria-expanded={open} aria-controls={detailsId}
+                                        onClick={() => setExpanded((was) => !was)}>
+                                    <span className="priorities-summary-text">
+                                        <span id={titleId} className="priorities-summary-title">
+                                            Your priorities
+                                            <i className={`fa-solid fa-chevron-${open ? 'up' : 'down'} priorities-summary-chevron`} aria-hidden="true"></i>
+                                        </span>
+                                        <span className="priorities-summary" data-testid="priorities-summary">
+                                            {prioritiesSummary(chips, currency, choicePaths)}
+                                        </span>
+                                    </span>
+                                </button>
+                            ) : (
+                                <span className="priorities-summary-text">
+                                    <span id={titleId} className="priorities-summary-title">Your priorities</span>
+                                    <span className="priorities-summary" data-testid="priorities-empty">None saved yet</span>
+                                </span>
+                            )}
+                        </h2>
+                        <button type="button" className="btn btn-sm btn-outline-primary priorities-edit" ref={editButton}
+                                onClick={() => setPrioritiesEditorOpen(variant)}>
+                            {chips.length > 0 ? 'Edit' : 'Add'}<span className="visually-hidden"> priorities</span>
+                        </button>
+                    </div>
+                    {viewError}
+                    <div id={detailsId} className="priorities-details" hidden={!open}>
+                        {open && (
+                            <>
+                                <ScrollRegion>
+                                    <PriorityChips chips={chips} collapsedCount={chips.length}
+                                                   currency={currency} readOnlyPaths={readOnlyPaths} choicePaths={choicePaths}
+                                                   onEdit={() => setPrioritiesEditorOpen(variant)}/>
+                                </ScrollRegion>
+                                <div className="priorities-actions" role="group" aria-label="Priorities actions">
+                                    {resetAction}
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </>
+            );
+        } else {
+            body = (
+                <>
+                    {viewError}
+                    {chips.length > 0 ? (
+                        <PriorityChips chips={chips} currency={currency} readOnlyPaths={readOnlyPaths}
+                                       choicePaths={choicePaths} onEdit={() => setPrioritiesEditorOpen(variant)}/>
+                    ) : (
+                        <p className="priorities-empty" data-testid="priorities-empty">
+                            No priorities saved yet. Add a few so job matches fit what you want.
+                        </p>
+                    )}
+                    <div className="priorities-actions" role="group" aria-label="Priorities actions">
+                        <button type="button" className="btn btn-sm btn-outline-primary priorities-edit" ref={editButton}
+                                onClick={() => setPrioritiesEditorOpen(variant)}>
+                            {chips.length > 0 ? 'Edit priorities' : 'Add priorities'}
+                        </button>
+                        {chips.length > 0 && resetAction}
+                    </div>
+                </>
+            );
+        }
     }
 
     return (
         <section className={className} aria-labelledby={titleId} data-testid={`priorities-${variant}`}>
-            <h2 id={titleId} className="h6 priorities-title">Your priorities</h2>
+            {!summaryRow && <h2 id={titleId} className="h6 priorities-title">Your priorities</h2>}
             {sessionExpired && (
                 <p className="priorities-session-expired" role="alert" data-testid="priorities-session-expired">
                     {SESSION_EXPIRED_MESSAGE} <a href={signInHref()}>Sign in</a>

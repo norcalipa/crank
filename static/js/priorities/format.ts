@@ -121,3 +121,37 @@ export function expandChanges(changes: PreferenceChange[], labels?: Record<strin
     }
     return rows;
 }
+
+export interface SummaryChip {
+    path: string;
+    label: string;
+    display: string;
+    hard: boolean;
+    supported: boolean;
+    items?: string[];
+}
+
+const SUMMARY_REQUIREMENTS = 2;
+
+// A value that says nothing alone ("Yes", "2") is named by its field; "Remote" or "$150,000" stands for itself.
+function summaryValue(chip: SummaryChip, currency?: unknown, choicePaths?: ReadonlySet<string>): string {
+    const value = chipValueLabel(chip.path, chip.display, currency, chip.items, choicePaths?.has(chip.path));
+    if (value === 'Yes') return chip.label;
+    return /^(No|-?[\d,.]+)$/.test(value) ? `${chip.label}: ${value}` : value;
+}
+
+/** One-line summary for the collapsed sidebar row: "Requires: Remote, $150,000, +1 · 5 preferences".
+ *  Values read as on the chips, in chip order (criteria the matcher uses first). Empty when nothing is saved. */
+export function prioritiesSummary(chips: SummaryChip[], currency?: unknown, choicePaths?: ReadonlySet<string>): string {
+    const required = chips.filter((chip) => chip.hard)
+        .sort((a, b) => Number(!a.supported) - Number(!b.supported));
+    const preferences = chips.length - required.length;
+    const parts: string[] = [];
+    if (required.length > 0) {
+        const named = required.slice(0, SUMMARY_REQUIREMENTS).map((chip) => summaryValue(chip, currency, choicePaths));
+        const more = required.length - named.length;
+        parts.push(`Requires: ${[...named, ...(more > 0 ? [`+${more}`] : [])].join(', ')}`);
+    }
+    if (preferences > 0) parts.push(`${preferences} ${preferences === 1 ? 'preference' : 'preferences'}`);
+    return parts.join(' \u00b7 ');
+}
