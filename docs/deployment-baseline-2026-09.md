@@ -40,6 +40,8 @@ Record shape (staff-only evidence; not a public contract):
 | `inventory` | Bounded inventory health signals + violations | `crank.services.inventory_health.check_inventory_health()` |
 | `latest_runs` | Latest `AgentRun` per run type: `{run_type, status, terminal, created, finished_at, error_summary}` | `crank.models.agent_run.AgentRun` |
 | `source_counts` | `{configured, approved, enabled}` job sources | mirrors `crank.admin_dashboard._aggregate_counts()` |
+| `data_counts` | Integer row counts only — `conversations`, `messages`, `saved_preferences`, `job_matches`, `job_matches_seen`, `job_matches_dismissed`, `accepted_company_evidence` — so two records taken before and after a disablement or rollback show stored data was preserved. No identifiers or text. | `readiness_baseline.data_counts()` (issue #492) |
+| `release_verdict` | `{production_ready, blockers}`, computed only from the record itself. `production_ready` is true only with no blockers. Codes: `env_not_prod`, `fixtures_present`, `provider_not_orchestrator`, `migrations_not_clean`, `interactive_agent_disabled`, `interactive_agent_misconfigured`, `job_pipeline_disabled`, `job_pipeline_misconfigured`, `no_enabled_source`, `inventory_violations`, `no_successful_pipeline_run`. A fixture-backed or capability-disabled record therefore cannot be filed as production readiness. | `readiness_baseline.release_verdict()` (issue #492) |
 
 Secret hygiene: every non-empty configured value of `SECRET_KEY`,
 `LLM_API_KEY`, `USAJOBS_AUTH_KEY`, `FIRECRAWL_API_KEY`, and `YELP_API_KEY`
