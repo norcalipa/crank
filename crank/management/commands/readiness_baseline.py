@@ -22,9 +22,12 @@ The command is a thin composition of the existing safe helpers:
 - source counts mirroring ``crank.admin_dashboard._aggregate_counts()``;
 - aggregate user-data row counts (``data_counts``), so two records taken
   before and after a rollback show that stored data was preserved;
+- the effective ``CapabilitySwitch`` state of the capabilities the verdict
+  depends on (``capability_switches``), because the settings-only capability
+  report cannot see a capability an operator disabled by its switch;
 - a ``release_verdict`` computed only from the record itself, so a
-  fixture-backed or capability-disabled record cannot be read as production
-  readiness (issue #492).
+  fixture-backed, capability-disabled or switch-disabled record cannot be
+  read as production readiness (issue #492).
 
 The record never contains secret values: configured secret settings are
 scrubbed from any free-text field before serialization, and the helpers above
@@ -57,6 +60,7 @@ from crank.release import (
     git_sha,
     migration_status_summary,
 )
+from crank.services import monitoring
 from crank.services.inventory_health import check_inventory_health
 
 #: Settings that carry secret values and must never reach the baseline output.
@@ -251,6 +255,10 @@ def data_counts() -> dict:
     Two records taken before and after a disablement or rollback can be
     compared to show stored conversations, preferences, matches and accepted
     evidence were preserved. No identifier or text is ever included.
+
+    Cost: seven ``COUNT`` queries, three of them over ``JobMatch`` (``seen_at``
+    has no index). That is acceptable while the command is run by hand for a
+    release decision; revisit it before any schedule calls this command.
     """
     matches = JobMatch.objects.all()
     return {
@@ -266,15 +274,38 @@ def data_counts() -> dict:
     }
 
 
+#: Capabilities ``release_verdict`` requires. Each name is both its entry in
+#: the settings-based capability report and its ``CapabilitySwitch`` key.
+VERDICT_CAPABILITIES = ("interactive_agent", "job_pipeline")
+
+
+def capability_switches() -> dict:
+    """Effective ``CapabilitySwitch`` state for the verdict's capabilities.
+
+    The capability report reads settings flags only. The database switch is
+    the documented immediate rollback, so its state is recorded beside the
+    report: an absent row means enabled, exactly as the runtime reads it.
+    """
+    return {
+        name: monitoring.capability_enabled(name, default=True)
+        for name in VERDICT_CAPABILITIES
+    }
+
+
 def _capability_blockers(record: dict, name: str) -> list[str]:
-    """Blocker codes for one capability entry of the record's report."""
+    """Blocker codes for one capability: settings report, then its switch."""
+    blockers = []
     capabilities = (record.get("capabilities") or {}).get("capabilities") or []
     entry = next((cap for cap in capabilities if cap.get("name") == name), None)
     if entry is None or not entry.get("enabled"):
-        return [f"{name}_disabled"]
-    if entry.get("issues") or not entry.get("ok", True):
-        return [f"{name}_misconfigured"]
-    return []
+        blockers.append(f"{name}_disabled")
+    elif entry.get("issues") or not entry.get("ok", True):
+        blockers.append(f"{name}_misconfigured")
+    # Fail closed: a record that does not say the switch is on (including one
+    # written before the key existed) cannot stand as production readiness.
+    if (record.get("capability_switches") or {}).get(name) is not True:
+        blockers.append(f"{name}_switch_disabled")
+    return blockers
 
 
 def release_verdict(record: dict) -> dict:
@@ -295,8 +326,8 @@ def release_verdict(record: dict) -> dict:
         blockers.append("provider_not_orchestrator")
     if (record.get("migrations") or {}).get("status") != "clean":
         blockers.append("migrations_not_clean")
-    blockers.extend(_capability_blockers(record, "interactive_agent"))
-    blockers.extend(_capability_blockers(record, "job_pipeline"))
+    for name in VERDICT_CAPABILITIES:
+        blockers.extend(_capability_blockers(record, name))
     if not (record.get("source_counts") or {}).get("enabled"):
         blockers.append("no_enabled_source")
     if (record.get("inventory") or {}).get("violations"):
@@ -327,6 +358,7 @@ def baseline_record() -> dict:
         "readiness_gates": readiness_gates(),
         "job_search_provider": _safe_job_search_provider(),
         "capabilities": capability_report().to_dict(),
+        "capability_switches": capability_switches(),
         "inventory": check_inventory_health(),
         "latest_runs": latest_runs(),
         "source_counts": source_counts(),

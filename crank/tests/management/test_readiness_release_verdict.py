@@ -3,7 +3,10 @@
 """Tests for the readiness record's ``release_verdict`` and ``data_counts`` (issue #492).
 
 ``release_verdict`` is a pure function over the baseline record: one test per
-blocker code, the all-clear case, and the real command output. ``data_counts``
+blocker code, the all-clear case, and the real command output. The record
+carries the effective ``CapabilitySwitch`` state, so a capability whose
+settings flags are on but whose switch is off is never production ready.
+``data_counts``
 must be aggregate integers only, so two records can be compared across a
 rollback without exposing identifiers or text.
 """
@@ -14,11 +17,13 @@ import json
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from crank.management.commands.readiness_baseline import (
+    VERDICT_CAPABILITIES,
     baseline_record,
+    capability_switches,
     data_counts,
     release_verdict,
 )
@@ -26,6 +31,7 @@ from crank.management.commands.seed_staging_baseline import TARGET_ORG_NAME
 from crank.models.company_profile import CompanyFieldEvidence
 from crank.models.job_match import JobMatch
 from crank.models.job_search import JobSearchConversation, JobSearchMessage
+from crank.models.monitoring import ALLOWED_CAPABILITY_KEYS, CapabilitySwitch
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference
 
@@ -36,8 +42,10 @@ BLOCKER_CODES = (
     "migrations_not_clean",
     "interactive_agent_disabled",
     "interactive_agent_misconfigured",
+    "interactive_agent_switch_disabled",
     "job_pipeline_disabled",
     "job_pipeline_misconfigured",
+    "job_pipeline_switch_disabled",
     "no_enabled_source",
     "inventory_violations",
     "no_successful_pipeline_run",
@@ -68,6 +76,7 @@ def _ready_record() -> dict:
                 {"name": "crawl", "enabled": False, "ok": True, "issues": []},
             ],
         },
+        "capability_switches": {"interactive_agent": True, "job_pipeline": True},
         "source_counts": {"configured": 2, "approved": 1, "enabled": 1},
         "inventory": {"violations": [], "healthy": True},
         "latest_runs": [
@@ -171,6 +180,48 @@ class ReleaseVerdictTests(SimpleTestCase):
             ["job_pipeline_misconfigured"],
         )
 
+    def test_switch_disabled_blocks_a_settings_enabled_capability(self):
+        """Settings flags on, database switch off: not production ready."""
+        for name in VERDICT_CAPABILITIES:
+            with self.subTest(name=name):
+                self.assertEqual(
+                    self._blockers(
+                        lambda r, name=name: r["capability_switches"].update(
+                            {name: False}
+                        )
+                    ),
+                    [f"{name}_switch_disabled"],
+                )
+
+    def test_switch_state_must_be_recorded_as_true(self):
+        """A record without the switch state fails closed (older records too)."""
+        both = [f"{name}_switch_disabled" for name in VERDICT_CAPABILITIES]
+        self.assertEqual(self._blockers(lambda r: r.pop("capability_switches")), both)
+        self.assertEqual(
+            self._blockers(lambda r: r.update(capability_switches=None)), both
+        )
+        # Only the boolean True counts; a truthy string is not a recorded state.
+        self.assertEqual(
+            self._blockers(
+                lambda r: r["capability_switches"].update(job_pipeline="true")
+            ),
+            ["job_pipeline_switch_disabled"],
+        )
+
+    def test_settings_and_switch_blockers_are_independent(self):
+        def mutate(record):
+            _capability(record, "job_pipeline").update(enabled=False)
+            record["capability_switches"]["job_pipeline"] = False
+
+        self.assertEqual(
+            self._blockers(mutate),
+            ["job_pipeline_disabled", "job_pipeline_switch_disabled"],
+        )
+
+    def test_verdict_capabilities_are_registered_switch_keys(self):
+        self.assertEqual(VERDICT_CAPABILITIES, ("interactive_agent", "job_pipeline"))
+        self.assertTrue(set(VERDICT_CAPABILITIES) <= set(ALLOWED_CAPABILITY_KEYS))
+
     def test_capability_missing_from_report_counts_as_disabled(self):
         self.assertEqual(
             self._blockers(lambda r: r.update(capabilities={"capabilities": []})),
@@ -220,7 +271,9 @@ class ReleaseVerdictTests(SimpleTestCase):
                 "provider_not_orchestrator",
                 "migrations_not_clean",
                 "interactive_agent_disabled",
+                "interactive_agent_switch_disabled",
                 "job_pipeline_disabled",
+                "job_pipeline_switch_disabled",
                 "no_enabled_source",
                 "no_successful_pipeline_run",
             ],
@@ -239,6 +292,7 @@ class ReleaseVerdictTests(SimpleTestCase):
             self.assertIn(f"`{code}`", doc)
         self.assertIn("`release_verdict`", doc)
         self.assertIn("`data_counts`", doc)
+        self.assertIn("`capability_switches`", doc)
 
 
 class ReleaseVerdictCommandTests(TestCase):
@@ -256,6 +310,40 @@ class ReleaseVerdictCommandTests(TestCase):
         self.assertIn("env_not_prod", verdict["blockers"])
         self.assertTrue(set(verdict["blockers"]) <= set(BLOCKER_CODES))
         self.assertEqual(verdict, release_verdict(record))
+
+    def test_record_carries_the_effective_switch_state(self):
+        """Absent rows read as enabled, exactly as the runtime reads them."""
+        self.assertEqual(
+            capability_switches(), {"interactive_agent": True, "job_pipeline": True}
+        )
+        CapabilitySwitch.objects.create(key="job_pipeline", enabled=False)
+        CapabilitySwitch.objects.create(key="interactive_agent", enabled=True)
+        record = self._command_record()
+        self.assertEqual(
+            record["capability_switches"],
+            {"interactive_agent": True, "job_pipeline": False},
+        )
+        blockers = record["release_verdict"]["blockers"]
+        self.assertIn("job_pipeline_switch_disabled", blockers)
+        self.assertNotIn("interactive_agent_switch_disabled", blockers)
+
+    @override_settings(AGENT_RUN_ENABLED=True, JOB_PIPELINE_ENABLED=True)
+    def test_settings_on_and_switch_off_is_not_production_ready(self):
+        """The rollback switch is visible in the verdict, not only the flags."""
+        enabled = baseline_record()
+        self.assertIs(_capability(enabled, "job_pipeline")["enabled"], True)
+        self.assertNotIn(
+            "job_pipeline_switch_disabled", enabled["release_verdict"]["blockers"]
+        )
+
+        CapabilitySwitch.objects.create(key="job_pipeline", enabled=False)
+        record = baseline_record()
+        self.assertIs(_capability(record, "job_pipeline")["enabled"], True)
+        blockers = record["release_verdict"]["blockers"]
+        self.assertIn("job_pipeline_switch_disabled", blockers)
+        self.assertNotIn("job_pipeline_disabled", blockers)
+        self.assertIs(record["release_verdict"]["production_ready"], False)
+        self.assertEqual(record["release_verdict"], release_verdict(record))
 
     def test_fixture_backed_record_is_not_production_ready(self):
         call_command("seed_staging_baseline", stdout=io.StringIO())
