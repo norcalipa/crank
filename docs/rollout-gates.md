@@ -337,7 +337,7 @@ reads its switch.
 | Agent no-op | `agent_noop` + `AGENT_NOOP_ENABLED` | #328 | off | registered |
 | Crawl scheduling | `crawl_schedule` + `CRAWL_CRON_ENABLED` | #328 | off | registered |
 | On-demand crawl | `crawl` | #328 | off | registered |
-| Publication consumer | `publication_consumer` | #470 | off | planned |
+| Publication consumer | `publication_consumer` + `PUBLICATION_CONSUMER_ENABLED` | #470 | off | registered |
 | Assistant shell | `assistant_shell` | #472 | off | planned |
 | Match recompute | `match_recompute` + `MATCH_RECOMPUTE_ENABLED` | #475 | off | registered |
 | Match results read | `match_results_read` + `MATCH_RESULTS_READ_ENABLED` | #475 | off | registered |
@@ -347,6 +347,127 @@ flipping one switch never disables another capability's data path; a
 rollback leaves direct controls and stored conversations, preferences, and
 accepted data usable, and never deletes records or reverses production
 migrations (see `docs/deployment-migrations.md`, "Epic #454 rollout").
+
+## Contextual assistant staged release (#492)
+
+This section defines how the epic #454 capabilities are released in separate,
+independently reversible phases, and which measured gates each decision uses.
+It records a **procedure, not a verified state**: nothing here claims that any
+phase is enabled, observed or approved. Operational activation (credentials,
+bootstrap, first crawl) is the procedure in
+[#453](https://github.com/norcalipa/crank/issues/453); this section adds the
+decision gates and the record that go around it. The moderated usability round
+that feeds the shell decision is defined in `docs/usability-validation.md`,
+which also holds the single list of
+[decisions pending owner confirmation](usability-validation.md#decisions-pending-owner-confirmation).
+
+### Observed state when this section was written
+
+| Fact | Observation | Source |
+|---|---|---|
+| Capabilities reported by production | `interactive_agent`, `job_pipeline` and `crawl` each `enabled: false`; `all_ok: true`; `pending_migrations: 0`. Observed twice on 2026-10-06, at 15:50:56Z and 16:31:54Z. | Public readiness endpoint, `GET https://crank.fyi/healthz/ready/` (read-only) |
+| Flags and CronJobs are re-applied on every deploy | `k8s/crank-agent-config.yml` (every capability flag `"false"`) and the CronJob manifests `k8s/crank-cronjob.yml`, `k8s/crank-crawl-cron.yaml`, `k8s/crank-healthcheck-cron.yaml` and `k8s/cron-gather-scores.yml` (the last three `suspend: true`) are applied with `kubectl apply` by both deploy workflows. | `.github/workflows/deploy-home.yml` (runs after every successful `Build Image` on `main`) and `.github/workflows/update-home-deployment.yml` (runs when one of those manifests changes on `main`) |
+| Staging | The repository defines no staging deployment: `crank/settings/staging.py` and `seed_staging_baseline` exist, but no manifest, workflow or compose file names a staging environment. Whether one exists outside the repository is not known from the repository. | `grep -rn staging k8s deploy .github docker-compose.yml` returns nothing |
+
+#453 was closed on 2026-09-18. What its operator did in the cluster cannot be
+read from the repository; the first row above is what the public endpoint
+reported afterwards.
+
+### Durable enablement rule
+
+Because the ConfigMap and the CronJob manifests are re-applied from the
+repository on every deploy, an out-of-band `kubectl patch` or ConfigMap edit
+lasts only until the next merge to `main`. A phase is therefore enabled
+durably by a **commit**:
+
+1. One pull request per capability changes that capability's flag in
+   `k8s/crank-agent-config.yml` and, where the phase has a CronJob, its
+   `suspend:` line. `update-home-deployment.yml` applies it on merge.
+2. The pull request body is the decision record (template below); its merge
+   commit is the release SHA for that phase; the approving review is the
+   named sign-off.
+3. Immediate rollback is the database-backed `CapabilitySwitch` for the phase.
+   It survives deploys and is audited by `OperationalChangeAudit`. It is
+   followed by a revert pull request so the repository again matches the
+   intended state.
+4. `deploy/cronjob-job-pipeline.yaml` and `deploy/cronjob-match-recompute.yaml`
+   are not applied by either deploy workflow. They are applied by hand, but
+   the flags they read live in the re-applied ConfigMap, so rule 1 still
+   governs whether they do any work.
+
+### Phases
+
+Phases are enabled in the order of this table. Each has its own switch; no
+two share a decision.
+
+| Phase id | Settings flags | Switch key | Manifest / CronJob | Rollback action |
+|---|---|---|---|---|
+| `shell` | none — the workspace renders on every page outside the admin, staff and sign-in surfaces (`crank/context_processors.py`, `assistant_workspace_enabled`) | none (`assistant_shell` is reserved as planned, not registered) | web Deployment in `k8s/crank.yml` | Redeploy the previous image tag (`docs/capability-config-contract.md`, "Rollback Procedure", code rollback). Schema changes are additive, so this preserves data (`docs/deployment-migrations.md`, "Epic #454 rollout"). |
+| `interactive_replies` | `INTERACTIVE_AGENT_ENABLED`; provider and model settings | `interactive_agent` | `k8s/crank-agent-config.yml`; no CronJob | Disable the switch; revert the enablement PR. Direct priority editing and stored results stay usable. |
+| `job_source` | `AGENT_RUN_ENABLED`, `JOB_PIPELINE_ENABLED`; `JobSourceCatalog.enabled` per source | `job_pipeline` | `deploy/cronjob-job-pipeline.yaml` (`crank-job-pipeline`) | Disable the switch or the single source; revert the enablement PR. Listings and matches are kept. |
+| `publication` | `PUBLICATION_CONSUMER_ENABLED` (not present in the checked-in ConfigMap) | `publication_consumer` | none in the repository (`publication_sweep` command; see `docs/publication-outbox.md`) | Disable the switch; revert the enablement PR. Outbox rows are kept. |
+| `match_recompute` | `MATCH_RECOMPUTE_ENABLED`, `MATCH_RESULTS_READ_ENABLED` | `match_recompute` (read side: `match_results_read`) | `deploy/cronjob-match-recompute.yaml` (`crank-match-recompute`) | Disable the switch; revert the enablement PR (order in `docs/match-recompute.md`). |
+| `organization_crawl` | `CRAWL_CRON_ENABLED` | `crawl_schedule` | `k8s/crank-crawl-cron.yaml` (`crank-crawl-organizations`) | Disable the switch; revert the enablement PR. Accepted evidence is kept. |
+| `score_source` | `GATHER_SCORES_ENABLED` | `gather_scores` | `k8s/cron-gather-scores.yml` (`crank-gather-scores`) | As in "Capability: Score Source (Gather Scores)" above. |
+
+**The shell has no switch.** It has been part of every deployed image since it
+merged, because every merge to `main` deploys, so it cannot be staged and its
+only rollback is redeploying the previous image. Its decision row therefore
+uses evidence gathered before and after release rather than a switch.
+
+### Decision gates per phase
+
+Gate names are the `release_gates:` entries in `docs/monitoring.yaml`; the
+queries live there and tests bind them to the telemetry allowlists. A gate is
+`provisional` (a number that already existed in this document, restated
+below) or `baseline_required` (no number until 14 days of data exist with the
+capability enabled; see `docs/monitoring.md`, "Release decision gates").
+Below a gate's `min_sample` the outcome is **hold — insufficient data**, never
+a pass.
+
+Precondition for every gate that reads `inventory_health` or
+`pipeline_health`: the `crank-healthcheck` CronJob must be unsuspended in
+`k8s/crank-healthcheck-cron.yaml`, because only it emits those events.
+
+| Phase id | Gates | Window | Decision |
+|---|---|---|---|
+| `shell` | Playwright Django workflow green on the release SHA; moderated round passes A1 and A2 (`docs/usability-validation.md`); manual accessibility evidence recorded (`docs/e2e-validation.md`, "Manual evidence pending"); `priorities-apply-success` | 14 days | expand / hold / roll back |
+| `interactive_replies` | `interactive-reply-success`, `interactive-alerts-quiet`, `interactive-time-to-first-result`, `assistant-ready-share` | 7 days (14 for time to first result) | expand / hold / roll back |
+| `job_source` | `job-source-alerts-quiet`, `job-matches-source-unavailable`; `release_verdict` of the readiness record has no blockers | 7 days | expand / hold / roll back |
+| `publication` | `publication-outbox-age` | 14 days | expand / hold / roll back |
+| `match_recompute` | `publication-to-match-lag`, `matching-alerts-quiet` | 14 days | expand / hold / roll back |
+| `organization_crawl` | `evidence-stale-share` | 14 days | expand / hold / roll back |
+| `score_source` | no telemetry gate; the existing Score Source stage tables above apply unchanged | per stage table | per stage table |
+
+### Carried-over thresholds for #492 gates
+
+Every number a `provisional` gate carries is restated here with where it came
+from. No other gate has a number.
+
+| Gate | Number | Came from |
+|---|---|---|
+| `interactive-reply-success` | `0.90`, breach when below, over 7 days | "Capability: Interactive Agent", "Stage 3: Limited Production": "90%+ success rate over window", observation window 7 days |
+| `job-matches-source-unavailable` | `0`, breach when above | Issue #492 acceptance criterion "Release promises of live jobs require functioning inventory/matching": a phase described as live jobs may not serve a source-unavailable state |
+| `interactive-alerts-quiet`, `job-source-alerts-quiet`, `matching-alerts-quiet` | `0` named alerts opened during the window | The thresholds are those already defined under `alerts:` in `docs/monitoring.yaml`, unchanged; "quiet" means none of the named alerts opened |
+
+### Decision record template
+
+One record per phase decision, written in the enablement (or revert) pull
+request body. Until a record is filled in for a specific release SHA, this is
+the *record format*, not a decision.
+
+| Field | Value |
+|---|---|
+| Phase id | _one of the phase ids above_ |
+| Decision | _expand / hold / roll back_ |
+| Release SHA | _merge commit of the enablement PR_ |
+| Readiness record | _`python manage.py readiness_baseline --out <file>`: `source_version`, `fixtures.revision`, `release_verdict`_ |
+| Source / fixture readiness | _`source_counts`, `inventory.violations`; fixtures must be absent for a production decision_ |
+| Gate results | _per gate: observed value, sample size, window, pass / breach / insufficient data_ |
+| Failures | _what failed or was assisted, with issue numbers_ |
+| Follow-up fixes | _issue or PR numbers, each fixed or explicitly accepted_ |
+| Rollback evidence | _`rollback_drill --json` result; `data_counts` from records taken before and after, compared_ |
+| Sign-off | _GitHub handle, role signed for, date_ |
 
 ## Evidence Storage
 

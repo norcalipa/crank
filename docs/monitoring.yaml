@@ -175,6 +175,183 @@ metrics:
     owner: maintainer (crank.fyi)
     runbook: docs/monitoring.md#assistant-and-data-freshness-metrics
     baseline_only: true
+# Release decision gates (issue #492). Evidence queries for staged release
+# decisions; these are NOT alerts and page nobody. `provisional` gates carry a
+# number that already exists in docs/rollout-gates.md (see `source`);
+# `baseline_required` gates have no threshold until 14 days of data exist with
+# the capability enabled. Below `min_sample` events in the window the decision
+# is "hold - insufficient data", never "pass".
+release_gates:
+  - name: priorities-apply-success
+    phase: shell
+    switch: null
+    kind: nrql
+    status: baseline_required
+    event: preference_decision
+    nrql: >-
+      SELECT filter(count(*), WHERE status = 'applied') / count(*)
+      FROM CrankOperation WHERE event_name = 'preference_decision'
+      AND decision = 'apply' SINCE 14 days ago
+    operator: below
+    threshold: null
+    min_sample: 1
+    window: 14 days
+    on_breach: hold the shell decision and file a follow-up issue
+    runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
+  - name: interactive-reply-success
+    phase: interactive_replies
+    switch: interactive_agent
+    kind: nrql
+    status: provisional
+    event: assistant_turn
+    nrql: >-
+      SELECT filter(count(*), WHERE phase = 'replied') /
+      filter(count(*), WHERE phase = 'attempted')
+      FROM CrankOperation WHERE event_name = 'assistant_turn' SINCE 7 days ago
+    operator: below
+    threshold: 0.90
+    min_sample: 1
+    window: 7 days
+    source: docs/rollout-gates.md#carried-over-thresholds-for-492-gates
+    on_breach: disable the interactive_agent switch, then open a revert PR
+    runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
+  - name: interactive-alerts-quiet
+    phase: interactive_replies
+    switch: interactive_agent
+    kind: alerts_quiet
+    status: provisional
+    alerts: [cost-limit, recurring-helpfulness-gaps, repeated-failure]
+    operator: above
+    threshold: 0
+    window: 7 days
+    source: docs/rollout-gates.md#carried-over-thresholds-for-492-gates
+    on_breach: follow the alert's recovery text; hold expansion
+    runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
+  - name: interactive-time-to-first-result
+    phase: interactive_replies
+    switch: interactive_agent
+    kind: nrql
+    status: baseline_required
+    event: assistant_first_result
+    nrql: >-
+      SELECT percentile(seconds_to_first_result, 50) FROM CrankOperation
+      WHERE event_name = 'assistant_first_result' SINCE 14 days ago
+    operator: above
+    threshold: null
+    min_sample: 1
+    window: 14 days
+    on_breach: hold expansion and file a follow-up issue
+    runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
+  - name: assistant-ready-share
+    phase: interactive_replies
+    switch: interactive_agent
+    kind: nrql
+    status: baseline_required
+    event: availability_state
+    nrql: >-
+      SELECT filter(count(*), WHERE state = 'ready') / count(*)
+      FROM CrankOperation WHERE event_name = 'availability_state'
+      AND surface = 'assistant_status' AND state != 'signed_out' SINCE 7 days ago
+    operator: below
+    threshold: null
+    min_sample: 1
+    window: 7 days
+    on_breach: hold expansion and inspect the availability state mix
+    runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
+  - name: job-source-alerts-quiet
+    phase: job_source
+    switch: job_pipeline
+    kind: alerts_quiet
+    status: provisional
+    alerts:
+      - zero-enabled-sources
+      - zero-active-listings
+      - stale-inventory
+      - repeated-failures
+      - listing-collapse
+      - no-recent-success
+      - rejection-spike
+    operator: above
+    threshold: 0
+    window: 7 days
+    source: docs/rollout-gates.md#carried-over-thresholds-for-492-gates
+    on_breach: follow the alert's recovery text; disable the affected source
+    runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
+  - name: job-matches-source-unavailable
+    phase: job_source
+    switch: job_pipeline
+    kind: nrql
+    status: provisional
+    event: availability_state
+    nrql: >-
+      SELECT count(*) FROM CrankOperation WHERE event_name = 'availability_state'
+      AND surface = 'job_matches' AND state IN ('no_source', 'source_disabled')
+      SINCE 7 days ago
+    operator: above
+    threshold: 0
+    min_sample: 1
+    window: 7 days
+    source: docs/rollout-gates.md#carried-over-thresholds-for-492-gates
+    on_breach: do not describe the phase as live jobs; hold or roll back
+    runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
+  - name: publication-outbox-age
+    phase: publication
+    switch: publication_consumer
+    kind: nrql
+    status: baseline_required
+    event: pipeline_health
+    nrql: >-
+      SELECT latest(outbox_oldest_age_seconds) FROM CrankOperation
+      WHERE event_name = 'pipeline_health' SINCE 24 hours ago
+    operator: above
+    threshold: null
+    min_sample: 1
+    window: 14 days
+    on_breach: hold expansion and inspect the publication sweep
+    runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
+  - name: publication-to-match-lag
+    phase: match_recompute
+    switch: match_recompute
+    kind: nrql
+    status: baseline_required
+    event: matching_batch
+    nrql: >-
+      SELECT max(publication_lag_max_seconds) FROM CrankOperation
+      WHERE event_name = 'matching_batch' AND publication_lag_count > 0
+      SINCE 14 days ago
+    operator: above
+    threshold: null
+    min_sample: 1
+    window: 14 days
+    on_breach: hold expansion and inspect the recompute drain
+    runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
+  - name: matching-alerts-quiet
+    phase: match_recompute
+    switch: match_recompute
+    kind: alerts_quiet
+    status: provisional
+    alerts: [matching-backlog, deadline-resource-pressure]
+    operator: above
+    threshold: 0
+    window: 7 days
+    source: docs/rollout-gates.md#carried-over-thresholds-for-492-gates
+    on_breach: follow the alert's recovery text; hold expansion
+    runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
+  - name: evidence-stale-share
+    phase: organization_crawl
+    switch: crawl_schedule
+    kind: nrql
+    status: baseline_required
+    event: pipeline_health
+    nrql: >-
+      SELECT latest(evidence_stale_rows) / latest(accepted_evidence_rows)
+      FROM CrankOperation WHERE event_name = 'pipeline_health' SINCE 24 hours ago
+    operator: above
+    threshold: null
+    min_sample: 1
+    window: 14 days
+    on_breach: hold expansion and inspect organization crawl freshness
+    runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
 alerts:
   - name: repeated-failure
     nrql: "SELECT count(*) FROM CrankOperation WHERE status = 'failed' AND event_name NOT IN ('publication_sweep', 'preference_decision') SINCE 15 minutes ago"

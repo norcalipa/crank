@@ -87,6 +87,11 @@ JOB_PIPELINE_ENABLED=true
 
 Deploy the config change so pods pick up the new values.
 
+These values are re-applied from `k8s/crank-agent-config.yml` on every deploy,
+so an edit made only in the cluster is reverted by the next merge to `main`.
+To keep a capability enabled, commit the change to that file (see "Durable
+enablement rule" in `docs/rollout-gates.md`).
+
 ## Step 5: run the first crawl batch
 
 Trigger one source at a time for a controlled smoke test:
@@ -131,6 +136,14 @@ kubectl -n crank patch cronjob crank-job-pipeline -p '{"spec":{"suspend":false}}
 
 Leave `crank-crawl-organizations` suspended until organization-profile sources
 are separately seeded and smoke-tested.
+
+`crank-job-pipeline` is defined in `deploy/cronjob-job-pipeline.yaml`, which
+the deploy workflows do not re-apply, but the flags it reads come from the
+re-applied ConfigMap (step 4). CronJobs defined under `k8s/`
+(`crank-crawl-organizations`, and `crank-healthcheck` in step 8) are
+re-applied with `suspend: true` on every deploy, so a `kubectl patch` on them
+is reverted by the next merge to `main`; unsuspend those durably by committing
+the `suspend:` line (see "Durable enablement rule" in `docs/rollout-gates.md`).
 
 ## Step 8: enable recurring inventory monitoring
 

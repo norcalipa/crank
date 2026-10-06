@@ -161,6 +161,14 @@ readiness gate treats a queued row as an active/overlapping run.
    kubectl -n crank patch cronjob crank-job-pipeline -p '{"spec":{"suspend":false}}'
    ```
 
+   `k8s/crank-crawl-cron.yaml` (`crank-crawl-organizations`) and the
+   capability flags in `k8s/crank-agent-config.yml` are re-applied from the
+   repository on every deploy, so a patch or flag edit made only in the
+   cluster is reverted by the next merge to `main`. To keep a phase enabled,
+   commit the change to those files (see "Durable enablement rule" in
+   `docs/rollout-gates.md`). `crank-job-pipeline` is applied by hand from
+   `deploy/cronjob-job-pipeline.yaml`; its patch persists, its flags do not.
+
 ## Production override and rollback
 
 The checked-in organization schedule is `0 */6 * * *`. Override

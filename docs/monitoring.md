@@ -177,6 +177,29 @@ The `metrics:` block in `monitoring.yaml` is `baseline_only`. No alert
 threshold is added; thresholds are chosen after a 14-day baseline and feed
 issue #492.
 
+#### Release decision gates
+
+Issue #492 adds a `release_gates:` block to `monitoring.yaml`. Gates are
+evidence queries for staged release decisions (`docs/rollout-gates.md`,
+"Contextual assistant staged release (#492)"). They are not alerts: nothing
+pages, `metrics:` stays `baseline_only` and `alerts:` is unchanged.
+
+- A **`provisional`** gate carries a number that already existed in
+  `docs/rollout-gates.md`; its `source` names the heading that restates it. It
+  may inform a decision but has not been confirmed against measured data.
+- A **`baseline_required`** gate has `threshold: null`. Its query can be run
+  and its value recorded, but it cannot pass or fail until a baseline exists.
+- Below `min_sample` events in the window the outcome is "hold — insufficient
+  data", never a pass. `min_sample: 1` is only the point below which a query
+  has nothing to measure; it is raised when the threshold is locked.
+
+**Locking a threshold.** After at least 14 days of data with the capability
+enabled, a small follow-up pull request sets `threshold` and `min_sample`
+from the observed baseline and changes `status` to `locked`. Adding an alert
+or changing a `baseline_only` flag belongs in that same pull request, with the
+tests that pin them. Gates reading `inventory_health` or `pipeline_health`
+have no data while the `crank-healthcheck` CronJob is suspended.
+
 ## Admin controls and recovery
 
 Staff-only Django admin views expose sanitized `AgentRun`/`SourceRun` history,
