@@ -30,6 +30,8 @@ export interface ReviewChangesProps {
     choicePaths?: ReadonlySet<string>;
     // Editor field labels by path, so the diff names a field as the editor does.
     labels?: Record<string, string>;
+    // The bounded sidebar block: the change comes before the note, and Cancel sits beside the primary action.
+    compact?: boolean;
     testId?: string;
 }
 
@@ -93,7 +95,7 @@ export function ChangeList({changes, label, labels, currency, choicePaths}: {
 export default function ReviewChanges({
     changes, scope = 'account', pending = false, error = null, stale = false,
     heading = 'Review your changes', applyLabel, onApply, onCancel, onEdit, onApplySearchOnly, onReviewLatest,
-    labels, currency, choicePaths, conflicts = [], testId = 'priorities-review',
+    labels, currency, choicePaths, conflicts = [], compact = false, testId = 'priorities-review',
 }: ReviewChangesProps) {
     const headingId = `priorities-review-${React.useId()}`;
     const headingRef = React.useRef<HTMLHeadingElement>(null);
@@ -101,8 +103,21 @@ export default function ReviewChanges({
         headingRef.current?.focus();
     }, []);
     const isSearch = scope === 'search';
+    const note = (
+        <p className="priorities-scope-note">
+            {isSearch
+                ? 'These changes apply to this search only. They are not saved.'
+                : onApplySearchOnly
+                    ? 'Save these to your account, or use them for this search only.'
+                    : 'These changes will be saved to your account and used for matching.'}
+        </p>
+    );
+    const cancel = (
+        <button type="button" className="btn btn-sm btn-link text-light priorities-review-cancel"
+                onClick={onCancel} disabled={pending}>Cancel</button>
+    );
     return (
-        <div className="priorities-card priorities-review" data-testid={testId}
+        <div className={`priorities-card priorities-review${compact ? ' priorities-review-compact' : ''}`} data-testid={testId}
              role="group" aria-labelledby={headingId}>
             <h3 id={headingId} className="h6 priorities-heading" tabIndex={-1} ref={headingRef}>
                 {heading}
@@ -110,13 +125,7 @@ export default function ReviewChanges({
             <span className="visually-hidden" role="status">
                 {changes.length === 1 ? '1 change to review' : `${changes.length} changes to review`}
             </span>
-            <p className="priorities-scope-note">
-                {isSearch
-                    ? 'These changes apply to this search only. They are not saved.'
-                    : onApplySearchOnly
-                        ? 'Save these to your account, or use them for this search only.'
-                        : 'These changes will be saved to your account and used for matching.'}
-            </p>
+            {!compact && note}
             {conflicts.length > 0 && (
                 <p className="pref-change-conflict" role="status" data-testid="priorities-review-conflicts">
                     <i className="fa-solid fa-code-merge me-1" aria-hidden="true"></i>
@@ -130,6 +139,7 @@ export default function ReviewChanges({
                     Nothing would change. Edit a priority to continue.
                 </p>
             )}
+            {compact && note}
             {error && (
                 <div className="pref-change-error" role="alert" data-testid="priorities-review-error">
                     <i className="fa-solid fa-triangle-exclamation me-1" aria-hidden="true"></i>
@@ -153,18 +163,18 @@ export default function ReviewChanges({
                         ) : (isSearch ? 'Apply to this search' : (applyLabel ?? 'Apply to account'))}
                     </button>
                 )}
+                {compact && cancel}
                 {onEdit && (
-                    <button type="button" className="btn btn-sm btn-link text-light"
+                    <button type="button" className="btn btn-sm btn-link text-light priorities-review-edit"
                             onClick={onEdit} disabled={pending}>Edit</button>
                 )}
                 {onApplySearchOnly && !isSearch && (
-                    <button type="button" className="btn btn-sm btn-outline-light"
+                    <button type="button" className="btn btn-sm btn-outline-light priorities-review-search"
                             onClick={onApplySearchOnly} disabled={pending || changes.length === 0}>
                         This search only
                     </button>
                 )}
-                <button type="button" className="btn btn-sm btn-link text-light"
-                        onClick={onCancel} disabled={pending}>Cancel</button>
+                {!compact && cancel}
             </div>
         </div>
     );
