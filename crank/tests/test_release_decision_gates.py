@@ -9,6 +9,11 @@ and to the "Contextual assistant staged release (#492)" section of
 ``docs/rollout-gates.md``, and keep ``docs/usability-validation.md`` honest:
 required sections, task and probe ids, the forbidden-data list, and every test
 cited in the failure and retry matrix must exist.
+
+The repository has no gate evaluator: a person runs the queries and applies the
+rules written in ``docs/monitoring.md``. ``_outcome`` below is those rules as
+code, so the tests can show that no gate passes while its sample floor is
+unset and that every gate can reach pass, hold and breach once it is locked.
 """
 
 import re
@@ -22,6 +27,7 @@ from crank.services import monitoring
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MONITORING_YAML = REPO_ROOT / "docs" / "monitoring.yaml"
+MONITORING_DOC = REPO_ROOT / "docs" / "monitoring.md"
 ROLLOUT_DOC = REPO_ROOT / "docs" / "rollout-gates.md"
 USABILITY_DOC = REPO_ROOT / "docs" / "usability-validation.md"
 
@@ -49,8 +55,12 @@ PHASE_IDS = (
 )
 COMMON_KEYS = {
     "name", "phase", "switch", "kind", "status", "window", "on_breach", "runbook",
+    "operator", "threshold", "min_sample", "sample_nrql",
 }
-NRQL_KEYS = {"event", "nrql", "operator", "threshold", "min_sample"}
+NRQL_KEYS = {"event", "nrql"}
+QUIET_KEYS = {"alerts", "signal_event", "policy_confirmed"}
+FROM_CLAUSE = " FROM CrankOperation "
+FLOORS_HEADING = "### Sample floors and alert policies to lock"
 RELEASE_SECTION = "Contextual assistant staged release (#492)"
 
 _ENUM_EQUALS = re.compile(r"\b([a-z_]+)\s*(?:!=|=)\s*'([^']*)'")
@@ -103,6 +113,70 @@ def _table_rows(text: str) -> list:
             continue
         rows.append([cell.strip() for cell in line.strip().strip("|").split("|")])
     return rows
+
+
+def _split_query(nrql: str) -> tuple:
+    """``(select expression, text from FROM onward)`` of a gate query."""
+    select, tail = nrql.split(FROM_CLAUSE, 1)
+    assert select.startswith("SELECT "), nrql
+    return select[len("SELECT "):], tail
+
+
+def _is_ratio(gate: dict) -> bool:
+    return gate["kind"] == "nrql" and " / " in _split_query(gate["nrql"])[0]
+
+
+def _outcome(gate: dict, sample, value) -> str:
+    """The documented evaluation rules (docs/monitoring.md), in order."""
+    if gate["min_sample"] is None:
+        return "hold"
+    if sample is None or sample < gate["min_sample"]:
+        return "hold"
+    if gate["kind"] == "alerts_quiet" and gate["policy_confirmed"] is not True:
+        return "hold"
+    if gate["threshold"] is None or value is None:
+        return "hold"
+    if gate["operator"] == "above":
+        return "breach" if value > gate["threshold"] else "pass"
+    return "breach" if value < gate["threshold"] else "pass"
+
+
+def _observations(gate: dict, largest_sample: int = 6):
+    """Every ``(sample, value)`` a gate's own queries could return.
+
+    The value is tied to the sample the way the queries tie them: a ratio is
+    ``k / sample`` for ``0 <= k <= sample``; a gate whose query *is* its sample
+    query returns the sample itself; anything else (an aggregate, or the
+    number of named alerts opened) is free once at least one event exists.
+    """
+    for sample in range(largest_sample + 1):
+        if gate["kind"] == "alerts_quiet":
+            values = (0, 1, 5)
+        elif sample == 0:
+            values = (None,)
+        elif _is_ratio(gate):
+            values = tuple(k / sample for k in range(sample + 1))
+        elif gate["nrql"] == gate["sample_nrql"]:
+            values = (sample,)
+        else:
+            values = (0, 1, 10**6)
+        for value in values:
+            yield sample, value
+
+
+def _outcomes(gate: dict) -> set:
+    return {_outcome(gate, sample, value) for sample, value in _observations(gate)}
+
+
+def _locked(gate: dict, **overrides) -> dict:
+    """A copy of a gate as a threshold-lock pull request would leave it."""
+    locked = dict(gate, min_sample=3)
+    if locked["threshold"] is None:
+        locked["threshold"] = 0.5 if _is_ratio(gate) else 1
+    if locked["kind"] == "alerts_quiet":
+        locked["policy_confirmed"] = True
+    locked.update(overrides)
+    return locked
 
 
 def _nrql_enum_literals(nrql: str) -> list:
@@ -159,9 +233,53 @@ class ReleaseGateShapeTests(SimpleTestCase):
                 self.assertIn(gate["event"], monitoring.EVENT_NAMES)
                 self.assertIn("FROM CrankOperation", gate["nrql"])
                 self.assertIn(f"event_name = '{gate['event']}'", gate["nrql"])
+                self.assertNotIn("signal_event", gate)
+                self.assertNotIn("policy_confirmed", gate)
+
+    def test_every_gate_declares_operator_threshold_and_sample(self):
+        for gate in _gates():
+            with self.subTest(gate=gate["name"]):
                 self.assertIn(gate["operator"], ("above", "below"))
-                self.assertIs(type(gate["min_sample"]), int)
-                self.assertGreaterEqual(gate["min_sample"], 1)
+                self.assertIn(type(gate["threshold"]), (int, float, type(None)))
+                self.assertIn(FROM_CLAUSE, gate["sample_nrql"])
+
+    def test_no_sample_floor_is_set_before_a_gate_is_locked(self):
+        """A floor of 1 lets one lucky event pass, so none is invented here.
+
+        ``provisional`` and ``baseline_required`` are the only statuses, and
+        both require ``min_sample: null``. The owner's threshold-lock pull
+        request sets the floor and the status together and updates this test.
+        """
+        for gate in _gates():
+            with self.subTest(gate=gate["name"]):
+                self.assertIn(gate["status"], ("provisional", "baseline_required"))
+                self.assertIsNone(gate["min_sample"])
+
+    def test_window_matches_the_since_clause_of_every_query(self):
+        for gate in _gates():
+            queries = [gate["sample_nrql"]]
+            if gate["kind"] == "nrql":
+                queries.append(gate["nrql"])
+            for query in queries:
+                with self.subTest(gate=gate["name"], query=query):
+                    self.assertRegex(gate["window"], r"^[1-9][0-9]* (hours|days)$")
+                    self.assertEqual(query.count("SINCE"), 1)
+                    self.assertTrue(query.endswith(f" SINCE {gate['window']} ago"))
+
+    def test_sample_query_counts_what_the_gate_reads(self):
+        """Ratio: the denominator. Otherwise: the events behind the value."""
+        for gate in _gates():
+            if gate["kind"] != "nrql":
+                continue
+            with self.subTest(gate=gate["name"]):
+                select, tail = _split_query(gate["nrql"])
+                sample_select, sample_tail = _split_query(gate["sample_nrql"])
+                self.assertEqual(sample_tail, tail)
+                if _is_ratio(gate):
+                    self.assertEqual(sample_select, select.split(" / ", 1)[1])
+                else:
+                    self.assertEqual(sample_select, "count(*)")
+                self.assertNotEqual(gate["sample_nrql"], gate["nrql"])
 
     def test_alerts_quiet_gates_name_existing_alerts(self):
         alert_names = {alert["name"] for alert in _load_yaml()["alerts"]}
@@ -173,6 +291,42 @@ class ReleaseGateShapeTests(SimpleTestCase):
                 self.assertEqual(len(gate["alerts"]), len(set(gate["alerts"])))
                 self.assertTrue(set(gate["alerts"]) <= alert_names)
                 self.assertNotIn("nrql", gate)
+                self.assertNotIn("event", gate)
+                self.assertTrue(QUIET_KEYS <= set(gate))
+                self.assertEqual((gate["operator"], gate["threshold"]), ("above", 0))
+
+    def test_alerts_quiet_gates_require_a_live_signal(self):
+        """"No alert opened" is also true when nothing emits.
+
+        Each gate names the event its alerts read, counts it over the gate's
+        window as the sample, and stays unconfirmed until the owner checks the
+        alert policy exists (the repository wires none).
+        """
+        alerts = {alert["name"]: alert["nrql"] for alert in _load_yaml()["alerts"]}
+        for gate in _gates():
+            if gate["kind"] != "alerts_quiet":
+                continue
+            with self.subTest(gate=gate["name"]):
+                signal = gate["signal_event"]
+                self.assertIn(signal, monitoring.EVENT_NAMES)
+                reading = [
+                    name
+                    for name in gate["alerts"]
+                    if f"event_name = '{signal}'" in alerts[name]
+                ]
+                self.assertTrue(reading, signal)
+                self.assertEqual(
+                    gate["sample_nrql"],
+                    f"SELECT count(*){FROM_CLAUSE}WHERE event_name = '{signal}'"
+                    f" SINCE {gate['window']} ago",
+                )
+                self.assertIs(gate["policy_confirmed"], False)
+
+    def test_job_source_signal_is_the_healthcheck_event(self):
+        gates = {gate["name"]: gate for gate in _gates()}
+        self.assertEqual(
+            gates["job-source-alerts-quiet"]["signal_event"], "inventory_health"
+        )
 
     def test_provisional_gates_have_a_number_and_a_resolvable_source(self):
         slugs = [_slug(line) for line in _headings(ROLLOUT_DOC)]
@@ -208,6 +362,104 @@ class ReleaseGateShapeTests(SimpleTestCase):
         self.assertEqual(len(doc["alerts"]), 12)
         alert_names = {alert["name"] for alert in doc["alerts"]}
         self.assertFalse(alert_names & set(GATE_NAMES))
+
+
+class ReleaseGateEvaluationTests(SimpleTestCase):
+    """What the documented rules decide for every result a query can return."""
+
+    def test_no_gate_can_pass_as_checked_in(self):
+        for gate in _gates():
+            with self.subTest(gate=gate["name"]):
+                self.assertEqual(_outcomes(gate), {"hold"})
+
+    def test_no_gate_can_pass_while_its_floor_is_unset(self):
+        """Even with a number and a confirmed policy, no floor means hold."""
+        for gate in _gates():
+            with self.subTest(gate=gate["name"]):
+                self.assertEqual(_outcomes(_locked(gate, min_sample=None)), {"hold"})
+
+    def test_one_lucky_event_cannot_pass_below_the_floor(self):
+        gates = {gate["name"]: gate for gate in _gates()}
+        gate = _locked(gates["interactive-reply-success"])
+        self.assertEqual(_outcome(gate, 1, 1.0), "hold")
+        self.assertEqual(_outcome(gate, 2, 1.0), "hold")
+        self.assertEqual(_outcome(gate, 3, 1.0), "pass")
+        self.assertEqual(_outcome(gate, 3, 2 / 3), "breach")
+        # The floor the first version of this gate carried is why it is unset.
+        self.assertEqual(_outcome(_locked(gate, min_sample=1), 1, 1.0), "pass")
+
+    def test_every_locked_gate_can_pass_hold_and_breach(self):
+        for gate in _gates():
+            with self.subTest(gate=gate["name"]):
+                self.assertEqual(
+                    _outcomes(_locked(gate)), {"pass", "hold", "breach"}
+                )
+
+    def test_source_unavailable_gate_is_a_share_that_can_pass(self):
+        gates = {gate["name"]: gate for gate in _gates()}
+        gate = gates["job-matches-source-unavailable"]
+        self.assertTrue(_is_ratio(gate))
+        self.assertIn(
+            "filter(count(*), WHERE state IN ('no_source', 'source_disabled'))"
+            " / count(*)",
+            gate["nrql"],
+        )
+        self.assertIn("surface = 'job_matches'", gate["sample_nrql"])
+        self.assertNotIn("no_source", gate["sample_nrql"])
+        locked = _locked(gate)
+        self.assertEqual(_outcome(locked, 0, None), "hold")
+        self.assertEqual(_outcome(locked, 5, 0.0), "pass")
+        self.assertEqual(_outcome(locked, 5, 1 / 5), "breach")
+
+    def test_a_count_of_only_bad_events_could_never_pass(self):
+        """The shape this gate first had: the value was its own sample."""
+        query = (
+            "SELECT count(*) FROM CrankOperation WHERE event_name ="
+            " 'availability_state' AND surface = 'job_matches' AND state IN"
+            " ('no_source', 'source_disabled') SINCE 7 days ago"
+        )
+        gate = {
+            "kind": "nrql", "nrql": query, "sample_nrql": query,
+            "operator": "above", "threshold": 0, "min_sample": 1,
+        }
+        self.assertEqual(_outcomes(gate), {"hold", "breach"})
+
+    def test_alerts_quiet_holds_without_signal_or_confirmed_policy(self):
+        for gate in _gates():
+            if gate["kind"] != "alerts_quiet":
+                continue
+            with self.subTest(gate=gate["name"]):
+                locked = _locked(gate)
+                # Nothing emitted: quiet, but not evidence.
+                self.assertEqual(_outcome(locked, 0, 0), "hold")
+                self.assertEqual(_outcome(locked, 2, 0), "hold")
+                self.assertEqual(_outcome(locked, 3, 0), "pass")
+                self.assertEqual(_outcome(locked, 3, 1), "breach")
+                unconfirmed = _locked(gate, policy_confirmed=False)
+                self.assertEqual(_outcomes(unconfirmed), {"hold"})
+
+    def test_missing_value_or_threshold_holds(self):
+        gates = {gate["name"]: gate for gate in _gates()}
+        gate = _locked(gates["publication-outbox-age"])
+        self.assertEqual(_outcome(gate, 5, None), "hold")
+        self.assertEqual(_outcome(gate, None, 0), "hold")
+        self.assertEqual(_outcome(gate, 5, 0), "pass")
+        self.assertEqual(_outcome(gate, 5, 2), "breach")
+        self.assertEqual(_outcome(_locked(gate, threshold=None), 5, 0), "hold")
+
+    def test_monitoring_doc_states_the_evaluation_rules(self):
+        text = " ".join(MONITORING_DOC.read_text(encoding="utf-8").split())
+        for phrase in (
+            "#### Release decision gates",
+            "`min_sample: null` — **hold**",
+            "below `min_sample` — **hold**",
+            "`policy_confirmed: false` — **hold**",
+            "`threshold: null` — **hold**",
+            "the denominator of the ratio",
+            "the number of `signal_event` events",
+            "No gate can pass as checked in",
+        ):
+            self.assertIn(phrase, text)
 
 
 class ReleaseGateTelemetryTests(TestCase):
@@ -291,10 +543,8 @@ class RolloutDocReleaseSectionTests(SimpleTestCase):
             documented = set(re.findall(r"`([a-z-]+)`", row[1])) & set(GATE_NAMES)
             self.assertEqual(documented, expected, phase)
 
-    def test_carried_over_numbers_match_the_yaml(self):
-        rows = _section_table(
-            self.section, "### Carried-over thresholds for #492 gates"
-        )
+    def test_provisional_numbers_match_the_yaml(self):
+        rows = _section_table(self.section, "### Provisional numbers for #492 gates")
         documented = {}
         for row in rows:
             number = row[1].split("`")[1]
@@ -306,6 +556,38 @@ class RolloutDocReleaseSectionTests(SimpleTestCase):
             if gate["status"] == "provisional"
         }
         self.assertEqual(documented, provisional)
+
+    def test_provisional_numbers_say_which_are_new(self):
+        """Only the reply-success number predates #492; the rest are new."""
+        rows = _section_table(self.section, "### Provisional numbers for #492 gates")
+        origin = {}
+        for row in rows:
+            for name in re.findall(r"`([a-z-]+)`", row[0]):
+                origin[name] = row[2]
+        provisional = {g["name"] for g in _gates() if g["status"] == "provisional"}
+        self.assertEqual(set(origin), provisional)
+        carried = {name for name, value in origin.items() if value == "carried over"}
+        self.assertEqual(carried, {"interactive-reply-success"})
+        new = {name for name, value in origin.items() if value == "new in #492"}
+        self.assertEqual(new, provisional - carried)
+        # The carried-over number really is elsewhere in the document.
+        before = ROLLOUT_DOC.read_text(encoding="utf-8").split(
+            f"## {RELEASE_SECTION}"
+        )[0]
+        self.assertIn("90%+ success rate over window", before)
+        self.assertNotIn("Carried-over thresholds", self.section)
+
+    def test_decision_rows_state_the_window_their_gates_read(self):
+        """A phase observed for 14 days whose gates read 24 hours says so."""
+        decisions = _section_table(self.section, "### Decision gates per phase")
+        windows = {}
+        for gate in _gates():
+            windows.setdefault(gate["phase"], set()).add(gate["window"])
+        for row in decisions:
+            phase = row[0].strip("`")
+            for window in windows.get(phase, ()):
+                with self.subTest(phase=phase, window=window):
+                    self.assertIn(window, row[2])
 
     def test_section_states_the_required_facts(self):
         normalized = " ".join(self.section.split())
@@ -326,8 +608,45 @@ class RolloutDocReleaseSectionTests(SimpleTestCase):
             "`data_counts`",
             "`release_verdict`",
             "crank-healthcheck",
+            "**No gate can pass today.**",
+            "nothing in it creates the alert policy",
+            "Alert policy check",
+            "nothing schedules the drain",
+            "no CronJob in `k8s/` or `deploy/` runs it",
+            "5. Verify after the merge.",
+            "Pods read `envFrom` values only when they start",
+            "kubectl -n crank rollout restart deployment/crank",
         ):
             self.assertIn(phrase, normalized)
+
+    def test_verification_step_matches_the_deploy_workflows(self):
+        """The rule's claims about image tags are read from the workflows."""
+        workflows = REPO_ROOT / ".github" / "workflows"
+        update = (workflows / "update-home-deployment.yml").read_text(encoding="utf-8")
+        deploy = (workflows / "deploy-home.yml").read_text(encoding="utf-8")
+        self.assertIn("export GITHUB_SHA=latest", update)
+        self.assertIn("export GITHUB_SHA=${{ github.event.workflow_run.head_sha }}", deploy)
+        for workflow in (update, deploy):
+            self.assertIn("envsubst < /tmp/crank-agent-config.yml", workflow)
+            self.assertNotIn("rollout restart", workflow)
+        manifest = (REPO_ROOT / "k8s" / "crank.yml").read_text(encoding="utf-8")
+        self.assertIn("image: ghcr.io/norcalipa/crank/crank:${GITHUB_SHA}", manifest)
+        self.assertIn("envFrom:", manifest)
+
+    def test_publication_sweep_has_no_schedule_in_the_repository(self):
+        """The entry criterion stays true until a CronJob runs the sweep."""
+        manifests = [
+            path
+            for folder in ("k8s", "deploy")
+            for path in sorted((REPO_ROOT / folder).iterdir())
+            if "secret" not in path.name
+        ]
+        self.assertTrue(manifests)
+        for path in manifests:
+            with self.subTest(path=path.name):
+                self.assertNotIn(
+                    "publication_sweep", path.read_text(encoding="utf-8")
+                )
 
 
 def _section_table(section: str, heading: str) -> list:
@@ -343,6 +662,61 @@ def _section_table(section: str, heading: str) -> list:
         len(lines),
     )
     return _table_rows("\n".join(lines[start:end]))[1:]
+
+
+class RunbookDurableEnablementTests(SimpleTestCase):
+    """The crawl runbooks only instruct steps the deploy workflows keep."""
+
+    RUNBOOKS = ("runbook-initial-crawl.md", "runbook-crawl-scheduling.md")
+    REAPPLIED = {
+        "crank-crawl-cron.yaml": "crank-crawl-organizations",
+        "crank-healthcheck-cron.yaml": "crank-healthcheck",
+    }
+
+    def _text(self, name: str) -> str:
+        return (REPO_ROOT / "docs" / name).read_text(encoding="utf-8")
+
+    def test_reapplied_cronjobs_are_suspended_templates(self):
+        """Why a patch is undone and a raw apply is invalid."""
+        workflows = REPO_ROOT / ".github" / "workflows"
+        for workflow in ("deploy-home.yml", "update-home-deployment.yml"):
+            source = (workflows / workflow).read_text(encoding="utf-8")
+            self.assertNotIn("deploy/", source)
+            for manifest in self.REAPPLIED:
+                self.assertIn(f"envsubst < /tmp/{manifest}", source)
+        for manifest, cronjob in self.REAPPLIED.items():
+            text = (REPO_ROOT / "k8s" / manifest).read_text(encoding="utf-8")
+            self.assertIn(f"name: {cronjob}", text)
+            self.assertIn("suspend: true", text)
+            self.assertIn("crank:${GITHUB_SHA}", text)
+
+    def test_runbooks_do_not_patch_or_raw_apply_reapplied_cronjobs(self):
+        for name in self.RUNBOOKS:
+            text = self._text(name)
+            with self.subTest(runbook=name):
+                self.assertNotIn("kubectl -n crank apply -f k8s/", text)
+                for cronjob in self.REAPPLIED.values():
+                    self.assertNotIn(f"patch cronjob {cronjob}", text)
+                self.assertIn("patch cronjob crank-job-pipeline", text)
+                self.assertIn("deploy/cronjob-job-pipeline.yaml", text)
+
+    def test_runbooks_name_the_files_and_the_switch(self):
+        for name in self.RUNBOOKS:
+            normalized = " ".join(self._text(name).split())
+            with self.subTest(runbook=name):
+                for phrase in (
+                    "k8s/crank-agent-config.yml",
+                    "k8s/crank-crawl-cron.yaml",
+                    "`spec.suspend: false`",
+                    "`CapabilitySwitch`",
+                    "`job_pipeline`",
+                    "`crawl_schedule`",
+                    "Durable enablement rule",
+                ):
+                    self.assertIn(phrase, normalized)
+        initial = " ".join(self._text(self.RUNBOOKS[0]).split())
+        self.assertIn("k8s/crank-healthcheck-cron.yaml", initial)
+        self.assertIn("revert the commit", initial)
 
 
 class CapabilityRegistryRowTests(SimpleTestCase):
@@ -463,15 +837,45 @@ class UsabilityValidationDocTests(SimpleTestCase):
         self.assertIn("**returning**", section)
 
     def test_five_decisions_are_marked_as_defaults_in_one_place(self):
-        rows = _table_rows(
-            _section(USABILITY_DOC, "Decisions pending owner confirmation")
-        )[1:]
+        section = _section(USABILITY_DOC, "Decisions pending owner confirmation")
+        rows = _table_rows(section.split(FLOORS_HEADING)[0])[1:]
         self.assertEqual([row[0] for row in rows], ["D1", "D2", "D3", "D4", "D5"])
         for row in rows:
             self.assertIn("default — owner may change", row[2])
         marker = "**default — owner may change:**"
         self.assertEqual(self.content.count(marker), 5)
         self.assertNotIn(marker, ROLLOUT_DOC.read_text(encoding="utf-8"))
+
+    def test_sample_floors_are_listed_as_pending_without_a_default(self):
+        """Every gate's floor is the owner's to set; none is defaulted."""
+        section = _section(USABILITY_DOC, "Decisions pending owner confirmation")
+        self.assertEqual(section.count(FLOORS_HEADING), 1)
+        floors = section.split(FLOORS_HEADING)[1]
+        self.assertIn("**no default**", floors)
+        self.assertNotIn("default — owner may change", floors)
+        rows = _table_rows(floors)
+        self.assertEqual(
+            rows[0],
+            ["Gate", "What the floor counts", "Window", "Floor N", "Alert policy"],
+        )
+        gates = {gate["name"]: gate for gate in _gates()}
+        self.assertEqual(
+            [row[0].strip("`") for row in rows[1:]], [g["name"] for g in _gates()]
+        )
+        for row in rows[1:]:
+            gate = gates[row[0].strip("`")]
+            with self.subTest(gate=gate["name"]):
+                self.assertTrue(row[1])
+                self.assertEqual(row[2], gate["window"])
+                self.assertEqual(
+                    row[3], "not set" if gate["min_sample"] is None else "locked"
+                )
+                if gate["kind"] == "alerts_quiet":
+                    self.assertIn(f"`{gate['signal_event']}`", row[1])
+                    self.assertEqual(row[4], "not confirmed")
+                else:
+                    self.assertIn(f"`{gate['event']}`", row[1])
+                    self.assertEqual(row[4], "—")
 
     def test_results_record_is_empty(self):
         record = _section(USABILITY_DOC, "Results record")

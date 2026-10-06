@@ -27,10 +27,34 @@ its line here (and, where a line says so, the one value it names).
 | # | Decision | Default — owner may change |
 |---|---|---|
 | D1 | Shell rollback | **default — owner may change:** redeploying the previous image is accepted as the shell's rollback; `assistant_shell` stays `planned` and no shell switch is built. |
-| D2 | Gate thresholds | **default — owner may change:** existing #328 stage numbers are reused as `provisional`; every other new gate is `baseline_required` until 14 days of data exist with the capability enabled; no new alerts. Values live in `release_gates:` in `docs/monitoring.yaml`. |
+| D2 | Gate thresholds | **default — owner may change:** the one existing #328 stage number (reply success `0.90`) is reused as `provisional`; four more `provisional` numbers are new in #492 (`docs/rollout-gates.md`, "Provisional numbers for #492 gates"); every other new gate is `baseline_required` until 14 days of data exist with the capability enabled; no new alerts. Values live in `release_gates:` in `docs/monitoring.yaml`. No gate has a sample floor yet (see "Sample floors and alert policies to lock" below). |
 | D3 | Where sessions run | **default — owner may change:** a staging instance (`ENV=staging`, orchestrator provider, at least one real approved source). Documented alternative: production as an internal canary with throwaway accounts, after durable enablement. |
 | D4 | Pass bar for A2 | **default — owner may change:** at least 4 of 5 participants answer all four comprehension probes (C1–C4) correctly. |
 | D5 | Sign-offs and where evidence lives | **default — owner may change:** the repository owner signs each role by GitHub handle and date; results are recorded by an owner-authored docs pull request that fills the results record; raw notes never enter the repository. |
+
+### Sample floors and alert policies to lock
+
+These have **no default**. Each release gate in `release_gates:`
+(`docs/monitoring.yaml`) needs a sample floor N before it can pass: below N
+events in its window the outcome is hold. Until the owner supplies N the gate
+holds whatever its query returns, so no gate can pass today. The three
+`alerts_quiet` gates also need the owner to confirm that the named alerts
+exist in the alerting tool, because nothing in the repository creates them.
+Rules: `docs/monitoring.md`, "Release decision gates".
+
+| Gate | What the floor counts | Window | Floor N | Alert policy |
+|---|---|---|---|---|
+| `priorities-apply-success` | `preference_decision` events with `decision = 'apply'` | 14 days | not set | — |
+| `interactive-reply-success` | `assistant_turn` events with `phase = 'attempted'` | 7 days | not set | — |
+| `interactive-alerts-quiet` | `interactive_call` events (live signal) | 7 days | not set | not confirmed |
+| `interactive-time-to-first-result` | `assistant_first_result` events | 14 days | not set | — |
+| `assistant-ready-share` | `availability_state` events for `assistant_status`, signed-out excluded | 7 days | not set | — |
+| `job-source-alerts-quiet` | `inventory_health` events (live signal) | 7 days | not set | not confirmed |
+| `job-matches-source-unavailable` | `availability_state` events for `job_matches`, every state | 7 days | not set | — |
+| `publication-outbox-age` | `pipeline_health` events | 24 hours | not set | — |
+| `publication-to-match-lag` | `matching_batch` events with a measured lag | 14 days | not set | — |
+| `matching-alerts-quiet` | `matching_batch` events (live signal) | 7 days | not set | not confirmed |
+| `evidence-stale-share` | accepted evidence rows in the latest `pipeline_health` event | 24 hours | not set | — |
 
 ## Preconditions
 

@@ -184,21 +184,51 @@ evidence queries for staged release decisions (`docs/rollout-gates.md`,
 "Contextual assistant staged release (#492)"). They are not alerts: nothing
 pages, `metrics:` stays `baseline_only` and `alerts:` is unchanged.
 
-- A **`provisional`** gate carries a number that already existed in
-  `docs/rollout-gates.md`; its `source` names the heading that restates it. It
-  may inform a decision but has not been confirmed against measured data.
+- A **`provisional`** gate carries a number restated in
+  `docs/rollout-gates.md`; its `source` names the heading that says where the
+  number came from and whether it is new. It has not been confirmed against
+  measured data.
 - A **`baseline_required`** gate has `threshold: null`. Its query can be run
   and its value recorded, but it cannot pass or fail until a baseline exists.
-- Below `min_sample` events in the window the outcome is "hold — insufficient
-  data", never a pass. `min_sample: 1` is only the point below which a query
-  has nothing to measure; it is raised when the threshold is locked.
 
-**Locking a threshold.** After at least 14 days of data with the capability
-enabled, a small follow-up pull request sets `threshold` and `min_sample`
-from the observed baseline and changes `status` to `locked`. Adding an alert
-or changing a `baseline_only` flag belongs in that same pull request, with the
-tests that pin them. Gates reading `inventory_health` or `pipeline_health`
-have no data while the `crank-healthcheck` CronJob is suspended.
+**What "sample" means.** Every gate has a `sample_nrql` and a `min_sample`
+floor, and the sample is defined per kind of gate:
+
+| Gate | Sample (`sample_nrql`) |
+|---|---|
+| `kind: nrql`, ratio query (`a / b`) | the denominator of the ratio — a share of nothing is not a measurement |
+| `kind: nrql`, any other aggregate (`percentile`, `max`, `latest`) | the number of events the query reads in the window |
+| `kind: alerts_quiet` | the number of `signal_event` events in the window: the event the named alerts read. "No alert opened" is also true when nothing emits, so quiet counts only while the signal is live |
+
+**Evaluation rules.** A gate's outcome is pass, breach or hold, decided in
+this order:
+
+1. `min_sample: null` — **hold**. The owner has not locked a sample floor.
+2. The sample is missing or below `min_sample` — **hold** (insufficient data).
+3. `kind: alerts_quiet` with `policy_confirmed: false` — **hold**. Nothing in
+   the repository creates the alert policy in the alerting tool, so the owner
+   confirms by hand that the named alerts exist there before quiet can count.
+4. `threshold: null` — **hold**.
+5. Otherwise **breach** when the value is `operator` the `threshold`, else
+   **pass**.
+
+No gate can pass as checked in: every `min_sample` is `null` and every
+`policy_confirmed` is `false`. A floor of 1 would let a single event decide a
+release (one replied turn is 100%), so no floor is invented here; the floors
+are listed with the other
+[decisions pending owner confirmation](usability-validation.md#decisions-pending-owner-confirmation).
+`window` is the `SINCE` clause of the gate's queries. The two gates that read
+the latest `pipeline_health` gauges use a 24-hour window; the 14 days in their
+phase's decision row is how long the phase is observed before deciding.
+
+**Locking a gate.** After at least 14 days of data with the capability
+enabled, a small follow-up pull request sets `min_sample` (and `threshold`
+where it is `null`) from the observed baseline, sets `policy_confirmed: true`
+once the owner has checked the alert policy, and changes `status` to `locked`.
+Adding an alert or changing a `baseline_only` flag belongs in that same pull
+request, with the tests that pin them. Gates reading `inventory_health` or
+`pipeline_health` have no data while the `crank-healthcheck` CronJob is
+suspended.
 
 ## Admin controls and recovery
 

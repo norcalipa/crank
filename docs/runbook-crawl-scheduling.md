@@ -134,12 +134,17 @@ readiness gate treats a queued row as an active/overlapping run.
    provision provider credentials through the existing Kubernetes Secret. Do
    not put credentials in a ConfigMap or repository file.
 2. Set `AGENT_RUN_ENABLED=true` and `CRAWL_CRON_ENABLED=true` in
-   `crank-agent-config` (plus `JOB_PIPELINE_ENABLED=true` for job ingestion).
+   `crank-agent-config` (plus `JOB_PIPELINE_ENABLED=true` for job ingestion),
+   as a commit to `k8s/crank-agent-config.yml`: every deploy re-applies that
+   file, so a flag edited only in the cluster is reverted by the next merge
+   to `main`.
    Start with the default `168` hours for organization profiles, then adjust
    `ORGANIZATION_FRESHNESS_HOURS` if the source terms and provider budget
    support a tighter target.
-3. Apply `k8s/crank-crawl-cron.yaml` with the CronJob still suspended. Run a
-   one-off bounded smoke test first:
+3. The deploy workflows apply `k8s/crank-crawl-cron.yaml` on every deploy
+   with the CronJob still suspended (do not `kubectl apply -f` the file
+   directly: its image tag is the literal `${GITHUB_SHA}` until the workflow
+   substitutes it). Run a one-off bounded smoke test first:
 
    ```sh
    kubectl -n crank create job --from=cronjob/crank-crawl-organizations crawl-smoke-$(date +%s)
@@ -154,20 +159,20 @@ readiness gate treats a queued row as an active/overlapping run.
    ```
 
 4. Inspect the command's aggregate counters and source timestamps. Unsuspend
-   only the phase that has passed the smoke test:
+   only the phase that has passed the smoke test. For organization profiles,
+   commit `spec.suspend: false` in `k8s/crank-crawl-cron.yaml`
+   (`crank-crawl-organizations`): every deploy re-applies that file, so a
+   `kubectl patch` on it is reverted by the next merge to `main`. For job
+   sources, `crank-job-pipeline` is applied by hand from
+   `deploy/cronjob-job-pipeline.yaml` and no deploy re-applies it, so its
+   patch persists:
 
    ```sh
-   kubectl -n crank patch cronjob crank-crawl-organizations -p '{"spec":{"suspend":false}}'
    kubectl -n crank patch cronjob crank-job-pipeline -p '{"spec":{"suspend":false}}'
    ```
 
-   `k8s/crank-crawl-cron.yaml` (`crank-crawl-organizations`) and the
-   capability flags in `k8s/crank-agent-config.yml` are re-applied from the
-   repository on every deploy, so a patch or flag edit made only in the
-   cluster is reverted by the next merge to `main`. To keep a phase enabled,
-   commit the change to those files (see "Durable enablement rule" in
-   `docs/rollout-gates.md`). `crank-job-pipeline` is applied by hand from
-   `deploy/cronjob-job-pipeline.yaml`; its patch persists, its flags do not.
+   See "Durable enablement rule" in `docs/rollout-gates.md` for the decision
+   record and the check to run after the merge.
 
 ## Production override and rollback
 
@@ -179,9 +184,16 @@ database-backed `crawl_schedule` singleton guard, source limits, and deadline
 guardrails. (The former `JOB_CRAWL_CRON` override is obsolete: job freshness is
 the pipeline's `0 */6 * * *` schedule.)
 
-To pause without deleting resources, set the CronJob's `spec.suspend=true`
-and/or set `CRAWL_CRON_ENABLED=false` (the scheduler command exits without
-claiming work; `JOB_PIPELINE_ENABLED=false` pauses job ingestion the same way).
+To pause without deleting resources, disable the database `CapabilitySwitch`
+(`crawl_schedule` for the organization schedule, `job_pipeline` for job
+ingestion) in Django admin: it takes effect on the next run and no deploy
+overwrites it. Then make the pause durable in the repository: commit
+`spec.suspend: true` in `k8s/crank-crawl-cron.yaml` and/or
+`CRAWL_CRON_ENABLED: "false"` (`JOB_PIPELINE_ENABLED: "false"` for job
+ingestion) in `k8s/crank-agent-config.yml`; the command then exits without
+claiming work. A `kubectl patch` or flag edit made only in the cluster is
+reverted by the next deploy, except on `crank-job-pipeline`, whose manifest
+is not re-applied.
 If a provider is failing, pause that phase, leave its source timestamp stale
 for a bounded retry after remediation, and inspect `crawl_planning` telemetry
 before resuming. A manual bounded organization dispatch is available with:

@@ -85,12 +85,14 @@ CRAWL_CRON_ENABLED=true
 JOB_PIPELINE_ENABLED=true
 ```
 
-Deploy the config change so pods pick up the new values.
-
-These values are re-applied from `k8s/crank-agent-config.yml` on every deploy,
-so an edit made only in the cluster is reverted by the next merge to `main`.
-To keep a capability enabled, commit the change to that file (see "Durable
-enablement rule" in `docs/rollout-gates.md`).
+Make this change as a commit to `k8s/crank-agent-config.yml` (keys
+`AGENT_RUN_ENABLED`, `CRAWL_CRON_ENABLED`, `JOB_PIPELINE_ENABLED`). Both
+deploy workflows re-apply that file on every deploy, so an edit made only in
+the cluster is reverted by the next merge to `main`. After the merge has
+deployed, confirm `GET /healthz/ready/` reports the capability with
+`enabled: true` before continuing (see "Durable enablement rule" in
+`docs/rollout-gates.md`, which also covers the case where the web pods have
+not restarted).
 
 ## Step 5: run the first crawl batch
 
@@ -134,16 +136,16 @@ Once you have confirmed listings exist and the smoke test passed:
 kubectl -n crank patch cronjob crank-job-pipeline -p '{"spec":{"suspend":false}}'
 ```
 
-Leave `crank-crawl-organizations` suspended until organization-profile sources
-are separately seeded and smoke-tested.
+This patch persists: `crank-job-pipeline` is defined in
+`deploy/cronjob-job-pipeline.yaml`, which the deploy workflows do not
+re-apply. The flags it reads still come from the re-applied ConfigMap
+(step 4).
 
-`crank-job-pipeline` is defined in `deploy/cronjob-job-pipeline.yaml`, which
-the deploy workflows do not re-apply, but the flags it reads come from the
-re-applied ConfigMap (step 4). CronJobs defined under `k8s/`
-(`crank-crawl-organizations`, and `crank-healthcheck` in step 8) are
-re-applied with `suspend: true` on every deploy, so a `kubectl patch` on them
-is reverted by the next merge to `main`; unsuspend those durably by committing
-the `suspend:` line (see "Durable enablement rule" in `docs/rollout-gates.md`).
+Leave `crank-crawl-organizations` suspended until organization-profile sources
+are separately seeded and smoke-tested. It is defined in
+`k8s/crank-crawl-cron.yaml`, which every deploy re-applies, so a
+`kubectl patch` on it lasts only until the next merge to `main`: unsuspend it
+by committing `spec.suspend: false` in that file.
 
 ## Step 8: enable recurring inventory monitoring
 
@@ -154,10 +156,18 @@ adapters. It is safe to run at any time and never needs provider credentials:
 ```sh
 # Local/one-off check (exits 1 when unhealthy)
 python manage.py crawl_healthcheck
+```
 
-# Recurring probe: apply the CronJob manifest once, then unsuspend it
-kubectl -n crank apply -f k8s/crank-healthcheck-cron.yaml
-kubectl -n crank patch cronjob crank-healthcheck -p '{"spec":{"suspend":false}}'
+For the recurring probe, commit `spec.suspend: false` in
+`k8s/crank-healthcheck-cron.yaml`. The deploy workflows already apply that
+manifest on every deploy (substituting the image tag for `${GITHUB_SHA}`), so
+the `crank-healthcheck` CronJob exists, suspended, and the merge unsuspends
+it. Do not `kubectl apply -f` the file directly: its image tag is the literal
+`${GITHUB_SHA}` until substituted. A `kubectl patch` of `suspend` is reverted
+by the next deploy. Confirm with:
+
+```sh
+kubectl -n crank get cronjob crank-healthcheck
 ```
 
 The probe emits an `inventory_health` New Relic event; the alert policy in
@@ -200,20 +210,32 @@ review, the publication outbox and match lag.
 
 If something goes wrong:
 
-1. **Kill switches**: set `CRAWL_CRON_ENABLED=false` and
-   `AGENT_RUN_ENABLED=false`. CronJobs stop dispatching immediately.
+1. **Kill switches (immediate)**: in Django admin, set the database
+   `CapabilitySwitch` for `job_pipeline` (and `crawl_schedule` for the
+   organization crawl) to disabled. The commands check it on every run, it
+   takes effect without a deploy, and no deploy overwrites it.
 
 2. **Suspend CronJobs**:
 
    ```sh
    kubectl -n crank patch cronjob crank-job-pipeline -p '{"spec":{"suspend":true}}'
-   kubectl -n crank patch cronjob crank-crawl-organizations -p '{"spec":{"suspend":true}}'
    ```
 
-3. **Disable Firecrawl**: set `FIRECRAWL_ENABLED=false` so the adapter refuses
+   This patch persists (`deploy/cronjob-job-pipeline.yaml` is not re-applied).
+   `crank-crawl-organizations` and `crank-healthcheck` follow
+   `k8s/crank-crawl-cron.yaml` and `k8s/crank-healthcheck-cron.yaml`: if
+   `spec.suspend: false` was committed there, a patch is undone by the next
+   deploy, so revert that commit.
+
+3. **Make it durable**: revert the commit that set `AGENT_RUN_ENABLED`,
+   `CRAWL_CRON_ENABLED` and `JOB_PIPELINE_ENABLED` to `"true"` in
+   `k8s/crank-agent-config.yml`. Setting the flags to `false` only in the
+   cluster lasts until the next merge to `main` re-applies the file.
+
+4. **Disable Firecrawl**: set `FIRECRAWL_ENABLED=false` so the adapter refuses
    to construct.
 
-4. **Clear partial data safely**: to remove all listings from a single source
+5. **Clear partial data safely**: to remove all listings from a single source
    without affecting others, use the Django admin or a shell:
 
    ```sh

@@ -394,6 +394,17 @@ durably by a **commit**:
    are not applied by either deploy workflow. They are applied by hand, but
    the flags they read live in the re-applied ConfigMap, so rule 1 still
    governs whether they do any work.
+5. Verify after the merge. Pods read `envFrom` values only when they start,
+   and applying a changed ConfigMap restarts nothing. The web pods are
+   replaced only when the image tag in the Deployment changes:
+   `update-home-deployment.yml` applies the tag `latest`, and `deploy-home.yml`
+   (after the image build for the same merge) applies the commit SHA. When
+   the deploy has finished, `GET https://crank.fyi/healthz/ready/` must report
+   the capability with `enabled: true`. If it still reports `enabled: false`,
+   restart the web Deployment
+   (`kubectl -n crank rollout restart deployment/crank`) and check again; do
+   not record the phase as enabled before it does. CronJob pods start fresh
+   on every run, so they read the new values on their next run.
 
 ### Phases
 
@@ -419,36 +430,60 @@ uses evidence gathered before and after release rather than a switch.
 
 Gate names are the `release_gates:` entries in `docs/monitoring.yaml`; the
 queries live there and tests bind them to the telemetry allowlists. A gate is
-`provisional` (a number that already existed in this document, restated
-below) or `baseline_required` (no number until 14 days of data exist with the
-capability enabled; see `docs/monitoring.md`, "Release decision gates").
-Below a gate's `min_sample` the outcome is **hold — insufficient data**, never
-a pass.
+`provisional` (it has a number; "Provisional numbers for #492 gates" below
+says which were carried over and which are new) or `baseline_required` (no
+number until 14 days of data exist with the capability enabled). The outcome
+rules are in `docs/monitoring.md`, "Release decision gates"; in short:
 
-Precondition for every gate that reads `inventory_health` or
-`pipeline_health`: the `crank-healthcheck` CronJob must be unsuspended in
-`k8s/crank-healthcheck-cron.yaml`, because only it emits those events.
+- **No gate can pass today.** Every gate's sample floor (`min_sample`) is
+  unset, and an unset floor means **hold — insufficient data** whatever the
+  query returns. The floors are the owner's to lock; they are listed with the
+  other
+  [decisions pending owner confirmation](usability-validation.md#decisions-pending-owner-confirmation).
+- With a floor set, a sample below it is still **hold**, never a pass.
+- An `alerts_quiet` gate needs two more things before "no alert opened" counts
+  as evidence: its signal event must be arriving (the floor counts that event
+  over the window), and the owner must have confirmed that the named alerts
+  exist in the alerting tool. The repository defines the alert queries in
+  `docs/monitoring.yaml` but nothing in it creates the alert policy, so this
+  is a manual check, recorded in the decision record.
+
+Entry criteria that the repository does not yet satisfy:
+
+- **Gates reading `inventory_health` or `pipeline_health`**
+  (`job-source-alerts-quiet`, `publication-outbox-age`,
+  `evidence-stale-share`): only `crawl_healthcheck` emits those events, and
+  its CronJob is `suspend: true` in `k8s/crank-healthcheck-cron.yaml`. Until
+  that line is committed as `false`, these gates have no sample and hold.
+- **`publication` phase**: nothing schedules the drain. `publication_sweep`
+  is the only consumer of the outbox and no CronJob in `k8s/` or `deploy/`
+  runs it, so setting `PUBLICATION_CONSUMER_ENABLED` alone leaves the outbox
+  undrained and `publication-outbox-age` can only watch it grow. A scheduled
+  sweep (a separate change; this section adds none) is a prerequisite of the
+  phase's enablement pull request.
 
 | Phase id | Gates | Window | Decision |
 |---|---|---|---|
 | `shell` | Playwright Django workflow green on the release SHA; moderated round passes A1 and A2 (`docs/usability-validation.md`); manual accessibility evidence recorded (`docs/e2e-validation.md`, "Manual evidence pending"); `priorities-apply-success` | 14 days | expand / hold / roll back |
-| `interactive_replies` | `interactive-reply-success`, `interactive-alerts-quiet`, `interactive-time-to-first-result`, `assistant-ready-share` | 7 days (14 for time to first result) | expand / hold / roll back |
+| `interactive_replies` | `interactive-reply-success`, `interactive-alerts-quiet`, `interactive-time-to-first-result`, `assistant-ready-share` | 7 days (14 days for time to first result) | expand / hold / roll back |
 | `job_source` | `job-source-alerts-quiet`, `job-matches-source-unavailable`; `release_verdict` of the readiness record has no blockers | 7 days | expand / hold / roll back |
-| `publication` | `publication-outbox-age` | 14 days | expand / hold / roll back |
-| `match_recompute` | `publication-to-match-lag`, `matching-alerts-quiet` | 14 days | expand / hold / roll back |
-| `organization_crawl` | `evidence-stale-share` | 14 days | expand / hold / roll back |
+| `publication` | `publication-outbox-age` (prerequisite: a scheduled `publication_sweep`, see above) | 14 days observed; the gate reads the latest 24 hours | expand / hold / roll back |
+| `match_recompute` | `publication-to-match-lag`, `matching-alerts-quiet` | 14 days (7 days for `matching-alerts-quiet`) | expand / hold / roll back |
+| `organization_crawl` | `evidence-stale-share` | 14 days observed; the gate reads the latest 24 hours | expand / hold / roll back |
 | `score_source` | no telemetry gate; the existing Score Source stage tables above apply unchanged | per stage table | per stage table |
 
-### Carried-over thresholds for #492 gates
+### Provisional numbers for #492 gates
 
-Every number a `provisional` gate carries is restated here with where it came
-from. No other gate has a number.
+Every number a `provisional` gate carries is listed here, with whether it was
+already in this document or is **new in #492**. No other gate has a number.
+Only one number is carried over; the other four gates' numbers were written
+for #492 and have not been measured or approved.
 
-| Gate | Number | Came from |
-|---|---|---|
-| `interactive-reply-success` | `0.90`, breach when below, over 7 days | "Capability: Interactive Agent", "Stage 3: Limited Production": "90%+ success rate over window", observation window 7 days |
-| `job-matches-source-unavailable` | `0`, breach when above | Issue #492 acceptance criterion "Release promises of live jobs require functioning inventory/matching": a phase described as live jobs may not serve a source-unavailable state |
-| `interactive-alerts-quiet`, `job-source-alerts-quiet`, `matching-alerts-quiet` | `0` named alerts opened during the window | The thresholds are those already defined under `alerts:` in `docs/monitoring.yaml`, unchanged; "quiet" means none of the named alerts opened |
+| Gate | Number | Carried over or new | Came from |
+|---|---|---|---|
+| `interactive-reply-success` | `0.90`, breach when below, over 7 days | carried over | "Capability: Interactive Agent", "Stage 3: Limited Production": "90%+ success rate over window", observation window 7 days |
+| `job-matches-source-unavailable` | `0`, breach when the share of `job_matches` availability states that are `no_source` or `source_disabled` is above it, over 7 days | new in #492 | Derived from issue #492's acceptance criterion "Release promises of live jobs require functioning inventory/matching": a phase described as live jobs may not serve a source-unavailable state. Not a measured value. |
+| `interactive-alerts-quiet`, `job-source-alerts-quiet`, `matching-alerts-quiet` | `0` named alerts opened during the window | new in #492 | The per-alert thresholds under `alerts:` in `docs/monitoring.yaml` already existed and are unchanged. Requiring that none of them opened for a whole window is a bar this section adds. |
 
 ### Decision record template
 
@@ -463,7 +498,8 @@ the *record format*, not a decision.
 | Release SHA | _merge commit of the enablement PR_ |
 | Readiness record | _`python manage.py readiness_baseline --out <file>`: `source_version`, `fixtures.revision`, `release_verdict`_ |
 | Source / fixture readiness | _`source_counts`, `inventory.violations`; fixtures must be absent for a production decision_ |
-| Gate results | _per gate: observed value, sample size, window, pass / breach / insufficient data_ |
+| Gate results | _per gate: observed value, sample (`sample_nrql` result) against the locked floor, window, pass / breach / hold_ |
+| Alert policy check | _for each `alerts_quiet` gate: who confirmed the named alerts exist in the alerting tool, and when_ |
 | Failures | _what failed or was assisted, with issue numbers_ |
 | Follow-up fixes | _issue or PR numbers, each fixed or explicitly accepted_ |
 | Rollback evidence | _`rollback_drill --json` result; `data_counts` from records taken before and after, compared_ |
