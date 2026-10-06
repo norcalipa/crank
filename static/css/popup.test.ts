@@ -288,7 +288,7 @@ describe('blocking-dialog close targets and row focus perimeter (issue #464 r2)'
         expect(rule![0]).toMatch(/padding:\s*0/);
         // The keyboard focus indicator survives the larger control.
         expect(popupCss).toMatch(
-            /\.popup-details \.card-header \.btn-close:focus-visible\s*\{[^}]*outline:\s*3px solid var\(--bs-warning\)/,
+            /\.popup-details \.card-header \.btn-close:focus-visible\s*\{[^}]*outline:\s*3px solid #93c5fd/,
         );
     });
 
@@ -338,7 +338,7 @@ describe('blocking-dialog close targets and row focus perimeter (issue #464 r2)'
 
 describe('rankings responsive layout, name clamping and disclosure (issue #478 visual round 2)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
-    const containerBlock = popupCss.match(/@container organization-results \(max-width: 48rem\) \{[\s\S]*?\n\}\n/)![0];
+    const containerBlock = popupCss.match(/@container organization-results \(max-width: 56rem\) \{[\s\S]*?\n\}\n/)![0];
 
     it('switches table to cards on the results container width, not the viewport', () => {
         expect(popupCss).toMatch(/\.organization-results\s*\{[^}]*container:\s*organization-results\s*\/\s*inline-size/);

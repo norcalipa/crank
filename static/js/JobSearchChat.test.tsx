@@ -102,9 +102,12 @@ async function renderChat(existingMessages: ChatMessage[] = []) {
         jsonResponse(emptyConversation(42, existingMessages)),
     );
     render(<JobSearchChat/>);
-    // Wait until resume resolves and the input is enabled.
+    // Wait until resume resolves and the input is enabled. The composer is
+    // enabled while history is still loading, but a submit is dropped until
+    // loading clears, so wait for the loading indicator to go away too.
     await screen.findByLabelText('Message');
     await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+    await waitFor(() => expect(screen.queryByTestId('chat-loading')).not.toBeInTheDocument());
 }
 
 async function renderChatAs(existingMessages: ChatMessage[]) {
@@ -115,6 +118,7 @@ async function renderChatAs(existingMessages: ChatMessage[]) {
     const instance = render(<JobSearchChat/>);
     await screen.findByLabelText('Message');
     await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
+    await waitFor(() => expect(screen.queryByTestId('chat-loading')).not.toBeInTheDocument());
     return instance;
 }
 
@@ -4477,13 +4481,16 @@ describe('workspace navigation state (issue #479)', () => {
         act(() => setWorkspaceAccount({status: 'authenticated', key: 'new-user'}));
 
         await waitFor(() => expect(conversationCalls()).toHaveLength(1));
+        // The composer is enabled while history is still loading, so wait for
+        // the resume to land before asserting on its results.
+        await waitFor(() => expect(getWorkspaceSnapshot().conversationId).toBe(42));
+        await waitFor(() => expect(screen.queryByTestId('chat-loading')).not.toBeInTheDocument());
         await waitFor(() => expect(screen.getByLabelText('Message')).toBeEnabled());
         // The previous account's pending draft was purged by the reconcile
         // that ran before the resume, so it is never adopted.
         expect(screen.getByLabelText('Message')).toHaveValue('');
         expect(window.localStorage.getItem('crank:jobsearch:draft:pending')).toBeNull();
         expect(window.localStorage.getItem('crank:last-account')).toBe(accountDigest('new-user'));
-        expect(getWorkspaceSnapshot().conversationId).toBe(42);
     });
 
     test('a same-account pending draft is adopted after hydration', async () => {

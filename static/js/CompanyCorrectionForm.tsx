@@ -2,7 +2,8 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
 import {createPortal} from 'react-dom';
-import {CORRECTABLE_FIELD_LABELS, fieldKeyLabel} from './labels';
+import EvidenceBadge from './evidence/EvidenceBadge';
+import {CORRECTABLE_FIELD_LABELS, fieldKeyLabel, formatEvidenceDate} from './labels';
 import {lockBackground, unlockBackground} from './modalIsolation';
 import {getCachedProvenance, setCachedProvenance} from './provenanceCache';
 import {COMPANY_OPEN_EVENT} from './suggestCompany/controller';
@@ -66,11 +67,6 @@ const newIdempotencyKey = (): string =>
               return (ch === 'x' ? n : (n & 0x3) | 0x8).toString(16);
           });
 
-const formatDate = (isoString: string | null): string =>
-    isoString
-        ? new Date(isoString).toLocaleDateString(undefined, {year: 'numeric', month: 'short', day: 'numeric'})
-        : 'Unknown';
-
 export const describeCurrentValue = (
     provenance: ProvenanceState, fieldKey: string
 ): {
@@ -91,7 +87,7 @@ export const describeCurrentValue = (
         ? (provenance.data.fields || []).find(item => item.field_key === fieldKey)
         : undefined;
     if (row) {
-        const date = formatDate(row.last_verified_at);
+        const date = row.last_verified_at ? formatEvidenceDate(row.last_verified_at) : 'never';
         const source = row.source_domain ? `from ${row.source_domain} · ` : '';
         const verified = `${source}last verified ${date}`;
         return {
@@ -476,13 +472,13 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
         if (current.kind === 'verified') {
             return (
                 <span data-testid="correction-current-text">
-                    <span className="small text-body-secondary d-block">Verified evidence</span>
+                    <span className="small text-body-secondary d-block">Accepted evidence</span>
                     <span className="fw-semibold me-2">{current.value}</span>
                     <span className="small text-body-secondary d-inline-block">
                         {current.domain && <><span className="text-nowrap">{current.domain},</span>{' '}</>}
                         <span className="text-nowrap">last verified {current.date}</span>
                     </span>
-                    {current.stale && <>{' '}<span className="badge text-bg-warning">Stale</span></>}
+                    {current.stale && <>{' '}<EvidenceBadge status="stale"/></>}
                 </span>
             );
         }
@@ -553,12 +549,9 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
                             <dt>Your suggestion · {saved?.field_label}</dt>
                             <dd className="d-flex flex-wrap align-items-center gap-2">
                                 <span data-testid="correction-saved-proposed">{saved?.proposed_value}</span>
-                                <span className="badge text-bg-warning badge-pending">
-                                    <i className="fa-solid fa-hourglass-half me-1" aria-hidden="true"></i>
-                                    Pending review
-                                </span>
+                                <EvidenceBadge status="pending"/>
                             </dd>
-                            <dt>Verified evidence</dt>
+                            <dt>Accepted evidence</dt>
                             <dd className="mb-0">
                                 <span data-testid="correction-saved-current">
                                     {saved?.current_value || 'No verified value on record'}

@@ -8,6 +8,7 @@ from django.contrib.auth import get_user_model
 from django.core import serializers
 from django.core.management import CommandError, call_command
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from crank.management.commands.seed_e2e import (
     ACTIVE_LISTING_EXTERNAL_ID,
@@ -154,12 +155,54 @@ class SeedE2ECommandTests(TestCase):
     def test_seeds_one_accepted_rto_policy_claim_for_alpha(self):
         call_command("seed_e2e", stdout=StringIO())
         call_command("seed_e2e", stdout=StringIO())
-        row = CompanyFieldEvidence.objects.get()
+        row = CompanyFieldEvidence.objects.get(organization__name="E2E Alpha Corp", field_key="rto_policy")
         self.assertEqual(row.organization.name, "E2E Alpha Corp")
         self.assertEqual(row.field_key, "rto_policy")
         self.assertEqual(row.value_text, "Remote-first")
         self.assertEqual(row.state, CompanyFieldEvidence.State.ACCEPTED)
         self.assertEqual(row.source_domain, "e2e.example.test")
+
+    def test_seeds_evidence_status_fixtures_for_issue_473(self):
+        call_command("seed_e2e", stdout=StringIO())
+        call_command("seed_e2e", stdout=StringIO())
+        extra = ScoreType.objects.get(name="E2E Leadership")
+        self.assertFalse(ScoreAlgorithmWeight.objects.filter(type=extra).exists())
+        self.assertEqual(
+            list(Score.objects.filter(type=extra).values_list("target__name", flat=True)),
+            ["E2E Beta Labs"],
+        )
+        beta = CompanyFieldEvidence.objects.filter(organization__name="E2E Beta Labs")
+        self.assertEqual(beta.count(), 3)
+        accepted = beta.filter(state=CompanyFieldEvidence.State.ACCEPTED)
+        self.assertEqual(set(accepted.values_list("field_key", flat=True)), {"rto_policy", "funding_round"})
+        for row in accepted:
+            self.assertGreaterEqual((timezone.now() - row.last_verified_at).days, 399)
+        # Beta is the seeded Remote org (issue #484): its accepted RTO claim
+        # must agree with the policy the rankings display.
+        self.assertEqual(accepted.get(field_key="rto_policy").value_text, "Remote")
+        self.assertEqual(
+            Organization.objects.get(name="E2E Beta Labs").get_rto_policy_display(), "Remote"
+        )
+        conflict = beta.get(state=CompanyFieldEvidence.State.CONFLICTED)
+        self.assertEqual(conflict.field_key, "rto_policy")
+        self.assertIsNone(conflict.last_verified_at)
+        self.assertFalse(CompanyFieldEvidence.objects.filter(organization__name="E2E Gamma Works").exists())
+        locations = CompanyFieldEvidence.objects.get(
+            organization__name="E2E Alpha Corp", field_key="locations"
+        )
+        self.assertEqual(locations.source_domain, "e2e.example.test")
+        self.assertNotIn("e2e.example.test", locations.source_url)
+
+    def test_rerun_repairs_drifted_evidence_fixture(self):
+        call_command("seed_e2e", stdout=StringIO())
+        row = CompanyFieldEvidence.objects.get(
+            organization__name="E2E Beta Labs", field_key="funding_round"
+        )
+        row.value_text = "Drifted"
+        row.save()
+        call_command("seed_e2e", stdout=StringIO())
+        row.refresh_from_db()
+        self.assertEqual(row.value_text, "Series B")
 
     def test_rerun_twice_produces_identical_state(self):
         """MAJOR-5: a re-run over already-seeded data is a true no-op — every
@@ -254,7 +297,7 @@ class SeedE2ECommandTests(TestCase):
         observation = CompanyProfileObservation.objects.get(fingerprint="e2e-accepted")
         observation.status = CompanyProfileObservation.Status.REJECTED
         observation.save()
-        CompanyFieldEvidence.objects.filter(organization__name="E2E Alpha Corp").update(
+        CompanyFieldEvidence.objects.filter(organization__name="E2E Alpha Corp", field_key="rto_policy").update(
             value_text="Drifted", state=CompanyFieldEvidence.State.SUPERSEDED
         )
         preference = UserPreference.objects.get(user__username=E2E_USERNAME)
@@ -270,7 +313,7 @@ class SeedE2ECommandTests(TestCase):
         call_command("seed_e2e", stdout=StringIO())
 
         # -- Everything is reconciled to canonical fixture state. --
-        evidence = CompanyFieldEvidence.objects.get(organization__name="E2E Alpha Corp")
+        evidence = CompanyFieldEvidence.objects.get(organization__name="E2E Alpha Corp", field_key="rto_policy")
         self.assertEqual(
             (evidence.value_text, evidence.state), ("Remote-first", "accepted")
         )

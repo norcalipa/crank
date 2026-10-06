@@ -84,6 +84,14 @@ describe('CompanyCorrectionForm', () => {
             expect(await screen.findByTestId('correction-current-text')).toHaveTextContent(/Austin.*last verified.*Stale/);
         });
 
+        test('labels the current row "Accepted evidence", never "Verified evidence", so a stale row reads coherently', async () => {
+            renderForm({...baseContext, fieldKey: 'locations'});
+            const text = await screen.findByTestId('correction-current-text');
+            expect(text).toHaveTextContent(/^Accepted evidence/);
+            expect(text).not.toHaveTextContent('Verified evidence');
+            expect(text).toHaveTextContent('Stale');
+        });
+
         test('says so when there is no verified value and invites a first suggestion', async () => {
             renderForm({...baseContext, fieldKey: 'funding_round'});
             expect(await screen.findByTestId('correction-current-text')).toHaveTextContent('No verified value on record');
@@ -152,11 +160,12 @@ describe('CompanyCorrectionForm', () => {
             expect(describeCurrentValue({status: 'loading'}, 'rto_policy').kind).toBe('loading');
         });
 
-        test('a verified row with no verification date reads "Unknown"', () => {
+        test('a verified row with no verification date reads "never", as the dialog does', () => {
             const result = describeCurrentValue({status: 'ready', data: {fields: [
                 {field_key: 'rto_policy', value: 'X', stale: false, last_verified_at: null},
             ]}}, 'rto_policy');
-            expect(result.text).toBe('X · last verified Unknown');
+            expect(result.text).toBe('X · last verified never');
+            expect(result.date).toBe('never');
         });
     });
 
@@ -307,7 +316,7 @@ describe('CompanyCorrectionForm', () => {
             expect(status).toHaveTextContent('Suggestion submitted');
             expect(status).toHaveTextContent('Your suggestion · RTO policy');
             expect(status.querySelector('.fa-circle-check')).not.toBeNull();
-            expect(status.querySelector('.badge-pending')).toHaveTextContent('Pending review');
+            expect(status.querySelector('.evidence-badge-pending')).toHaveTextContent('Pending review');
 
             const [url, init] = posts()[0];
             expect(url).toBe('/api/company-corrections/');

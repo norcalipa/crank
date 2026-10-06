@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 
 import * as React from 'react';
 
@@ -57,6 +57,12 @@ describe('OrganizationDetailsPopup', () => {
                             extraction_version: 'v1.2.3',
                             status: 'auto_applied',
                         },
+                        fields: [{
+                            field_key: 'rto_policy', state: 'accepted', value: 'Remote first', source_domain: 'example.com',
+                            observed_at: '2025-01-10T12:00:00Z', scope: {}, last_checked_at: null,
+                            last_successful_fetch_at: null, last_changed_at: null,
+                            last_verified_at: '2025-01-10T12:00:00Z', stale: false,
+                        }],
                     }),
                 });
             }
@@ -123,7 +129,7 @@ describe('OrganizationDetailsPopup', () => {
         expect(screen.getByText('Remote')).toBeInTheDocument();
         expect(screen.getAllByText('Yes').length).toBe(2); // For gives_ratings and accelerated_vesting
         expect(screen.getByText('5')).toBeInTheDocument(); // For ranking
-        expect(screen.getByText('85%')).toBeInTheDocument(); // For profile_completeness
+        expect(screen.getByTestId('rating-coverage')).toHaveTextContent('85% of rating dimensions'); // fallback without dimension counts
         expect(screen.getByRole('dialog', {name: 'Test Organization'})).toHaveAttribute('aria-modal', 'true');
         expect(screen.getByRole('button', {name: 'Close'})).toHaveFocus();
     });
@@ -745,7 +751,7 @@ describe('OrganizationDetailsPopup', () => {
         expect(screen.getByTestId('last-updated')).toBeInTheDocument();
         expect(screen.getByTestId('added-to-catalog')).toBeInTheDocument();
         expect(screen.getByTestId('observation-details')).toBeInTheDocument();
-        expect(screen.getByText('example.com')).toBeInTheDocument();
+        expect(within(screen.getByTestId('observation-details')).getByText('example.com')).toBeInTheDocument();
         expect(screen.getByText('v1.2.3')).toBeInTheDocument();
         expect(screen.getByText('auto_applied')).toBeInTheDocument();
     });
@@ -855,14 +861,15 @@ describe('OrganizationDetailsPopup', () => {
         provenanceWithEvidence();
         render(<OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}}/>);
         const meta = await screen.findByTestId('field-evidence-rto_policy');
-        expect(meta).toHaveTextContent('example.com, last verified');
+        expect(meta).toHaveTextContent('Source: example.com');
+        expect(meta).toHaveTextContent('Last verified');
         cleanup();
         provenanceWithEvidence({fields: [{
             field_key: 'rto_policy', state: 'accepted', value: 'Remote first', source_domain: '',
             last_verified_at: '2025-01-10T12:00:00Z', stale: false, scope: {},
         }]});
         render(<OrganizationDetailsPopup organization={mockOrganization} visible={true} onClose={() => {}}/>);
-        expect(await screen.findByTestId('field-evidence-rto_policy')).toHaveTextContent('unknown source, last verified');
+        expect(await screen.findByTestId('field-evidence-rto_policy')).toHaveTextContent('Source: unknown source');
     });
 
     test('renders verified field rows with value, source domain and observed date', async () => {
@@ -1332,14 +1339,14 @@ describe('OrganizationDetailsPopup', () => {
             expect(grid.querySelector('.popup-details-scores')).toBeInTheDocument();
         });
 
-        test('Rank and Profile Completeness share one score card with the scores', () => {
+        test('Rank and Rating coverage share one score card with the scores', () => {
             renderAuthenticated(jest.fn());
             const card = screen.getByTestId('popup-details-score-card');
             expect(card).toHaveClass('popup-details-scores');
             const rows = card.querySelectorAll('.popup-details-score-row');
             expect(rows).toHaveLength(2);
             expect(rows[0]).toHaveTextContent(`Rank:${mockOrganization.ranking}`);
-            expect(rows[1]).toHaveTextContent(`Profile Completeness:${mockOrganization.profile_completeness.toFixed(0)}%`);
+            expect(rows[1]).toHaveTextContent(`Rating coverage:${mockOrganization.profile_completeness.toFixed(0)}% of rating dimensions`);
             expect(screen.getByTestId('popup-details-grid').querySelector('.popup-details-profile'))
                 .not.toHaveTextContent('Rank:');
         });
@@ -1438,7 +1445,7 @@ describe('OrganizationDetailsPopup', () => {
             const evidenceButton = await screen.findByTestId('suggest-correction-field-rto_policy');
             expect(evidenceButton).toHaveAccessibleName('Suggest a correction to RTO Policy');
             expect(evidenceButton).not.toHaveAttribute('aria-label');
-            expect(screen.getByRole('button', {name: 'Suggest a correction'})).toHaveAttribute('data-testid', 'suggest-correction-link');
+            expect(screen.getByRole('button', {name: 'Choose a field to correct'})).toHaveAttribute('data-testid', 'suggest-correction-link');
             expect(screen.getByTestId('field-evidence')).toHaveTextContent('Field evidence');
             expect(screen.getByTestId('field-evidence-rto_policy')).toContainElement(evidenceButton);
             expect(screen.getByTestId('field-unverified-funding_round'))
@@ -1483,7 +1490,7 @@ describe('OrganizationDetailsPopup', () => {
             expect(list).toHaveTextContent('unknown_key');
             expect(list).toHaveTextContent('RTO Policy:');
             expect(list).not.toHaveTextContent('RTO policy');
-            expect(list.querySelector('.badge-pending')).not.toBeNull();
+            expect(list.querySelector('.evidence-badge-pending')).not.toBeNull();
             expect(list).not.toHaveTextContent(/verified/i);
         });
 
