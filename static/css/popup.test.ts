@@ -395,3 +395,49 @@ describe('chat layering and pinned rows (issue #483 adversarial review round 1)'
         expect(rule('.chat-footer-notices')).toMatch(/max-height:\s*var\(--chat-notices-max,\s*40dvh\)/);
     });
 });
+
+describe('job-match figures, notices and contained transcript (issue #473 visual round 2)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const containerBlocks = (width: string) => Array.from(
+        popupCss.matchAll(new RegExp(`@container job-match \\(max-width: ${width}\\) \\{([\\s\\S]*?)\\n\\}`, 'g')),
+    ).map((match) => match[1]).join('\n');
+
+    it('sizes the panel as a container, since it is narrower at 768px than on a 375px phone', () => {
+        expect(popupCss).toMatch(/#job-match-panel\s*\{[^}]*container:\s*job-match \/ inline-size/);
+    });
+
+    it('puts the figure labels on one shared row and the values on the next', () => {
+        expect(popupCss).toMatch(/#job-match-panel \.job-match-figures\s*\{[^}]*grid-template-rows:\s*auto auto/);
+        expect(popupCss).toMatch(/#job-match-panel \.job-match-figure\s*\{[^}]*grid-row:\s*span 2;[^}]*grid-template-rows:\s*subgrid/);
+        // No fixed-height label row is left to overprint a three-line label.
+        expect(popupCss).not.toMatch(/\.job-match-figure\s*\{[^}]*grid-template-rows:\s*2rem/);
+    });
+
+    it('lists the figures as label / value rows when the panel cannot hold three columns', () => {
+        const narrow = containerBlocks('20rem');
+        expect(narrow).toMatch(/\.job-match-figures\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[^}]*grid-template-rows:\s*none/);
+        expect(narrow).toMatch(/\.job-match-figure\s*\{[^}]*grid-row:\s*auto;[^}]*align-items:\s*baseline/);
+    });
+
+    it('gives a wrapped chip qualifier its own line without a leading separator, and stacks the notice', () => {
+        const narrow = containerBlocks('26rem');
+        expect(narrow).toMatch(/\.job-match-chip-qualifier\s*\{\s*flex-basis:\s*100%/);
+        expect(narrow).toMatch(/\.job-match-chip-sep\s*\{\s*display:\s*none/);
+        expect(narrow).toMatch(/\.job-match-stale-banner\s*\{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\);/);
+        expect(narrow).toMatch(/\.job-match-stale-refresh\s*\{[^}]*grid-column:\s*2/);
+        expect(popupCss).toMatch(/\.job-match-chip \.evidence-badge-profile \.evidence-badge-marker\s*\{\s*display:\s*none/);
+    });
+
+    it('makes the transcript the containing block of its visually-hidden text', () => {
+        expect(popupCss).toMatch(/#job-search-chat \.chat-transcript\s*\{[^}]*position:\s*relative/);
+    });
+
+    it('keeps the focused panel heading clear of the sticky phone top bar, with a visible ring', () => {
+        expect(popupCss).toMatch(/#job-match-panel \.job-match-panel-title\s*\{\s*scroll-margin-top:\s*4\.5rem/);
+        expect(popupCss).toMatch(/#job-match-panel \.job-match-panel-title:focus-visible\s*\{[^}]*outline:\s*3px solid/);
+    });
+
+    it('labels the reply-time snapshot on assistant cards in the card’s muted ink', () => {
+        expect(popupCss).toMatch(/\.org-card \.org-card-evidence-label\s*\{[^}]*color:\s*#cbd5e1/);
+    });
+});

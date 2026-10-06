@@ -1575,6 +1575,21 @@ body.app-nav-drawer-open {
     }
 }
 
+/* The panel is only ~308px wide at 768px, where the viewport rule above would
+   squeeze the message into a one-word column beside the button; a narrow
+   panel keeps the stacked banner whatever the viewport. */
+@container job-match (max-width: 26rem) {
+    #job-match-panel .job-match-stale-banner {
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: start;
+    }
+
+    #job-match-panel .job-match-stale-refresh {
+        grid-column: 2;
+        justify-self: start;
+    }
+}
+
 /* Loading spinner emphasis (r3 item 6): sky/cyan instead of muted gray. */
 #job-match-panel .job-match-loading-spinner {
     color: #7dd3fc;
@@ -4629,6 +4644,10 @@ span.priority-chip-button { cursor: default; }
    "How ranking works" on the rankings page. */
 #job-match-panel .job-match-legend { margin-bottom: 1rem; }
 #job-match-panel .job-match-legend .ranking-definitions dt:first-child { margin-top: 0; }
+
+/* The heading takes focus after a notice's Refresh; it must land below the
+   sticky phone top bar (48px), not under it. */
+#job-match-panel .job-match-panel-title { scroll-margin-top: 4.5rem; }
 
 #job-match-panel .job-match-panel-title:focus-visible {
     outline: 3px solid #38bdf8;
