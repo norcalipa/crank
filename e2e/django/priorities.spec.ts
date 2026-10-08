@@ -233,11 +233,22 @@ async function measurePanel(page: Page): Promise<PanelMeasure> {
             const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
             return !!hit && el.contains(hit);
         };
-        // The review pins its first action row (Apply and Cancel); Edit and This search only are one short
-        // scroll below inside the same scroller, so the change itself stays in view on a phone.
-        const actions = Array.from(section.querySelectorAll(
+        const actions = Array.from(section.querySelectorAll<HTMLElement>(
             '.priorities-footer button, .chat-actions button, .priorities-details .priorities-actions button',
-        )).filter((el) => !el.matches('.priorities-review-compact .priorities-review-edit, .priorities-review-compact .priorities-review-search'));
+        ));
+        const inBlock = (el: Element) => {
+            const r = el.getBoundingClientRect();
+            return r.top >= box.top - 1 && r.bottom <= box.bottom + 1;
+        };
+        // The review pins its first action row (Apply and Cancel) so the change stays in view on a short phone;
+        // Edit and This search only are in the block and clickable once its list is scrolled to the end.
+        const second = actions.filter((el) => el.matches('.priorities-review-compact .priorities-review-edit, .priorities-review-compact .priorities-review-search'));
+        const first = actions.filter((el) => !second.includes(el));
+        const firstReachable = first.every(inBlock);
+        const at = scroller ? scroller.scrollTop : 0;
+        if (scroller) scroller.scrollTop = scroller.scrollHeight;
+        const secondReachable = second.every((el) => inBlock(el) && onTop(el));
+        if (scroller) scroller.scrollTop = at;
         return {
             section: section.offsetHeight,
             share: section.offsetHeight / body.clientHeight,
@@ -248,10 +259,7 @@ async function measurePanel(page: Page): Promise<PanelMeasure> {
                 && composer.left >= 0 && composer.right <= window.innerWidth,
             toggleOnTop: toggle ? onTop(toggle) : true,
             scrollable: !!scroller && scroller.scrollHeight > scroller.clientHeight + 1,
-            actionsInSection: actions.every((el) => {
-                const r = el.getBoundingClientRect();
-                return r.top >= box.top - 1 && r.bottom <= box.bottom + 1;
-            }),
+            actionsInSection: firstReachable && secondReachable,
         };
     });
 }
@@ -306,7 +314,11 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
             const section = page.getByTestId('priorities-sidebar');
             const bodyHeight = await page.locator('.assistant-panel-body').evaluate((el) => el.clientHeight);
             const toggle = section.getByTestId('priorities-summary-toggle');
-            await expect(section.getByTestId('priorities-summary')).toHaveText(/^Requires: \$150,000, .+, \+2 \u00b7 6 preferences$/);
+            // Four requirements: the first is named whole and the rest are counted (a second one is named only while the
+            // line stays short), so the row never cuts the value it names.
+            await expect(section.getByTestId('priorities-summary')).toHaveText('Requires: $150,000, +3 \u00b7 6 preferences');
+            expect(await section.getByTestId('priorities-summary').locator('.priorities-summary-lead')
+                .evaluate((el) => el.scrollWidth <= el.clientWidth + 1), 'the named requirement is not cut').toBe(true);
 
             // Expanded with ten: every chip, an inner scroller, Reset in view, the row still on top.
             await toggle.click();
@@ -342,6 +354,52 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
             await section.getByRole('button', {name: 'Done'}).click();
             await expect(section.getByRole('button', {name: 'Edit priorities'})).toBeFocused();
             await expect(section.getByTestId('priorities-summary')).toContainText('$165,000');
+        });
+    }
+
+
+    for (const viewport of [{width: 320, height: 640}, {width: 375, height: 700}, {width: 320, height: 568}]) {
+        test(`${viewport.width}x${viewport.height}: a failed Apply says so above the review's actions`, async ({page}) => {
+            await page.setViewportSize(viewport);
+            await page.goto('/');
+            expect(await setPriorities(page, TEN)).toBe(10);
+            const section = await openPanel(page);
+            await section.getByRole('button', {name: 'Edit priorities'}).click();
+            await page.getByRole('spinbutton', {name: SALARY}).fill('165000');
+            await page.getByRole('button', {name: 'Review changes'}).click();
+            await expect(page.getByRole('list', {name: 'Proposed changes'})).toBeVisible();
+            const seen = (testId: string) => section.getByTestId(testId).evaluate((el) => {
+                const r = el.getBoundingClientRect();
+                const scroller = el.closest('.priorities-scroll')!.getBoundingClientRect();
+                const actions = el.parentElement!.querySelector('.chat-actions')!.getBoundingClientRect();
+                const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                return {
+                    whole: r.top >= Math.max(0, scroller.top) - 1 && r.bottom <= Math.min(window.innerHeight, scroller.bottom, actions.top) + 1,
+                    onTop: !!hit && el.contains(hit),
+                };
+            });
+
+            // The server refuses: the reason shows whole, above Apply and Cancel, and is announced.
+            await page.route('**/api/agent/preferences/apply/', (route) => route.fulfill({
+                status: 500, contentType: 'application/json', body: '{"error":{"type":"server","message":"Could not apply your changes. Try again."}}',
+            }));
+            await page.getByRole('button', {name: 'Apply to account'}).click();
+            const error = section.getByTestId('priorities-review-error');
+            await expect(error).toHaveText(/Could not apply your changes/);
+            await expect(error).toHaveAttribute('role', 'alert');
+            await expect.poll(() => seen('priorities-review-error')).toEqual({whole: true, onTop: true});
+            await expect(section.getByRole('button', {name: 'Apply to account'})).toBeEnabled();
+
+            // The priorities changed elsewhere: the reason for "Review latest" shows the same way.
+            await page.unroute('**/api/agent/preferences/apply/');
+            await page.route('**/api/agent/preferences/apply/', (route) => route.fulfill({
+                status: 409, contentType: 'application/json', body: '{"error":{"type":"preference_stale","message":"stale"}}',
+            }));
+            await page.getByRole('button', {name: 'Apply to account'}).click();
+            await expect(section.getByRole('button', {name: 'Review latest'})).toBeVisible();
+            await expect(error).toHaveText(/Your priorities changed elsewhere/);
+            await expect.poll(() => seen('priorities-review-error')).toEqual({whole: true, onTop: true});
+            await page.unroute('**/api/agent/preferences/apply/');
         });
     }
 
@@ -391,6 +449,9 @@ const WIDE_FONT_CSS = "body, button, input, textarea, select { font-family: 'Dej
 const OPEN_BLOCK_VIEWPORTS = [
     ...PANEL_VIEWPORTS.map((viewport) => ({...viewport, wideFont: false})),
     {name: 'short sheet, panel scrolls', width: 320, height: 420, wideFont: false},
+    // Phone heights between the layout sizes: a small iPhone with Safari's toolbars showing, and an older one.
+    {name: 'small phone with browser bars', width: 375, height: 553, wideFont: false},
+    {name: 'older small phone', width: 320, height: 568, wideFont: false},
     // The CI image's fallback font is wider than the local one: force it so the tight sizes are checked either way.
     {name: 'sheet, wide font', width: 375, height: 700, wideFont: true},
     {name: 'short sheet, wide font', width: 320, height: 640, wideFont: true},
@@ -523,6 +584,157 @@ async function measureReview(page: Page): Promise<ReviewMeasure> {
     });
 }
 
+
+// What a reader has in front of them after a step (issue #480, visual round 3): the block, the control that
+// just took the focus, the chat's bars and their place in the conversation.
+interface ReaderState {
+    body: number;
+    block: number;
+    blockVisible: number;
+    blockTopInView: boolean;
+    open: boolean;
+    pinned: boolean;
+    owner: string | null;
+    panelScrollRange: number;
+    focus: {name: string; inBlock: boolean; inside: boolean; hit: boolean} | null;
+    // Named controls of the open step: inside the viewport and reached by a pointer at their centre.
+    controls: Record<string, boolean>;
+    covered: string[];
+    pill: boolean;
+    // Composer band's top minus the last message's bottom: zero or more when the reader is at the end.
+    lastToComposer: number | null;
+}
+
+async function readerState(page: Page): Promise<ReaderState> {
+    return page.evaluate(() => {
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const section = document.querySelector<HTMLElement>('[data-testid="priorities-sidebar"]')!;
+        const body = document.querySelector<HTMLElement>('.assistant-panel-body')!;
+        const card = document.querySelector<HTMLElement>('[data-testid="job-search-chat"]')!;
+        const sr = section.getBoundingClientRect();
+        const br = body.getBoundingClientRect();
+        const seen = (el: Element) => {
+            const r = el.getBoundingClientRect();
+            const inside = r.top >= -0.5 && r.left >= -0.5 && r.bottom <= vh + 0.5 && r.right <= vw + 0.5;
+            const x = r.left + r.width / 2;
+            const y = r.top + r.height / 2;
+            const top = x >= 0 && y >= 0 && x < vw && y < vh ? document.elementFromPoint(x, y) : null;
+            return {inside, hit: !!top && (el === top || el.contains(top))};
+        };
+        const active = document.activeElement;
+        const focus = active && active !== document.body
+            ? {name: (active.getAttribute('aria-label') || active.getAttribute('data-testid') || active.textContent || active.tagName).trim().slice(0, 40),
+                inBlock: section.contains(active), ...seen(active)}
+            : null;
+        const controls: Record<string, boolean> = {};
+        section.querySelectorAll('button').forEach((button) => {
+            const state = seen(button);
+            controls[(button.textContent || '').trim()] = state.inside && (state.hit || button.disabled);
+        });
+        const bars: Record<string, Element | null> = {
+            header: card.querySelector('.card-header'),
+            more: card.querySelector('[data-testid="conversation-more"]'),
+            title: card.querySelector('.card-header h2'),
+            pill: card.querySelector('[data-testid="jump-to-latest"]'),
+            composer: document.querySelector('[data-testid="assistant-composer"]'),
+            send: card.querySelector('[aria-label="Send message"]'),
+        };
+        const covered = Object.entries(bars).filter(([, el]) => {
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            return [r.top + r.height / 2, r.top + 2, r.bottom - 2]
+                .filter((y) => y >= 0 && y < vh)
+                .some((y) => { const top = document.elementFromPoint(r.left + r.width / 2, y); return !!top && section.contains(top); });
+        }).map(([name]) => name);
+        const messages = card.querySelectorAll('[role="log"] article');
+        const last = messages[messages.length - 1];
+        const footer = card.querySelector('.chat-footer');
+        return {
+            body: body.clientHeight,
+            block: section.offsetHeight,
+            blockVisible: Math.round(Math.max(0, Math.min(sr.bottom, br.bottom, vh) - Math.max(sr.top, br.top, 0))),
+            blockTopInView: sr.top >= br.top - 1 && sr.top < Math.min(br.bottom, vh),
+            open: !!section.querySelector('.priorities-scroll'),
+            pinned: section.hasAttribute('data-pinned'),
+            owner: card.getAttribute('data-scroll-owner'),
+            panelScrollRange: body.scrollHeight - body.clientHeight,
+            focus,
+            controls,
+            covered,
+            pill: !!bars.pill,
+            lastToComposer: last && footer ? Math.round(footer.getBoundingClientRect().top - last.getBoundingClientRect().bottom) : null,
+        };
+    });
+}
+
+/** The chat re-measures over a few frames after the block changes, and the block then keeps the reader's place:
+ *  wait those frames out, then until two looks a few frames apart agree. */
+async function settledReader(page: Page): Promise<ReaderState> {
+    const frames = (count: number) => page.evaluate((left) => new Promise<void>((resolve) => {
+        const tick = () => { left -= 1; if (left > 0) requestAnimationFrame(tick); else resolve(); };
+        requestAnimationFrame(tick);
+    }), count);
+    await frames(6);
+    let previous = JSON.stringify(await readerState(page));
+    for (let i = 0; i < 30; i += 1) {
+        await frames(3);
+        const now = JSON.stringify(await readerState(page));
+        if (now === previous) break;
+        previous = now;
+    }
+    return JSON.parse(previous) as ReaderState;
+}
+
+/** A reader following the conversation: at its end, whichever element scrolls. Where the panel is too short to
+ *  show the row there, they scroll up to it. With `blur` nothing holds the focus (a row that does stays pinned). */
+async function readerAtRow(page: Page, blur = true, toRow = true): Promise<ReaderState> {
+    await page.evaluate(async ([drop, up]) => {
+        if (drop && document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        const body = document.querySelector<HTMLElement>('.assistant-panel-body')!;
+        const log = body.querySelector<HTMLElement>('[role="log"]')!;
+        log.scrollTop = log.scrollHeight;
+        body.scrollTop = body.scrollHeight;
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const row = document.querySelector<HTMLElement>('[data-testid="priorities-sidebar"] .priorities-summary-row')!;
+        if (up && row.getBoundingClientRect().top < body.getBoundingClientRect().top) body.scrollTop = 0;
+    }, [blur, toRow]);
+    return settledReader(page);
+}
+
+/** What must hold after every step. `before` is the reader's state before the block was opened. */
+function readerProblems(step: string, now: ReaderState, before: ReaderState | null, expected: string[]): string[] {
+    const problems: string[] = [];
+    if (now.covered.length) problems.push(`the block covers ${now.covered.join(', ')}`);
+    // The editor's form takes the focus as a whole; its controls are checked by name instead.
+    if (!now.focus) problems.push('nothing holds the focus');
+    else if (!(step === 'edit' && now.focus.name === 'Edit priorities')) {
+        if (!now.focus.inside) problems.push(`the focused control (${now.focus.name}) is off screen`);
+        else if (!now.focus.hit) problems.push(`the focused control (${now.focus.name}) is covered`);
+    }
+    if (now.open && !now.blockTopInView) problems.push('the open block starts off screen');
+    if (now.open && now.blockVisible < now.block - 1) problems.push(`only ${now.blockVisible} of ${now.block}px of the open block is on screen`);
+    for (const name of expected) {
+        if (!now.controls[name]) problems.push(`${name} is not on screen or is covered`);
+    }
+    if (now.open && now.owner === 'transcript' && now.panelScrollRange > 1) problems.push(`the panel scrolls ${now.panelScrollRange}px beside the transcript`);
+    // No jump: a reader at the end of the conversation is still there while the block is pinned open and once it is closed.
+    if (before && before.lastToComposer !== null && now.lastToComposer !== null && (!now.open || now.pinned)) {
+        if (before.lastToComposer >= -1 && now.lastToComposer < -1) problems.push(`the conversation jumped: its last message is ${-now.lastToComposer}px below the composer band`);
+        if (!now.open && !before.pill && now.pill) problems.push('"Jump to latest" appeared');
+    }
+    return problems;
+}
+
+const SWEEP_HEIGHTS = Array.from({length: 27}, (_, i) => 380 + i * 20);
+const SWEEP_WIDTHS = [
+    {width: 320, also: [568]},
+    {width: 360, also: [560]},
+    {width: 375, also: [553]},
+    {width: 1024, also: []},
+    {width: 1280, also: []},
+];
+
 test.describe('open priorities block over a conversation (issue #480)', () => {
     // These journeys send chat turns: the provider-outage pass answers none.
     test.skip(process.env.CRANK_E2E_PROVIDER_FAILURE === '1', 'needs assistant replies: not part of the provider-outage pass');
@@ -551,10 +763,26 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
             const composer = page.getByTestId('assistant-composer');
             const replies = page.locator(ASSISTANT_MESSAGE);
 
+            // A tap on the row, Enter on it, and Edit each open the block where the reader is looking.
+            const row = section.getByTestId('priorities-summary-toggle');
+            const atRest = await readerAtRow(page);
+            await row.click();
+            await expect(section.getByTestId('priority-chip')).toHaveCount(10);
+            expect(readerProblems('row tapped', await settledReader(page), atRest, ['Reset priorities'])).toEqual([]);
+            await page.keyboard.press('Enter');
+            await expect(section.getByTestId('priority-chip')).toHaveCount(0);
+            expect(readerProblems('row closed', await settledReader(page), atRest, [])).toEqual([]);
+            await page.keyboard.press('Enter');
+            await expect(section.getByTestId('priority-chip')).toHaveCount(10);
+            expect(readerProblems('Enter on the row', await settledReader(page), atRest, ['Reset priorities'])).toEqual([]);
+            await page.keyboard.press('Enter');
+            await expect(section.getByTestId('priority-chip')).toHaveCount(0);
+
             // Editor open: at rest, with a two-line message typed, after the reply, and with keyboard focus on More.
             await section.getByRole('button', {name: 'Edit priorities'}).click();
             await expect(page.getByRole('form', {name: 'Edit priorities'})).toBeVisible();
             await expect(section.getByTestId('priorities-step-title')).toBeVisible();
+            expect(readerProblems('edit', await settledReader(page), atRest, ['Review changes', 'Cancel'])).toEqual([]);
             await expectChatUsable(page, 'editor', false);
             await composer.fill(TWO_LINE_MESSAGE);
             await expectChatUsable(page, 'editor, two lines typed', true);
@@ -605,6 +833,110 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
         });
     }
 
+
+    for (const {width, also} of SWEEP_WIDTHS) {
+        test(`${width}px wide, every height from 380 to 900: what the reader opens is on screen, the chat's bars stay free and nothing jumps`, async ({page}) => {
+            test.setTimeout(420_000);
+            await page.setViewportSize({width, height: 900});
+            await page.goto('/');
+            expect(await setPriorities(page, TEN)).toBe(10);
+            const section = await openPanel(page);
+            await ensureConversation(page, 3);
+            const toggle = section.getByTestId('priorities-summary-toggle');
+            const edit = section.getByRole('button', {name: 'Edit priorities'});
+            const chips = section.getByTestId('priority-chip');
+            const failures: string[] = [];
+            const pins: string[] = [];
+            const heights = Array.from(new Set([...SWEEP_HEIGHTS, ...also])).sort((a, b) => a - b);
+
+            for (const height of heights) {
+                await page.setViewportSize({width, height});
+                const check = async (step: string, before: ReaderState | null, expected: string[]) => {
+                    const now = await settledReader(page);
+                    for (const problem of readerProblems(step, now, before, expected)) failures.push(`${width}x${height} ${step}: ${problem}`);
+                    return now;
+                };
+                const before = await readerAtRow(page);
+
+                // Enter on the row opens the list and closes it again; the focus stays on the row.
+                await toggle.focus();
+                await page.keyboard.press('Enter');
+                await expect(chips).toHaveCount(10);
+                const opened = await check('Enter on the row', before, ['Reset priorities']);
+                pins.push(`${height}:${opened.pinned ? 'pinned' : 'in the panel'}`);
+                await page.keyboard.press('Enter');
+                await expect(chips).toHaveCount(0);
+                await check('Enter again', before, []);
+
+                // Edit, Review changes, Cancel: each step's controls are on screen and Cancel returns the focus to Edit.
+                await edit.click();
+                await expect(page.getByRole('form', {name: 'Edit priorities'})).toBeVisible();
+                await check('edit', before, ['Review changes', 'Cancel']);
+                await page.getByRole('spinbutton', {name: SALARY}).fill('165000');
+                await page.getByRole('button', {name: 'Review changes'}).click();
+                await expect(page.getByRole('list', {name: 'Proposed changes'})).toBeVisible();
+                await check('review', before, ['Apply to account', 'Cancel']);
+                await section.getByRole('group', {name: 'Review actions'}).getByRole('button', {name: 'Cancel'}).click();
+                await expect(edit).toBeFocused();
+                const closed = await check('cancel', before, []);
+
+                // The row holds the focus and is pinned over a scrolling panel: the reader returns to the end of the
+                // conversation and uses the row from there. It stays on screen, and closing brings them back to the end.
+                if (closed.owner !== 'panel' || !closed.pinned) continue;
+                const held = await readerAtRow(page, false, false);
+                for (const problem of readerProblems('row held at the end', held, null, [])) failures.push(`${width}x${height} row held at the end: ${problem}`);
+                await page.keyboard.press('Shift+Tab');
+                await page.keyboard.press('Enter');
+                await expect(chips).toHaveCount(10);
+                await check('Enter on the held row', held, ['Reset priorities']);
+                await page.keyboard.press('Enter');
+                await expect(chips).toHaveCount(0);
+                await check('Enter again on the held row', held, []);
+            }
+            expect(failures).toEqual([]);
+            // The block is pinned on the tall panels and scrolls with the panel on the shortest: both are exercised.
+            expect(pins.some((pin) => pin.endsWith(':pinned'))).toBe(true);
+            if (width < 768) expect(pins.some((pin) => pin.endsWith(':in the panel'))).toBe(true);
+        });
+    }
+
+    test('closing the editor with a draft typed keeps the reader at the end of the conversation', async ({page}) => {
+        test.setTimeout(120_000);
+        for (const viewport of [{width: 375, height: 700}, {width: 320, height: 640}, {width: 1280, height: 900}]) {
+            await page.setViewportSize(viewport);
+            await page.goto('/');
+            expect(await setPriorities(page, TEN)).toBe(10);
+            const section = await openPanel(page);
+            await ensureConversation(page, 3);
+            const state = `${viewport.width}x${viewport.height}`;
+            await page.getByTestId('assistant-composer').fill(TWO_LINE_MESSAGE);
+            const before = await readerAtRow(page);
+            expect(before.lastToComposer, `${state}: the last message is above the composer band`).toBeGreaterThanOrEqual(-1);
+
+            // Cancel from the editor.
+            await section.getByRole('button', {name: 'Edit priorities'}).click();
+            await expect(page.getByRole('form', {name: 'Edit priorities'})).toBeVisible();
+            expect(readerProblems('edit', await settledReader(page), before, ['Review changes', 'Cancel']), state).toEqual([]);
+            await page.getByRole('form', {name: 'Edit priorities'}).getByRole('button', {name: 'Cancel'}).click();
+            await expect(section.getByRole('button', {name: 'Edit priorities'})).toBeFocused();
+            expect(readerProblems('cancel', await settledReader(page), before, []), state).toEqual([]);
+            await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+
+            // Review, Apply, Done: the same.
+            await section.getByRole('button', {name: 'Edit priorities'}).click();
+            await page.getByRole('spinbutton', {name: SALARY}).fill('165000');
+            await page.getByRole('button', {name: 'Review changes'}).click();
+            await page.getByRole('button', {name: 'Apply to account'}).click();
+            await expect(page.getByRole('list', {name: 'Changed priorities'})).toBeVisible();
+            expect(readerProblems('applied', await settledReader(page), before, ['Done']), state).toEqual([]);
+            await section.getByRole('button', {name: 'Done'}).click();
+            await expect(section.getByRole('button', {name: 'Edit priorities'})).toBeFocused();
+            expect(readerProblems('done', await settledReader(page), before, []), state).toEqual([]);
+            await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+            await page.getByTestId('assistant-composer').fill('');
+        }
+    });
+
     test('the summary keeps its counts when the requirements are long, and a long value wraps inside its chip', async ({page}) => {
         await page.setViewportSize({width: 375, height: 700});
         await page.goto('/');
@@ -618,16 +950,19 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
         const section = await openPanel(page);
         const summary = section.getByTestId('priorities-summary');
         const tail = summary.locator('.priorities-summary-tail');
-        await expect(tail).toHaveText(/^\+2 \u00b7 2 preferences$/);
+        await expect(summary).toHaveText('Requires: $150,000, +3 \u00b7 2 preferences');
+        await expect(tail).toHaveText(/^\+3 \u00b7 2 preferences$/);
         // The counts are whole and inside the row; only the lead gives way.
         const fit = await summary.evaluate((el) => {
             const counts = el.querySelector<HTMLElement>('.priorities-summary-tail')!;
+            const lead = el.querySelector<HTMLElement>('.priorities-summary-lead')!;
             return {
                 countsWhole: counts.scrollWidth <= counts.clientWidth + 1,
                 countsInRow: counts.getBoundingClientRect().right <= el.getBoundingClientRect().right + 1,
+                leadWhole: lead.scrollWidth <= lead.clientWidth + 1,
             };
         });
-        expect(fit).toEqual({countsWhole: true, countsInRow: true});
+        expect(fit).toEqual({countsWhole: true, countsInRow: true, leadWhole: true});
         expect((await measurePanel(page)).section).toBeLessThanOrEqual(COLLAPSED_MAX_PX);
 
         await section.getByTestId('priorities-summary-toggle').click();
