@@ -47,9 +47,14 @@ const ScrollRegion: React.FC<{children: React.ReactNode}> = ({children}) => {
     );
 };
 
-// The open sidebar block stays pinned above a scrolling panel only while the chat keeps this much
-// room under it: its header, its composer band and 8rem of transcript.
-export const PIN_ROOM_PX = 288;
+// The sidebar block stays pinned above a scrolling panel while the chat keeps its header, its composer
+// band and this much under it: room for the chat's jump pill, which comes and goes as the reader scrolls
+// and so must not unpin the block, or else for two lines of transcript.
+export const PIN_TRANSCRIPT_PX = 56;
+// Before the chat has mounted: its header and an empty composer band.
+export const CHAT_BARS_FALLBACK_PX = 164;
+// The chat re-measures and follows the conversation a few frames after the block resizes.
+const REVEAL_FRAMES = 6;
 
 const STALE_COPY = 'Your priorities changed elsewhere. Review the latest before applying.';
 
@@ -106,6 +111,8 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const resetButton = React.useRef<HTMLButtonElement>(null);
     const confirmHeading = React.useRef<HTMLParagraphElement>(null);
     const sectionRef = React.useRef<HTMLElement>(null);
+    const following = React.useRef(false);
+    const moved = React.useRef(false);
 
     const beginWrite = () => {
         const controller = new AbortController();
@@ -238,34 +245,98 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         } else if (step === 'view' && focusAfter.current) {
             const target = focusAfter.current === 'reset' ? resetButton.current || editButton.current : editButton.current;
             focusAfter.current = null;
-            target?.focus();
+            // In the panel the row is at the top of the panel's content: focusing it must not scroll the reader up to it.
+            target?.focus({preventScroll: variant === 'sidebar'});
         }
-    }, [step]);
+    }, [step, variant]);
 
     appliedRef.current = applied;
 
-    // Sidebar: tell the panel how tall the open block is and whether pinning it leaves the chat room.
-    // When it does not, the block scrolls away with the panel instead of covering the chat's bars.
+    // Sidebar: tell the panel how tall the block is and whether pinning it leaves the chat room. The open block is
+    // pinned, and so is the collapsed row while it holds the keyboard focus. Where the chat's own bars and a little
+    // transcript would not fit under it, it scrolls away with the panel instead of covering them.
     const inSidebar = variant === 'sidebar' && authenticated;
     React.useLayoutEffect(() => {
         const section = sectionRef.current;
         const panelBody = section?.closest<HTMLElement>('.assistant-panel-body');
         if (!inSidebar || !section || !panelBody || typeof ResizeObserver === 'undefined') return undefined;
-        const sync = () => {
+        let card: HTMLElement | null = null;
+        let footer: HTMLElement | null = null;
+        const sync = (focused = section.contains(document.activeElement)) => {
             const open = section.querySelector('.priorities-scroll') !== null;
-            const height = open ? section.offsetHeight : 0;
+            const held = open || focused;
+            const height = held ? section.offsetHeight : 0;
+            const header = card?.querySelector<HTMLElement>('.card-header');
+            // The jump pill takes a row of the composer band only while the panel scrolls.
+            const pill = footer?.querySelector<HTMLElement>('.chat-jump-row');
+            const pillRow = pill && getComputedStyle(pill).position === 'static' ? pill.offsetHeight : 0;
+            const bars = header && footer ? header.offsetHeight + footer.offsetHeight - pillRow : CHAT_BARS_FALLBACK_PX;
             panelBody.style.setProperty('--priorities-open-h', `${height}px`);
-            section.toggleAttribute('data-pinned', open && panelBody.clientHeight - height >= PIN_ROOM_PX);
+            section.toggleAttribute('data-pinned', held && panelBody.clientHeight - height >= bars + PIN_TRANSCRIPT_PX);
         };
-        const observer = new ResizeObserver(sync);
+        const observer = new ResizeObserver(() => sync());
         observer.observe(section);
         observer.observe(panelBody);
+        // The chat mounts after this block and replaces its footer: keep its card and footer observed.
+        const watch = () => {
+            const nextCard = panelBody.querySelector<HTMLElement>('[data-testid="job-search-chat"]');
+            const nextFooter = nextCard?.querySelector<HTMLElement>('.chat-footer') ?? null;
+            if (nextCard === card && nextFooter === footer) return;
+            if (card) observer.unobserve(card);
+            if (footer) observer.unobserve(footer);
+            card = nextCard;
+            footer = nextFooter;
+            if (card) observer.observe(card);
+            if (footer) observer.observe(footer);
+            sync();
+        };
+        const mutations = new MutationObserver(watch);
+        mutations.observe(panelBody, {childList: true, subtree: true});
+        // Focus moving between the row's own buttons never lets go of it.
+        const entered = () => sync(true);
+        const left = (event: FocusEvent) => { if (!section.contains(event.relatedTarget as Node | null)) sync(false); };
+        section.addEventListener('focusin', entered);
+        section.addEventListener('focusout', left);
+        watch();
         sync();
         return () => {
             observer.disconnect();
+            mutations.disconnect();
+            section.removeEventListener('focusin', entered);
+            section.removeEventListener('focusout', left);
             panelBody.style.removeProperty('--priorities-open-h');
         };
     }, [inSidebar, step, expanded, phase]);
+
+    // Just after a step changes, the chat re-measures and may scroll the panel. Where the block does not pin,
+    // keep what the reader opened (or the row that took the focus) on screen; where it does, or once the chat
+    // scrolls its own transcript again, a reader who was following the conversation stays at its end.
+    React.useEffect(() => {
+        const section = sectionRef.current;
+        const panelBody = section?.closest<HTMLElement>('.assistant-panel-body');
+        if (!inSidebar || !section || !panelBody) return undefined;
+        // The chat shows its jump pill to a reader who is not at the end; one this block moved is still following.
+        if (!moved.current) following.current = panelBody.querySelector('[data-testid="jump-to-latest"]') === null;
+        const open = section.querySelector('.priorities-scroll') !== null;
+        let frames = REVEAL_FRAMES;
+        let raf = requestAnimationFrame(function keep() {
+            const pinned = section.hasAttribute('data-pinned');
+            const above = section.getBoundingClientRect().top - panelBody.getBoundingClientRect().top;
+            const log = panelBody.querySelector<HTMLElement>('[data-scroll-owner="transcript"] [role="log"]');
+            if ((open || section.contains(document.activeElement)) && !pinned && above < 0) {
+                panelBody.scrollTop += above;
+                moved.current = true;
+            } else if (following.current && (log || pinned)) {
+                const scroller = log ?? panelBody;
+                scroller.scrollTop = scroller.scrollHeight;
+                moved.current = false;
+            }
+            frames -= 1;
+            if (frames > 0) raf = requestAnimationFrame(keep);
+            else if (!open) moved.current = false;
+        });
+        return () => cancelAnimationFrame(raf);
+    }, [inSidebar, step, expanded]);
 
     const close = () => {
         if (applied) {
@@ -518,7 +589,8 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             <ScrollRegion>
                 <ReviewChanges key={proposal.id} changes={proposal.changes} labels={labels} currency={currency}
                                choicePaths={choicePaths} conflicts={conflicts} pending={busy || rebasing}
-                               error={reviewError} stale={stale} compact={sidebar}
+                               // In the sidebar an expired session is said once, by the sign-in line above.
+                               error={sidebar && sessionExpired ? null : reviewError} stale={stale} compact={sidebar}
                                onApply={() => void apply('account')}
                                onApplySearchOnly={() => void apply('search')}
                                onEdit={() => setStep('edit')} onCancel={close}
@@ -582,7 +654,10 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                                             <i className={`fa-solid fa-chevron-${open ? 'up' : 'down'} priorities-summary-chevron`} aria-hidden="true"></i>
                                         </span>
                                         <span className="priorities-summary" data-testid="priorities-summary">
-                                            <span className="priorities-summary-lead">{summary.lead}</span>
+                                            <span className="priorities-summary-first">
+                                                <span className="priorities-summary-lead">{summary.lead}</span>
+                                                {summary.keep && <span className="priorities-summary-keep">{summary.keep}</span>}
+                                            </span>
                                             {summary.tail && (
                                                 <>
                                                     <span className="priorities-summary-sep">{summary.sep}</span>
@@ -612,11 +687,13 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                             {chips.length > 0 ? 'Edit' : 'Add'}<span className="visually-hidden"> priorities</span>
                         </button>
                     </div>
-                    {viewError}
+                    {/* Open, the error scrolls with the list instead of taking the list's room. */}
+                    {!open && viewError}
                     <div id={detailsId} className="priorities-details" hidden={!open}>
                         {open && (
                             <>
                                 <ScrollRegion>
+                                    {viewError}
                                     <PriorityChips chips={chips} collapsedCount={chips.length} legend={false}
                                                    currency={currency} readOnlyPaths={readOnlyPaths} choicePaths={choicePaths}
                                                    onEdit={() => setPrioritiesEditorOpen(variant)}/>

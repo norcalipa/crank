@@ -3,7 +3,7 @@
 import '@testing-library/jest-dom';
 import * as React from 'react';
 import {act, fireEvent, render, screen, waitFor, within} from '@testing-library/react';
-import PrioritiesSection, {PIN_ROOM_PX, SidebarPriorities} from './PrioritiesSection';
+import PrioritiesSection, {CHAT_BARS_FALLBACK_PX, PIN_TRANSCRIPT_PX, SidebarPriorities} from './PrioritiesSection';
 import {prioritiesSurface, subscribeDesktop} from './surface';
 import {
     getWorkspaceSnapshot, resetWorkspaceForTests, setPrioritiesEditorOpen, setPrioritiesRevision,
@@ -1203,21 +1203,27 @@ describe('PrioritiesSection', () => {
 
         describe('pinning the open block', () => {
             // jsdom lays nothing out: the heights are given, and the observer is driven by hand.
-            const heights = {section: 0, body: 0};
+            const heights = {section: 0, body: 0, header: 0, footer: 0, pill: 0};
             const observers: Array<{run: () => void; observed: Element[]; disconnected: boolean}> = [];
             const realOffset = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
             const realClient = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
+            const offsetOf = (el: HTMLElement) => (el.matches('.priorities-sidebar') ? heights.section
+                : el.matches('.card-header') ? heights.header
+                    : el.matches('.chat-footer') ? heights.footer
+                        : el.matches('.chat-jump-row') ? heights.pill : 0);
 
             beforeEach(() => {
                 observers.length = 0;
+                Object.assign(heights, {section: 0, body: 0, header: 0, footer: 0, pill: 0});
                 (global as any).ResizeObserver = class {
                     private entry: {run: () => void; observed: Element[]; disconnected: boolean};
                     constructor(run: () => void) { this.entry = {run, observed: [], disconnected: false}; observers.push(this.entry); }
                     observe(el: Element) { this.entry.observed.push(el); }
+                    unobserve(el: Element) { this.entry.observed = this.entry.observed.filter((seen) => seen !== el); }
                     disconnect() { this.entry.disconnected = true; }
                 };
                 Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
-                    configurable: true, get() { return (this as HTMLElement).matches('.priorities-sidebar') ? heights.section : 0; },
+                    configurable: true, get() { return offsetOf(this as HTMLElement); },
                 });
                 Object.defineProperty(Element.prototype, 'clientHeight', {
                     configurable: true, get() { return (this as Element).matches('.assistant-panel-body') ? heights.body : 0; },
@@ -1229,7 +1235,17 @@ describe('PrioritiesSection', () => {
                 Object.defineProperty(Element.prototype, 'clientHeight', realClient!);
             });
             const live = () => observers.filter((o) => !o.disconnected);
-            const panel = (node: React.ReactNode) => <div className="assistant-panel-body">{node}</div>;
+            const panel = (node: React.ReactNode, chat: React.ReactNode = null) => (
+                <div className="assistant-panel-body">{node}<div id="job-search-chat">{chat}</div></div>
+            );
+            const chatCard = (footerKey: string, pill: 'static' | 'absolute' | null = null) => (
+                <section data-testid="job-search-chat">
+                    <div className="card-header"></div>
+                    <div className="chat-footer" key={footerKey}>
+                        {pill && <div className="chat-jump-row" style={{position: pill}}></div>}
+                    </div>
+                </section>
+            );
 
             test('the open block is pinned only while the chat keeps its room under it, and says how tall it is', async () => {
                 serve([chip, pref(1)]);
@@ -1239,7 +1255,7 @@ describe('PrioritiesSection', () => {
                 const section = await screen.findByTestId('priorities-sidebar');
                 const body = section.parentElement!;
                 const toggle = await screen.findByTestId('priorities-summary-toggle');
-                // Collapsed: nothing is pinned and the chat's header keeps its own offset.
+                // Collapsed and without the focus: nothing is pinned and the chat's header keeps its own offset.
                 expect(section).not.toHaveAttribute('data-pinned');
                 expect(body.style.getPropertyValue('--priorities-open-h')).toBe('0px');
                 expect(live()).toHaveLength(1);
@@ -1251,29 +1267,98 @@ describe('PrioritiesSection', () => {
                 expect(section).toHaveAttribute('data-pinned');
                 expect(body.style.getPropertyValue('--priorities-open-h')).toBe('400px');
 
-                // Exactly the room: still pinned. One pixel short (the panel shrank): it scrolls with the panel instead.
-                heights.body = 400 + PIN_ROOM_PX;
+                // Before the chat has mounted its bars are assumed. Exactly the room: still pinned.
+                // One pixel short (the panel shrank): it scrolls with the panel instead.
+                heights.body = 400 + CHAT_BARS_FALLBACK_PX + PIN_TRANSCRIPT_PX;
                 act(() => live()[0].run());
                 expect(section).toHaveAttribute('data-pinned');
-                heights.body = 400 + PIN_ROOM_PX - 1;
+                heights.body -= 1;
                 act(() => live()[0].run());
                 expect(section).not.toHaveAttribute('data-pinned');
                 expect(body.style.getPropertyValue('--priorities-open-h')).toBe('400px');
 
-                // The editor is an open step too; closing it unpins and clears the height.
+                // The editor is an open step too. Cancel returns the focus to Edit, and the row that holds it stays pinned.
                 heights.body = 800;
                 await openEditor('sidebar');
                 expect(section).toHaveAttribute('data-pinned');
                 fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
-                fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
+                const edit = await screen.findByRole('button', {name: 'Edit priorities'});
+                await waitFor(() => expect(edit).toHaveFocus());
                 heights.section = 61;
-                act(() => live()[0].run());
+                fireEvent.click(screen.getByTestId('priorities-summary-toggle'));
+                expect(screen.queryByTestId('priority-chip')).not.toBeInTheDocument();
+                expect(section).toHaveAttribute('data-pinned');
+                expect(body.style.getPropertyValue('--priorities-open-h')).toBe('61px');
+                // Focus moving to the row's other button never lets go of it; focus leaving the row does.
+                act(() => screen.getByTestId('priorities-summary-toggle').focus());
+                expect(section).toHaveAttribute('data-pinned');
+                fireEvent.focusOut(screen.getByTestId('priorities-summary-toggle'), {relatedTarget: edit});
+                expect(section).toHaveAttribute('data-pinned');
+                act(() => screen.getByTestId('priorities-summary-toggle').blur());
                 expect(section).not.toHaveAttribute('data-pinned');
                 expect(body.style.getPropertyValue('--priorities-open-h')).toBe('0px');
+                // A row that holds the focus is not pinned where even it leaves the chat no room.
+                heights.body = 61 + CHAT_BARS_FALLBACK_PX + PIN_TRANSCRIPT_PX - 1;
+                act(() => edit.focus());
+                expect(section).not.toHaveAttribute('data-pinned');
+                expect(body.style.getPropertyValue('--priorities-open-h')).toBe('61px');
 
                 unmount();
                 expect(live()).toHaveLength(0);
                 expect(body.style.getPropertyValue('--priorities-open-h')).toBe('');
+            });
+
+            test('the room is measured from the chat\'s own header and composer band, whenever they mount or change', async () => {
+                serve([chip, pref(1)]);
+                heights.section = 400;
+                heights.body = 400 + 50 + 100 + PIN_TRANSCRIPT_PX;
+                const node = <PrioritiesSection variant="sidebar" authenticated/>;
+                const {rerender} = render(panel(node));
+                const section = await screen.findByTestId('priorities-sidebar');
+                const body = section.parentElement!;
+                fireEvent.click(await screen.findByTestId('priorities-summary-toggle'));
+                // No chat yet: the assumed bars are taller than this panel leaves room for.
+                expect(section).not.toHaveAttribute('data-pinned');
+
+                // The chat mounts after the block: its header (50) and composer band (100) are what must fit.
+                heights.header = 50;
+                heights.footer = 100;
+                rerender(panel(node, chatCard('first')));
+                await waitFor(() => expect(section).toHaveAttribute('data-pinned'));
+                const card = screen.getByTestId('job-search-chat');
+                const footer = card.querySelector('.chat-footer')!;
+                expect(live()[0].observed).toEqual([section, body, card, footer]);
+
+                // The band grows by a line (a draft, a notice): one pixel short, so the block lets go.
+                heights.footer = 101;
+                act(() => live()[0].run());
+                expect(section).not.toHaveAttribute('data-pinned');
+
+                // The chat replaces its footer (a new conversation): the new one is observed, the old one dropped.
+                heights.footer = 100;
+                rerender(panel(node, chatCard('second')));
+                await waitFor(() => expect(section).toHaveAttribute('data-pinned'));
+                const next = card.querySelector('.chat-footer')!;
+                expect(next).not.toBe(footer);
+                expect(live()[0].observed).toEqual([section, body, card, next]);
+
+                // The jump pill takes a row of the band while the panel scrolls; it comes and goes with the
+                // reader's scrolling, so it does not unpin the block. Floating over the transcript it takes none.
+                heights.footer = 144;
+                heights.pill = 44;
+                rerender(panel(node, chatCard('second', 'static')));
+                await waitFor(() => expect(card.querySelector('.chat-jump-row')).not.toBeNull());
+                act(() => live()[0].run());
+                expect(section).toHaveAttribute('data-pinned');
+                rerender(panel(node, chatCard('second', 'absolute')));
+                await waitFor(() => expect(card.querySelector<HTMLElement>('.chat-jump-row')!.style.position).toBe('absolute'));
+                act(() => live()[0].run());
+                expect(section).not.toHaveAttribute('data-pinned');
+
+                // The chat goes away (signed out mid-session): back to the assumed bars, nothing left observed of it.
+                rerender(panel(node));
+                await waitFor(() => expect(live()[0].observed).toEqual([section, body]));
+                expect(section).not.toHaveAttribute('data-pinned');
             });
 
             test('nothing is observed outside the panel, in the main block, or signed out', async () => {
@@ -1307,13 +1392,25 @@ describe('PrioritiesSection', () => {
             const {unmount} = render(<PrioritiesSection variant="sidebar" authenticated/>);
             const summary = await screen.findByTestId('priorities-summary');
             expect(summary).toHaveTextContent(/^Requires: Need1, Need2, \+1 \u00b7 2 preferences$/);
-            expect(summary.querySelector('.priorities-summary-lead')).toHaveTextContent(/^Requires: Need1, Need2$/);
-            expect(summary.querySelector('.priorities-summary-sep')!.textContent).toBe(', ');
+            expect(summary.querySelector('.priorities-summary-lead')).toHaveTextContent(/^Requires: Need1, Need2,$/);
+            expect(summary.querySelector('.priorities-summary-keep')).toBeNull();
+            expect(summary.querySelector('.priorities-summary-sep')!.textContent).toBe(' ');
             expect(summary.querySelector('.priorities-summary-tail')).toHaveTextContent(/^\+1 \u00b7 2 preferences$/);
             // (jsdom's name computation puts a space between inline spans; browsers do not.)
             expect(screen.getByTestId('priorities-summary-toggle'))
-                .toHaveAccessibleName(/^Your priorities Requires: Need1, Need2 ?, ?\+1 \u00b7 2 preferences$/);
+                .toHaveAccessibleName(/^Your priorities Requires: Need1, Need2, ?\+1 \u00b7 2 preferences$/);
             unmount();
+
+            // A value named by its field is kept whole beside the lead that may be cut.
+            serve([{path: 'work_location.max_in_office_days', label: 'Maximum office days per week', display: '2', hard: true, supported: true}, pref(1)]);
+            const named = render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const kept = await screen.findByTestId('priorities-summary');
+            expect(kept).toHaveTextContent(/^Requires: Maximum office days per week: 2 \u00b7 1 preference$/);
+            const first = kept.querySelector('.priorities-summary-first')!;
+            expect(Array.from(first.children).map((el) => [el.className, el.textContent])).toEqual([
+                ['priorities-summary-lead', 'Requires: Maximum office days per week'], ['priorities-summary-keep', ': 2'],
+            ]);
+            named.unmount();
 
             serve([pref(1), pref(2)]);
             render(<PrioritiesSection variant="sidebar" authenticated/>);
@@ -1388,6 +1485,272 @@ describe('PrioritiesSection', () => {
             const mainNote = mainReview.querySelector('.priorities-scope-note')!;
             expect(mainNote.compareDocumentPosition(within(mainReview).getByRole('list', {name: 'Proposed changes'}))
                 & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        });
+    });
+
+    describe('visual round 3 (issue #480)', () => {
+        const pref = (n: number) => ({path: `p${n}`, label: `Pref ${n}`, display: `v${n}`, hard: false, supported: true});
+        const serve = (apply: () => Response = () => json({revision: 3, changes: proposal.changes, undo: null})) => mockFetch({
+            '/api/agent/preferences/propose/': () => json(proposal),
+            '/api/agent/preferences/apply/': apply,
+            '/api/agent/preferences/reset/': () => json({error: {type: 'server', message: 'nope'}}, 500),
+            '/api/agent/preferences/': () => json(snapshotBody(2, [chip, pref(1)])),
+        });
+
+        describe('keeping the reader\'s place when a step changes', () => {
+            // jsdom lays nothing out and never scrolls: positions are given and frames are run by hand.
+            let queued = new Map<number, FrameRequestCallback>();
+            let nextId = 0;
+            const tops = {section: 100, body: 100};
+            const frame = () => act(() => {
+                const run = Array.from(queued.values());
+                queued = new Map();
+                run.forEach((callback) => callback(0));
+            });
+            const settle = async () => { for (let i = 0; i < 6; i += 1) await frame(); };
+
+            beforeEach(() => {
+                queued = new Map();
+                Object.assign(tops, {section: 100, body: 100});
+                jest.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+                    nextId += 1;
+                    queued.set(nextId, callback);
+                    return nextId;
+                });
+                jest.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { queued.delete(id); });
+            });
+            afterEach(() => jest.restoreAllMocks());
+
+            const Chat = ({owner, pill}: {owner: 'panel' | 'transcript'; pill: boolean}) => (
+                <div id="job-search-chat">
+                    <section data-testid="job-search-chat" data-scroll-owner={owner}>
+                        <div role="log"></div>
+                        <div className="chat-footer">{pill && <button type="button" data-testid="jump-to-latest">Jump</button>}</div>
+                    </section>
+                </div>
+            );
+            async function mount(owner: 'panel' | 'transcript', pill = false) {
+                serve();
+                const ui = (shown: boolean) => (
+                    <div className="assistant-panel-body">
+                        <PrioritiesSection variant="sidebar" authenticated/>
+                        <Chat owner={owner} pill={shown}/>
+                    </div>
+                );
+                const view = render(ui(pill));
+                const section = await screen.findByTestId('priorities-sidebar');
+                const panel = section.parentElement!;
+                const log = panel.querySelector<HTMLElement>('[role="log"]')!;
+                jest.spyOn(section, 'getBoundingClientRect').mockImplementation(() => ({top: tops.section}) as DOMRect);
+                jest.spyOn(panel, 'getBoundingClientRect').mockImplementation(() => ({top: tops.body}) as DOMRect);
+                Object.defineProperty(panel, 'scrollHeight', {configurable: true, value: 2000});
+                Object.defineProperty(log, 'scrollHeight', {configurable: true, value: 3000});
+                const toggle = await screen.findByTestId('priorities-summary-toggle');
+                await settle();
+                return {section, panel, log, toggle, showPill: (shown: boolean) => view.rerender(ui(shown)), unmount: view.unmount};
+            }
+
+            test('an open block that does not pin is brought back on screen, and the reader returns to the end when it closes', async () => {
+                const {section, panel, toggle, showPill} = await mount('panel');
+                panel.scrollTop = 900;
+                act(() => toggle.focus());
+                fireEvent.click(toggle);
+                // The chat followed the conversation: the block's top is 400px above the panel's.
+                tops.section = -300;
+                await frame();
+                expect(panel.scrollTop).toBe(500);
+                tops.section = 100;
+                // The reader is no longer at the end, so the chat shows its pill; nothing else moves.
+                showPill(true);
+                await settle();
+                expect(panel.scrollTop).toBe(500);
+                expect(queued.size).toBe(0);
+
+                // Closed again with the row pinned (it holds the focus): back to the end of the conversation.
+                fireEvent.click(toggle);
+                section.setAttribute('data-pinned', '');
+                await frame();
+                expect(panel.scrollTop).toBe(2000);
+                showPill(false);
+                await settle();
+                expect(queued.size).toBe(0);
+            });
+
+            test('a reader who was reading older messages is left where they are', async () => {
+                const {section, panel, toggle} = await mount('panel', true);
+                panel.scrollTop = 300;
+                fireEvent.click(toggle);
+                section.setAttribute('data-pinned', '');
+                await settle();
+                expect(panel.scrollTop).toBe(300);
+                // Opened where it does not pin and scrolled away by the reader: brought back, but not sent to the end on closing.
+                section.removeAttribute('data-pinned');
+                await openEditor('sidebar');
+                tops.section = 40;
+                await frame();
+                expect(panel.scrollTop).toBe(240);
+                tops.section = 100;
+                await settle();
+                act(() => screen.getByRole('button', {name: 'Cancel'}).click());
+                section.setAttribute('data-pinned', '');
+                await settle();
+                expect(panel.scrollTop).toBe(240);
+            });
+
+            test('while the chat scrolls its own transcript a reader at the end stays there; a pinned block keeps them there in the panel', async () => {
+                const first = await mount('transcript');
+                fireEvent.click(first.toggle);
+                await frame();
+                expect(first.log.scrollTop).toBe(3000);
+                expect(first.panel.scrollTop).toBe(0);
+                first.unmount();
+                act(() => resetWorkspaceForTests());
+
+                const second = await mount('panel');
+                fireEvent.click(second.toggle);
+                // Not pinned and still on screen: nothing to do.
+                await frame();
+                expect(second.panel.scrollTop).toBe(0);
+                second.section.setAttribute('data-pinned', '');
+                await frame();
+                expect(second.panel.scrollTop).toBe(2000);
+                expect(second.log.scrollTop).toBe(0);
+            });
+
+            test('the row that took the focus is brought on screen where it cannot pin, and a pending frame is dropped on unmount', async () => {
+                const {panel, unmount} = await mount('panel', true);
+                panel.scrollTop = 700;
+                await openEditor('sidebar');
+                await settle();
+                // Cancel returns the focus to Edit without scrolling; the row is 150px above the panel's top.
+                fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
+                await waitFor(() => expect(screen.getByRole('button', {name: 'Edit priorities'})).toHaveFocus());
+                tops.section = -50;
+                await frame();
+                expect(panel.scrollTop).toBe(550);
+                expect(queued.size).toBe(1);
+                unmount();
+                expect(queued.size).toBe(0);
+            });
+        });
+
+        test('closing returns the focus to the row without scrolling the panel; the main block scrolls to its button as before', async () => {
+            const focus = jest.spyOn(HTMLElement.prototype, 'focus');
+            serve();
+            const first = render(<PrioritiesSection variant="sidebar" authenticated/>);
+            await openEditor('sidebar');
+            fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
+            const edit = await screen.findByRole('button', {name: 'Edit priorities'});
+            await waitFor(() => expect(edit).toHaveFocus());
+            expect(focus.mock.contexts[focus.mock.calls.length - 1]).toBe(edit);
+            expect(focus).toHaveBeenLastCalledWith({preventScroll: true});
+            first.unmount();
+            act(() => resetWorkspaceForTests());
+
+            serve();
+            render(<PrioritiesSection variant="main" authenticated/>);
+            await openEditor('main');
+            fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
+            await waitFor(() => expect(screen.getByRole('button', {name: 'Edit priorities'})).toHaveFocus());
+            expect(focus).toHaveBeenLastCalledWith({preventScroll: false});
+            focus.mockRestore();
+        });
+
+        test('an expired session on Apply is said once in the sidebar, by the sign-in line', async () => {
+            const expired = () => json({error: {type: 'auth_required'}}, 401);
+            async function applyExpired(variant: 'main' | 'sidebar') {
+                serve(expired);
+                const view = render(<PrioritiesSection variant={variant} authenticated/>);
+                const form = await openEditor(variant);
+                fireEvent.change(within(form).getByRole('spinbutton', {name: /Minimum base salary/}), {target: {value: '150000'}});
+                fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+                fireEvent.click(await screen.findByRole('button', {name: 'Apply to account'}));
+                expect(await screen.findByTestId('priorities-session-expired')).toBeInTheDocument();
+                return view;
+            }
+            const sidebar = await applyExpired('sidebar');
+            expect(screen.getByTestId('priorities-review')).toBeInTheDocument();
+            expect(screen.queryByTestId('priorities-review-error')).not.toBeInTheDocument();
+            expect(screen.getAllByRole('alert')).toHaveLength(1);
+            sidebar.unmount();
+            act(() => resetWorkspaceForTests());
+            // The main block is unchanged: the review keeps its own message.
+            await applyExpired('main');
+            expect(screen.getByTestId('priorities-review-error')).toBeInTheDocument();
+        });
+
+        test('a failed Apply in the sidebar review says so in the review, with the actions still there', async () => {
+            serve(() => json({error: {type: 'server', message: 'Could not save right now.'}}, 500));
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const form = await openEditor('sidebar');
+            fireEvent.change(within(form).getByRole('spinbutton', {name: /Minimum base salary/}), {target: {value: '150000'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            fireEvent.click(await screen.findByRole('button', {name: 'Apply to account'}));
+            const error = await screen.findByTestId('priorities-review-error');
+            expect(error).toHaveAttribute('role', 'alert');
+            expect(error).toHaveTextContent('Could not save right now.');
+            // The message sits between the change and the actions, where the stylesheet pins it above the action row.
+            const review = screen.getByTestId('priorities-review');
+            expect(error.parentElement).toBe(review);
+            expect(error.nextElementSibling).toBe(within(review).getByRole('group', {name: 'Review actions'}));
+            expect(screen.getByRole('button', {name: 'Apply to account'})).toBeEnabled();
+        });
+
+        test('an invalid value in the sidebar scrolls only the block\'s own list to the field, never the panel', async () => {
+            scrollIntoView.mockClear();
+            mockFetch({
+                '/api/agent/preferences/propose/': () => json({error: {type: 'invalid_request', message: 'bad',
+                    field_errors: {'compensation.minimum_salary': ['Must be zero or more.']}}}, 400),
+                '/api/agent/preferences/': () => json(snapshotBody(2, [chip])),
+            });
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const form = await openEditor('sidebar');
+            const input = within(form).getByLabelText('Minimum base salary');
+            const region = form.closest<HTMLElement>('.priorities-scroll')!;
+            // The field's row is 300px below the list's top edge and 90px tall; the pinned footer starts 400px below that edge.
+            const rects = {row: {top: 500, bottom: 590}, footer: {top: 600}};
+            jest.spyOn(region, 'getBoundingClientRect').mockImplementation(() => ({top: 200}) as DOMRect);
+            jest.spyOn(input.closest<HTMLElement>('.priorities-field')!, 'getBoundingClientRect').mockImplementation(() => rects.row as DOMRect);
+            jest.spyOn(region.querySelector<HTMLElement>('.priorities-footer')!, 'getBoundingClientRect').mockImplementation(() => rects.footer as DOMRect);
+            region.scrollTop = 40;
+            fireEvent.change(input, {target: {value: '-5'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            await waitFor(() => expect(input).toHaveFocus());
+            expect(input).toHaveAttribute('aria-invalid', 'true');
+            // The whole row fits above the footer: it goes to the top of the list.
+            expect(region.scrollTop).toBe(40 + 300 - 8);
+            expect(scrollIntoView).not.toHaveBeenCalled();
+
+            // A list too short for the row (the footer starts 60px below the list's top edge): the row's end, with
+            // the reason, sits just above the footer.
+            rects.row = {top: 208, bottom: 298};
+            rects.footer = {top: 260};
+            region.scrollTop = 0;
+            fireEvent.change(input, {target: {value: '-6'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            await waitFor(() => expect(region.scrollTop).toBe(298 - 260 + 4));
+            expect(scrollIntoView).not.toHaveBeenCalled();
+        });
+
+        test('a failed reset is said at the top of the open list, and under the row once the list is collapsed', async () => {
+            serve();
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const toggle = await screen.findByTestId('priorities-summary-toggle');
+            fireEvent.click(toggle);
+            fireEvent.click(screen.getByRole('button', {name: 'Reset priorities'}));
+            fireEvent.click(within(screen.getByRole('group', {name: 'Confirm reset'})).getByRole('button', {name: 'Reset priorities'}));
+            const open = await screen.findByTestId('priorities-view-error');
+            // Open: it scrolls with the chips instead of taking the list's room.
+            const scroller = open.closest('.priorities-scroll')!;
+            expect(scroller.firstElementChild).toBe(open);
+            expect(within(scroller as HTMLElement).getAllByTestId('priority-chip')).toHaveLength(2);
+            expect(screen.getAllByTestId('priorities-view-error')).toHaveLength(1);
+
+            fireEvent.click(screen.getByTestId('priorities-summary-toggle'));
+            const collapsed = screen.getByTestId('priorities-view-error');
+            expect(collapsed.closest('.priorities-scroll')).toBeNull();
+            expect(collapsed.previousElementSibling).toHaveClass('priorities-summary-row');
+            expect(screen.getAllByTestId('priorities-view-error')).toHaveLength(1);
         });
     });
 });

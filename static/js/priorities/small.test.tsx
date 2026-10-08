@@ -300,7 +300,9 @@ describe('prioritiesSummary (collapsed sidebar row)', () => {
     test('requirements come first with the chip formatting, then the preference count', () => {
         expect(prioritiesSummary([salary])).toBe('Requires: $150,000');
         expect(prioritiesSummary([chipOf({}), salary, modes], 'EUR', new Set(['work_location.modes'])))
-            .toBe('Requires: EUR 150,000, Remote \u00b7 1 preference');
+            .toBe('Requires: EUR 150,000, +1 \u00b7 1 preference');
+        expect(prioritiesSummary([chipOf({}), salary, modes], undefined, new Set(['work_location.modes'])))
+            .toBe('Requires: $150,000, Remote \u00b7 1 preference');
         expect(prioritiesSummary([salary, modes])).toBe('Requires: $150,000, remote');
     });
 
@@ -309,13 +311,17 @@ describe('prioritiesSummary (collapsed sidebar row)', () => {
         const chips = [unused, salary, modes, chipOf({})];
         expect(prioritiesSummary(chips)).toBe('Requires: $150,000, remote, +1 \u00b7 1 preference');
         expect(chips[0]).toBe(unused);
-        expect(prioritiesSummary([unused, salary])).toBe('Requires: $150,000, Equity liquidity');
+        // A second requirement that would make the lead long is counted instead of named.
+        expect(prioritiesSummary([unused, salary])).toBe('Requires: $150,000, +1');
     });
 
     test('a value that says nothing alone is named by its field', () => {
         const days = chipOf({path: 'work_location.max_in_office_days', label: 'In-office days', display: '2', hard: true});
         const flag = chipOf({path: 'compensation.require_public_company', label: 'Public company', display: 'No', hard: true});
-        expect(prioritiesSummary([days, flag])).toBe('Requires: In-office days: 2, Public company: No');
+        expect(prioritiesSummary([days, flag])).toBe('Requires: In-office days: 2, +1');
+        expect(prioritiesSummary([flag])).toBe('Requires: Public company: No');
+        const short = chipOf({path: 'work_location.max_in_office_days', label: 'Days', display: '2', hard: true});
+        expect(prioritiesSummary([short, chipOf({...flag, label: 'Pub'})])).toBe('Requires: Days: 2, Pub: No');
     });
 });
 
@@ -325,17 +331,33 @@ describe('prioritiesSummaryParts (lead, separator, counts)', () => {
     });
     const req = (n: number) => chipOf({path: `r${n}`, display: `Need${n}`, hard: true});
 
+    const days = (label: string) => chipOf({path: 'work_location.max_in_office_days', label, display: '2', hard: true});
+
     test.each([
-        ['nothing saved', [], {lead: '', sep: '', tail: ''}],
-        ['preferences only', [chipOf({}), chipOf({path: 'industry'})], {lead: '2 preferences', sep: '', tail: ''}],
-        ['requirements only', [req(1), req(2)], {lead: 'Requires: Need1, Need2', sep: '', tail: ''}],
-        ['requirements and preferences', [req(1), chipOf({})], {lead: 'Requires: Need1', sep: ' \u00b7 ', tail: '1 preference'}],
-        ['more requirements than named', [req(1), req(2), req(3), req(4)], {lead: 'Requires: Need1, Need2', sep: ', ', tail: '+2'}],
+        ['nothing saved', [], {lead: '', keep: '', sep: '', tail: ''}],
+        ['preferences only', [chipOf({}), chipOf({path: 'industry'})], {lead: '2 preferences', keep: '', sep: '', tail: ''}],
+        ['requirements only', [req(1), req(2)], {lead: 'Requires: Need1, Need2', keep: '', sep: '', tail: ''}],
+        ['requirements and preferences', [req(1), chipOf({})], {lead: 'Requires: Need1', keep: '', sep: ' \u00b7 ', tail: '1 preference'}],
+        // The comma rides on the lead: when the lead is cut, no stray ", " is left before the counts.
+        ['more requirements than named', [req(1), req(2), req(3), req(4)], {lead: 'Requires: Need1, Need2,', keep: '', sep: ' ', tail: '+2'}],
         ['more requirements and preferences', [req(1), req(2), req(3), chipOf({})],
-            {lead: 'Requires: Need1, Need2', sep: ', ', tail: '+1 \u00b7 1 preference'}],
+            {lead: 'Requires: Need1, Need2,', keep: '', sep: ' ', tail: '+1 \u00b7 1 preference'}],
+        // A value named by its field is the part that is kept whole; only the field name gives way.
+        ['a field-named value alone', [days('Maximum office days per week')],
+            {lead: 'Requires: Maximum office days per week', keep: ': 2', sep: '', tail: ''}],
+        ['a long first requirement counts the second', [days('Maximum office days per week'), req(1), chipOf({})],
+            {lead: 'Requires: Maximum office days per week', keep: ': 2,', sep: ' ', tail: '+1 \u00b7 1 preference'}],
+        ['a field-named value second', [req(1), days('Days'), chipOf({})],
+            {lead: 'Requires: Need1, Days', keep: ': 2', sep: ' \u00b7 ', tail: '1 preference'}],
+        ['a field-named value first of two', [days('Days'), req(1), req(2)],
+            {lead: 'Requires: Days: 2, Need1,', keep: '', sep: ' ', tail: '+1'}],
+        ['a second requirement one character too long', [req(1), chipOf({path: 'r2', display: 'Tencharsxx', hard: true})],
+            {lead: 'Requires: Need1,', keep: '', sep: ' ', tail: '+1'}],
+        ['a second requirement that just fits', [req(1), chipOf({path: 'r2', display: 'Ninechars', hard: true})],
+            {lead: 'Requires: Need1, Ninechars', keep: '', sep: '', tail: ''}],
     ])('%s', (_name, chips, parts) => {
         expect(prioritiesSummaryParts(chips)).toEqual(parts);
-        expect(prioritiesSummary(chips)).toBe(`${parts.lead}${parts.sep}${parts.tail}`);
+        expect(prioritiesSummary(chips)).toBe(`${parts.lead}${parts.keep}${parts.sep}${parts.tail}`);
     });
 });
 
