@@ -244,13 +244,14 @@ export default function PriorityEditor({
         const frame = window.requestAnimationFrame(() => {
             const first = formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]');
             // In the sidebar only the block's own list scrolls, so the conversation under the block stays put. The
-            // field's row goes to the top of the list; where the list is too short for the whole row, its end (the
-            // value and the reason) sits just above the pinned footer instead.
+            // field's row goes to the top of the list; where the list is too short to show it down to the reason,
+            // the value and the reason sit just above the pinned footer instead.
             const region = first?.closest<HTMLElement>('.priorities-sidebar .priorities-scroll');
             if (first && region) {
-                const row = first.closest<HTMLElement>('.priorities-field')!.getBoundingClientRect();
+                const row = first.closest<HTMLElement>('.priorities-field')!;
+                const reason = row.querySelector<HTMLElement>('.priorities-field-error')!.getBoundingClientRect();
                 const footerTop = region.querySelector<HTMLElement>('.priorities-footer')!.getBoundingClientRect().top;
-                region.scrollTop += Math.max(row.top - region.getBoundingClientRect().top - 8, row.bottom - footerTop + 4);
+                region.scrollTop += Math.max(row.getBoundingClientRect().top - region.getBoundingClientRect().top - 8, reason.bottom - footerTop + 4);
             } else {
                 first?.scrollIntoView({block: 'center'});
             }
