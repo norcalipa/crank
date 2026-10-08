@@ -114,7 +114,7 @@ for (const [width, height] of [[1280, 800], [375, 800], [320, 700]] as const) {
             await expectNoHorizontalOverflow(page);
         });
 
-        test('replaced evidence reads "Evidence changed — refresh" until matches are refreshed', async ({page}) => {
+        test('replaced evidence reads "Evidence changed — refresh" and a paused re-check says so', async ({page}) => {
             // The stored-match case: the response still cites a row that has
             // since been superseded.
             const supersede = async (route: Route) => {
@@ -148,17 +148,23 @@ for (const [width, height] of [[1280, 800], [375, 800], [320, 700]] as const) {
             const refresh = notice.getByRole('button', {name: 'Refresh matches'});
             const box = await refresh.boundingBox();
             expect(box!.height).toBeGreaterThanOrEqual(44);
-            await page.unroute(RANKED, supersede);
-            // Refresh asks the server to re-check, then re-reads; pressed by
-            // keyboard, focus lands on the panel heading, not <body>.
+            // This server keeps recompute off, so the real answer is
+            // "disabled": the notice says re-checking is paused and stops
+            // offering a button that cannot succeed. (The successful
+            // re-check is in match-refresh.spec.ts, on stored results.)
             const recheck = page.waitForResponse((response) =>
                 response.url().includes('/api/job-matches/refresh/') && response.request().method() === 'POST');
             await refresh.focus();
             await page.keyboard.press('Enter');
-            expect((await recheck).status()).toBe(200);
-            await expect(notice).toHaveCount(0);
-            await expect(jobChip).toContainText('Sourced, not confirmed');
+            const answer = await recheck;
+            expect(answer.status()).toBe(200);
+            expect(await answer.json()).toEqual({status: 'disabled'});
+            await expect(notice).toContainText('Re-checking is paused right now');
+            await expect(notice.getByRole('button')).toHaveCount(0);
+            await expect(notice).toHaveCount(1);
+            await expect(jobChip).toContainText('Evidence changed — refresh');
             await expect(page.getByRole('heading', {name: 'Your Job Matches'})).toBeFocused();
+            await expectNoHorizontalOverflow(page);
         });
 
         test('assistant organization cards show the summary, and old replies still render', async ({page}) => {
