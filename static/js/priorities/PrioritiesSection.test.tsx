@@ -1707,23 +1707,33 @@ describe('PrioritiesSection', () => {
             const form = await openEditor('sidebar');
             const input = within(form).getByLabelText('Minimum base salary');
             const region = form.closest<HTMLElement>('.priorities-scroll')!;
-            // The field's row is 300px below the list's top edge and 90px tall; the pinned footer starts 400px below that edge.
-            const rects = {row: {top: 500, bottom: 590}, footer: {top: 600}};
+            // The field's row is 300px below the list's top edge and its reason ends 90px further down; the pinned
+            // footer starts 400px below that edge. (The reason exists once the server has refused the value.)
+            const rects = {row: {top: 500}, reason: {bottom: 590}, footer: {top: 600}};
+            const row = input.closest<HTMLElement>('.priorities-field')!;
+            const realQuery = row.querySelector.bind(row);
             jest.spyOn(region, 'getBoundingClientRect').mockImplementation(() => ({top: 200}) as DOMRect);
-            jest.spyOn(input.closest<HTMLElement>('.priorities-field')!, 'getBoundingClientRect').mockImplementation(() => rects.row as DOMRect);
+            jest.spyOn(row, 'getBoundingClientRect').mockImplementation(() => rects.row as DOMRect);
+            jest.spyOn(row, 'querySelector').mockImplementation((selector: string) => {
+                const found = realQuery(selector) as HTMLElement | null;
+                if (found && selector === '.priorities-field-error') found.getBoundingClientRect = () => rects.reason as DOMRect;
+                return found;
+            });
             jest.spyOn(region.querySelector<HTMLElement>('.priorities-footer')!, 'getBoundingClientRect').mockImplementation(() => rects.footer as DOMRect);
             region.scrollTop = 40;
             fireEvent.change(input, {target: {value: '-5'}});
             fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
             await waitFor(() => expect(input).toHaveFocus());
             expect(input).toHaveAttribute('aria-invalid', 'true');
-            // The whole row fits above the footer: it goes to the top of the list.
+            expect(row.querySelector('.priorities-field-error')).toHaveTextContent('Must be zero or more.');
+            // The row fits above the footer down to its reason: it goes to the top of the list.
             expect(region.scrollTop).toBe(40 + 300 - 8);
             expect(scrollIntoView).not.toHaveBeenCalled();
 
-            // A list too short for the row (the footer starts 60px below the list's top edge): the row's end, with
-            // the reason, sits just above the footer.
-            rects.row = {top: 208, bottom: 298};
+            // A list too short for that (the footer starts 60px below the list's top edge): the value and the
+            // reason sit just above the footer.
+            rects.row = {top: 208};
+            rects.reason = {bottom: 298};
             rects.footer = {top: 260};
             region.scrollTop = 0;
             fireEvent.change(input, {target: {value: '-6'}});
