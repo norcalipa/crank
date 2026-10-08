@@ -28,9 +28,11 @@ its line here (and, where a line says so, the one value it names).
 |---|---|---|
 | D1 | Shell rollback | **default — owner may change:** redeploying the previous image is accepted as the shell's rollback; `assistant_shell` stays `planned` and no shell switch is built. |
 | D2 | Gate thresholds | **default — owner may change:** the one existing #328 stage number (reply success `0.90`) is reused as `provisional`; four more `provisional` numbers are new in #492 (`docs/rollout-gates.md`, "Provisional numbers for #492 gates"); every other new gate is `baseline_required` until 14 days of data exist with the capability enabled; no new alerts. Values live in `release_gates:` in `docs/monitoring.yaml`. No gate has a sample floor yet (see "Sample floors and alert policies to lock" below). |
-| D3 | Where sessions run | **default — owner may change:** a staging instance (`ENV=staging`, orchestrator provider, at least one real approved source). Documented alternative: production as an internal canary with throwaway accounts, after durable enablement. |
+| D3 | Where sessions run | **default — owner may change:** a staging instance (`ENV=staging`, orchestrator provider, at least one real approved source). Documented alternative: production as an internal canary with throwaway accounts, after durable enablement — which is not possible until #555 is fixed (see Preconditions). |
 | D4 | Pass bar for A2 | **default — owner may change:** at least 4 of 5 participants answer all four comprehension probes (C1–C4) correctly. |
-| D5 | Sign-offs and where evidence lives | **default — owner may change:** the repository owner signs each role by GitHub handle and date; results are recorded by an owner-authored docs pull request that fills the results record; raw notes never enter the repository. |
+| D5 | Sign-offs and where evidence lives | **default — owner may change:** the repository owner signs each role by GitHub handle and date; results are recorded by an owner-authored docs pull request that fills the results record; raw notes never enter the repository. This is the only sign-off mechanism: an approving review is not one. |
+| D6 | How long raw notes and recordings are kept | **default — owner may change:** destroyed when the results record is merged, and in any case no later than 30 days after the last session — also if the round is abandoned or repeated. |
+| D7 | Where decision records live and what they may show | **default — owner may change:** each phase decision record is the body of its pull request, which is public. Aggregate `data_counts` and gate values are accepted as public; nothing that identifies a person or quotes typed text may appear. Alternative: keep the record outside the repository and put only the decision and the sign-off in the pull request. |
 
 ### Sample floors and alert policies to lock
 
@@ -46,14 +48,14 @@ Rules: `docs/monitoring.md`, "Release decision gates".
 |---|---|---|---|---|
 | `priorities-apply-success` | `preference_decision` events with `decision = 'apply'` | 14 days | not set | — |
 | `interactive-reply-success` | `assistant_turn` events with `phase = 'attempted'` | 7 days | not set | — |
-| `interactive-alerts-quiet` | `interactive_call` events (live signal) | 7 days | not set | not confirmed |
+| `interactive-alerts-quiet` | `interactive_call` events with `status = 'provider_succeeded'` (live signal; error events do not count) | 7 days | not set | not confirmed |
 | `interactive-time-to-first-result` | `assistant_first_result` events | 14 days | not set | — |
-| `assistant-ready-share` | `availability_state` events for `assistant_status`, signed-out excluded | 7 days | not set | — |
-| `job-source-alerts-quiet` | `inventory_health` events (live signal) | 7 days | not set | not confirmed |
+| `job-source-alerts-quiet` | `inventory_health` events that carry the gauges (live signal; a degraded probe event does not count) | 7 days | not set | not confirmed |
 | `job-matches-source-unavailable` | `availability_state` events for `job_matches`, every state | 7 days | not set | — |
-| `publication-outbox-age` | `pipeline_health` events | 24 hours | not set | — |
-| `publication-to-match-lag` | `matching_batch` events with a measured lag | 14 days | not set | — |
-| `matching-alerts-quiet` | `matching_batch` events (live signal) | 7 days | not set | not confirmed |
+| `assistant-ready-share` | `availability_state` events for `assistant_status`, signed-out excluded | 7 days | not set | — |
+| `publication-outbox-age` | `pipeline_health` events that carry the outbox age gauge | 24 hours | not set | — |
+| `publication-to-match-lag` | `matching_batch` events from the `match_recompute` stage with a measured lag | 14 days | not set | — |
+| `matching-alerts-quiet` | `matching_batch` events from the `match_recompute` stage (live signal) | 7 days | not set | not confirmed |
 | `evidence-stale-share` | accepted evidence rows in the latest `pipeline_health` event | 24 hours | not set | — |
 
 ## Preconditions
@@ -63,9 +65,15 @@ Do not start recruiting until every line holds for the release under test.
 - **An environment with real inventory exists.** The repository defines no
   staging deployment (see "Observed state when this section was written" in
   `docs/rollout-gates.md`), so the environment in D3 has to be stood up, or
-  the documented alternative chosen. Enablement must follow the durable
-  enablement rule in that section, because out-of-band `kubectl` changes are
-  reverted by the next deploy.
+  the documented alternative chosen.
+- **[#555](https://github.com/norcalipa/crank/issues/555) is fixed — open
+  when this was written.** A hard precondition for any environment deployed
+  by this repository's workflows, production included. Every deploy reverts
+  out-of-band `kubectl` changes and blanks the capability credentials, and
+  committing the reply flag without a surviving credential takes the web
+  pods out of readiness ("Durable enablement rule" in
+  `docs/rollout-gates.md`). Until it is fixed the canary alternative in D3
+  cannot be prepared, and nobody should commit a capability flag to try.
 - **The readiness record is taken on that environment.** Run
   `python manage.py readiness_baseline --out <file>` and keep
   `source_version`, `fixtures.revision` and `release_verdict`. The record
@@ -81,11 +89,25 @@ Do not start recruiting until every line holds for the release under test.
 - **Automated checks are green on the same SHA.** The Playwright Django
   workflow passes and `python manage.py rollback_drill --json` reports
   passed.
-- **The surfaces under test are final.** Tasks below are written as user
-  goals because the job cards, company view, evidence labels and help copy
-  were still changing when this was written. Re-read every task and probe
-  against the release SHA before the first session, and correct any wording
-  that no longer matches what a participant will see.
+- **The surfaces under test are final.** That means every issue in the
+  table below is closed and its change is in the release under test. Tasks
+  are written as user goals because these surfaces were still changing when
+  this was written. Re-read every task and probe against the release SHA
+  before the first session, and correct any wording that no longer matches
+  what a participant will see.
+
+| Blocking issue | What it changes | Affects | State on 2026-10-08 |
+|---|---|---|---|
+| #551 | evidence status on job and assistant cards | T2, T4, C3, C4 | open (pull request) |
+| #489 | job cards and posting links | T3 | open |
+| #486 | company details in the workspace | T2 | open |
+| #488 | help and conversation copy | A1, A2 | open |
+| #536 | assistant listing tool can show hidden employers | wrong facts shown as confirmed | open |
+| #537 | office-policy parser misreads "no office required" | wrong facts shown as confirmed | open |
+| #548 | value readers misread RTO and vesting prose | wrong facts shown as confirmed | open |
+| #555 | deploys blank credentials and revert flags | the environment itself | open |
+
+Check each state again before recruiting; this table is a snapshot.
 
 ## Participants and recruiting criteria
 
@@ -109,8 +131,19 @@ Before each session, the moderator confirms aloud and ticks:
 - [ ] The participant knows what is written down: task outcomes, timings,
       probe answers and paraphrased confusion notes, under a participant
       number.
-- [ ] The participant knows what is not kept: their name, contact details,
-      employer, real pay, real job preferences and anything they typed.
+- [ ] The participant knows what the moderator does not write down: their
+      name, contact details, employer, real pay, real job preferences, and
+      the words they type or the assistant replies.
+- [ ] The participant knows that **the product itself keeps what they
+      type**: chat messages and saved priorities are stored under the
+      throwaway account, and each message is sent to the external
+      language-model provider that writes the replies. The stored copies are
+      deleted with the account after the round (see
+      "Deleting session data"); the copy sent to the provider cannot be
+      deleted from here.
+- [ ] The participant has been asked **not to type real personal details**
+      — no real name, employer, pay, location or contact details — in
+      priorities or in chat.
 - [ ] The participant has agreed to notes being taken. Audio or screen
       recording happens only with separate explicit agreement, and a
       recording is never stored in the repository or attached to an issue.
@@ -140,12 +173,53 @@ Further rules:
   never quoted from what the participant typed or what the assistant
   replied.
 - **Retention limit for raw notes:** raw notes and any recording are
-  destroyed when the results record is merged. They are not kept past that
-  point and never enter the repository.
+  destroyed when the results record is merged, and in any case no later than
+  30 days after the last session (D6) — including when the round is
+  abandoned or has to be repeated. They never enter the repository.
+
+### What the product stores during a session
+
+The rules above govern the moderator's records. The product keeps its own:
+
+- Every chat message, the participant's and the assistant's, is stored
+  verbatim (`JobSearchMessage.content`). The newest 50 messages of each
+  conversation are kept (`JOB_SEARCH_MESSAGES_RETENTION`), with no time
+  limit.
+- Saved priorities are stored (`UserPreference`) until changed or reset.
+- With the orchestrator provider that D3 requires, the conversation text is
+  sent to the external language-model provider. How long the provider keeps
+  it is set by the provider's terms, not by this repository.
+
+### Deleting session data
+
+After the last session, and before the results record is merged:
+
+1. A superuser deletes each throwaway account in Django admin
+   (**Authentication and Authorization → Users → Delete**). This is an
+   existing path: the account's conversations, messages, saved priorities
+   and matches are deleted with it (`on_delete=CASCADE`; a test in
+   `crank/tests/test_release_decision_gates.py` checks the cascade). A
+   participant can also delete a single conversation themselves with the
+   product's own delete-conversation control
+   (`agent_conversation_delete`), but that leaves the account and its saved
+   priorities, so it does not replace this step.
+2. **The repository owner confirms the deletion** and records the date in the
+   results record, in one of two ways: the admin user list no longer shows
+   any session account; or, on an environment with no other users, a
+   readiness record taken after deletion shows `conversations`, `messages`
+   and `saved_preferences` in `data_counts` back at the values of a record
+   taken before the first session.
+3. There is no command or page that deletes a set of accounts in one step,
+   and none is added here. If the manual step proves error-prone, file a
+   follow-up issue for a bounded cleanup command.
+4. Nothing here can delete what was already sent to the model provider.
+   Before recruiting, the owner checks the provider's retention terms and
+   decides whether they are acceptable for the round.
 
 ## Moderator script
 
-1. Read the consent checklist and tick it.
+1. Read the consent checklist and tick it, including the two items about
+   what the product stores and not typing real personal details.
 2. Say: "I will read you a goal. Please do it the way you would on your own
    and say what you are thinking. I cannot help while you work; that is so we
    learn what the product needs to explain better."
@@ -262,32 +336,47 @@ currently skipped and are not passing evidence.
 
 None of these can be done by a pull request from an implementer.
 
-1. Choose and prepare the session environment (D3), following the durable
-   enablement rule and #453.
-2. Record the release under test with `readiness_baseline`.
-3. Confirm the automated preconditions on that SHA.
-4. Recruit five participants to the criteria above.
-5. Run the five sessions with the moderator script.
-6. Score the round against A1 and A2.
-7. File a follow-up issue for every failed or assisted core task and every S1
-   or S2 finding; fix or explicitly accept each before the release decision.
-8. Exercise disablement and rollback in the chosen environment: take a
-   readiness record, switch off the provider
-   (`CapabilitySwitch(interactive_agent)`) and one source
-   (`JobSourceCatalog.enabled`), confirm direct priority editing and stored
-   results still work, re-enable, take a second record, and compare
-   `data_counts`.
-9. Complete the manual accessibility evidence still pending in
-   `docs/e2e-validation.md` ("Manual evidence pending").
-10. Enable each phase durably, one pull request per capability, in the order
-    of the phase table in `docs/rollout-gates.md`.
-11. Observe each enabled phase for its window, run the gate queries, and
-    decide expand, hold or roll back. Baseline-required gates need at least
-    14 days of data with the capability enabled.
-12. Lock thresholds after the baseline in a small follow-up pull request.
-13. Record each decision in the decision record template with a named
-    sign-off (D5).
-14. Close #492 with the filled results record.
+1. Choose and prepare the session environment (D3). For any environment
+   deployed by this repository's workflows this waits for #555; do not
+   commit a capability flag before it is fixed.
+2. Confirm every blocking issue in the Preconditions table is closed and in
+   the release under test.
+3. Check the model provider's retention terms for conversation text and
+   decide whether they are acceptable for the round.
+4. Record the release under test with `readiness_baseline`. Keep the
+   `data_counts` of this record: it is the "before" for step 9.
+5. Confirm the automated preconditions on that SHA.
+6. Recruit five participants to the criteria above.
+7. Run the five sessions with the moderator script.
+8. Score the round against A1 and A2.
+9. Delete the throwaway accounts and confirm the deletion
+   ("Deleting session data"). Destroy raw notes and recordings by the limit
+   in D6.
+10. File a follow-up issue for every failed or assisted core task and every
+    S1 or S2 finding; fix or explicitly accept each before the release
+    decision.
+11. Exercise disablement and rollback in the chosen environment: take a
+    readiness record, switch off the provider
+    (`CapabilitySwitch(interactive_agent)`) and one source
+    (`JobSourceCatalog.enabled`), confirm direct priority editing and stored
+    results still work, re-enable, take a second record, and compare
+    `data_counts`. This restarts the window of every gate in the phases it
+    touches (`docs/monitoring.md`, "A clean window").
+12. Complete the manual accessibility evidence still pending in
+    `docs/e2e-validation.md` ("Manual evidence pending").
+13. Once #555 is fixed, enable each phase durably, one pull request per
+    capability and one for the master flag, in the order of the phase table
+    in `docs/rollout-gates.md`, running the post-merge check each time.
+14. Lock a sample floor for every gate and confirm the alert policies exist
+    in the alerting tool ("Sample floors and alert policies to lock").
+15. Observe each enabled phase for a clean window, run the gate queries, and
+    decide expand, hold or roll back by the procedure in
+    `docs/monitoring.md`. Baseline-required gates need at least 14 days of
+    data with the capability enabled.
+16. Lock thresholds after the baseline in a small follow-up pull request.
+17. Record each decision in the decision record template, signed as D5
+    defines and within what D7 allows.
+18. Complete #492 with the filled results record.
 
 ## Results record
 
@@ -302,6 +391,8 @@ Empty until the round is run. Filled in by the owner (D5).
 | Fixture revision (`fixtures.revision`) | _…_ |
 | `release_verdict` | _…_ |
 | Session dates | _…_ |
+| Session accounts deleted (date, confirmed by) | _…_ |
+| Raw notes and recordings destroyed (date) | _…_ |
 
 ### Outcomes
 
