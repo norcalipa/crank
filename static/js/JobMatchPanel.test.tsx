@@ -1431,13 +1431,13 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
     test('an endpoint generation mismatch keeps the displayed list', async () => {
         installBatchedFetch([
             {title: 'Gen five', generation: 5, hold: false},
-            {title: 'Mismatch', generation: 6, rankedGeneration: 7, hold: false},
+            {title: 'Mismatched pair', generation: 6, rankedGeneration: 7, hold: false},
         ]);
         render(<JobMatchPanel/>);
         await screen.findByText('Gen five');
         await refreshAndSettle(3);
         expect(screen.getByText('Gen five')).toBeInTheDocument();
-        expect(screen.queryByText('Mismatch')).not.toBeInTheDocument();
+        expect(screen.queryByText('Mismatched pair')).not.toBeInTheDocument();
     });
 
     test('a newer ranked generation applies even when the matches page fails', async () => {

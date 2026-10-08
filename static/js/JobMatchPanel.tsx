@@ -1208,7 +1208,9 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
                     </button>
                 </div>
                 <div className="card-body">
-                    <span className="visually-hidden" role="status" aria-live="polite"
+                    {/* Always mounted, so a re-check that clears the notice is
+                        still announced. */}
+                    <span className="visually-hidden" aria-live="polite" aria-atomic="true"
                           data-testid="recheck-announcement">{recheckAnnouncement}</span>
                     <ResultNotices emptyState={emptyState!} />
                     <UnsupportedNotice unsupported={jobs[0]?.unsupported || orgs[0]?.unsupported} />

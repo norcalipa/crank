@@ -223,7 +223,7 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
         expect(heading()).not.toHaveAttribute('aria-describedby');
         // Success is announced; nothing visible would say it otherwise.
         const announcement = screen.getByTestId('recheck-announcement');
-        expect(announcement).toHaveAttribute('role', 'status');
+        expect(announcement).toHaveAttribute('aria-atomic', 'true');
         expect(announcement).toHaveAttribute('aria-live', 'polite');
         expect(announcement).toHaveTextContent('Matches re-checked.');
     });
