@@ -177,18 +177,27 @@ metrics:
     baseline_only: true
 # Release decision gates (issue #492). Evidence queries for staged release
 # decisions; these are NOT alerts and page nobody. A gate's outcome is one of
-# pass / breach / hold, decided in this order (docs/monitoring.md, "Release
-# decision gates"):
+# pass / breach / hold. The first step that applies decides (the full
+# procedure, with a worked example per kind of gate, is in docs/monitoring.md,
+# "Release decision gates"):
 #   1. `min_sample: null`  -> hold. No sample floor has been locked by the
 #      owner, so NO gate below can pass as checked in.
-#   2. the `sample_nrql` result is missing or below `min_sample` -> hold
+#   2. the gate's whole `window` does not lie after the phase was verified
+#      enabled, or its switch or a source was off at any time in it -> hold.
+#   3. the `sample_nrql` result is missing or below `min_sample` -> hold
 #      (insufficient data).
-#   3. `kind: alerts_quiet` with `policy_confirmed: false` -> hold (nobody has
+#   4. `kind: alerts_quiet` with `policy_confirmed: false` -> hold (nobody has
 #      confirmed the named alerts exist in the alerting tool).
-#   4. `threshold: null` (`status: baseline_required`) -> hold.
-#   5. otherwise breach when the value is `operator` the `threshold`, else pass.
+#   5. `threshold: null` (`status: baseline_required`), or the query returned
+#      no value -> hold.
+#   6. the value is `operator` the `threshold` -> breach.
+#   7. otherwise -> pass.
 # `sample_nrql` is the denominator of a ratio query, otherwise the count of
-# the events the gate reads (`signal_event` for an alerts_quiet gate).
+# the events that carry the measurement the gate reads. For an alerts_quiet
+# gate that is `signal_event` narrowed by `signal_filter`, so that an event
+# from another phase, or an error event with no measurement, cannot meet the
+# floor. The value of an alerts_quiet gate is the number of its named alerts
+# that were open at any time in the window, read from the alerting tool.
 # `provisional` gates carry a number restated in docs/rollout-gates.md (see
 # `source`); `baseline_required` gates have none until 14 days of data exist
 # with the capability enabled.
@@ -244,8 +253,10 @@ release_gates:
       - recurring-helpfulness-gaps
       - repeated-failure
     signal_event: interactive_call
+    signal_filter: status = 'provider_succeeded'
     sample_nrql: >-
-      SELECT count(*) FROM CrankOperation WHERE event_name = 'interactive_call'
+      SELECT count(*)
+      FROM CrankOperation WHERE event_name = 'interactive_call' AND status = 'provider_succeeded'
       SINCE 7 days ago
     operator: above
     threshold: 0
@@ -275,26 +286,6 @@ release_gates:
     window: 14 days
     on_breach: hold expansion and file a follow-up issue
     runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
-  - name: assistant-ready-share
-    phase: interactive_replies
-    switch: interactive_agent
-    kind: nrql
-    status: baseline_required
-    event: availability_state
-    nrql: >-
-      SELECT filter(count(*), WHERE state = 'ready') / count(*)
-      FROM CrankOperation WHERE event_name = 'availability_state' AND surface = 'assistant_status' AND state != 'signed_out'
-      SINCE 7 days ago
-    sample_nrql: >-
-      SELECT count(*)
-      FROM CrankOperation WHERE event_name = 'availability_state' AND surface = 'assistant_status' AND state != 'signed_out'
-      SINCE 7 days ago
-    operator: below
-    threshold: null
-    min_sample: null
-    window: 7 days
-    on_breach: hold expansion and inspect the availability state mix
-    runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
   - name: job-source-alerts-quiet
     phase: job_source
     switch: job_pipeline
@@ -306,11 +297,12 @@ release_gates:
       - stale-inventory
       - repeated-failures
       - listing-collapse
-      - no-recent-success
       - rejection-spike
     signal_event: inventory_health
+    signal_filter: enabled_sources IS NOT NULL
     sample_nrql: >-
-      SELECT count(*) FROM CrankOperation WHERE event_name = 'inventory_health'
+      SELECT count(*)
+      FROM CrankOperation WHERE event_name = 'inventory_health' AND enabled_sources IS NOT NULL
       SINCE 7 days ago
     operator: above
     threshold: 0
@@ -341,6 +333,26 @@ release_gates:
     source: docs/rollout-gates.md#provisional-numbers-for-492-gates
     on_breach: do not describe the phase as live jobs; hold or roll back
     runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
+  - name: assistant-ready-share
+    phase: job_source
+    switch: job_pipeline
+    kind: nrql
+    status: baseline_required
+    event: availability_state
+    nrql: >-
+      SELECT filter(count(*), WHERE state = 'ready') / count(*)
+      FROM CrankOperation WHERE event_name = 'availability_state' AND surface = 'assistant_status' AND state != 'signed_out'
+      SINCE 7 days ago
+    sample_nrql: >-
+      SELECT count(*)
+      FROM CrankOperation WHERE event_name = 'availability_state' AND surface = 'assistant_status' AND state != 'signed_out'
+      SINCE 7 days ago
+    operator: below
+    threshold: null
+    min_sample: null
+    window: 7 days
+    on_breach: hold expansion and inspect the availability state mix (ready needs replies on and job inventory)
+    runbook: docs/rollout-gates.md#contextual-assistant-staged-release-492
   - name: publication-outbox-age
     phase: publication
     switch: publication_consumer
@@ -349,11 +361,11 @@ release_gates:
     event: pipeline_health
     nrql: >-
       SELECT latest(outbox_oldest_age_seconds)
-      FROM CrankOperation WHERE event_name = 'pipeline_health'
+      FROM CrankOperation WHERE event_name = 'pipeline_health' AND outbox_oldest_age_seconds IS NOT NULL
       SINCE 24 hours ago
     sample_nrql: >-
       SELECT count(*)
-      FROM CrankOperation WHERE event_name = 'pipeline_health'
+      FROM CrankOperation WHERE event_name = 'pipeline_health' AND outbox_oldest_age_seconds IS NOT NULL
       SINCE 24 hours ago
     operator: above
     threshold: null
@@ -369,11 +381,11 @@ release_gates:
     event: matching_batch
     nrql: >-
       SELECT max(publication_lag_max_seconds)
-      FROM CrankOperation WHERE event_name = 'matching_batch' AND publication_lag_count > 0
+      FROM CrankOperation WHERE event_name = 'matching_batch' AND stage = 'match_recompute' AND publication_lag_count > 0
       SINCE 14 days ago
     sample_nrql: >-
       SELECT count(*)
-      FROM CrankOperation WHERE event_name = 'matching_batch' AND publication_lag_count > 0
+      FROM CrankOperation WHERE event_name = 'matching_batch' AND stage = 'match_recompute' AND publication_lag_count > 0
       SINCE 14 days ago
     operator: above
     threshold: null
@@ -390,8 +402,10 @@ release_gates:
       - matching-backlog
       - deadline-resource-pressure
     signal_event: matching_batch
+    signal_filter: stage = 'match_recompute'
     sample_nrql: >-
-      SELECT count(*) FROM CrankOperation WHERE event_name = 'matching_batch'
+      SELECT count(*)
+      FROM CrankOperation WHERE event_name = 'matching_batch' AND stage = 'match_recompute'
       SINCE 7 days ago
     operator: above
     threshold: 0

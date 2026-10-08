@@ -192,25 +192,118 @@ pages, `metrics:` stays `baseline_only` and `alerts:` is unchanged.
   and its value recorded, but it cannot pass or fail until a baseline exists.
 
 **What "sample" means.** Every gate has a `sample_nrql` and a `min_sample`
-floor, and the sample is defined per kind of gate:
+floor. The sample counts only events that carry the measurement the gate
+reads, so an error event, or an event emitted by another phase, cannot meet a
+floor:
 
 | Gate | Sample (`sample_nrql`) |
 |---|---|
 | `kind: nrql`, ratio query (`a / b`) | the denominator of the ratio — a share of nothing is not a measurement |
-| `kind: nrql`, any other aggregate (`percentile`, `max`, `latest`) | the number of events the query reads in the window |
-| `kind: alerts_quiet` | the number of `signal_event` events in the window: the event the named alerts read. "No alert opened" is also true when nothing emits, so quiet counts only while the signal is live |
+| `kind: nrql`, any other aggregate (`percentile`, `max`, `latest`) | the number of events in the window that carry the attribute the query aggregates. `publication-outbox-age` filters `outbox_oldest_age_seconds IS NOT NULL` because a degraded `pipeline_health` event (`healthy: false`) carries no gauges |
+| `kind: alerts_quiet` | the number of `signal_event` events in the window that match `signal_filter`: the event the named alerts read, narrowed to the ones this phase emits with a measurement. "No alert opened" is also true when nothing emits, so quiet counts only while the signal is live |
 
-**Evaluation rules.** A gate's outcome is pass, breach or hold, decided in
-this order:
+The three signal filters, and why each exists:
 
-1. `min_sample: null` — **hold**. The owner has not locked a sample floor.
-2. The sample is missing or below `min_sample` — **hold** (insufficient data).
-3. `kind: alerts_quiet` with `policy_confirmed: false` — **hold**. Nothing in
-   the repository creates the alert policy in the alerting tool, so the owner
-   confirms by hand that the named alerts exist there before quiet can count.
-4. `threshold: null` — **hold**.
-5. Otherwise **breach** when the value is `operator` the `threshold`, else
-   **pass**.
+| Gate | `signal_filter` | Without it the floor could be met by |
+|---|---|---|
+| `interactive-alerts-quiet` | `status = 'provider_succeeded'` | `interactive_call` events with `status: error`, which the chat view emits for every rejected or failed request |
+| `job-source-alerts-quiet` | `enabled_sources IS NOT NULL` | degraded `inventory_health` events (`healthy: false`, no gauges) emitted when the probe itself cannot run |
+| `matching-alerts-quiet` | `stage = 'match_recompute'` | `matching_batch` events with `stage: job_pipeline_matching`, which the job pipeline of the earlier `job_source` phase emits every six hours |
+
+`publication-to-match-lag` carries the same `stage = 'match_recompute'`
+filter for the same reason: the job pipeline's `matching_batch` event also
+has `publication_lag_*` attributes.
+
+**What "value" means.**
+
+- `kind: nrql`: the single number the `nrql` query returns when it is run at
+  the end of the window.
+- `kind: alerts_quiet`: the number of the gate's named alerts that were
+  **open at any time in the window**, read from the alerting tool's incident
+  history (not by re-running the alert queries, whose own windows are minutes
+  or hours). An alert that was already open when the window started counts.
+  This is why step 4 below needs the owner to have confirmed the alerts exist
+  in the tool: without a policy there is no history to read.
+
+**A clean window.** A gate's queries end `SINCE <window> ago`, so a result
+describes the phase only if the whole window lies after the phase was
+enabled. The window is clean when both hold:
+
+- at least `window` has passed since the phase's post-merge check succeeded
+  (`docs/rollout-gates.md`, "Durable enablement rule", rule 5); and
+- during the window the phase's switch was not turned off and no job source
+  was disabled. A rollback exercise (`docs/usability-validation.md`, "What
+  only the owner can do") therefore restarts the window of every gate in the
+  phase it touches.
+
+Without this, `job-matches-source-unavailable` would breach for seven days
+after `job_source` is enabled, because every signed-in `job_matches` poll
+before then emitted `no_source` or `source_disabled`.
+
+**Evaluation procedure.** Apply the steps in order to one gate. The first
+step whose check is true decides the outcome; later steps are not read.
+
+| Step | Check | Outcome |
+|---|---|---|
+| 1 | `min_sample` is `null` | hold |
+| 2 | the window is not clean | hold |
+| 3 | the sample is missing or below `min_sample` | hold |
+| 4 | `kind: alerts_quiet` and `policy_confirmed` is not `true` | hold |
+| 5 | `threshold` is `null`, or the query returned no value | hold |
+| 6 | the value is `operator` the `threshold` (`above`: value > threshold; `below`: value < threshold) | breach |
+| 7 | none of the above | pass |
+
+A value equal to the threshold is a pass under either operator.
+
+**Phase decision.** A phase's gates are combined like this:
+
+1. Any gate is **breach** — do not expand. Follow that gate's `on_breach`
+   (hold or roll back).
+2. Otherwise, any gate is **hold** — the decision is **hold**. A held gate
+   blocks expansion; it is never read as a pass.
+3. Every gate is **pass** — the phase may be expanded, if the non-telemetry
+   entries in its decision row are also met. Expanding is still the owner's
+   decision.
+
+**Worked examples.** The floors and thresholds below are invented for the
+examples only. They are not defaults and are not proposed values.
+
+*Ratio gate* — `interactive-reply-success` (`operator: below`,
+`threshold: 0.90`), supposing the owner had locked `min_sample: 200` and the
+window is clean:
+
+| `sample_nrql` (attempted turns) | `nrql` (replied ÷ attempted) | Decided at | Outcome |
+|---|---|---|---|
+| 150 | 0.97 | step 3: 150 is below 200 | hold |
+| 240 | 0.88 | step 6: 0.88 is below 0.90 | breach |
+| 240 | 0.90 | step 7 | pass |
+| 240 | 0.93 | step 7 | pass |
+
+As checked in (`min_sample: null`) all four are hold at step 1.
+
+*Aggregate gate* — `publication-outbox-age` (`operator: above`), supposing
+`min_sample: 20` and a clean window:
+
+| `sample_nrql` (events with the gauge) | `nrql` (latest age, seconds) | `threshold` | Decided at | Outcome |
+|---|---|---|---|---|
+| 24 | 5400 | `null` (as checked in) | step 5 | hold |
+| 24 | 5400 | 3600 | step 6: 5400 is above 3600 | breach |
+| 24 | 600 | 3600 | step 7 | pass |
+| 0 | no value | 3600 | step 3 | hold |
+
+*Alerts-quiet gate* — `matching-alerts-quiet` (`operator: above`,
+`threshold: 0`), supposing `min_sample: 500` and a clean window:
+
+| `sample_nrql` (`match_recompute` batches) | Named alerts open in the window | `policy_confirmed` | Decided at | Outcome |
+|---|---|---|---|---|
+| 2016 | 0 | `false` (as checked in) | step 4 | hold |
+| 2016 | 0 | `true` | step 7 | pass |
+| 2016 | 1 (`matching-backlog` opened on day 3) | `true` | step 6: 1 is above 0 | breach |
+| 2016 | 1 (already open when the window started) | `true` | step 6 | breach |
+| 0 (CronJob still suspended) | 0 | `true` | step 3 | hold |
+
+*Phase* — `match_recompute` with `publication-to-match-lag` on hold and
+`matching-alerts-quiet` passing: the phase decision is **hold**.
 
 No gate can pass as checked in: every `min_sample` is `null` and every
 `policy_confirmed` is `false`. A floor of 1 would let a single event decide a
