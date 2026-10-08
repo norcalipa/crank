@@ -32,7 +32,7 @@ import yaml
 from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth import get_user_model
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from crank.models import AgentRun, JobListing, JobSourceCatalog
@@ -2234,11 +2234,17 @@ class SessionAccountDeletionTests(TestCase):
     """The existing delete path the protocol names removes what a session stored."""
 
     def test_user_model_can_be_deleted_in_django_admin(self):
-        user_model = get_user_model()
-        self.assertIn(user_model, admin.site._registry)
-        model_admin = admin.site._registry[user_model]
-        self.assertIn("delete_selected", dict(admin.site.actions))
-        self.assertIsNot(model_admin.actions, None)
+        """Users are registered in the admin and a superuser may delete them."""
+        users = get_user_model()
+        self.assertIn(users, admin.site._registry)
+        request = RequestFactory().get("/admin/")
+        request.user = users.objects.create_superuser(
+            "owner-492", "owner@example.test", "not-real-492"
+        )
+        model_admin = admin.site._registry[users]
+        self.assertTrue(model_admin.has_delete_permission(request))
+        request.user = users.objects.create_user("staff-492", is_staff=True)
+        self.assertFalse(model_admin.has_delete_permission(request))
 
     def test_deleting_the_account_deletes_conversations_messages_and_priorities(self):
         users = get_user_model()
