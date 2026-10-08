@@ -119,10 +119,10 @@ is the last entry in `envFrom` in `k8s/crank.yml` and the `k8s/` CronJobs.
 commits to `k8s/crank-agent-config.yml`, one pull request each, in this
 order, following "Durable enablement rule" in `docs/rollout-gates.md`:
 
-1. `AGENT_RUN_ENABLED: "true"` — the master flag, on its own. It starts no
-   work by itself.
-2. `JOB_PIPELINE_ENABLED: "true"` — the job-source phase this runbook is
-   about.
+1. After #555 is fixed: `AGENT_RUN_ENABLED: "true"` — the master flag, on
+   its own. It starts no work by itself.
+2. After #555 is fixed: `JOB_PIPELINE_ENABLED: "true"` — the job-source phase
+   this runbook is about.
 
 `CRAWL_CRON_ENABLED` belongs to the organization-crawl phase and is a later,
 separate pull request (`docs/runbook-crawl-scheduling.md`); it is not part of
@@ -241,10 +241,11 @@ python manage.py crawl_healthcheck
 ```
 
 For the recurring probe, commit `spec.suspend: false` in
-`k8s/crank-healthcheck-cron.yaml`. The deploy workflows already apply that
-manifest on every deploy (substituting the image tag for `${GITHUB_SHA}`), so
-the `crank-healthcheck` CronJob exists, suspended, and the merge unsuspends
-it. Do not `kubectl apply -f` the file directly: its image tag is the literal
+`k8s/crank-healthcheck-cron.yaml`. This one does not wait for #555: the probe
+is read-only and needs no credential and no capability flag. The deploy
+workflows already apply that manifest on every deploy (substituting the image
+tag for `${GITHUB_SHA}`), so the `crank-healthcheck` CronJob exists,
+suspended, and the merge unsuspends it. Do not `kubectl apply -f` the file directly: its image tag is the literal
 `${GITHUB_SHA}` until substituted. A `kubectl patch` of `suspend` is reverted
 by the next deploy. Confirm with:
 
