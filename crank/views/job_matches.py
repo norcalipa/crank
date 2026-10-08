@@ -4,6 +4,7 @@
 
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
+from django.core.cache import cache
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.http import Http404, JsonResponse
@@ -383,6 +384,10 @@ def job_match_status(request):
 _CHANGED_EVIDENCE_STATES = frozenset({"superseded", "missing"})
 
 
+def _refresh_cooldown():
+    return max(1, int(getattr(settings, "JOB_MATCH_REFRESH_COOLDOWN_SECONDS", 30)))
+
+
 @login_required
 @require_POST
 def job_match_refresh(request):
@@ -394,8 +399,17 @@ def job_match_refresh(request):
     removed, so repeating the request once that is resolved does no work.
     The recompute is forced because a deleted row does not advance the data
     watermark. It runs inline like the preference hook, so it honors the same
-    operator switch. ``status`` is ``disabled``, ``not_needed`` or a
-    ``RecomputeStatus`` value; the client re-reads either way.
+    operator switch.
+
+    Owner-scoped: it takes no parameters and acts only on ``request.user``.
+    One recompute per user per cooldown window: the atomic ``cache.add`` is
+    both the single-flight guard for concurrent requests and the rate limit,
+    so a client cannot queue recomputes. A request inside the window gets 429
+    with ``Retry-After`` and does no recompute.
+
+    The body is ``{"status": ...}`` only: ``disabled``, ``not_needed``,
+    ``rate_limited`` (with ``retry_after`` seconds) or a ``RecomputeStatus``
+    value. The client re-reads either way.
     """
     if not match_recompute.recompute_enabled():
         return JsonResponse({"status": "disabled"})
@@ -413,6 +427,11 @@ def job_match_refresh(request):
     )
     if not changed:
         return JsonResponse({"status": "not_needed"})
+    cooldown = _refresh_cooldown()
+    if not cache.add(f"job-match-refresh:{request.user.pk}", 1, cooldown):
+        response = JsonResponse({"status": "rate_limited", "retry_after": cooldown}, status=429)
+        response["Retry-After"] = str(cooldown)
+        return response
     outcome = match_recompute.recompute_user(request.user, reason="refresh", force=True)
     return JsonResponse({"status": outcome.status.value})
 

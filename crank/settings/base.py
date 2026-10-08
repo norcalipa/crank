@@ -461,6 +461,9 @@ PUBLICATION_SWEEP_BATCH_SIZE = _env_int("PUBLICATION_SWEEP_BATCH_SIZE", 500)
 # to today's live computation unchanged.
 MATCH_RECOMPUTE_ENABLED = _env_bool("MATCH_RECOMPUTE_ENABLED", False)
 MATCH_RESULTS_READ_ENABLED = _env_bool("MATCH_RESULTS_READ_ENABLED", False)
+# One user-requested re-check of stored matches ("Refresh matches", issue #473)
+# per user per window; requests inside it get 429 and do no recompute.
+JOB_MATCH_REFRESH_COOLDOWN_SECONDS = _env_int("JOB_MATCH_REFRESH_COOLDOWN_SECONDS", 30)
 # Bounded drain: users per recompute_matches invocation and its wall-clock
 # deadline in seconds.
 MATCH_RECOMPUTE_MAX_USERS = _env_int("MATCH_RECOMPUTE_MAX_USERS", 50)

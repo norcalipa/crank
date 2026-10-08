@@ -6,6 +6,7 @@ from datetime import timedelta
 from unittest import mock
 
 from django.contrib.auth.models import User
+from django.core.cache import cache
 from django.db import connection
 from django.test import Client, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
@@ -30,6 +31,8 @@ RECOMPUTE = "crank.views.job_matches.match_recompute.recompute_user"
 )
 class JobMatchRefreshTests(TestCase):
     def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
         self.now = timezone.now()
         self.owner = User.objects.create_user("owner", password="secret")
         self.other = User.objects.create_user("other", password="secret")
@@ -186,3 +189,76 @@ class JobMatchRefreshTests(TestCase):
             response = self.client.post(URL)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "failed"})
+
+    def test_a_second_recompute_inside_the_cooldown_is_refused(self):
+        CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).delete()
+        with mock.patch(
+            "crank.services.match_recompute.open_snapshot", side_effect=RuntimeError("boom")
+        ):
+            self.assertEqual(self.client.post(URL).json(), {"status": "failed"})
+        before = self._generation(self.owner)
+        # Still unresolved, but the window has not passed: no second run.
+        with mock.patch(RECOMPUTE) as recompute:
+            response = self.client.post(URL)
+        recompute.assert_not_called()
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.json(), {"status": "rate_limited", "retry_after": 30})
+        self.assertEqual(response["Retry-After"], "30")
+        self.assertEqual(self._generation(self.owner), before)
+        # The window is per user and it ends.
+        cache.delete(f"job-match-refresh:{self.owner.pk}")
+        self.assertEqual(self.client.post(URL).json(), {"status": "published"})
+
+    def test_the_cooldown_is_per_user(self):
+        CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).delete()
+        self.assertEqual(self.client.post(URL).json(), {"status": "published"})
+        other = Client()
+        other.force_login(self.other)
+        self.assertEqual(other.post(URL).json(), {"status": "published"})
+
+    @override_settings(JOB_MATCH_REFRESH_COOLDOWN_SECONDS=0)
+    def test_the_cooldown_cannot_be_configured_away(self):
+        CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).delete()
+        with mock.patch(RECOMPUTE, return_value=mock.Mock(status=RecomputeStatus.FAILED)):
+            self.assertEqual(self.client.post(URL).json(), {"status": "failed"})
+            response = self.client.post(URL)
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.json()["retry_after"], 1)
+
+    def test_concurrent_requests_run_one_recompute(self):
+        CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).delete()
+        real = recompute_user
+        during = []
+
+        def recompute_while_another_request_arrives(user, **kwargs):
+            # A second request lands while the first is still computing.
+            during.append(self.client.post(URL))
+            return real(user, **kwargs)
+
+        with mock.patch(RECOMPUTE, side_effect=recompute_while_another_request_arrives) as recompute:
+            first = self.client.post(URL)
+        self.assertEqual(recompute.call_count, 1)
+        self.assertEqual(first.json(), {"status": "published"})
+        self.assertEqual([response.status_code for response in during], [429])
+        self.assertEqual(during[0].json()["status"], "rate_limited")
+
+    def test_the_response_carries_a_status_and_nothing_else(self):
+        CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).delete()
+        published = self.client.post(URL)
+        self.assertEqual(set(published.json()), {"status"})
+        self.assertEqual(set(self.client.post(URL).json()), {"status"})
+        self.assertNotIn(self.other.username, published.content.decode())
+
+    def test_a_refresh_records_no_telemetry_event(self):
+        CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).delete()
+        with mock.patch("crank.services.monitoring.record_event") as record_event:
+            self.assertEqual(self.client.post(URL).json(), {"status": "published"})
+        record_event.assert_not_called()
+
+    def test_query_count_is_bounded_and_independent_of_other_users(self):
+        CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).delete()
+        with CaptureQueriesContext(connection) as queries:
+            self.assertEqual(self.client.post(URL).json(), {"status": "published"})
+        self.assertLessEqual(len(queries), 40)
+        statements = " ".join(query["sql"] for query in queries)
+        self.assertNotIn(f'"user_id" = {self.other.pk}', statements)
