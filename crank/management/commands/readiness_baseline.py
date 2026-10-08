@@ -26,8 +26,8 @@ The command is a thin composition of the existing safe helpers:
   depends on (``capability_switches``), because the settings-only capability
   report cannot see a capability an operator disabled by its switch;
 - a ``release_verdict`` computed only from the record itself, so a
-  fixture-backed, capability-disabled or switch-disabled record cannot be
-  read as production readiness (issue #492).
+  fixture-backed, capability-disabled, switch-disabled or switch-unreadable
+  record cannot be read as production readiness (issue #492).
 
 The record never contains secret values: configured secret settings are
 scrubbed from any free-text field before serialization, and the helpers above
@@ -51,6 +51,7 @@ from crank.models.company_profile import CompanyFieldEvidence
 from crank.models.job import JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.job_search import JobSearchConversation, JobSearchMessage
+from crank.models.monitoring import CapabilitySwitch
 from crank.models.organization import Organization
 from crank.models.preference import UserPreference
 from crank.release import (
@@ -60,7 +61,6 @@ from crank.release import (
     git_sha,
     migration_status_summary,
 )
-from crank.services import monitoring
 from crank.services.inventory_health import check_inventory_health
 
 #: Settings that carry secret values and must never reach the baseline output.
@@ -285,11 +285,21 @@ def capability_switches() -> dict:
     The capability report reads settings flags only. The database switch is
     the documented immediate rollback, so its state is recorded beside the
     report: an absent row means enabled, exactly as the runtime reads it.
+
+    The rows are read here rather than through
+    ``monitoring.capability_enabled()``, which returns its default when the
+    query fails: for a readiness verdict an unreadable switch must not count
+    as enabled, so a failed read records ``"unknown"`` for every capability.
     """
-    return {
-        name: monitoring.capability_enabled(name, default=True)
-        for name in VERDICT_CAPABILITIES
-    }
+    try:
+        rows = dict(
+            CapabilitySwitch.objects.filter(
+                key__in=VERDICT_CAPABILITIES
+            ).values_list("key", "enabled")
+        )
+    except Exception:  # noqa: BLE001 - fail closed on any DB error
+        return {name: UNKNOWN for name in VERDICT_CAPABILITIES}
+    return {name: bool(rows.get(name, True)) for name in VERDICT_CAPABILITIES}
 
 
 def _capability_blockers(record: dict, name: str) -> list[str]:
@@ -301,10 +311,14 @@ def _capability_blockers(record: dict, name: str) -> list[str]:
         blockers.append(f"{name}_disabled")
     elif entry.get("issues") or not entry.get("ok", True):
         blockers.append(f"{name}_misconfigured")
-    # Fail closed: a record that does not say the switch is on (including one
-    # written before the key existed) cannot stand as production readiness.
-    if (record.get("capability_switches") or {}).get(name) is not True:
+    # Fail closed: only a recorded ``True`` clears the switch. ``False`` is a
+    # switch an operator turned off; anything else (a failed read, or a record
+    # written before the key existed) is a state nobody read.
+    state = (record.get("capability_switches") or {}).get(name)
+    if state is False:
         blockers.append(f"{name}_switch_disabled")
+    elif state is not True:
+        blockers.append(f"{name}_switch_unknown")
     return blockers
 
 

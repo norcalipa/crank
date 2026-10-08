@@ -14,9 +14,11 @@ rollback without exposing identifiers or text.
 import copy
 import io
 import json
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
+from django.db import OperationalError
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
@@ -43,9 +45,11 @@ BLOCKER_CODES = (
     "interactive_agent_disabled",
     "interactive_agent_misconfigured",
     "interactive_agent_switch_disabled",
+    "interactive_agent_switch_unknown",
     "job_pipeline_disabled",
     "job_pipeline_misconfigured",
     "job_pipeline_switch_disabled",
+    "job_pipeline_switch_unknown",
     "no_enabled_source",
     "inventory_violations",
     "no_successful_pipeline_run",
@@ -180,6 +184,38 @@ class ReleaseVerdictTests(SimpleTestCase):
             ["job_pipeline_misconfigured"],
         )
 
+    def test_issues_alone_mean_misconfigured(self):
+        """A report entry that lists issues but carries no ``ok`` key blocks."""
+        for name in VERDICT_CAPABILITIES:
+            with self.subTest(name=name):
+
+                def mutate(record, name=name):
+                    entry = _capability(record, name)
+                    del entry["ok"]
+                    entry["issues"] = ["AGENT_RUN_ENABLED is false"]
+
+                self.assertEqual(self._blockers(mutate), [f"{name}_misconfigured"])
+
+    def test_ok_false_alone_means_misconfigured(self):
+        for name in VERDICT_CAPABILITIES:
+            with self.subTest(name=name):
+                self.assertEqual(
+                    self._blockers(
+                        lambda r, name=name: _capability(r, name).update(
+                            ok=False, issues=[]
+                        )
+                    ),
+                    [f"{name}_misconfigured"],
+                )
+
+    def test_enabled_entry_without_ok_or_issues_is_not_misconfigured(self):
+        record = _ready_record()
+        for name in VERDICT_CAPABILITIES:
+            entry = _capability(record, name)
+            del entry["ok"]
+            del entry["issues"]
+        self.assertEqual(release_verdict(record)["blockers"], [])
+
     def test_switch_disabled_blocks_a_settings_enabled_capability(self):
         """Settings flags on, database switch off: not production ready."""
         for name in VERDICT_CAPABILITIES:
@@ -194,19 +230,30 @@ class ReleaseVerdictTests(SimpleTestCase):
                 )
 
     def test_switch_state_must_be_recorded_as_true(self):
-        """A record without the switch state fails closed (older records too)."""
-        both = [f"{name}_switch_disabled" for name in VERDICT_CAPABILITIES]
+        """A record that does not say the switch is on fails closed.
+
+        ``False`` is a switch somebody turned off. Anything else was never
+        read: a failed read (``"unknown"``), or a record written before the
+        key existed.
+        """
+        both = [f"{name}_switch_unknown" for name in VERDICT_CAPABILITIES]
         self.assertEqual(self._blockers(lambda r: r.pop("capability_switches")), both)
         self.assertEqual(
             self._blockers(lambda r: r.update(capability_switches=None)), both
         )
-        # Only the boolean True counts; a truthy string is not a recorded state.
         self.assertEqual(
-            self._blockers(
-                lambda r: r["capability_switches"].update(job_pipeline="true")
-            ),
-            ["job_pipeline_switch_disabled"],
+            self._blockers(lambda r: r.update(capability_switches={})), both
         )
+        for unread in ("unknown", None, "true", 1, 0, ""):
+            with self.subTest(unread=unread):
+                self.assertEqual(
+                    self._blockers(
+                        lambda r, unread=unread: r["capability_switches"].update(
+                            job_pipeline=unread
+                        )
+                    ),
+                    ["job_pipeline_switch_unknown"],
+                )
 
     def test_settings_and_switch_blockers_are_independent(self):
         def mutate(record):
@@ -271,25 +318,42 @@ class ReleaseVerdictTests(SimpleTestCase):
                 "provider_not_orchestrator",
                 "migrations_not_clean",
                 "interactive_agent_disabled",
-                "interactive_agent_switch_disabled",
+                "interactive_agent_switch_unknown",
                 "job_pipeline_disabled",
-                "job_pipeline_switch_disabled",
+                "job_pipeline_switch_unknown",
                 "no_enabled_source",
                 "no_successful_pipeline_run",
             ],
         )
 
     def test_every_documented_code_is_reachable(self):
-        """The codes above are exactly the documented set, in the baseline doc too."""
+        """The documented codes are exactly the codes the verdict can emit."""
         from pathlib import Path
+        import re
 
         doc = (
             Path(__file__).resolve().parents[3]
             / "docs"
             / "deployment-baseline-2026-09.md"
         ).read_text(encoding="utf-8")
-        for code in BLOCKER_CODES:
-            self.assertIn(f"`{code}`", doc)
+        row = next(
+            line for line in doc.splitlines() if line.startswith("| `release_verdict` |")
+        )
+        codes = row.split("Codes:", 1)[1].split(".", 1)[0]
+        self.assertEqual(re.findall(r"`([a-z_]+)`", codes), list(BLOCKER_CODES))
+
+        # Every documented code is produced by some record, and no other is.
+        reachable = set(release_verdict({})["blockers"])
+
+        def worst(record):
+            record["fixtures"]["present"] = True
+            record["inventory"]["violations"] = ["zero active listings"]
+            for name in VERDICT_CAPABILITIES:
+                _capability(record, name)["ok"] = False
+                record["capability_switches"][name] = False
+
+        reachable |= set(self._blockers(worst))
+        self.assertEqual(reachable, set(BLOCKER_CODES))
         self.assertIn("`release_verdict`", doc)
         self.assertIn("`data_counts`", doc)
         self.assertIn("`capability_switches`", doc)
@@ -345,6 +409,55 @@ class ReleaseVerdictCommandTests(TestCase):
         self.assertIs(record["release_verdict"]["production_ready"], False)
         self.assertEqual(record["release_verdict"], release_verdict(record))
 
+    def test_unreadable_switch_is_recorded_as_unknown_and_blocks(self):
+        """A failed switch read must never be recorded as enabled."""
+        with mock.patch(
+            "crank.management.commands.readiness_baseline.CapabilitySwitch.objects"
+        ) as manager:
+            manager.filter.side_effect = OperationalError("connection lost")
+            self.assertEqual(
+                capability_switches(),
+                {"interactive_agent": "unknown", "job_pipeline": "unknown"},
+            )
+            record = self._command_record()
+        self.assertEqual(
+            record["capability_switches"],
+            {"interactive_agent": "unknown", "job_pipeline": "unknown"},
+        )
+        blockers = record["release_verdict"]["blockers"]
+        for name in VERDICT_CAPABILITIES:
+            self.assertIn(f"{name}_switch_unknown", blockers)
+            self.assertNotIn(f"{name}_switch_disabled", blockers)
+
+        # Everything else ready, switches unreadable: still not ready.
+        ready = _ready_record()
+        ready["capability_switches"] = {
+            name: "unknown" for name in VERDICT_CAPABILITIES
+        }
+        self.assertEqual(
+            release_verdict(ready),
+            {
+                "production_ready": False,
+                "blockers": [
+                    "interactive_agent_switch_unknown",
+                    "job_pipeline_switch_unknown",
+                ],
+            },
+        )
+
+    def test_switch_read_ignores_other_keys_and_reads_each_row(self):
+        """Each capability reads its own row; unrelated switches do not leak in."""
+        CapabilitySwitch.objects.create(key="interactive_agent", enabled=False)
+        CapabilitySwitch.objects.create(key="crawl", enabled=False)
+        self.assertEqual(
+            capability_switches(), {"interactive_agent": False, "job_pipeline": True}
+        )
+        CapabilitySwitch.objects.filter(key="interactive_agent").update(enabled=True)
+        CapabilitySwitch.objects.create(key="job_pipeline", enabled=False)
+        self.assertEqual(
+            capability_switches(), {"interactive_agent": True, "job_pipeline": False}
+        )
+
     def test_fixture_backed_record_is_not_production_ready(self):
         call_command("seed_staging_baseline", stdout=io.StringIO())
         record = baseline_record()
@@ -361,62 +474,94 @@ class DataCountsTests(TestCase):
         self.assertEqual(set(counts), DATA_COUNT_KEYS)
         self.assertEqual(set(counts.values()), {0})
 
-    def test_counts_one_row_of_each_kind(self):
+    def test_each_counter_reads_its_own_table(self):
+        """A different number of rows per kind, so no two counters can swap."""
         call_command("seed_staging_baseline", stdout=io.StringIO())
+        JobMatch.objects.update(seen_at=None, dismissed=False)
         before = data_counts()
         self.assertEqual(before["job_matches"], JobMatch.objects.count())
         self.assertGreaterEqual(before["job_matches"], 2)
 
-        user = get_user_model().objects.create_user(
-            username="release-verdict-user", password="not-a-real-password-492"
-        )
-        conversation = JobSearchConversation.objects.create(owner=user)
-        JobSearchMessage.objects.create(
-            conversation=conversation,
-            role=JobSearchMessage.Role.USER,
-            content="synthetic turn",
-        )
-        UserPreference.objects.get_or_create(user=user)
-        seen, dismissed = JobMatch.objects.order_by("id")[:2]
-        JobMatch.objects.filter(pk=seen.pk).update(seen_at=timezone.now())
-        JobMatch.objects.filter(pk=dismissed.pk).update(dismissed=True)
+        users = [
+            get_user_model().objects.create_user(
+                username=f"release-verdict-user-{index}",
+                password="not-a-real-password-492",
+            )
+            for index in range(4)
+        ]
+        # 2 conversations, 3 messages, 4 saved preferences.
+        conversations = [
+            JobSearchConversation.objects.create(owner=user) for user in users[:2]
+        ]
+        for index in range(3):
+            JobSearchMessage.objects.create(
+                conversation=conversations[index % 2],
+                role=JobSearchMessage.Role.USER,
+                content="synthetic turn",
+            )
+        preferences_before = UserPreference.objects.count()
+        for user in users:
+            UserPreference.objects.get_or_create(user=user)
+        added_preferences = UserPreference.objects.count() - preferences_before
+        # 1 match seen, 2 dismissed.
+        first, second = JobMatch.objects.order_by("id")[:2]
+        JobMatch.objects.filter(pk=first.pk).update(seen_at=timezone.now())
+        JobMatch.objects.filter(pk__in=[first.pk, second.pk]).update(dismissed=True)
+        # 5 accepted evidence rows and 1 conflicted row.
         organization = Organization.objects.get(name=TARGET_ORG_NAME)
-        evidence = {
-            "organization": organization,
-            "value_text": "synthetic",
-            "source_url": "https://jobs.example.test/about",
-            "observed_at": timezone.now(),
-            "validation_version": "v1",
-            "extractor_version": "v1",
-        }
-        CompanyFieldEvidence.objects.create(
-            field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
-            state=CompanyFieldEvidence.State.ACCEPTED,
-            **evidence,
-        )
-        CompanyFieldEvidence.objects.create(
-            field_key=CompanyFieldEvidence.FieldKey.FUNDING_ROUND,
-            state=CompanyFieldEvidence.State.CONFLICTED,
-            **evidence,
-        )
+        field_keys = [choice[0] for choice in CompanyFieldEvidence.FieldKey.choices]
+        for index in range(6):
+            CompanyFieldEvidence.objects.create(
+                organization=organization,
+                field_key=field_keys[index % len(field_keys)],
+                state=(
+                    CompanyFieldEvidence.State.ACCEPTED
+                    if index < 5
+                    else CompanyFieldEvidence.State.CONFLICTED
+                ),
+                value_text=f"synthetic {index}",
+                source_url=f"https://jobs.example.test/about/{index}",
+                observed_at=timezone.now(),
+                validation_version="v1",
+                extractor_version="v1",
+            )
 
         after = data_counts()
-        self.assertEqual(after["conversations"], before["conversations"] + 1)
-        self.assertEqual(after["messages"], before["messages"] + 1)
+        delta = {key: after[key] - before[key] for key in DATA_COUNT_KEYS}
         self.assertEqual(
-            after["saved_preferences"], UserPreference.objects.count()
+            delta,
+            {
+                "conversations": 2,
+                "messages": 3,
+                "saved_preferences": added_preferences,
+                "job_matches": 0,
+                "job_matches_seen": 1,
+                "job_matches_dismissed": 2,
+                # Only accepted rows count; the conflicted row is excluded.
+                "accepted_company_evidence": 5,
+            },
         )
-        self.assertGreaterEqual(after["saved_preferences"], 1)
-        self.assertEqual(after["job_matches"], before["job_matches"])
-        self.assertEqual(after["job_matches_seen"], before["job_matches_seen"] + 1)
+        self.assertEqual(added_preferences, 4)
+        # Each key against its own queryset.
         self.assertEqual(
-            after["job_matches_dismissed"], before["job_matches_dismissed"] + 1
+            after,
+            {
+                "conversations": JobSearchConversation.objects.count(),
+                "messages": JobSearchMessage.objects.count(),
+                "saved_preferences": UserPreference.objects.count(),
+                "job_matches": JobMatch.objects.count(),
+                "job_matches_seen": JobMatch.objects.filter(
+                    seen_at__isnull=False
+                ).count(),
+                "job_matches_dismissed": JobMatch.objects.filter(
+                    dismissed=True
+                ).count(),
+                "accepted_company_evidence": CompanyFieldEvidence.objects.filter(
+                    state=CompanyFieldEvidence.State.ACCEPTED
+                ).count(),
+            },
         )
-        # Only accepted rows count; the conflicted row is excluded.
-        self.assertEqual(
-            after["accepted_company_evidence"],
-            before["accepted_company_evidence"] + 1,
-        )
+        self.assertNotEqual(after["conversations"], after["messages"])
 
     def test_record_carries_counts_only(self):
         """No identifier or text: every value is a plain non-negative integer."""
