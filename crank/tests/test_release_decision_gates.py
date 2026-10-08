@@ -353,8 +353,6 @@ def _matches(where: str, attributes: dict) -> bool:
             ok = attributes.get(key) is not None
         elif rest.startswith("= '"):
             ok = attributes.get(key) == rest[3:-1]
-        elif rest.startswith("!= '"):
-            ok = attributes.get(key) != rest[4:-1]
         elif rest.startswith("> "):
             ok = (attributes.get(key) or 0) > float(rest[2:])
         else:
