@@ -1732,6 +1732,26 @@ describe('PrioritiesSection', () => {
             expect(scrollIntoView).not.toHaveBeenCalled();
         });
 
+        test('an error that names no field moves nothing: neither the block\'s list nor the panel', async () => {
+            scrollIntoView.mockClear();
+            mockFetch({
+                '/api/agent/preferences/propose/': () => json({error: {type: 'server', message: 'Could not check right now.'}}, 500),
+                '/api/agent/preferences/': () => json(snapshotBody(2, [chip])),
+            });
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const form = await openEditor('sidebar');
+            const region = form.closest<HTMLElement>('.priorities-scroll')!;
+            region.scrollTop = 40;
+            fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '150000'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            expect(await screen.findByTestId('priorities-form-error')).toHaveTextContent('Could not check right now.');
+            // The editor looks for an invalid field on the next frame and finds none.
+            await act(async () => { await new Promise((resolve) => window.requestAnimationFrame(() => resolve(null))); });
+            expect(region.scrollTop).toBe(40);
+            expect(scrollIntoView).not.toHaveBeenCalled();
+            expect(form.querySelector('[aria-invalid="true"]')).toBeNull();
+        });
+
         test('a failed reset is said at the top of the open list, and under the row once the list is collapsed', async () => {
             serve();
             render(<PrioritiesSection variant="sidebar" authenticated/>);
