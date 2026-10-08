@@ -441,4 +441,31 @@ describe('job-match figures, notices and contained transcript (issue #473 visual
     it('labels the reply-time snapshot on assistant cards in the card’s muted ink', () => {
         expect(popupCss).toMatch(/\.org-card \.org-card-evidence-label\s*\{[^}]*color:\s*#cbd5e1/);
     });
+
+    it('sits a one-line figure label on its value in the column layout only (visual round 3)', () => {
+        expect(popupCss).toMatch(/#job-match-panel \.job-match-figure-label\s*\{[^}]*align-self:\s*end/);
+        expect(containerBlocks('24rem')).toMatch(/\.job-match-figure-label\s*\{\s*align-self:\s*auto/);
+    });
+
+    it('makes qualified chips full-width rows on narrow panels and bolds the changed qualifier', () => {
+        expect(containerBlocks('26rem')).toMatch(/\.job-match-chip:has\(> \.job-match-chip-qualifier\)\s*\{\s*display:\s*flex/);
+        expect(popupCss).toMatch(/\.job-match-chip--changed \.job-match-chip-qualifier\s*\{\s*font-weight:\s*600/);
+    });
+
+    it('shows a busy re-check control as unavailable without removing it from the tab order', () => {
+        expect(popupCss).toMatch(/#job-match-panel \[aria-disabled="true"\]\s*\{[^}]*opacity:\s*\.65;[^}]*cursor:\s*default/);
+    });
+
+    it('gives the legend the panel\u2019s sky focus ring and a denser type size on narrow panels', () => {
+        expect(popupCss).toMatch(/#job-match-panel \.how-ranking-works-summary:focus-visible\s*\{\s*outline-color:\s*#38bdf8/);
+        const narrow = containerBlocks('26rem');
+        expect(narrow).toMatch(/\.job-match-legend \.how-ranking-works-content\s*\{\s*font-size:\s*\.875rem;\s*line-height:\s*1\.45/);
+        expect(narrow).toMatch(/\.job-match-legend \.ranking-definitions dt\s*\{\s*margin-top:\s*\.5rem/);
+    });
+
+    it('lets a reply with cards use the whole row in the narrowest assistant panel, in one line', () => {
+        const rule = popupCss.split('\n').filter((line) => line.includes('.chat-bubble-assistant:has(.org-card)'));
+        expect(rule).toHaveLength(1);
+        expect(rule[0]).toMatch(/^@container assistant-panel \(max-width: 20rem\) \{ #job-search-chat \.chat-bubble-assistant:has\(\.org-card\) \{ max-width: 100% !important; \} \}$/);
+    });
 });
