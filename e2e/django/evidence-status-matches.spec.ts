@@ -203,7 +203,7 @@ for (const [width, height] of [[1280, 800], [375, 800], [320, 700]] as const) {
             await expect(old.locator('.evidence-badge')).toHaveCount(0);
             // The summary is a reply-time snapshot and says so to every reader.
             await expect(beta.getByTestId('evidence-recorded-label')).toBeVisible();
-            await expect(beta.getByTestId('evidence-recorded-label')).toHaveText('Facts when this reply was written');
+            await expect(beta.getByTestId('evidence-recorded-label')).toHaveText('Facts as of this reply');
             await expectNoHorizontalOverflow(page);
         });
 

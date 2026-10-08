@@ -50,7 +50,7 @@ const EvidenceSummary: React.FC<EvidenceSummaryProps> = ({evidence, variant = 'r
             </span>
             <span className="evidence-summary-fresh" data-testid="evidence-last-verified">
                 {evidence.last_verified_at
-                    ? `Last verified ${formatEvidenceDate(evidence.last_verified_at)}`
+                    ? <>Last verified <span className="text-nowrap">{formatEvidenceDate(evidence.last_verified_at)}</span></>
                     : 'Never verified'}
             </span>
             {evidence.pending_review > 0 && (

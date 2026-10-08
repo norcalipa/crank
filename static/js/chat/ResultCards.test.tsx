@@ -48,7 +48,7 @@ describe('OrgCard (issue #473)', () => {
         expect(within(evidence).getByTestId('evidence-pending')).toHaveTextContent('Pending review');
         // The reply-time snapshot is labelled for every reader, not only screen readers.
         const label = within(evidence).getByTestId('evidence-recorded-label');
-        expect(label).toHaveTextContent('Facts when this reply was written');
+        expect(label).toHaveTextContent('Facts as of this reply');
         expect(label).not.toHaveClass('visually-hidden');
         expect(evidence.querySelector('.visually-hidden')).toBeNull();
     });

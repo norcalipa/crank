@@ -74,6 +74,41 @@ _TERM_RE = re.compile(
 )
 
 
+_JOBS_ONLY = "Shown only in Job Search matches."
+_MARK_RE = re.compile(
+    r"    (\w+): \{label: '([^'\n]*)', marker: '([^'\n]*)', meaning: '([^'\n]*)'\},\n"
+)
+_MARK_ENTITIES = {"✓": "&#10003;", "✗": "&#10007;", "?": "?", "↻": "&#8635;"}
+
+
+def _marker(entity):
+    return (
+        '<span class="evidence-badge"><span class="evidence-badge-marker" aria-hidden="true">'
+        f"{entity}</span>"
+    )
+
+
+def test_requirement_marks_are_defined_once_and_in_how_ranking_works():
+    """✓, ✗ and ? on a chip each have one word and one meaning, in both legends."""
+    source = LABELS_TS.read_text(encoding="utf-8")
+    body = re.search(
+        r"export const REQUIREMENT_MARKS: [^\n]* = \{\n(?P<body>.*?)\n\};\n", source, re.S
+    ).group("body") + "\n"
+    marks = {key: rest for key, *rest in _MARK_RE.findall(body)}
+    assert list(marks) == ["match", "mismatch", "unknown"]
+    assert _MARK_RE.sub("", body) == ""
+    legend = RANKINGS_TEMPLATE.read_text(encoding="utf-8")
+    for label, marker, meaning in marks.values():
+        # The word follows the mark, which is hidden from assistive technology.
+        assert f"{_marker(_MARK_ENTITIES[marker])} {label}</span>: {meaning}</li>" in legend
+    changed = re.search(r"export const EVIDENCE_CHANGED_MARKER = '([^']*)';", source).group(1)
+    assert changed == "↻"
+    # The panel reads the marks from labels.ts instead of repeating them.
+    panel = (LABELS_TS.parent / "JobMatchPanel.tsx").read_text(encoding="utf-8")
+    for glyph in ("✓", "✗", "↻"):
+        assert f"'{glyph}'" not in panel and f">{glyph}<" not in panel
+
+
 def test_match_terms_read_the_same_in_how_ranking_works():
     """The job-card terms have one definition: labels.ts, repeated in the legend."""
     body = re.search(
@@ -82,12 +117,18 @@ def test_match_terms_read_the_same_in_how_ranking_works():
         re.S,
     ).group("body") + "\n"
     terms = {key: (label, meaning) for key, label, meaning in _TERM_RE.findall(body)}
-    assert set(terms) == {"sourced", "changed", "companyScore", "fit", "requirementCoverage"}
+    assert set(terms) == {
+        "sourced", "changed", "unqualified", "companyScore", "fit", "requirementCoverage",
+    }
     assert _TERM_RE.sub("", body) == ""
     legend = RANKINGS_TEMPLATE.read_text(encoding="utf-8")
-    for key in ("sourced", "changed"):
-        label, meaning = terms[key]
-        assert f'<span class="evidence-badge">{label}</span>: {meaning}</li>' in legend
+    # Neither status can appear on the rankings page, so the legend says where.
+    label, meaning = terms["sourced"]
+    assert f'<span class="evidence-badge">{label}</span>: {_JOBS_ONLY} {meaning}</li>' in legend
+    label, meaning = terms["changed"]
+    assert f'{_marker("&#8635;")} {label}</span>: {_JOBS_ONLY} {meaning}</li>' in legend
+    label, meaning = terms["unqualified"]
+    assert f'<span class="evidence-badge">{label}</span>: {meaning}</li>' in legend
     for key, heading in (
         ("companyScore", "Company score"),
         ("fit", "Fit"),
@@ -95,6 +136,8 @@ def test_match_terms_read_the_same_in_how_ranking_works():
     ):
         label, meaning = terms[key]
         assert label.startswith(heading)
+        if label != heading:
+            assert f'<dd>Shown as "{label}" on job cards. {meaning}</dd>' in legend
         assert re.search(
             r"<dt>%s</dt>\s*<dd>[^<]*%s</dd>" % (re.escape(heading), re.escape(meaning)), legend
         ), key

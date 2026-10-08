@@ -2,7 +2,7 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
 import EvidenceBadge from './evidence/EvidenceBadge';
-import {EVIDENCE_STATUS_META, MATCH_TERMS, formatEvidenceDate, fundingRoundLabel, rtoPolicyLabel} from './labels';
+import {EVIDENCE_CHANGED_MARKER, EVIDENCE_STATUS_META, MATCH_TERMS, REQUIREMENT_MARKS, formatEvidenceDate, fundingRoundLabel, rtoPolicyLabel} from './labels';
 import {csrfFetch} from './priorities/csrf';
 import {installPositionTracking, restoreResultPosition} from './workspace/position';
 import {createLatestGuard} from './workspace/requests';
@@ -435,9 +435,9 @@ function ThreeFigures({fit, company, coverage, scope}: {fit: number | null | und
 // missing data. Colors live in popup.css (scoped, contrast-checked) so the
 // component keeps a single source of truth for the palette.
 const REQUIREMENT_STATUS_META: Record<RequirementOutcome['status'], {marker: string; word: string; className: string}> = {
-    match: {marker: '✓', word: 'match', className: 'job-match-chip job-match-chip--match'},
-    mismatch: {marker: '✗', word: 'mismatch', className: 'job-match-chip job-match-chip--mismatch'},
-    unknown: {marker: '?', word: 'unknown', className: 'job-match-chip job-match-chip--unknown'},
+    match: {marker: REQUIREMENT_MARKS.match.marker, word: 'match', className: 'job-match-chip job-match-chip--match'},
+    mismatch: {marker: REQUIREMENT_MARKS.mismatch.marker, word: 'mismatch', className: 'job-match-chip job-match-chip--mismatch'},
+    unknown: {marker: REQUIREMENT_MARKS.unknown.marker, word: 'unknown', className: 'job-match-chip job-match-chip--unknown'},
 };
 
 const evidenceChanged = (req: RequirementOutcome): boolean =>
@@ -495,7 +495,7 @@ function RequirementChips({requirements}: {requirements?: RequirementOutcome[]})
                               data-status={req.status}
                               data-evidence-state={req.evidence_status!.state}
                               aria-label={`${label}: evidence changed, refresh matches`}>
-                            <span aria-hidden="true">↻</span> {label}
+                            <span aria-hidden="true">{EVIDENCE_CHANGED_MARKER}</span> {label}
                             <span className="job-match-chip-sep" aria-hidden="true"> · </span>
                             <span className="job-match-chip-qualifier" title={MATCH_TERMS.changed.meaning}>
                                 {MATCH_TERMS.changed.label} — refresh
@@ -527,35 +527,120 @@ function RequirementChips({requirements}: {requirements?: RequirementOutcome[]})
 const anyEvidenceChanged = (matches: {requirements?: RequirementOutcome[]}[]): boolean =>
     matches.some((match) => (match.requirements || []).some(evidenceChanged));
 
+type RecheckState =
+    | {kind: 'idle'}
+    | {kind: 'running'; wasPaused: boolean}
+    | {kind: 'paused'}
+    | {kind: 'limited'; retryAfter: number | null}
+    | {kind: 'failed'};
+const RECHECK_IDLE: RecheckState = {kind: 'idle'};
+
+interface RecheckAnswer {
+    state: RecheckState;
+    /** True when the answer can have changed what the read endpoints return. */
+    reread: boolean;
+    /** Spoken once the notice is gone, when nothing visible says what happened. */
+    announcement: string;
+}
+
+const RECHECK_FAILED: RecheckAnswer = {state: {kind: 'failed'}, reread: false, announcement: ''};
+
+/** Ask the server to re-check the stored matches and classify its answer
+ * (issue #473): refreshed, nothing to refresh, paused by the operator,
+ * asked again too soon, or failed. */
+async function requestRecheck(): Promise<RecheckAnswer> {
+    let response: Response;
+    let body: {status?: unknown; retry_after?: unknown} | null = null;
+    try {
+        response = await csrfFetch('/api/job-matches/refresh/', {method: 'POST'});
+        body = await response.json().catch(() => null);
+    } catch {
+        return RECHECK_FAILED;
+    }
+    if (response.status === 429) {
+        const seconds = Number(body?.retry_after ?? response.headers.get('Retry-After'));
+        return {
+            state: {kind: 'limited', retryAfter: Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds) : null},
+            reread: false, announcement: '',
+        };
+    }
+    const status = response.ok ? body?.status : 'failed';
+    if (status === 'disabled') {
+        return {state: {kind: 'paused'}, reread: false, announcement: ''};
+    }
+    if (status === 'published' || status === 'current') {
+        return {state: RECHECK_IDLE, reread: true, announcement: 'Matches re-checked.'};
+    }
+    if (status === 'not_needed') {
+        return {state: RECHECK_IDLE, reread: true, announcement: 'Your matches were already up to date.'};
+    }
+    if (typeof status !== 'string' || status === 'failed') {
+        return RECHECK_FAILED;
+    }
+    // Any other answer (the results were superseded while computing, or there
+    // is nothing saved to compute from): show the state as it now is.
+    return {state: RECHECK_IDLE, reread: true, announcement: ''};
+}
+
+const recheckSentence = (recheck: RecheckState): string => {
+    switch (recheck.kind) {
+        case 'running':
+            return 'Re-checking your matches…';
+        case 'paused':
+            return 'Re-checking is paused right now, so results marked “Evidence changed” may be out of date.';
+        case 'limited':
+            return recheck.retryAfter
+                ? `A re-check was just requested. Try again in about ${recheck.retryAfter} seconds.`
+                : 'A re-check was just requested. Try again shortly.';
+        case 'failed':
+            return 'The re-check did not finish. Try again in a moment.';
+        default:
+            return 'Refresh to re-check them.';
+    }
+};
+
 /** One consolidated notice when any shown outcome rests on evidence that has
  * since been replaced or removed (issue #473 AC9): the chips say which, and
  * this carries the >=44px refresh action. It stands in for the stale banner,
- * which the same change also raises. `retried` is set once a refresh has run;
- * the notice is only still shown then if the re-check did not go through. */
-function EvidenceChangedNotice({matches, retried, onRefresh}: {matches: {requirements?: RequirementOutcome[]}[]; retried: boolean; onRefresh: () => void}) {
+ * which the same change also raises. It stays mounted through a re-check so
+ * its live region reports the outcome; while one runs the button is
+ * `aria-disabled` (it keeps focus), and while re-checking is paused there is
+ * no button, because pressing it could not succeed; the header's refresh
+ * still asks again. */
+function EvidenceChangedNotice({matches, recheck, onRefresh}: {
+    matches: {requirements?: RequirementOutcome[]}[];
+    recheck: RecheckState;
+    onRefresh: (event: React.MouseEvent<HTMLElement>) => void;
+}) {
     if (!anyEvidenceChanged(matches)) {
         return null;
     }
+    const running = recheck.kind === 'running';
     return (
-        <div className="alert alert-warning py-2 small mb-3" role="status" aria-live="polite" data-testid="evidence-changed-notice">
+        <div className="alert alert-warning py-2 small mb-3" role="status" aria-live="polite" id="job-match-notice"
+             data-testid="evidence-changed-notice" data-recheck={recheck.kind} aria-busy={running || undefined}>
             <div className="job-match-stale-banner">
                 <Icon name="clock" className="job-match-stale-icon" />
                 <span className="job-match-stale-message">
                     Some company evidence changed after these matches were computed.{' '}
-                    {retried
-                        ? 'They could not be re-checked yet — try again in a moment.'
-                        : 'Refresh to re-check them.'}
+                    {recheckSentence(recheck)}
                 </span>
-                <button type="button" className="btn btn-sm btn-outline-light job-match-stale-refresh" onClick={onRefresh}
-                        data-testid="evidence-changed-refresh">
-                    <Icon name="refresh-cw" className="me-1" />Refresh matches
-                </button>
+                {recheck.kind !== 'paused' && !(running && recheck.wasPaused) && (
+                    <button type="button"
+                            className={`btn btn-sm btn-outline-light job-match-stale-refresh${running ? ' job-match-refresh-busy' : ''}`}
+                            onClick={onRefresh} aria-disabled={running || undefined}
+                            data-testid="evidence-changed-refresh">
+                        <Icon name={running ? 'spinner' : 'refresh-cw'} className="me-1" />
+                        {running ? 'Re-checking…' : recheck.kind === 'failed' ? 'Try again' : 'Refresh matches'}
+                    </button>
+                )}
             </div>
         </div>
     );
 }
 
 const LEGEND_STATUSES = ['verified', 'stale', 'profile'] as const;
+const LEGEND_MARKS = ['match', 'mismatch', 'unknown'] as const;
 
 /** The job-card vocabulary in one place (issue #473): the same definitions
  * as "How ranking works" on the rankings page, which this page lacks. */
@@ -571,16 +656,35 @@ function MatchLegend() {
                             <dd>{term.meaning}</dd>
                         </React.Fragment>
                     ))}
+                    <dt>Requirement chips</dt>
+                    <dd>
+                        {/* Each mark is followed by its word; the mark alone is
+                            decoration for assistive technology. */}
+                        <ul className="evidence-legend list-unstyled mb-0" data-testid="requirement-mark-legend">
+                            {LEGEND_MARKS.map((key) => (
+                                <li key={key}>
+                                    <span className="evidence-badge">
+                                        <span className="evidence-badge-marker" aria-hidden="true">{REQUIREMENT_MARKS[key].marker}</span>
+                                        {' '}{REQUIREMENT_MARKS[key].label}
+                                    </span>: {REQUIREMENT_MARKS[key].meaning}
+                                </li>
+                            ))}
+                        </ul>
+                    </dd>
                     <dt>Evidence behind a requirement</dt>
                     <dd>
                         <ul className="evidence-legend list-unstyled mb-0">
                             {LEGEND_STATUSES.map((status) => (
                                 <li key={status}><EvidenceBadge status={status}/>: {EVIDENCE_STATUS_META[status].meaning}</li>
                             ))}
-                            {[MATCH_TERMS.sourced, MATCH_TERMS.changed].map((term) => (
-                                <li key={term.label}><span className="evidence-badge">{term.label}</span>: {term.meaning}</li>
-                            ))}
-                            <li>A requirement with no qualifier was decided from the listing itself.</li>
+                            <li><span className="evidence-badge">{MATCH_TERMS.sourced.label}</span>: {MATCH_TERMS.sourced.meaning}</li>
+                            <li>
+                                <span className="evidence-badge">
+                                    <span className="evidence-badge-marker" aria-hidden="true">{EVIDENCE_CHANGED_MARKER}</span>
+                                    {' '}{MATCH_TERMS.changed.label}
+                                </span>: {MATCH_TERMS.changed.meaning}
+                            </li>
+                            <li><span className="evidence-badge">{MATCH_TERMS.unqualified.label}</span>: {MATCH_TERMS.unqualified.meaning}</li>
                         </ul>
                     </dd>
                 </dl>
@@ -763,10 +867,14 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     React.useEffect(() => setAuthed(isAuthenticated), [isAuthenticated]);
     const awaitingHydrationRef = React.useRef(false);
 
-    const fetchStatus = React.useCallback(async () => {
+    // `quiet` re-reads behind the list that is already shown (the evidence
+    // re-check), instead of replacing it with the loading skeleton.
+    const loadStatus = React.useCallback(async (quiet: boolean) => {
         if (!authed) return;
         const request = guardRef.current.begin();
-        setPhase('loading');
+        if (!quiet) {
+            setPhase('loading');
+        }
         setErrorMsg(null);
         try {
             const [statusRes, matchRes, rankedRes] = await Promise.all([
@@ -832,6 +940,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             setPhase('error');
         }
     }, [authed]);
+    const fetchStatus = React.useCallback(() => loadStatus(false), [loadStatus]);
 
     React.useEffect(() => {
         fetchStatus();
@@ -851,20 +960,46 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
         void fetchStatus();
     }, [fetchStatus]);
     // Stored matches that cite replaced evidence are only resolved by a
-    // recompute, so this asks for one before re-reading (issue #473). A
-    // failed request still re-reads: the notice then says it is not done.
-    const [recheckRequested, setRecheckRequested] = React.useState(false);
-    const recheckMatches = React.useCallback(async () => {
-        refocusRef.current = true;
-        setPhase('loading');
-        try {
-            await csrfFetch('/api/job-matches/refresh/', {method: 'POST'});
-        } catch {
-            // The re-read below reports the state as it is.
+    // recompute, so this asks for one and acts on the answer (issue #473).
+    // The list stays on screen while it runs; only an answer that can have
+    // changed the results is followed by a re-read.
+    const [recheck, setRecheck] = React.useState<RecheckState>(RECHECK_IDLE);
+    const [recheckAnnouncement, setRecheckAnnouncement] = React.useState('');
+    const [recheckFocus, setRecheckFocus] = React.useState<{control: HTMLElement} | null>(null);
+    const recheckRunningRef = React.useRef(false);
+    const recheckMatches = React.useCallback(async (event: React.MouseEvent<HTMLElement>) => {
+        // Single flight: a second press while one is running sends nothing.
+        if (recheckRunningRef.current) return;
+        recheckRunningRef.current = true;
+        const control = event.currentTarget;
+        setRecheck((current) => ({kind: 'running', wasPaused: current.kind === 'paused'}));
+        setRecheckAnnouncement('');
+        const answer = await requestRecheck();
+        if (answer.reread) {
+            await loadStatus(true);
         }
-        setRecheckRequested(true);
-        await fetchStatus();
-    }, [fetchStatus]);
+        recheckRunningRef.current = false;
+        setRecheck(answer.state);
+        setRecheckAnnouncement(answer.announcement);
+        // The pressed control keeps focus unless the outcome removed it (the
+        // notice clears, or its button goes while re-checking is paused);
+        // focus then goes to the heading instead of dropping to <body>.
+        setRecheckFocus({control});
+    }, [loadStatus]);
+    React.useEffect(() => {
+        if (!recheckFocus) return;
+        if (!recheckFocus.control.isConnected) {
+            document.getElementById('job-match-panel-title')!.focus();
+        }
+    }, [recheckFocus]);
+    // A read with no changed evidence closes the episode, so a later change
+    // starts from the first sentence again.
+    React.useEffect(() => {
+        const shown = [...(rankedMatches?.job_matches || []), ...(rankedMatches?.organization_matches || [])];
+        if (phase === 'ready' && !anyEvidenceChanged(shown)) {
+            setRecheck((current) => (current.kind === 'running' ? current : RECHECK_IDLE));
+        }
+    }, [phase, rankedMatches]);
 
     // Issue #480: a priorities write anywhere on the page refetches matches once.
     const seenPrioritiesRevision = React.useRef(getWorkspaceSnapshot().prioritiesRevision);
@@ -1060,18 +1195,25 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
             <section className="card bg-dark mb-3" data-bs-theme="dark" data-testid="job-match-panel"
                      aria-labelledby="job-match-panel-title">
                 <div className="card-header d-flex justify-content-between align-items-center">
-                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}>Your Job Matches</h2>
+                    <h2 id="job-match-panel-title" className="job-match-panel-title mb-0" tabIndex={-1}
+                        aria-describedby={evidenceChangedResults ? 'job-match-notice' : undefined}>Your Job Matches</h2>
+                    {/* With the notice showing, this is the same re-check as
+                        the notice's button, not a second kind of refresh. */}
                     <button type="button" className="btn btn-sm btn-outline-light"
-                            onClick={fetchStatus} aria-label="Refresh match status"
+                            onClick={evidenceChangedResults ? recheckMatches : fetchStatus}
+                            aria-label="Refresh match status"
+                            aria-disabled={recheck.kind === 'running' || undefined}
                             data-testid="job-match-refresh">
                         <Icon name="refresh-cw" />
                     </button>
                 </div>
                 <div className="card-body">
+                    <span className="visually-hidden" role="status" aria-live="polite"
+                          data-testid="recheck-announcement">{recheckAnnouncement}</span>
                     <ResultNotices emptyState={emptyState!} />
                     <UnsupportedNotice unsupported={jobs[0]?.unsupported || orgs[0]?.unsupported} />
                     <StaleNotice revision={{stale: staleResults && !evidenceChangedResults}} onRefresh={reloadFromNotice} />
-                    <EvidenceChangedNotice matches={[...jobs, ...orgs]} retried={recheckRequested} onRefresh={recheckMatches} />
+                    <EvidenceChangedNotice matches={[...jobs, ...orgs]} recheck={recheck} onRefresh={recheckMatches} />
                     <MatchLegend />
                     <ResultTimestamp revision={resultRevision} />
                     {jobs.length > 0 && (

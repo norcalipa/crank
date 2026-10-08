@@ -86,10 +86,10 @@ export function OrgCard({org}: {org: OrganizationResult}) {
                 {rto && <span>{rto}</span>}
             </div>
             {evidence ? (
-                <div className="org-card-evidence mt-1" data-testid={`org-evidence-${org.id}`}>
+                <div className="org-card-evidence mt-2" data-testid={`org-evidence-${org.id}`}>
                     {/* The summary is the reply-time snapshot stored with the
                         message, so the label says so for every reader. */}
-                    <div className="org-card-evidence-label" data-testid="evidence-recorded-label">Facts when this reply was written</div>
+                    <div className="org-card-evidence-label" data-testid="evidence-recorded-label">Facts as of this reply</div>
                     <EvidenceSummary evidence={evidence} variant="card"/>
                 </div>
             ) : (

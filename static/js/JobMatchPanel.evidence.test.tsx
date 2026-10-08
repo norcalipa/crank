@@ -5,7 +5,7 @@ import {fireEvent, render, screen, waitFor, within} from '@testing-library/react
 import * as React from 'react';
 
 import JobMatchPanel from './JobMatchPanel';
-import {EVIDENCE_STATUS_META, MATCH_TERMS} from './labels';
+import {EVIDENCE_CHANGED_MARKER, EVIDENCE_STATUS_META, MATCH_TERMS, REQUIREMENT_MARKS} from './labels';
 import {closeAssistant, resetWorkspaceForTests} from './workspace/store';
 
 // Requirement chips carry the read-time status of the fact behind each
@@ -191,11 +191,19 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
         return calls;
     }
 
-    test('the notice refresh asks for a recompute, then re-reads and returns focus to the heading', async () => {
+    const notice = () => screen.getByTestId('evidence-changed-notice');
+    const refreshButton = () => within(notice()).getByRole('button');
+    const posts = (calls: {url: string; method: string}[]) => calls.filter((call) => call.method === 'POST');
+    const rankedReads = (calls: {url: string; method: string}[]) => calls.filter((call) => call.url.includes('/ranked/'));
+    const heading = () => screen.getByRole('heading', {name: 'Your Job Matches'});
+
+    test('a refresh that published clears the notice, re-reads once, says so and moves focus to the heading', async () => {
         document.cookie = 'csrftoken=tok473';
         const calls = mockRefresh(changedJob(), settledJob(), () => Promise.resolve(json({status: 'published'})));
         render(<JobMatchPanel/>);
         const button = within(await screen.findByTestId('evidence-changed-notice')).getByRole('button', {name: 'Refresh matches'});
+        expect(heading()).toHaveAttribute('aria-describedby', 'job-match-notice');
+        expect(notice()).toHaveAttribute('id', 'job-match-notice');
         button.focus();
         const before = calls.length;
         fireEvent.click(button);
@@ -206,26 +214,232 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
         // The recompute is requested first; the three reads follow it.
         expect(after[0]).toEqual({url: '/api/job-matches/refresh/', method: 'POST'});
         expect(after.slice(1).every((call) => call.method === 'GET')).toBe(true);
-        expect(after.filter((call) => call.url.includes('/ranked/'))).toHaveLength(1);
+        expect(rankedReads(after)).toHaveLength(1);
         const post = (global.fetch as jest.Mock).mock.calls.find(([url]) => String(url).includes('/refresh/'));
         expect(post[1].headers['X-CSRFToken']).toBe('tok473');
-        // Focus is not dropped to <body> when the list (and the button) reloads.
-        const heading = screen.getByRole('heading', {name: 'Your Job Matches'});
-        await waitFor(() => expect(heading).toHaveFocus());
-        expect(heading).toHaveAttribute('tabindex', '-1');
+        // The button went with the notice: focus goes to the heading, not <body>.
+        await waitFor(() => expect(heading()).toHaveFocus());
+        expect(heading()).toHaveAttribute('tabindex', '-1');
+        expect(heading()).not.toHaveAttribute('aria-describedby');
+        // Success is announced; nothing visible would say it otherwise.
+        const announcement = screen.getByTestId('recheck-announcement');
+        expect(announcement).toHaveAttribute('role', 'status');
+        expect(announcement).toHaveAttribute('aria-live', 'polite');
+        expect(announcement).toHaveTextContent('Matches re-checked.');
     });
 
-    test('a refresh that could not re-check says so and keeps one notice', async () => {
-        const calls = mockRefresh(changedJob(), changedJob(), () => Promise.reject(new Error('offline')));
+    test('while a refresh runs the list stays, the button is busy, and a second press sends nothing', async () => {
+        let answer: (response: Response) => void = () => undefined;
+        const calls = mockRefresh(changedJob(), settledJob(),
+            () => new Promise<Response>((resolve) => { answer = resolve; }));
         render(<JobMatchPanel/>);
-        fireEvent.click(within(await screen.findByTestId('evidence-changed-notice')).getByRole('button', {name: 'Refresh matches'}));
+        const button = within(await screen.findByTestId('evidence-changed-notice')).getByRole('button', {name: 'Refresh matches'});
+        button.focus();
+        fireEvent.click(button);
 
-        await waitFor(() => expect(screen.getByTestId('evidence-changed-notice'))
-            .toHaveTextContent('They could not be re-checked yet — try again in a moment.'));
-        // The failed request still re-reads, so the page shows the state as it is.
-        expect(calls.filter((call) => call.url.includes('/ranked/'))).toHaveLength(2);
+        await waitFor(() => expect(notice()).toHaveAttribute('data-recheck', 'running'));
+        expect(notice()).toHaveAttribute('aria-busy', 'true');
+        expect(notice()).toHaveAttribute('aria-live', 'polite');
+        expect(notice()).toHaveTextContent('Re-checking your matches…');
+        // Same button, still focused, marked unavailable rather than removed.
+        expect(refreshButton()).toBe(button);
+        expect(button).toHaveAttribute('aria-disabled', 'true');
+        expect(button).not.toBeDisabled();
+        expect(button).toHaveTextContent('Re-checking…');
+        expect(button).toHaveFocus();
+        expect(screen.getByTestId('job-match-refresh')).toHaveAttribute('aria-disabled', 'true');
+        // No skeleton: the results are still on screen.
+        expect(screen.queryByTestId('job-match-loading')).not.toBeInTheDocument();
+        expect(screen.getByTestId('ranked-job-42')).toBeInTheDocument();
+        // Double click, and the header control, while it runs: still one POST.
+        fireEvent.click(button);
+        fireEvent.click(button);
+        fireEvent.click(screen.getByTestId('job-match-refresh'));
+        expect(posts(calls)).toHaveLength(1);
+
+        answer(json({status: 'current'}));
+        await waitFor(() => expect(screen.queryByTestId('evidence-changed-notice')).not.toBeInTheDocument());
+        expect(posts(calls)).toHaveLength(1);
+        expect(screen.getByTestId('job-match-refresh')).not.toHaveAttribute('aria-disabled');
+        expect(screen.getByTestId('recheck-announcement')).toHaveTextContent('Matches re-checked.');
+    });
+
+    test('nothing to refresh re-reads and says the matches were already up to date', async () => {
+        const calls = mockRefresh(changedJob(), settledJob(), () => Promise.resolve(json({status: 'not_needed'})));
+        render(<JobMatchPanel/>);
+        fireEvent.click(within(await screen.findByTestId('evidence-changed-notice')).getByRole('button'));
+        await waitFor(() => expect(screen.queryByTestId('evidence-changed-notice')).not.toBeInTheDocument());
+        expect(rankedReads(calls)).toHaveLength(2);
+        expect(screen.getByTestId('recheck-announcement')).toHaveTextContent('Your matches were already up to date.');
+        await waitFor(() => expect(heading()).toHaveFocus());
+    });
+
+    test('paused by the operator says so, removes the button and does not invite a retry', async () => {
+        const calls = mockRefresh(changedJob(), changedJob(), () => Promise.resolve(json({status: 'disabled'})));
+        render(<JobMatchPanel/>);
+        const button = within(await screen.findByTestId('evidence-changed-notice')).getByRole('button', {name: 'Refresh matches'});
+        button.focus();
+        fireEvent.click(button);
+
+        await waitFor(() => expect(notice()).toHaveAttribute('data-recheck', 'paused'));
+        expect(notice()).toHaveTextContent(
+            'Re-checking is paused right now, so results marked “Evidence changed” may be out of date.');
+        expect(notice()).not.toHaveTextContent(/try again|Refresh to re-check/i);
+        expect(within(notice()).queryByRole('button')).not.toBeInTheDocument();
         expect(screen.getAllByTestId('evidence-changed-notice')).toHaveLength(1);
-        await waitFor(() => expect(screen.getByRole('heading', {name: 'Your Job Matches'})).toHaveFocus());
+        // Nothing changed on the server, so nothing is re-read.
+        expect(rankedReads(calls)).toHaveLength(1);
+        // The button is gone; focus lands on the heading, which is described by the notice.
+        await waitFor(() => expect(heading()).toHaveFocus());
+        expect(heading()).toHaveAttribute('aria-describedby', 'job-match-notice');
+        expect(screen.getByTestId('recheck-announcement')).toBeEmptyDOMElement();
+
+        // The header refresh asks again without a notice button flashing back,
+        // and keeps its own focus.
+        const header = screen.getByTestId('job-match-refresh');
+        header.focus();
+        fireEvent.click(header);
+        expect(within(notice()).queryByRole('button')).not.toBeInTheDocument();
+        await waitFor(() => expect(posts(calls)).toHaveLength(2));
+        await waitFor(() => expect(notice()).toHaveAttribute('data-recheck', 'paused'));
+        expect(header).toHaveFocus();
+    });
+
+    test('a refresh asked for too soon says when to try again and keeps the button and its focus', async () => {
+        const limited = (body: unknown, headers: Record<string, string> = {}) => () => Promise.resolve(
+            new Response(JSON.stringify(body), {status: 429, headers}));
+        const calls = mockRefresh(changedJob(), changedJob(), limited({status: 'rate_limited', retry_after: 30}));
+        render(<JobMatchPanel/>);
+        const button = within(await screen.findByTestId('evidence-changed-notice')).getByRole('button', {name: 'Refresh matches'});
+        button.focus();
+        fireEvent.click(button);
+        await waitFor(() => expect(notice()).toHaveAttribute('data-recheck', 'limited'));
+        expect(notice()).toHaveTextContent('A re-check was just requested. Try again in about 30 seconds.');
+        expect(refreshButton()).toHaveTextContent('Refresh matches');
+        expect(refreshButton()).not.toHaveAttribute('aria-disabled');
+        expect(refreshButton()).toHaveFocus();
+        expect(rankedReads(calls)).toHaveLength(1);
+    });
+
+    test.each([
+        ['the Retry-After header', '', {'Retry-After': '12'}, 'Try again in about 12 seconds.'],
+        ['no usable delay', 'not json', {}, 'Try again shortly.'],
+    ])('a 429 with %s still reads as asked too soon', async (_name, body, headers, sentence) => {
+        mockRefresh(changedJob(), changedJob(),
+            () => Promise.resolve(new Response(body, {status: 429, headers: headers as Record<string, string>})));
+        render(<JobMatchPanel/>);
+        fireEvent.click(within(await screen.findByTestId('evidence-changed-notice')).getByRole('button'));
+        await waitFor(() => expect(notice()).toHaveTextContent(`A re-check was just requested. ${sentence}`));
+    });
+
+    test.each([
+        ['the request cannot be sent', () => Promise.reject(new Error('offline'))],
+        ['the server errors', () => Promise.resolve(new Response('<h1>Server Error</h1>', {status: 500}))],
+        ['the recompute reports failure', () => Promise.resolve(json({status: 'failed'}))],
+        ['the answer is unreadable', () => Promise.resolve(new Response('', {status: 200}))],
+    ])('when %s the notice offers Try again, keeps the list and focus, and a retry can succeed', async (_name, refresh) => {
+        let attempts = 0;
+        const calls = mockRefresh(changedJob(), settledJob(), () => {
+            attempts += 1;
+            return attempts === 1 ? (refresh as () => Promise<Response>)() : Promise.resolve(json({status: 'published'}));
+        });
+        // mockRefresh serves the settled list after any answered POST; the
+        // failed attempt must not have re-read at all.
+        render(<JobMatchPanel/>);
+        const button = within(await screen.findByTestId('evidence-changed-notice')).getByRole('button', {name: 'Refresh matches'});
+        button.focus();
+        fireEvent.click(button);
+
+        await waitFor(() => expect(notice()).toHaveAttribute('data-recheck', 'failed'));
+        expect(notice()).toHaveTextContent('The re-check did not finish. Try again in a moment.');
+        expect(screen.getAllByTestId('evidence-changed-notice')).toHaveLength(1);
+        expect(rankedReads(calls)).toHaveLength(1);
+        expect(screen.getByTestId('ranked-job-42')).toBeInTheDocument();
+        expect(screen.queryByTestId('job-match-error')).not.toBeInTheDocument();
+        const retry = within(notice()).getByRole('button', {name: 'Try again'});
+        expect(retry).toHaveFocus();
+
+        fireEvent.click(retry);
+        await waitFor(() => expect(screen.queryByTestId('evidence-changed-notice')).not.toBeInTheDocument());
+        expect(posts(calls)).toHaveLength(2);
+    });
+
+    test('an answer that is neither success nor failure just shows the state as it now is', async () => {
+        const calls = mockRefresh(changedJob(), changedJob(), () => Promise.resolve(json({status: 'discarded_stale'})));
+        render(<JobMatchPanel/>);
+        const button = within(await screen.findByTestId('evidence-changed-notice')).getByRole('button');
+        button.focus();
+        fireEvent.click(button);
+        await waitFor(() => expect(rankedReads(calls)).toHaveLength(2));
+        await waitFor(() => expect(notice()).toHaveAttribute('data-recheck', 'idle'));
+        expect(notice()).toHaveTextContent('Refresh to re-check them.');
+        expect(screen.getByTestId('recheck-announcement')).toBeEmptyDOMElement();
+        expect(refreshButton()).toHaveFocus();
+    });
+
+    test('a later evidence change starts from the first sentence, not the last outcome', async () => {
+        let ranked: unknown = changedJob();
+        let refresh = () => Promise.resolve(json({status: 'failed'}));
+        global.fetch = jest.fn((url: string) => {
+            if (url.includes('/api/job-matches/refresh/')) return refresh();
+            if (url.includes('/api/job-matches/status/')) {
+                return Promise.resolve(json({state: 'ok', title: 'Matches', message: '', actions: []}));
+            }
+            if (url.includes('/api/job-matches/ranked/')) {
+                return Promise.resolve(json({job_matches: [ranked], organization_matches: []}));
+            }
+            return Promise.resolve(json({count: 1, next: null, previous: null, results: []}));
+        }) as unknown as typeof fetch;
+        render(<JobMatchPanel/>);
+        fireEvent.click(within(await screen.findByTestId('evidence-changed-notice')).getByRole('button'));
+        await waitFor(() => expect(notice()).toHaveAttribute('data-recheck', 'failed'));
+        // The results settle by another route (a plain reload)...
+        ranked = settledJob();
+        refresh = () => Promise.resolve(json({status: 'not_needed'}));
+        fireEvent.click(within(notice()).getByRole('button', {name: 'Try again'}));
+        await waitFor(() => expect(screen.queryByTestId('evidence-changed-notice')).not.toBeInTheDocument());
+        // ...and when evidence changes again the notice is a fresh one.
+        ranked = changedJob();
+        fireEvent.click(screen.getByTestId('job-match-refresh'));
+        await waitFor(() => expect(notice()).toHaveTextContent('Refresh to re-check them.'));
+        expect(notice()).toHaveAttribute('data-recheck', 'idle');
+    });
+
+    test('a re-read that fails after a successful re-check shows the load error with focus on the heading', async () => {
+        let refreshed = false;
+        global.fetch = jest.fn((url: string) => {
+            if (url.includes('/api/job-matches/refresh/')) {
+                refreshed = true;
+                return Promise.resolve(json({status: 'published'}));
+            }
+            if (url.includes('/api/job-matches/status/')) {
+                return refreshed
+                    ? Promise.resolve(new Response('', {status: 503}))
+                    : Promise.resolve(json({state: 'ok', title: 'Matches', message: '', actions: []}));
+            }
+            if (url.includes('/api/job-matches/ranked/')) {
+                return Promise.resolve(json({job_matches: [changedJob()], organization_matches: []}));
+            }
+            return Promise.resolve(json({count: 1, next: null, previous: null, results: []}));
+        }) as unknown as typeof fetch;
+        render(<JobMatchPanel/>);
+        const button = within(await screen.findByTestId('evidence-changed-notice')).getByRole('button');
+        button.focus();
+        fireEvent.click(button);
+        expect(await screen.findByTestId('job-match-error')).toHaveTextContent('We couldn’t load your job matches.');
+        await waitFor(() => expect(heading()).toHaveFocus());
+    });
+
+    test('the header refresh re-checks when the notice is showing and keeps its focus', async () => {
+        const calls = mockRefresh(changedJob(), settledJob(), () => Promise.resolve(json({status: 'published'})));
+        render(<JobMatchPanel/>);
+        await screen.findByTestId('evidence-changed-notice');
+        const header = screen.getByTestId('job-match-refresh');
+        header.focus();
+        fireEvent.click(header);
+        await waitFor(() => expect(screen.queryByTestId('evidence-changed-notice')).not.toBeInTheDocument());
+        expect(posts(calls)).toEqual([{url: '/api/job-matches/refresh/', method: 'POST'}]);
+        expect(header).toHaveFocus();
     });
 
     test('changed evidence replaces the stale banner instead of adding a second one', async () => {
@@ -268,7 +482,22 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
         for (const key of ['verified', 'stale', 'profile'] as const) {
             expect(legend).toHaveTextContent(EVIDENCE_STATUS_META[key].meaning);
         }
-        expect(legend).toHaveTextContent('A requirement with no qualifier was decided from the listing itself.');
+        // The three outcome marks are defined once, each with its word; the
+        // glyph itself is hidden from assistive technology.
+        const marks = within(legend).getByTestId('requirement-mark-legend');
+        expect(Array.from(marks.querySelectorAll('li')).map((li) => li.textContent)).toEqual([
+            '✓ Match: The requirement is met.',
+            '✗ Mismatch: The requirement is not met.',
+            '? Unknown: The requirement could not be decided either way, so it does not count toward requirement coverage.',
+        ]);
+        for (const key of ['match', 'mismatch', 'unknown'] as const) {
+            expect(legend).toHaveTextContent(`${REQUIREMENT_MARKS[key].marker} ${REQUIREMENT_MARKS[key].label}: ${REQUIREMENT_MARKS[key].meaning}`);
+        }
+        marks.querySelectorAll('.evidence-badge-marker').forEach((mark) => expect(mark).toHaveAttribute('aria-hidden', 'true'));
+        expect(legend).toHaveTextContent(`${EVIDENCE_CHANGED_MARKER} Evidence changed: `);
+        // True for every chip: an undecided "?" chip is not claimed to be decided.
+        expect(legend).toHaveTextContent('No qualifier: A match or mismatch with no qualifier was decided from the job listing itself.');
+        expect(legend).not.toHaveTextContent('A requirement with no qualifier');
         // The chip and the figures point at the same definitions.
         expect(chip('compensation.require_public_company').querySelector('.job-match-chip-qualifier-text'))
             .toHaveAttribute('title', MATCH_TERMS.sourced.meaning);

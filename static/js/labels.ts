@@ -69,6 +69,17 @@ export const EVIDENCE_STATUS_META: Record<EvidenceStatusKey, EvidenceStatusMeta>
     conflicted: {label: 'Conflicting observation', marker: '\u26A0\uFE0E', meaning: 'A later observation disagrees. Not verified.'},
 };
 
+// The first mark on a requirement chip: how the requirement came out. The
+// word is the chip's spoken outcome, so a mark is never the only cue.
+export const REQUIREMENT_MARKS: Record<'match' | 'mismatch' | 'unknown', EvidenceStatusMeta> = {
+    match: {label: 'Match', marker: '✓', meaning: 'The requirement is met.'},
+    mismatch: {label: 'Mismatch', marker: '✗', meaning: 'The requirement is not met.'},
+    unknown: {label: 'Unknown', marker: '?', meaning: 'The requirement could not be decided either way, so it does not count toward requirement coverage.'},
+};
+
+// Leads a chip whose stored outcome rests on evidence that has since changed.
+export const EVIDENCE_CHANGED_MARKER = '↻';
+
 // Job-card terms that are not a fact status of their own: what a requirement
 // chip rests on, and the three figures. The cards, their legend and "How
 // ranking works" all read these (pinned by test_frontend_label_parity.py).
@@ -80,6 +91,10 @@ export const MATCH_TERMS: Record<string, {label: string; meaning: string}> = {
     changed: {
         label: 'Evidence changed',
         meaning: 'The fact behind this result was replaced or removed after matches were computed. Refresh matches to re-check it.',
+    },
+    unqualified: {
+        label: 'No qualifier',
+        meaning: 'A match or mismatch with no qualifier was decided from the job listing itself.',
     },
     companyScore: {
         label: 'Company score (preset)',

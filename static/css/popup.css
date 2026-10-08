@@ -1476,6 +1476,8 @@ body.app-nav-drawer-open {
     color: rgba(248, 249, 250, 0.75);
     /* Never leave the column, whatever font is in use. */
     overflow-wrap: anywhere;
+    /* A one-line label sits on its value, like its two-line neighbours. */
+    align-self: end;
 }
 
 #job-match-panel .job-match-figure-value {
@@ -1504,6 +1506,8 @@ body.app-nav-drawer-open {
         row-gap: 0.125rem;
         max-width: none;
     }
+
+    #job-match-panel .job-match-figure-label { align-self: auto; }
 
     #job-match-panel .job-match-figure {
         grid-row: auto;
@@ -4621,11 +4625,24 @@ span.priority-chip-button { cursor: default; }
 .job-match-chip .evidence-badge-profile .evidence-badge-marker { display: none; }
 
 /* Narrow panels: the qualifier takes its own line and the separator goes, so
-   a wrapped chip never starts a line with a stray dot. */
+   a wrapped chip never starts a line with a stray dot. Qualified chips are
+   full-width rows there, so a stack of them shares one width. */
 @container job-match (max-width: 26rem) {
     .job-match-chip-qualifier { flex-basis: 100%; }
     .job-match-chip-sep { display: none; }
+    .job-match-chip:has(> .job-match-chip-qualifier) { display: flex; }
 }
+
+.job-match-chip--changed .job-match-chip-qualifier { font-weight: 600; }
+
+/* A re-check is running: the button stays focusable but reads as unavailable. */
+#job-match-panel [aria-disabled="true"] {
+    opacity: .65;
+    cursor: default;
+}
+
+/* A stored reply's cards use the whole bubble row in the narrowest panel. */
+@container assistant-panel (max-width: 20rem) { #job-search-chat .chat-bubble-assistant:has(.org-card) { max-width: 100% !important; } }
 
 .job-match-chip .evidence-badge {
     padding: 0;
@@ -4647,6 +4664,12 @@ span.priority-chip-button { cursor: default; }
    "How ranking works" on the rankings page. */
 #job-match-panel .job-match-legend { margin-bottom: 1rem; }
 #job-match-panel .job-match-legend .ranking-definitions dt:first-child { margin-top: 0; }
+/* Sky like every other focus ring in this panel, not the rankings amber. */
+#job-match-panel .how-ranking-works-summary:focus-visible { outline-color: #38bdf8; }
+@container job-match (max-width: 26rem) {
+    #job-match-panel .job-match-legend .how-ranking-works-content { font-size: .875rem; line-height: 1.45; }
+    #job-match-panel .job-match-legend .ranking-definitions dt { margin-top: .5rem; }
+}
 
 /* The heading takes focus after a notice's Refresh; it must land below the
    sticky phone top bar (48px), not under it. */
