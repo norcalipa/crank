@@ -997,7 +997,7 @@ const JobMatchPanel: React.FC<JobMatchPanelProps> = ({isAuthenticated = true, si
     React.useEffect(() => {
         const shown = [...(rankedMatches?.job_matches || []), ...(rankedMatches?.organization_matches || [])];
         if (phase === 'ready' && !anyEvidenceChanged(shown)) {
-            setRecheck((current) => (current.kind === 'running' ? current : RECHECK_IDLE));
+            setRecheck(RECHECK_IDLE);
         }
     }, [phase, rankedMatches]);
 
