@@ -11,13 +11,39 @@ This runbook takes production from zero `JobListing` rows to a populated
 inventory. It assumes the Firecrawl adapter (#365), profile crawler (#366),
 scheduler (#367), and admin trigger (#368) are already merged and deployed.
 
+## Status: cannot be completed durably today
+
+**This runbook cannot be followed to a lasting result on the cluster the
+deploy workflows manage until
+[#555](https://github.com/norcalipa/crank/issues/555) is fixed.** Three
+things are missing from the repository, and no step below works around them:
+
+- **Credentials do not survive a deploy.** Every deploy re-applies
+  `crank-capability-secrets` with empty values, so a key an operator
+  populated is blank again after the next merge to `main`.
+- **Flags changed only in the cluster do not survive a deploy**, and flags
+  committed while credentials are blank leave a capability enabled without
+  its key. For the interactive agent that fails the web readiness probe; see
+  "Durable enablement rule" in `docs/rollout-gates.md`.
+- **Nothing creates the `crank-job-pipeline` CronJob.** No workflow applies
+  `deploy/`, and the manifest there is not valid as it stands (step 7).
+
+Steps 1, 2, 5 and 6 and the health probe in step 8 can be run today. Steps 3,
+4 and 7 describe what is true now and what waits for #555. **Do not commit a
+capability flag, and never put a credential in a ConfigMap or in the
+repository.**
+
 ## Prerequisites
 
 - Kubernetes access to the `crank` namespace
-- `FIRECRAWL_API_KEY` stored in the `crank-secrets` Kubernetes Secret
-- `AGENT_RUN_ENABLED` and `CRAWL_CRON_ENABLED` currently `false` (defaults)
-- CronJobs `crank-crawl-organizations` and `crank-job-pipeline` exist but are
-  suspended
+- Source credentials are read from the `crank-capability-secrets` Kubernetes
+  Secret (keys `FIRECRAWL_API_KEY`, `USAJOBS_AUTH_KEY`,
+  `USAJOBS_USER_AGENT_EMAIL`); see step 3 for why they do not persist yet
+- `AGENT_RUN_ENABLED`, `JOB_PIPELINE_ENABLED` and `CRAWL_CRON_ENABLED`
+  currently `false` (the checked-in values)
+- CronJob `crank-crawl-organizations` exists, suspended (every deploy applies
+  it). CronJob `crank-job-pipeline` does **not** exist unless someone created
+  it by hand (step 7)
 
 ## Default budget guardrails
 
@@ -66,33 +92,52 @@ python manage.py crawl_status
 You should see each source with `approved` state and `yes` enabled, zero
 listings, and `never` last crawl.
 
-## Step 3: set the Firecrawl API key
+## Step 3: source credentials
 
-Ensure the environment has the key:
+The application reads `FIRECRAWL_API_KEY`, `USAJOBS_AUTH_KEY` and
+`USAJOBS_USER_AGENT_EMAIL` from the `crank-capability-secrets` Secret, which
+is the last entry in `envFrom` in `k8s/crank.yml` and the `k8s/` CronJobs.
 
-```sh
-# In the crank-agent-config ConfigMap or deployment env:
-FIRECRAWL_API_KEY=<your-key>
-FIRECRAWL_ENABLED=true
-```
+- **Never put a credential in the `crank-agent-config` ConfigMap or in any
+  file in the repository.** The repository is public. It would not work
+  either: the Secret comes after the ConfigMap in `envFrom`, so its (blank)
+  value wins.
+- **There is no supported way to provision these keys today.** Both deploy
+  workflows re-apply the Secret with empty values on every run, so a value
+  set in the cluster lasts only until the next merge to `main`. This runbook
+  therefore gives no command for it. How credentials are provisioned so that
+  they survive a deploy is tracked in #555.
+- `FIRECRAWL_ENABLED` is a non-secret flag that the checked-in
+  `k8s/crank-agent-config.yml` does not carry. Once #555 is fixed, add it to
+  that file in a pull request. Do not set it only in the cluster: a key the
+  file does not carry is never removed by a deploy or by a revert, so it
+  would stay on invisibly.
 
-## Step 4: enable capability switches
+## Step 4: capability flags
 
-```sh
-# In crank-agent-config:
-AGENT_RUN_ENABLED=true
-CRAWL_CRON_ENABLED=true
-JOB_PIPELINE_ENABLED=true
-```
+**Do not do this until #555 is fixed.** Once it is, the flags are changed by
+commits to `k8s/crank-agent-config.yml`, one pull request each, in this
+order, following "Durable enablement rule" in `docs/rollout-gates.md`:
 
-Make this change as a commit to `k8s/crank-agent-config.yml` (keys
-`AGENT_RUN_ENABLED`, `CRAWL_CRON_ENABLED`, `JOB_PIPELINE_ENABLED`). Both
-deploy workflows re-apply that file on every deploy, so an edit made only in
-the cluster is reverted by the next merge to `main`. After the merge has
-deployed, confirm `GET /healthz/ready/` reports the capability with
-`enabled: true` before continuing (see "Durable enablement rule" in
-`docs/rollout-gates.md`, which also covers the case where the web pods have
-not restarted).
+1. `AGENT_RUN_ENABLED: "true"` — the master flag, on its own. It starts no
+   work by itself.
+2. `JOB_PIPELINE_ENABLED: "true"` — the job-source phase this runbook is
+   about.
+
+`CRAWL_CRON_ENABLED` belongs to the organization-crawl phase and is a later,
+separate pull request (`docs/runbook-crawl-scheduling.md`); it is not part of
+the first job inventory.
+
+After each merge, run the post-merge check in that rule: restart the web
+Deployment, wait for the rollout, and require `GET /healthz/ready/` to return
+HTTP 200 with the capability `enabled: true` and `ok: true`. A 503 means a
+required setting is missing, and a restart does not fix it.
+
+An edit made only in the cluster is reverted by the next merge to `main`,
+because both deploy workflows re-apply that file. The database
+`CapabilitySwitch` (`job_pipeline`, and `crawl_schedule` for the organization
+crawl) is the control that no deploy overwrites; it can only turn a
+capability off.
 
 ## Step 5: run the first crawl batch
 
@@ -128,24 +173,61 @@ To include closed/expired listings in the count:
 python manage.py crawl_status --include-closed
 ```
 
-## Step 7: unsuspend CronJobs
+## Step 7: the job-pipeline CronJob
 
-Once you have confirmed listings exist and the smoke test passed:
+**The repository does not create `crank-job-pipeline`.** Neither deploy
+workflow applies anything under `deploy/`, so on a cluster built from the
+repository the CronJob does not exist and any `kubectl` command naming it
+returns `NotFound`. Check first:
+
+```sh
+kubectl -n crank get cronjob crank-job-pipeline
+```
+
+`deploy/cronjob-job-pipeline.yaml` cannot be applied as it stands: its image
+tag is the literal text `${GITHUB_SHA}`. The one manual command that does
+create the CronJob substitutes the tag first:
+
+```sh
+GITHUB_SHA=latest envsubst '${GITHUB_SHA}' < deploy/cronjob-job-pipeline.yaml | kubectl apply -f -
+```
+
+What that command does and does not give you:
+
+- The CronJob is created **suspended** (`suspend: true` in the file).
+- **The image tag is fixed at whatever you substituted, because nothing
+  re-applies this manifest.** With `latest` (and the file's
+  `imagePullPolicy: Always`) each run pulls the image the last code deploy
+  tagged `latest`, so the pipeline follows releases. With a commit SHA the
+  pipeline keeps running that build indefinitely while the web application
+  and the schema move on. Use `latest`.
+- Later changes to the file in the repository do not reach the cluster until
+  someone runs the command again.
+- **Its pods receive no source credential.** The file's `envFrom` lists
+  `crank-config`, `crank-agent-config` and `db-connect-credentials`, not
+  `crank-capability-secrets`, so a source that needs a key cannot
+  authenticate from this CronJob.
+
+For those reasons a hand-created `crank-job-pipeline` is not a supported
+production setup. How this CronJob is applied, which tag it follows and how
+it gets credentials is tracked in #555.
+
+If the CronJob exists and the smoke test passed, this unsuspends it:
 
 ```sh
 kubectl -n crank patch cronjob crank-job-pipeline -p '{"spec":{"suspend":false}}'
 ```
 
-This patch persists: `crank-job-pipeline` is defined in
-`deploy/cronjob-job-pipeline.yaml`, which the deploy workflows do not
-re-apply. The flags it reads still come from the re-applied ConfigMap
-(step 4).
+The patch stays in place because no deploy re-applies
+`deploy/cronjob-job-pipeline.yaml` — the same reason its image tag never
+changes. Whether a run does any work still depends on the flags in the
+re-applied ConfigMap (step 4) and on the `job_pipeline` switch.
 
 Leave `crank-crawl-organizations` suspended until organization-profile sources
 are separately seeded and smoke-tested. It is defined in
 `k8s/crank-crawl-cron.yaml`, which every deploy re-applies, so a
-`kubectl patch` on it lasts only until the next merge to `main`: unsuspend it
-by committing `spec.suspend: false` in that file.
+`kubectl patch` on it lasts only until the next merge to `main`: once #555 is
+fixed, unsuspend it by committing `spec.suspend: false` in that file.
 
 ## Step 8: enable recurring inventory monitoring
 
@@ -193,9 +275,9 @@ is present, never its value.
 | --- | --- |
 | Approved and enabled source | Step 1: seed job sources |
 | Registered adapter and allowlisted URL | Step 1: seed job sources |
-| Source credentials present | Step 3: set the Firecrawl API key |
-| Job pipeline capability enabled | Step 4: enable capability switches |
-| Recent pipeline run finished | Step 7: unsuspend CronJobs |
+| Source credentials present | Step 3: source credentials |
+| Job pipeline capability enabled | Step 4: capability flags |
+| Recent pipeline run finished | Step 7: the job-pipeline CronJob |
 | Queued run consumed | [Crawl scheduling: queued runs are consumed](runbook-crawl-scheduling.md#queued-runs-are-consumed-issue-462) |
 | Committed listing inventory | Step 6: verify listing counts |
 | Employers resolved | Step 6: verify listing counts |
@@ -221,19 +303,26 @@ If something goes wrong:
    kubectl -n crank patch cronjob crank-job-pipeline -p '{"spec":{"suspend":true}}'
    ```
 
-   This patch persists (`deploy/cronjob-job-pipeline.yaml` is not re-applied).
+   This applies only if the CronJob was created by hand (step 7); the patch
+   stays in place because `deploy/cronjob-job-pipeline.yaml` is not
+   re-applied.
    `crank-crawl-organizations` and `crank-healthcheck` follow
    `k8s/crank-crawl-cron.yaml` and `k8s/crank-healthcheck-cron.yaml`: if
    `spec.suspend: false` was committed there, a patch is undone by the next
    deploy, so revert that commit.
 
-3. **Make it durable**: revert the commit that set `AGENT_RUN_ENABLED`,
-   `CRAWL_CRON_ENABLED` and `JOB_PIPELINE_ENABLED` to `"true"` in
-   `k8s/crank-agent-config.yml`. Setting the flags to `false` only in the
-   cluster lasts until the next merge to `main` re-applies the file.
+3. **Make it durable**: if a flag was committed as `"true"` in
+   `k8s/crank-agent-config.yml`, revert the commit for the phase being rolled
+   back (`JOB_PIPELINE_ENABLED`, or `CRAWL_CRON_ENABLED`). Revert the master
+   flag `AGENT_RUN_ENABLED` last, and only when every flag that depends on it
+   is `"false"` again: with `JOB_PIPELINE_ENABLED` or `CRAWL_CRON_ENABLED`
+   still true and the master flag off, `GET /healthz/ready/` returns 503 and
+   new web pods fail their readiness probe. Setting a flag to `false` only in
+   the cluster lasts until the next merge to `main` re-applies the file.
 
-4. **Disable Firecrawl**: set `FIRECRAWL_ENABLED=false` so the adapter refuses
-   to construct.
+4. **Disable Firecrawl**: if `FIRECRAWL_ENABLED` was committed, revert that
+   commit so the adapter refuses to construct. If it was ever set only in
+   the cluster, remove the key there by hand: no deploy removes it.
 
 5. **Clear partial data safely**: to remove all listings from a single source
    without affecting others, use the Django admin or a shell:
