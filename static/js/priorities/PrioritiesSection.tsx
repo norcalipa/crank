@@ -116,6 +116,11 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     // The block's height at the last sync: a block that grew (an error arrived) is told apart from a composer that grew.
     const shown = React.useRef(0);
 
+    // The chat shows its jump pill to a reader who is not at the end; one this block moved is still following.
+    const noteFollowing = (panelBody: HTMLElement) => {
+        if (!moved.current) following.current = panelBody.querySelector('[data-testid="jump-to-latest"]') === null;
+    };
+
     const beginWrite = () => {
         const controller = new AbortController();
         writes.current.add(controller);
@@ -281,8 +286,9 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             if (letGo && open && shown.current > 0 && height > shown.current) {
                 const above = section.getBoundingClientRect().top - panelBody.getBoundingClientRect().top;
                 if (above < 0) {
+                    // This block moves the reader: closing it returns one who was following to the end.
+                    noteFollowing(panelBody);
                     panelBody.scrollTop += above;
-                    // This block moved the reader: closing it returns one who was following to the end.
                     moved.current = true;
                 }
             }
@@ -329,8 +335,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         const section = sectionRef.current;
         const panelBody = section?.closest<HTMLElement>('.assistant-panel-body');
         if (!inSidebar || !section || !panelBody) return undefined;
-        // The chat shows its jump pill to a reader who is not at the end; one this block moved is still following.
-        if (!moved.current) following.current = panelBody.querySelector('[data-testid="jump-to-latest"]') === null;
+        noteFollowing(panelBody);
         const open = section.querySelector('.priorities-scroll') !== null;
         let frames = REVEAL_FRAMES;
         let raf = requestAnimationFrame(function keep() {
