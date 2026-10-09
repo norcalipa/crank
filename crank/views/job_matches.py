@@ -396,10 +396,14 @@ def _refresh_cooldown():
 def _seconds_left(expires_at, cooldown):
     """Whole seconds until ``expires_at``, within ``1..cooldown``.
 
-    The entry can expire between the refused ``add`` and this read, and a
-    value written by an older release is not a timestamp: both read as the
-    nearest bound instead of failing the request.
+    The entry can expire between the refused ``add`` and this read: the
+    window is over, so that reads 1, the shortest wait this can state. A
+    value written by an older release is not a timestamp and says nothing
+    about what is left, so it reads the whole window instead of failing the
+    request.
     """
+    if expires_at is None:
+        return 1
     if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
         return cooldown
     return max(1, min(cooldown, math.ceil(expires_at - time.time())))

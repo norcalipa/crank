@@ -228,15 +228,59 @@ class JobMatchRefreshTests(TestCase):
         import time
 
         now = time.time()
-        # Expired between the refused add and the read, a value from an older
-        # release, or a clock that moved: never 0, never beyond the window.
-        self.assertEqual(_seconds_left(None, 30), 30)
+        # A value from an older release or a clock that moved: never 0,
+        # never beyond the window.
         self.assertEqual(_seconds_left(True, 30), 30)
         self.assertEqual(_seconds_left("soon", 30), 30)
         self.assertEqual(_seconds_left(1, 30), 1)
         self.assertEqual(_seconds_left(now - 5, 30), 1)
         self.assertEqual(_seconds_left(now + 600, 30), 30)
         self.assertEqual(_seconds_left(now + 7.2, 30), 8)
+
+    def test_an_entry_that_expired_before_the_read_is_not_the_whole_window(self):
+        from crank.views.job_matches import _seconds_left
+
+        # Gone between the refused add and the read: the window is over.
+        self.assertEqual(_seconds_left(None, 30), 1)
+        self.assertEqual(_seconds_left(None, 1), 1)
+        CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).delete()
+        frozen = 1_760_000_000.0
+        with mock.patch("crank.views.job_matches.time.time", return_value=frozen), \
+                mock.patch("crank.views.job_matches.cache") as refused, \
+                mock.patch(RECOMPUTE) as recompute:
+            refused.add.return_value = False
+            refused.get.return_value = None
+            response = self.client.post(URL)
+        recompute.assert_not_called()
+        refused.add.assert_called_once_with(
+            f"job-match-refresh:{self.owner.pk}", frozen + 30, 30
+        )
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.json(), {"status": "rate_limited", "retry_after": 1})
+        self.assertEqual(response["Retry-After"], "1")
+
+    def test_the_last_second_of_the_window_reads_one_and_then_the_window_ends(self):
+        CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).delete()
+        frozen = 1_760_000_000.0
+        with mock.patch("crank.views.job_matches.time.time", return_value=frozen), \
+                mock.patch(RECOMPUTE, return_value=mock.Mock(status=RecomputeStatus.FAILED)):
+            self.assertEqual(self.client.post(URL).json(), {"status": "failed"})
+        for elapsed, left in ((0, 30), (0.5, 30), (29.5, 1), (29.999, 1)):
+            with self.subTest(elapsed=elapsed), mock.patch(
+                "crank.views.job_matches.time.time", return_value=frozen + elapsed
+            ), mock.patch(RECOMPUTE) as recompute:
+                response = self.client.post(URL)
+            recompute.assert_not_called()
+            self.assertEqual(response.status_code, 429)
+            self.assertEqual(response["Retry-After"], str(left))
+        # The cache shares the frozen clock: once the window is over the entry
+        # is gone and the next request runs, it is not told to wait again.
+        with mock.patch("crank.views.job_matches.time.time", return_value=frozen + 30.001), \
+                mock.patch(
+                    RECOMPUTE, return_value=mock.Mock(status=RecomputeStatus.PUBLISHED)
+                ) as recompute:
+            self.assertEqual(self.client.post(URL).json(), {"status": "published"})
+        recompute.assert_called_once()
 
     def test_the_cooldown_is_per_user(self):
         CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).delete()
