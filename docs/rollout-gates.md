@@ -484,7 +484,7 @@ two share a decision. Every phase after `shell` depends on #555 (see
 
 | Phase id | Settings flags | Switch key | Manifest / CronJob | Rollback action |
 |---|---|---|---|---|
-| `shell` | none — the workspace renders on every page outside the admin, staff and sign-in surfaces (`crank/context_processors.py`, `assistant_workspace_enabled`) | none (`assistant_shell` is reserved as planned, not registered) | web Deployment in `k8s/crank.yml` | Redeploy the previous image tag (`docs/capability-config-contract.md`, "Rollback Procedure", code rollback). Schema changes are additive, so this preserves data (`docs/deployment-migrations.md`, "Epic #454 rollout"). |
+| `shell` | none — the workspace renders on every page outside the admin, staff and sign-in surfaces (`crank/context_processors.py`, `assistant_workspace_enabled`) | none (`assistant_shell` is reserved as planned, not registered) | web Deployment in `k8s/crank.yml` | Redeploy the previous image tag (`docs/capability-config-contract.md`, "Rollback Procedure", code rollback), then merge a revert commit to `main` — the image rollback alone lasts only until the next merge (see "The shell's rollback is not durable"). Schema changes are additive, so this preserves data (`docs/deployment-migrations.md`, "Epic #454 rollout"). |
 | `interactive_replies` | `INTERACTIVE_AGENT_ENABLED`; provider and model settings | `interactive_agent` | `k8s/crank-agent-config.yml`; no CronJob | Disable the switch; revert the enablement PR. Direct priority editing and stored results stay usable. |
 | `job_source` | `JOB_PIPELINE_ENABLED` (needs the master flag `AGENT_RUN_ENABLED`); `JobSourceCatalog.enabled` per source | `job_pipeline` | `deploy/cronjob-job-pipeline.yaml` (`crank-job-pipeline`) — created by no deploy; depends on #555 | Disable the switch or the single source; revert the pull request that set `JOB_PIPELINE_ENABLED` (not the master flag). Listings and matches are kept. |
 | `publication` | `PUBLICATION_CONSUMER_ENABLED` (not present in the checked-in ConfigMap) | `publication_consumer` | none in the repository (`publication_sweep` command; see `docs/publication-outbox.md`) | Disable the switch; revert the enablement PR. Outbox rows are kept. |
@@ -516,6 +516,30 @@ work without any signal of its own.
 merged, because every merge to `main` deploys, so it cannot be staged and its
 only rollback is redeploying the previous image. Its decision row therefore
 uses evidence gathered before and after release rather than a switch.
+
+#### The shell's rollback is not durable
+
+**Redeploying the previous image is undone by the next merge to `main`.**
+Neither deploy workflow can be started by hand, so the previous image is put
+back by a change made in the cluster, and both workflows then overwrite it:
+
+- a merge that changes code builds a new image from `main`, which still
+  contains the change being rolled back, and deploys it
+  (`deploy-home.yml`);
+- a merge that changes only `k8s/` — every enablement and revert pull
+  request in the "Durable enablement rule" — re-applies `k8s/crank.yml` with
+  the image tag `latest` (`update-home-deployment.yml`), and `latest` is the
+  newest build, the one that was rolled back from.
+
+To make a shell rollback stick, the operator does two things, in this order:
+
+1. Redeploy the previous image tag, to stop the harm now.
+2. Merge a revert commit to `main` that removes the change, and wait for
+   that merge to deploy. From then on the newest build no longer contains
+   the change. **Merge no other pull request between step 1 and the deploy
+   of that revert**: any other merge puts the rolled-back build back.
+
+This describes the workflows as they are; nothing here changes them.
 
 ### Decision gates per phase
 

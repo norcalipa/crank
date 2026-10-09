@@ -2,7 +2,7 @@
 <!-- Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
 
 Owner: maintainer (crank.fyi)
-Last reviewed: 2026-08-12
+Last reviewed: 2026-10-09
 Version/change process: update this runbook with every initial-crawl or seeding-policy change.
 
 # Runbook: initial job inventory crawl
@@ -28,10 +28,13 @@ things are missing from the repository, and no step below works around them:
 - **Nothing creates the `crank-job-pipeline` CronJob.** No workflow applies
   `deploy/`, and the manifest there is not valid as it stands (step 7).
 
-Steps 1, 2, 5 and 6 and the health probe in step 8 can be run today. Steps 3,
-4 and 7 describe what is true now and what waits for #555. **Do not commit a
-capability flag, and never put a credential in a ConfigMap or in the
-repository.**
+Only steps 1 and 2 and the one-off `crawl_healthcheck` command in step 8 can
+be run today. **Steps 5 and 6 wait for #555 as well**: every seeded source
+needs a credential that each deploy blanks (step 3), and `run_job_pipeline`
+does no work while the capability flags are off (step 4). Steps 3, 4 and 7
+and the recurring probe in step 8 describe what is true now and what waits
+for #555. **Do not commit a capability flag, and never put a credential in a
+ConfigMap or in the repository.**
 
 ## Prerequisites
 
@@ -141,6 +144,13 @@ capability off.
 
 ## Step 5: run the first crawl batch
 
+**This step waits for #555.** Run today, `trigger_crawl` is refused for every
+seeded source — `USAJOBS Search` needs `USAJOBS_AUTH_KEY` and
+`USAJOBS_USER_AGENT_EMAIL`, and the three `firecrawl-careers` sources need
+`FIRECRAWL_ENABLED` and `FIRECRAWL_API_KEY` — and `run_job_pipeline` prints
+`job_pipeline: disabled; no work performed` and exits 0 without crawling
+anything. Nothing below works around that; steps 3 and 4 come first.
+
 Trigger one source at a time for a controlled smoke test:
 
 ```sh
@@ -159,6 +169,8 @@ python manage.py run_job_pipeline
 ```
 
 ## Step 6: verify listing counts
+
+Until step 5 has run (after #555), every source shows zero listings here.
 
 ```sh
 python manage.py crawl_status
@@ -240,9 +252,21 @@ adapters. It is safe to run at any time and never needs provider credentials:
 python manage.py crawl_healthcheck
 ```
 
-For the recurring probe, commit `spec.suspend: false` in
-`k8s/crank-healthcheck-cron.yaml`. This one does not wait for #555: the probe
-is read-only and needs no credential and no capability flag. The deploy
+**Leave the recurring probe suspended until #555 is fixed and step 6 shows
+listings.** The probe itself needs no credential and no capability flag, but
+it exits 1 whenever the inventory is unhealthy, and with no enabled source or
+no active listing it always is. Unsuspended today it would give a
+`crank-healthcheck` Job that fails every 15 minutes, `zero-enabled-sources`
+or `zero-active-listings` open from then on, and a first
+`job-source-alerts-quiet` window that breaches by construction, because an
+alert already open when a window starts counts against it
+(`docs/monitoring.md`, "Release decision gates", what "value" means). The manifest's own header says the
+same: unsuspend only after the bootstrap is complete and the alerts are
+wired to a policy.
+
+Once #555 is fixed, the inventory exists and the owner has created the alert
+policy, commit `spec.suspend: false` in `k8s/crank-healthcheck-cron.yaml`.
+The deploy
 workflows already apply that manifest on every deploy (substituting the image
 tag for `${GITHUB_SHA}`), so the `crank-healthcheck` CronJob exists,
 suspended, and the merge unsuspends it. Do not `kubectl apply -f` the file directly: its image tag is the literal
@@ -253,9 +277,11 @@ by the next deploy. Confirm with:
 kubectl -n crank get cronjob crank-healthcheck
 ```
 
-The probe emits an `inventory_health` New Relic event; the alert policy in
-`docs/monitoring.yaml` (zero-enabled-sources, zero-active-listings,
-stale-inventory, repeated-failures, listing-collapse) fires from that event.
+The probe emits an `inventory_health` New Relic event. `docs/monitoring.yaml`
+defines the alert queries that read it (zero-enabled-sources,
+zero-active-listings, stale-inventory, repeated-failures, listing-collapse),
+but nothing in the repository creates the alert policy: until the owner
+creates it in the alerting tool, no alert fires.
 
 If the probe itself cannot run (for example the database is unreachable), it
 emits a degraded `inventory_health` event with `healthy = false` and a

@@ -2,7 +2,7 @@
 Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
 
 Owner: maintainer (crank.fyi)
-Last reviewed: 2026-09-14
+Last reviewed: 2026-10-09
 Version/change process: update this runbook with every scheduling or rollout-policy change.
 
 # Crawl scheduling runbook

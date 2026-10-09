@@ -26,7 +26,7 @@ its line here (and, where a line says so, the one value it names).
 
 | # | Decision | Default — owner may change |
 |---|---|---|
-| D1 | Shell rollback | **default — owner may change:** redeploying the previous image is accepted as the shell's rollback; `assistant_shell` stays `planned` and no shell switch is built. |
+| D1 | Shell rollback | **default — owner may change:** redeploying the previous image, followed by a revert commit on `main`, is accepted as the shell's rollback; `assistant_shell` stays `planned` and no shell switch is built. The image rollback alone is undone by the next merge to `main`, so no other pull request is merged until the revert has deployed (`docs/rollout-gates.md`, "The shell's rollback is not durable"). |
 | D2 | Gate thresholds | **default — owner may change:** the one existing #328 stage number (reply success `0.90`) is reused as `provisional`; four more `provisional` numbers are new in #492 (`docs/rollout-gates.md`, "Provisional numbers for #492 gates"); every other new gate is `baseline_required` until 14 days of data exist with the capability enabled; no new alerts. Values live in `release_gates:` in `docs/monitoring.yaml`. No gate has a sample floor yet (see "Sample floors and alert policies to lock" below). |
 | D3 | Where sessions run | **default — owner may change:** a staging instance (`ENV=staging`, orchestrator provider, at least one real approved source). Documented alternative: production as an internal canary with throwaway accounts, after durable enablement — which is not possible until #555 is fixed (see Preconditions). |
 | D4 | Pass bar for A2 | **default — owner may change:** at least 4 of 5 participants answer all four comprehension probes (C1–C4) correctly. |
@@ -136,11 +136,11 @@ Before each session, the moderator confirms aloud and ticks:
       the words they type or the assistant replies.
 - [ ] The participant knows that **the product itself keeps what they
       type**: chat messages and saved priorities are stored under the
-      throwaway account, and each message is sent to the external
-      language-model provider that writes the replies. The stored copies are
-      deleted with the account after the round (see
-      "Deleting session data"); the copy sent to the provider cannot be
-      deleted from here.
+      throwaway account, and each message and the saved priorities are sent
+      to the external language-model provider that writes the replies. The
+      stored copies are kept until the account is deleted, which happens
+      after the round (see "Deleting session data"); the copy sent to the
+      provider cannot be deleted from here.
 - [ ] The participant has been asked **not to type real personal details**
       — no real name, employer, pay, location or contact details — in
       priorities or in chat.
@@ -182,13 +182,19 @@ Further rules:
 The rules above govern the moderator's records. The product keeps its own:
 
 - Every chat message, the participant's and the assistant's, is stored
-  verbatim (`JobSearchMessage.content`). The newest 50 messages of each
-  conversation are kept (`JOB_SEARCH_MESSAGES_RETENTION`), with no time
-  limit.
-- Saved priorities are stored (`UserPreference`) until changed or reset.
-- With the orchestrator provider that D3 requires, the conversation text is
-  sent to the external language-model provider. How long the provider keeps
-  it is set by the provider's terms, not by this repository.
+  verbatim (`JobSearchMessage.content`). **Every message of every
+  conversation is kept until the conversation or the account is deleted** —
+  including a conversation the participant closed by starting a new one.
+  Nothing in the repository removes messages by age or by number.
+- The product shows only the newest 50 messages of a conversation
+  (`JOB_SEARCH_MESSAGES_RETENTION`). That setting limits what the page and
+  the API return; it does not limit what is stored.
+- Saved priorities are stored (`UserPreference`) until changed or reset, and
+  are deleted with the account.
+- With the orchestrator provider that D3 requires, the conversation text and
+  the saved priorities are sent to the external language-model provider on
+  every turn. How long the provider keeps them is set by the provider's
+  terms, not by this repository.
 
 ### Deleting session data
 
@@ -196,9 +202,11 @@ After the last session, and before the results record is merged:
 
 1. A superuser deletes each throwaway account in Django admin
    (**Authentication and Authorization → Users → Delete**). This is an
-   existing path: the account's conversations, messages, saved priorities
-   and matches are deleted with it (`on_delete=CASCADE`; a test in
-   `crank/tests/test_release_decision_gates.py` checks the cascade). A
+   existing path: the account's conversations, messages, saved priorities,
+   matches and submitted corrections are deleted with it
+   (`on_delete=CASCADE`; a test in
+   `crank/tests/test_release_decision_gates.py` drives the admin delete page
+   and checks each of these is gone). A
    participant can also delete a single conversation themselves with the
    product's own delete-conversation control
    (`agent_conversation_delete`), but that leaves the account and its saved
@@ -342,7 +350,7 @@ None of these can be done by a pull request from an implementer.
 2. Confirm every blocking issue in the Preconditions table is closed and in
    the release under test.
 3. Check the model provider's retention terms for conversation text and
-   decide whether they are acceptable for the round.
+   saved priorities, and decide whether they are acceptable for the round.
 4. Record the release under test with `readiness_baseline`. Keep the
    `data_counts` of this record: it is the "before" for step 9.
 5. Confirm the automated preconditions on that SHA.
@@ -351,7 +359,9 @@ None of these can be done by a pull request from an implementer.
 8. Score the round against A1 and A2.
 9. Delete the throwaway accounts and confirm the deletion
    ("Deleting session data"). Destroy raw notes and recordings by the limit
-   in D6.
+   in D6. Keep one seeded account that was not used by a participant and
+   holds stored results until step 11 is done, so that step has something
+   to show preserved; delete it afterwards.
 10. File a follow-up issue for every failed or assisted core task and every
     S1 or S2 finding; fix or explicitly accept each before the release
     decision.
