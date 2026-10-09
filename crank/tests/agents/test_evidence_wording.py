@@ -428,6 +428,29 @@ class TestMixedFreshnessGoldenConversation:
         assert "reasons=['Remote', 'Series B']" in line
         assert "A profile outcome has no evidence behind it" in system
 
+    def test_an_inferred_requirement_is_unconfirmed_in_the_model_context_too(self):
+        """The same fact states the work mode but only implies a day count."""
+        from crank.models.preference import UserPreference
+
+        FieldKey = CompanyFieldEvidence.FieldKey
+        org, user = self._org([(FieldKey.RTO_POLICY, "Hybrid", 2)])
+        UserPreference.objects.filter(user=user).update(preferences={
+            "work_location": {"modes": ["hybrid"], "max_in_office_days": 3},
+        })
+        rto = self.rows[FieldKey.RTO_POLICY]
+
+        system = self._system(user)
+
+        line = next(
+            l for l in system.split("PREFERENCE-GROUNDED ORGANIZATION MATCHES (ranked", 1)[1].splitlines()
+            if "organization_id=%d " % org.id in l
+        )
+        assert "work_location.modes=match[evidence=%d]" % rto.pk in line
+        assert "work_location.max_in_office_days=match[evidence=%d,unconfirmed]" % rto.pk in line
+        # The organization card's summary counts the fact, not the requirement.
+        catalog = system.split("ORGANIZATION CATALOG (server-controlled", 1)[1].split("\n\n", 1)[0]
+        assert "evidence=verified:1,stale:0,unknown:6," in catalog
+
     def test_two_stale_facts_with_different_dates_are_not_conflated(self):
         FieldKey = CompanyFieldEvidence.FieldKey
         _, user = self._org([
