@@ -57,6 +57,8 @@ function ChangeValue({value, path, currency, importance, choice}: {
 }
 
 const CURRENCY_PATH = 'compensation.currency';
+// The bounded block offers More in its pinned row while about half of the row below is still out of sight.
+export const MORE_BELOW_PX = 22;
 
 export function ChangeList({changes, label, labels, currency, choicePaths}: {
     changes: PreferenceChange[];
@@ -103,6 +105,35 @@ export default function ReviewChanges({
         headingRef.current?.focus();
     }, []);
     const isSearch = scope === 'search';
+    // The bounded block pins one action row. While Edit and This search only are below it, a More button in that row leads to them.
+    const rootRef = React.useRef<HTMLDivElement>(null);
+    const [moreBelow, setMoreBelow] = React.useState(false);
+    const hasSecondRow = compact && (!!onEdit || (!!onApplySearchOnly && !isSearch));
+    React.useEffect(() => {
+        const root = rootRef.current as HTMLDivElement;
+        const scroller = hasSecondRow ? root.closest<HTMLElement>('.priorities-scroll') : null;
+        if (!scroller) {
+            setMoreBelow(false);
+            return undefined;
+        }
+        const measure = () => setMoreBelow(scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight > MORE_BELOW_PX);
+        measure();
+        scroller.addEventListener('scroll', measure);
+        const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+        observer?.observe(scroller);
+        observer?.observe(root);
+        return () => {
+            scroller.removeEventListener('scroll', measure);
+            observer?.disconnect();
+        };
+    }, [hasSecondRow]);
+    // More is only shown inside the block's scroller, with a second row to lead to: that row takes the focus.
+    const showMore = () => {
+        const root = rootRef.current as HTMLDivElement;
+        const scroller = root.closest('.priorities-scroll') as HTMLElement;
+        (root.querySelector('.priorities-review-edit, .priorities-review-search') as HTMLElement).focus();
+        scroller.scrollTop = scroller.scrollHeight;
+    };
     const note = (
         <p className="priorities-scope-note">
             {isSearch
@@ -118,7 +149,7 @@ export default function ReviewChanges({
     );
     return (
         <div className={`priorities-card priorities-review${compact ? ' priorities-review-compact' : ''}`} data-testid={testId}
-             role="group" aria-labelledby={headingId}>
+             role="group" aria-labelledby={headingId} ref={rootRef}>
             <h3 id={headingId} className="h6 priorities-heading" tabIndex={-1} ref={headingRef}>
                 {heading}
             </h3>
@@ -154,7 +185,10 @@ export default function ReviewChanges({
                     </button>
                 ) : (
                     <button type="button" className="btn btn-sm btn-primary"
-                            onClick={onApply} disabled={pending || changes.length === 0} aria-busy={pending}>
+                            // In the bounded block the button keeps the focus through the request, so a failed Apply leaves it there.
+                            onClick={() => { if (!(compact && pending)) onApply(); }}
+                            disabled={(pending && !compact) || changes.length === 0}
+                            aria-disabled={compact && pending ? true : undefined} aria-busy={pending}>
                         {pending ? (
                             <>
                                 <span className="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>
@@ -164,6 +198,13 @@ export default function ReviewChanges({
                     </button>
                 )}
                 {compact && cancel}
+                {moreBelow && (
+                    <button type="button" className="btn btn-sm btn-outline-light priorities-review-more"
+                            data-testid="priorities-review-more" aria-label="More options" onClick={showMore}>
+                        <i className="fa-solid fa-ellipsis" aria-hidden="true"></i>
+                        <span className="priorities-review-more-text">More</span>
+                    </button>
+                )}
                 {onEdit && (
                     <button type="button" className="btn btn-sm btn-link text-light priorities-review-edit"
                             onClick={onEdit} disabled={pending}>Edit</button>
