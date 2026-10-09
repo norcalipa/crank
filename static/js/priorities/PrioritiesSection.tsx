@@ -113,6 +113,8 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const sectionRef = React.useRef<HTMLElement>(null);
     const following = React.useRef(false);
     const moved = React.useRef(false);
+    // The block's height at the last sync: a block that grew (an error arrived) is told apart from a composer that grew.
+    const shown = React.useRef(0);
 
     const beginWrite = () => {
         const controller = new AbortController();
@@ -272,7 +274,19 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             const pillRow = pill && getComputedStyle(pill).position === 'static' ? pill.offsetHeight : 0;
             const bars = header && footer ? header.offsetHeight + footer.offsetHeight - pillRow : CHAT_BARS_FALLBACK_PX;
             panelBody.style.setProperty('--priorities-open-h', `${height}px`);
-            section.toggleAttribute('data-pinned', held && panelBody.clientHeight - height >= bars + PIN_TRANSCRIPT_PX);
+            const pin = held && panelBody.clientHeight - height >= bars + PIN_TRANSCRIPT_PX;
+            const letGo = section.hasAttribute('data-pinned') && !pin;
+            section.toggleAttribute('data-pinned', pin);
+            // A block that grew and no longer fits pinned is brought back, not left above the reader.
+            if (letGo && open && shown.current > 0 && height > shown.current) {
+                const above = section.getBoundingClientRect().top - panelBody.getBoundingClientRect().top;
+                if (above < 0) {
+                    panelBody.scrollTop += above;
+                    // This block moved the reader: closing it returns one who was following to the end.
+                    moved.current = true;
+                }
+            }
+            shown.current = height;
         };
         const observer = new ResizeObserver(() => sync());
         observer.observe(section);

@@ -1308,6 +1308,68 @@ describe('PrioritiesSection', () => {
                 expect(body.style.getPropertyValue('--priorities-open-h')).toBe('');
             });
 
+            test('a pinned block that grows past its room is brought back on screen; one the composer pushed out is left alone', async () => {
+                serve([chip, pref(1)]);
+                heights.section = 0;
+                heights.body = 241 + CHAT_BARS_FALLBACK_PX + PIN_TRANSCRIPT_PX;
+                render(panel(<PrioritiesSection variant="sidebar" authenticated/>));
+                const section = await screen.findByTestId('priorities-sidebar');
+                const body = section.parentElement!;
+                const at = {section: 0, body: 0};
+                jest.spyOn(section, 'getBoundingClientRect').mockImplementation(() => ({top: at.section}) as DOMRect);
+                jest.spyOn(body, 'getBoundingClientRect').mockImplementation(() => ({top: at.body}) as DOMRect);
+                const grow = (height: number) => { heights.section = height; act(() => live()[0].run()); };
+                const toggle = await screen.findByTestId('priorities-summary-toggle');
+
+                // A block not yet laid out (no height) has nothing to have grown from.
+                fireEvent.click(toggle);
+                expect(section).toHaveAttribute('data-pinned');
+                body.scrollTop = 2500;
+                at.section = -2439;
+                grow(299);
+                expect(section).not.toHaveAttribute('data-pinned');
+                expect(body.scrollTop).toBe(2500);
+
+                // Pinned at 241px with the reader at the end. An error makes it 299px: it no longer fits pinned and
+                // is back at the top of the panel's content, 2,439px above the reader. It is brought to them.
+                grow(241);
+                expect(section).toHaveAttribute('data-pinned');
+                grow(299);
+                expect(section).not.toHaveAttribute('data-pinned');
+                expect(body.scrollTop).toBe(61);
+
+                // Already let go: growing again moves nothing.
+                body.scrollTop = 2500;
+                grow(320);
+                expect(body.scrollTop).toBe(2500);
+
+                // It grew, but its top is still on screen: nothing to bring back.
+                grow(241);
+                at.section = 12;
+                grow(299);
+                expect(section).not.toHaveAttribute('data-pinned');
+                expect(body.scrollTop).toBe(2500);
+
+                // The composer grew instead (a draft): the block lets go, and a reader who is typing is not pulled away.
+                at.section = -2439;
+                grow(241);
+                heights.body -= 40;
+                act(() => live()[0].run());
+                expect(section).not.toHaveAttribute('data-pinned');
+                expect(body.scrollTop).toBe(2500);
+
+                // Nor is the collapsed row, pinned only because it holds the focus.
+                heights.body += 40;
+                heights.section = 61;
+                fireEvent.click(toggle);
+                act(() => toggle.focus());
+                expect(screen.queryByTestId('priority-chip')).not.toBeInTheDocument();
+                expect(section).toHaveAttribute('data-pinned');
+                grow(400);
+                expect(section).not.toHaveAttribute('data-pinned');
+                expect(body.scrollTop).toBe(2500);
+            });
+
             test('the room is measured from the chat\'s own header and composer band, whenever they mount or change', async () => {
                 serve([chip, pref(1)]);
                 heights.section = 400;
