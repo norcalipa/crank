@@ -477,7 +477,7 @@ function chipQualifier(req: RequirementOutcome): {node: React.ReactNode; spoken:
 
 /** Per-requirement chips in three visually distinct, non-color-duplicated
  * states, each qualified by the read-time status of the fact behind it. */
-function RequirementChips({requirements, canRecheck = true}: {requirements?: RequirementOutcome[]; canRecheck?: boolean}) {
+function RequirementChips({requirements, canRecheck}: {requirements?: RequirementOutcome[]; canRecheck: boolean}) {
     if (!requirements || requirements.length === 0) {
         return null;
     }

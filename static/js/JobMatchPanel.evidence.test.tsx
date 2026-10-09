@@ -533,6 +533,45 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
             outside.remove();
         });
 
+        test('a purge during the re-read that follows the answer drops the outcome as well', async () => {
+            let refreshed = false;
+            let releaseRanked: (response: Response) => void = () => undefined;
+            const outside = document.createElement('button');
+            document.body.appendChild(outside);
+            global.fetch = jest.fn((url: string) => {
+                if (url.includes('/api/job-matches/refresh/')) {
+                    refreshed = true;
+                    return Promise.resolve(json({status: 'published'}));
+                }
+                if (url.includes('/api/job-matches/status/')) {
+                    return Promise.resolve(json({state: 'ok', title: 'Matches', message: '', actions: []}));
+                }
+                if (url.includes('/api/job-matches/ranked/')) {
+                    // The read that follows the answer is held open.
+                    return refreshed && releaseRanked.length === 0
+                        ? new Promise<Response>((resolve) => { releaseRanked = (response) => resolve(response); })
+                        : Promise.resolve(json({job_matches: [changedJob()], organization_matches: []}));
+                }
+                return Promise.resolve(json({count: 1, next: null, previous: null, results: []}));
+            }) as unknown as typeof fetch;
+            render(<JobMatchPanel/>);
+            const button = within(await screen.findByTestId('evidence-changed-notice')).getByRole('button');
+            button.focus();
+            fireEvent.click(button);
+            await waitFor(() => expect(releaseRanked.length).toBe(1));
+
+            purge();
+            outside.focus();
+            await act(async () => { releaseRanked(json({job_matches: [settledJob()], organization_matches: []})); });
+            await settle();
+
+            expect(screen.getByTestId('job-match-loading')).toBeInTheDocument();
+            expect(screen.queryByTestId('ranked-job-42')).not.toBeInTheDocument();
+            expect(screen.getByTestId('recheck-announcement')).toBeEmptyDOMElement();
+            expect(outside).toHaveFocus();
+            outside.remove();
+        });
+
         test('a signed-out session does not get a load error from the dropped answer', async () => {
             let answer: (response: Response) => void = () => undefined;
             const calls = mockRefresh(changedJob(), settledJob(),
