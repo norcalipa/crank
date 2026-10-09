@@ -1612,6 +1612,47 @@ describe('PrioritiesSection', () => {
                 return {section, panel, log, toggle, showPill: (shown: boolean) => view.rerender(ui(shown)), unmount: view.unmount};
             }
 
+            test('a row held by the focus that opens past its room is brought back at once, and its reader still returns to the end', async () => {
+                const sizes = {section: 61, body: 61 + CHAT_BARS_FALLBACK_PX + PIN_TRANSCRIPT_PX};
+                const runs: Array<() => void> = [];
+                (global as any).ResizeObserver = class {
+                    constructor(run: () => void) { runs.push(run); }
+                    observe() { /* driven by hand */ }
+                    unobserve() { /* driven by hand */ }
+                    disconnect() { /* driven by hand */ }
+                };
+                try {
+                    const {section, panel, toggle} = await mount('panel');
+                    Object.defineProperty(section, 'offsetHeight', {configurable: true, get: () => sizes.section});
+                    Object.defineProperty(panel, 'clientHeight', {configurable: true, get: () => sizes.body});
+                    // At the end of the conversation (no jump pill), with the focus on the row: the row is pinned.
+                    panel.scrollTop = 900;
+                    act(() => toggle.focus());
+                    expect(section).toHaveAttribute('data-pinned');
+
+                    // Enter opens the list: 176px no longer fits pinned, and the block's top is 800px above the panel's.
+                    sizes.section = 176;
+                    tops.section = -700;
+                    fireEvent.click(toggle);
+                    expect(section).not.toHaveAttribute('data-pinned');
+                    expect(panel.scrollTop).toBe(100);
+                    tops.section = 100;
+                    await settle();
+                    expect(panel.scrollTop).toBe(100);
+
+                    // Enter again closes it; the row pins again and the reader is back at the end.
+                    sizes.section = 61;
+                    fireEvent.click(toggle);
+                    expect(section).toHaveAttribute('data-pinned');
+                    await frame();
+                    expect(panel.scrollTop).toBe(2000);
+                    await settle();
+                    expect(runs.length).toBeGreaterThan(0);
+                } finally {
+                    delete (global as any).ResizeObserver;
+                }
+            });
+
             test('an open block that does not pin is brought back on screen, and the reader returns to the end when it closes', async () => {
                 const {section, panel, toggle, showPill} = await mount('panel');
                 panel.scrollTop = 900;
