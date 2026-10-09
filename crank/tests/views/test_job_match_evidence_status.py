@@ -311,6 +311,12 @@ class JobMatchEvidenceStatusTests(TestCase):
         self.assertEqual(len(rows), 4)
         for row in rows:
             self.assertEqual(row["requirements"][0]["status"], "match")
-            # Prose matching interpreted: sourced, and no bare "Remote" reason.
+            # Prose matching interpreted: sourced, which the chip says.
             self.assertEqual(row["requirements"][0]["evidence_status"]["state"], "sourced")
+            self.assertEqual(row["reasons"], ["Remote"])
+
+        # The same path withholds the reason once the fact is stale.
+        CompanyFieldEvidence.objects.update(last_verified_at=self.now - timedelta(days=400))
+        for row in get_matches_for_user(self.owner, match_service=service)["job_matches"]:
+            self.assertEqual(row["requirements"][0]["evidence_status"]["state"], "stale")
             self.assertEqual(row["reasons"], [])

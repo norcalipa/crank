@@ -1564,17 +1564,19 @@ def annotate_requirement_evidence(requirement_lists, *, now: datetime | None = N
     ]
 
 
-#: Evidence states whose outcome a reason badge must not restate as plain
-#: fact: the chip beside it is qualified (stale, sourced) or withdrawn (changed).
-_REASON_WITHHELD_STATES = frozenset({"stale", "sourced", "superseded", "missing"})
+#: Evidence states whose outcome a reason must not restate as plain fact: the
+#: fact is past its freshness window (stale) or no longer the accepted one
+#: (changed). A "sourced" outcome keeps its reason: it is what the accepted,
+#: current source says, and the chip beside it carries "Sourced, not confirmed".
+_REASON_WITHHELD_STATES = frozenset({"stale", "superseded", "missing"})
 
 
 def unqualified_reasons(reasons, annotated_requirements) -> list[str]:
-    """``reasons`` without those that rest only on qualified evidence.
+    """``reasons`` without those that rest only on stale or replaced evidence.
 
-    A reason ("Remote", "Series B") states a fact with no room for a
-    qualifier, so one is kept only while a requirement decided by listing
-    data, profile data or evidence that verifies it still gives it.
+    A reason ("Remote", "Series B") states a fact with no room for a date or
+    a "changed" mark, so one is kept only while a requirement decided by
+    listing data, profile data or accepted, current evidence still gives it.
     ``annotated_requirements`` is one list from
     :func:`annotate_requirement_evidence`; the labels come from the renderer
     every surface shares, and the order of ``reasons`` is kept.

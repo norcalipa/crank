@@ -1322,18 +1322,23 @@ class CrossSurfaceReasonTests(TestCase):
         assert service_reasons == tool_reasons
         assert service_reasons[self.listing.pk] == ["Salary 150,000+", "Public company"]
 
-    def test_every_surface_withholds_the_reason_for_a_qualified_fact(self):
-        """A stale, prose-read or replaced fact is not restated as a bare
-        reason on any user-facing surface; the chip carries the qualifier."""
+    def test_every_surface_withholds_the_reason_for_a_stale_or_replaced_fact(self):
+        """A stale or replaced fact is not restated as a bare reason on any
+        user-facing surface; the chip carries the date or the change. What an
+        accepted, current source says in prose keeps its reason."""
         from crank.agents.job_search.tools import get_matches_for_user
 
+        kept = ["Salary 150,000+", "Public company"]
         cases = [
-            ("stale", {"last_verified_at": None}),
-            ("sourced", {"value_text": "Publicly listed on NASDAQ"}),
-            ("superseded", {"state": CompanyFieldEvidence.State.SUPERSEDED}),
+            ("stale", {"last_verified_at": None}, ["Salary 150,000+"]),
+            ("stale", {"last_verified_at": timezone.now() - timedelta(days=400)},
+             ["Salary 150,000+"]),
+            ("sourced", {"value_text": "Publicly listed on NASDAQ"}, kept),
+            ("superseded", {"state": CompanyFieldEvidence.State.SUPERSEDED},
+             ["Salary 150,000+"]),
         ]
         self.client.force_login(self.user)
-        for state, change in cases:
+        for state, change, expected in cases:
             with self.subTest(state=state):
                 CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).update(
                     value_text="Public company", last_verified_at=timezone.now(),
@@ -1361,7 +1366,7 @@ class CrossSurfaceReasonTests(TestCase):
                 )
                 assert public["evidence_status"]["state"] == state
                 for reasons in surfaces:
-                    assert reasons == ["Salary 150,000+"]
+                    assert reasons == expected
 
     def test_a_reason_another_unqualified_requirement_still_gives_is_kept(self):
         from crank.services.company_evidence import unqualified_reasons
