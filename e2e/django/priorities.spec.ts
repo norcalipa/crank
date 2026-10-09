@@ -3,7 +3,7 @@
 // Editable priority chips with a review / apply / undo flow (issue #480).
 // Uses the dedicated seeded account `e2e_prefs_user` because these journeys
 // mutate the saved preference document.
-import {expect, Page, test} from '@playwright/test';
+import {expect, Locator, Page, test} from '@playwright/test';
 import {E2E_PASSWORD, expectNoHorizontalOverflow, login, requireDjangoTier} from './support';
 
 const PREFS_USER = 'e2e_prefs_user';
@@ -124,6 +124,15 @@ test.describe('priorities editor (issue #480)', () => {
         await expect(review).toContainText('130,000');
         await expect(review).toContainText('120,000');
         await expect(page.getByRole('button', {name: 'Apply to account'})).toBeVisible();
+    });
+
+    test('tabbing through the main editor never puts the focused control under its pinned footer', async ({page}) => {
+        await page.setViewportSize({width: 1280, height: 900});
+        await openEditor(page);
+        const {fields, covered, inFooter} = await tabThroughEditor(page, 'priorities-main');
+        expect(inFooter, 'the walk ends in the editor\'s footer').toBe(true);
+        expect(fields).toBeGreaterThanOrEqual(30);
+        expect(covered, 'focused controls a pointer at their centre does not reach').toEqual([]);
     });
 
     test('chips stay within the viewport at 375px', async ({page}) => {
@@ -278,6 +287,68 @@ async function expectBounded(page: Page, bodyHeight: number): Promise<PanelMeasu
     return measure;
 }
 
+/** The control that holds the keyboard focus inside the priorities block: whether a pointer at its centre reaches
+ *  it (or its label). A control that ignores the pointer (the list's Add while its box is empty) is reached through
+ *  the row that holds it, never through the editor's pinned footer. Null when the focus is elsewhere. */
+async function focusedControl(page: Page, block = 'priorities-sidebar'): Promise<{name: string; inFooter: boolean; reached: boolean} | null> {
+    return page.evaluate(async (testId) => {
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const el = document.activeElement as HTMLElement | null;
+        const section = document.querySelector<HTMLElement>(`[data-testid="${testId}"]`)!;
+        if (!el || !section.contains(el)) return null;
+        const footer = section.querySelector<HTMLElement>('.priorities-footer')!;
+        const r = el.getBoundingClientRect();
+        const x = r.left + r.width / 2;
+        const y = r.top + r.height / 2;
+        const top = x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight ? document.elementFromPoint(x, y) : null;
+        const label = el.closest('label') || (el.id ? document.querySelector(`label[for="${el.id}"]`) : null);
+        const inert = getComputedStyle(el).pointerEvents === 'none';
+        const reached = !!top && (el === top || el.contains(top) || (!!label && label.contains(top))
+            || (inert && top.contains(el) && !footer.contains(top)));
+        return {
+            name: (el.getAttribute('aria-label') || label?.textContent || el.textContent || el.tagName).trim().slice(0, 40),
+            inFooter: footer.contains(el),
+            reached,
+        };
+    }, block);
+}
+
+/** Tabs from the editor's first field to its footer. Returns the fields walked and those a pointer does not reach. */
+async function tabThroughEditor(page: Page, block: string): Promise<{fields: number; covered: string[]; inFooter: boolean}> {
+    await page.getByRole('spinbutton', {name: SALARY}).focus();
+    const covered: string[] = [];
+    let fields = 0;
+    let inFooter = false;
+    for (let stop = 0; stop < 80 && !inFooter; stop += 1) {
+        const at = await focusedControl(page, block);
+        expect(at, `stop ${stop}: the focus is in the priorities block`).not.toBeNull();
+        inFooter = at!.inFooter;
+        if (!inFooter) {
+            fields += 1;
+            if (!at!.reached) covered.push(`stop ${stop}: ${at!.name}`);
+            await page.keyboard.press('Tab');
+        }
+    }
+    return {fields, covered, inFooter};
+}
+
+/** Whole inside the viewport and the block's scroller, with a pointer at its centre reaching it. */
+async function wholeAndOnTop(target: Locator): Promise<boolean> {
+    return target.first().evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        const scroller = el.closest('.priorities-scroll')!.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return r.height > 0 && r.top >= Math.max(0, scroller.top) - 1 && r.bottom <= Math.min(window.innerHeight, scroller.bottom) + 1
+            && !!hit && (el === hit || el.contains(hit));
+    });
+}
+
+/** A pointer press at the control's centre, where it is: unlike click(), nothing is scrolled into view first. */
+async function pointerPress(page: Page, target: Locator): Promise<void> {
+    const box = (await target.boundingBox())!;
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+}
+
 test.describe('collapsed priorities row in the assistant sidebar (issue #480)', () => {
     test.beforeEach(async ({page}) => {
         requireDjangoTier();
@@ -389,6 +460,8 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
             await expect(error).toHaveAttribute('role', 'alert');
             await expect.poll(() => seen('priorities-review-error')).toEqual({whole: true, onTop: true});
             await expect(section.getByRole('button', {name: 'Apply to account'})).toBeEnabled();
+            // The button that was pressed still holds the focus: Enter tries again.
+            await expect(section.getByRole('button', {name: 'Apply to account'})).toBeFocused();
 
             // The priorities changed elsewhere: the reason for "Review latest" shows the same way.
             await page.unroute('**/api/agent/preferences/apply/');
@@ -400,6 +473,76 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
             await expect(error).toHaveText(/Your priorities changed elsewhere/);
             await expect.poll(() => seen('priorities-review-error')).toEqual({whole: true, onTop: true});
             await page.unroute('**/api/agent/preferences/apply/');
+        });
+    }
+
+    for (const viewport of [{width: 320, height: 640}, {width: 375, height: 700}, {width: 1280, height: 900}]) {
+        test(`${viewport.width}x${viewport.height}: tabbing through the editor never puts the focused control under its pinned footer`, async ({page}) => {
+            await page.setViewportSize(viewport);
+            await page.goto('/');
+            expect(await setPriorities(page, TEN)).toBe(10);
+            const section = await openPanel(page);
+            await section.getByRole('button', {name: 'Edit priorities'}).click();
+            await expect(page.getByRole('form', {name: 'Edit priorities'})).toBeVisible();
+            await settleLayout(page);
+            const {fields, covered, inFooter} = await tabThroughEditor(page, 'priorities-sidebar');
+            // Every field of the form was walked, down to Review changes in the footer.
+            expect(inFooter, 'the walk ends in the editor\'s footer').toBe(true);
+            expect(fields).toBeGreaterThanOrEqual(37);
+            expect(covered, 'focused controls a pointer at their centre does not reach').toEqual([]);
+        });
+    }
+
+    for (const viewport of [{width: 320, height: 568, more: true}, {width: 375, height: 553, more: true}, {width: 320, height: 640, more: false}]) {
+        test(`${viewport.width}x${viewport.height}: the review leads to its second row of actions, and the applied card shows what was saved`, async ({page}) => {
+            await page.setViewportSize({width: viewport.width, height: viewport.height});
+            await page.goto('/');
+            expect(await setPriorities(page, TEN)).toBe(10);
+            const section = await openPanel(page);
+            await section.getByRole('button', {name: 'Edit priorities'}).click();
+            await page.getByRole('spinbutton', {name: SALARY}).fill('165000');
+            await page.getByRole('button', {name: 'Review changes'}).click();
+            await expect(page.getByRole('list', {name: 'Proposed changes'})).toBeVisible();
+            await settleLayout(page);
+            const actions = section.getByRole('group', {name: 'Review actions'});
+            const more = actions.getByRole('button', {name: 'More options'});
+            const edit = actions.getByRole('button', {name: 'Edit'});
+            const searchOnly = actions.getByRole('button', {name: 'This search only'});
+            if (viewport.more) {
+                // The block shows one row of actions: Apply, Cancel and More, each whole and reachable; the change is not hidden.
+                for (const button of [actions.getByRole('button', {name: 'Apply to account'}), actions.getByRole('button', {name: 'Cancel'}), more]) {
+                    expect(await wholeAndOnTop(button), await button.textContent() || '').toBe(true);
+                }
+                expect(await wholeAndOnTop(section.locator('.priorities-review .pref-change-values'))).toBe(true);
+                expect(await wholeAndOnTop(edit)).toBe(false);
+                expect((await more.boundingBox())!.width).toBeGreaterThanOrEqual(44);
+                // More leads to the second row: it is on screen, Edit holds the focus, and More has done its job.
+                await pointerPress(page, more);
+                await expect(edit).toBeFocused();
+                await expect(more).toHaveCount(0);
+            } else {
+                // Both rows fit: nothing to lead to.
+                await expect(more).toHaveCount(0);
+            }
+            await expect.poll(() => wholeAndOnTop(edit)).toBe(true);
+            await expect.poll(() => wholeAndOnTop(searchOnly)).toBe(true);
+            await expectNoHorizontalOverflow(page);
+
+            // Applied: the field, its old and new value, and Undo and Done are all on screen and uncovered.
+            await section.locator('.priorities-scroll').evaluate((el) => { el.scrollTop = 0; });
+            await pointerPress(page, actions.getByRole('button', {name: 'Apply to account'}));
+            const applied = section.getByTestId('priorities-applied');
+            await expect(applied.getByRole('list', {name: 'Changed priorities'})).toBeVisible();
+            await settleLayout(page);
+            await expect(applied.getByRole('heading')).toBeFocused();
+            for (const part of ['.priorities-heading', '.pref-change-path', '.pref-change-old', '.pref-change-new']) {
+                expect(await wholeAndOnTop(applied.locator(part)), `applied card: ${part}`).toBe(true);
+            }
+            await expect(applied.locator('.pref-change-new')).toHaveText('$165,000');
+            for (const name of ['Undo', 'Done']) {
+                expect(await wholeAndOnTop(applied.getByRole('button', {name})), name).toBe(true);
+            }
+            await expectNoHorizontalOverflow(page);
         });
     }
 
@@ -457,6 +600,8 @@ const OPEN_BLOCK_VIEWPORTS = [
     {name: 'short sheet, wide font', width: 320, height: 640, wideFont: true},
 ];
 const TWO_LINE_MESSAGE = 'What else should I compare between two employers before I decide where to apply this month?';
+const FIVE_LINE_MESSAGE = 'What else should I compare between two employers before I decide where to apply this month, and which of the verified '
+    + 'facts about pay, remote work and funding should I weigh most when two of them score the same on this list?';
 const ASSISTANT_MESSAGE = 'article[aria-label="Assistant message"]';
 
 /** The chat re-measures a frame after anything above it resizes, and may then scroll the panel: let that settle. */
@@ -935,6 +1080,65 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
             await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
             await page.getByTestId('assistant-composer').fill('');
         }
+    });
+
+    test('320x700 with a long draft: a failed Apply is still on screen, with the focus on its button', async ({page}) => {
+        test.setTimeout(120_000);
+        await page.setViewportSize({width: 320, height: 700});
+        await page.goto('/');
+        expect(await setPriorities(page, TEN)).toBe(10);
+        const section = await openPanel(page);
+        await ensureConversation(page, 3);
+        await page.getByTestId('assistant-composer').fill(FIVE_LINE_MESSAGE);
+        await readerAtRow(page);
+        await section.getByRole('button', {name: 'Edit priorities'}).click();
+        await page.getByRole('spinbutton', {name: SALARY}).fill('165000');
+        await page.getByRole('button', {name: 'Review changes'}).click();
+        await expect(page.getByRole('list', {name: 'Proposed changes'})).toBeVisible();
+        // The reader is at the end of the conversation with the review pinned above it.
+        await readerAtRow(page, false, false);
+        const apply = section.getByRole('button', {name: 'Apply to account'});
+        const error = section.getByTestId('priorities-review-error');
+        const onScreen = (target: Locator) => target.evaluate((el) => {
+            const r = el.getBoundingClientRect();
+            const panel = el.closest('.assistant-panel-body')!.getBoundingClientRect();
+            const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            return r.top >= Math.max(0, panel.top) - 1 && r.bottom <= Math.min(window.innerHeight, panel.bottom) + 1 && !!hit && el.contains(hit);
+        });
+        expect(await onScreen(apply), 'Apply is on screen before it is pressed').toBe(true);
+
+        // The server refuses. The message makes the block too tall to stay pinned: it is brought back, not left
+        // at the top of the panel above the reader.
+        await page.route('**/api/agent/preferences/apply/', (route) => route.fulfill({
+            status: 500, contentType: 'application/json', body: '{"error":{"type":"server","message":"Could not apply your changes. Try again."}}',
+        }));
+        await pointerPress(page, apply);
+        await expect(error).toHaveText(/Could not apply your changes/);
+        await settledReader(page);
+        expect(await onScreen(error), 'the reason is on screen and uncovered').toBe(true);
+        expect(await onScreen(apply), 'Apply is on screen and uncovered').toBe(true);
+        await expect(apply).toBeFocused();
+
+        // The priorities changed elsewhere: the same for "Review latest".
+        await page.unroute('**/api/agent/preferences/apply/');
+        await page.route('**/api/agent/preferences/apply/', (route) => route.fulfill({
+            status: 409, contentType: 'application/json', body: '{"error":{"type":"preference_stale","message":"stale"}}',
+        }));
+        await pointerPress(page, apply);
+        const latest = section.getByRole('button', {name: 'Review latest'});
+        await expect(latest).toBeFocused();
+        await settledReader(page);
+        expect(await onScreen(error), 'the stale reason is on screen and uncovered').toBe(true);
+        expect(await onScreen(latest), 'Review latest is on screen and uncovered').toBe(true);
+        await page.unroute('**/api/agent/preferences/apply/');
+
+        // Closing returns a reader who was following the conversation to its end.
+        await pointerPress(page, section.getByRole('group', {name: 'Review actions'}).getByRole('button', {name: 'Cancel'}));
+        await expect(section.getByRole('button', {name: 'Edit priorities'})).toBeFocused();
+        const after = await settledReader(page);
+        expect(after.lastToComposer, 'the last message is above the composer band again').toBeGreaterThanOrEqual(-1);
+        await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+        await page.getByTestId('assistant-composer').fill('');
     });
 
     test('the summary keeps its counts when the requirements are long, and a long value wraps inside its chip', async ({page}) => {
