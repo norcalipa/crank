@@ -80,6 +80,21 @@ describe('OrgCard (issue #473)', () => {
                 last_verified_at: '2026-09-01T00:00:00Z'})}),
         ]}}/>);
         expect(screen.getByTestId('org-evidence-1')).toHaveTextContent('not recorded');
-        expect(screen.getByTestId('org-evidence-2').querySelector('.evidence-badge-verified')).toBeInTheDocument();
+        expect(within(screen.getByTestId('org-evidence-2')).getByTestId('evidence-facts'))
+            .toHaveTextContent('7 verified · 0 stale · 0 unknown');
+    });
+
+    test('a stored summary never carries the "Verified" verdict, which would not age', () => {
+        // Every fact was verified when the reply was written; the stored
+        // counts say so with their date, without a present-tense badge.
+        render(<OrgCard org={org({evidence: summary({verified: 7, unknown: 0, fact_coverage: 7,
+            last_verified_at: '2026-09-01T00:00:00Z'})})}/>);
+        const evidence = screen.getByTestId('org-evidence-7');
+        expect(evidence.querySelector('.evidence-badge-verified')).toBeNull();
+        expect(evidence.querySelector('.evidence-badge')).toBeNull();
+        expect(evidence).not.toHaveTextContent('✓');
+        expect(within(evidence).getByTestId('evidence-recorded-label')).toHaveTextContent('Facts as of this reply');
+        expect(within(evidence).getByTestId('evidence-facts')).toHaveTextContent('7 verified · 0 stale · 0 unknown');
+        expect(within(evidence).getByTestId('evidence-last-verified')).toHaveTextContent('Last verified Sep 1, 2026');
     });
 });

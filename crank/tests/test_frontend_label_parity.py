@@ -141,3 +141,29 @@ def test_match_terms_read_the_same_in_how_ranking_works():
         assert re.search(
             r"<dt>%s</dt>\s*<dd>[^<]*%s</dd>" % (re.escape(heading), re.escape(meaning)), legend
         ), key
+
+
+_DEFINITIONS_RE = re.compile(
+    r'<dl class="ranking-definitions mb-0" data-testid="ranking-definitions">.*?</dl>', re.S
+)
+#: Lines the template renders from the freshness policy; a fixture holds
+#: their rendered text instead.
+_RENDERED_LINE_RE = re.compile(
+    r"\{\{|\{%|tracked facts \(|^<li>[^<]*: \d+ days</li>$"
+)
+
+
+def _definition_lines(path):
+    block = _DEFINITIONS_RE.search(path.read_text(encoding="utf-8")).group(0)
+    lines = [line.strip() for line in block.splitlines() if line.strip()]
+    return [line for line in lines if not _RENDERED_LINE_RE.search(line)]
+
+
+def test_static_fixture_legends_match_the_rankings_template():
+    """The fixture-tier specs and captures show the legend the template renders."""
+    expected = _definition_lines(RANKINGS_TEMPLATE)
+    assert any("Requirement chips" in line for line in expected)
+    assert any("&#8635;</span> Evidence changed" in line for line in expected)
+    fixtures = Path(settings.BASE_DIR) / "e2e" / "fixtures"
+    for name in ("organization-list.html", "organization-list-paged.html"):
+        assert _definition_lines(fixtures / name) == expected, name

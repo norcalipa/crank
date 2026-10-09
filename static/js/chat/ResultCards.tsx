@@ -88,9 +88,11 @@ export function OrgCard({org}: {org: OrganizationResult}) {
             {evidence ? (
                 <div className="org-card-evidence mt-2" data-testid={`org-evidence-${org.id}`}>
                     {/* The summary is the reply-time snapshot stored with the
-                        message, so the label says so for every reader. */}
+                        message, so the label says so for every reader, and it
+                        carries no all-verified verdict: facts pass their
+                        freshness window while the stored counts do not age. */}
                     <div className="org-card-evidence-label" data-testid="evidence-recorded-label">Facts as of this reply</div>
-                    <EvidenceSummary evidence={evidence} variant="card"/>
+                    <EvidenceSummary evidence={evidence} variant="card" snapshot/>
                 </div>
             ) : (
                 // A reply stored before fact status existed (or with an

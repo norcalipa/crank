@@ -16,7 +16,7 @@
 // settings changes or /etc/hosts edits.
 import {defineConfig, devices} from '@playwright/test';
 
-import {djangoServerEnv} from './e2e/django/server-env';
+import {DJANGO_STORED_PORT, djangoServerEnv} from './e2e/django/server-env';
 
 // Marks this tier for the specs: the fixture-tier config scans all of ./e2e,
 // so the Django specs skip with a named reason when it collects them.
@@ -64,9 +64,12 @@ export default defineConfig({
         // Started after the first (servers start in order), so it finds the
         // migrated, seeded database. Same data and sessions; stored match
         // reads and inline recompute on, for match-refresh.spec.ts (#473).
-        command: 'python3 manage.py runserver 127.0.0.1:4175 --noreload',
-        url: 'http://127.0.0.1:4175/',
-        reuseExistingServer: !process.env.CI && !providerFailure,
+        // Never reused: a server already on this port may belong to another
+        // checkout, and match-refresh.spec.ts writes to the database this
+        // config resolves. A busy port fails the run instead.
+        command: `python3 manage.py runserver 127.0.0.1:${DJANGO_STORED_PORT} --noreload`,
+        url: `http://127.0.0.1:${DJANGO_STORED_PORT}/`,
+        reuseExistingServer: false,
         timeout: 120_000,
         env: {
             ...djangoServerEnv(),

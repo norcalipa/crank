@@ -9,8 +9,16 @@
  * inline recompute on (issue #473). Only that configuration can publish a
  * generation and re-check it, which the "Evidence changed" refresh needs; the
  * main server keeps both off, like production's default.
+ *
+ * 4175 is also where local runs put a main server when 4174 is taken, so the
+ * port can be moved with CRANK_E2E_STORED_PORT, and the config never attaches
+ * to a server that is already listening on it.
  */
-export const DJANGO_STORED_BASE_URL = 'http://local.crank.fyi:4175';
+const requestedPort = Number(process.env.CRANK_E2E_STORED_PORT);
+export const DJANGO_STORED_PORT = Number.isInteger(requestedPort) && requestedPort > 1023 && requestedPort < 65536
+    ? requestedPort
+    : 4175;
+export const DJANGO_STORED_BASE_URL = `http://local.crank.fyi:${DJANGO_STORED_PORT}`;
 
 /** Environment shared by both servers and by fixture commands run from specs. */
 export function djangoServerEnv(): Record<string, string> {

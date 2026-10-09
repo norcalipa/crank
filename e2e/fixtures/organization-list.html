@@ -46,12 +46,21 @@
                             <h2 class="h6">Balanced</h2>
                             <div class="scoring-description"><p>Weights every rating dimension evenly.</p></div>
                             <dl class="ranking-definitions mb-0" data-testid="ranking-definitions">
-                                <dt>Company score</dt>
-                                <dd>The preset-weighted average of the rating dimensions. It is the same for everyone.</dd>
-                                <dt>Fit</dt>
-                                <dd>Shown only in Job Search matches. Computed from your saved priorities and never mixed into the company score.</dd>
-                                <dt>Requirement coverage</dt>
-                                <dd>Shown only in Job Search matches. The share of your requirements that could be decided either way. It does not mean the facts behind them are verified.</dd>
+                        <dt>Company score</dt>
+                        <dd>Shown as "Company score (preset)" on job cards. The preset-weighted average of the rating dimensions. It is the same for everyone.</dd>
+                        <dt>Fit</dt>
+                        <dd>Shown only in Job Search matches. Computed from your saved priorities and never mixed into the company score.</dd>
+                        <dt>Requirement coverage</dt>
+                        <dd>Shown only in Job Search matches. The share of your requirements that could be decided either way. It does not mean the facts behind them are verified.</dd>
+                        <dt>Requirement chips</dt>
+                        <dd>Shown only in Job Search matches. Each chip starts with how the requirement came out:
+                            <ul class="evidence-legend list-unstyled mb-0 mt-1" data-testid="requirement-mark-legend">
+                                <li><span class="evidence-badge"><span class="evidence-badge-marker" aria-hidden="true">&#10003;</span> Match</span>: The requirement is met.</li>
+                                <li><span class="evidence-badge"><span class="evidence-badge-marker" aria-hidden="true">&#10007;</span> Mismatch</span>: The requirement is not met.</li>
+                                <li><span class="evidence-badge"><span class="evidence-badge-marker" aria-hidden="true">?</span> Unknown</span>: The requirement could not be decided either way, so it does not count toward requirement coverage.</li>
+                                <li><span class="evidence-badge">No qualifier</span>: A match or mismatch with no qualifier was decided from the job listing itself.</li>
+                            </ul>
+                        </dd>
                         <dt>Rating coverage</dt>
                         <dd>How many of the active rating dimensions have at least one score for the company, shown as "N of M". A dimension with no score counts as missing, never as zero.</dd>
                         <dt>Fact coverage</dt>
@@ -73,11 +82,11 @@
                                 <li><span class="evidence-badge evidence-badge-profile"><span class="evidence-badge-marker" aria-hidden="true">&bull;</span> Profile data</span>: Curated profile value without field-level evidence.</li>
                                 <li><span class="evidence-badge evidence-badge-pending"><span class="evidence-badge-marker" aria-hidden="true">&hellip;</span> Pending review</span>: An observation is waiting for review. Not verified.</li>
                                 <li><span class="evidence-badge evidence-badge-conflicted"><span class="evidence-badge-marker" aria-hidden="true">&#9888;&#xFE0E;</span> Conflicting observation</span>: A later observation disagrees. Not verified.</li>
-                                <li><span class="evidence-badge">Sourced, not confirmed</span>: An accepted, current source says this in its own words. Matching read it automatically and the reading has not been confirmed.</li>
-                                <li><span class="evidence-badge">Evidence changed</span>: The fact behind this result was replaced or removed after matches were computed. Refresh matches to re-check it.</li>
+                                <li><span class="evidence-badge">Sourced, not confirmed</span>: Shown only in Job Search matches. An accepted, current source backs this without stating it outright: matching read it from the wording of the source or inferred it (for example, a day count from "Hybrid"), or the source covers only some locations or roles. Not confirmed.</li>
+                                <li><span class="evidence-badge"><span class="evidence-badge-marker" aria-hidden="true">&#8635;</span> Evidence changed</span>: Shown only in Job Search matches. The fact behind this result was replaced or removed after matches were computed. Refresh matches to re-check it.</li>
                             </ul>
                         </dd>
-                            </dl>
+                    </dl>
                         </div>
                     </details>
                     <div id="organization-list"></div>

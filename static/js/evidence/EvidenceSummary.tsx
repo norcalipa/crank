@@ -20,12 +20,16 @@ export const evidenceDescription = (coverage: string, evidence?: EvidenceSummary
 interface EvidenceSummaryProps {
     evidence?: EvidenceSummaryData | null;
     variant?: 'row' | 'card';
+    /** The summary was recorded earlier and is not re-read (a stored
+     * assistant reply). "Verified" is a claim about now that such a record
+     * cannot keep, so it shows its counts and date without that verdict. */
+    snapshot?: boolean;
 }
 
 // Facts, freshness and review state for one organization, shown separately
 // from rating coverage. Rows without a summary (old cache entries, fixtures)
 // read as Unknown rather than as verified.
-const EvidenceSummary: React.FC<EvidenceSummaryProps> = ({evidence, variant = 'row'}) => {
+const EvidenceSummary: React.FC<EvidenceSummaryProps> = ({evidence, variant = 'row', snapshot = false}) => {
     if (!evidence) {
         return (
             <div className={`evidence-summary evidence-summary-${variant}`} data-testid="evidence-summary">
@@ -39,7 +43,7 @@ const EvidenceSummary: React.FC<EvidenceSummaryProps> = ({evidence, variant = 'r
         ? 'stale'
         : evidence.verified + evidence.stale === 0
             ? 'unknown'
-            : evidence.verified === evidence.total ? 'verified' : null;
+            : evidence.verified === evidence.total && !snapshot ? 'verified' : null;
     return (
         <div className={`evidence-summary evidence-summary-${variant}`} data-testid="evidence-summary">
             {headline && <EvidenceBadge status={headline}/>}

@@ -86,7 +86,7 @@ export const EVIDENCE_CHANGED_MARKER = '↻';
 export const MATCH_TERMS: Record<string, {label: string; meaning: string}> = {
     sourced: {
         label: 'Sourced, not confirmed',
-        meaning: 'An accepted, current source says this in its own words. Matching read it automatically and the reading has not been confirmed.',
+        meaning: 'An accepted, current source backs this without stating it outright: matching read it from the wording of the source or inferred it (for example, a day count from "Hybrid"), or the source covers only some locations or roles. Not confirmed.',
     },
     changed: {
         label: 'Evidence changed',
