@@ -249,3 +249,254 @@ class AnnotateRequirementEvidenceTests(TestCase):
             [[self._requirement(), self._requirement(status="unknown")]], now=self.now
         )[0]
         self.assertEqual([a["evidence_status"]["state"] for a in annotated], ["stale", "stale"])
+
+
+#: Whole-value forms an accepted row may be called "Verified" for, per
+#: requirement, written out by hand (not derived from the service's tables).
+_STATED_FORMS = {
+    "work_location.modes": {
+        "r", "remote", "h", "hybrid", "o", "in-office", "in office", "onsite",
+    },
+    # Only a remote policy states a day count; 3 and 5 are matching's guesses.
+    "work_location.max_in_office_days": {"r", "remote"},
+    "compensation.require_public_company": {
+        "public", "public company", "private", "private company",
+    },
+    "funding_stage": {
+        "s", "a", "b", "c", "d", "e", "f", "x", "o", "p",
+        "seed", "series a", "series b", "series c", "series d", "series e",
+        "series f", "series g or later", "other private", "public",
+    },
+    "vesting.prefer_accelerated": {"true", "yes", "1", "false", "no", "0"},
+    "work_location.countries": set(),
+}
+
+_VALUE_CORPUS = [
+    "Remote", "R", "remote", "Hybrid", "H", "hybrid", "In-Office", "in office",
+    "Onsite", "O", "Remote first", "Hybrid 3 days", "Hybrid, two days a week",
+    "Five days in office, no exceptions", "It depends on the team",
+    "Public", "Public company", "Private", "private company", "Publicly listed on NASDAQ",
+    "Not public yet", "Seed", "Pre-seed", "pre seed", "Series A", "series b", "Series G",
+    "Series G or Later", "Series X", "Other Private", "X", "P", "S",
+    "raised a Series B last year", "yes", "Yes", "no", "true", "1", "0", "sometimes",
+    "Berlin, Germany", "United States", "Germany",
+]
+
+_CRITERIA_VARIANTS = [
+    {"work_modes": frozenset({"remote"}), "max_in_office_days": 0},
+    {"work_modes": frozenset({"hybrid"}), "max_in_office_days": 2},
+    {"work_modes": frozenset({"in-office", "hybrid"}), "max_in_office_days": 3},
+    {"work_modes": frozenset({"remote"}), "max_in_office_days": 5},
+]
+
+
+class RequirementStatedByEvidenceTests(TestCase):
+    """"Verified" is decided per requirement, from what the evidence states."""
+
+    def setUp(self):
+        from crank.agents.jobs import matching
+
+        self.matching = matching
+        self.now = timezone.now()
+        self.organization = Organization.objects.create(name="Example Labs")
+        self.listing = type(
+            "Listing", (), {"location_text": "Berlin, Germany", "title": "Sales Engineer",
+                            "is_remote": None, "organization": self.organization,
+                            "source_metadata": {}},
+        )()
+
+    def _row(self, field_key, value_text, **kwargs):
+        values = {
+            "organization": self.organization,
+            "field_key": field_key,
+            "value_text": value_text,
+            "source_url": "https://example.test/about",
+            "source_domain": "example.test",
+            "observed_at": self.now,
+            "last_verified_at": self.now,
+            "validation_version": "v1",
+            "extractor_version": "v1",
+            "state": State.ACCEPTED,
+        }
+        values.update(kwargs)
+        return CompanyFieldEvidence.objects.create(**values)
+
+    def _criteria(self, **overrides):
+        values = {
+            "require_public_company": True,
+            "countries": frozenset({"germany"}),
+            "funding_stages": frozenset({"series b", "seed"}),
+            "prefer_accelerated": True,
+            "work_modes": frozenset({"remote"}),
+            "max_in_office_days": 3,
+        }
+        values.update(overrides)
+        return self.matching.JobCriteria(**values)
+
+    def _evaluate(self, path, row, criteria=None):
+        """Matching's own outcome for ``path`` from ``row``, then annotated."""
+        outcome = self.matching._eval_requirement(
+            path, self.listing, self.organization, criteria or self._criteria(),
+            {row.field_key: row},
+        )
+        return annotate_requirement_evidence([[outcome.as_dict()]], now=self.now)[0][0]
+
+    def _state(self, path, field_key, value_text, criteria=None, **row_kwargs):
+        requirement = self._evaluate(path, self._row(field_key, value_text, **row_kwargs), criteria)
+        return requirement["status"], requirement["observed"], requirement["evidence_status"]["state"]
+
+    def test_hybrid_does_not_verify_an_in_office_day_count(self):
+        # The reviewer's case: the evidence says "Hybrid"; the 3 is a guess.
+        path = "work_location.max_in_office_days"
+        self.assertEqual(
+            self._state(path, FieldKey.RTO_POLICY, "Hybrid"), ("match", 3, "sourced")
+        )
+        self.assertEqual(
+            self._state(path, FieldKey.RTO_POLICY, "Hybrid",
+                        self._criteria(max_in_office_days=2)),
+            ("mismatch", 3, "sourced"),
+        )
+        self.assertEqual(
+            self._state(path, FieldKey.RTO_POLICY, "In-Office"), ("mismatch", 5, "sourced")
+        )
+        # The same fact does state the work mode.
+        self.assertEqual(
+            self._state("work_location.modes", FieldKey.RTO_POLICY, "Hybrid"),
+            ("mismatch", "hybrid", "verified"),
+        )
+
+    def test_remote_states_zero_office_days(self):
+        self.assertEqual(
+            self._state("work_location.max_in_office_days", FieldKey.RTO_POLICY, "Remote",
+                        self._criteria(max_in_office_days=0)),
+            ("match", 0, "verified"),
+        )
+
+    def test_each_requirement_kind(self):
+        cases = [
+            ("work_location.modes", FieldKey.RTO_POLICY, "Remote", ("match", "remote", "verified")),
+            ("work_location.modes", FieldKey.RTO_POLICY, "Remote first",
+             ("match", "remote", "sourced")),
+            ("compensation.require_public_company", FieldKey.PUBLIC_STATUS, "Public company",
+             ("match", "Public company", "verified")),
+            ("compensation.require_public_company", FieldKey.PUBLIC_STATUS, "private",
+             ("mismatch", "private", "verified")),
+            ("compensation.require_public_company", FieldKey.PUBLIC_STATUS,
+             "Publicly listed on NASDAQ", ("match", "Publicly listed on NASDAQ", "sourced")),
+            ("funding_stage", FieldKey.FUNDING_ROUND, "Series B", ("match", "b", "verified")),
+            ("funding_stage", FieldKey.FUNDING_ROUND, "S", ("match", "s", "verified")),
+            ("funding_stage", FieldKey.FUNDING_ROUND, "Series C", ("mismatch", "c", "verified")),
+            # An alias only matching's canonicaliser resolves is not stated.
+            ("funding_stage", FieldKey.FUNDING_ROUND, "Pre-seed", ("match", "s", "sourced")),
+            ("funding_stage", FieldKey.FUNDING_ROUND, "Series G", ("mismatch", "x", "sourced")),
+            ("vesting.prefer_accelerated", FieldKey.ACCELERATED_VESTING, "yes",
+             ("match", True, "verified")),
+            ("vesting.prefer_accelerated", FieldKey.ACCELERATED_VESTING, "no",
+             ("mismatch", False, "verified")),
+            # Matching reads anything but true/yes/1 as "no": a guess.
+            ("vesting.prefer_accelerated", FieldKey.ACCELERATED_VESTING, "sometimes",
+             ("mismatch", False, "sourced")),
+            # A country found by substring in a locations value is never stated.
+            ("work_location.countries", FieldKey.LOCATIONS, "Germany",
+             ("match", "germany", "sourced")),
+        ]
+        for path, field_key, value_text, expected in cases:
+            with self.subTest(path=path, value_text=value_text):
+                self.assertEqual(self._state(path, field_key, value_text), expected)
+
+    def test_scoped_row_is_never_verified_even_when_the_listing_is_in_scope(self):
+        for scope in ({"countries": ["Germany"]}, {"role_families": ["Sales"]}):
+            with self.subTest(scope=scope):
+                row = self._row(FieldKey.RTO_POLICY, "Remote", scope_json=scope)
+                requirement = self._evaluate("work_location.modes", row)
+                self.assertEqual(
+                    (requirement["status"], requirement["scope_ok"]), ("match", True)
+                )
+                self.assertEqual(requirement["evidence_status"]["state"], "sourced")
+                self.assertEqual(
+                    evidence_status_for_ids([row.pk], now=self.now)[row.pk]["state"], "sourced"
+                )
+        # Attribution is not scope.
+        attributed = self._row(
+            FieldKey.RTO_POLICY, "Remote", scope_json={"claimed_domain": "example.test"}
+        )
+        self.assertEqual(
+            self._evaluate("work_location.modes", attributed)["evidence_status"]["state"],
+            "verified",
+        )
+
+    def test_outcome_that_disagrees_with_the_stated_value_is_not_verified(self):
+        row = self._row(FieldKey.RTO_POLICY, "Hybrid")
+        funding = self._row(FieldKey.FUNDING_ROUND, "Series B")
+        public = self._row(FieldKey.PUBLIC_STATUS, "Private")
+        vesting = self._row(FieldKey.ACCELERATED_VESTING, "yes")
+
+        def state(path, pk, **overrides):
+            requirement = {"path": path, "status": "match", "source_kind": "evidence",
+                           "source_id": pk, "scope_ok": True, **overrides}
+            return annotate_requirement_evidence([[requirement]], now=self.now)[0][0][
+                "evidence_status"]["state"]
+
+        self.assertEqual(state("work_location.modes", row.pk, observed="hybrid"), "verified")
+        self.assertEqual(state("work_location.modes", row.pk, observed="remote"), "sourced")
+        self.assertEqual(state("work_location.max_in_office_days", row.pk, observed=0), "sourced")
+        self.assertEqual(state("funding_stage", funding.pk, observed="b"), "verified")
+        self.assertEqual(state("funding_stage", funding.pk, observed="c"), "sourced")
+        self.assertEqual(state("funding_stage", funding.pk, observed=None), "sourced")
+        self.assertEqual(
+            state("compensation.require_public_company", public.pk, status="mismatch"),
+            "verified",
+        )
+        self.assertEqual(state("compensation.require_public_company", public.pk), "sourced")
+        self.assertEqual(state("vesting.prefer_accelerated", vesting.pk, observed=True), "verified")
+        self.assertEqual(state("vesting.prefer_accelerated", vesting.pk, observed=1), "sourced")
+        # A requirement the field is not listed for, or a missing scope flag.
+        self.assertEqual(state("funding_stage", row.pk, observed="h"), "sourced")
+        self.assertEqual(state("culture", row.pk, observed="hybrid"), "sourced")
+        self.assertEqual(
+            state("work_location.modes", row.pk, observed="hybrid", scope_ok=None), "sourced"
+        )
+
+    def test_only_a_stated_whole_value_can_be_verified(self):
+        """Property: across every evidence-backed requirement, value and
+        criteria, matching's real outcome is Verified only for a hand-listed
+        stated form, and never when it rests on an inferred day count."""
+        paths = self.matching._EVIDENCE_FIELD_KEY
+        self.assertEqual(set(paths), set(_STATED_FORMS))
+        verified = set()
+        for path, field_key in paths.items():
+            for value_text in _VALUE_CORPUS:
+                row = self._row(field_key, value_text)
+                for variant in _CRITERIA_VARIANTS:
+                    requirement = self._evaluate(path, row, self._criteria(**variant))
+                    state = requirement["evidence_status"]["state"]
+                    self.assertIn(state, ("verified", "sourced"))
+                    if state != "verified":
+                        continue
+                    verified.add(path)
+                    with self.subTest(path=path, value_text=value_text, variant=variant):
+                        self.assertIn(" ".join(value_text.casefold().split()), _STATED_FORMS[path])
+                        self.assertIn(requirement["status"], ("match", "mismatch"))
+                        if path == "work_location.max_in_office_days":
+                            # 3 and 5 exist only in matching's reader.
+                            self.assertEqual(requirement["observed"], 0)
+                            self.assertNotIn(self.matching._rto_days(value_text), (3, 5))
+        # The property is not vacuous: every listed kind does get verified.
+        self.assertEqual(verified, {p for p, forms in _STATED_FORMS.items() if forms})
+
+    def test_a_new_evidence_backed_requirement_defaults_to_not_verified(self):
+        from crank.services import company_evidence
+
+        listed = {path for path, _ in company_evidence._REQUIREMENT_STATED_BY}
+        self.assertEqual(
+            listed, {p for p, forms in _STATED_FORMS.items() if forms}
+        )
+        row = self._row(FieldKey.RTO_POLICY, "Remote")
+        requirement = {"path": "some.future_requirement", "status": "match",
+                       "observed": "remote", "source_kind": "evidence",
+                       "source_id": row.pk, "scope_ok": True}
+        self.assertEqual(
+            annotate_requirement_evidence([[requirement]], now=self.now)[0][0][
+                "evidence_status"]["state"],
+            "sourced",
+        )

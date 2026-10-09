@@ -234,3 +234,54 @@ class JobMatchEvidenceStatusTests(TestCase):
             matches["job_matches"][0]["requirements"][0]["evidence_status"]["state"], "stale"
         )
         self.assertEqual(matches["job_matches"][0]["requirements"][0]["source_id"], row.pk)
+
+    def _ranked_states(self, path):
+        payload = self.client.get("/api/job-matches/ranked/").json()
+        return {
+            kind: [
+                (r["status"], r["observed"], r["evidence_status"]["state"])
+                for match in payload[kind]
+                for r in match["requirements"]
+                if r["path"] == path
+            ]
+            for kind in ("job_matches", "organization_matches")
+        }
+
+    def test_hybrid_evidence_does_not_verify_the_in_office_day_chip(self):
+        CompanyFieldEvidence.objects.all().delete()
+        self._evidence(FieldKey.RTO_POLICY, "Hybrid", age_days=2)
+        UserPreference.objects.filter(user=self.owner).update(
+            preferences={"work_location": {"max_in_office_days": 3, "modes": ["hybrid"]}}
+        )
+
+        days = self._ranked_states("work_location.max_in_office_days")
+        # The evidence says "Hybrid"; the 3 is matching's reading of the word.
+        self.assertEqual(days["job_matches"], [("match", 3, "sourced")] * 3)
+        self.assertEqual(days["organization_matches"], [("match", 3, "sourced")])
+        # The work mode is what the same fact does state.
+        modes = self._ranked_states("work_location.modes")
+        self.assertEqual(modes["job_matches"], [("match", "hybrid", "verified")] * 3)
+        self.assertEqual(modes["organization_matches"], [("match", "hybrid", "verified")])
+
+    def test_scoped_evidence_is_not_verified_on_a_job_chip(self):
+        CompanyFieldEvidence.objects.all().delete()
+        row = self._evidence(FieldKey.RTO_POLICY, "Remote", age_days=2)
+        CompanyFieldEvidence.objects.filter(pk=row.pk).update(
+            scope_json={"countries": ["Germany"]}
+        )
+        JobListing.all_objects.filter(pk=self.listings[0].pk).update(
+            location_text="Berlin, Germany"
+        )
+
+        payload = self.client.get("/api/job-matches/ranked/").json()
+        in_scope = next(
+            m for m in payload["job_matches"] if m["listing_id"] == self.listings[0].pk
+        )["requirements"][0]
+        self.assertEqual(
+            (in_scope["status"], in_scope["scope_ok"], in_scope["source_id"]),
+            ("match", True, row.pk),
+        )
+        self.assertEqual(in_scope["evidence_status"]["state"], "sourced")
+        for match in payload["job_matches"] + payload["organization_matches"]:
+            for requirement in match["requirements"]:
+                self.assertNotEqual(requirement["evidence_status"]["state"], "verified")

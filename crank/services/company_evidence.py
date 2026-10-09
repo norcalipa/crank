@@ -1383,33 +1383,28 @@ def _is_evidence_id(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def evidence_status_for_ids(evidence_ids, *, now: datetime | None = None) -> dict[int, dict]:
-    """Read-time status of the evidence rows a stored match refers to.
-
-    One query for any number of ids. ``state`` is ``verified`` (accepted,
-    within policy, strictly readable), ``sourced`` (accepted and fresh, but
-    prose matching had to interpret), ``stale``, ``superseded`` (the row is no
-    longer the accepted fact) or ``missing`` (deleted). Only accepted rows
-    expose ``last_verified_at`` and ``source_domain``.
-    """
+def _evidence_rows_and_statuses(evidence_ids, now: datetime | None):
+    """``(statuses, accepted rows by id)`` for :func:`evidence_status_for_ids`."""
     ids = {pk for pk in evidence_ids if _is_evidence_id(pk)}
     if not ids:
-        return {}
+        return {}, {}
     now = now or timezone.now()
     statuses: dict[int, dict] = {
         pk: {"state": "missing", "last_verified_at": None, "source_domain": None}
         for pk in ids
     }
+    accepted: dict[int, CompanyFieldEvidence] = {}
     rows = CompanyFieldEvidence.objects.filter(pk__in=ids).only(
-        "field_key", "state", "value_text", "last_verified_at", "source_domain"
+        "field_key", "state", "value_text", "last_verified_at", "source_domain", "scope_json"
     )
     for row in rows:
         if row.state != State.ACCEPTED:
             statuses[row.pk]["state"] = "superseded"
             continue
+        accepted[row.pk] = row
         if field_status(row, now=now) == "stale":
             state = "stale"
-        elif _strictly_readable(row.field_key, row.value_text):
+        elif is_company_wide(row) and _strictly_readable(row.field_key, row.value_text):
             state = "verified"
         else:
             state = "sourced"
@@ -1420,7 +1415,22 @@ def evidence_status_for_ids(evidence_ids, *, now: datetime | None = None) -> dic
             ),
             "source_domain": row.source_domain or None,
         }
-    return statuses
+    return statuses, accepted
+
+
+def evidence_status_for_ids(evidence_ids, *, now: datetime | None = None) -> dict[int, dict]:
+    """Read-time status of the evidence rows a stored match refers to.
+
+    One query for any number of ids. ``state`` is ``verified`` (accepted,
+    within policy, company-wide and strictly readable), ``sourced`` (accepted
+    and fresh, but scoped to a location or role, or prose matching had to
+    interpret), ``stale``, ``superseded`` (the row is no longer the accepted
+    fact) or ``missing`` (deleted). Only accepted rows expose
+    ``last_verified_at`` and ``source_domain``. This is the status of the
+    *fact*; whether it verifies a requirement is decided per requirement by
+    :func:`annotate_requirement_evidence`.
+    """
+    return _evidence_rows_and_statuses(evidence_ids, now)[0]
 
 
 _PROFILE_EVIDENCE_STATUS = {
@@ -1430,7 +1440,75 @@ _PROFILE_EVIDENCE_STATUS = {
 }
 
 
-def _requirement_evidence_status(requirement: dict, statuses: dict[int, dict]):
+def _states_work_mode(value_text: str, requirement: dict) -> bool:
+    """A whole-value RTO word names the work mode itself."""
+    reading = _badge_reading(FieldKey.RTO_POLICY, value_text)
+    return reading is not None and requirement.get("observed") == reading
+
+
+def _states_office_days(value_text: str, requirement: dict) -> bool:
+    """Only "Remote" states a day count (none); 3 and 5 are matching's guesses."""
+    observed = requirement.get("observed")
+    return (
+        _badge_reading(FieldKey.RTO_POLICY, value_text) == "remote"
+        and type(observed) is int
+        and observed == 0
+    )
+
+
+def _states_public_status(value_text: str, requirement: dict) -> bool:
+    """A bare public/private status answers "is it public" directly."""
+    normalized = " ".join(value_text.replace("_", " ").casefold().split())
+    if normalized not in _PUBLIC_STATUS_STRICT_READINGS:
+        return False
+    expected = "match" if normalized.startswith("public") else "mismatch"
+    return requirement.get("status") == expected
+
+
+def _states_funding_stage(value_text: str, requirement: dict) -> bool:
+    """A funding-round code or label is the stage; aliases and prose are not."""
+    normalized = " ".join(value_text.replace("_", " ").casefold().split())
+    observed = requirement.get("observed")
+    return any(
+        normalized in (code.casefold(), str(label).casefold())
+        and isinstance(observed, str)
+        and observed == code.casefold()
+        for code, label in Organization.FundingRound.choices
+    )
+
+
+def _states_accelerated_vesting(value_text: str, requirement: dict) -> bool:
+    """A bare yes/no is the answer the requirement compares."""
+    reading = _badge_reading(FieldKey.ACCELERATED_VESTING, value_text)
+    return reading is not None and requirement.get("observed") is reading
+
+
+#: The only (requirement, evidence field) pairs whose accepted value can
+#: *state* what the requirement tests, each with the value forms that do.
+#: Matching's readers also guess (#548): a day count from the word "Hybrid", a
+#: stage from an alias, a country from a substring. A requirement decided by
+#: such a guess is "sourced", never "verified", and so is any pair not listed
+#: here (``work_location.countries`` has no stated form at all).
+_REQUIREMENT_STATED_BY = {
+    ("work_location.modes", FieldKey.RTO_POLICY): _states_work_mode,
+    ("work_location.max_in_office_days", FieldKey.RTO_POLICY): _states_office_days,
+    ("compensation.require_public_company", FieldKey.PUBLIC_STATUS): _states_public_status,
+    ("funding_stage", FieldKey.FUNDING_ROUND): _states_funding_stage,
+    ("vesting.prefer_accelerated", FieldKey.ACCELERATED_VESTING): _states_accelerated_vesting,
+}
+
+
+def _evidence_states_requirement(requirement: dict, row: CompanyFieldEvidence | None) -> bool:
+    """Whether the accepted row states the outcome stored for ``requirement``."""
+    if row is None or requirement.get("status") not in ("match", "mismatch"):
+        return False
+    if requirement.get("scope_ok") is not True or not is_company_wide(row):
+        return False
+    stated = _REQUIREMENT_STATED_BY.get((requirement.get("path"), row.field_key))
+    return stated is not None and stated(row.value_text, requirement)
+
+
+def _requirement_evidence_status(requirement: dict, statuses: dict[int, dict], rows: dict):
     source_kind = requirement.get("source_kind")
     source_id = requirement.get("source_id")
     if source_kind == "evidence":
@@ -1438,13 +1516,12 @@ def _requirement_evidence_status(requirement: dict, statuses: dict[int, dict]):
         if status is None:
             return {"state": "missing", "last_verified_at": None, "source_domain": None}
         status = dict(status)
-        # A row that did not decide the outcome (out of scope, or unreadable)
-        # must not lend it a verified mark.
-        undecided = (
-            requirement.get("status") == "unknown"
-            or requirement.get("scope_ok") is False
-        )
-        if status["state"] == "verified" and undecided:
+        # "Verified" is a claim about the requirement, not the fact: a fresh,
+        # accepted row that did not decide the outcome (out of scope,
+        # unreadable) or decided it through a guess must not lend it the mark.
+        if status["state"] == "verified" and not _evidence_states_requirement(
+            requirement, rows.get(source_id)
+        ):
             status["state"] = "sourced"
         return status
     if source_kind == "field" and str(source_id or "").startswith("organization."):
@@ -1457,8 +1534,11 @@ def annotate_requirement_evidence(requirement_lists, *, now: datetime | None = N
 
     At most one query for the whole response (none when no requirement cites
     an evidence row). The stored requirement dicts are never mutated: status
-    depends on ``now`` and is derived per response. A requirement backed by a
-    direct organization field reads ``profile``; listing data has no status.
+    depends on ``now`` and is derived per response. ``verified`` needs a fresh,
+    accepted, company-wide row whose value states the stored outcome (see
+    ``_REQUIREMENT_STATED_BY``); anything matching inferred is ``sourced``. A
+    requirement backed by a direct organization field reads ``profile``;
+    listing data has no status.
     """
     requirement_lists = [list(requirements or []) for requirements in requirement_lists]
     evidence_ids = {
@@ -1469,10 +1549,13 @@ def annotate_requirement_evidence(requirement_lists, *, now: datetime | None = N
         and requirement.get("source_kind") == "evidence"
         and _is_evidence_id(requirement.get("source_id"))
     }
-    statuses = evidence_status_for_ids(evidence_ids, now=now)
+    statuses, rows = _evidence_rows_and_statuses(evidence_ids, now)
     return [
         [
-            {**requirement, "evidence_status": _requirement_evidence_status(requirement, statuses)}
+            {
+                **requirement,
+                "evidence_status": _requirement_evidence_status(requirement, statuses, rows),
+            }
             if isinstance(requirement, dict)
             else requirement
             for requirement in requirements
