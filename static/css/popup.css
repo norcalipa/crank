@@ -4085,6 +4085,9 @@ span.priority-chip-button { cursor: default; }
 .priorities-sidebar > * { flex: 0 0 auto; }
 /* The one scroller of the block; it contains the chips' hidden text, so the section itself never scrolls. */
 .priorities-sidebar .priorities-scroll { position: relative; flex: 1 1 auto; min-height: 0; max-height: none; overflow-x: hidden; }
+/* A field that takes the focus is scrolled clear of the editor's pinned footer (44px button, padding, rule), not
+   under it. Only the editor: the review's pinned buttons are themselves in that band and would scroll its list. */
+.priorities-scroll:has(> .priorities-editor) { scroll-padding-bottom: calc(2.75rem + 1.5rem); }
 .priorities-step-title { margin: 0 0 0.25rem; font-size: 0.875rem; font-weight: 600; line-height: 1.25; color: #f8f9fa; }
 /* The shortest open block (11rem) shows the editor's first field whole above its pinned footer. */
 .priorities-sidebar .priorities-legend { margin-bottom: 0; }
