@@ -10,6 +10,7 @@ same prompt (matching the "log correlation/status not prompts" requirement).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 #: Placeholder inserted where content was elided so the model knows it is
 #: missing history rather than a gap it must explain.
@@ -24,23 +25,43 @@ _EVIDENCE_FLAGS = {
     "missing": ",changed",
 }
 
+def _utc_day(value: object) -> str:
+    """The UTC calendar day of an ISO timestamp, or ``never``."""
+    if isinstance(value, str):
+        try:
+            moment = datetime.fromisoformat(value)
+        except ValueError:
+            return "never"
+        if moment.tzinfo is not None:
+            moment = moment.astimezone(timezone.utc)
+        return moment.date().isoformat()
+    return "never"
+
 
 def _evidence_flag(status: object) -> str:
-    """``,stale`` / ``,unconfirmed`` / ``,changed`` for a non-verified evidence row."""
+    """``,stale,last_verified=<day|never>`` / ``,unconfirmed`` / ``,changed``.
+
+    A stale fact carries its *own* last-verified day: the catalog row's
+    ``newest_verified`` is the newest across all of an organization's facts
+    and would date an old fact last week.
+    """
     if not isinstance(status, dict):
         return ""
-    return _EVIDENCE_FLAGS.get(status.get("state"), "")
+    flag = _EVIDENCE_FLAGS.get(status.get("state"), "")
+    if flag == ",stale":
+        flag += ",last_verified=%s" % _utc_day(status.get("last_verified_at"))
+    return flag
 
 
 def _evidence_summary_text(summary: object) -> str:
-    """``verified:V,stale:S,unknown:U,last_verified=<date|never>`` for a catalog row."""
+    """``verified:V,stale:S,unknown:U,newest_verified=<day|never>`` for a catalog row."""
     if not isinstance(summary, dict):
         return "not_provided"
-    text = "verified:{verified},stale:{stale},unknown:{unknown},last_verified={date}".format(
+    text = "verified:{verified},stale:{stale},unknown:{unknown},newest_verified={date}".format(
         verified=summary.get("verified"),
         stale=summary.get("stale"),
         unknown=summary.get("unknown"),
-        date=str(summary.get("last_verified_at") or "never")[:10],
+        date=_utc_day(summary.get("last_verified_at")),
     )
     if summary.get("pending_review"):
         text += ",pending_review:%s" % summary.get("pending_review")
@@ -54,7 +75,9 @@ def _requirements_text(requirements: object) -> str:
     source (``source=<id>``) so the model can make a *validated* citation from
     the bounded context rather than inventing one (issue #467 AC-11). An
     evidence row that is not currently verified carries its read-time state
-    (``evidence=<id>,stale``), so the wording can agree with the chips (#473).
+    (``evidence=<id>,stale,last_verified=<day>``), and an outcome read from
+    the organization profile is marked ``,profile`` (no evidence behind it),
+    so the wording can agree with the chips (#473).
     """
     if not requirements:
         return "[]"
@@ -68,7 +91,8 @@ def _requirements_text(requirements: object) -> str:
         if source_kind == "evidence" and isinstance(source_id, int) and not isinstance(source_id, bool):
             text += "[evidence=%s%s]" % (source_id, _evidence_flag(req.get("evidence_status")))
         elif source_kind == "field" and source_id:
-            text += "[source=%s]" % source_id
+            profile = ",profile" if str(source_id).startswith("organization.") else ""
+            text += "[source=%s%s]" % (source_id, profile)
         parts.append(text)
     if not parts:
         return "[]"

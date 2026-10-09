@@ -209,6 +209,35 @@ class JobMatchRefreshTests(TestCase):
         cache.delete(f"job-match-refresh:{self.owner.pk}")
         self.assertEqual(self.client.post(URL).json(), {"status": "published"})
 
+    def test_retry_after_is_what_is_left_of_the_window(self):
+        import time
+
+        CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).delete()
+        with mock.patch(RECOMPUTE, return_value=mock.Mock(status=RecomputeStatus.FAILED)):
+            self.assertEqual(self.client.post(URL).json(), {"status": "failed"})
+            started = time.time()
+            with mock.patch("crank.views.job_matches.time.time", return_value=started + 12.4):
+                response = self.client.post(URL)
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.json(), {"status": "rate_limited", "retry_after": 18})
+        self.assertEqual(response["Retry-After"], "18")
+
+    def test_retry_after_stays_within_the_window_for_any_cached_value(self):
+        from crank.views.job_matches import _seconds_left
+
+        import time
+
+        now = time.time()
+        # Expired between the refused add and the read, a value from an older
+        # release, or a clock that moved: never 0, never beyond the window.
+        self.assertEqual(_seconds_left(None, 30), 30)
+        self.assertEqual(_seconds_left(True, 30), 30)
+        self.assertEqual(_seconds_left("soon", 30), 30)
+        self.assertEqual(_seconds_left(1, 30), 1)
+        self.assertEqual(_seconds_left(now - 5, 30), 1)
+        self.assertEqual(_seconds_left(now + 600, 30), 30)
+        self.assertEqual(_seconds_left(now + 7.2, 30), 8)
+
     def test_the_cooldown_is_per_user(self):
         CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).delete()
         self.assertEqual(self.client.post(URL).json(), {"status": "published"})

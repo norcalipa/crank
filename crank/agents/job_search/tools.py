@@ -13,7 +13,6 @@ arbitrary models, SQL, files, hosts, or URLs.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import replace
 from typing import Any
 
 from crank.agents.job_search.evidence_summary import normalize_evidence_summary
@@ -559,20 +558,20 @@ def get_matches_for_user(
         from crank.services.job_matching import match_jobs, match_organizations
         job_results = match_jobs(user, limit=capped)
         org_results = match_organizations(user, limit=capped)
-        # Read-time evidence status per requirement, one bulk query (#473).
-        from crank.services.company_evidence import annotate_requirement_evidence
+    # Read-time evidence status per requirement, one bulk query, on every
+    # path (#473): an injected service (the this-search-only confirm
+    # response) must not return outcomes that read as unqualified.
+    from crank.services.company_evidence import (
+        annotate_requirement_evidence,
+        unqualified_reasons,
+    )
 
-        annotated = annotate_requirement_evidence(
-            [r.requirements for r in job_results] + [r.requirements for r in org_results]
-        )
-        job_results = [
-            replace(r, requirements=requirements)
-            for r, requirements in zip(job_results, annotated)
-        ]
-        org_results = [
-            replace(r, requirements=requirements)
-            for r, requirements in zip(org_results, annotated[len(job_results):])
-        ]
+    job_results, org_results = list(job_results), list(org_results)
+    annotated = annotate_requirement_evidence(
+        [r.requirements for r in job_results] + [r.requirements for r in org_results]
+    )
+    job_requirements = annotated[:len(job_results)]
+    org_requirements = annotated[len(job_results):]
 
     job_dicts = [
         {
@@ -588,13 +587,13 @@ def get_matches_for_user(
             "fit_score": r.fit_score,
             "company_score": r.company_score,
             "coverage": r.coverage,
-            "requirements": r.requirements,
+            "requirements": requirements,
             "unsupported": r.unsupported,
             "evidence_ids": r.evidence_ids,
             "revision": r.revision() if hasattr(r, "revision") else None,
-            "reasons": r.reasons,
+            "reasons": unqualified_reasons(r.reasons, requirements),
         }
-        for r in job_results
+        for r, requirements in zip(job_results, job_requirements)
     ]
     org_dicts = [
         {
@@ -607,13 +606,13 @@ def get_matches_for_user(
             "fit_score": r.fit_score,
             "company_score": r.company_score,
             "coverage": r.coverage,
-            "requirements": r.requirements,
+            "requirements": requirements,
             "unsupported": r.unsupported,
             "evidence_ids": r.evidence_ids,
             "revision": r.revision() if hasattr(r, "revision") else None,
-            "reasons": r.reasons,
+            "reasons": unqualified_reasons(r.reasons, requirements),
         }
-        for r in org_results
+        for r, requirements in zip(org_results, org_requirements)
     ]
     return {
         "job_matches": normalize_match_rows(job_dicts),

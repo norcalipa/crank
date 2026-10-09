@@ -285,3 +285,32 @@ class JobMatchEvidenceStatusTests(TestCase):
         for match in payload["job_matches"] + payload["organization_matches"]:
             for requirement in match["requirements"]:
                 self.assertNotEqual(requirement["evidence_status"]["state"], "verified")
+
+    def test_injected_match_service_path_is_annotated_too(self):
+        """The this-search-only confirm response uses the injected path."""
+        from crank.agents.job_search.tools import get_matches_for_user
+        from crank.services import job_matching
+
+        CompanyFieldEvidence.objects.all().delete()
+        self._evidence(FieldKey.RTO_POLICY, "Remote first", age_days=2)
+
+        def service(user, limit):
+            return (
+                job_matching.match_jobs(user, limit=limit),
+                iter(job_matching.match_organizations(user, limit=limit)),
+            )
+
+        with CaptureQueriesContext(connection) as captured:
+            matches = get_matches_for_user(self.owner, match_service=service)
+        self.assertEqual(
+            len([q for q in captured.captured_queries
+                 if "crank_companyfieldevidence" in q["sql"] and '"id" IN' in q["sql"]]),
+            1,
+        )
+        rows = matches["job_matches"] + matches["organization_matches"]
+        self.assertEqual(len(rows), 4)
+        for row in rows:
+            self.assertEqual(row["requirements"][0]["status"], "match")
+            # Prose matching interpreted: sourced, and no bare "Remote" reason.
+            self.assertEqual(row["requirements"][0]["evidence_status"]["state"], "sourced")
+            self.assertEqual(row["reasons"], [])

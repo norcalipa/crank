@@ -93,11 +93,11 @@ class TestStaleGoldenConversation:
         catalog = system.split("ORGANIZATION CATALOG", 1)[1]
         assert (
             "id=1 name='Beta Labs' funding_round=X rto_policy=O "
-            "evidence=verified:0,stale:2,unknown:5,last_verified=2024-08-08,pending_review:1"
+            "evidence=verified:0,stale:2,unknown:5,newest_verified=2024-08-08,pending_review:1"
         ) in catalog
         assert (
             "id=2 name='Fresh Co' funding_round=A rto_policy=R "
-            "evidence=verified:7,stale:0,unknown:0,last_verified=2026-09-01"
+            "evidence=verified:7,stale:0,unknown:0,newest_verified=2026-09-01"
         ) in catalog
         assert "pending_review" not in catalog.split("id=2 ", 1)[1].split("\n", 1)[0]
         assert "id=3 name='Legacy Datasource Co' funding_round=S rto_policy=H evidence=not_provided" in catalog
@@ -143,7 +143,7 @@ class TestStaleGoldenConversation:
             },
             match_service=match_service,
         )
-        assert "work_location.modes=match[evidence=31,stale]" in system
+        assert "work_location.modes=match[evidence=31,stale,last_verified=2024-08-08]" in system
         assert "funding_stage=match[evidence=32]" in system
         # A flagged id is still a citable, server-exposed evidence reference.
         assert result.cited_organization_ids == (1,)
@@ -153,7 +153,8 @@ class TestStaleGoldenConversation:
 class TestContextRendering:
     @pytest.mark.parametrize(
         "state, flag",
-        [("stale", ",stale"), ("sourced", ",unconfirmed"), ("superseded", ",changed"),
+        [("stale", ",stale,last_verified=never"), ("sourced", ",unconfirmed"),
+         ("superseded", ",changed"),
          ("missing", ",changed"), ("verified", ""), ("profile", ""), (None, "")],
     )
     def test_evidence_flag_per_state(self, state, flag):
@@ -176,7 +177,7 @@ class TestContextRendering:
         assert rendered == (
             "[work_location.modes=match[evidence=5,unconfirmed], "
             "funding_stage=match[evidence=6,changed], "
-            "industry=match[source=organization.industry], "
+            "industry=match[source=organization.industry,profile], "
             "culture=match[evidence=7]]"
         )
 
@@ -184,7 +185,43 @@ class TestContextRendering:
         assert _evidence_summary_text(None) == "not_provided"
         assert _evidence_summary_text({"verified": 0, "stale": 0, "unknown": 7,
                                        "last_verified_at": None, "pending_review": 0}) == (
-            "verified:0,stale:0,unknown:7,last_verified=never"
+            "verified:0,stale:0,unknown:7,newest_verified=never"
+        )
+
+    @pytest.mark.parametrize(
+        "value, day",
+        [
+            ("2025-08-14T09:30:00+00:00", "2025-08-14"),
+            # The UTC day, whatever offset the timestamp was written in.
+            ("2025-08-14T23:30:00-07:00", "2025-08-15"),
+            ("2025-08-14T09:30:00", "2025-08-14"),
+            ("2025-08-14", "2025-08-14"),
+            (None, "never"), ("", "never"), ("last week", "never"), (20250814, "never"),
+        ],
+    )
+    def test_stale_flag_carries_the_facts_own_utc_day(self, value, day):
+        assert _evidence_flag({"state": "stale", "last_verified_at": value}) == (
+            ",stale,last_verified=%s" % day
+        )
+
+    def test_only_a_stale_flag_carries_a_date(self):
+        dated = {"last_verified_at": "2025-08-14T09:30:00+00:00"}
+        assert _evidence_flag({"state": "sourced", **dated}) == ",unconfirmed"
+        assert _evidence_flag({"state": "verified", **dated}) == ""
+
+    def test_profile_and_listing_sources_are_told_apart(self):
+        rendered = _requirements_text([
+            {"path": "funding_stage", "status": "match", "source_kind": "field",
+             "source_id": "organization.funding_round"},
+            {"path": "compensation.minimum_salary", "status": "match", "source_kind": "field",
+             "source_id": "listing.compensation_min"},
+            {"path": "industry", "status": "match", "source_kind": "field",
+             "source_id": "source_metadata.industry"},
+        ])
+        assert rendered == (
+            "[funding_stage=match[source=organization.funding_round,profile], "
+            "compensation.minimum_salary=match[source=listing.compensation_min], "
+            "industry=match[source=source_metadata.industry]]"
         )
 
 
@@ -285,3 +322,128 @@ class TestDatasourcesAttachSummaries:
         org, _ = self._stale_org()
         rows = page_context._load_organizations([org.id])
         assert rows[0]["evidence"]["stale"] == 1
+
+
+@pytest.mark.django_db
+class TestMixedFreshnessGoldenConversation:
+    """One organization, facts verified on different days (issue #473)."""
+
+    @pytest.fixture(autouse=True)
+    def _local_cache(self, settings):
+        settings.CACHES = {
+            "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
+        }
+
+    def _org(self, facts):
+        from django.contrib.auth.models import User
+        from crank.models.preference import UserPreference
+
+        self.now = timezone.now()
+        org = Organization.objects.create(
+            name="Mixed Co", status=1, public=True, rto_policy="R", funding_round="B",
+        )
+        self.rows = {}
+        for field_key, value_text, age_days in facts:
+            verified_at = self.now - timedelta(days=age_days)
+            self.rows[field_key] = CompanyFieldEvidence.objects.create(
+                organization=org, field_key=field_key, value_text=value_text,
+                source_url="https://mixed.example/about", source_domain="mixed.example",
+                observed_at=verified_at, last_verified_at=verified_at,
+                validation_version="v1", extractor_version="v1",
+                state=CompanyFieldEvidence.State.ACCEPTED,
+            )
+        user = User.objects.create_user("mixed-owner")
+        UserPreference.objects.create(user=user, revision=0, preferences={
+            "work_location": {"modes": ["remote"]},
+            "funding_stage": ["Series B"],
+        })
+        return org, user
+
+    def _system(self, user):
+        gateway = ScriptedGateway({
+            "message": "Mixed Co is remote.", "cited_organization_ids": [],
+            "cited_job_listing_ids": [], "preference_patch": None,
+        })
+        JobSearchOrchestrator(
+            gateway=gateway,
+            preference_service=NullPreferenceService(),
+            user=user,
+            org_datasource=tools.default_organization_datasource,
+            score_datasource=lambda ids, types, limit: [],
+            job_listing_datasource=lambda filters, limit: [],
+            match_service=lambda *, user, limit: tools.get_matches_for_user(user, limit=limit),
+            availability_service=lambda user: None,
+        ).run(user_prompt="is it remote?", conversation=[], preference_markdown="")
+        return "\n".join(
+            m["content"] for m in gateway.requests[0].messages if m["role"] == "system"
+        )
+
+    @staticmethod
+    def _day(row):
+        from datetime import timezone as dt_timezone
+
+        return row.last_verified_at.astimezone(dt_timezone.utc).date().isoformat()
+
+    def test_a_stale_fact_carries_its_own_date_not_the_organizations_newest(self):
+        FieldKey = CompanyFieldEvidence.FieldKey
+        org, user = self._org([
+            (FieldKey.RTO_POLICY, "Remote", 420),
+            (FieldKey.FUNDING_ROUND, "Series B", 5),
+        ])
+        rto, funding = self.rows[FieldKey.RTO_POLICY], self.rows[FieldKey.FUNDING_ROUND]
+        assert self._day(rto) != self._day(funding)
+
+        system = self._system(user)
+
+        # The catalog's one date is the newest check (the funding round)...
+        catalog = system.split("ORGANIZATION CATALOG (server-controlled", 1)[1].split("\n\n", 1)[0]
+        assert "evidence=verified:1,stale:1,unknown:5,newest_verified=%s" % self._day(funding) in catalog
+        assert "last_verified=" not in catalog
+        # ...and the stale requirement is dated with its own, older day.
+        matches = system.split("PREFERENCE-GROUNDED ORGANIZATION MATCHES (ranked", 1)[1]
+        assert (
+            "work_location.modes=match[evidence=%d,stale,last_verified=%s]"
+            % (rto.pk, self._day(rto))
+        ) in matches
+        assert "funding_stage=match[evidence=%d]" % funding.pk in matches
+        assert self._day(funding) not in matches
+        # The stale fact is not restated as a bare reason beside its flag.
+        line = next(l for l in matches.splitlines() if "organization_id=%d " % org.id in l)
+        assert "reasons=['Series B']" in line
+
+    def test_a_profile_backed_outcome_is_marked_as_profile_data(self):
+        FieldKey = CompanyFieldEvidence.FieldKey
+        org, user = self._org([(FieldKey.RTO_POLICY, "Remote", 2)])
+        rto = self.rows[FieldKey.RTO_POLICY]
+
+        system = self._system(user)
+
+        line = next(
+            l for l in system.split("PREFERENCE-GROUNDED ORGANIZATION MATCHES (ranked", 1)[1].splitlines()
+            if "organization_id=%d " % org.id in l
+        )
+        # No evidence row backs the funding stage: it is the profile field.
+        assert "funding_stage=match[source=organization.funding_round,profile]" in line
+        assert "work_location.modes=match[evidence=%d]" % rto.pk in line
+        assert "reasons=['Remote', 'Series B']" in line
+        assert "A profile outcome has no evidence behind it" in system
+
+    def test_two_stale_facts_with_different_dates_are_not_conflated(self):
+        FieldKey = CompanyFieldEvidence.FieldKey
+        _, user = self._org([
+            (FieldKey.RTO_POLICY, "Remote", 420),
+            (FieldKey.FUNDING_ROUND, "Series B", 300),
+        ])
+        rto, funding = self.rows[FieldKey.RTO_POLICY], self.rows[FieldKey.FUNDING_ROUND]
+
+        matches = self._system(user).split("PREFERENCE-GROUNDED ORGANIZATION MATCHES (ranked", 1)[1]
+
+        assert (
+            "work_location.modes=match[evidence=%d,stale,last_verified=%s]"
+            % (rto.pk, self._day(rto))
+        ) in matches
+        assert (
+            "funding_stage=match[evidence=%d,stale,last_verified=%s]"
+            % (funding.pk, self._day(funding))
+        ) in matches
+        assert self._day(rto) != self._day(funding)

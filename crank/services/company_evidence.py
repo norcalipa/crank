@@ -1564,6 +1564,34 @@ def annotate_requirement_evidence(requirement_lists, *, now: datetime | None = N
     ]
 
 
+#: Evidence states whose outcome a reason badge must not restate as plain
+#: fact: the chip beside it is qualified (stale, sourced) or withdrawn (changed).
+_REASON_WITHHELD_STATES = frozenset({"stale", "sourced", "superseded", "missing"})
+
+
+def unqualified_reasons(reasons, annotated_requirements) -> list[str]:
+    """``reasons`` without those that rest only on qualified evidence.
+
+    A reason ("Remote", "Series B") states a fact with no room for a
+    qualifier, so one is kept only while a requirement decided by listing
+    data, profile data or evidence that verifies it still gives it.
+    ``annotated_requirements`` is one list from
+    :func:`annotate_requirement_evidence`; the labels come from the renderer
+    every surface shares, and the order of ``reasons`` is kept.
+    """
+    from crank.agents.jobs.matching import outcomes_from_dicts, reasons_from_requirements
+
+    kept, withheld = [], []
+    for requirement in annotated_requirements or []:
+        if not isinstance(requirement, dict):
+            continue
+        state = (requirement.get("evidence_status") or {}).get("state")
+        (withheld if state in _REASON_WITHHELD_STATES else kept).append(requirement)
+    still_given = set(reasons_from_requirements(outcomes_from_dicts(kept)))
+    dropped = set(reasons_from_requirements(outcomes_from_dicts(withheld))) - still_given
+    return [reason for reason in reasons or [] if reason not in dropped]
+
+
 def field_evidence_payload(organization, *, now: datetime | None = None) -> dict:
     """Build the serialized ``fields`` / ``unverified_fields`` arrays.
 

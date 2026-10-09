@@ -2,6 +2,9 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 """Authenticated JSON endpoints for owner-scoped job matches."""
 
+import math
+import time
+
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
@@ -136,7 +139,9 @@ def _match_payload(match, *, detail=False, user=None, revision=None, requirement
         "unsupported": list(unsupported),
         "evidence_ids": list(match.evidence_ids or []),
         "revision": revision,
-        "reasons": reasons_from_requirements(outcomes),
+        "reasons": company_evidence.unqualified_reasons(
+            reasons_from_requirements(outcomes), requirements
+        ),
         "first_matched_at": match.first_matched_at,
         "last_matched_at": match.last_matched_at,
         "seen_at": match.seen_at,
@@ -388,6 +393,18 @@ def _refresh_cooldown():
     return max(1, int(getattr(settings, "JOB_MATCH_REFRESH_COOLDOWN_SECONDS", 30)))
 
 
+def _seconds_left(expires_at, cooldown):
+    """Whole seconds until ``expires_at``, within ``1..cooldown``.
+
+    The entry can expire between the refused ``add`` and this read, and a
+    value written by an older release is not a timestamp: both read as the
+    nearest bound instead of failing the request.
+    """
+    if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
+        return cooldown
+    return max(1, min(cooldown, math.ceil(expires_at - time.time())))
+
+
 @login_required
 @require_POST
 def job_match_refresh(request):
@@ -405,7 +422,7 @@ def job_match_refresh(request):
     One recompute per user per cooldown window: the atomic ``cache.add`` is
     both the single-flight guard for concurrent requests and the rate limit,
     so a client cannot queue recomputes. A request inside the window gets 429
-    with ``Retry-After`` and does no recompute.
+    with ``Retry-After`` (the seconds left of it) and does no recompute.
 
     The body is ``{"status": ...}`` only: ``disabled``, ``not_needed``,
     ``rate_limited`` (with ``retry_after`` seconds) or a ``RecomputeStatus``
@@ -428,9 +445,15 @@ def job_match_refresh(request):
     if not changed:
         return JsonResponse({"status": "not_needed"})
     cooldown = _refresh_cooldown()
-    if not cache.add(f"job-match-refresh:{request.user.pk}", 1, cooldown):
-        response = JsonResponse({"status": "rate_limited", "retry_after": cooldown}, status=429)
-        response["Retry-After"] = str(cooldown)
+    key = f"job-match-refresh:{request.user.pk}"
+    # The value is when the window ends, so a refused request can say how
+    # much of it is left rather than the whole window.
+    if not cache.add(key, time.time() + cooldown, cooldown):
+        retry_after = _seconds_left(cache.get(key), cooldown)
+        response = JsonResponse(
+            {"status": "rate_limited", "retry_after": retry_after}, status=429
+        )
+        response["Retry-After"] = str(retry_after)
         return response
     outcome = match_recompute.recompute_user(request.user, reason="refresh", force=True)
     return JsonResponse({"status": outcome.status.value})
@@ -454,9 +477,11 @@ def job_match_ranked(request):
     job_results = match_jobs(request.user, limit=limit)
     org_results = match_organizations(request.user, limit=limit)
     # Read-time evidence status for every requirement, one bulk query (#473).
-    annotated = iter(company_evidence.annotate_requirement_evidence(
+    annotated = company_evidence.annotate_requirement_evidence(
         [r.requirements for r in job_results] + [r.requirements for r in org_results]
-    ))
+    )
+    job_requirements = annotated[:len(job_results)]
+    org_requirements = annotated[len(job_results):]
 
     return JsonResponse({
         "job_matches": [
@@ -473,14 +498,14 @@ def job_match_ranked(request):
                 "fit_score": r.fit_score,
                 "company_score": r.company_score,
                 "coverage": r.coverage,
-                "requirements": next(annotated),
+                "requirements": requirements,
                 "unsupported": r.unsupported,
                 "evidence_ids": r.evidence_ids,
                 "revision": r.revision(),
-                "reasons": r.reasons,
+                "reasons": company_evidence.unqualified_reasons(r.reasons, requirements),
                 "factors": r.factors,
             }
-            for r in job_results
+            for r, requirements in zip(job_results, job_requirements)
         ],
         "organization_matches": [
             {
@@ -493,13 +518,13 @@ def job_match_ranked(request):
                 "fit_score": r.fit_score,
                 "company_score": r.company_score,
                 "coverage": r.coverage,
-                "requirements": next(annotated),
+                "requirements": requirements,
                 "unsupported": r.unsupported,
                 "evidence_ids": r.evidence_ids,
                 "revision": r.revision(),
-                "reasons": r.reasons,
+                "reasons": company_evidence.unqualified_reasons(r.reasons, requirements),
             }
-            for r in org_results
+            for r, requirements in zip(org_results, org_requirements)
         ],
     })
 
