@@ -4291,9 +4291,24 @@ span.priority-chip-button { cursor: default; }
     box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.8);
 }
 .priorities-sidebar .priorities-review-compact > .chat-actions > .btn { min-width: 0; }
-.priorities-sidebar .priorities-review-compact > .chat-actions > .priorities-review-edit { justify-self: start; }
-.priorities-sidebar .priorities-review-compact > .chat-actions > .priorities-review-cancel,
-.priorities-sidebar .priorities-review-compact > .chat-actions > .priorities-review-edit { min-width: 44px; }
+/* While the second row is out of sight the pinned one ends with More, which leads to it. */
+.priorities-sidebar .priorities-review-compact > .chat-actions:has(> .priorities-review-more) { grid-template-columns: minmax(0, 1fr) auto auto; }
+.priorities-sidebar .priorities-review-compact > .chat-actions:has(> .priorities-review-more) > .priorities-review-search { grid-column: 2 / -1; }
+.priorities-sidebar .priorities-review-compact > .chat-actions > .priorities-review-more { display: inline-flex; align-items: center; justify-content: center; gap: 0.375rem; min-width: 44px; }
+@media (max-width: 374.98px) {
+    /* Apply, Cancel and More share 272px: More keeps its mark and its name for assistive technology. */
+    .priorities-sidebar .priorities-review-compact > .chat-actions > .priorities-review-more > .priorities-review-more-text {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        padding: 0;
+        border: 0;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+    }
+}
 @media (max-width: 767.98px) {
     /* Sheets: no card chrome, so the diff gets the width and the height. */
     .priorities-sidebar .priorities-review-compact { padding: 0; border: 0; background: transparent; }
@@ -4303,6 +4318,16 @@ span.priority-chip-button { cursor: default; }
     /* The reset question is read before its buttons: no card chrome, and the buttons follow the text. */
     .priorities-sidebar .priorities-confirm { padding: 0; border: 0; background: transparent; }
     .priorities-sidebar .priorities-confirm > .chat-actions { position: static; padding-block: 0.5rem 0; border-top: 0; box-shadow: none; background: transparent; }
+    /* What was saved is read above Undo and Done: no card chrome. */
+    .priorities-sidebar .priorities-applied { padding: 0; border: 0; background: transparent; }
+    .priorities-sidebar .priorities-applied > .priorities-heading { margin-bottom: 0.25rem; }
+    .priorities-sidebar .priorities-applied > .pref-change-list { margin-top: 0; }
+    .priorities-sidebar .priorities-applied .pref-change-item:first-child { padding-top: 0; border-top: 0; }
+    .priorities-sidebar .priorities-applied > .chat-actions { margin-inline: -6px; padding-inline: 6px; background: #212529; }
+}
+@media (max-width: 767.98px) and (max-height: 640px) {
+    /* On the shortest sheets the summary keeps to one line, so the values it is about show. */
+    .priorities-sidebar .priorities-applied > .priorities-heading > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 @media (max-width: 400px) {
     .assistant-panel-body #job-search-chat .empty-history-note { display: none; }

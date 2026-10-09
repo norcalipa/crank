@@ -2,9 +2,9 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
 import * as React from 'react';
-import {fireEvent, render, screen} from '@testing-library/react';
+import {act, fireEvent, render, screen} from '@testing-library/react';
 import PriorityChips from './PriorityChips';
-import ReviewChanges from './ReviewChanges';
+import ReviewChanges, {MORE_BELOW_PX} from './ReviewChanges';
 import AppliedChanges from './AppliedChanges';
 import {chipValueLabel, preferencePathLabel, preferenceValueLabel, prioritiesSummary, prioritiesSummaryParts} from './format';
 
@@ -392,5 +392,150 @@ describe('ReviewChanges compact (sidebar)', () => {
         render(<ReviewChanges changes={[]} compact onApply={jest.fn()} onCancel={jest.fn()}/>);
         expect(labels()).toEqual(['Apply to account', 'Cancel']);
         expect(screen.getByTestId('priorities-review-empty')).toBeInTheDocument();
+    });
+});
+
+describe('final fixes after visual round 3 (issue #480)', () => {
+    const one = [{path: 'compensation.minimum_salary', old: 0, new: 150000}];
+
+    test('in the bounded block Apply keeps the focus through its request and ignores a second activation', () => {
+        const onApply = jest.fn();
+        const {rerender} = render(<ReviewChanges changes={one} compact onApply={onApply} onCancel={jest.fn()}/>);
+        const apply = screen.getByRole('button', {name: 'Apply to account'});
+        apply.focus();
+        fireEvent.click(apply);
+        expect(onApply).toHaveBeenCalledTimes(1);
+        rerender(<ReviewChanges changes={one} compact pending onApply={onApply} onCancel={jest.fn()}/>);
+        const busy = screen.getByRole('button', {name: 'Applying…'});
+        expect(busy).toBe(apply);
+        expect(busy).not.toBeDisabled();
+        expect(busy).toHaveAttribute('aria-disabled', 'true');
+        expect(busy).toHaveAttribute('aria-busy', 'true');
+        expect(busy).toHaveFocus();
+        fireEvent.click(busy);
+        expect(onApply).toHaveBeenCalledTimes(1);
+        // The request failed: the same button, still focused, applies again.
+        rerender(<ReviewChanges changes={one} compact error="Could not apply." onApply={onApply} onCancel={jest.fn()}/>);
+        expect(apply).toHaveFocus();
+        expect(apply).not.toHaveAttribute('aria-disabled');
+        fireEvent.click(apply);
+        expect(onApply).toHaveBeenCalledTimes(2);
+        // With nothing to apply it is disabled, as before.
+        rerender(<ReviewChanges changes={[]} compact onApply={onApply} onCancel={jest.fn()}/>);
+        expect(apply).toBeDisabled();
+    });
+
+    test('outside the bounded block Apply is disabled while its request runs, as before', () => {
+        const onApply = jest.fn();
+        render(<ReviewChanges changes={one} pending onApply={onApply} onCancel={jest.fn()}/>);
+        const busy = screen.getByRole('button', {name: 'Applying…'});
+        expect(busy).toBeDisabled();
+        expect(busy).not.toHaveAttribute('aria-disabled');
+    });
+
+    describe('More in the pinned action row', () => {
+        // jsdom lays nothing out: the scroller's sizes are given.
+        const sizes = {scrollHeight: 300, clientHeight: 160};
+        const realScroll = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+        const realClient = Object.getOwnPropertyDescriptor(Element.prototype, 'clientHeight');
+        const observers: Array<{run: () => void; observed: Element[]; disconnected: boolean}> = [];
+        beforeEach(() => {
+            observers.length = 0;
+            Object.assign(sizes, {scrollHeight: 300, clientHeight: 160});
+            Object.defineProperty(Element.prototype, 'scrollHeight', {configurable: true, get() { return sizes.scrollHeight; }});
+            Object.defineProperty(Element.prototype, 'clientHeight', {configurable: true, get() { return sizes.clientHeight; }});
+        });
+        afterEach(() => {
+            delete (global as any).ResizeObserver;
+            Object.defineProperty(Element.prototype, 'scrollHeight', realScroll!);
+            Object.defineProperty(Element.prototype, 'clientHeight', realClient!);
+        });
+        const names = () => screen.getAllByRole('button').map((b) => b.getAttribute('aria-label') || b.textContent);
+        const inBlock = (node: React.ReactNode) => <div className="priorities-scroll" data-testid="scroller">{node}</div>;
+        const all = () => ({onApply: jest.fn(), onCancel: jest.fn(), onEdit: jest.fn(), onApplySearchOnly: jest.fn()});
+
+        test('is offered while the second row is out of sight, leads to it, and goes once that row shows', () => {
+            const h = all();
+            render(inBlock(<ReviewChanges changes={one} compact {...h}/>));
+            const scroller = screen.getByTestId('scroller');
+            expect(names()).toEqual(['Apply to account', 'Cancel', 'More options', 'Edit', 'This search only']);
+            const more = screen.getByRole('button', {name: 'More options'});
+            expect(more).toHaveTextContent('More');
+            expect(more.closest('[role="group"]')).toHaveAccessibleName('Review actions');
+
+            // Exactly the threshold left below: the row is as good as shown. One pixel more: More is back.
+            scroller.scrollTop = 300 - 160 - MORE_BELOW_PX;
+            fireEvent.scroll(scroller);
+            expect(screen.queryByRole('button', {name: 'More options'})).not.toBeInTheDocument();
+            scroller.scrollTop -= 1;
+            fireEvent.scroll(scroller);
+
+            fireEvent.click(screen.getByRole('button', {name: 'More options'}));
+            expect(scroller.scrollTop).toBe(300);
+            expect(screen.getByRole('button', {name: 'Edit'})).toHaveFocus();
+            fireEvent.scroll(scroller);
+            expect(names()).toEqual(['Apply to account', 'Cancel', 'Edit', 'This search only']);
+            expect(h.onEdit).not.toHaveBeenCalled();
+        });
+
+        test('stays beside a failed Apply and beside Review latest, and leads to This search only when there is no Edit', () => {
+            const {rerender} = render(inBlock(
+                <ReviewChanges changes={one} compact error="Could not apply." onApply={jest.fn()} onCancel={jest.fn()} onApplySearchOnly={jest.fn()}/>,
+            ));
+            expect(screen.getByRole('alert')).toHaveTextContent('Could not apply.');
+            fireEvent.click(screen.getByRole('button', {name: 'More options'}));
+            expect(screen.getByRole('button', {name: 'This search only'})).toHaveFocus();
+            rerender(inBlock(
+                <ReviewChanges changes={one} compact stale error="Changed elsewhere." onApply={jest.fn()} onCancel={jest.fn()}
+                               onApplySearchOnly={jest.fn()} onReviewLatest={jest.fn()}/>,
+            ));
+            expect(names()).toEqual(['Review latest', 'Cancel', 'More options', 'This search only']);
+        });
+
+        test('is not offered where everything fits, without a second row, or outside the bounded block', () => {
+            sizes.scrollHeight = 160;
+            const h = all();
+            const {unmount} = render(inBlock(<ReviewChanges changes={one} compact {...h}/>));
+            expect(names()).toEqual(['Apply to account', 'Cancel', 'Edit', 'This search only']);
+            unmount();
+            sizes.scrollHeight = 300;
+            // A search-scoped review has no "This search only", and here no Edit: one row.
+            const view = render(inBlock(<ReviewChanges changes={one} compact scope="search" onApply={jest.fn()} onCancel={jest.fn()} onApplySearchOnly={jest.fn()}/>));
+            expect(names()).toEqual(['Apply to this search', 'Cancel']);
+            // A second row arrives, then goes again: More follows it.
+            view.rerender(inBlock(<ReviewChanges changes={one} compact scope="search" {...h}/>));
+            expect(names()).toEqual(['Apply to this search', 'Cancel', 'More options', 'Edit']);
+            view.rerender(inBlock(<ReviewChanges changes={one} compact scope="search" onApply={jest.fn()} onCancel={jest.fn()}/>));
+            expect(names()).toEqual(['Apply to this search', 'Cancel']);
+            view.unmount();
+            // The chat's own card and the main editor's review: never.
+            const outside = render(inBlock(<ReviewChanges changes={one} {...h}/>));
+            expect(screen.queryByRole('button', {name: 'More options'})).not.toBeInTheDocument();
+            outside.unmount();
+            render(<ReviewChanges changes={one} compact {...h}/>);
+            expect(screen.queryByRole('button', {name: 'More options'})).not.toBeInTheDocument();
+        });
+
+        test('follows the block as it is resized, and stops listening when the review closes', () => {
+            (global as any).ResizeObserver = class {
+                private entry: {run: () => void; observed: Element[]; disconnected: boolean};
+                constructor(run: () => void) { this.entry = {run, observed: [], disconnected: false}; observers.push(this.entry); }
+                observe(el: Element) { this.entry.observed.push(el); }
+                disconnect() { this.entry.disconnected = true; }
+            };
+            const {unmount} = render(inBlock(<ReviewChanges changes={one} compact {...all()}/>));
+            const scroller = screen.getByTestId('scroller');
+            const removed = jest.spyOn(scroller, 'removeEventListener');
+            expect(observers).toHaveLength(1);
+            expect(observers[0].observed).toEqual([scroller, screen.getByTestId('priorities-review')]);
+            expect(screen.getByRole('button', {name: 'More options'})).toBeInTheDocument();
+            // The panel grew: both rows fit.
+            sizes.clientHeight = 300;
+            act(() => observers[0].run());
+            expect(screen.queryByRole('button', {name: 'More options'})).not.toBeInTheDocument();
+            unmount();
+            expect(observers[0].disconnected).toBe(true);
+            expect(removed).toHaveBeenCalledWith('scroll', expect.any(Function));
+        });
     });
 });
