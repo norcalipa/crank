@@ -10,6 +10,9 @@ evidence stay exactly as ``seed_e2e`` left them.
   evidence row that no longer exists, which is what a stored match looks like
   after its fact was removed.
 - ``pause``: the operator switch for recompute is off.
+- ``settle``: the account's matches are recomputed and published again, as
+  the pipeline does on its own, so a page still showing the old generation
+  asks for a re-check that has nothing left to do.
 - ``disarm``: remove the account, the switch and the refresh cooldown.
 """
 import os
@@ -46,6 +49,9 @@ elif action == "pause":
     CapabilitySwitch.objects.update_or_create(
         key="match_recompute", defaults={"enabled": False, "note": "e2e: paused"}
     )
+elif action == "settle":
+    outcome = recompute_user(User.objects.get(username=USERNAME), reason="e2e", force=True)
+    assert outcome.status == RecomputeStatus.PUBLISHED, outcome
 elif action == "arm":
     disarm()
     user = User.objects.create_user(USERNAME, password=os.environ["E2E_PASSWORD"])

@@ -16,7 +16,7 @@ requireDjangoTier();
 const USERNAME = 'e2e_refresh_user';
 const REFRESH = '/api/job-matches/refresh/';
 
-function fixture(action: 'arm' | 'pause' | 'disarm'): void {
+function fixture(action: 'arm' | 'pause' | 'settle' | 'disarm'): void {
     execFileSync(
         'python3',
         ['manage.py', 'shell', '-c', "exec(open('e2e/django/match_refresh_fixture.py').read())"],
@@ -111,9 +111,39 @@ test.describe('Refresh matches on stored results', () => {
             await expect(notice.getByRole('button')).toHaveCount(0);
             await expect(page.getByTestId('evidence-changed-notice')).toHaveCount(1);
             await expect(page.getByRole('heading', {name: 'Your Job Matches'})).toBeFocused();
-            // The results are still on screen, still marked.
+            // The results are still on screen, still marked, without a call
+            // to refresh that nothing on the page can answer.
             const chip = page.getByTestId('ranked-job-matches').getByTestId('requirement-work_location.modes').first();
-            await expect(chip).toContainText('Evidence changed — refresh');
+            await expect(chip).toContainText('Work mode · Evidence changed');
+            await expect(chip).not.toContainText('refresh');
+            // The header's refresh asks again and re-reads the lists.
+            const reread = page.waitForResponse((response) => response.url().includes('/api/job-matches/ranked/'));
+            await page.getByTestId('job-match-refresh').click();
+            expect((await reread).status()).toBe(200);
+            await expect.poll(() => posts).toEqual(['200 disabled', '200 disabled']);
+            await expect(notice).toHaveAttribute('data-recheck', 'paused');
+            await expectNoHorizontalOverflow(page);
+        });
+
+        test(`nothing left to re-check: the notice clears and says the matches were up to date at ${width}px`, async ({page}) => {
+            await page.setViewportSize({width, height});
+            const posts = refreshPosts(page);
+            await openStoredMatches(page);
+            const notice = page.getByTestId('evidence-changed-notice');
+            await expect(notice).toHaveCount(1);
+            // The matches are published again behind the open page, so the
+            // generation on the server no longer cites the removed fact.
+            fixture('settle');
+            const refresh = notice.getByRole('button', {name: 'Refresh matches'});
+            await refresh.focus();
+            await page.keyboard.press('Enter');
+
+            await expect(notice).toHaveCount(0);
+            expect(posts).toEqual(['200 not_needed']);
+            const chip = page.getByTestId('ranked-job-matches').getByTestId('requirement-work_location.modes').first();
+            await expect(chip).toHaveAttribute('data-evidence-state', 'sourced');
+            await expect(page.getByRole('heading', {name: 'Your Job Matches'})).toBeFocused();
+            await expect(page.getByTestId('recheck-announcement')).toHaveText('Your matches were already up to date.');
             await expectNoHorizontalOverflow(page);
         });
     }

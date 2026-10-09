@@ -162,8 +162,15 @@ for (const [width, height] of [[1280, 800], [375, 800], [320, 700]] as const) {
             await expect(notice).toContainText('Re-checking is paused right now');
             await expect(notice.getByRole('button')).toHaveCount(0);
             await expect(notice).toHaveCount(1);
-            await expect(jobChip).toContainText('Evidence changed — refresh');
+            // Nothing on the page can re-check while it is paused, so the
+            // chip stops asking for a refresh.
+            await expect(jobChip).toContainText('Work mode · Evidence changed');
+            await expect(jobChip).not.toContainText('refresh');
             await expect(page.getByRole('heading', {name: 'Your Job Matches'})).toBeFocused();
+            // The header's refresh still re-reads the lists.
+            const reread = page.waitForResponse((response) => response.url().includes('/api/job-matches/ranked/'));
+            await page.getByTestId('job-match-refresh').click();
+            expect((await reread).status()).toBe(200);
             await expectNoHorizontalOverflow(page);
         });
 
