@@ -1387,7 +1387,15 @@ def _is_evidence_id(value) -> bool:
 
 
 def _evidence_rows_and_statuses(evidence_ids, now: datetime | None):
-    """``(statuses, accepted rows by id)`` for :func:`evidence_status_for_ids`."""
+    """``(statuses, accepted rows by id)`` for the evidence rows stored matches cite.
+
+    One query for any number of ids. A row's ``state`` here is ``sourced``
+    (accepted and within policy), ``stale``, ``superseded`` (no longer the
+    accepted fact) or ``missing`` (deleted); only accepted rows expose
+    ``last_verified_at`` and ``source_domain``. It is never ``verified``:
+    that is a claim about a requirement, and only
+    :func:`_requirement_evidence_status` makes it.
+    """
     ids = {pk for pk in evidence_ids if _is_evidence_id(pk)}
     if not ids:
         return {}, {}
@@ -1405,35 +1413,14 @@ def _evidence_rows_and_statuses(evidence_ids, now: datetime | None):
             statuses[row.pk]["state"] = "superseded"
             continue
         accepted[row.pk] = row
-        if field_status(row, now=now) == "stale":
-            state = "stale"
-        elif is_company_wide(row) and _strictly_readable(row.field_key, row.value_text):
-            state = "verified"
-        else:
-            state = "sourced"
         statuses[row.pk] = {
-            "state": state,
+            "state": "stale" if field_status(row, now=now) == "stale" else "sourced",
             "last_verified_at": (
                 row.last_verified_at.isoformat() if row.last_verified_at else None
             ),
             "source_domain": row.source_domain or None,
         }
     return statuses, accepted
-
-
-def evidence_status_for_ids(evidence_ids, *, now: datetime | None = None) -> dict[int, dict]:
-    """Read-time status of the evidence rows a stored match refers to.
-
-    One query for any number of ids. ``state`` is ``verified`` (accepted,
-    within policy, company-wide and strictly readable), ``sourced`` (accepted
-    and fresh, but scoped to a location or role, or prose matching had to
-    interpret), ``stale``, ``superseded`` (the row is no longer the accepted
-    fact) or ``missing`` (deleted). Only accepted rows expose
-    ``last_verified_at`` and ``source_domain``. This is the status of the
-    *fact*; whether it verifies a requirement is decided per requirement by
-    :func:`annotate_requirement_evidence`.
-    """
-    return _evidence_rows_and_statuses(evidence_ids, now)[0]
 
 
 _PROFILE_EVIDENCE_STATUS = {
@@ -1504,6 +1491,8 @@ def _evidence_states_requirement(requirement: dict, row: CompanyFieldEvidence | 
         return False
     if requirement.get("scope_ok") is not True or not is_company_wide(row):
         return False
+    if not _strictly_readable(row.field_key, row.value_text):
+        return False
     stated = _REQUIREMENT_STATED_BY.get((requirement.get("path"), row.field_key))
     return stated is not None and stated(row.value_text, requirement)
 
@@ -1519,10 +1508,10 @@ def _requirement_evidence_status(requirement: dict, statuses: dict[int, dict], r
         # "Verified" is a claim about the requirement, not the fact: a fresh,
         # accepted row that did not decide the outcome (out of scope,
         # unreadable) or decided it through a guess must not lend it the mark.
-        if status["state"] == "verified" and not _evidence_states_requirement(
+        if status["state"] == "sourced" and _evidence_states_requirement(
             requirement, rows.get(source_id)
         ):
-            status["state"] = "sourced"
+            status["state"] = "verified"
         return status
     if source_kind == "field" and str(source_id or "").startswith("organization."):
         return dict(_PROFILE_EVIDENCE_STATUS)
@@ -1566,8 +1555,11 @@ def annotate_requirement_evidence(requirement_lists, *, now: datetime | None = N
 
 #: Evidence states whose outcome a reason must not restate as plain fact: the
 #: fact is past its freshness window (stale) or no longer the accepted one
-#: (changed). A "sourced" outcome keeps its reason: it is what the accepted,
-#: current source says, and the chip beside it carries "Sourced, not confirmed".
+#: (changed). A "sourced" outcome keeps its reason, which is what matching
+#: read from the accepted, current source and not necessarily what the source
+#: says ("Not remote" reads "Remote", #548): the chip beside it carries
+#: "Sourced, not confirmed", and :func:`unconfirmed_reasons` names such reasons
+#: for a surface that can qualify them.
 _REASON_WITHHELD_STATES = frozenset({"stale", "superseded", "missing"})
 
 
@@ -1577,6 +1569,8 @@ def unqualified_reasons(reasons, annotated_requirements) -> list[str]:
     A reason ("Remote", "Series B") states a fact with no room for a date or
     a "changed" mark, so one is kept only while a requirement decided by
     listing data, profile data or accepted, current evidence still gives it.
+    A kept reason is matching's reading of that source, not a quotation of it
+    (see :func:`unconfirmed_reasons`).
     ``annotated_requirements`` is one list from
     :func:`annotate_requirement_evidence`; the labels come from the renderer
     every surface shares, and the order of ``reasons`` is kept.
@@ -1592,6 +1586,30 @@ def unqualified_reasons(reasons, annotated_requirements) -> list[str]:
     still_given = set(reasons_from_requirements(outcomes_from_dicts(kept)))
     dropped = set(reasons_from_requirements(outcomes_from_dicts(withheld))) - still_given
     return [reason for reason in reasons or [] if reason not in dropped]
+
+
+def unconfirmed_reasons(reasons, annotated_requirements) -> list[str]:
+    """The ``reasons`` that no confirmed outcome gives, in their order.
+
+    A reason is unconfirmed when an evidence-backed requirement that is not
+    ``verified`` gives it and no other requirement does: matching inferred it
+    from a source that may not say it. A requirement whose evidence status is
+    absent or unknown counts as not verified. A reason no requirement gives is
+    not listed; the caller wrote it.
+    """
+    from crank.agents.jobs.matching import outcomes_from_dicts, reasons_from_requirements
+
+    confirmed, inferred = [], []
+    for requirement in annotated_requirements or []:
+        if not isinstance(requirement, dict):
+            continue
+        status = requirement.get("evidence_status")
+        state = status.get("state") if isinstance(status, dict) else None
+        unverified = requirement.get("source_kind") == "evidence" and state != "verified"
+        (inferred if unverified else confirmed).append(requirement)
+    still_given = set(reasons_from_requirements(outcomes_from_dicts(confirmed)))
+    only_inferred = set(reasons_from_requirements(outcomes_from_dicts(inferred))) - still_given
+    return [reason for reason in reasons or [] if reason in only_inferred]
 
 
 def field_evidence_payload(organization, *, now: datetime | None = None) -> dict:

@@ -11,9 +11,9 @@ from crank.models.company_profile import CompanyFieldEvidence
 from crank.models.organization import Organization
 from crank.services.company_evidence import (
     FIELD_FRESHNESS_POLICY,
+    _evidence_rows_and_statuses,
     _strictly_readable,
     annotate_requirement_evidence,
-    evidence_status_for_ids,
 )
 
 FieldKey = CompanyFieldEvidence.FieldKey
@@ -45,6 +45,20 @@ class EvidenceStatusTests(TestCase):
         values.update(kwargs)
         return CompanyFieldEvidence.objects.create(**values)
 
+    def _statuses(self, ids, *, now=None, **overrides):
+        """Each id's status as the one public path gives it: per requirement.
+
+        Every id is cited by a work-mode requirement that matched "remote",
+        which is what the default row states.
+        """
+        requirements = [
+            {"path": "work_location.modes", "status": "match", "observed": "remote",
+             "source_kind": "evidence", "source_id": pk, "scope_ok": True, **overrides}
+            for pk in ids
+        ]
+        annotated = annotate_requirement_evidence([requirements], now=now)[0]
+        return {r["source_id"]: r["evidence_status"] for r in annotated}
+
     def test_verified_stale_superseded_and_missing_in_one_query(self):
         verified = self._row()
         stale = self._row(age_days=FIELD_FRESHNESS_POLICY[FieldKey.RTO_POLICY] + 1)
@@ -54,7 +68,7 @@ class EvidenceStatusTests(TestCase):
         missing_id = rejected.pk + 1000
 
         with self.assertNumQueries(1):
-            statuses = evidence_status_for_ids(
+            statuses = self._statuses(
                 [verified.pk, stale.pk, never.pk, superseded.pk, rejected.pk, missing_id],
                 now=self.now,
             )
@@ -88,28 +102,61 @@ class EvidenceStatusTests(TestCase):
         days = FIELD_FRESHNESS_POLICY[FieldKey.RTO_POLICY]
         boundary = self._row(age_days=days)
         past = self._row(age_days=days + 1)
-        statuses = evidence_status_for_ids([boundary.pk, past.pk], now=self.now)
+        statuses = self._statuses([boundary.pk, past.pk], now=self.now)
         self.assertEqual(statuses[boundary.pk]["state"], "verified")
         self.assertEqual(statuses[past.pk]["state"], "stale")
 
     def test_no_ids_runs_no_query_and_ignores_non_integer_ids(self):
+        gone = {"state": "missing", "last_verified_at": None, "source_domain": None}
         with self.assertNumQueries(0):
-            self.assertEqual(evidence_status_for_ids([]), {})
-            self.assertEqual(evidence_status_for_ids([None, "7", True, 1.5]), {})
+            self.assertEqual(self._statuses([]), {})
+            # Not an id: nothing is looked up, and nothing reads as verified.
+            self.assertEqual(
+                self._statuses([None, "7", True, 1.5]),
+                {None: gone, "7": gone, True: gone, 1.5: gone},
+            )
+            self.assertEqual(_evidence_rows_and_statuses([None, "7", True, 1.5], None), ({}, {}))
 
     def test_prose_and_fields_without_a_strict_reader_are_sourced_not_verified(self):
         prose = self._row(value_text="Remote first, with five office days a quarter")
         locations = self._row(FieldKey.LOCATIONS, value_text="Berlin, Germany")
         blank_domain = self._row(value_text="hybrid", source_domain="")
-        statuses = evidence_status_for_ids([prose.pk, locations.pk, blank_domain.pk])
+        statuses = self._statuses([prose.pk, locations.pk, blank_domain.pk])
         self.assertEqual(statuses[prose.pk]["state"], "sourced")
         self.assertEqual(statuses[locations.pk]["state"], "sourced")
-        self.assertEqual(statuses[blank_domain.pk]["state"], "verified")
-        self.assertIsNone(statuses[blank_domain.pk]["source_domain"])
+        # "hybrid" is a whole-value reading, but not of an outcome that read
+        # "remote": the value alone never earns the mark.
+        self.assertEqual(statuses[blank_domain.pk]["state"], "sourced")
+        stated = self._statuses([blank_domain.pk], observed="hybrid")[blank_domain.pk]
+        self.assertEqual(stated["state"], "verified")
+        self.assertIsNone(stated["source_domain"])
+
+    def test_a_fact_alone_is_never_verified_only_a_requirement_is(self):
+        """No helper answers "verified" for a row by its value (round-1 MAJOR 1)."""
+        from crank.services import company_evidence
+
+        self.assertFalse(hasattr(company_evidence, "evidence_status_for_ids"))
+        hybrid = self._row(value_text="Hybrid")
+        remote = self._row(value_text="Remote")
+        stale = self._row(value_text="Remote", age_days=4000)
+        statuses, rows = _evidence_rows_and_statuses(
+            [hybrid.pk, remote.pk, stale.pk], self.now
+        )
+        self.assertEqual(
+            {pk: status["state"] for pk, status in statuses.items()},
+            {hybrid.pk: "sourced", remote.pk: "sourced", stale.pk: "stale"},
+        )
+        self.assertEqual(set(rows), {hybrid.pk, remote.pk, stale.pk})
+        # The same rows through a requirement: only the stated outcome is verified.
+        by_requirement = self._statuses([hybrid.pk, remote.pk, stale.pk], now=self.now)
+        self.assertEqual(
+            {pk: status["state"] for pk, status in by_requirement.items()},
+            {hybrid.pk: "sourced", remote.pk: "verified", stale.pk: "stale"},
+        )
 
     def test_stale_wins_over_an_unreadable_value(self):
         row = self._row(value_text="It depends on the team", age_days=400)
-        self.assertEqual(evidence_status_for_ids([row.pk])[row.pk]["state"], "stale")
+        self.assertEqual(self._statuses([row.pk])[row.pk]["state"], "stale")
 
     def test_strict_readings_per_field(self):
         cases = [
@@ -414,7 +461,8 @@ class RequirementStatedByEvidenceTests(TestCase):
                 )
                 self.assertEqual(requirement["evidence_status"]["state"], "sourced")
                 self.assertEqual(
-                    evidence_status_for_ids([row.pk], now=self.now)[row.pk]["state"], "sourced"
+                    _evidence_rows_and_statuses([row.pk], self.now)[0][row.pk]["state"],
+                    "sourced",
                 )
         # Attribution is not scope.
         attributed = self._row(
