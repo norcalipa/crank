@@ -1353,9 +1353,12 @@ def _agrees_with_displayed(field_key: str, value_text: str, shown: str | None) -
     return evidence_reading == shown_reading
 
 
-_PUBLIC_STATUS_STRICT_READINGS = frozenset(
-    {"public", "public company", "private", "private company"}
-)
+#: Bare public/private forms, with the outcome "is it public" has for each.
+_PUBLIC_STATUS_STATED_OUTCOMES = {
+    "public": "match", "public company": "match",
+    "private": "mismatch", "private company": "mismatch",
+}
+_PUBLIC_STATUS_STRICT_READINGS = frozenset(_PUBLIC_STATUS_STATED_OUTCOMES)
 
 
 def _strictly_readable(field_key: str, value_text: str) -> bool:
@@ -1459,10 +1462,7 @@ def _states_office_days(value_text: str, requirement: dict) -> bool:
 def _states_public_status(value_text: str, requirement: dict) -> bool:
     """A bare public/private status answers "is it public" directly."""
     normalized = " ".join(value_text.replace("_", " ").casefold().split())
-    if normalized not in _PUBLIC_STATUS_STRICT_READINGS:
-        return False
-    expected = "match" if normalized.startswith("public") else "mismatch"
-    return requirement.get("status") == expected
+    return _PUBLIC_STATUS_STATED_OUTCOMES.get(normalized, "") == requirement.get("status")
 
 
 def _states_funding_stage(value_text: str, requirement: dict) -> bool:

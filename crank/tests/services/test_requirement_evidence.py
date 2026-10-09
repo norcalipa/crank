@@ -457,6 +457,19 @@ class RequirementStatedByEvidenceTests(TestCase):
             state("work_location.modes", row.pk, observed="hybrid", scope_ok=None), "sourced"
         )
 
+    def test_stated_readers_refuse_values_they_do_not_list(self):
+        """Each reader stands on its own, whatever the row-level check let through."""
+        from crank.services import company_evidence as service
+
+        match = {"status": "match", "observed": None}
+        self.assertFalse(service._states_public_status("Publicly listed", match))
+        self.assertFalse(service._states_public_status("", {"status": None}))
+        self.assertTrue(service._states_public_status("PUBLIC_COMPANY", match))
+        self.assertFalse(service._states_work_mode("mostly remote", {**match, "observed": None}))
+        self.assertFalse(service._states_office_days("Remote", {**match, "observed": False}))
+        self.assertFalse(service._states_funding_stage("Series Q", {**match, "observed": "series q"}))
+        self.assertFalse(service._states_accelerated_vesting("sometimes", match))
+
     def test_only_a_stated_whole_value_can_be_verified(self):
         """Property: across every evidence-backed requirement, value and
         criteria, matching's real outcome is Verified only for a hand-listed
