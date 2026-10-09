@@ -23,22 +23,33 @@ purpose: a one-line edit to a gate that changes what it measures must be made
 in both places.
 """
 
+import copy
+import io
 import re
+import uuid
 from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
 import yaml
 from django.conf import settings
-from django.contrib import admin
 from django.contrib.auth import get_user_model
-from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
+from django.core.management import call_command
+from django.test import SimpleTestCase, TestCase, override_settings
+from django.urls import reverse
 from django.utils import timezone
 
+from crank.agents.job_search.context import build_model_context
+from crank.agents.jobs.usajobs import USAJobsAdapter
+from crank.agents.sources import errors as source_errors
 from crank.models import AgentRun, JobListing, JobSourceCatalog
+from crank.models.company_correction import CompanyCorrection
+from crank.models.job_match import JobMatch
 from crank.models.job_search import JobSearchConversation, JobSearchMessage
+from crank.models.organization import Organization
 from crank.models.monitoring import ALLOWED_CAPABILITY_KEYS
 from crank.models.preference import UserPreference
+from crank.serializers.job_search import serialize_conversation
 from crank.services import monitoring
 from crank.views import assistant_status
 
@@ -212,6 +223,108 @@ STATE_PHASE = {
 
 #: The evaluation procedure of docs/monitoring.md: ``(check, outcome)`` in
 #: order. The first check that is true decides.
+#: What the owner is told to do when each gate breaches. Restated for the same
+#: reason as ``PINNED_GATES``: "expand anyway" must not be a one-line edit.
+PINNED_ON_BREACH = {
+    "priorities-apply-success": "hold the shell decision and file a follow-up issue",
+    "interactive-reply-success": (
+        "disable the interactive_agent switch, then open a revert PR"
+    ),
+    "interactive-alerts-quiet": "follow the alert's recovery text; hold expansion",
+    "interactive-time-to-first-result": "hold expansion and file a follow-up issue",
+    "job-source-alerts-quiet": (
+        "follow the alert's recovery text; disable the affected source"
+    ),
+    "job-matches-source-unavailable": (
+        "do not describe the phase as live jobs; hold or roll back"
+    ),
+    "assistant-ready-share": (
+        "hold expansion and inspect the availability state mix"
+        " (ready needs replies on and job inventory)"
+    ),
+    "publication-outbox-age": "hold expansion and inspect the publication sweep",
+    "publication-to-match-lag": "hold expansion and inspect the recompute drain",
+    "matching-alerts-quiet": "follow the alert's recovery text; hold expansion",
+    "evidence-stale-share": (
+        "hold expansion and inspect organization crawl freshness"
+    ),
+}
+
+
+def _alert(where: str, since: str, threshold: int, select: str = "count(*)") -> dict:
+    return {
+        "nrql": f"SELECT {select}{FROM_CLAUSE}WHERE {where} SINCE {since} ago",
+        "threshold": threshold,
+        "operator": "above",
+    }
+
+
+def _inventory_alert(condition: str) -> dict:
+    return _alert(
+        f"event_name = 'inventory_health' AND {condition}", "30 minutes", 1
+    )
+
+
+#: Query, threshold and operator of every alert an ``alerts_quiet`` gate names.
+#: Those gates are defined entirely by these alerts, so an alert that can no
+#: longer open makes its gate pass for nothing.
+PINNED_ALERTS = {
+    "repeated-failure": _alert(
+        "status = 'failed' AND event_name NOT IN"
+        " ('publication_sweep', 'preference_decision')",
+        "15 minutes",
+        3,
+    ),
+    "cost-limit": _alert(
+        "event_name = 'interactive_call'", "1 day", 10, "sum(estimated_cost_usd)"
+    ),
+    "recurring-helpfulness-gaps": _alert(
+        "event_name = 'job_search_helpfulness_gap'", "1 day", 3
+    ),
+    "rejection-spike": _alert(
+        "event_name = 'source_stage'", "30 minutes", 20, "sum(items_failed)"
+    ),
+    "zero-enabled-sources": _inventory_alert("enabled_sources = 0"),
+    "zero-active-listings": _inventory_alert(
+        "active_listings = 0 AND enabled_sources > 0"
+    ),
+    "stale-inventory": _inventory_alert("stale_sources > 0"),
+    "repeated-failures": _inventory_alert("repeated_failure_sources > 0"),
+    "listing-collapse": _inventory_alert("collapsed_sources > 0"),
+    "deadline-resource-pressure": _alert(
+        "event_name = 'matching_batch'", "30 minutes", 1, "sum(deadline_reached)"
+    ),
+    "matching-backlog": _alert(
+        "event_name = 'matching_batch'", "30 minutes", 10, "sum(users_failed)"
+    ),
+}
+
+
+def _gate_alert_problems(doc: dict) -> list:
+    """Every way ``doc`` differs from the pinned gate ↔ alert relationship."""
+    problems = []
+    alerts = {alert["name"]: alert for alert in doc["alerts"]}
+    named = set()
+    for gate in doc["release_gates"]:
+        if gate["on_breach"] != PINNED_ON_BREACH.get(gate["name"]):
+            problems.append(f"{gate['name']}: on_breach")
+        if gate["kind"] != "alerts_quiet":
+            continue
+        if gate["alerts"] != PINNED_GATES[gate["name"]]["alerts"]:
+            problems.append(f"{gate['name']}: alerts")
+        named.update(gate["alerts"])
+    if named != set(PINNED_ALERTS):
+        problems.append("the gates name a different set of alerts")
+    for name, pinned in PINNED_ALERTS.items():
+        alert = alerts.get(name, {})
+        for key, value in pinned.items():
+            if alert.get(key) != value:
+                problems.append(f"{name}: {key}")
+        if not str(alert.get("recovery", "")).strip():
+            problems.append(f"{name}: recovery")
+    return problems
+
+
 RULES = (
     ("`min_sample` is `null`", "hold"),
     ("the window is not clean", "hold"),
@@ -634,6 +747,58 @@ class ReleaseGateShapeTests(SimpleTestCase):
                 path, _, anchor = gate["runbook"].partition("#")
                 slugs = [_slug(line) for line in _headings(REPO_ROOT / path)]
                 self.assertEqual(slugs.count(anchor), 1, anchor)
+
+    def test_gate_alert_relationship_is_pinned(self):
+        """Each quiet gate's alerts, their queries, thresholds and operators."""
+        self.assertEqual(_gate_alert_problems(_load_yaml()), [])
+        self.assertEqual(set(PINNED_ON_BREACH), set(GATE_NAMES))
+
+    def test_inverted_alert_or_breach_action_is_detected(self):
+        """The edits a reviewer made, one at a time, each fail the check."""
+
+        def alert(doc, name):
+            return next(a for a in doc["alerts"] if a["name"] == name)
+
+        def gate(doc, name):
+            return next(g for g in doc["release_gates"] if g["name"] == name)
+
+        def cost_limit(doc):
+            alert(doc, "cost-limit")["threshold"] = 1000
+
+        def zero_listings(doc):
+            alert(doc, "zero-active-listings")["nrql"] = alert(
+                doc, "zero-active-listings"
+            )["nrql"].replace("enabled_sources > 0", "enabled_sources > 9999")
+
+        def operator(doc):
+            alert(doc, "matching-backlog")["operator"] = "below"
+
+        def expand_anyway(doc):
+            gate(doc, "interactive-reply-success")["on_breach"] = "expand anyway"
+
+        def no_action(doc):
+            gate(doc, "matching-alerts-quiet")["on_breach"] = "none"
+
+        def drop_alert(doc):
+            gate(doc, "job-source-alerts-quiet")["alerts"].remove(
+                "zero-active-listings"
+            )
+
+        def remove_definition(doc):
+            doc["alerts"].remove(alert(doc, "stale-inventory"))
+
+        def no_recovery(doc):
+            alert(doc, "repeated-failure")["recovery"] = " "
+
+        original = _load_yaml()
+        for mutate in (
+            cost_limit, zero_listings, operator, expand_anyway, no_action,
+            drop_alert, remove_definition, no_recovery,
+        ):
+            doc = copy.deepcopy(original)
+            mutate(doc)
+            with self.subTest(mutation=mutate.__name__):
+                self.assertTrue(_gate_alert_problems(doc))
 
     def test_gates_add_no_alert_and_keep_metrics_baseline_only(self):
         """#540's invariant: gates are evidence queries, not alerts."""
@@ -1567,10 +1732,71 @@ class RunbookDurableEnablementTests(SimpleTestCase):
         r"kubectl[^\n]*\b(edit|patch|create|replace|set|apply)\b[^\n]*configmap",
         re.IGNORECASE,
     )
-    #: A credential setting given a value, as in ``FIRECRAWL_API_KEY=<key>``.
+    #: A credential setting given a value, as in ``FIRECRAWL_API_KEY=<key>``
+    #: or the JSON ``"FIRECRAWL_API_KEY":"<key>"``.
     CREDENTIAL_ASSIGNMENT = re.compile(
-        r"\b[A-Z_]*(API_KEY|AUTH_KEY|SECRET|PASSWORD|TOKEN)[A-Z_]*\s*[=:]\s*\S"
+        r"\b[A-Z_]*(API_KEY|AUTH_KEY|SECRET|PASSWORD|TOKEN)[A-Z_]*[\"']?\s*[=:]\s*\S"
     )
+    #: The only ``kubectl`` commands the runbooks give, whole line. A deny-list
+    #: of spellings cannot be complete (``cm``, ``cj``, ``set env``,
+    #: ``--from-literal``); anything not listed here fails.
+    ALLOWED_KUBECTL = tuple(
+        re.compile(pattern)
+        for pattern in (
+            r"kubectl -n crank get cronjob crank-(job-pipeline|healthcheck)",
+            r"kubectl -n crank create job --from=cronjob/crank-"
+            r"(crawl-organizations|job-pipeline) (crawl|pipeline)-smoke-\$\(date \+%s\)",
+            r"kubectl -n crank logs -l job-name=<(pipeline-)?smoke-job-name>"
+            r" --all-containers",
+            r"GITHUB_SHA=latest envsubst '\$\{GITHUB_SHA\}'"
+            r" < deploy/cronjob-job-pipeline\.yaml \| kubectl apply -f -",
+            r"kubectl -n crank patch cronjob crank-job-pipeline"
+            r" -p '\{\"spec\":\{\"suspend\":(true|false)\}\}'",
+            r"kubectl -n crank patch cronjob crank-crawl-jobs"
+            r" -p '\{\"spec\":\{\"suspend\":true\}\}'",
+            r"kubectl -n crank delete cronjob crank-crawl-jobs",
+        )
+    )
+    #: How prose may mention ``kubectl``: only to say what not to do.
+    KUBECTL_IN_PROSE = {"kubectl", "kubectl patch", "kubectl apply -f"}
+    #: Commands a reviewer inserted that every earlier guard let through.
+    UNSAFE_INSERTIONS = (
+        "kubectl -n crank set env deployment/crank AGENT_RUN_ENABLED=true"
+        " JOB_PIPELINE_ENABLED=true",
+        "kubectl -n crank patch secret crank-capability-secrets --type merge"
+        ' -p \'{"stringData":{"FIRECRAWL_API_KEY":"<your-key>"}}\'',
+        "kubectl -n crank patch cj crank-healthcheck -p '{\"spec\":{\"suspend\":false}}'",
+        "kubectl -n crank create cm crank-agent-config"
+        " --from-literal=CRAWL_CRON_ENABLED=true -o yaml --dry-run=client"
+        " | kubectl replace -f -",
+        "kubectl -n crank patch cronjob crank-healthcheck"
+        " -p '{\"spec\":{\"suspend\":false}}'",
+        "kubectl -n crank edit configmap crank-agent-config",
+        "kubectl -n crank rollout undo deployment/crank",
+    )
+
+    @classmethod
+    def _kubectl_problems(cls, text: str) -> list:
+        """Every mention of ``kubectl`` in ``text`` that is not allowed."""
+        problems, prose, counted, inside = [], [], 0, False
+        for line in text.splitlines():
+            if line.strip().startswith("```"):
+                inside = not inside
+            elif not inside:
+                prose.append(line)
+            elif "kubectl" in line:
+                counted += line.count("kubectl")
+                if not any(p.fullmatch(line.strip()) for p in cls.ALLOWED_KUBECTL):
+                    problems.append(line.strip())
+        flat = " ".join(" ".join(prose).split())
+        for span in re.findall(r"`([^`]*)`", flat):
+            if "kubectl" in span:
+                counted += span.count("kubectl")
+                if span not in cls.KUBECTL_IN_PROSE:
+                    problems.append(span)
+        if counted != text.count("kubectl"):
+            problems.append("kubectl outside a code block or code span")
+        return problems
 
     def _text(self, name: str) -> str:
         return (REPO_ROOT / "docs" / name).read_text(encoding="utf-8")
@@ -1624,6 +1850,31 @@ class RunbookDurableEnablementTests(SimpleTestCase):
                         applies += 1
         self.assertEqual(applies, 1)
 
+    def test_every_kubectl_command_is_one_the_runbooks_mean_to_give(self):
+        for name in self.RUNBOOKS:
+            with self.subTest(runbook=name):
+                self.assertEqual(self._kubectl_problems(self._text(name)), [])
+
+    def test_an_inserted_unsafe_command_fails_the_guard(self):
+        """As a pasted command, as inline code and as bare prose."""
+        for name in self.RUNBOOKS:
+            text = self._text(name)
+            for command in self.UNSAFE_INSERTIONS:
+                for form in (
+                    f"\n```sh\n{command}\n```\n",
+                    f"\nThen run `{command}`.\n",
+                    f"\nThen run {command} once.\n",
+                ):
+                    with self.subTest(runbook=name, form=form.strip()[:50]):
+                        self.assertTrue(self._kubectl_problems(text + form))
+
+    def test_image_tag_advice_matches_the_command(self):
+        """The one apply uses ``latest``, and the prose under it says why."""
+        initial = " ".join(self._text(self.RUNBOOKS[0]).split())
+        self.assertIn("and the schema move on. Use `latest`.", initial)
+        self.assertNotIn("Use the commit SHA", initial)
+        self.assertNotIn("Use a commit SHA", initial)
+
     def test_runbooks_never_write_a_configmap_or_assign_a_credential(self):
         for name in self.RUNBOOKS:
             text = self._text(name)
@@ -1634,6 +1885,10 @@ class RunbookDurableEnablementTests(SimpleTestCase):
         self.assertRegex("kubectl -n crank edit configmap crank-agent-config", self.CONFIGMAP_WRITE)
         self.assertRegex("FIRECRAWL_API_KEY=<your-key>", self.CREDENTIAL_ASSIGNMENT)
         self.assertRegex('LLM_API_KEY: "x"', self.CREDENTIAL_ASSIGNMENT)
+        self.assertRegex(
+            '{"stringData":{"FIRECRAWL_API_KEY":"<your-key>"}}',
+            self.CREDENTIAL_ASSIGNMENT,
+        )
 
     def test_runbooks_say_what_cannot_be_done_until_555(self):
         for name in self.RUNBOOKS:
@@ -1644,7 +1899,8 @@ class RunbookDurableEnablementTests(SimpleTestCase):
                 self.assertIn("`crank-capability-secrets`", normalized)
                 self.assertIn("gives no command for it", normalized)
             # A paragraph that tells the operator to commit an enablement
-            # names #555. The read-only health probe is the one exception.
+            # names #555 — the health probe too: unsuspended before there is
+            # inventory, it fails on every run.
             instructions = 0
             for paragraph in re.split(r"\n\s*\n", self._text(name)):
                 flat = " ".join(paragraph.split())
@@ -1654,12 +1910,30 @@ class RunbookDurableEnablementTests(SimpleTestCase):
                     continue
                 instructions += 1
                 with self.subTest(runbook=name, paragraph=flat[:60]):
-                    if "k8s/crank-healthcheck-cron.yaml" in flat:
-                        self.assertIn("does not wait for #555", flat)
-                    else:
-                        self.assertIn("#555", flat)
+                    self.assertIn("#555", flat)
             self.assertGreaterEqual(instructions, 2, name)
         initial = " ".join(self._text(self.RUNBOOKS[0]).split())
+        self.assertNotIn("does not wait for #555", initial)
+        self.assertNotIn("5 and 6 and the health probe in step 8 can be run", initial)
+        for phrase in (
+            "Only steps 1 and 2 and the one-off `crawl_healthcheck` command in"
+            " step 8 can be run today.",
+            "**Steps 5 and 6 wait for #555 as well**",
+            "**This step waits for #555.**",
+            "prints `job_pipeline: disabled; no work performed` and exits 0",
+            "Until step 5 has run (after #555), every source shows zero listings"
+            " here.",
+            "**Leave the recurring probe suspended until #555 is fixed and step 6"
+            " shows listings.**",
+            "a `crank-healthcheck` Job that fails every 15 minutes",
+            "a first `job-source-alerts-quiet` window that breaches by"
+            " construction",
+            "Once #555 is fixed, the inventory exists and the owner has created"
+            " the alert policy, commit `spec.suspend: false` in"
+            " `k8s/crank-healthcheck-cron.yaml`.",
+            "nothing in the repository creates the alert policy",
+        ):
+            self.assertIn(phrase, initial)
         for phrase in (
             "## Status: cannot be completed durably today",
             "**The repository does not create `crank-job-pipeline`.**",
@@ -1867,7 +2141,10 @@ class UsabilityValidationDocTests(SimpleTestCase):
         for phrase in (
             "chat messages and saved priorities are stored under the throwaway"
             " account",
-            "each message is sent to the external language-model provider",
+            "each message and the saved priorities are sent to the external"
+            " language-model provider",
+            "The stored copies are kept until the account is deleted, which"
+            " happens after the round",
             "the copy sent to the provider cannot be deleted from here",
         ):
             self.assertIn(phrase, consent)
@@ -1875,11 +2152,21 @@ class UsabilityValidationDocTests(SimpleTestCase):
         for phrase in (
             "### What the product stores during a session",
             "stored verbatim (`JobSearchMessage.content`)",
-            "The newest 50 messages of each conversation are kept"
-            " (`JOB_SEARCH_MESSAGES_RETENTION`), with no time limit.",
-            "Saved priorities are stored (`UserPreference`)",
+            "**Every message of every conversation is kept until the"
+            " conversation or the account is deleted**",
+            "Nothing in the repository removes messages by age or by number.",
+            "The product shows only the newest 50 messages of a conversation"
+            " (`JOB_SEARCH_MESSAGES_RETENTION`).",
+            "it does not limit what is stored.",
+            "Saved priorities are stored (`UserPreference`) until changed or"
+            " reset, and are deleted with the account.",
+            "the conversation text and the saved priorities are sent to the"
+            " external language-model provider on every turn.",
         ):
             self.assertIn(phrase, rules)
+        # The claim this replaced: the setting was read as a storage limit.
+        self.assertNotIn("messages of each conversation are kept", rules)
+        self.assertNotIn("with no time limit", rules)
         self.assertEqual(settings.JOB_SEARCH_MESSAGES_RETENTION, 50)
         field = JobSearchMessage._meta.get_field("content")
         self.assertEqual(field.get_internal_type(), "TextField")
@@ -1890,6 +2177,8 @@ class UsabilityValidationDocTests(SimpleTestCase):
         for phrase in (
             "After the last session, and before the results record is merged:",
             "A superuser deletes each throwaway account in Django admin",
+            "the account's conversations, messages, saved priorities, matches"
+            " and submitted corrections are deleted with it",
             "**The repository owner confirms the deletion**",
             "`agent_conversation_delete`",
             "There is no command or page that deletes a set of accounts in one"
@@ -1902,7 +2191,12 @@ class UsabilityValidationDocTests(SimpleTestCase):
             _section(USABILITY_DOC, "What only the owner can do").split()
         )
         self.assertIn("Delete the throwaway accounts and confirm the deletion", checklist)
-        self.assertIn("Check the model provider's retention terms", checklist)
+        self.assertIn(
+            "Check the model provider's retention terms for conversation text"
+            " and saved priorities",
+            checklist,
+        )
+        self.assertIn("Keep one seeded account", checklist)
         record = _section(USABILITY_DOC, "Results record")
         self.assertIn("| Session accounts deleted (date, confirmed by) | _…_ |", record)
         self.assertIn("| Raw notes and recordings destroyed (date) | _…_ |", record)
@@ -1984,16 +2278,16 @@ class UsabilityValidationDocTests(SimpleTestCase):
     def test_preconditions_name_the_blocking_issues(self):
         section = _section(USABILITY_DOC, "Preconditions")
         rows = _table_rows(section)
-        self.assertEqual(
-            rows[0], ["Blocking issue", "What it changes", "Affects", "State on 2026-10-08"]
-        )
+        self.assertEqual(rows[0][:3], ["Blocking issue", "What it changes", "Affects"])
+        # A dated snapshot: the owner re-checks it, and a row may become closed.
+        self.assertRegex(rows[0][3], r"^State on \d{4}-\d{2}-\d{2}$")
         self.assertEqual(
             [row[0] for row in rows[1:]],
             ["#551", "#489", "#486", "#488", "#536", "#537", "#548", "#555"],
         )
         for row in rows[1:]:
             self.assertTrue(row[1] and row[2], row[0])
-            self.assertTrue(row[3].startswith("open"), row[0])
+            self.assertRegex(row[3], r"^(open|closed)\b", row[0])
         normalized = " ".join(section.split())
         self.assertIn(
             "every issue in the table below is closed and its change is in the"
@@ -2229,43 +2523,409 @@ class FailureRetryMatrixTests(SimpleTestCase):
 
 
 class SessionAccountDeletionTests(TestCase):
-    """The existing delete path the protocol names removes what a session stored."""
+    """The existing delete path the protocol names removes what a session stored.
 
-    def test_user_model_can_be_deleted_in_django_admin(self):
-        """Users are registered in the admin and a superuser may delete them."""
+    Driven through the real Django admin user-delete view, because that view
+    also asks the admin of every cascaded model for delete permission: a
+    permission flag on the user admin alone says nothing about whether the
+    deletion goes through.
+    """
+
+    def _session_account(self, username: str):
+        """An account owning one row of each kind a session can leave behind."""
+        user = get_user_model().objects.create_user(username, password="not-real-492")
+        conversation = JobSearchConversation.objects.create(owner=user)
+        for index in range(2):
+            JobSearchMessage.objects.create(
+                conversation=conversation,
+                role=JobSearchMessage.Role.USER,
+                content=f"synthetic turn {index}",
+            )
+        UserPreference.objects.get_or_create(user=user)
+        organization = Organization.objects.create(name=f"Org {username}", status=1)
+        source = JobSourceCatalog.objects.create(
+            name=f"Source {username}",
+            adapter_key="test-adapter",
+            base_url="https://data.usajobs.gov/api/search",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+        )
+        now = timezone.now()
+        listing = JobListing.objects.create(
+            source=source,
+            canonical_url=f"https://data.usajobs.gov/listings/{username}",
+            employer_name="Example Corp",
+            title="Backend Engineer",
+            first_seen_at=now,
+            last_seen_at=now,
+            status=JobListing.Status.ACTIVE,
+        )
+        JobMatch.objects.create(
+            user=user,
+            listing=listing,
+            preference_version=1,
+            ranker_version="test.v1",
+            score=0.5,
+            first_matched_at=now,
+            last_matched_at=now,
+        )
+        CompanyCorrection.objects.create(
+            requester=user,
+            organization=organization,
+            field_key="rto_policy",
+            proposed_value="Hybrid",
+            evidence_url="https://example.com/careers",
+            scope_level="company",
+            scope_value="",
+            idempotency_key=uuid.uuid4(),
+        )
+        return user
+
+    def _stored(self, user) -> dict:
+        return {
+            "conversations": JobSearchConversation.objects.filter(owner_id=user.pk).count(),
+            "messages": JobSearchMessage.objects.filter(
+                conversation__owner_id=user.pk
+            ).count(),
+            "priorities": UserPreference.objects.filter(user_id=user.pk).count(),
+            "matches": JobMatch.objects.filter(user_id=user.pk).count(),
+            "corrections": CompanyCorrection.objects.filter(
+                requester_id=user.pk
+            ).count(),
+        }
+
+    def test_admin_user_delete_removes_everything_the_session_stored(self):
         users = get_user_model()
-        self.assertIn(users, admin.site._registry)
-        request = RequestFactory().get("/admin/")
-        request.user = users.objects.create_superuser(
+        session = self._session_account("p1-throwaway")
+        other = self._session_account("someone-else")
+        before = {
+            "conversations": 1, "messages": 2, "priorities": 1, "matches": 1,
+            "corrections": 1,
+        }
+        self.assertEqual(self._stored(session), before)
+        owner = users.objects.create_superuser(
             "owner-492", "owner@example.test", "not-real-492"
         )
-        model_admin = admin.site._registry[users]
-        self.assertTrue(model_admin.has_delete_permission(request))
-        request.user = users.objects.create_user("staff-492", is_staff=True)
-        self.assertFalse(model_admin.has_delete_permission(request))
+        self.client.force_login(owner)
+        url = reverse("admin:auth_user_delete", args=[session.pk])
 
-    def test_deleting_the_account_deletes_conversations_messages_and_priorities(self):
+        confirmation = self.client.get(url)
+        self.assertEqual(confirmation.status_code, 200)
+        # The page lists what would block the deletion; nothing may.
+        self.assertFalse(confirmation.context["perms_lacking"])
+        self.assertFalse(confirmation.context["protected"])
+
+        response = self.client.post(url, {"post": "yes"})
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(users.objects.filter(pk=session.pk).exists())
+        self.assertEqual(self._stored(session), dict.fromkeys(before, 0))
+        # Nobody else's data went with it.
+        self.assertTrue(users.objects.filter(pk=other.pk).exists())
+        self.assertEqual(self._stored(other), before)
+
+    def test_staff_without_permission_cannot_delete_an_account(self):
         users = get_user_model()
-        session = users.objects.create_user("p1-throwaway", password="not-real-492")
-        other = users.objects.create_user("someone-else", password="not-real-492")
-        for owner in (session, other):
-            conversation = JobSearchConversation.objects.create(owner=owner)
-            for index in range(2):
-                JobSearchMessage.objects.create(
-                    conversation=conversation,
-                    role=JobSearchMessage.Role.USER,
-                    content=f"synthetic turn {index}",
+        session = self._session_account("p2-throwaway")
+        self.client.force_login(
+            users.objects.create_user("staff-492", is_staff=True)
+        )
+        url = reverse("admin:auth_user_delete", args=[session.pk])
+        self.assertEqual(self.client.post(url, {"post": "yes"}).status_code, 403)
+        self.assertTrue(users.objects.filter(pk=session.pk).exists())
+        self.assertEqual(self._stored(session)["messages"], 2)
+
+
+class StoredAndSentDataTests(TestCase):
+    """What the consent text says is stored, shown and sent is what happens."""
+
+    @override_settings(JOB_SEARCH_MESSAGES_RETENTION=50)
+    def test_every_message_is_stored_and_only_the_newest_are_shown(self):
+        user = get_user_model().objects.create_user("p3-throwaway")
+        conversation = JobSearchConversation.objects.create(owner=user)
+        for index in range(60):
+            JobSearchMessage.objects.create(
+                conversation=conversation,
+                role=JobSearchMessage.Role.USER,
+                content=f"typed turn {index}",
+            )
+        shown = serialize_conversation(conversation)["messages"]
+        self.assertEqual(len(shown), 50)
+        self.assertEqual(conversation.messages.count(), 60)
+        self.assertTrue(conversation.messages.filter(content="typed turn 0").exists())
+
+    def test_saved_priorities_are_part_of_what_the_provider_receives(self):
+        context = build_model_context(
+            prompt_id="p",
+            system="system",
+            conversation=[{"role": "user", "content": "typed turn"}],
+            user_prompt="typed turn",
+            preference_markdown="synthetic priority: remote only",
+            organization_catalog=[],
+            score_summaries=[],
+            max_preference_characters=1000,
+            max_conversation_characters=1000,
+        )
+        sent = "\n".join(message["content"] for message in context.to_messages())
+        self.assertIn("typed turn", sent)
+        self.assertIn("synthetic priority: remote only", sent)
+
+
+class InitialCrawlNotRunnableTodayTests(TestCase):
+    """Why the initial-crawl runbook's steps 5, 6 and 8 wait for #555."""
+
+    def test_checked_in_flags_are_off(self):
+        config = yaml.safe_load(
+            (REPO_ROOT / "k8s" / "crank-agent-config.yml").read_text(encoding="utf-8")
+        )["data"]
+        for flag in ("AGENT_RUN_ENABLED", "JOB_PIPELINE_ENABLED", "CRAWL_CRON_ENABLED"):
+            self.assertEqual(config[flag], "false", flag)
+        self.assertNotIn("FIRECRAWL_ENABLED", config)
+
+    @override_settings(AGENT_RUN_ENABLED=False, JOB_PIPELINE_ENABLED=False)
+    def test_pipeline_does_no_work_with_the_checked_in_flags(self):
+        out = io.StringIO()
+        call_command("run_job_pipeline", stdout=out)
+        self.assertIn("job_pipeline: disabled; no work performed", out.getvalue())
+        self.assertFalse(AgentRun.objects.exists())
+
+    @override_settings(USAJOBS_AUTH_KEY="", USAJOBS_USER_AGENT_EMAIL="")
+    def test_usajobs_source_refuses_to_start_without_its_credential(self):
+        source = JobSourceCatalog(
+            name="USAJOBS Search",
+            adapter_key="usajobs",
+            base_url="https://data.usajobs.gov/api/search",
+        )
+        with mock.patch.dict("os.environ", {}, clear=False) as environ:
+            environ.pop("USAJOBS_AUTH_KEY", None)
+            environ.pop("USAJOBS_USER_AGENT_EMAIL", None)
+            with self.assertRaises(source_errors.UnauthorizedSourceError):
+                USAJobsAdapter(source)
+
+    def test_health_probe_fails_while_there_is_no_inventory(self):
+        """Unsuspended before the bootstrap, the CronJob fails on every run."""
+        with self.assertRaises(SystemExit) as raised:
+            call_command("crawl_healthcheck", stdout=io.StringIO(), stderr=io.StringIO())
+        self.assertEqual(raised.exception.code, 1)
+
+    def test_healthcheck_manifest_says_when_to_unsuspend(self):
+        manifest = " ".join(
+            (REPO_ROOT / "k8s" / "crank-healthcheck-cron.yaml")
+            .read_text(encoding="utf-8")
+            .replace("#", " ")
+            .split()
+        )
+        self.assertIn("Set suspend: false only after the bootstrap is complete", manifest)
+        self.assertIn("suspend: true", manifest)
+        self.assertIn('schedule: "*/15 * * * *"', manifest)
+
+
+#: Whole sentences each document must contain, whitespace-normalised. Phrases
+#: were not enough: a sentence can keep its key phrase and say the opposite.
+PINNED_TEXT = {
+    "docs/usability-validation.md": (
+        "The stored copies are kept until the account is deleted, which happens"
+        ' after the round (see "Deleting session data"); the copy sent to the'
+        " provider cannot be deleted from here.",
+        "Aggregate `data_counts` and gate values are accepted as public; nothing"
+        " that identifies a person or quotes typed text may appear.",
+        "**Assistance** is any moderator action that gives the participant"
+        " information they did not find themselves: pointing at or naming a"
+        " control, saying where to look, explaining what a label or state means,"
+        " confirming or denying that an answer is right, rephrasing the task to"
+        " hint at the path, or operating the product for them. A task with any"
+        " assistance is recorded as **assisted**, however small the hint.",
+        "Per participant, per task: - **Outcome:** unassisted, assisted or"
+        " failed. - **Time to useful result:** seconds from the end of the task"
+        " read-out to the success condition (for T3, to the posting being open)."
+        " - **Confusion notes:** paraphrased, each given a severity. Per"
+        " participant, per probe: correct or not correct against the rubric.",
+        "| S1 | A participant could not complete a core task, or completed it"
+        " believing something false. | Follow-up issue; fixed before the release"
+        " decision. |",
+        "| S2 | A participant completed the task only with assistance, or drew a"
+        " wrong conclusion in a probe. | Follow-up issue; fixed or explicitly"
+        " accepted before the release decision. |",
+        "- **Demo or fixture-only sessions do not count.** Canned replies"
+        " (`JOB_SEARCH_PROVIDER=demo`) and synthetic listings (`seed_e2e`) are"
+        " not source-backed data.",
+        "- **A1 — core task:** at least 4 of 5 participants complete T1–T3"
+        " unassisted. Every failed or assisted core task produces a specific"
+        " follow-up issue.",
+        "14. Lock a sample floor for every gate and confirm the alert policies"
+        ' exist in the alerting tool ("Sample floors and alert policies to'
+        ' lock").',
+        "redeploying the previous image, followed by a revert commit on `main`,"
+        " is accepted as the shell's rollback;",
+        "The image rollback alone is undone by the next merge to `main`, so no"
+        " other pull request is merged until the revert has deployed",
+    ),
+    "docs/rollout-gates.md": (
+        "| `shell` | Playwright Django workflow green on the release SHA;"
+        " moderated round passes A1 and A2 (`docs/usability-validation.md`);"
+        " manual accessibility evidence recorded (`docs/e2e-validation.md`,"
+        ' "Manual evidence pending"); `priorities-apply-success` | 14 days |'
+        " expand / hold / roll back |",
+        "| `job_source` | `job-source-alerts-quiet`,"
+        " `job-matches-source-unavailable`, `assistant-ready-share`;"
+        " `release_verdict` of the readiness record has no blockers | 7 days |"
+        " expand / hold / roll back |",
+        "3. Immediate rollback is the database-backed `CapabilitySwitch` for the"
+        " phase. It survives deploys and is audited by `OperationalChangeAudit`."
+        " It is followed by a revert pull request so the repository again matches"
+        " the intended state. Revert phase flags in the reverse of the order they"
+        " were enabled, and the master flag last.",
+        "Disable the switch or the single source; revert the pull request that"
+        " set `JOB_PIPELINE_ENABLED` (not the master flag). Listings and matches"
+        " are kept. |",
+        "| `interactive-reply-success` | `0.90`, breach when below, over 7 days |",
+        "Redeploy the previous image tag (`docs/capability-config-contract.md`,"
+        ' "Rollback Procedure", code rollback), then merge a revert commit to'
+        " `main` — the image rollback alone lasts only until the next merge",
+        "**Redeploying the previous image is undone by the next merge to"
+        " `main`.**",
+        "2. Merge a revert commit to `main` that removes the change, and wait for"
+        " that merge to deploy.",
+        "**Merge no other pull request between step 1 and the deploy of that"
+        " revert**: any other merge puts the rolled-back build back.",
+    ),
+    "docs/monitoring.md": (
+        "**Locking a gate.** After at least 14 days of data with the capability"
+        " enabled, a small follow-up pull request sets `min_sample`",
+        "An alert that was already open when the window started counts.",
+    ),
+    "docs/deployment-baseline-2026-09.md": (
+        "(an absent row is `true`, as at runtime)",
+        'If the read fails, every value is `"unknown"` — never `true` — and the'
+        " verdict adds `*_switch_unknown`.",
+    ),
+}
+
+#: Edits a reviewer made that left every test green: ``(file, original,
+#: replacement)``. An empty replacement is a deletion.
+REVIEWED_INVERSIONS = (
+    ("docs/usability-validation.md",
+     "The stored copies are kept until the account is deleted, which happens"
+     " after the round",
+     "The stored copies are kept indefinitely after the round"),
+    ("docs/usability-validation.md",
+     "nothing that identifies a person or quotes typed text may appear.",
+     "anything may appear."),
+    ("docs/usability-validation.md",
+     "that gives the participant information they did not find themselves",
+     "the moderator judges decisive. Small hints are not assistance"),
+    ("docs/usability-validation.md", "however small the hint.", ""),
+    ("docs/usability-validation.md",
+     "- **Outcome:** unassisted, assisted or failed.", "To be decided."),
+    ("docs/usability-validation.md",
+     "believing something false. | Follow-up issue; fixed before the release"
+     " decision. |",
+     "believing something false. | Recorded only. |"),
+    ("docs/usability-validation.md",
+     "- **Demo or fixture-only sessions do not count.**", ""),
+    ("docs/usability-validation.md",
+     "Every failed or assisted core task produces a specific follow-up issue.",
+     ""),
+    ("docs/usability-validation.md",
+     "14. Lock a sample floor for every gate and confirm the alert policies"
+     " exist",
+     ""),
+    ("docs/usability-validation.md", ", followed by a revert commit on `main`,", ""),
+    ("docs/rollout-gates.md",
+     " moderated round passes A1 and A2 (`docs/usability-validation.md`);", ""),
+    ("docs/rollout-gates.md",
+     "; `release_verdict` of the readiness record has no blockers", ""),
+    ("docs/rollout-gates.md", "and the master flag last.", "and the master flag first."),
+    ("docs/rollout-gates.md",
+     "revert the pull request that set `JOB_PIPELINE_ENABLED` (not the master"
+     " flag)",
+     "revert the pull request that set the master flag"),
+    ("docs/rollout-gates.md",
+     "`0.90`, breach when below, over 7 days", "`0.90`, breach when below, over 30 days"),
+    ("docs/rollout-gates.md",
+     "is undone by the next merge to `main`.**", "survives every later merge.**"),
+    ("docs/rollout-gates.md", "**Merge no other pull request between", "**Merge any pull request between"),
+    ("docs/monitoring.md", "After at least 14 days of data", "After at least 2 days of data"),
+    ("docs/deployment-baseline-2026-09.md",
+     "an absent row is `true`", "an absent row is `false`"),
+    ("docs/deployment-baseline-2026-09.md",
+     'every value is `"unknown"` — never `true`', "every value is `true`"),
+)
+
+
+def _pinned_text_problems(name: str, text: str) -> list:
+    normalized = " ".join(text.split())
+    return [pinned for pinned in PINNED_TEXT[name] if pinned not in normalized]
+
+
+class PinnedDocTextTests(SimpleTestCase):
+    """Statements the release decision rests on cannot be reworded unnoticed."""
+
+    def _normalized(self, name: str) -> str:
+        return " ".join((REPO_ROOT / name).read_text(encoding="utf-8").split())
+
+    def test_every_pinned_sentence_is_present(self):
+        for name in PINNED_TEXT:
+            with self.subTest(doc=name):
+                self.assertEqual(
+                    _pinned_text_problems(name, self._normalized(name)), []
                 )
-            UserPreference.objects.get_or_create(user=owner)
 
-        session.delete()
+    def test_each_reviewed_inversion_is_detected(self):
+        for name, original, replacement in REVIEWED_INVERSIONS:
+            text = self._normalized(name)
+            with self.subTest(doc=name, original=original[:50]):
+                self.assertIn(original, text)
+                mutated = text.replace(original, replacement)
+                self.assertTrue(_pinned_text_problems(name, mutated))
 
-        self.assertFalse(JobSearchConversation.objects.filter(owner_id=session.pk).exists())
-        self.assertEqual(JobSearchMessage.objects.count(), 2)
-        self.assertEqual(
-            set(JobSearchMessage.objects.values_list("conversation__owner", flat=True)),
-            {other.pk},
+    def test_inverted_wording_is_absent(self):
+        for name, phrases in {
+            "docs/usability-validation.md": (
+                "kept indefinitely after the round",
+                "anything may appear",
+                "Small hints are not assistance",
+                "To be decided",
+            ),
+            "docs/rollout-gates.md": (
+                "the master flag first",
+                "revert the pull request that set the master flag",
+                "over 30 days",
+            ),
+            "docs/monitoring.md": ("After at least 2 days of data",),
+            "docs/deployment-baseline-2026-09.md": (
+                "an absent row is `false`",
+                "every value is `true`",
+            ),
+        }.items():
+            text = self._normalized(name)
+            for phrase in phrases:
+                with self.subTest(doc=name, phrase=phrase):
+                    self.assertNotIn(phrase, text)
+
+    def test_owner_checklist_keeps_every_numbered_step(self):
+        checklist = _section(USABILITY_DOC, "What only the owner can do")
+        numbers = re.findall(r"^(\d+)\. ", checklist, flags=re.MULTILINE)
+        self.assertEqual(numbers, [str(n) for n in range(1, 19)])
+
+
+class ShellRollbackDurabilityTests(SimpleTestCase):
+    """Why an image rollback alone does not last (see the rollout section)."""
+
+    def test_no_deploy_workflow_can_be_started_by_hand(self):
+        workflows = REPO_ROOT / ".github" / "workflows"
+        for name in ("deploy-home.yml", "update-home-deployment.yml"):
+            with self.subTest(workflow=name):
+                source = (workflows / name).read_text(encoding="utf-8")
+                self.assertNotIn("workflow_dispatch", source)
+
+    def test_every_deploy_sets_the_web_image_to_the_newest_build(self):
+        workflows = REPO_ROOT / ".github" / "workflows"
+        manifest_only = (workflows / "update-home-deployment.yml").read_text(
+            encoding="utf-8"
         )
-        self.assertEqual(
-            list(UserPreference.objects.values_list("user", flat=True)), [other.pk]
-        )
+        self.assertIn("export GITHUB_SHA=latest", manifest_only)
+        self.assertIn("- 'k8s/crank-agent-config.yml'", manifest_only)
+        build = (workflows / "deploy-home.yml").read_text(encoding="utf-8")
+        self.assertIn("/crank:latest", build)
+        self.assertIn("github.event.workflow_run.head_sha", build)
+        web = (REPO_ROOT / "k8s" / "crank.yml").read_text(encoding="utf-8")
+        self.assertIn("image: ghcr.io/norcalipa/crank/crank:${GITHUB_SHA}", web)
