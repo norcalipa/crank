@@ -17,6 +17,7 @@ from django.utils import timezone
 from crank.agents.job_search import page_context, tools
 from crank.agents.job_search.context import (
     _evidence_flag,
+    _reasons_text,
     _evidence_summary_text,
     _requirements_text,
 )
@@ -93,14 +94,14 @@ class TestStaleGoldenConversation:
         catalog = system.split("ORGANIZATION CATALOG", 1)[1]
         assert (
             "id=1 name='Beta Labs' funding_round=X rto_policy=O "
-            "evidence=verified:0,stale:2,unknown:5,newest_verified=2024-08-08,pending_review:1"
+            "facts=verified:0,stale:2,unknown:5,newest_verified=2024-08-08,pending_review:1"
         ) in catalog
         assert (
             "id=2 name='Fresh Co' funding_round=A rto_policy=R "
-            "evidence=verified:7,stale:0,unknown:0,newest_verified=2026-09-01"
+            "facts=verified:7,stale:0,unknown:0,newest_verified=2026-09-01"
         ) in catalog
         assert "pending_review" not in catalog.split("id=2 ", 1)[1].split("\n", 1)[0]
-        assert "id=3 name='Legacy Datasource Co' funding_round=S rto_policy=H evidence=not_provided" in catalog
+        assert "id=3 name='Legacy Datasource Co' funding_round=S rto_policy=H facts=not_provided" in catalog
         # ...the rule for wording it...
         assert result.prompt_id == "job_search_system_v6"
         assert "EVIDENCE HONESTY" in system
@@ -155,14 +156,29 @@ class TestContextRendering:
         "state, flag",
         [("stale", ",stale,last_verified=never"), ("sourced", ",unconfirmed"),
          ("superseded", ",changed"),
-         ("missing", ",changed"), ("verified", ""), ("profile", ""), (None, "")],
+         ("missing", ",changed"), ("verified", "")],
     )
     def test_evidence_flag_per_state(self, state, flag):
         assert _evidence_flag({"state": state}) == flag
 
-    def test_evidence_flag_ignores_non_dict_status(self):
-        assert _evidence_flag(None) == ""
-        assert _evidence_flag("stale") == ""
+    @pytest.mark.parametrize(
+        "status",
+        [
+            None, "stale", "verified", [], {}, {"state": None}, {"state": ""},
+            # A state this module does not list, a near miss, and a non-string.
+            {"state": "profile"}, {"state": "fresh"}, {"state": "Verified"},
+            {"state": "verified "}, {"state": True}, {"state": ["verified"]},
+            {"last_verified_at": "2025-08-14T09:30:00+00:00"},
+        ],
+    )
+    def test_evidence_flag_fails_closed(self, status):
+        """Only the exact ``verified`` state is written without a flag."""
+        assert _evidence_flag(status) == ",unconfirmed"
+        rendered = _requirements_text([{
+            "path": "culture", "status": "match", "source_kind": "evidence",
+            "source_id": 7, "evidence_status": status,
+        }])
+        assert rendered == "[culture=match[evidence=7,unconfirmed]]"
 
     def test_requirements_text_flags_only_evidence_sources(self):
         rendered = _requirements_text([
@@ -172,13 +188,46 @@ class TestContextRendering:
              "source_id": 6, "evidence_status": {"state": "missing"}},
             {"path": "industry", "status": "match", "source_kind": "field",
              "source_id": "organization.industry", "evidence_status": {"state": "profile"}},
-            {"path": "culture", "status": "match", "source_kind": "evidence", "source_id": 7},
+            {"path": "culture", "status": "match", "source_kind": "evidence", "source_id": 7,
+             "evidence_status": {"state": "verified"}},
+            # No status at all: not verified.
+            {"path": "geography.countries", "status": "match", "source_kind": "evidence",
+             "source_id": 8},
         ])
         assert rendered == (
             "[work_location.modes=match[evidence=5,unconfirmed], "
             "funding_stage=match[evidence=6,changed], "
             "industry=match[source=organization.industry,profile], "
-            "culture=match[evidence=7]]"
+            "culture=match[evidence=7], "
+            "geography.countries=match[evidence=8,unconfirmed]]"
+        )
+
+    def test_reasons_text_lists_unconfirmed_reasons_apart(self):
+        def requirement(path, observed, source_id, state):
+            return {"path": path, "status": "match", "observed": observed,
+                    "source_kind": "evidence", "source_id": source_id, "scope_ok": True,
+                    "evidence_status": state and {"state": state}}
+
+        modes = requirement("work_location.modes", "remote", 5, "sourced")
+        stage = requirement("funding_stage", "b", 6, "verified")
+        assert _reasons_text({"reasons": ["Remote", "Series B"], "requirements": [modes, stage]}) == (
+            "reasons=['Series B'] unconfirmed_reasons=['Remote']"
+        )
+        # Nothing unconfirmed: the key is not written at all.
+        confirmed = requirement("work_location.modes", "remote", 5, "verified")
+        assert _reasons_text({"reasons": ["Remote", "Series B"],
+                              "requirements": [confirmed, stage]}) == "reasons=['Remote', 'Series B']"
+        # A requirement with no status, or an unknown one, is not confirmed.
+        for state in (None, "fresh"):
+            unknown = requirement("work_location.modes", "remote", 5, state)
+            assert _reasons_text({"reasons": ["Remote"], "requirements": [unknown]}) == (
+                "reasons=[] unconfirmed_reasons=['Remote']"
+            )
+        # Malformed rows render without raising.
+        assert _reasons_text({}) == "reasons=[]"
+        assert _reasons_text({"reasons": None, "requirements": None}) == "reasons=[]"
+        assert _reasons_text({"reasons": ["Remote", 7, None], "requirements": "x"}) == (
+            "reasons=['Remote']"
         )
 
     def test_summary_text(self):
@@ -359,9 +408,9 @@ class TestMixedFreshnessGoldenConversation:
         })
         return org, user
 
-    def _system(self, user):
+    def _system(self, user, message="Mixed Co is remote."):
         gateway = ScriptedGateway({
-            "message": "Mixed Co is remote.", "cited_organization_ids": [],
+            "message": message, "cited_organization_ids": [],
             "cited_job_listing_ids": [], "preference_patch": None,
         })
         JobSearchOrchestrator(
@@ -397,7 +446,7 @@ class TestMixedFreshnessGoldenConversation:
 
         # The catalog's one date is the newest check (the funding round)...
         catalog = system.split("ORGANIZATION CATALOG (server-controlled", 1)[1].split("\n\n", 1)[0]
-        assert "evidence=verified:1,stale:1,unknown:5,newest_verified=%s" % self._day(funding) in catalog
+        assert "facts=verified:1,stale:1,unknown:5,newest_verified=%s" % self._day(funding) in catalog
         assert "last_verified=" not in catalog
         # ...and the stale requirement is dated with its own, older day.
         matches = system.split("PREFERENCE-GROUNDED ORGANIZATION MATCHES (ranked", 1)[1]
@@ -425,7 +474,7 @@ class TestMixedFreshnessGoldenConversation:
         # No evidence row backs the funding stage: it is the profile field.
         assert "funding_stage=match[source=organization.funding_round,profile]" in line
         assert "work_location.modes=match[evidence=%d]" % rto.pk in line
-        assert "reasons=['Remote', 'Series B']" in line
+        assert line.endswith("reasons=['Remote', 'Series B']")
         assert "A profile outcome has no evidence behind it" in system
 
     def test_an_inferred_requirement_is_unconfirmed_in_the_model_context_too(self):
@@ -449,7 +498,56 @@ class TestMixedFreshnessGoldenConversation:
         assert "work_location.max_in_office_days=match[evidence=%d,unconfirmed]" % rto.pk in line
         # The organization card's summary counts the fact, not the requirement.
         catalog = system.split("ORGANIZATION CATALOG (server-controlled", 1)[1].split("\n\n", 1)[0]
-        assert "evidence=verified:1,stale:0,unknown:6," in catalog
+        assert "facts=verified:1,stale:0,unknown:6," in catalog
+
+    def test_a_reply_that_restates_the_fact_counts_completes_the_turn(self):
+        """Round-2 MINOR 1: count wording is not an evidence-id citation."""
+        from crank.agents.job_search.errors import InvalidRequirementReferenceError
+
+        FieldKey = CompanyFieldEvidence.FieldKey
+        _, user = self._org([
+            (FieldKey.RTO_POLICY, "Remote", 420),
+            (FieldKey.FUNDING_ROUND, "Series B", 5),
+        ])
+        exposed = {row.pk for row in self.rows.values()}
+        # The counts in these replies are not ids the match tool exposed.
+        unexposed = max(exposed) + 50
+        for message in (
+            "Mixed Co is remote. Evidence: 1 verified, 1 stale, 5 unknown.",
+            "Mixed Co — evidence 1 of 7 facts verified, 1 stale.",
+            "Mixed Co: facts=verified:1,stale:1,unknown:5.",
+            "Mixed Co: evidence %d verified, %d stale." % (unexposed, unexposed),
+        ):
+            system = self._system(user, message)
+            catalog = system.split("ORGANIZATION CATALOG (server-controlled", 1)[1].split("\n\n", 1)[0]
+            assert " facts=verified:1,stale:1,unknown:5," in catalog
+            # The catalog never puts a number after the word a citation uses.
+            assert "evidence=" not in catalog
+        # A real citation of an id the tool did not expose still fails the turn.
+        for message in ("Backed by [evidence=%d]." % unexposed, "Backed by evidence %d." % unexposed):
+            with pytest.raises(InvalidRequirementReferenceError):
+                self._system(user, message)
+        cited = "Funding per [evidence=%d]." % self.rows[FieldKey.FUNDING_ROUND].pk
+        assert "ORGANIZATION CATALOG" in self._system(user, cited)
+
+    def test_a_reason_matching_inferred_from_prose_is_not_given_as_fact(self):
+        """Round-2 MINOR 2: "Not remote" reads "Remote"; the model is told so."""
+        FieldKey = CompanyFieldEvidence.FieldKey
+        org, user = self._org([
+            (FieldKey.RTO_POLICY, "Not remote", 2),
+            (FieldKey.FUNDING_ROUND, "Series B", 5),
+        ])
+        rto = self.rows[FieldKey.RTO_POLICY]
+
+        system = self._system(user)
+
+        line = next(
+            l for l in system.split("PREFERENCE-GROUNDED ORGANIZATION MATCHES (ranked", 1)[1].splitlines()
+            if "organization_id=%d " % org.id in l
+        )
+        assert "work_location.modes=match[evidence=%d,unconfirmed]" % rto.pk in line
+        assert line.endswith("reasons=['Series B'] unconfirmed_reasons=['Remote']")
+        assert "unconfirmed_reasons= are the matcher's reading" in system
 
     def test_two_stale_facts_with_different_dates_are_not_conflated(self):
         FieldKey = CompanyFieldEvidence.FieldKey

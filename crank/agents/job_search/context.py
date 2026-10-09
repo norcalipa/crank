@@ -25,6 +25,12 @@ _EVIDENCE_FLAGS = {
     "missing": ",changed",
 }
 
+#: The only state written as a bare ``[evidence=<id>]``, which the prompt
+#: defines as verified. Anything else, a state this module does not know or
+#: no status at all, is flagged: the default must never be the strong claim.
+_VERIFIED_STATE = "verified"
+
+
 def _utc_day(value: object) -> str:
     """The UTC calendar day of an ISO timestamp, or ``never``."""
     if isinstance(value, str):
@@ -43,18 +49,44 @@ def _evidence_flag(status: object) -> str:
 
     A stale fact carries its *own* last-verified day: the catalog row's
     ``newest_verified`` is the newest across all of an organization's facts
-    and would date an old fact last week.
+    and would date an old fact last week. Only the ``verified`` state has no
+    flag; a missing status or an unlisted state reads ``,unconfirmed``.
     """
-    if not isinstance(status, dict):
+    state = status.get("state") if isinstance(status, dict) else None
+    if not isinstance(state, str):
+        return ",unconfirmed"
+    if state == _VERIFIED_STATE:
         return ""
-    flag = _EVIDENCE_FLAGS.get(status.get("state"), "")
+    flag = _EVIDENCE_FLAGS.get(state, ",unconfirmed")
     if flag == ",stale":
         flag += ",last_verified=%s" % _utc_day(status.get("last_verified_at"))
     return flag
 
 
+def _reasons_text(row: dict) -> str:
+    """``reasons=[…]``, with those no confirmed outcome gives listed apart.
+
+    A reason is matching's label for an outcome ("Remote"). When the only
+    outcomes behind it are unconfirmed, the source may not say it in those
+    words, so it is written under ``unconfirmed_reasons=`` and the prompt
+    forbids stating it as fact (#473).
+    """
+    from crank.services.company_evidence import unconfirmed_reasons
+
+    reasons = [reason for reason in row.get("reasons") or [] if isinstance(reason, str)]
+    unconfirmed = unconfirmed_reasons(reasons, row.get("requirements"))
+    text = "reasons=%s" % [reason for reason in reasons if reason not in unconfirmed]
+    if unconfirmed:
+        text += " unconfirmed_reasons=%s" % unconfirmed
+    return text
+
+
 def _evidence_summary_text(summary: object) -> str:
-    """``verified:V,stale:S,unknown:U,newest_verified=<day|never>`` for a catalog row."""
+    """``verified:V,stale:S,unknown:U,newest_verified=<day|never>`` for a catalog row.
+
+    The row writes it as ``facts=…``, never ``evidence=…``: these are counts,
+    and "evidence" followed by a number is how a reply cites an evidence id.
+    """
     if not isinstance(summary, dict):
         return "not_provided"
     text = "verified:{verified},stale:{stale},unknown:{unknown},newest_verified={date}".format(
@@ -146,7 +178,7 @@ class ModelContext:
         if self.organization_catalog:
             catalog_rows = [
                 "id={id} name={name!r} funding_round={funding_round} "
-                "rto_policy={rto_policy} evidence={evidence}".format(
+                "rto_policy={rto_policy} facts={evidence}".format(
                     id=row.get("id"),
                     name=bounded_name(row.get("name", "")),
                     funding_round=row.get("funding_round", ""),
@@ -196,12 +228,12 @@ class ModelContext:
             if job_matches:
                 match_lines = [
                     "listing_id={listing_id} title={title!r} score={score} "
-                    "requirements={requirements} reasons={reasons}".format(
+                    "requirements={requirements} {reasons}".format(
                         listing_id=row.get("listing_id"),
                         title=bounded_name(row.get("title", "")),
                         score=row.get("score", 0.0),
                         requirements=_requirements_text(row.get("requirements")),
-                        reasons=row.get("reasons", []),
+                        reasons=_reasons_text(row),
                     )
                     for row in job_matches
                 ]
@@ -212,12 +244,12 @@ class ModelContext:
             if org_matches:
                 org_lines = [
                     "organization_id={organization_id} name={name!r} score={score} "
-                    "requirements={requirements} reasons={reasons}".format(
+                    "requirements={requirements} {reasons}".format(
                         organization_id=row.get("organization_id"),
                         name=bounded_name(row.get("name", "")),
                         score=row.get("score", 0.0),
                         requirements=_requirements_text(row.get("requirements")),
-                        reasons=row.get("reasons", []),
+                        reasons=_reasons_text(row),
                     )
                     for row in org_matches
                 ]

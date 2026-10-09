@@ -26,9 +26,9 @@ class TestSystemPrompt:
 
         digests = {
             6: {
-                (False, True): "62700811ca3f025ed4a74ff156dc1aec907616d31f5806217322d487204132ec",
-                (True, True): "add8957380dded0bcfc584085bae4036a1cea3d5c7d52bd7c14dbe0ff2853b2d",
-                (True, False): "9c38a0858708a7fe91eb985aad863e60c45e563568f8ea0354c8e702233820b1",
+                (False, True): "879a7ed183ca482b284cf735e304dac73592f2826b237269a988786fc77a80b7",
+                (True, True): "09e9771bdd1d4f4de807ceac6a02cb12fdf9cccbce5b6a9e480c5f494cd937d5",
+                (True, False): "67f3e8038f36664b492ce05b83b993c446fdcd2adbde416b06f062cd6adeddab",
             },
         }
         for (with_context, with_actions), expected in digests[SYSTEM_PROMPT_VERSION].items():
@@ -77,7 +77,16 @@ class TestSystemPrompt:
         """v6 tells the model how to word stale and unverified facts (issue #473)."""
         text = build_system_prompt()
         assert "EVIDENCE HONESTY" in text
-        assert "evidence=verified:V,stale:S,unknown:U,newest_verified=<date|never>" in text
+        assert "facts=verified:V,stale:S,unknown:U,newest_verified=<date|never>" in text
+        # Counts are never written after the word a citation uses.
+        assert "evidence=verified" not in text
+        assert "These are counts of facts, not evidence ids." in text
+        assert "say UTC (for example 'last verified 2025-08-15 UTC')" in text
+        assert (
+            "unconfirmed_reasons= are the matcher's reading of a source that may "
+            "not say so in those words: give one only as sourced but not confirmed, "
+            "never as a fact and never as verified." in text
+        )
         assert "[evidence=<id>,stale,last_verified=<date|never>]" in text
         # A stale fact is dated from its own reference, never from the
         # organization's newest check.

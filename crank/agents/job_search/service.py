@@ -56,7 +56,21 @@ _REQUIREMENT_PATH_RE = re.compile(
 )
 #: A bounded "evidence #<id>" reference form. Accepts the ``id`` wording
 #: ("evidence id 999") the earlier regex silently let through unvalidated.
-_EVIDENCE_REF_RE = re.compile(r"\bevidence\s*(?:id\s+)?[#:]?\s*(\d+)", re.IGNORECASE)
+#: A number with an explicit id marker (``evidence=7``, ``evidence #7``,
+#: ``evidence id 7``) is always a citation. A bare or colon-led number
+#: ("evidence 7", "Evidence: 7") is one too, unless a count word follows it:
+#: "Evidence: 1 verified, 1 stale" and "evidence 1 of 7 facts" restate the
+#: catalog's fact counts (#473) and name no evidence row.
+_EVIDENCE_COUNT_WORDS = (
+    r"(?:of\s+\d+|(?:facts?\s+)?(?:verified|stale|unknown|pending)|facts?)\b"
+)
+_EVIDENCE_REF_RE = re.compile(
+    r"\bevidence\s*(?:"
+    r"(?:id\s*[#:=]?|[#=])\s*(\d+)"
+    r"|:?\s*(\d+)(?!\d)(?!\s*" + _EVIDENCE_COUNT_WORDS + r")"
+    r")",
+    re.IGNORECASE,
+)
 
 logger = logging.getLogger("crank.agents.job_search")
 
@@ -781,9 +795,10 @@ class JobSearchOrchestrator:
                     f"model referenced a requirement not exposed by the match tool: {token}"
                 )
         for m in _EVIDENCE_REF_RE.finditer(message or ""):
-            if int(m.group(1)) not in exposed_evidence_ids:
+            cited = m.group(1) or m.group(2)
+            if int(cited) not in exposed_evidence_ids:
                 raise InvalidRequirementReferenceError(
-                    f"model referenced an evidence id not exposed by the match tool: {m.group(1)}"
+                    f"model referenced an evidence id not exposed by the match tool: {cited}"
                 )
 
     @staticmethod
