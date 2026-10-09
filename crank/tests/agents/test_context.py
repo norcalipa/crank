@@ -14,10 +14,16 @@ def test_requirements_text_exposes_evidence_ids_and_sources():
         {"path": "compensation.minimum_salary", "status": "match",
          "source_kind": "field", "source_id": "listing.compensation_min"},
         {"path": "compensation.require_public_company", "status": "match",
-         "source_kind": "evidence", "source_id": 12},
+         "source_kind": "evidence", "source_id": 12,
+         "evidence_status": {"state": "verified"}},
+        # No read-time status: the id is still exposed for citation, but a
+        # bare reference means verified, so this one is flagged (#473).
+        {"path": "funding_stage", "status": "match",
+         "source_kind": "evidence", "source_id": 13},
     ])
     assert "compensation.minimum_salary=match[source=listing.compensation_min]" in rendered
     assert "compensation.require_public_company=match[evidence=12]" in rendered
+    assert "funding_stage=match[evidence=13,unconfirmed]" in rendered
 
 
 def test_requirements_text_omits_empty():
