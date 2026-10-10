@@ -146,6 +146,21 @@ describe('EvidenceSummary', () => {
         expect(screen.getByTestId('evidence-summary').querySelector('.evidence-badge-verified')).toHaveTextContent('Verified');
     });
 
+    test('a recorded snapshot keeps its counts and date but drops only the Verified verdict', () => {
+        const verified = {verified: 7, stale: 0, unknown: 0, total: 7, fact_coverage: 7,
+            last_verified_at: '2026-09-01T00:00:00Z', pending_review: 0};
+        const {rerender} = render(<EvidenceSummary evidence={verified} variant="card" snapshot/>);
+        const root = screen.getByTestId('evidence-summary');
+        expect(root.querySelector('.evidence-badge')).toBeNull();
+        expect(screen.getByTestId('evidence-facts')).toHaveTextContent('7 verified · 0 stale · 0 unknown');
+        expect(screen.getByTestId('evidence-last-verified')).toHaveTextContent('Last verified Sep 1, 2026');
+        // A verdict that cannot over-claim later is kept.
+        rerender(<EvidenceSummary evidence={{...verified, verified: 5, stale: 2}} variant="card" snapshot/>);
+        expect(screen.getByTestId('evidence-summary').querySelector('.evidence-badge-stale')).toHaveTextContent('Stale');
+        rerender(<EvidenceSummary evidence={{...verified, verified: 0, unknown: 7}} variant="card" snapshot/>);
+        expect(screen.getByTestId('evidence-summary').querySelector('.evidence-badge-unknown')).toBeInTheDocument();
+    });
+
     test('never verified', () => {
         render(<EvidenceSummary evidence={base}/>);
         expect(screen.getByTestId('evidence-last-verified')).toHaveTextContent('Never verified');

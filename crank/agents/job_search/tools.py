@@ -15,6 +15,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from crank.agents.job_search.evidence_summary import normalize_evidence_summary
+
 MAX_ORGANIZATION_RESULTS = 25
 MAX_SCORE_SUMMARY_RESULTS = 5
 MAX_FILTER_QUERY_LENGTH = 80
@@ -89,6 +91,7 @@ def normalize_organization_rows(rows: list[Any]) -> list[dict[str, Any]]:
             "url": str(getattr(row, "url", "")),
             "funding_round": str(getattr(row, "funding_round", "")),
             "rto_policy": str(getattr(row, "rto_policy", "")),
+            "evidence": normalize_evidence_summary(getattr(row, "evidence", None)),
         })
     return output
 
@@ -151,7 +154,22 @@ def default_organization_datasource(
         queryset = queryset.filter(funding_round=filters["funding_round"])
     if filters.get("rto_policy"):
         queryset = queryset.filter(rto_policy=filters["rto_policy"])
-    return list(queryset[:limit])
+    return attach_evidence_summaries(list(queryset[:limit]))
+
+
+def attach_evidence_summaries(rows: list[Any]) -> list[Any]:
+    """Set ``row.evidence`` to each organization's fact summary (two queries).
+
+    The same summary the rankings show (issue #473), so the assistant's
+    wording and its cards agree with the other surfaces.
+    """
+    from crank.services.company_evidence import evidence_summaries_for_orgs
+
+    if rows:
+        summaries = evidence_summaries_for_orgs([row.id for row in rows])
+        for row in rows:
+            row.evidence = summaries.get(row.id)
+    return rows
 
 
 def query_active_organizations(
@@ -540,6 +558,20 @@ def get_matches_for_user(
         from crank.services.job_matching import match_jobs, match_organizations
         job_results = match_jobs(user, limit=capped)
         org_results = match_organizations(user, limit=capped)
+    # Read-time evidence status per requirement, one bulk query, on every
+    # path (#473): an injected service (the this-search-only confirm
+    # response) must not return outcomes that read as unqualified.
+    from crank.services.company_evidence import (
+        annotate_requirement_evidence,
+        unqualified_reasons,
+    )
+
+    job_results, org_results = list(job_results), list(org_results)
+    annotated = annotate_requirement_evidence(
+        [r.requirements for r in job_results] + [r.requirements for r in org_results]
+    )
+    job_requirements = annotated[:len(job_results)]
+    org_requirements = annotated[len(job_results):]
 
     job_dicts = [
         {
@@ -555,13 +587,13 @@ def get_matches_for_user(
             "fit_score": r.fit_score,
             "company_score": r.company_score,
             "coverage": r.coverage,
-            "requirements": r.requirements,
+            "requirements": requirements,
             "unsupported": r.unsupported,
             "evidence_ids": r.evidence_ids,
             "revision": r.revision() if hasattr(r, "revision") else None,
-            "reasons": r.reasons,
+            "reasons": unqualified_reasons(r.reasons, requirements),
         }
-        for r in job_results
+        for r, requirements in zip(job_results, job_requirements)
     ]
     org_dicts = [
         {
@@ -574,13 +606,13 @@ def get_matches_for_user(
             "fit_score": r.fit_score,
             "company_score": r.company_score,
             "coverage": r.coverage,
-            "requirements": r.requirements,
+            "requirements": requirements,
             "unsupported": r.unsupported,
             "evidence_ids": r.evidence_ids,
             "revision": r.revision() if hasattr(r, "revision") else None,
-            "reasons": r.reasons,
+            "reasons": unqualified_reasons(r.reasons, requirements),
         }
-        for r in org_results
+        for r, requirements in zip(org_results, org_requirements)
     ]
     return {
         "job_matches": normalize_match_rows(job_dicts),

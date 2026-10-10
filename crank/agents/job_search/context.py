@@ -10,10 +10,97 @@ same prompt (matching the "log correlation/status not prompts" requirement).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 #: Placeholder inserted where content was elided so the model knows it is
 #: missing history rather than a gap it must explain.
 _ELISION_MARK = "<elided...>"
+
+
+#: Read-time evidence states the model must not describe as verified.
+_EVIDENCE_FLAGS = {
+    "stale": ",stale",
+    "sourced": ",unconfirmed",
+    "superseded": ",changed",
+    "missing": ",changed",
+}
+
+#: The only state written as a bare ``[evidence=<id>]``, which the prompt
+#: defines as verified. Anything else, a state this module does not know or
+#: no status at all, is flagged: the default must never be the strong claim.
+_VERIFIED_STATE = "verified"
+
+
+def _utc_day(value: object) -> str:
+    """The UTC calendar day of an ISO timestamp, or ``never``."""
+    if isinstance(value, str):
+        try:
+            moment = datetime.fromisoformat(value)
+        except ValueError:
+            return "never"
+        if moment.tzinfo is not None:
+            moment = moment.astimezone(timezone.utc)
+        return moment.date().isoformat()
+    return "never"
+
+
+def _evidence_flag(status: object) -> str:
+    """``,stale,last_verified=<day|never>`` / ``,unconfirmed`` / ``,changed``.
+
+    A stale fact carries its *own* last-verified day: the catalog row's
+    ``newest_verified`` is the newest across all of an organization's facts
+    and would date an old fact last week. Only a ``verified`` state with no open
+    review has no flag (``,under_review`` otherwise); a missing status or an
+    unlisted state reads ``,unconfirmed``.
+    """
+    state = status.get("state") if isinstance(status, dict) else None
+    if not isinstance(state, str):
+        return ",unconfirmed"
+    if state == _VERIFIED_STATE:
+        # A later observation that disagrees is awaiting review: still the
+        # accepted fact, but never a bare (verified) reference.
+        return ",under_review" if status.get("review") else ""
+    flag = _EVIDENCE_FLAGS.get(state, ",unconfirmed")
+    if flag == ",stale":
+        flag += ",last_verified=%s" % _utc_day(status.get("last_verified_at"))
+    return flag
+
+
+def _reasons_text(row: dict) -> str:
+    """``reasons=[…]``, with those no confirmed outcome gives listed apart.
+
+    A reason is matching's label for an outcome ("Remote"). When the only
+    outcomes behind it are unconfirmed, the source may not say it in those
+    words, so it is written under ``unconfirmed_reasons=`` and the prompt
+    forbids stating it as fact (#473).
+    """
+    from crank.services.company_evidence import unconfirmed_reasons
+
+    reasons = [reason for reason in row.get("reasons") or [] if isinstance(reason, str)]
+    unconfirmed = unconfirmed_reasons(reasons, row.get("requirements"))
+    text = "reasons=%s" % [reason for reason in reasons if reason not in unconfirmed]
+    if unconfirmed:
+        text += " unconfirmed_reasons=%s" % unconfirmed
+    return text
+
+
+def _evidence_summary_text(summary: object) -> str:
+    """``verified:V,stale:S,unknown:U,newest_verified=<day|never>`` for a catalog row.
+
+    The row writes it as ``facts=…``, never ``evidence=…``: these are counts,
+    and "evidence" followed by a number is how a reply cites an evidence id.
+    """
+    if not isinstance(summary, dict):
+        return "not_provided"
+    text = "verified:{verified},stale:{stale},unknown:{unknown},newest_verified={date}".format(
+        verified=summary.get("verified"),
+        stale=summary.get("stale"),
+        unknown=summary.get("unknown"),
+        date=_utc_day(summary.get("last_verified_at")),
+    )
+    if summary.get("pending_review"):
+        text += ",pending_review:%s" % summary.get("pending_review")
+    return text
 
 
 def _requirements_text(requirements: object) -> str:
@@ -21,7 +108,11 @@ def _requirements_text(requirements: object) -> str:
 
     Exposes the outcome's evidence id (``evidence=<id>``) and direct-field
     source (``source=<id>``) so the model can make a *validated* citation from
-    the bounded context rather than inventing one (issue #467 AC-11).
+    the bounded context rather than inventing one (issue #467 AC-11). An
+    evidence row that is not currently verified carries its read-time state
+    (``evidence=<id>,stale,last_verified=<day>``), and an outcome read from
+    the organization profile is marked ``,profile`` (no evidence behind it),
+    so the wording can agree with the chips (#473).
     """
     if not requirements:
         return "[]"
@@ -33,9 +124,10 @@ def _requirements_text(requirements: object) -> str:
         source_kind = req.get("source_kind")
         source_id = req.get("source_id")
         if source_kind == "evidence" and isinstance(source_id, int) and not isinstance(source_id, bool):
-            text += "[evidence=%s]" % source_id
+            text += "[evidence=%s%s]" % (source_id, _evidence_flag(req.get("evidence_status")))
         elif source_kind == "field" and source_id:
-            text += "[source=%s]" % source_id
+            profile = ",profile" if str(source_id).startswith("organization.") else ""
+            text += "[source=%s%s]" % (source_id, profile)
         parts.append(text)
     if not parts:
         return "[]"
@@ -89,11 +181,12 @@ class ModelContext:
         if self.organization_catalog:
             catalog_rows = [
                 "id={id} name={name!r} funding_round={funding_round} "
-                "rto_policy={rto_policy}".format(
+                "rto_policy={rto_policy} facts={evidence}".format(
                     id=row.get("id"),
                     name=bounded_name(row.get("name", "")),
                     funding_round=row.get("funding_round", ""),
                     rto_policy=row.get("rto_policy", ""),
+                    evidence=_evidence_summary_text(row.get("evidence")),
                 )
                 for row in self.organization_catalog
             ]
@@ -138,12 +231,12 @@ class ModelContext:
             if job_matches:
                 match_lines = [
                     "listing_id={listing_id} title={title!r} score={score} "
-                    "requirements={requirements} reasons={reasons}".format(
+                    "requirements={requirements} {reasons}".format(
                         listing_id=row.get("listing_id"),
                         title=bounded_name(row.get("title", "")),
                         score=row.get("score", 0.0),
                         requirements=_requirements_text(row.get("requirements")),
-                        reasons=row.get("reasons", []),
+                        reasons=_reasons_text(row),
                     )
                     for row in job_matches
                 ]
@@ -154,12 +247,12 @@ class ModelContext:
             if org_matches:
                 org_lines = [
                     "organization_id={organization_id} name={name!r} score={score} "
-                    "requirements={requirements} reasons={reasons}".format(
+                    "requirements={requirements} {reasons}".format(
                         organization_id=row.get("organization_id"),
                         name=bounded_name(row.get("name", "")),
                         score=row.get("score", 0.0),
                         requirements=_requirements_text(row.get("requirements")),
-                        reasons=row.get("reasons", []),
+                        reasons=_reasons_text(row),
                     )
                     for row in org_matches
                 ]

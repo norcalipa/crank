@@ -1377,6 +1377,9 @@ body.app-nav-drawer-open {
 #job-match-panel {
     max-width: 46rem;
     margin-inline: auto;
+    /* The panel is narrower at 768px (beside the assistant) than on a 375px
+       phone, so its figure and chip rows size to the panel, not the viewport. */
+    container: job-match / inline-size;
 }
 
 /* Consistent vertical rhythm: notices, timestamp, and section headings no
@@ -1443,22 +1446,24 @@ body.app-nav-drawer-open {
     font-weight: 600;
 }
 
-/* Score grid (r3 item 4, r4): three labelled columns with legible xs uppercase
-   labels and sm semibold values carrying explicit scales (/5, /100, %). Each
-   figure cell is a mini-grid whose first row is a fixed ~2rem label row so a
-   two-line label ("COMPANY SCORE") can never push its value one baseline below
-   the others; tabular-nums keeps the figures on a steady numeric baseline. */
+/* Score grid (r3 item 4, r4; issue #473): three labelled columns with legible
+   xs uppercase labels and sm semibold values carrying explicit scales (/5,
+   /100, %). The labels share one grid row and the values the next (subgrid),
+   so a label of any height can neither overprint its value nor move one value
+   off the others' baseline; tabular-nums keeps the figures steady. */
 #job-match-panel .job-match-figures {
     display: grid;
     grid-template-columns: 1.15fr 1fr 1fr;
+    grid-template-rows: auto auto;
     column-gap: 0.5rem;
-    row-gap: 0.25rem;
+    row-gap: 0;
     max-width: 24rem;
 }
 
 #job-match-panel .job-match-figure {
     display: grid;
-    grid-template-rows: 2rem auto;
+    grid-row: span 2;
+    grid-template-rows: subgrid;
     min-width: 0;
 }
 
@@ -1469,6 +1474,10 @@ body.app-nav-drawer-open {
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: rgba(248, 249, 250, 0.75);
+    /* Never leave the column, whatever font is in use. */
+    overflow-wrap: anywhere;
+    /* A one-line label sits on its value, like its two-line neighbours. */
+    align-self: end;
 }
 
 #job-match-panel .job-match-figure-value {
@@ -1483,11 +1492,29 @@ body.app-nav-drawer-open {
     #job-match-panel .job-match-figures {
         grid-template-columns: repeat(3, minmax(0, 1fr));
         column-gap: 0.75rem;
-        row-gap: 0.75rem;
+    }
+}
+
+/* Panels up to 24rem (phones and the ~308px column at 768px) cannot hold
+   "REQUIREMENT" in a third of their width with room to spare (at 327px it
+   fits or spills by a pixel depending on the font), so the figures are
+   listed as label / value rows. */
+@container job-match (max-width: 24rem) {
+    #job-match-panel .job-match-figures {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: none;
+        row-gap: 0.125rem;
+        max-width: none;
     }
 
+    #job-match-panel .job-match-figure-label { align-self: auto; }
+
     #job-match-panel .job-match-figure {
-        grid-template-rows: auto auto;
+        grid-row: auto;
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-rows: auto;
+        column-gap: 0.75rem;
+        align-items: baseline;
     }
 }
 
@@ -1552,6 +1579,21 @@ body.app-nav-drawer-open {
     #job-match-panel .job-match-stale-refresh {
         grid-column: 3;
         justify-self: end;
+    }
+}
+
+/* The panel is only ~308px wide at 768px, where the viewport rule above would
+   squeeze the message into a one-word column beside the button; a narrow
+   panel keeps the stacked banner whatever the viewport. */
+@container job-match (max-width: 26rem) {
+    #job-match-panel .job-match-stale-banner {
+        grid-template-columns: auto minmax(0, 1fr);
+        align-items: start;
+    }
+
+    #job-match-panel .job-match-stale-refresh {
+        grid-column: 2;
+        justify-self: start;
     }
 }
 
@@ -3255,6 +3297,7 @@ body.assistant-open .app-content .table-responsive,
 /* Lighter transcript outline and a clean conversation-actions grid. */
 #job-search-chat .chat-transcript {
     border: 1px solid rgba(255, 255, 255, .08);
+    position: relative; /* .visually-hidden descendants scroll with the log, not the panel body (#473) */
 }
 
 #job-search-chat .card-header {
@@ -4780,3 +4823,89 @@ span.priority-chip-button { cursor: default; }
 .evidence-legend li + li { margin-top: .375rem; }
 .evidence-legend-windows { margin-top: .25rem; }
 .evidence-legend .evidence-badge { margin-inline-end: .25rem; }
+
+/* issue #473 evidence status: requirement chips and assistant cards */
+.job-match-chip {
+    flex-wrap: wrap;
+    max-inline-size: 100%;
+    overflow-wrap: anywhere;
+}
+
+/* A match or mismatch whose fact is stale, profile data or unconfirmed prose
+   keeps its outcome marker and ink but loses the solid fill, so it never
+   reads as the verified outcome. The dashed outline is the non-color cue. */
+.job-match-chip--unverified {
+    background-color: transparent;
+    border-style: dashed;
+}
+
+.job-match-chip--changed {
+    color: #e5e7eb; /* gray-200, ~12:1 on #212529 */
+    background-color: transparent;
+    border: 1px dashed rgba(229, 231, 235, 0.6);
+}
+
+.job-match-chip-qualifier,
+.job-match-chip-sep { color: #e5e7eb; }
+
+.job-match-chip-qualifier-text { font-weight: 600; }
+
+/* The chip already leads with its outcome marker; the profile bullet after
+   the separator would read as a second dot. */
+.job-match-chip .evidence-badge-profile .evidence-badge-marker { display: none; }
+
+/* Narrow panels: the qualifier takes its own line and the separator goes, so
+   a wrapped chip never starts a line with a stray dot. Qualified chips are
+   full-width rows there, so a stack of them shares one width. */
+@container job-match (max-width: 26rem) {
+    .job-match-chip-qualifier { flex-basis: 100%; }
+    .job-match-chip-sep { display: none; }
+    .job-match-chip:has(> .job-match-chip-qualifier) { display: flex; }
+}
+
+.job-match-chip--changed .job-match-chip-qualifier { font-weight: 600; }
+
+/* A re-check is running: the button stays focusable but reads as unavailable. */
+#job-match-panel [aria-disabled="true"] {
+    opacity: .65;
+    cursor: default;
+}
+
+/* A stored reply's cards use the whole bubble row in the narrowest panel. */
+@container assistant-panel (max-width: 20rem) { #job-search-chat .chat-bubble-assistant:has(.org-card) { max-width: 100% !important; } }
+
+.job-match-chip .evidence-badge {
+    padding: 0;
+    border: 0;
+    font-size: inherit;
+    white-space: normal;
+}
+
+.org-card .org-card-evidence { overflow-wrap: anywhere; }
+
+.org-card .org-card-evidence-label {
+    font-size: .75rem;
+    line-height: 1.3;
+    color: #cbd5e1; /* slate-300, the card's muted ink */
+    margin-bottom: .125rem;
+}
+
+/* "What these labels mean" under the matches header: the same definitions as
+   "How ranking works" on the rankings page. */
+#job-match-panel .job-match-legend { margin-bottom: 1rem; }
+#job-match-panel .job-match-legend .ranking-definitions dt:first-child { margin-top: 0; }
+/* Sky like every other focus ring in this panel, not the rankings amber. */
+#job-match-panel .how-ranking-works-summary:focus-visible { outline-color: #38bdf8; }
+@container job-match (max-width: 26rem) {
+    #job-match-panel .job-match-legend .how-ranking-works-content { font-size: .875rem; line-height: 1.45; }
+    #job-match-panel .job-match-legend .ranking-definitions dt { margin-top: .5rem; }
+}
+
+/* The heading takes focus after a notice's Refresh; it must land below the
+   sticky phone top bar (48px), not under it. */
+#job-match-panel .job-match-panel-title { scroll-margin-top: 4.5rem; }
+
+#job-match-panel .job-match-panel-title:focus-visible {
+    outline: 3px solid #38bdf8;
+    outline-offset: 2px;
+}

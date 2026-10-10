@@ -1,6 +1,8 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
+import EvidenceSummary from '../evidence/EvidenceSummary';
+import {EvidenceSummaryData, fundingRoundLabel, rtoPolicyLabel} from '../labels';
 import type {JobResult, OrganizationResult, StructuredResults} from './types';
 
 export function formatCompensation(comp: JobResult['compensation']): string {
@@ -18,26 +20,6 @@ export function formatCompensation(comp: JobResult['compensation']): string {
     if (comp.interval) parts.push(comp.interval);
     return parts.join(' ');
 }
-
-export function fundingRoundLabel(code: string): string {
-    const map: Record<string, string> = {
-        S: 'Seed', A: 'Series A', B: 'Series B', C: 'Series C',
-        D: 'Series D', E: 'Series E', F: 'Series F',
-        X: 'Late Stage', O: 'IPO', P: 'Pre-IPO',
-    };
-    return map[code] || code || '';
-}
-
-export function rtoPolicyLabel(code: string): string {
-    const map: Record<string, string> = {
-        R: 'Remote', H: 'Hybrid', O: 'On-site',
-    };
-    return map[code] || code || '';
-}
-
-// States in which submitting a message would be futile: the assistant cannot
-// answer at all (administratively disabled) or has nothing to search.
-// Gating is advisory-only: the POST path remains authoritative and a failed
 
 export function JobCard({job}: {job: JobResult}) {
     const comp = formatCompensation(job.compensation);
@@ -76,9 +58,19 @@ export function JobCard({job}: {job: JobResult}) {
     );
 }
 
+// Stored replies are served as persisted, so the summary is checked before
+// it is rendered as counts.
+const isEvidenceSummary = (value: unknown): value is EvidenceSummaryData => {
+    if (!value || typeof value !== 'object') return false;
+    const summary = value as Record<string, unknown>;
+    return ['verified', 'stale', 'unknown', 'total', 'pending_review']
+        .every((key) => Number.isInteger(summary[key]));
+};
+
 export function OrgCard({org}: {org: OrganizationResult}) {
     const funding = fundingRoundLabel(org.funding_round);
     const rto = rtoPolicyLabel(org.rto_policy);
+    const evidence = isEvidenceSummary(org.evidence) ? org.evidence : null;
     return (
         <article
             className="org-card border rounded p-2 mb-2"
@@ -93,6 +85,22 @@ export function OrgCard({org}: {org: OrganizationResult}) {
                 {funding && rto && ' · '}
                 {rto && <span>{rto}</span>}
             </div>
+            {evidence ? (
+                <div className="org-card-evidence mt-2" data-testid={`org-evidence-${org.id}`}>
+                    {/* The summary is the reply-time snapshot stored with the
+                        message, so the label says so for every reader, and it
+                        carries no all-verified verdict: facts pass their
+                        freshness window while the stored counts do not age. */}
+                    <div className="org-card-evidence-label" data-testid="evidence-recorded-label">Facts as of this reply</div>
+                    <EvidenceSummary evidence={evidence} variant="card" snapshot/>
+                </div>
+            ) : (
+                // A reply stored before fact status existed (or with an
+                // unreadable one): say so rather than guess a status for it.
+                <div className="org-card-evidence text-muted small mt-1" data-testid={`org-evidence-${org.id}`}>
+                    Fact status was not recorded for this reply.
+                </div>
+            )}
             <div className="org-card-actions d-flex flex-wrap align-items-center column-gap-3 mt-1">
             {org.url && (
                 <a

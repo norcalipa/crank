@@ -328,11 +328,13 @@ class RolloutGateRegistryTests(TestCase):
         """Reserved-but-unimplemented names are labeled planned.
 
         Per #463: new flag names must be implemented before being documented
-        as available. The planned owners are verified against each issue's
-        scope: publication consumer (#470), assistant shell (#472 — "Build
-        the shared responsive workspace with a right assistant sidebar"),
-        and the recompute phase switches (#475 — "Recompute versioned
-        matches"). None may appear as available.
+        as available. The owners are verified against each issue's scope:
+        publication consumer (#470, since registered), assistant shell
+        (#472 — "Build the shared responsive workspace with a right
+        assistant sidebar", still planned), and the recompute phase switches
+        (#475 — "Recompute versioned matches", since registered). The
+        registered/planned split per row is pinned by
+        ``crank/tests/test_release_decision_gates.py``.
         """
         content = ROLLOUT_DOC.read_text(encoding="utf-8")
         for key in ("publication_consumer", "assistant_shell"):

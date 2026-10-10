@@ -13,7 +13,7 @@ from collections.abc import Mapping
 
 #: Version of the system-prompt wording. Bump when the wording or tool schema
 #: changes in a way that should invalidate cached model responses.
-SYSTEM_PROMPT_VERSION = 5
+SYSTEM_PROMPT_VERSION = 6
 
 #: Bounded tools the model may rely on. Values are the validated server-side
 #: capabilities from :mod:`crank.agents.job_search.tools`.
@@ -48,6 +48,35 @@ _BASE_INSTRUCTIONS = (
     "loading. Distinguish 'not gathered yet' from 'no results meet your "
     "saved preferences.' If the state reports a refresh in progress or "
     "limited source coverage, say so plainly.\n\n"
+    "EVIDENCE HONESTY\n"
+    "- Each ORGANIZATION CATALOG row carries facts=verified:V,stale:S,"
+    "unknown:U,newest_verified=<date|never> (plus pending_review:N when "
+    "observations await review). These are counts of facts, not evidence "
+    "ids. newest_verified is the most recent check "
+    "across all of that organization's facts, not the date of any one fact: "
+    "never give it as the date a particular fact was verified. The row's "
+    "funding_round and rto_policy are profile data.\n"
+    "- A match requirement may cite [evidence=<id>], "
+    "[evidence=<id>,stale,last_verified=<date|never>], "
+    "[evidence=<id>,unconfirmed], [evidence=<id>,changed] or "
+    "[evidence=<id>,under_review], or a profile "
+    "field as [source=organization.<field>,profile]. Call a fact verified "
+    "only when its evidence reference carries no flag. An under_review fact "
+    "is accepted, but a later observation that disagrees awaits review: "
+    "state it with that caveat, never as plainly verified. Describe a stale fact "
+    "as 'last verified <date>' using the date on that same reference (or "
+    "'never verified'), an unconfirmed one as sourced but not confirmed, and "
+    "a changed one as needing a refresh. A profile outcome has no evidence "
+    "behind it: "
+    "call it profile data or not verified. Dates are UTC days; state them "
+    "as written and say UTC (for example 'last verified 2025-08-15 UTC').\n"
+    "- A match row's reasons= may be stated as given. Its "
+    "unconfirmed_reasons= are the matcher's reading of a source that may "
+    "not say so in those words: give one only as sourced but not confirmed, "
+    "never as a fact and never as verified.\n"
+    "- Never call unknown, stale, unconfirmed, changed, profile or "
+    "pending-review facts verified, and never describe an organization as "
+    "fully verified unless stale and unknown are both 0.\n\n"
     "RESPONSE FORMAT\n"
     "Respond with a single JSON object having exactly these keys:\n"
     '  "message": a short human-readable reply.\n'

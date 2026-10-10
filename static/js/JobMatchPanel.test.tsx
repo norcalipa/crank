@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import '@testing-library/jest-dom';
-import {render, screen, fireEvent, waitFor} from '@testing-library/react';
+import {render, screen, fireEvent, waitFor, within} from '@testing-library/react';
 import * as React from 'react';
 
 import JobMatchPanel from './JobMatchPanel';
@@ -942,9 +942,9 @@ describe('JobMatchPanel requirement figures and states (issue #467)', () => {
     test('renders three separately labelled figures with explicit scales', async () => {
         await renderPanel('ok', {count: 1, rankedJobs: [jobWithRequirements]});
         const card = screen.getByTestId('ranked-job-42');
-        expect(card).toHaveTextContent('Company score');
+        expect(card).toHaveTextContent('Company score (preset)');
         expect(card).toHaveTextContent('Fit');
-        expect(card).toHaveTextContent('Coverage');
+        expect(card).toHaveTextContent('Requirement coverage');
         // Round-3: each value carries its scale so the number reads on its own.
         expect(screen.getByTestId('job-42-company-score')).toHaveTextContent('4.2 / 5');
         expect(screen.getByTestId('job-42-fit-score')).toHaveTextContent('85.5 / 100');
@@ -1301,7 +1301,10 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
             await new Promise((resolve) => setTimeout(resolve, 20));
         });
         expect(screen.getByText('Fresh')).toBeInTheDocument();
-        expect(screen.queryByText('Stale')).not.toBeInTheDocument();
+        // Scoped to the results: the legend (issue #473) also defines the word "Stale".
+        const results = within(screen.getByTestId('ranked-job-matches'));
+        expect(results.getByText('Fresh')).toBeInTheDocument();
+        expect(results.queryByText('Stale')).not.toBeInTheDocument();
     });
 
     test('a superseded request that fails late does not surface an error', async () => {
@@ -1428,13 +1431,13 @@ describe('JobMatchPanel navigation state (issue #479)', () => {
     test('an endpoint generation mismatch keeps the displayed list', async () => {
         installBatchedFetch([
             {title: 'Gen five', generation: 5, hold: false},
-            {title: 'Mismatch', generation: 6, rankedGeneration: 7, hold: false},
+            {title: 'Mismatched pair', generation: 6, rankedGeneration: 7, hold: false},
         ]);
         render(<JobMatchPanel/>);
         await screen.findByText('Gen five');
         await refreshAndSettle(3);
         expect(screen.getByText('Gen five')).toBeInTheDocument();
-        expect(screen.queryByText('Mismatch')).not.toBeInTheDocument();
+        expect(screen.queryByText('Mismatched pair')).not.toBeInTheDocument();
     });
 
     test('a newer ranked generation applies even when the matches page fails', async () => {

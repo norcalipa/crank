@@ -295,6 +295,11 @@ class LegendParityTests(TestCase):
 
     def _labels_ts_entries(self):
         source = (Path(__file__).resolve().parents[3] / "static/js/labels.ts").read_text()
+        # Only the fact-status vocabulary; labels.ts also defines the
+        # requirement marks in the same one-line form.
+        source = re.search(
+            r"export const EVIDENCE_STATUS_META: [^\n]* = \{\n(.*?)\n\};\n", source, re.S
+        ).group(1)
         entries = {}
         for match in re.finditer(
             r"^\s+(\w+): \{label: '([^']+)', marker: '([^']+)', meaning: '([^']+)'\},?$",

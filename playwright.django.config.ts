@@ -16,6 +16,8 @@
 // settings changes or /etc/hosts edits.
 import {defineConfig, devices} from '@playwright/test';
 
+import {DJANGO_STORED_PORT, djangoServerEnv} from './e2e/django/server-env';
+
 // Marks this tier for the specs: the fixture-tier config scans all of ./e2e,
 // so the Django specs skip with a named reason when it collects them.
 process.env.PW_DJANGO_TIER = '1';
@@ -37,7 +39,7 @@ export default defineConfig({
         baseURL: 'http://local.crank.fyi:4174',
         trace: 'on-first-retry',
     },
-    webServer: {
+    webServer: [{
         command: [
             'npx webpack',
             'python3 manage.py migrate --noinput',
@@ -48,12 +50,7 @@ export default defineConfig({
         reuseExistingServer: !process.env.CI && !providerFailure,
         timeout: 300_000,
         env: {
-            ENV: 'dev',
-            DJANGO_SETTINGS_MODULE: 'crank.settings',
-            // Throwaway dev-only key for the local e2e server; never used in
-            // any deployed environment. Override with SECRET_KEY if desired.
-            SECRET_KEY: process.env.SECRET_KEY || 'e2e-throwaway-dev-key',
-            REDIS_MASTER_URL: process.env.REDIS_MASTER_URL || 'redis://localhost:6379/0',
+            ...djangoServerEnv(),
             // The seeded tier exercises the real assistant send path (demo
             // provider in dev): the interactive-agent feature flag must be on
             // or the advisory status endpoint classifies replies_disabled and
@@ -63,7 +60,25 @@ export default defineConfig({
             INTERACTIVE_AGENT_ENABLED: process.env.INTERACTIVE_AGENT_ENABLED || '1',
             CRANK_E2E_PROVIDER_FAILURE: providerFailure ? '1' : '0',
         },
-    },
+    }, {
+        // Started after the first (servers start in order), so it finds the
+        // migrated, seeded database. Same data and sessions; stored match
+        // reads and inline recompute on, for match-refresh.spec.ts (#473).
+        // Never reused: a server already on this port may belong to another
+        // checkout, and match-refresh.spec.ts writes to the database this
+        // config resolves. A busy port fails the run instead.
+        command: `python3 manage.py runserver 127.0.0.1:${DJANGO_STORED_PORT} --noreload`,
+        url: `http://127.0.0.1:${DJANGO_STORED_PORT}/`,
+        reuseExistingServer: false,
+        timeout: 120_000,
+        env: {
+            ...djangoServerEnv(),
+            INTERACTIVE_AGENT_ENABLED: process.env.INTERACTIVE_AGENT_ENABLED || '1',
+            CRANK_E2E_PROVIDER_FAILURE: providerFailure ? '1' : '0',
+            MATCH_RESULTS_READ_ENABLED: '1',
+            MATCH_RECOMPUTE_ENABLED: '1',
+        },
+    }],
     projects: [
         {
             name: 'chromium',

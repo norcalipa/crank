@@ -1066,6 +1066,85 @@ class TestMatchReferenceValidation:
         with pytest.raises(InvalidRequirementReferenceError):
             orch.run(user_prompt="q", conversation=[], preference_markdown="")
 
+    EXPOSED = [
+        {"path": "work_location.modes", "status": "match",
+         "source_kind": "evidence", "source_id": 6,
+         "evidence_status": {"state": "verified"}},
+        {"path": "funding_stage", "status": "match",
+         "source_kind": "evidence", "source_id": 7,
+         "evidence_status": {"state": "stale", "last_verified_at": None}},
+    ]
+
+    def _run(self, message):
+        orch, _gw = self._orchestrator(message, requirements=self.EXPOSED)
+        return orch.run(user_prompt="q", conversation=[], preference_markdown="")
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            # The round-2 review's replies, which follow the catalog's wording.
+            "Mixed Co is remote. Evidence: 1 verified, 1 stale, 5 unknown.",
+            "Mixed Co — evidence 1 of 7 facts verified, 1 stale.",
+            "Mixed Co has 1 verified fact and 1 stale fact; 5 are unknown.",
+            "Mixed Co: evidence 7 facts tracked.",
+            "Mixed Co: facts=verified:1,stale:1,unknown:5,newest_verified=2025-12-13.",
+            "Evidence: 2 pending review. Evidence: 3 facts verified.",
+            "Evidence:\n1 verified\n1 stale",
+        ],
+    )
+    def test_a_reply_that_restates_the_fact_counts_is_not_a_citation(self, message):
+        assert self._run(message).message == message
+
+    @pytest.mark.parametrize("count", range(0, 21))
+    def test_every_count_wording_passes_whatever_the_number(self, count):
+        """None of 0-20 is read as an id; 6 and 7 are exposed, the rest are not."""
+        for message in (
+            f"Evidence: {count} verified, {count} stale, {count} unknown.",
+            f"evidence {count} of 20 facts verified",
+            f"Evidence: {count} facts, {count} pending review.",
+            f"evidence {count} fact",
+        ):
+            assert self._run(message).message == message
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Backed by [evidence=99].",
+            "Backed by [evidence=99,stale,last_verified=2025-08-15].",
+            "Backed by evidence=99 verified.",
+            "Backed by evidence #99 verified.",
+            "Backed by evidence id 99 of 100.",
+            "Backed by evidence id: 99.",
+            "Backed by evidence ID #99.",
+            "Backed by evidence 99.",
+            "Backed by evidence: 99.",
+            "Backed by evidence 99, last verified 2025-08-15.",
+            "Backed by evidence 99 (verified).",
+            "Evidence 99 is verified.",
+            "Evidence: 1 verified. See evidence 99.",
+            # A count wording does not hide a longer id behind its first digit.
+            "Backed by evidence 199.",
+        ],
+    )
+    def test_a_fabricated_evidence_id_is_still_rejected(self, message):
+        with pytest.raises(InvalidRequirementReferenceError) as raised:
+            self._run(message)
+        assert str(raised.value).endswith(
+            "not exposed by the match tool: %s" % ("199" if "199" in message else "99")
+        )
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Remote per [evidence=6].",
+            "Remote per evidence 6; funding per [evidence=7,stale,last_verified=never].",
+            "Remote per evidence #6 and evidence id 7.",
+            "Evidence: 1 verified, 1 stale. Remote per evidence=6.",
+        ],
+    )
+    def test_a_genuine_citation_is_still_accepted(self, message):
+        assert self._run(message).message == message
+
     def test_outcome_evidence_id_is_exposed_for_citation(self):
         """An evidence id tied to an outcome (source_kind='evidence') is citable,
         even when it is not in the row-level evidence_ids list."""

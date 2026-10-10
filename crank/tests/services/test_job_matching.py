@@ -804,7 +804,7 @@ class HelperFunctionTests(TestCase):
     def test_rto_label_known(self):
         assert _rto_label("R") == "Remote"
         assert _rto_label("H") == "Hybrid"
-        assert _rto_label("O") == "In-office"
+        assert _rto_label("O") == "In-Office"
 
     def test_rto_label_unknown_code(self):
         assert _rto_label("X") == "X"
@@ -827,7 +827,7 @@ class HelperFunctionTests(TestCase):
         from crank.agents.jobs.matching import RequirementOutcome, reasons_from_requirements
 
         outcomes = [RequirementOutcome("work_location.modes", "match", "in-office", "field", "organization.rto_policy")]
-        assert "In-office" in reasons_from_requirements(outcomes)
+        assert "In-Office" in reasons_from_requirements(outcomes)
 
     def test_reasons_from_requirements_salary(self):
         from crank.agents.jobs.matching import RequirementOutcome, reasons_from_requirements
@@ -1282,7 +1282,12 @@ class CrossSurfaceReasonTests(TestCase):
         self.org = Organization.objects.create(
             name="PublicCo", funding_round="P", rto_policy="R",
         )
-        make_evidence(self.org, "public_status", "Public company")
+        # A verified fact: reasons restate only facts whose evidence carries
+        # no qualifier (issue #473), and a never-verified row reads as stale.
+        self.evidence = make_evidence(self.org, "public_status", "Public company")
+        CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).update(
+            last_verified_at=timezone.now()
+        )
         self.source = JobSourceCatalog.objects.create(
             name="Synthetic", adapter_key="synthetic.v1",
             base_url="https://jobs.example.test", enabled=True,
@@ -1316,3 +1321,67 @@ class CrossSurfaceReasonTests(TestCase):
 
         assert service_reasons == tool_reasons
         assert service_reasons[self.listing.pk] == ["Salary 150,000+", "Public company"]
+
+    def test_every_surface_withholds_the_reason_for_a_stale_or_replaced_fact(self):
+        """A stale or replaced fact is not restated as a bare reason on any
+        user-facing surface; the chip carries the date or the change. What an
+        accepted, current source says in prose keeps its reason."""
+        from crank.agents.job_search.tools import get_matches_for_user
+
+        kept = ["Salary 150,000+", "Public company"]
+        cases = [
+            ("stale", {"last_verified_at": None}, ["Salary 150,000+"]),
+            ("stale", {"last_verified_at": timezone.now() - timedelta(days=400)},
+             ["Salary 150,000+"]),
+            ("sourced", {"value_text": "Publicly listed on NASDAQ"}, kept),
+            ("superseded", {"state": CompanyFieldEvidence.State.SUPERSEDED},
+             ["Salary 150,000+"]),
+        ]
+        self.client.force_login(self.user)
+        for state, change, expected in cases:
+            with self.subTest(state=state):
+                CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).update(
+                    value_text="Public company", last_verified_at=timezone.now(),
+                    state=CompanyFieldEvidence.State.ACCEPTED,
+                )
+                service = match_jobs(self.user, limit=10)[0]
+                assert service.reasons == ["Salary 150,000+", "Public company"]
+                requirements = [dict(r) for r in service.requirements]
+                CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).update(**change)
+
+                if state == "superseded":
+                    # Only a stored outcome can still cite a replaced row.
+                    from crank.services.company_evidence import (
+                        annotate_requirement_evidence, unqualified_reasons,
+                    )
+                    annotated = annotate_requirement_evidence([requirements])[0]
+                    surfaces = [unqualified_reasons(service.reasons, annotated)]
+                else:
+                    tool = get_matches_for_user(self.user, limit=10)["job_matches"][0]
+                    ranked = self.client.get("/api/job-matches/ranked/").json()["job_matches"][0]
+                    annotated = ranked["requirements"]
+                    surfaces = [tool["reasons"], ranked["reasons"]]
+                public = next(
+                    r for r in annotated if r["path"] == "compensation.require_public_company"
+                )
+                assert public["evidence_status"]["state"] == state
+                for reasons in surfaces:
+                    assert reasons == expected
+
+    def test_a_reason_another_unqualified_requirement_still_gives_is_kept(self):
+        from crank.services.company_evidence import unqualified_reasons
+
+        requirements = [
+            {"path": "work_location.modes", "status": "match", "observed": "remote",
+             "source_kind": "evidence", "source_id": 1,
+             "evidence_status": {"state": "stale"}},
+            {"path": "work_location.modes", "status": "match", "observed": "remote",
+             "source_kind": "field", "source_id": "listing.is_remote",
+             "evidence_status": None},
+            "not-a-dict",
+        ]
+        assert unqualified_reasons(["Remote", "Hand-written"], requirements) == [
+            "Remote", "Hand-written",
+        ]
+        assert unqualified_reasons(["Remote", "Hand-written"], requirements[:1]) == ["Hand-written"]
+        assert unqualified_reasons(None, None) == []

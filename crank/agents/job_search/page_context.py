@@ -36,7 +36,7 @@ def _load_organizations(ids: list[int]) -> list[dict[str, Any]]:
     # employer resolution: active and ``public=True``. (Publicly traded is a
     # separate fact: ``funding_round == "P"``.)
     rows = Organization.objects.filter(status=1, public=True, id__in=ids)
-    return tools.normalize_organization_rows(list(rows))
+    return tools.normalize_organization_rows(tools.attach_evidence_summaries(list(rows)))
 
 
 def _load_listing(listing_id: int) -> dict[str, Any] | None:

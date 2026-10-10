@@ -3,7 +3,7 @@
 import * as React from 'react';
 import {createPortal} from 'react-dom';
 import {lockBackground, unlockBackground} from './modalIsolation';
-import {EvidenceStatusKey, fieldKeyLabel} from './labels';
+import {EvidenceStatusKey, FUNDING_ROUND_LABELS, RTO_POLICY_LABELS, fieldKeyLabel} from './labels';
 import EvidenceBadge from './evidence/EvidenceBadge';
 import EvidenceDetails, {EvidenceData, EvidenceSkeleton} from './evidence/EvidenceDetails';
 import {setCachedProvenance} from './provenanceCache';
@@ -417,26 +417,9 @@ const OrganizationDetailsPopup: React.FC<OrganizationDetailsPopupProps> = ({
         );
     };
 
-    // Map funding round codes to display names
-    const fundingRoundMap: Record<string, string> = {
-        'S': 'Seed',
-        'A': 'Series A',
-        'B': 'Series B',
-        'C': 'Series C',
-        'D': 'Series D',
-        'E': 'Series E',
-        'F': 'Series F',
-        'X': 'Series G or Later',
-        'O': 'Other Private',
-        'P': 'Public'
-    };
-
-    // Map RTO policy codes to display names
-    const rtoPolicyMap: Record<string, string> = {
-        'R': 'Remote',
-        'H': 'Hybrid',
-        'O': 'In-Office'
-    };
+    // Funding-round and RTO words are shared by every surface (issue #473).
+    const fundingRoundMap = FUNDING_ROUND_LABELS;
+    const rtoPolicyMap = RTO_POLICY_LABELS;
 
     // Map organization type codes to display names
     const typeMap: Record<string, string> = {
