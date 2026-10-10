@@ -2,7 +2,7 @@
 Licensed under the MIT License. See LICENSE file in the project root for full license information. -->
 
 Owner: maintainer (crank.fyi)
-Last reviewed: 2026-09-14
+Last reviewed: 2026-10-09
 Version/change process: update this runbook with every scheduling or rollout-policy change.
 
 # Crawl scheduling runbook
@@ -130,16 +130,35 @@ readiness gate treats a queued row as an active/overlapping run.
 
 ## Staging enablement
 
-1. Review the approved/enabled `SourceCatalog` and `JobSourceCatalog` rows and
-   provision provider credentials through the existing Kubernetes Secret. Do
-   not put credentials in a ConfigMap or repository file.
-2. Set `AGENT_RUN_ENABLED=true` and `CRAWL_CRON_ENABLED=true` in
-   `crank-agent-config` (plus `JOB_PIPELINE_ENABLED=true` for job ingestion).
+**On the cluster the deploy workflows manage, steps 1 and 2 cannot be made to
+last until [#555](https://github.com/norcalipa/crank/issues/555) is fixed:**
+every deploy blanks the capability credentials and re-applies the checked-in
+flags. Do not commit a capability flag before then, and see "Durable
+enablement rule" in `docs/rollout-gates.md` for what happens if one is. An
+environment that those workflows do not deploy to is not affected.
+
+1. Review the approved/enabled `SourceCatalog` and `JobSourceCatalog` rows.
+   Provider credentials are read from the `crank-capability-secrets`
+   Kubernetes Secret. Do not put credentials in a ConfigMap or repository
+   file. There is no supported way to make a key in that Secret survive a
+   deploy yet (#555), so this runbook gives no command for it.
+2. Once #555 is fixed, set the flags by commits to
+   `k8s/crank-agent-config.yml`, one pull request each: first the master flag
+   `AGENT_RUN_ENABLED: "true"`, then `CRAWL_CRON_ENABLED: "true"` for
+   organization profiles (`JOB_PIPELINE_ENABLED: "true"` for job ingestion is
+   its own phase and its own pull request). Every deploy re-applies that
+   file, so a flag edited only in the cluster is reverted by the next merge
+   to `main`. Run the post-merge check after each merge.
    Start with the default `168` hours for organization profiles, then adjust
    `ORGANIZATION_FRESHNESS_HOURS` if the source terms and provider budget
    support a tighter target.
-3. Apply `k8s/crank-crawl-cron.yaml` with the CronJob still suspended. Run a
-   one-off bounded smoke test first:
+3. The deploy workflows apply `k8s/crank-crawl-cron.yaml` on every deploy
+   with the CronJob still suspended (do not `kubectl apply -f` the file
+   directly: its image tag is the literal `${GITHUB_SHA}` until the workflow
+   substitutes it). Run a one-off bounded smoke test first. The second
+   command below works only if `crank-job-pipeline` exists; no deploy creates
+   it, and `docs/runbook-initial-crawl.md`, step 7, gives the one manual
+   command that does and what it costs:
 
    ```sh
    kubectl -n crank create job --from=cronjob/crank-crawl-organizations crawl-smoke-$(date +%s)
@@ -154,12 +173,20 @@ readiness gate treats a queued row as an active/overlapping run.
    ```
 
 4. Inspect the command's aggregate counters and source timestamps. Unsuspend
-   only the phase that has passed the smoke test:
+   only the phase that has passed the smoke test. For organization profiles,
+   once #555 is fixed, commit `spec.suspend: false` in
+   `k8s/crank-crawl-cron.yaml` (`crank-crawl-organizations`): every deploy
+   re-applies that file, so a `kubectl patch` on it is reverted by the next
+   merge to `main`. For job sources, a `crank-job-pipeline` that was created
+   by hand from `deploy/cronjob-job-pipeline.yaml` is re-applied by no
+   deploy, so this patch stays in place — and so does its image tag:
 
    ```sh
-   kubectl -n crank patch cronjob crank-crawl-organizations -p '{"spec":{"suspend":false}}'
    kubectl -n crank patch cronjob crank-job-pipeline -p '{"spec":{"suspend":false}}'
    ```
+
+   See "Durable enablement rule" in `docs/rollout-gates.md` for the decision
+   record and the check to run after the merge.
 
 ## Production override and rollback
 
@@ -171,9 +198,20 @@ database-backed `crawl_schedule` singleton guard, source limits, and deadline
 guardrails. (The former `JOB_CRAWL_CRON` override is obsolete: job freshness is
 the pipeline's `0 */6 * * *` schedule.)
 
-To pause without deleting resources, set the CronJob's `spec.suspend=true`
-and/or set `CRAWL_CRON_ENABLED=false` (the scheduler command exits without
-claiming work; `JOB_PIPELINE_ENABLED=false` pauses job ingestion the same way).
+To pause without deleting resources, disable the database `CapabilitySwitch`
+(`crawl_schedule` for the organization schedule, `job_pipeline` for job
+ingestion) in Django admin: it takes effect on the next run and no deploy
+overwrites it. Then make the pause durable in the repository: commit
+`spec.suspend: true` in `k8s/crank-crawl-cron.yaml` and/or
+`CRAWL_CRON_ENABLED: "false"` (`JOB_PIPELINE_ENABLED: "false"` for job
+ingestion) in `k8s/crank-agent-config.yml`; the command then exits without
+claiming work. A `kubectl patch` or flag edit made only in the cluster is
+reverted by the next deploy, except on `crank-job-pipeline`, whose manifest
+is not re-applied. When reverting flags, leave the master flag
+`AGENT_RUN_ENABLED` until every flag that depends on it is `"false"`: with
+`CRAWL_CRON_ENABLED` or `JOB_PIPELINE_ENABLED` still true and the master flag
+off, `GET /healthz/ready/` returns 503 and new web pods fail their readiness
+probe.
 If a provider is failing, pause that phase, leave its source timestamp stale
 for a bounded retry after remediation, and inspect `crawl_planning` telemetry
 before resuming. A manual bounded organization dispatch is available with:

@@ -19,7 +19,15 @@ The command is a thin composition of the existing safe helpers:
   schema revision and the loaded fixture set rather than aggregate counts;
 - latest ``AgentRun`` per run type with its terminal status and a sanitized
   error summary;
-- source counts mirroring ``crank.admin_dashboard._aggregate_counts()``.
+- source counts mirroring ``crank.admin_dashboard._aggregate_counts()``;
+- aggregate user-data row counts (``data_counts``), so two records taken
+  before and after a rollback show that stored data was preserved;
+- the effective ``CapabilitySwitch`` state of the capabilities the verdict
+  depends on (``capability_switches``), because the settings-only capability
+  report cannot see a capability an operator disabled by its switch;
+- a ``release_verdict`` computed only from the record itself, so a
+  fixture-backed, capability-disabled, switch-disabled or switch-unreadable
+  record cannot be read as production readiness (issue #492).
 
 The record never contains secret values: configured secret settings are
 scrubbed from any free-text field before serialization, and the helpers above
@@ -39,8 +47,13 @@ from django.utils import timezone
 
 from crank.capability import capability_report
 from crank.models.agent_run import AgentRun
-from crank.models.job import JobSourceCatalog
+from crank.models.company_profile import CompanyFieldEvidence
+from crank.models.job import JobListing, JobSourceCatalog
+from crank.models.job_match import JobMatch
+from crank.models.job_search import JobSearchConversation, JobSearchMessage
+from crank.models.monitoring import CapabilitySwitch
 from crank.models.organization import Organization
+from crank.models.preference import UserPreference
 from crank.release import (
     UNKNOWN,
     _safe_job_search_provider,
@@ -236,9 +249,170 @@ def source_counts() -> dict:
     }
 
 
+def assistant_provider() -> dict:
+    """Whether the assistant endpoint can build its provider right now.
+
+    ``capability_report()`` only checks that ``LLM_PROVIDER`` is non-empty, so
+    a value no provider class answers to still reports ``ok``. This asks the
+    factory ``GET /api/agent/assistant-status/`` asks (``_build_provider()``,
+    config-only: no network or credential read), and records whether the
+    provider class is the offline placeholder, which builds but never calls a
+    real model. Booleans only; the exception text is never recorded.
+    """
+    from crank.agents.job_search.demo import _build_provider
+    from crank.agents.llm import FakeLLMProvider, _import_provider
+
+    try:
+        _build_provider()
+        builds = True
+    except Exception:  # noqa: BLE001 - any failure means "cannot serve"
+        builds = False
+    try:
+        placeholder = issubclass(
+            _import_provider(getattr(settings, "LLM_PROVIDER", "")), FakeLLMProvider
+        )
+    except Exception:  # noqa: BLE001
+        placeholder = False
+    return {"builds": builds, "offline_placeholder": placeholder}
+
+
+def listing_counts() -> dict:
+    """ACTIVE listings the product can match: approved, enabled sources only.
+
+    The same filter ``assistant_status._inventory_ready()`` and
+    ``match_persist.match_inventory()`` use. ``check_inventory_health()`` counts
+    listings under any source, so a disabled or blocked source's listings are
+    live there and ignored by matching. Integers only.
+    """
+    return {
+        "active_from_live_sources": JobListing.objects.filter(
+            status=JobListing.Status.ACTIVE,
+            source__approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            source__enabled=True,
+        ).count()
+    }
+
+
+def data_counts() -> dict:
+    """Return aggregate user-data row counts (integers only).
+
+    Two records taken before and after a disablement or rollback can be
+    compared to show stored conversations, preferences, matches and accepted
+    evidence were preserved. No identifier or text is ever included.
+
+    Cost: seven ``COUNT`` queries, three of them over ``JobMatch`` (``seen_at``
+    has no index). That is acceptable while the command is run by hand for a
+    release decision; revisit it before any schedule calls this command.
+    """
+    matches = JobMatch.objects.all()
+    return {
+        "conversations": JobSearchConversation.objects.count(),
+        "messages": JobSearchMessage.objects.count(),
+        "saved_preferences": UserPreference.objects.count(),
+        "job_matches": matches.count(),
+        "job_matches_seen": matches.filter(seen_at__isnull=False).count(),
+        "job_matches_dismissed": matches.filter(dismissed=True).count(),
+        "accepted_company_evidence": CompanyFieldEvidence.objects.filter(
+            state=CompanyFieldEvidence.State.ACCEPTED
+        ).count(),
+    }
+
+
+#: Capabilities ``release_verdict`` requires. Each name is both its entry in
+#: the settings-based capability report and its ``CapabilitySwitch`` key.
+VERDICT_CAPABILITIES = ("interactive_agent", "job_pipeline")
+
+
+def capability_switches() -> dict:
+    """Effective ``CapabilitySwitch`` state for the verdict's capabilities.
+
+    The capability report reads settings flags only. The database switch is
+    the documented immediate rollback, so its state is recorded beside the
+    report: an absent row means enabled, exactly as the runtime reads it.
+
+    The rows are read here rather than through
+    ``monitoring.capability_enabled()``, which returns its default when the
+    query fails: for a readiness verdict an unreadable switch must not count
+    as enabled, so a failed read records ``"unknown"`` for every capability.
+    """
+    try:
+        rows = dict(
+            CapabilitySwitch.objects.filter(
+                key__in=VERDICT_CAPABILITIES
+            ).values_list("key", "enabled")
+        )
+    except Exception:  # noqa: BLE001 - fail closed on any DB error
+        return {name: UNKNOWN for name in VERDICT_CAPABILITIES}
+    return {name: bool(rows.get(name, True)) for name in VERDICT_CAPABILITIES}
+
+
+def _capability_blockers(record: dict, name: str) -> list[str]:
+    """Blocker codes for one capability: settings report, then its switch."""
+    blockers = []
+    capabilities = (record.get("capabilities") or {}).get("capabilities") or []
+    entry = next((cap for cap in capabilities if cap.get("name") == name), None)
+    if entry is None or not entry.get("enabled"):
+        blockers.append(f"{name}_disabled")
+    elif entry.get("issues") or not entry.get("ok", True):
+        blockers.append(f"{name}_misconfigured")
+    # Fail closed: only a recorded ``True`` clears the switch. ``False`` is a
+    # switch an operator turned off; anything else (a failed read, or a record
+    # written before the key existed) is a state nobody read.
+    state = (record.get("capability_switches") or {}).get(name)
+    if state is False:
+        blockers.append(f"{name}_switch_disabled")
+    elif state is not True:
+        blockers.append(f"{name}_switch_unknown")
+    return blockers
+
+
+def release_verdict(record: dict) -> dict:
+    """Say whether a baseline record can stand as production readiness.
+
+    A pure function over the record ``baseline_record()`` builds: it runs no
+    query, so it cannot disagree with the record it is attached to. Each
+    failed condition adds one fixed code to ``blockers`` (documented in
+    ``docs/deployment-baseline-2026-09.md``); ``production_ready`` is true
+    only when there are none.
+    """
+    blockers = []
+    if record.get("env") != "prod":
+        blockers.append("env_not_prod")
+    if (record.get("fixtures") or {}).get("present"):
+        blockers.append("fixtures_present")
+    if record.get("job_search_provider") != "orchestrator":
+        blockers.append("provider_not_orchestrator")
+    if (record.get("migrations") or {}).get("status") != "clean":
+        blockers.append("migrations_not_clean")
+    for name in VERDICT_CAPABILITIES:
+        blockers.extend(_capability_blockers(record, name))
+    if not (record.get("source_counts") or {}).get("enabled"):
+        blockers.append("no_enabled_source")
+    if (record.get("inventory") or {}).get("violations"):
+        blockers.append("inventory_violations")
+    # Fail closed: only a recorded buildable, non-placeholder provider clears it.
+    provider = record.get("assistant_provider") or {}
+    if provider.get("builds") is not True or provider.get("offline_placeholder") is not False:
+        blockers.append("interactive_provider_unbuildable")
+    # Fail closed: a missing count is not a live listing.
+    if not (record.get("listing_counts") or {}).get("active_from_live_sources"):
+        blockers.append("no_live_listing")
+    pipeline_status = next(
+        (
+            run.get("status")
+            for run in record.get("latest_runs") or []
+            if run.get("run_type") == AgentRun.RunType.JOB_PIPELINE
+        ),
+        None,
+    )
+    if pipeline_status != AgentRun.Status.SUCCEEDED:
+        blockers.append("no_successful_pipeline_run")
+    return {"production_ready": not blockers, "blockers": blockers}
+
+
 def baseline_record() -> dict:
     """Assemble the full baseline record from safe helpers only."""
-    return {
+    record = {
         "generated_at": timezone.now().isoformat(),
         "env": str(getattr(settings, "ENV", "") or UNKNOWN),
         "source_version": git_sha(),
@@ -249,10 +423,16 @@ def baseline_record() -> dict:
         "readiness_gates": readiness_gates(),
         "job_search_provider": _safe_job_search_provider(),
         "capabilities": capability_report().to_dict(),
+        "capability_switches": capability_switches(),
+        "assistant_provider": assistant_provider(),
         "inventory": check_inventory_health(),
         "latest_runs": latest_runs(),
         "source_counts": source_counts(),
+        "listing_counts": listing_counts(),
+        "data_counts": data_counts(),
     }
+    record["release_verdict"] = release_verdict(record)
+    return record
 
 
 class Command(BaseCommand):
