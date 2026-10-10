@@ -199,8 +199,19 @@ floor:
 | Gate | Sample (`sample_nrql`) |
 |---|---|
 | `kind: nrql`, ratio query (`a / b`) | the denominator of the ratio — a share of nothing is not a measurement |
-| `kind: nrql`, any other aggregate (`percentile`, `max`, `latest`) | the number of events in the window that carry the attribute the query aggregates. `publication-outbox-age` filters `outbox_oldest_age_seconds IS NOT NULL` because a degraded `pipeline_health` event (`healthy: false`) carries no gauges |
+| `kind: nrql`, any other aggregate (`percentile`, `max`) | the number of events in the window that carry the attribute the query aggregates |
+| `kind: nrql`, a gauge that reads 0 when nothing happened, or a stock that exists before the phase starts (`publication-outbox-age`, `evidence-stale-share`) | the phase's own activity, not the events the value reads. `publication-outbox-age` reads `max(outbox_oldest_age_seconds)` over the probe's `pipeline_health` events (a degraded event, `healthy: false`, carries no gauge) but its sample is `sum(processed)` over completed `publication_sweep` events: an empty outbox with the consumer off reads age 0 on every probe tick, and the probe sends at most 96 events a day whatever the consumer does. `evidence-stale-share` samples completed `company_profile_crawl` stages, because the accepted rows already exist and the freshness policy (90 to 365 days per field) cannot move a share inside a 24-hour window. A window with no sweep or crawl holds |
 | `kind: alerts_quiet` | the number of `signal_event` events in the window that match `signal_filter`: the event the named alerts read, narrowed to the ones this phase emits with a measurement. "No alert opened" is also true when nothing emits, so quiet counts only while the signal is live |
+
+**A sample counts requests and events, not people.** Telemetry has no user
+or session dimension, and the availability endpoints send one event per request
+with no throttle, so one signed-in account polling in a loop (300 polls make 300
+events) or one open tab can meet any floor, and moderated sessions and smoke
+tests count in the same windows. `assistant-ready-share` therefore counts only
+`cached = false` events, at most one per cache period for all signed-in users.
+`job-matches-source-unavailable` and the two success shares have no such
+filter: choose their floors knowing N is a request count, and say so when
+locking them.
 
 The three signal filters, and why each exists:
 
@@ -223,7 +234,15 @@ has `publication_lag_*` attributes.
   history (not by re-running the alert queries, whose own windows are minutes
   or hours). An alert that was already open when the window started counts.
   This is why step 4 below needs the owner to have confirmed the alerts exist
-  in the tool: without a policy there is no history to read.
+  in the tool: without a policy there is no history to read. "Exist" means the
+  alert's query, threshold and window equal its entry under `alerts:` in
+  `docs/monitoring.yaml`, and it has been seen to open once. Seen to open is
+  the check that matters for `deadline-resource-pressure`, which sums
+  `deadline_reached`, an attribute sent as a boolean; whether the alerting tool
+  sums it to a non-zero number is not tested here (see the pending decision in
+  `docs/usability-validation.md`). No quiet gate names `rejection-spike`: it
+  sums `items_failed`, which the job pipeline's `source_stage` events do not
+  carry.
 
 **A clean window.** A gate's queries end `SINCE <window> ago`, so a result
 describes the phase only if the whole window lies after the phase was
@@ -284,11 +303,12 @@ As checked in (`min_sample: null`) all four are hold at step 1.
 *Aggregate gate* — `publication-outbox-age` (`operator: above`), supposing
 `min_sample: 20` and a clean window:
 
-| `sample_nrql` (events with the gauge) | `nrql` (latest age, seconds) | `threshold` | Decided at | Outcome |
+| `sample_nrql` (items processed by completed sweeps) | `nrql` (oldest age in the window, seconds) | `threshold` | Decided at | Outcome |
 |---|---|---|---|---|
 | 24 | 5400 | `null` (as checked in) | step 5 | hold |
 | 24 | 5400 | 3600 | step 6: 5400 is above 3600 | breach |
 | 24 | 600 | 3600 | step 7 | pass |
+| 0 (consumer off, or an empty outbox) | 0 | 3600 | step 3: 0 is below 20 | hold |
 | 0 | no value | 3600 | step 3 | hold |
 
 *Alerts-quiet gate* — `matching-alerts-quiet` (`operator: above`,

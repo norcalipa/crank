@@ -27,6 +27,7 @@ from crank.management.commands.readiness_baseline import (
     baseline_record,
     capability_switches,
     data_counts,
+    listing_counts,
     release_verdict,
 )
 from crank.management.commands.seed_staging_baseline import TARGET_ORG_NAME
@@ -52,6 +53,7 @@ BLOCKER_CODES = (
     "job_pipeline_switch_unknown",
     "no_enabled_source",
     "inventory_violations",
+    "no_live_listing",
     "no_successful_pipeline_run",
 )
 
@@ -83,6 +85,7 @@ def _ready_record() -> dict:
         "capability_switches": {"interactive_agent": True, "job_pipeline": True},
         "source_counts": {"configured": 2, "approved": 1, "enabled": 1},
         "inventory": {"violations": [], "healthy": True},
+        "listing_counts": {"active_from_live_sources": 1},
         "latest_runs": [
             {"run_type": "noop", "status": "failed"},
             {"run_type": "job_pipeline", "status": "succeeded"},
@@ -289,6 +292,16 @@ class ReleaseVerdictTests(SimpleTestCase):
             ["inventory_violations"],
         )
 
+    def test_no_live_listing(self):
+        cases = {
+            "zero": lambda r: r["listing_counts"].update(active_from_live_sources=0),
+            "key missing": lambda r: r["listing_counts"].clear(),
+            "section missing": lambda r: r.pop("listing_counts"),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self._blockers(mutate), ["no_live_listing"])
+
     def test_no_successful_pipeline_run(self):
         cases = {
             "latest run failed": [{"run_type": "job_pipeline", "status": "failed"}],
@@ -322,6 +335,7 @@ class ReleaseVerdictTests(SimpleTestCase):
                 "job_pipeline_disabled",
                 "job_pipeline_switch_unknown",
                 "no_enabled_source",
+                "no_live_listing",
                 "no_successful_pipeline_run",
             ],
         )
@@ -348,6 +362,7 @@ class ReleaseVerdictTests(SimpleTestCase):
         def worst(record):
             record["fixtures"]["present"] = True
             record["inventory"]["violations"] = ["zero active listings"]
+            record["listing_counts"]["active_from_live_sources"] = 0
             for name in VERDICT_CAPABILITIES:
                 _capability(record, name)["ok"] = False
                 record["capability_switches"][name] = False
@@ -357,6 +372,7 @@ class ReleaseVerdictTests(SimpleTestCase):
         self.assertIn("`release_verdict`", doc)
         self.assertIn("`data_counts`", doc)
         self.assertIn("`capability_switches`", doc)
+        self.assertIn("`listing_counts`", doc)
 
 
 class ReleaseVerdictCommandTests(TestCase):
@@ -458,12 +474,109 @@ class ReleaseVerdictCommandTests(TestCase):
             capability_switches(), {"interactive_agent": True, "job_pipeline": False}
         )
 
+    def _ready_real_state(self):
+        """Rows and settings that make the real record all-clear."""
+        from crank.models.agent_run import AgentRun
+        from crank.models.job import JobListing, JobSourceCatalog
+
+        source = JobSourceCatalog.objects.create(
+            name="Live Source",
+            adapter_key="usajobs",
+            base_url="https://data.usajobs.gov/",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+            last_crawl_at=timezone.now(),
+        )
+        listing = JobListing.all_objects.create(
+            source=source,
+            external_id="live-1",
+            canonical_url="https://jobs.example.test/listings/live-1",
+            employer_name="Example Corp",
+            title="Software Engineer",
+            status=JobListing.Status.ACTIVE,
+            first_seen_at=timezone.now(),
+            last_seen_at=timezone.now(),
+        )
+        AgentRun.objects.create(
+            run_type=AgentRun.RunType.JOB_PIPELINE,
+            status=AgentRun.Status.SUCCEEDED,
+        )
+        return source, listing
+
+    def _ready_settings(self):
+        return override_settings(
+            ENV="prod",
+            JOB_SEARCH_PROVIDER="orchestrator",
+            INTERACTIVE_AGENT_ENABLED=True,
+            LLM_PROVIDER="openai",
+            LLM_MODEL="model-x",
+            LLM_API_KEY="not-a-real-key",
+            JOB_PIPELINE_ENABLED=True,
+            AGENT_RUN_ENABLED=True,
+        )
+
+    def test_real_record_can_be_production_ready(self):
+        """The all-clear verdict, on the record the command builds, not a dict."""
+        self._ready_real_state()
+        with self._ready_settings():
+            record = baseline_record()
+        self.assertEqual(
+            record["release_verdict"], {"production_ready": True, "blockers": []}
+        )
+        self.assertEqual(record["listing_counts"], {"active_from_live_sources": 1})
+
+    def test_listings_under_a_disabled_or_blocked_source_are_not_live(self):
+        """Matching ignores them, so the verdict must not count them."""
+        from crank.models.job import JobSourceCatalog
+
+        source, _ = self._ready_real_state()
+        # A second approved, enabled source with no listings keeps
+        # ``no_enabled_source`` clear, as a successful empty fetch would.
+        JobSourceCatalog.objects.create(
+            name="Empty Source",
+            adapter_key="usajobs",
+            base_url="https://data.usajobs.gov/",
+            approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            enabled=True,
+            last_crawl_at=timezone.now(),
+        )
+        states = {
+            "disabled": {"enabled": False},
+            "blocked": {
+                "approval_state": JobSourceCatalog.ApprovalState.BLOCKED,
+                "enabled": True,
+            },
+        }
+        for label, changes in states.items():
+            with self.subTest(label):
+                JobSourceCatalog.objects.filter(pk=source.pk).update(**changes)
+                with self._ready_settings():
+                    record = baseline_record()
+                # The old evidence: inventory health still sees a listing.
+                self.assertEqual(record["inventory"]["violations"], [])
+                self.assertEqual(record["listing_counts"], {"active_from_live_sources": 0})
+                self.assertEqual(
+                    record["release_verdict"],
+                    {"production_ready": False, "blockers": ["no_live_listing"]},
+                )
+
+    def test_inactive_listing_is_not_live(self):
+        from crank.models.job import JobListing
+
+        _, listing = self._ready_real_state()
+        JobListing.all_objects.filter(pk=listing.pk).update(
+            status=JobListing.Status.EXPIRED
+        )
+        self.assertEqual(listing_counts(), {"active_from_live_sources": 0})
+
     def test_fixture_backed_record_is_not_production_ready(self):
         call_command("seed_staging_baseline", stdout=io.StringIO())
         record = baseline_record()
         self.assertIs(record["fixtures"]["present"], True)
         self.assertIn("fixtures_present", record["release_verdict"]["blockers"])
         self.assertIs(record["release_verdict"]["production_ready"], False)
+        # A decision record still carries the counts that show data preserved.
+        self.assertEqual(set(record["data_counts"]), DATA_COUNT_KEYS)
 
 
 class DataCountsTests(TestCase):

@@ -48,7 +48,7 @@ from django.utils import timezone
 from crank.capability import capability_report
 from crank.models.agent_run import AgentRun
 from crank.models.company_profile import CompanyFieldEvidence
-from crank.models.job import JobSourceCatalog
+from crank.models.job import JobListing, JobSourceCatalog
 from crank.models.job_match import JobMatch
 from crank.models.job_search import JobSearchConversation, JobSearchMessage
 from crank.models.monitoring import CapabilitySwitch
@@ -249,6 +249,23 @@ def source_counts() -> dict:
     }
 
 
+def listing_counts() -> dict:
+    """ACTIVE listings the product can match: approved, enabled sources only.
+
+    The same filter ``assistant_status._inventory_ready()`` and
+    ``match_persist.match_inventory()`` use. ``check_inventory_health()`` counts
+    listings under any source, so a disabled or blocked source's listings are
+    live there and ignored by matching. Integers only.
+    """
+    return {
+        "active_from_live_sources": JobListing.objects.filter(
+            status=JobListing.Status.ACTIVE,
+            source__approval_state=JobSourceCatalog.ApprovalState.APPROVED,
+            source__enabled=True,
+        ).count()
+    }
+
+
 def data_counts() -> dict:
     """Return aggregate user-data row counts (integers only).
 
@@ -346,6 +363,9 @@ def release_verdict(record: dict) -> dict:
         blockers.append("no_enabled_source")
     if (record.get("inventory") or {}).get("violations"):
         blockers.append("inventory_violations")
+    # Fail closed: a missing count is not a live listing.
+    if not (record.get("listing_counts") or {}).get("active_from_live_sources"):
+        blockers.append("no_live_listing")
     pipeline_status = next(
         (
             run.get("status")
@@ -376,6 +396,7 @@ def baseline_record() -> dict:
         "inventory": check_inventory_health(),
         "latest_runs": latest_runs(),
         "source_counts": source_counts(),
+        "listing_counts": listing_counts(),
         "data_counts": data_counts(),
     }
     record["release_verdict"] = release_verdict(record)

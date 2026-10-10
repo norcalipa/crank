@@ -31,7 +31,7 @@ its line here (and, where a line says so, the one value it names).
 | D3 | Where sessions run | **default — owner may change:** a staging instance (`ENV=staging`, orchestrator provider, at least one real approved source). Documented alternative: production as an internal canary with throwaway accounts, after durable enablement — which is not possible until #555 is fixed (see Preconditions). |
 | D4 | Pass bar for A2 | **default — owner may change:** at least 4 of 5 participants answer all four comprehension probes (C1–C4) correctly. |
 | D5 | Sign-offs and where evidence lives | **default — owner may change:** the repository owner signs each role by GitHub handle and date; results are recorded by an owner-authored docs pull request that fills the results record; raw notes never enter the repository. This is the only sign-off mechanism: an approving review is not one. |
-| D6 | How long raw notes and recordings are kept | **default — owner may change:** destroyed when the results record is merged, and in any case no later than 30 days after the last session — also if the round is abandoned or repeated. |
+| D6 | How long raw notes and recordings are kept | **default — owner may change:** the raw notes, recordings and transcripts, the participant-number mapping, the recruiting messages and the calendar invitations are destroyed when the results record is merged, and in any case no later than 30 days after the last session — also if the round is abandoned or repeated. |
 | D7 | Where decision records live and what they may show | **default — owner may change:** each phase decision record is the body of its pull request, which is public. Aggregate `data_counts` and gate values are accepted as public; nothing that identifies a person or quotes typed text may appear. Alternative: keep the record outside the repository and put only the decision and the sign-off in the pull request. |
 
 ### Sample floors and alert policies to lock
@@ -42,7 +42,31 @@ events in its window the outcome is hold. Until the owner supplies N the gate
 holds whatever its query returns, so no gate can pass today. The three
 `alerts_quiet` gates also need the owner to confirm that the named alerts
 exist in the alerting tool, because nothing in the repository creates them.
-Rules: `docs/monitoring.md`, "Release decision gates".
+"Exist" means more than a name: the alert's query, threshold and window equal
+its entry under `alerts:` in `docs/monitoring.yaml`, and it has been seen to
+open once. Rules: `docs/monitoring.md`, "Release decision gates".
+
+**Open: does `deadline-resource-pressure` ever open?** It is
+`sum(deadline_reached)` over `matching_batch`, and `deadline_reached` is sent
+as a boolean. NRQL does not coerce types, and this cannot be tested from the
+repository. The owner decides, when checking the alert policy for
+`matching-alerts-quiet`: if the alerting tool sums it to a non-zero number when
+a drain stops at its deadline, nothing changes; if it does not, the alert needs
+a numeric attribute or a `count` of `deadline_reached = true`, which is a change
+to `alerts:` and belongs in the gate-locking pull request, not here. Until
+then `matching-alerts-quiet` is not evidence about deadline pressure.
+
+**A floor counts requests and events, not people.** Telemetry carries no user
+or session dimension, and the availability endpoints send one event per
+request with no throttle: one signed-in account polling in a loop, or one
+open tab, can supply a whole floor, and sign-up is open. The five moderated
+sessions and the owner's own smoke tests fall in the same windows and can be
+most of a sample; nothing excludes them. An outsider can pad a sample, and can
+lower a success share (an apply with a stale token counts as a failed apply).
+Choose N knowing it is a request count. `assistant-ready-share` counts only
+`cached = false` events: the classification is cached for every signed-in user
+at once, so that is at most one event per cache period however many clients
+poll.
 
 | Gate | What the floor counts | Window | Floor N | Alert policy |
 |---|---|---|---|---|
@@ -51,12 +75,12 @@ Rules: `docs/monitoring.md`, "Release decision gates".
 | `interactive-alerts-quiet` | `interactive_call` events with `status = 'provider_succeeded'` (live signal; error events do not count) | 7 days | not set | not confirmed |
 | `interactive-time-to-first-result` | `assistant_first_result` events | 14 days | not set | — |
 | `job-source-alerts-quiet` | `inventory_health` events that carry the gauges (live signal; a degraded probe event does not count) | 7 days | not set | not confirmed |
-| `job-matches-source-unavailable` | `availability_state` events for `job_matches`, every state | 7 days | not set | — |
-| `assistant-ready-share` | `availability_state` events for `assistant_status`, signed-out excluded | 7 days | not set | — |
-| `publication-outbox-age` | `pipeline_health` events that carry the outbox age gauge | 24 hours | not set | — |
+| `job-matches-source-unavailable` | `availability_state` events for `job_matches`, every state (a request count; one account can supply it) | 7 days | not set | — |
+| `assistant-ready-share` | `availability_state` events for `assistant_status`, signed-out excluded, `cached = false` only (one per cache period) | 7 days | not set | — |
+| `publication-outbox-age` | items a completed `publication_sweep` processed (the sum of `processed`): an empty outbox with the consumer off reads age 0 on every probe tick, so the probe's events are not the sample | 24 hours | not set | — |
 | `publication-to-match-lag` | `matching_batch` events from the `match_recompute` stage with a measured lag | 14 days | not set | — |
 | `matching-alerts-quiet` | `matching_batch` events from the `match_recompute` stage (live signal) | 7 days | not set | not confirmed |
-| `evidence-stale-share` | accepted evidence rows in the latest `pipeline_health` event | 24 hours | not set | — |
+| `evidence-stale-share` | completed `company_profile_crawl` stages (`source_stage` events): the accepted rows exist before the phase starts and the 90–365 day freshness policy cannot change a share inside the window, so only a crawl in the window shows the phase ran | 24 hours | not set | — |
 
 ## Preconditions
 
@@ -131,6 +155,12 @@ Before each session, the moderator confirms aloud and ticks:
 - [ ] The participant knows what is written down: task outcomes, timings,
       probe answers and paraphrased confusion notes, under a participant
       number.
+- [ ] The participant knows the results are **published**: the results
+      record goes in a pull request to this repository, which is public, and
+      git history keeps it, so a merged row cannot be removed. Per
+      participant number it holds fresh or returning, screen width, task
+      outcomes, timings and probe answers, beside the session dates. The
+      participant can withdraw their row until the pull request is merged.
 - [ ] The participant knows what the moderator does not write down: their
       name, contact details, employer, real pay, real job preferences, and
       the words they type or the assistant replies.
@@ -147,6 +177,11 @@ Before each session, the moderator confirms aloud and ticks:
 - [ ] The participant has agreed to notes being taken. Audio or screen
       recording happens only with separate explicit agreement, and a
       recording is never stored in the repository or attached to an issue.
+      A recording lives only on the moderator's own device. A conferencing
+      tool that records or transcribes a remote session keeps its own copy
+      under its own terms, so it is switched off unless the participant has
+      agreed to that copy, and the moderator deletes it at the retention
+      limit (D6).
 - [ ] The participant has been asked to use invented priorities rather than
       their real ones.
 - [ ] The participant is using a throwaway account.
@@ -168,12 +203,15 @@ request, or in the results record:
 Further rules:
 
 - Participants are recorded as P1–P5 and nothing else. The mapping from
-  number to person is kept outside the repository by the moderator.
+  number to person is kept outside the repository by the moderator. It, the
+  recruiting messages and the calendar invitations identify the participants
+  more directly than any note, and are destroyed with the raw notes (D6).
 - Confusion is paraphrased ("did not notice the date under the reason"),
   never quoted from what the participant typed or what the assistant
   replied.
-- **Retention limit for raw notes:** raw notes and any recording are
-  destroyed when the results record is merged, and in any case no later than
+- **Retention limit for raw notes:** raw notes, any recording or
+  transcript, the participant-number mapping, the recruiting messages and
+  the calendar invitations are destroyed when the results record is merged, and in any case no later than
   30 days after the last session (D6) — including when the round is
   abandoned or has to be repeated. They never enter the repository.
 
@@ -358,8 +396,8 @@ None of these can be done by a pull request from an implementer.
 7. Run the five sessions with the moderator script.
 8. Score the round against A1 and A2.
 9. Delete the throwaway accounts and confirm the deletion
-   ("Deleting session data"). Destroy raw notes and recordings by the limit
-   in D6. Keep one seeded account that was not used by a participant and
+   ("Deleting session data"). Destroy the raw notes, recordings, mapping,
+   recruiting messages and invitations by the limit in D6. Keep one seeded account that was not used by a participant and
    holds stored results until step 11 is done, so that step has something
    to show preserved; delete it afterwards.
 10. File a follow-up issue for every failed or assisted core task and every
@@ -402,7 +440,7 @@ Empty until the round is run. Filled in by the owner (D5).
 | `release_verdict` | _…_ |
 | Session dates | _…_ |
 | Session accounts deleted (date, confirmed by) | _…_ |
-| Raw notes and recordings destroyed (date) | _…_ |
+| Raw notes, recordings, participant mapping, recruiting messages and invitations destroyed (date) | _…_ |
 
 ### Outcomes
 

@@ -34,6 +34,7 @@ from unittest import mock
 import yaml
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
@@ -100,12 +101,17 @@ PHASE_SWITCHES = {
 }
 
 
-def _nrql(phase, status, operator, threshold, window, select, where, sample):
+def _nrql(
+    phase, status, operator, threshold, window, select, where, sample,
+    sample_where=None,
+):
+    """``sample_where`` is set only for a gate whose sample counts the phase's
+    own activity rather than the events its value reads."""
     return {
         "kind": "nrql", "phase": phase, "switch": PHASE_SWITCHES[phase],
         "status": status, "operator": operator, "threshold": threshold,
         "window": window, "select": select, "where": where,
-        "sample_select": sample,
+        "sample_select": sample, "sample_where": sample_where,
     }
 
 
@@ -118,14 +124,22 @@ def _quiet(phase, window, signal, signal_filter, alerts):
     }
 
 
+#: ``cached = false`` is one event per cache period however many clients poll
+#: (``assistant_status._classification``), so a floor cannot be met by one
+#: account polling in a loop.
 _ASSISTANT_POLLS = (
     "event_name = 'availability_state' AND surface = 'assistant_status'"
-    " AND state != 'signed_out'"
+    " AND state != 'signed_out' AND cached = false"
 )
 _JOB_MATCH_POLLS = "event_name = 'availability_state' AND surface = 'job_matches'"
 _RECOMPUTE_LAG = (
     "event_name = 'matching_batch' AND stage = 'match_recompute'"
     " AND publication_lag_count > 0"
+)
+_SWEEP_COMPLETED = "event_name = 'publication_sweep' AND status = 'completed'"
+_CRAWL_COMPLETED = (
+    "event_name = 'source_stage' AND stage = 'company_profile_crawl'"
+    " AND status = 'completed'"
 )
 _OUTBOX_GAUGE = (
     "event_name = 'pipeline_health' AND outbox_oldest_age_seconds IS NOT NULL"
@@ -161,7 +175,7 @@ PINNED_GATES = {
         "job_source", "7 days", "inventory_health", "enabled_sources IS NOT NULL",
         [
             "zero-enabled-sources", "zero-active-listings", "stale-inventory",
-            "repeated-failures", "listing-collapse", "rejection-spike",
+            "repeated-failures", "listing-collapse",
         ],
     ),
     "job-matches-source-unavailable": _nrql(
@@ -179,7 +193,8 @@ PINNED_GATES = {
     ),
     "publication-outbox-age": _nrql(
         "publication", "baseline_required", "above", None, "24 hours",
-        "latest(outbox_oldest_age_seconds)", _OUTBOX_GAUGE, "count(*)",
+        "max(outbox_oldest_age_seconds)", _OUTBOX_GAUGE, "sum(processed)",
+        sample_where=_SWEEP_COMPLETED,
     ),
     "publication-to-match-lag": _nrql(
         "match_recompute", "baseline_required", "above", None, "14 days",
@@ -193,8 +208,18 @@ PINNED_GATES = {
         "organization_crawl", "baseline_required", "above", None, "24 hours",
         "latest(evidence_stale_rows) / latest(accepted_evidence_rows)",
         "event_name = 'pipeline_health'",
-        "latest(accepted_evidence_rows)",
+        "count(*)",
+        sample_where=_CRAWL_COMPLETED,
     ),
+}
+
+#: Gates whose sample is the phase's own activity, not the events the value
+#: reads: the value is a gauge that is 0 on an empty outbox, or a stock that
+#: exists before the phase starts, so counting its events would meet a floor
+#: with the consumer off or no crawl run.
+ACTIVITY_SAMPLES = {
+    "publication-outbox-age": "sum(processed)",
+    "evidence-stale-share": "count(*)",
 }
 
 #: Which direction is bad for each thing a gate can measure.
@@ -204,7 +229,7 @@ BAD_WHEN = {
     "assistant-ready-share": "below",         # a good-state share
     "interactive-time-to-first-result": "above",  # a duration
     "job-matches-source-unavailable": "above",    # a bad-state share
-    "publication-outbox-age": "above",        # an age
+    "publication-outbox-age": "above",        # an age (the oldest, not the last)
     "publication-to-match-lag": "above",      # a lag
     "evidence-stale-share": "above",          # a stale share
     "interactive-alerts-quiet": "above",      # open alerts
@@ -299,6 +324,21 @@ PINNED_ALERTS = {
     ),
 }
 
+#: Alerts no gate names, pinned all the same: ``alerts:`` is "unchanged", and
+#: that statement holds for every entry or for none.
+#: ``no-recent-success`` opens routinely at a six-hour cadence. ``rejection-spike``
+#: sums ``items_failed``, which the job pipeline's ``source_stage`` events do not
+#: carry (only the organization crawler and score gathering send it), so it
+#: cannot open in the ``job_source`` phase and no gate may count it as quiet.
+PINNED_UNGATED_ALERTS = {
+    "no-recent-success": {
+        "nrql": "SELECT count(*) FROM CrankOperation WHERE"
+        " event_name = 'scheduled_run' AND status = 'succeeded' SINCE 6 hours ago",
+        "threshold": 1,
+        "operator": "below",
+    },
+}
+
 
 def _gate_alert_problems(doc: dict) -> list:
     """Every way ``doc`` differs from the pinned gate ↔ alert relationship."""
@@ -313,9 +353,11 @@ def _gate_alert_problems(doc: dict) -> list:
         if gate["alerts"] != PINNED_GATES[gate["name"]]["alerts"]:
             problems.append(f"{gate['name']}: alerts")
         named.update(gate["alerts"])
-    if named != set(PINNED_ALERTS):
+    if named != set(PINNED_ALERTS) - {"rejection-spike"}:
         problems.append("the gates name a different set of alerts")
-    for name, pinned in PINNED_ALERTS.items():
+    if set(alerts) != set(PINNED_ALERTS) | set(PINNED_UNGATED_ALERTS):
+        problems.append("alerts: is not the pinned set of twelve")
+    for name, pinned in {**PINNED_ALERTS, **PINNED_UNGATED_ALERTS}.items():
         alert = alerts.get(name, {})
         for key, value in pinned.items():
             if alert.get(key) != value:
@@ -466,6 +508,10 @@ def _matches(where: str, attributes: dict) -> bool:
             ok = attributes.get(key) is not None
         elif rest.startswith("= '"):
             ok = attributes.get(key) == rest[3:-1]
+        elif rest.startswith("!= '"):
+            ok = attributes.get(key) != rest[4:-1]
+        elif rest in ("= false", "= true"):
+            ok = attributes.get(key) is (rest == "= true")
         elif rest.startswith("> "):
             ok = (attributes.get(key) or 0) > float(rest[2:])
         else:
@@ -574,9 +620,12 @@ class ReleaseGateShapeTests(SimpleTestCase):
                 since = f" SINCE {pinned['window']} ago"
                 if pinned["kind"] == "nrql":
                     tail = f"{FROM_CLAUSE}WHERE {pinned['where']}{since}"
+                    sample_where = pinned["sample_where"] or pinned["where"]
+                    sample_tail = f"{FROM_CLAUSE}WHERE {sample_where}{since}"
                     self.assertEqual(gate["nrql"], f"SELECT {pinned['select']}{tail}")
                     self.assertEqual(
-                        gate["sample_nrql"], f"SELECT {pinned['sample_select']}{tail}"
+                        gate["sample_nrql"],
+                        f"SELECT {pinned['sample_select']}{sample_tail}",
                     )
                 else:
                     self.assertEqual(gate["alerts"], pinned["alerts"])
@@ -666,6 +715,14 @@ class ReleaseGateShapeTests(SimpleTestCase):
             with self.subTest(gate=gate["name"]):
                 select, tail = _split_query(gate["nrql"])
                 sample_select, sample_tail = _split_query(gate["sample_nrql"])
+                if gate["name"] in ACTIVITY_SAMPLES:
+                    self.assertNotEqual(sample_tail, tail)
+                    self.assertNotIn(
+                        f"event_name = '{gate['event']}'", gate["sample_nrql"]
+                    )
+                    expected_select = ACTIVITY_SAMPLES[gate["name"]]
+                    self.assertEqual(sample_select, expected_select)
+                    continue
                 self.assertEqual(sample_tail, tail)
                 if _is_ratio(gate):
                     self.assertEqual(sample_select, select.split(" / ", 1)[1])
@@ -790,10 +847,17 @@ class ReleaseGateShapeTests(SimpleTestCase):
         def no_recovery(doc):
             alert(doc, "repeated-failure")["recovery"] = " "
 
+        def silent_alert(doc):
+            alert(doc, "no-recent-success")["threshold"] = 0
+
+        def uncounted_rejections(doc):
+            gate(doc, "job-source-alerts-quiet")["alerts"].append("rejection-spike")
+
         original = _load_yaml()
         for mutate in (
             cost_limit, zero_listings, operator, expand_anyway, no_action,
-            drop_alert, remove_definition, no_recovery,
+            drop_alert, remove_definition, no_recovery, silent_alert,
+            uncounted_rejections,
         ):
             doc = copy.deepcopy(original)
             mutate(doc)
@@ -1026,8 +1090,9 @@ class EvaluationProcedureDocTests(SimpleTestCase):
         base = dict(self.gates["publication-outbox-age"], min_sample=20)
         self.assertIn("supposing `min_sample: 20` and a clean window", self.normalized)
         rows = _table_after(self.text, "*Aggregate gate* — `publication-outbox-age`")
-        self.assertEqual(len(rows), 4)
+        self.assertEqual(len(rows), 5)
         for sample, value, threshold, decided, outcome in rows:
+            sample = sample.split(" ")[0]
             with self.subTest(sample=sample, value=value, threshold=threshold):
                 gate = dict(
                     base,
@@ -1171,9 +1236,9 @@ class ReleaseGateTelemetryTests(TestCase):
         where = lag.split(" WHERE ", 1)[1].split(" SINCE ")[0]
         self.assertFalse(_matches(where, unmeasured))
 
-    def test_degraded_health_events_do_not_count_as_outbox_samples(self):
+    def test_degraded_health_events_carry_no_outbox_reading(self):
         gate = {g["name"]: g for g in _gates()}["publication-outbox-age"]
-        where = gate["sample_nrql"].split(" WHERE ", 1)[1].split(" SINCE ")[0]
+        where = gate["nrql"].split(" WHERE ", 1)[1].split(" SINCE ")[0]
         healthy = monitoring.event_attributes(
             "pipeline_health", {"healthy": True, "outbox_oldest_age_seconds": 0}
         )
@@ -1182,6 +1247,69 @@ class ReleaseGateTelemetryTests(TestCase):
         )
         self.assertTrue(_matches(where, healthy))
         self.assertFalse(_matches(where, degraded))
+
+    def test_outbox_gate_needs_a_consumer_that_worked(self):
+        """An empty outbox reads 0 on every probe tick, with the consumer off."""
+        gate = {g["name"]: g for g in _gates()}["publication-outbox-age"]
+        self.assertIn("max(outbox_oldest_age_seconds)", gate["nrql"])
+        self.assertNotIn("latest(", gate["nrql"])
+        where = gate["sample_nrql"].split(" WHERE ", 1)[1].split(" SINCE ")[0]
+        probe = monitoring.event_attributes(
+            "pipeline_health", {"healthy": True, "outbox_oldest_age_seconds": 0}
+        )
+        self.assertFalse(_matches(where, probe), "a probe tick is not a sweep")
+        for status in ("disabled", "failed"):
+            sweep = monitoring.event_attributes(
+                "publication_sweep", {"status": status}
+            )
+            self.assertFalse(_matches(where, sweep), status)
+        done = monitoring.event_attributes(
+            "publication_sweep", {"status": "completed", "processed": 4}
+        )
+        self.assertTrue(_matches(where, done))
+        self.assertEqual(done["processed"], 4)
+
+    def test_evidence_gate_needs_a_crawl_in_its_window(self):
+        """The accepted-row stock exists before the phase starts."""
+        gate = {g["name"]: g for g in _gates()}["evidence-stale-share"]
+        where = gate["sample_nrql"].split(" WHERE ", 1)[1].split(" SINCE ")[0]
+        stock = monitoring.event_attributes(
+            "pipeline_health", {"healthy": True, "accepted_evidence_rows": 7}
+        )
+        self.assertFalse(_matches(where, stock))
+        for stage, status in (
+            ("job_ingest", "completed"),
+            ("company_profile_crawl", "failed"),
+        ):
+            other = monitoring.event_attributes(
+                "source_stage", {"stage": stage, "status": status}
+            )
+            self.assertFalse(_matches(where, other), (stage, status))
+        crawl = monitoring.event_attributes(
+            "source_stage", {"stage": "company_profile_crawl", "status": "completed"}
+        )
+        self.assertTrue(_matches(where, crawl))
+
+    def test_ready_share_floor_is_not_met_by_one_account_polling(self):
+        """300 polls by one signed-in account are one event per cache period."""
+        gate = {g["name"]: g for g in _gates()}["assistant-ready-share"]
+        where = gate["sample_nrql"].split(" WHERE ", 1)[1].split(" SINCE ")[0]
+        self.assertEqual(
+            _split_query(gate["nrql"])[1], _split_query(gate["sample_nrql"])[1]
+        )
+        user = get_user_model().objects.create_user("poller", password="not-real-492")
+        self.client.force_login(user)
+        cache.clear()
+        self.addCleanup(cache.clear)
+        events = []
+        with override_settings(ASSISTANT_STATUS_CACHE_SECONDS=30), mock.patch(
+            "newrelic.agent.record_custom_event",
+            side_effect=lambda name, attributes: events.append(attributes),
+        ):
+            for _ in range(300):
+                self.client.get(reverse("agent-assistant-status"))
+        self.assertEqual(len(events), 300)
+        self.assertEqual(sum(1 for e in events if _matches(where, e)), 1)
 
     def test_filter_evaluator_rejects_clauses_it_does_not_know(self):
         with self.assertRaises(AssertionError):
@@ -1775,6 +1903,50 @@ class RunbookDurableEnablementTests(SimpleTestCase):
         "kubectl -n crank rollout undo deployment/crank",
     )
 
+    #: A sentence that tells the reader to put a credential into a file or a
+    #: ConfigMap. Only a sentence that also says "not" or "never" may match.
+    CREDENTIAL_INSTRUCTION = re.compile(
+        r"\b(paste|put|add|write|store|commit|place|set)\b[^.]{0,100}"
+        r"\b(keys?|credentials?|secrets?)\b[^.]{0,100}"
+        r"(\.ya?ml|configmap|repository|\bfile\b)",
+        re.IGNORECASE,
+    )
+    #: A fenced line that names a credential, or a tool that would carry one.
+    CREDENTIAL_ON_A_COMMAND_LINE = re.compile(
+        r"(?i)(api[_-]?key|auth[_-]?key|secret|password|token|credential"
+        r"|\bhelm\b|--set\b|--set-string|--from-literal|sk-[a-z0-9])"
+    )
+    UNSAFE_CREDENTIAL_INSERTIONS = (
+        "Paste the Firecrawl key into `k8s/crank-capability-secrets.yml` under"
+        " `stringData` and commit it, so it survives deploys.",
+        "Until then, put credentials in the ConfigMap or a repository file.",
+        "Add the API key to a file in the repository.",
+        "```sh\nhelm upgrade crank ./chart -n crank --set-string"
+        " capability.llmApiKey=sk-live-EXAMPLE\n```",
+    )
+
+    @classmethod
+    def _credential_problems(cls, text: str) -> list:
+        """Instructions that would put a credential somewhere it must not go."""
+        problems, prose, inside = [], [], False
+        for line in text.splitlines():
+            if line.strip().startswith("```"):
+                inside = not inside
+            elif inside:
+                if cls.CREDENTIAL_ON_A_COMMAND_LINE.search(line):
+                    problems.append(line.strip())
+            else:
+                prose.append(line)
+        flat = " ".join(" ".join(prose).split())
+        for sentence in re.split(r"(?<=[.!?])\s+", flat):
+            if cls.CREDENTIAL_INSTRUCTION.search(sentence) and not re.search(
+                r"\b(not|never|no)\b", sentence, re.IGNORECASE
+            ):
+                problems.append(sentence)
+        if "```" in text and text.count("```") % 2:
+            problems.append("unbalanced code fence")
+        return problems
+
     @classmethod
     def _kubectl_problems(cls, text: str) -> list:
         """Every mention of ``kubectl`` in ``text`` that is not allowed."""
@@ -1888,6 +2060,25 @@ class RunbookDurableEnablementTests(SimpleTestCase):
         self.assertRegex(
             '{"stringData":{"FIRECRAWL_API_KEY":"<your-key>"}}',
             self.CREDENTIAL_ASSIGNMENT,
+        )
+
+    def test_runbooks_never_instruct_putting_a_credential_in_a_file(self):
+        """Prose and fenced commands: the repository is public, a ConfigMap blanks."""
+        for name in self.RUNBOOKS:
+            text = self._text(name)
+            with self.subTest(runbook=name):
+                self.assertEqual(self._credential_problems(text), [])
+            for insertion in self.UNSAFE_CREDENTIAL_INSERTIONS:
+                with self.subTest(runbook=name, insertion=insertion[:40]):
+                    self.assertTrue(
+                        self._credential_problems(text + "\n\n" + insertion + "\n")
+                    )
+        # The negated form each runbook uses today is not flagged.
+        self.assertEqual(
+            self._credential_problems(
+                "Do not put credentials in a ConfigMap or repository file."
+            ),
+            [],
         )
 
     def test_runbooks_say_what_cannot_be_done_until_555(self):
@@ -2110,12 +2301,15 @@ class UsabilityValidationDocTests(SimpleTestCase):
         """Each item is asserted, not only the heading."""
         section = _section(USABILITY_DOC, "Consent and recording checklist")
         items = [" ".join(item.split()) for item in section.split("- [ ]")[1:]]
-        self.assertEqual(len(items), 8)
+        self.assertEqual(len(items), 9)
         for item, phrase in zip(
             items,
             (
                 "can stop at any time without giving a reason",
                 "knows what is written down: task outcomes, timings, probe answers",
+                "the results are **published**: the results record goes in a pull"
+                " request to this repository, which is public, and git history"
+                " keeps it, so a merged row cannot be removed",
                 "what the moderator does not write down",
                 "**the product itself keeps what they type**",
                 "**not to type real personal details**",
@@ -2199,7 +2393,11 @@ class UsabilityValidationDocTests(SimpleTestCase):
         self.assertIn("Keep one seeded account", checklist)
         record = _section(USABILITY_DOC, "Results record")
         self.assertIn("| Session accounts deleted (date, confirmed by) | _…_ |", record)
-        self.assertIn("| Raw notes and recordings destroyed (date) | _…_ |", record)
+        self.assertIn(
+            "| Raw notes, recordings, participant mapping, recruiting messages and"
+            " invitations destroyed (date) | _…_ |",
+            record,
+        )
 
     def test_assistance_is_defined(self):
         script = " ".join(_section(USABILITY_DOC, "Moderator script").split())
@@ -2370,7 +2568,10 @@ class UsabilityValidationDocTests(SimpleTestCase):
                     self.assertIn("live signal", row[1])
                     self.assertEqual(row[4], "not confirmed")
                 else:
-                    self.assertIn(f"`{gate['event']}`", row[1])
+                    sample_event = re.search(
+                        r"event_name = '([a-z_]+)'", gate["sample_nrql"]
+                    ).group(1)
+                    self.assertIn(f"`{sample_event}`", row[1])
                     self.assertEqual(row[4], "—")
 
     def test_floor_descriptions_name_the_filters_that_narrow_them(self):
@@ -2757,6 +2958,52 @@ PINNED_TEXT = {
         " is accepted as the shell's rollback;",
         "The image rollback alone is undone by the next merge to `main`, so no"
         " other pull request is merged until the revert has deployed",
+        "**Status:** Protocol only — no session has been run",
+        "Merging this document does not complete #492.",
+        "- None is a contributor to this project.",
+        "- Returning participants use a throwaway account prepared for the"
+        " session, not their own.",
+        "Do not start recruiting until every line holds for the release under"
+        " test.",
+        'I cannot help while you work; that is so we learn what the product needs'
+        ' to explain better."',
+        "cite a browser test that is currently skipped and are not passing"
+        " evidence.",
+        "Documented alternative: production as an internal canary with throwaway"
+        " accounts, after durable enablement",
+        "and a recording is never stored in the repository or attached to an"
+        " issue. A recording lives only on the moderator's own device.",
+        "A conferencing tool that records or transcribes a remote session keeps"
+        " its own copy under its own terms, so it is switched off unless the"
+        " participant has agreed to that copy, and the moderator deletes it at"
+        " the retention limit (D6).",
+        "- [ ] The participant knows the results are **published**: the results"
+        " record goes in a pull request to this repository, which is public, and"
+        " git history keeps it, so a merged row cannot be removed.",
+        "The participant can withdraw their row until the pull request is"
+        " merged.",
+        "The mapping from number to person is kept outside the repository by the"
+        " moderator. It, the recruiting messages and the calendar invitations"
+        " identify the participants more directly than any note, and are"
+        " destroyed with the raw notes (D6).",
+        "- **Retention limit for raw notes:** raw notes, any recording or"
+        " transcript, the participant-number mapping, the recruiting messages and"
+        " the calendar invitations are destroyed when the results record is"
+        " merged, and in any case no later than 30 days after the last session"
+        " (D6)",
+        "the raw notes, recordings and transcripts, the participant-number"
+        " mapping, the recruiting messages and the calendar invitations are"
+        " destroyed when the results record is merged",
+        "Before recruiting, the owner checks the provider's retention terms and"
+        " decides whether they are acceptable for the round.",
+        "**A floor counts requests and events, not people.**",
+        "Choose N knowing it is a request count.",
+        '"Exist" means more than a name: the alert\'s query, threshold and window'
+        " equal its entry under `alerts:` in `docs/monitoring.yaml`, and it has"
+        " been seen to open once.",
+        "**Open: does `deadline-resource-pressure` ever open?**",
+        "Until then `matching-alerts-quiet` is not evidence about deadline"
+        " pressure.",
     ),
     "docs/rollout-gates.md": (
         "| `shell` | Playwright Django workflow green on the release SHA;"
@@ -2786,16 +3033,60 @@ PINNED_TEXT = {
         " that merge to deploy.",
         "**Merge no other pull request between step 1 and the deploy of that"
         " revert**: any other merge puts the rolled-back build back.",
+        "Do not record the phase as enabled before all of this holds.",
+        "`interactive_agent`, `job_pipeline` and `crawl` each `enabled: false`;"
+        " `all_ok: true`",
+        "the other four gates' numbers were written for #492 and have not been"
+        " measured or approved.",
+        "`inventory.violations`; fixtures must be absent for a production"
+        " decision_ |",
+        "Merge an enablement pull request only while no deploy run is in"
+        " progress:",
+        "`LLM_PRICE_PER_1K_TOKENS_USD` and `LLM_PER_USER_COST_LIMIT_USD` to"
+        ' `"0"`.',
+        "The enablement pull request for this phase sets a real price and a"
+        " ceiling the owner chose; until then \"quiet\" says nothing about cost"
+        " and the phase has no spend guard.",
+        "`rejection-spike` is not named by `job-source-alerts-quiet`: it sums"
+        " `items_failed`, which the job pipeline's `source_stage` events do not"
+        " carry, so it cannot open in this phase.",
+        "a same-named alert with another threshold does not satisfy it.",
     ),
     "docs/monitoring.md": (
         "**Locking a gate.** After at least 14 days of data with the capability"
         " enabled, a small follow-up pull request sets `min_sample`",
         "An alert that was already open when the window started counts.",
+        "A floor of 1 would let a single event decide a release (one replied turn"
+        " is 100%), so no floor is invented here;",
+        "**A sample counts requests and events, not people.**",
+        "`assistant-ready-share` therefore counts only `cached = false` events,"
+        " at most one per cache period for all signed-in users.",
+        "an empty outbox with the consumer off reads age 0 on every probe tick,",
+        "A window with no sweep or crawl holds",
+        "No quiet gate names `rejection-spike`:",
     ),
     "docs/deployment-baseline-2026-09.md": (
         "(an absent row is `true`, as at runtime)",
         'If the read fails, every value is `"unknown"` — never `true` — and the'
         " verdict adds `*_switch_unknown`.",
+        "`production_ready` is true only with no blockers.",
+        "A fixture-backed, capability-disabled, switch-disabled or"
+        " switch-unreadable record therefore cannot be filed as production"
+        " readiness.",
+        "so two records taken before and after a disablement or rollback show"
+        " stored data was preserved. No identifiers or text.",
+        "ACTIVE listings under an approved **and** enabled source, the only"
+        " listings matching and the assistant status read.",
+        "the verdict adds `no_live_listing` when this is 0 or absent.",
+    ),
+    "docs/runbook-crawl-scheduling.md": (
+        "Provider credentials are read from the `crank-capability-secrets`"
+        " Kubernetes Secret. Do not put credentials in a ConfigMap or repository"
+        " file.",
+    ),
+    "docs/runbook-initial-crawl.md": (
+        "- **Never put a credential in the `crank-agent-config` ConfigMap or in"
+        " any file in the repository.** The repository is public.",
     ),
 }
 
@@ -2848,6 +3139,96 @@ REVIEWED_INVERSIONS = (
      "an absent row is `true`", "an absent row is `false`"),
     ("docs/deployment-baseline-2026-09.md",
      'every value is `"unknown"` — never `true`', "every value is `true`"),
+    # Survivors of the second review (113 mutations, 26 survived).
+    ("docs/usability-validation.md",
+     "**Status:** Protocol only — no session has been run",
+     "**Status:** Complete — five sessions passed"),
+    ("docs/usability-validation.md",
+     "Merging this document does not complete #492.",
+     "Merging this document completes #492."),
+    ("docs/usability-validation.md",
+     "- None is a contributor to this project.",
+     "- Contributors to this project may take part."),
+    ("docs/usability-validation.md",
+     "- Returning participants use a throwaway account prepared for the session,"
+     " not their own.",
+     "- Returning participants use their own account."),
+    ("docs/usability-validation.md",
+     "Do not start recruiting until every line holds for the release under test.",
+     "Recruiting can start before these hold."),
+    ("docs/usability-validation.md",
+     "I cannot help while you work;", "I can help if you get stuck;"),
+    ("docs/usability-validation.md",
+     "currently skipped and are not passing evidence.",
+     "currently skipped and count as passing evidence."),
+    ("docs/usability-validation.md",
+     "production as an internal canary with throwaway accounts,",
+     "production as an internal canary with the participants' own accounts,"),
+    ("docs/usability-validation.md",
+     "and a recording is never stored in the repository or attached to an issue.",
+     "and a recording may be attached to the follow-up issue."),
+    ("docs/usability-validation.md",
+     "The mapping from number to person is kept outside the repository by the"
+     " moderator.",
+     "The mapping from number to person is written in the results record."),
+    ("docs/usability-validation.md",
+     "Before recruiting, the owner checks the provider's retention terms and"
+     " decides whether they are acceptable for the round.",
+     "The provider's retention terms need no check."),
+    ("docs/usability-validation.md",
+     "git history keeps it, so a merged row cannot be removed.",
+     "it can be removed at any time."),
+    ("docs/usability-validation.md",
+     "The participant can withdraw their row until the pull request is merged.", ""),
+    ("docs/usability-validation.md",
+     "the participant-number mapping, the recruiting messages and the calendar"
+     " invitations are destroyed when the results record is merged",
+     "nothing else is destroyed when the results record is merged"),
+    ("docs/usability-validation.md",
+     "and the moderator deletes it at the retention limit (D6).", ""),
+    ("docs/usability-validation.md",
+     "Choose N knowing it is a request count.", ""),
+    ("docs/rollout-gates.md",
+     "Do not record the phase as enabled before all of this holds.", ""),
+    ("docs/rollout-gates.md",
+     "`interactive_agent`, `job_pipeline` and `crawl` each `enabled: false`;",
+     "`interactive_agent`, `job_pipeline` and `crawl` each `enabled: true`;"),
+    ("docs/rollout-gates.md",
+     "and have not been measured or approved.",
+     "and have been measured and approved."),
+    ("docs/rollout-gates.md",
+     "fixtures must be absent for a production decision", ""),
+    ("docs/rollout-gates.md",
+     "Merge an enablement pull request only while no deploy run is in progress:",
+     "Merge an enablement pull request at any time:"),
+    ("docs/rollout-gates.md",
+     "until then \"quiet\" says nothing about cost and the phase has no spend"
+     " guard.",
+     "until then \"quiet\" covers cost."),
+    ("docs/rollout-gates.md",
+     "a same-named alert with another threshold does not satisfy it.",
+     "a same-named alert with another threshold satisfies it."),
+    ("docs/monitoring.md",
+     "so no floor is invented here;", "so the floor is 1 until changed;"),
+    ("docs/monitoring.md",
+     "`assistant-ready-share` therefore counts only `cached = false` events,",
+     "`assistant-ready-share` therefore counts every event,"),
+    ("docs/deployment-baseline-2026-09.md",
+     "therefore cannot be filed as production readiness.",
+     "may still be filed as production readiness."),
+    ("docs/deployment-baseline-2026-09.md",
+     "No identifiers or text.", "Includes account identifiers."),
+    ("docs/deployment-baseline-2026-09.md",
+     "`production_ready` is true only with no blockers.",
+     "`production_ready` is true with at most one blocker."),
+    ("docs/deployment-baseline-2026-09.md",
+     "the verdict adds `no_live_listing` when this is 0 or absent.",
+     "the verdict never reads this."),
+    ("docs/runbook-crawl-scheduling.md",
+     "Do not put credentials in a ConfigMap or repository file.",
+     "Until then, put credentials in the ConfigMap or a repository file."),
+    ("docs/runbook-initial-crawl.md",
+     "The repository is public.", "The repository is private."),
 )
 
 

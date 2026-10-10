@@ -193,10 +193,16 @@ metrics:
 #   6. the value is `operator` the `threshold` -> breach.
 #   7. otherwise -> pass.
 # `sample_nrql` is the denominator of a ratio query, otherwise the count of
-# the events that carry the measurement the gate reads. For an alerts_quiet
-# gate that is `signal_event` narrowed by `signal_filter`, so that an event
-# from another phase, or an error event with no measurement, cannot meet the
-# floor. The value of an alerts_quiet gate is the number of its named alerts
+# the events that carry the measurement the gate reads. Two gates read a
+# stock that exists before their phase starts or a gauge that is 0 when
+# nothing happened, so their sample counts the phase's own activity instead:
+# `publication-outbox-age` sums the items a completed `publication_sweep`
+# processed, and `evidence-stale-share` counts completed
+# `company_profile_crawl` stages. `assistant-ready-share` counts only
+# `cached = false` events (one per cache period, however many clients poll).
+# For an alerts_quiet gate the sample is `signal_event` narrowed by
+# `signal_filter`, so that an event from another phase, or an error event with
+# no measurement, cannot meet the floor. The value of an alerts_quiet gate is the number of its named alerts
 # that were open at any time in the window, read from the alerting tool.
 # `provisional` gates carry a number restated in docs/rollout-gates.md (see
 # `source`); `baseline_required` gates have none until 14 days of data exist
@@ -297,7 +303,6 @@ release_gates:
       - stale-inventory
       - repeated-failures
       - listing-collapse
-      - rejection-spike
     signal_event: inventory_health
     signal_filter: enabled_sources IS NOT NULL
     sample_nrql: >-
@@ -341,11 +346,11 @@ release_gates:
     event: availability_state
     nrql: >-
       SELECT filter(count(*), WHERE state = 'ready') / count(*)
-      FROM CrankOperation WHERE event_name = 'availability_state' AND surface = 'assistant_status' AND state != 'signed_out'
+      FROM CrankOperation WHERE event_name = 'availability_state' AND surface = 'assistant_status' AND state != 'signed_out' AND cached = false
       SINCE 7 days ago
     sample_nrql: >-
       SELECT count(*)
-      FROM CrankOperation WHERE event_name = 'availability_state' AND surface = 'assistant_status' AND state != 'signed_out'
+      FROM CrankOperation WHERE event_name = 'availability_state' AND surface = 'assistant_status' AND state != 'signed_out' AND cached = false
       SINCE 7 days ago
     operator: below
     threshold: null
@@ -360,12 +365,12 @@ release_gates:
     status: baseline_required
     event: pipeline_health
     nrql: >-
-      SELECT latest(outbox_oldest_age_seconds)
+      SELECT max(outbox_oldest_age_seconds)
       FROM CrankOperation WHERE event_name = 'pipeline_health' AND outbox_oldest_age_seconds IS NOT NULL
       SINCE 24 hours ago
     sample_nrql: >-
-      SELECT count(*)
-      FROM CrankOperation WHERE event_name = 'pipeline_health' AND outbox_oldest_age_seconds IS NOT NULL
+      SELECT sum(processed)
+      FROM CrankOperation WHERE event_name = 'publication_sweep' AND status = 'completed'
       SINCE 24 hours ago
     operator: above
     threshold: null
@@ -426,8 +431,8 @@ release_gates:
       FROM CrankOperation WHERE event_name = 'pipeline_health'
       SINCE 24 hours ago
     sample_nrql: >-
-      SELECT latest(accepted_evidence_rows)
-      FROM CrankOperation WHERE event_name = 'pipeline_health'
+      SELECT count(*)
+      FROM CrankOperation WHERE event_name = 'source_stage' AND stage = 'company_profile_crawl' AND status = 'completed'
       SINCE 24 hours ago
     operator: above
     threshold: null

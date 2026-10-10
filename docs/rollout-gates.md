@@ -485,7 +485,7 @@ two share a decision. Every phase after `shell` depends on #555 (see
 | Phase id | Settings flags | Switch key | Manifest / CronJob | Rollback action |
 |---|---|---|---|---|
 | `shell` | none — the workspace renders on every page outside the admin, staff and sign-in surfaces (`crank/context_processors.py`, `assistant_workspace_enabled`) | none (`assistant_shell` is reserved as planned, not registered) | web Deployment in `k8s/crank.yml` | Redeploy the previous image tag (`docs/capability-config-contract.md`, "Rollback Procedure", code rollback), then merge a revert commit to `main` — the image rollback alone lasts only until the next merge (see "The shell's rollback is not durable"). Schema changes are additive, so this preserves data (`docs/deployment-migrations.md`, "Epic #454 rollout"). |
-| `interactive_replies` | `INTERACTIVE_AGENT_ENABLED`; provider and model settings | `interactive_agent` | `k8s/crank-agent-config.yml`; no CronJob | Disable the switch; revert the enablement PR. Direct priority editing and stored results stay usable. |
+| `interactive_replies` | `INTERACTIVE_AGENT_ENABLED`; provider and model settings; `LLM_PRICE_PER_1K_TOKENS_USD` and `LLM_PER_USER_COST_LIMIT_USD`, both above `0` (see "Entry criteria") | `interactive_agent` | `k8s/crank-agent-config.yml`; no CronJob | Disable the switch; revert the enablement PR. Direct priority editing and stored results stay usable. |
 | `job_source` | `JOB_PIPELINE_ENABLED` (needs the master flag `AGENT_RUN_ENABLED`); `JobSourceCatalog.enabled` per source | `job_pipeline` | `deploy/cronjob-job-pipeline.yaml` (`crank-job-pipeline`) — created by no deploy; depends on #555 | Disable the switch or the single source; revert the pull request that set `JOB_PIPELINE_ENABLED` (not the master flag). Listings and matches are kept. |
 | `publication` | `PUBLICATION_CONSUMER_ENABLED` (not present in the checked-in ConfigMap) | `publication_consumer` | none in the repository (`publication_sweep` command; see `docs/publication-outbox.md`) | Disable the switch; revert the enablement PR. Outbox rows are kept. |
 | `match_recompute` | `MATCH_RECOMPUTE_ENABLED`, `MATCH_RESULTS_READ_ENABLED` (the scheduled command needs the master flag `AGENT_RUN_ENABLED`) | `match_recompute` (read side: `match_results_read`) | `deploy/cronjob-match-recompute.yaml` (`crank-match-recompute`) — created by no deploy; depends on #555 | Disable the switch; revert the enablement PR (order in `docs/match-recompute.md`). |
@@ -561,7 +561,10 @@ rules are in `docs/monitoring.md`, "Release decision gates"; in short:
   over the window), and the owner must have confirmed that the named alerts
   exist in the alerting tool. The repository defines the alert queries in
   `docs/monitoring.yaml` but nothing in it creates the alert policy, so this
-  is a manual check, recorded in the decision record.
+  is a manual check, recorded in the decision record. "Exist" means the
+  alert's query, threshold and window equal its entry in
+  `docs/monitoring.yaml` and it has been seen to open once; a same-named
+  alert with another threshold does not satisfy it.
 
 - A gate is evaluated only over a **clean window**: one that lies wholly
   after the phase's post-merge check succeeded, with the switch on and no
@@ -582,6 +585,24 @@ Entry criteria that the repository does not yet satisfy:
   `evidence-stale-share`): only `crawl_healthcheck` emits those events, and
   its CronJob is `suspend: true` in `k8s/crank-healthcheck-cron.yaml`. Until
   that line is committed as `false`, these gates have no sample and hold.
+- **`interactive_replies`: a spend guard.** The checked-in
+  `k8s/crank-agent-config.yml` sets `LLM_PRICE_PER_1K_TOKENS_USD` and
+  `LLM_PER_USER_COST_LIMIT_USD` to `"0"`. With a price of `0` every call
+  records `estimated_cost_usd: 0.0`, so the `cost-limit` alert that
+  `interactive-alerts-quiet` names can never open, and a per-user ceiling of
+  `0` turns that ceiling off (`crank/agents/llm.py`). The enablement pull
+  request for this phase sets a real price and a ceiling the owner chose;
+  until then "quiet" says nothing about cost and the phase has no spend
+  guard.
+- **`job_source`: an alert that is not a gate input.** `rejection-spike` is
+  not named by `job-source-alerts-quiet`: it sums `items_failed`, which the
+  job pipeline's `source_stage` events do not carry, so it cannot open in
+  this phase.
+- **`match_recompute`: an alert to try.** `deadline-resource-pressure` sums
+  `deadline_reached`, which is sent as a boolean. Whether the alerting tool
+  sums it to a non-zero number is not tested here; the owner's "seen to open
+  once" check settles it (see the decision in
+  `docs/usability-validation.md`).
 - **`publication` phase**: nothing schedules the drain. `publication_sweep`
   is the only consumer of the outbox and no CronJob in `k8s/` or `deploy/`
   runs it, so setting `PUBLICATION_CONSUMER_ENABLED` alone leaves the outbox
@@ -637,7 +658,7 @@ the *record format*, not a decision.
 | Source / fixture readiness | _`source_counts`, `inventory.violations`; fixtures must be absent for a production decision_ |
 | Post-merge check | _time of the HTTP 200 from `/healthz/ready/` with the capability `enabled: true` and `ok: true`; gate windows start here_ |
 | Gate results | _per gate: window start and end, observed value, sample (`sample_nrql` result) against the locked floor, the step that decided, pass / breach / hold_ |
-| Alert policy check | _for each `alerts_quiet` gate: who confirmed the named alerts exist in the alerting tool, and when_ |
+| Alert policy check | _for each `alerts_quiet` gate: who confirmed each named alert exists in the alerting tool with the query, threshold and window of `docs/monitoring.yaml` and has been seen to open once, and when_ |
 | Failures | _what failed or was assisted, with issue numbers_ |
 | Follow-up fixes | _issue or PR numbers, each fixed or explicitly accepted_ |
 | Rollback evidence | _`rollback_drill --json` result; `data_counts` from records taken before and after, compared_ |
