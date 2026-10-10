@@ -11,6 +11,8 @@ import type {PreferenceChange} from './format';
 export interface AppliedChangesProps {
     changes: PreferenceChange[];
     summary: string;
+    // A search-only result is the whole message: the sheets' one-line clamp on the summary does not apply to it.
+    scope?: 'account' | 'search';
     canUndo: boolean;
     undoPending?: boolean;
     undoError?: string | null;
@@ -24,7 +26,7 @@ export interface AppliedChangesProps {
 }
 
 export default function AppliedChanges({
-    changes, summary, canUndo, undoPending = false, undoError = null, undone = false,
+    changes, summary, scope = 'account', canUndo, undoPending = false, undoError = null, undone = false,
     labels, currency, choicePaths, onUndo, onDismiss, testId = 'priorities-applied',
 }: AppliedChangesProps) {
     const headingId = `priorities-applied-${React.useId()}`;
@@ -33,7 +35,7 @@ export default function AppliedChanges({
         headingRef.current?.focus();
     }, [undone]);
     return (
-        <div className="alert alert-success pref-change-notice priorities-applied" data-testid={testId}
+        <div className={`alert alert-success pref-change-notice priorities-applied${scope === 'search' ? ' priorities-applied-search' : ''}`} data-testid={testId}
              role="group" aria-labelledby={headingId}>
             <h3 id={headingId} className="h6 priorities-heading" tabIndex={-1} ref={headingRef}>
                 <i className={`fa-solid ${undone ? 'fa-rotate-left' : 'fa-circle-check'} me-1`} aria-hidden="true"></i>

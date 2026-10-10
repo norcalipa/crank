@@ -714,6 +714,9 @@ describe('PrioritiesSection', () => {
             const banner = await screen.findByTestId('priorities-session-expired');
             expect(within(banner).getByRole('link', {name: /sign in/i})).toBeInTheDocument();
             expect(screen.queryByRole('button', {name: /try again/i})).not.toBeInTheDocument();
+            // Said once: the generic load error is not stacked under the sign-in line.
+            expect(screen.queryByTestId('priorities-load-error')).not.toBeInTheDocument();
+            expect(screen.getAllByRole('alert')).toHaveLength(1);
         });
 
         test('This search only counts jobs only and marks a capped count', async () => {
@@ -1312,7 +1315,8 @@ describe('PrioritiesSection', () => {
                 serve([chip, pref(1)]);
                 heights.section = 0;
                 heights.body = 241 + CHAT_BARS_FALLBACK_PX + PIN_TRANSCRIPT_PX;
-                render(panel(<PrioritiesSection variant="sidebar" authenticated/>));
+                const node = <PrioritiesSection variant="sidebar" authenticated/>;
+                const {rerender} = render(panel(node));
                 const section = await screen.findByTestId('priorities-sidebar');
                 const body = section.parentElement!;
                 const at = {section: 0, body: 0};
@@ -1352,14 +1356,19 @@ describe('PrioritiesSection', () => {
 
                 // The composer grew instead (a draft): the block lets go, and a reader who is typing is not pulled away.
                 at.section = -2439;
+                heights.header = 0;
+                heights.footer = CHAT_BARS_FALLBACK_PX;
+                rerender(panel(node, chatCard('composer')));
+                await waitFor(() => expect(live()[0].observed).toHaveLength(4));
                 grow(241);
-                heights.body -= 40;
+                expect(section).toHaveAttribute('data-pinned');
+                heights.footer += 40;
                 act(() => live()[0].run());
                 expect(section).not.toHaveAttribute('data-pinned');
                 expect(body.scrollTop).toBe(2500);
 
                 // Nor is the collapsed row, pinned only because it holds the focus.
-                heights.body += 40;
+                heights.footer -= 40;
                 heights.section = 61;
                 fireEvent.click(toggle);
                 act(() => toggle.focus());
@@ -1735,6 +1744,125 @@ describe('PrioritiesSection', () => {
                 unmount();
                 expect(queued.size).toBe(0);
             });
+
+            // The resize observer is driven by hand here; the block and the panel are given their heights.
+            async function mountSized(pill = false) {
+                const sizes = {section: 61, body: 800};
+                const observers: Array<{run: () => void; disconnected: boolean}> = [];
+                (global as any).ResizeObserver = class {
+                    private entry: {run: () => void; disconnected: boolean};
+                    constructor(run: () => void) { this.entry = {run, disconnected: false}; observers.push(this.entry); }
+                    observe() { /* driven by hand */ }
+                    unobserve() { /* driven by hand */ }
+                    disconnect() { this.entry.disconnected = true; }
+                };
+                const view = await mount('panel', pill);
+                Object.defineProperty(view.section, 'offsetHeight', {configurable: true, get: () => sizes.section});
+                Object.defineProperty(view.panel, 'clientHeight', {configurable: true, get: () => sizes.body});
+                const run = () => act(() => observers.filter((o) => !o.disconnected).forEach((o) => o.run()));
+                return {...view, sizes, observers, run};
+            }
+
+            test('a panel that got shorter (rotation, resize) brings back an open block that no longer fits pinned', async () => {
+                try {
+                    // Reading older messages (the jump pill shows): the reader is not sent to the end of the conversation.
+                    const {section, panel, toggle, sizes, run} = await mountSized(true);
+                    sizes.section = 400;
+                    fireEvent.click(toggle);
+                    expect(section).toHaveAttribute('data-pinned');
+                    // The reader is deep in the panel, the block's top 1,444px above the panel's.
+                    panel.scrollTop = 1452;
+                    await settle();
+                    expect(panel.scrollTop).toBe(1452);
+                    // Nothing changed in size: nothing moves, however often the observer fires.
+                    tops.section = -1344;
+                    run();
+                    expect(section).toHaveAttribute('data-pinned');
+                    expect(panel.scrollTop).toBe(1452);
+                    // The panel got shorter: the block stops fitting, and comes back to the panel's top.
+                    sizes.body = 400;
+                    run();
+                    expect(section).not.toHaveAttribute('data-pinned');
+                    expect(panel.scrollTop).toBe(1452 - 1444);
+                } finally {
+                    delete (global as any).ResizeObserver;
+                }
+            });
+
+            test('a block that is not open is left where it is when the panel gets shorter', async () => {
+                try {
+                    const {section, panel, toggle, sizes, run} = await mountSized();
+                    act(() => toggle.focus());
+                    expect(section).toHaveAttribute('data-pinned');
+                    panel.scrollTop = 900;
+                    tops.section = -700;
+                    sizes.body = 150;
+                    run();
+                    expect(section).not.toHaveAttribute('data-pinned');
+                    expect(panel.scrollTop).toBe(900);
+                } finally {
+                    delete (global as any).ResizeObserver;
+                }
+            });
+
+            test('a block brought back is a move of this block: a reader who was at the end returns there when it closes', async () => {
+                try {
+                    // The jump pill showed at mount and has gone since; only opening through the focused row notes that.
+                    const {section, panel, toggle, sizes, showPill} = await mountSized(true);
+                    showPill(false);
+                    sizes.body = 61 + CHAT_BARS_FALLBACK_PX + PIN_TRANSCRIPT_PX;
+                    panel.scrollTop = 900;
+                    act(() => toggle.focus());
+                    expect(section).toHaveAttribute('data-pinned');
+                    sizes.section = 176;
+                    tops.section = -700;
+                    fireEvent.click(toggle);
+                    expect(panel.scrollTop).toBe(100);
+                    tops.section = 100;
+                    await settle();
+                    sizes.section = 61;
+                    fireEvent.click(toggle);
+                    await frame();
+                    expect(panel.scrollTop).toBe(2000);
+                } finally {
+                    delete (global as any).ResizeObserver;
+                }
+            });
+
+            test('a row brought on screen is not a move for good: a reader who scrolls away afterwards is left there', async () => {
+                const {panel, showPill, section} = await mount('panel');
+                panel.scrollTop = 700;
+                await openEditor('sidebar');
+                await settle();
+                fireEvent.click(screen.getByRole('button', {name: 'Cancel'}));
+                await waitFor(() => expect(screen.getByRole('button', {name: 'Edit priorities'})).toHaveFocus());
+                tops.section = -50;
+                await frame();
+                expect(panel.scrollTop).toBe(550);
+                tops.section = 100;
+                await settle();
+                // The reader scrolls away (the chat shows its pill) and opens the list: nothing sends them to the end.
+                showPill(true);
+                fireEvent.click(screen.getByTestId('priorities-summary-toggle'));
+                section.setAttribute('data-pinned', '');
+                await settle();
+                expect(panel.scrollTop).toBe(550);
+            });
+
+            test('the block stops observing and listening when it goes', async () => {
+                try {
+                    const {section, unmount, observers} = await mountSized();
+                    const removed = jest.spyOn(section, 'removeEventListener');
+                    const disconnected = jest.spyOn(MutationObserver.prototype, 'disconnect');
+                    unmount();
+                    expect(observers.every((o) => o.disconnected)).toBe(true);
+                    expect(disconnected).toHaveBeenCalled();
+                    expect(removed).toHaveBeenCalledWith('focusin', expect.any(Function));
+                    expect(removed).toHaveBeenCalledWith('focusout', expect.any(Function));
+                } finally {
+                    delete (global as any).ResizeObserver;
+                }
+            });
         });
 
         test('closing returns the focus to the row without scrolling the panel; the main block scrolls to its button as before', async () => {
@@ -1780,6 +1908,48 @@ describe('PrioritiesSection', () => {
             // The main block is unchanged: the review keeps its own message.
             await applyExpired('main');
             expect(screen.getByTestId('priorities-review-error')).toBeInTheDocument();
+        });
+
+        test('the sign-in line goes once a later write starts or the priorities load again', async () => {
+            const answers: Array<() => Response> = [];
+            mockFetch({
+                '/api/agent/preferences/propose/': () => json(proposal),
+                '/api/agent/preferences/apply/': () => answers.shift()!(),
+                '/api/agent/preferences/': () => json(snapshotBody(2, [chip])),
+            });
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const form = await openEditor('sidebar');
+            fireEvent.change(within(form).getByRole('spinbutton', {name: /Minimum base salary/}), {target: {value: '150000'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            const apply = await screen.findByRole('button', {name: 'Apply to account'});
+            // Expired; signed in again elsewhere; the next answer is a conflict: its own message is shown.
+            answers.push(() => json({error: {type: 'auth_required'}}, 401), () => json({error: {type: 'stale'}}, 409));
+            fireEvent.click(apply);
+            expect(await screen.findByTestId('priorities-session-expired')).toBeInTheDocument();
+            fireEvent.click(await screen.findByRole('button', {name: 'Apply to account'}));
+            expect(await screen.findByTestId('priorities-review-error')).toBeInTheDocument();
+            expect(screen.queryByTestId('priorities-session-expired')).not.toBeInTheDocument();
+            // Expired again, then a success: the sign-in line does not stay above "Priorities saved."
+            fireEvent.click(await screen.findByRole('button', {name: 'Review latest'}));
+            fireEvent.click(await screen.findByRole('button', {name: 'Apply to account'}));
+            answers.push(() => json({error: {type: 'auth_required'}}, 401), () => json({revision: 3, changes: proposal.changes, undo: null}));
+            fireEvent.click(await screen.findByRole('button', {name: 'Apply to account'}));
+            expect(await screen.findByTestId('priorities-session-expired')).toBeInTheDocument();
+            fireEvent.click(screen.getByRole('button', {name: 'Apply to account'}));
+            expect(await screen.findByText('Priorities saved. Job matches will update.')).toBeInTheDocument();
+            expect(screen.queryByTestId('priorities-session-expired')).not.toBeInTheDocument();
+        });
+
+        test('a search-only result is the whole message, so the one-line clamp is left off it; a saved one keeps it', async () => {
+            serve(() => json({scope: 'search', matches: {job_matches: [1, 2], organization_matches: []}}));
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const form = await openEditor('sidebar');
+            fireEvent.change(within(form).getByRole('spinbutton', {name: /Minimum base salary/}), {target: {value: '150000'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            fireEvent.click(await screen.findByRole('button', {name: 'This search only'}));
+            const searched = await screen.findByTestId('priorities-applied');
+            expect(searched).toHaveClass('priorities-applied-search');
+            expect(searched).toHaveTextContent('2 jobs match these priorities');
         });
 
         test('a failed Apply in the sidebar review says so in the review, with the actions still there', async () => {

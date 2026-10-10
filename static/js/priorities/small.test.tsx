@@ -323,6 +323,15 @@ describe('prioritiesSummary (collapsed sidebar row)', () => {
         const short = chipOf({path: 'work_location.max_in_office_days', label: 'Days', display: '2', hard: true});
         expect(prioritiesSummary([short, chipOf({...flag, label: 'Pub'})])).toBe('Requires: Days: 2, Pub: No');
     });
+
+    test('a number with its unit and a list of values are named by their field', () => {
+        const equity = chipOf({path: 'compensation.minimum_equity_percent', label: 'Minimum equity (%)', display: '0.5%', hard: true});
+        const countries = chipOf({path: 'work_location.countries', label: 'Work countries', display: 'US, CA', items: ['US', 'CA'], hard: true});
+        expect(prioritiesSummary([equity])).toBe('Requires: Minimum equity (%): 0.5%');
+        expect(prioritiesSummary([countries])).toBe('Requires: Work countries: US, CA');
+        // One entry stands for itself.
+        expect(prioritiesSummary([modes])).toBe('Requires: remote');
+    });
 });
 
 describe('prioritiesSummaryParts (lead, separator, counts)', () => {
@@ -476,6 +485,39 @@ describe('final fixes after visual round 3 (issue #480)', () => {
             fireEvent.scroll(scroller);
             expect(names()).toEqual(['Apply to account', 'Cancel', 'Edit', 'This search only']);
             expect(h.onEdit).not.toHaveBeenCalled();
+        });
+
+        test('a second-row button that takes the focus by Tab shows its row', () => {
+            const inside = render(inBlock(<ReviewChanges changes={one} compact {...all()}/>));
+            const scroller = screen.getByTestId('scroller');
+            expect(scroller.scrollTop).toBe(0);
+            act(() => screen.getByRole('button', {name: 'Edit'}).focus());
+            expect(scroller.scrollTop).toBe(300);
+            scroller.scrollTop = 0;
+            act(() => screen.getByRole('button', {name: 'This search only'}).focus());
+            expect(scroller.scrollTop).toBe(300);
+            // Outside the bounded block there is no pinned group to reveal: nothing scrolls.
+            scroller.scrollTop = 0;
+            inside.unmount();
+            const outside = render(<ReviewChanges changes={one} {...all()}/>);
+            act(() => outside.getByRole('button', {name: 'Edit'}).focus());
+            expect(scroller.scrollTop).toBe(0);
+        });
+
+        test('More while Apply is running keeps the focus on Apply, which still has it after the failure', () => {
+            const h = all();
+            const {rerender} = render(inBlock(<ReviewChanges changes={one} compact {...h}/>));
+            const scroller = screen.getByTestId('scroller');
+            const more = screen.getByRole('button', {name: 'More options'});
+            rerender(inBlock(<ReviewChanges changes={one} compact pending {...h}/>));
+            expect(screen.getByRole('button', {name: 'Edit'})).toBeDisabled();
+            const apply = screen.getByRole('button', {name: 'Applying…'});
+            fireEvent.click(more);
+            expect(apply).toHaveFocus();
+            expect(document.activeElement).not.toBe(document.body);
+            expect(scroller.scrollTop).toBe(300);
+            rerender(inBlock(<ReviewChanges changes={one} compact error="Could not apply." {...h}/>));
+            expect(screen.getByRole('button', {name: 'Apply to account'})).toHaveFocus();
         });
 
         test('stays beside a failed Apply and beside Review latest, and leads to This search only when there is no Edit', () => {

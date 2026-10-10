@@ -128,11 +128,19 @@ export default function ReviewChanges({
         };
     }, [hasSecondRow]);
     // More is only shown inside the block's scroller, with a second row to lead to: that row takes the focus.
+    // A second-row button that takes the focus (by Tab, or through More) shows its row: the pinned group only
+    // reaches its own place once the list is at its end.
+    const revealSecondRow = () => {
+        const scroller = compact ? rootRef.current?.closest<HTMLElement>('.priorities-scroll') : null;
+        if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    };
     const showMore = () => {
         const root = rootRef.current as HTMLDivElement;
-        const scroller = root.closest('.priorities-scroll') as HTMLElement;
-        (root.querySelector('.priorities-review-edit, .priorities-review-search') as HTMLElement).focus();
-        scroller.scrollTop = scroller.scrollHeight;
+        // While a request runs the second row is disabled: the focus goes to a button that stays.
+        const target = root.querySelector<HTMLElement>('.priorities-review-edit:not(:disabled), .priorities-review-search:not(:disabled)')
+            ?? root.querySelector<HTMLElement>('.chat-actions > button:not(.priorities-review-more):not(:disabled)');
+        target?.focus();
+        revealSecondRow();
     };
     const note = (
         <p className="priorities-scope-note">
@@ -207,11 +215,11 @@ export default function ReviewChanges({
                 )}
                 {onEdit && (
                     <button type="button" className="btn btn-sm btn-link text-light priorities-review-edit"
-                            onClick={onEdit} disabled={pending}>Edit</button>
+                            onClick={onEdit} onFocus={revealSecondRow} disabled={pending}>Edit</button>
                 )}
                 {onApplySearchOnly && !isSearch && (
                     <button type="button" className="btn btn-sm btn-outline-light priorities-review-search"
-                            onClick={onApplySearchOnly} disabled={pending || changes.length === 0}>
+                            onClick={onApplySearchOnly} onFocus={revealSecondRow} disabled={pending || changes.length === 0}>
                         This search only
                     </button>
                 )}
