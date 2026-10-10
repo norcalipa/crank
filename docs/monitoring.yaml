@@ -197,8 +197,13 @@ metrics:
 # stock that exists before their phase starts or a gauge that is 0 when
 # nothing happened, so their sample counts the phase's own activity instead:
 # `publication-outbox-age` sums the items a completed `publication_sweep`
-# processed, and `evidence-stale-share` counts completed
-# `company_profile_crawl` stages. `assistant-ready-share` counts only
+# processed, and `evidence-stale-share` sums the observations the completed
+# `company_profile_crawl` stages persisted (`items_succeeded`; the crawler
+# reports `completed` for an empty or wholly rejected fetch, so the stage
+# count alone would not show anything was read). A source is due every
+# `ORGANIZATION_FRESHNESS_HOURS` (168 in the ConfigMap) and the window is 24
+# hours, so about a seventh of the sources are crawled on an average day:
+# choose the floor knowing it. `assistant-ready-share` counts only
 # `cached = false` events (one per cache period, however many clients poll).
 # For an alerts_quiet gate the sample is `signal_event` narrowed by
 # `signal_filter`, so that an event from another phase, or an error event with
@@ -431,7 +436,7 @@ release_gates:
       FROM CrankOperation WHERE event_name = 'pipeline_health'
       SINCE 24 hours ago
     sample_nrql: >-
-      SELECT count(*)
+      SELECT sum(items_succeeded)
       FROM CrankOperation WHERE event_name = 'source_stage' AND stage = 'company_profile_crawl' AND status = 'completed'
       SINCE 24 hours ago
     operator: above

@@ -200,7 +200,7 @@ floor:
 |---|---|
 | `kind: nrql`, ratio query (`a / b`) | the denominator of the ratio — a share of nothing is not a measurement |
 | `kind: nrql`, any other aggregate (`percentile`, `max`) | the number of events in the window that carry the attribute the query aggregates |
-| `kind: nrql`, a gauge that reads 0 when nothing happened, or a stock that exists before the phase starts (`publication-outbox-age`, `evidence-stale-share`) | the phase's own activity, not the events the value reads. `publication-outbox-age` reads `max(outbox_oldest_age_seconds)` over the probe's `pipeline_health` events (a degraded event, `healthy: false`, carries no gauge) but its sample is `sum(processed)` over completed `publication_sweep` events: an empty outbox with the consumer off reads age 0 on every probe tick, and the probe sends at most 96 events a day whatever the consumer does. `evidence-stale-share` samples completed `company_profile_crawl` stages, because the accepted rows already exist and the freshness policy (90 to 365 days per field) cannot move a share inside a 24-hour window. A window with no sweep or crawl holds |
+| `kind: nrql`, a gauge that reads 0 when nothing happened, or a stock that exists before the phase starts (`publication-outbox-age`, `evidence-stale-share`) | the phase's own activity, not the events the value reads. `publication-outbox-age` reads `max(outbox_oldest_age_seconds)` over the probe's `pipeline_health` events (a degraded event, `healthy: false`, carries no gauge) but its sample is `sum(processed)` over completed `publication_sweep` events: an empty outbox with the consumer off reads age 0 on every probe tick, and the probe sends at most 96 events a day whatever the consumer does. `evidence-stale-share` samples `sum(items_succeeded)` over completed `company_profile_crawl` stages (the crawler reports `completed` for an empty or wholly rejected fetch, which persists nothing and adds 0), because the accepted rows already exist and the freshness policy (90 to 365 days per field) cannot move a share inside a 24-hour window. A window with no sweep or crawl holds |
 | `kind: alerts_quiet` | the number of `signal_event` events in the window that match `signal_filter`: the event the named alerts read, narrowed to the ones this phase emits with a measurement. "No alert opened" is also true when nothing emits, so quiet counts only while the signal is live |
 
 **A sample counts requests and events, not people.** Telemetry has no user
@@ -331,8 +331,13 @@ release (one replied turn is 100%), so no floor is invented here; the floors
 are listed with the other
 [decisions pending owner confirmation](usability-validation.md#decisions-pending-owner-confirmation).
 `window` is the `SINCE` clause of the gate's queries. The two gates that read
-the latest `pipeline_health` gauges use a 24-hour window; the 14 days in their
-phase's decision row is how long the phase is observed before deciding.
+`pipeline_health` gauges (`max()` for `publication-outbox-age`, `latest()` for
+`evidence-stale-share`) use a 24-hour window; the 14 days in their phase's
+decision row is how long the phase is observed before deciding. For
+`publication-outbox-age` that 24-hour window is the only limit on what `max()`
+sees: a stall on day 3 is not in the value read at the end, so either read the
+gate daily during the 14 days or move it to `SINCE 14 days ago` when the floor
+is locked.
 
 **Locking a gate.** After at least 14 days of data with the capability
 enabled, a small follow-up pull request sets `min_sample` (and `threshold`

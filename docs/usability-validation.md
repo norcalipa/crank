@@ -80,7 +80,7 @@ poll.
 | `publication-outbox-age` | items a completed `publication_sweep` processed (the sum of `processed`): an empty outbox with the consumer off reads age 0 on every probe tick, so the probe's events are not the sample | 24 hours | not set | — |
 | `publication-to-match-lag` | `matching_batch` events from the `match_recompute` stage with a measured lag | 14 days | not set | — |
 | `matching-alerts-quiet` | `matching_batch` events from the `match_recompute` stage (live signal) | 7 days | not set | not confirmed |
-| `evidence-stale-share` | completed `company_profile_crawl` stages (`source_stage` events): the accepted rows exist before the phase starts and the 90–365 day freshness policy cannot change a share inside the window, so only a crawl in the window shows the phase ran | 24 hours | not set | — |
+| `evidence-stale-share` | `sum(items_succeeded)` over completed `company_profile_crawl` stages (`source_stage` events; the crawler reports `completed` for an empty fetch, which adds 0): the accepted rows exist before the phase starts and the 90–365 day freshness policy cannot change a share inside the window, so only a crawl in the window shows the phase ran | 24 hours | not set | — |
 
 ## Preconditions
 

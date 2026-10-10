@@ -249,6 +249,33 @@ def source_counts() -> dict:
     }
 
 
+def assistant_provider() -> dict:
+    """Whether the assistant endpoint can build its provider right now.
+
+    ``capability_report()`` only checks that ``LLM_PROVIDER`` is non-empty, so
+    a value no provider class answers to still reports ``ok``. This asks the
+    factory ``GET /api/agent/assistant-status/`` asks (``_build_provider()``,
+    config-only: no network or credential read), and records whether the
+    provider class is the offline placeholder, which builds but never calls a
+    real model. Booleans only; the exception text is never recorded.
+    """
+    from crank.agents.job_search.demo import _build_provider
+    from crank.agents.llm import FakeLLMProvider, _import_provider
+
+    try:
+        _build_provider()
+        builds = True
+    except Exception:  # noqa: BLE001 - any failure means "cannot serve"
+        builds = False
+    try:
+        placeholder = issubclass(
+            _import_provider(getattr(settings, "LLM_PROVIDER", "")), FakeLLMProvider
+        )
+    except Exception:  # noqa: BLE001
+        placeholder = False
+    return {"builds": builds, "offline_placeholder": placeholder}
+
+
 def listing_counts() -> dict:
     """ACTIVE listings the product can match: approved, enabled sources only.
 
@@ -363,6 +390,10 @@ def release_verdict(record: dict) -> dict:
         blockers.append("no_enabled_source")
     if (record.get("inventory") or {}).get("violations"):
         blockers.append("inventory_violations")
+    # Fail closed: only a recorded buildable, non-placeholder provider clears it.
+    provider = record.get("assistant_provider") or {}
+    if provider.get("builds") is not True or provider.get("offline_placeholder") is not False:
+        blockers.append("interactive_provider_unbuildable")
     # Fail closed: a missing count is not a live listing.
     if not (record.get("listing_counts") or {}).get("active_from_live_sources"):
         blockers.append("no_live_listing")
@@ -393,6 +424,7 @@ def baseline_record() -> dict:
         "job_search_provider": _safe_job_search_provider(),
         "capabilities": capability_report().to_dict(),
         "capability_switches": capability_switches(),
+        "assistant_provider": assistant_provider(),
         "inventory": check_inventory_health(),
         "latest_runs": latest_runs(),
         "source_counts": source_counts(),

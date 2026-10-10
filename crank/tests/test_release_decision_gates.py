@@ -208,7 +208,7 @@ PINNED_GATES = {
         "organization_crawl", "baseline_required", "above", None, "24 hours",
         "latest(evidence_stale_rows) / latest(accepted_evidence_rows)",
         "event_name = 'pipeline_health'",
-        "count(*)",
+        "sum(items_succeeded)",
         sample_where=_CRAWL_COMPLETED,
     ),
 }
@@ -219,7 +219,7 @@ PINNED_GATES = {
 #: with the consumer off or no crawl run.
 ACTIVITY_SAMPLES = {
     "publication-outbox-age": "sum(processed)",
-    "evidence-stale-share": "count(*)",
+    "evidence-stale-share": "sum(items_succeeded)",
 }
 
 #: Which direction is bad for each thing a gate can measure.
@@ -340,6 +340,25 @@ PINNED_UNGATED_ALERTS = {
 }
 
 
+#: What each alert tells the operator to do. The quiet gates' ``on_breach`` is
+#: "follow the alert's recovery text", so rewording one into "no action is
+#: needed" changes what a breach means.
+PINNED_RECOVERY = {
+    "repeated-failure": "Inspect sanitized AgentRun/SourceRun, then disable the affected source or capability.",
+    "no-recent-success": "Check scheduler, overlap/stale-run state, and run the bounded recovery procedure.",
+    "deadline-resource-pressure": "Reduce configured bounded work or raise the approved deadline after review.",
+    "cost-limit": "Disable interactive_agent and inspect token/cost settings before re-enabling.",
+    "rejection-spike": "Inspect reason-coded source failures and isolate the source; no raw response is retained.",
+    "matching-backlog": "Inspect deadline/resource pressure and keep the job_pipeline capability disabled until safe.",
+    "zero-enabled-sources": "Run seed_job_sources --dry-run then seed_job_sources; verify with crawl_status.",
+    "zero-active-listings": "Run crawl_status and trigger one bounded crawl; check provider credentials and adapter state.",
+    "recurring-helpfulness-gaps": "Inspect assistant/LLM grounding: verify the orchestrator provider is selected in production and the anti-echo guard is intact.",
+    "stale-inventory": "Verify CRAWL_CRON_ENABLED and the crawl CronJobs are unsuspended, then run a bounded schedule_crawls.",
+    "repeated-failures": "Inspect sanitized CrawlRun history, isolate the failing source, and re-enable only after a confirmed healthy run.",
+    "listing-collapse": "Inspect the source that lost all active listings and re-run a bounded crawl before re-seeding or re-enabling.",
+}
+
+
 def _gate_alert_problems(doc: dict) -> list:
     """Every way ``doc`` differs from the pinned gate ↔ alert relationship."""
     problems = []
@@ -362,7 +381,7 @@ def _gate_alert_problems(doc: dict) -> list:
         for key, value in pinned.items():
             if alert.get(key) != value:
                 problems.append(f"{name}: {key}")
-        if not str(alert.get("recovery", "")).strip():
+        if alert.get("recovery") != PINNED_RECOVERY.get(name):
             problems.append(f"{name}: recovery")
     return problems
 
@@ -847,6 +866,9 @@ class ReleaseGateShapeTests(SimpleTestCase):
         def no_recovery(doc):
             alert(doc, "repeated-failure")["recovery"] = " "
 
+        def waved_off(doc):
+            alert(doc, "cost-limit")["recovery"] = "Raise the limit and carry on."
+
         def silent_alert(doc):
             alert(doc, "no-recent-success")["threshold"] = 0
 
@@ -856,7 +878,7 @@ class ReleaseGateShapeTests(SimpleTestCase):
         original = _load_yaml()
         for mutate in (
             cost_limit, zero_listings, operator, expand_anyway, no_action,
-            drop_alert, remove_definition, no_recovery, silent_alert,
+            drop_alert, remove_definition, no_recovery, waved_off, silent_alert,
             uncounted_rejections,
         ):
             doc = copy.deepcopy(original)
@@ -1286,9 +1308,31 @@ class ReleaseGateTelemetryTests(TestCase):
             )
             self.assertFalse(_matches(where, other), (stage, status))
         crawl = monitoring.event_attributes(
-            "source_stage", {"stage": "company_profile_crawl", "status": "completed"}
+            "source_stage",
+            {
+                "stage": "company_profile_crawl",
+                "status": "completed",
+                "items_seen": 3,
+                "items_succeeded": 2,
+                "items_failed": 1,
+            },
         )
         self.assertTrue(_matches(where, crawl))
+        # The crawler reports ``completed`` for an empty or wholly rejected
+        # fetch; the sample is the sum of what was persisted, so those add 0.
+        self.assertIn("sum(items_succeeded)", gate["sample_nrql"])
+        self.assertEqual(crawl["items_succeeded"], 2)
+        empty = monitoring.event_attributes(
+            "source_stage",
+            {
+                "stage": "company_profile_crawl",
+                "status": "completed",
+                "items_seen": 3,
+                "items_succeeded": 0,
+                "items_failed": 3,
+            },
+        )
+        self.assertEqual(empty["items_succeeded"], 0)
 
     def test_ready_share_floor_is_not_met_by_one_account_polling(self):
         """300 polls by one signed-in account are one event per cache period."""
@@ -1916,6 +1960,9 @@ class RunbookDurableEnablementTests(SimpleTestCase):
         r"(?i)(api[_-]?key|auth[_-]?key|secret|password|token|credential"
         r"|\bhelm\b|--set\b|--set-string|--from-literal|sk-[a-z0-9])"
     )
+    # Scope: a regression test for these replayed insertions, not a detector of
+    # unseen instructions. A sentence with any negation, or a verb or noun not
+    # listed, passes it; the pinned runbook sentences are what hold the line.
     UNSAFE_CREDENTIAL_INSERTIONS = (
         "Paste the Firecrawl key into `k8s/crank-capability-secrets.yml` under"
         " `stringData` and commit it, so it survives deploys.",
@@ -3038,8 +3085,8 @@ PINNED_TEXT = {
         " `all_ok: true`",
         "the other four gates' numbers were written for #492 and have not been"
         " measured or approved.",
-        "`inventory.violations`; fixtures must be absent for a production"
-        " decision_ |",
+        "`inventory.violations`, `listing_counts.active_from_live_sources`;"
+        " fixtures must be absent for a production decision_ |",
         "Merge an enablement pull request only while no deploy run is in"
         " progress:",
         "`LLM_PRICE_PER_1K_TOKENS_USD` and `LLM_PER_USER_COST_LIMIT_USD` to"
@@ -3051,6 +3098,11 @@ PINNED_TEXT = {
         " `items_failed`, which the job pipeline's `source_stage` events do not"
         " carry, so it cannot open in this phase.",
         "a same-named alert with another threshold does not satisfy it.",
+        "Whether the alerting tool sums it to a non-zero number is not tested"
+        " here; the owner's \"seen to open once\" check settles it",
+        "which is sent as a boolean.",
+        "`0` turns that ceiling off",
+        "can never open",
         "| `interactive_replies` | `INTERACTIVE_AGENT_ENABLED`; provider and model"
         " settings; `LLM_PRICE_PER_1K_TOKENS_USD` and"
         " `LLM_PER_USER_COST_LIMIT_USD`, both above `0`",
@@ -3067,6 +3119,12 @@ PINNED_TEXT = {
         "an empty outbox with the consumer off reads age 0 on every probe tick,",
         "A window with no sweep or crawl holds",
         "No quiet gate names `rejection-spike`:",
+        "and it has been seen to open once.",
+        "whether the alerting tool sums it to a non-zero number is not tested"
+        " here",
+        "`evidence-stale-share` samples `sum(items_succeeded)` over completed"
+        " `company_profile_crawl` stages",
+        "that 24-hour window is the only limit on what `max()` sees",
     ),
     "docs/deployment-baseline-2026-09.md": (
         "(an absent row is `true`, as at runtime)",
@@ -3235,6 +3293,27 @@ REVIEWED_INVERSIONS = (
      "Until then, put credentials in the ConfigMap or a repository file."),
     ("docs/runbook-initial-crawl.md",
      "The repository is public.", "The repository is private."),
+    ("docs/rollout-gates.md",
+     "is not tested here; the owner's \"seen to open once\" check settles it",
+     "was tested here; no check is needed"),
+    ("docs/rollout-gates.md",
+     "which is sent as a boolean.", "which is sent as a number."),
+    ("docs/rollout-gates.md", "can never open", "can still open"),
+    ("docs/rollout-gates.md", "`0` turns that ceiling off", "`0` turns that ceiling on"),
+    ("docs/monitoring.md",
+     "and it has been seen to open once.", "and nothing more is checked."),
+    ("docs/monitoring.md",
+     "whether the alerting tool sums it to a non-zero number is not tested here",
+     "whether the alerting tool sums it to a non-zero number is tested here"),
+    ("docs/monitoring.md",
+     "`evidence-stale-share` samples `sum(items_succeeded)` over completed",
+     "`evidence-stale-share` samples the accepted rows over completed"),
+    ("docs/monitoring.md",
+     "that 24-hour window is the only limit on what `max()` sees",
+     "that 24-hour window is not a limit on what `max()` sees"),
+    ("docs/rollout-gates.md",
+     "`inventory.violations`, `listing_counts.active_from_live_sources`;",
+     "`inventory.violations`;"),
 )
 
 

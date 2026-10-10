@@ -655,7 +655,7 @@ the *record format*, not a decision.
 | Enablement commit | _merge commit of the enablement PR (no image is built from it)_ |
 | Release SHA | _`source_version` of the readiness record: the image the pods are running, which is the last image build on `main`, not the enablement commit_ |
 | Readiness record | _`python manage.py readiness_baseline --out <file>`: `source_version`, `fixtures.revision`, `release_verdict`_ |
-| Source / fixture readiness | _`source_counts`, `inventory.violations`; fixtures must be absent for a production decision_ |
+| Source / fixture readiness | _`source_counts`, `inventory.violations`, `listing_counts.active_from_live_sources`; fixtures must be absent for a production decision_ |
 | Post-merge check | _time of the HTTP 200 from `/healthz/ready/` with the capability `enabled: true` and `ok: true`; gate windows start here_ |
 | Gate results | _per gate: window start and end, observed value, sample (`sample_nrql` result) against the locked floor, the step that decided, pass / breach / hold_ |
 | Alert policy check | _for each `alerts_quiet` gate: who confirmed each named alert exists in the alerting tool with the query, threshold and window of `docs/monitoring.yaml` and has been seen to open once, and when_ |

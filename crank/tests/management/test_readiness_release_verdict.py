@@ -53,6 +53,7 @@ BLOCKER_CODES = (
     "job_pipeline_switch_unknown",
     "no_enabled_source",
     "inventory_violations",
+    "interactive_provider_unbuildable",
     "no_live_listing",
     "no_successful_pipeline_run",
 )
@@ -84,6 +85,7 @@ def _ready_record() -> dict:
         },
         "capability_switches": {"interactive_agent": True, "job_pipeline": True},
         "source_counts": {"configured": 2, "approved": 1, "enabled": 1},
+        "assistant_provider": {"builds": True, "offline_placeholder": False},
         "inventory": {"violations": [], "healthy": True},
         "listing_counts": {"active_from_live_sources": 1},
         "latest_runs": [
@@ -302,6 +304,38 @@ class ReleaseVerdictTests(SimpleTestCase):
             with self.subTest(label):
                 self.assertEqual(self._blockers(mutate), ["no_live_listing"])
 
+    def test_no_live_listing_is_reported_beside_inventory_violations(self):
+        """The two codes are independent: neither hides the other."""
+
+        def mutate(record):
+            record["inventory"]["violations"] = ["zero active listings"]
+            record["listing_counts"]["active_from_live_sources"] = 0
+
+        self.assertEqual(
+            self._blockers(mutate), ["inventory_violations", "no_live_listing"]
+        )
+
+    def test_provider_that_cannot_be_built_blocks(self):
+        """A provider the endpoint cannot build, or the offline placeholder."""
+        cases = {
+            "does not build": {"builds": False, "offline_placeholder": False},
+            "placeholder": {"builds": True, "offline_placeholder": True},
+            "build not recorded as true": {"builds": 1, "offline_placeholder": False},
+            "placeholder not recorded as false": {"builds": True},
+            "section absent": None,
+        }
+        for label, section in cases.items():
+            with self.subTest(label):
+                def mutate(record, section=section):
+                    if section is None:
+                        del record["assistant_provider"]
+                    else:
+                        record["assistant_provider"] = section
+
+                self.assertEqual(
+                    self._blockers(mutate), ["interactive_provider_unbuildable"]
+                )
+
     def test_no_successful_pipeline_run(self):
         cases = {
             "latest run failed": [{"run_type": "job_pipeline", "status": "failed"}],
@@ -335,6 +369,7 @@ class ReleaseVerdictTests(SimpleTestCase):
                 "job_pipeline_disabled",
                 "job_pipeline_switch_unknown",
                 "no_enabled_source",
+                "interactive_provider_unbuildable",
                 "no_live_listing",
                 "no_successful_pipeline_run",
             ],
@@ -363,6 +398,7 @@ class ReleaseVerdictTests(SimpleTestCase):
             record["fixtures"]["present"] = True
             record["inventory"]["violations"] = ["zero active listings"]
             record["listing_counts"]["active_from_live_sources"] = 0
+            record["assistant_provider"]["builds"] = False
             for name in VERDICT_CAPABILITIES:
                 _capability(record, name)["ok"] = False
                 record["capability_switches"][name] = False
@@ -508,7 +544,10 @@ class ReleaseVerdictCommandTests(TestCase):
             ENV="prod",
             JOB_SEARCH_PROVIDER="orchestrator",
             INTERACTIVE_AGENT_ENABLED=True,
-            LLM_PROVIDER="openai",
+            # A value ``_build_provider()`` can build: the product answers
+            # ``ready`` for it. A bare ``"openai"`` passes the capability
+            # report and cannot be built.
+            LLM_PROVIDER="crank.agents.llm:OpenAIChatAdapter",
             LLM_MODEL="model-x",
             LLM_API_KEY="not-a-real-key",
             JOB_PIPELINE_ENABLED=True,
@@ -524,6 +563,52 @@ class ReleaseVerdictCommandTests(TestCase):
             record["release_verdict"], {"production_ready": True, "blockers": []}
         )
         self.assertEqual(record["listing_counts"], {"active_from_live_sources": 1})
+        # Integers only: ``.exists()`` would record ``True``, which equals 1.
+        self.assertIs(type(record["listing_counts"]["active_from_live_sources"]), int)
+        self.assertEqual(
+            record["assistant_provider"],
+            {"builds": True, "offline_placeholder": False},
+        )
+        self.assertEqual(self._assistant_state(), "ready")
+
+    def _assistant_state(self) -> str:
+        """The product's own answer, with the real provider factory."""
+        from crank.views.assistant_status import _classify_authenticated_state
+
+        return _classify_authenticated_state()
+
+    def test_provider_the_endpoint_cannot_build_blocks_the_all_clear(self):
+        """The capability report accepts these; the endpoint cannot serve."""
+        self._ready_real_state()
+        for value in ("openai", "crank.agents.llm:OpenAIProvider", ""):
+            with self.subTest(value):
+                with self._ready_settings(), override_settings(LLM_PROVIDER=value):
+                    record = baseline_record()
+                    state = self._assistant_state()
+                self.assertEqual(
+                    record["assistant_provider"],
+                    {"builds": False, "offline_placeholder": False},
+                )
+                self.assertEqual(
+                    record["release_verdict"]["blockers"],
+                    (["interactive_agent_misconfigured"] if not value else [])
+                    + ["interactive_provider_unbuildable"],
+                )
+                self.assertNotEqual(state, "ready")
+
+    def test_offline_placeholder_provider_blocks_the_all_clear(self):
+        self._ready_real_state()
+        with self._ready_settings(), override_settings(
+            LLM_PROVIDER="crank.agents.llm:FakeLLMProvider"
+        ):
+            record = baseline_record()
+        self.assertEqual(
+            record["assistant_provider"],
+            {"builds": True, "offline_placeholder": True},
+        )
+        self.assertEqual(
+            record["release_verdict"]["blockers"], ["interactive_provider_unbuildable"]
+        )
 
     def test_listings_under_a_disabled_or_blocked_source_are_not_live(self):
         """Matching ignores them, so the verdict must not count them."""
@@ -546,6 +631,14 @@ class ReleaseVerdictCommandTests(TestCase):
                 "approval_state": JobSourceCatalog.ApprovalState.BLOCKED,
                 "enabled": True,
             },
+            "pending": {
+                "approval_state": JobSourceCatalog.ApprovalState.PENDING,
+                "enabled": True,
+            },
+            "pending, disabled": {
+                "approval_state": JobSourceCatalog.ApprovalState.PENDING,
+                "enabled": False,
+            },
         }
         for label, changes in states.items():
             with self.subTest(label):
@@ -555,6 +648,7 @@ class ReleaseVerdictCommandTests(TestCase):
                 # The old evidence: inventory health still sees a listing.
                 self.assertEqual(record["inventory"]["violations"], [])
                 self.assertEqual(record["listing_counts"], {"active_from_live_sources": 0})
+                self.assertIs(type(record["listing_counts"]["active_from_live_sources"]), int)
                 self.assertEqual(
                     record["release_verdict"],
                     {"production_ready": False, "blockers": ["no_live_listing"]},
