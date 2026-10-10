@@ -362,6 +362,19 @@ describe('prioritiesSummaryParts (lead, separator, counts)', () => {
             {lead: 'Requires: Days: 2, Need1,', keep: '', sep: ' ', tail: '+1'}],
         ['a second requirement one character too long', [req(1), chipOf({path: 'r2', display: 'Tencharsxx', hard: true})],
             {lead: 'Requires: Need1,', keep: '', sep: ' ', tail: '+1'}],
+        // A list is as long as the user made it: with its field's name it is all in the part that may be cut.
+        ['a list first, named by its field and cut with the lead', [chipOf({path: 'work_location.modes', label: 'Work arrangement', display: 'Remote, Hybrid', items: ['Remote', 'Hybrid'], hard: true}), chipOf({})],
+            {lead: 'Requires: Work arrangement: Remote, Hybrid', keep: '', sep: ' \u00b7 ', tail: '1 preference'}],
+        ['a long list first counts the second', [chipOf({path: 'work_location.countries', label: 'Work countries', display: 'United States, Canada, United Kingdom', items: ['United States', 'Canada', 'United Kingdom'], hard: true}), req(1)],
+            {lead: 'Requires: Work countries: United States, Canada, United Kingdom,', keep: '', sep: ' ', tail: '+1'}],
+        ['a list second that fits', [req(1), chipOf({path: 'work_location.countries', label: 'W', display: 'US, CA', items: ['US', 'CA'], hard: true})],
+            {lead: 'Requires: Need1, W: US, CA', keep: '', sep: '', tail: ''}],
+        ['a number with its unit keeps the number whole', [chipOf({path: 'compensation.minimum_equity_percent', label: 'Minimum equity (%)', display: '0.5%', hard: true})],
+            {lead: 'Requires: Minimum equity (%)', keep: ': 0.5%', sep: '', tail: ''}],
+        ['a number with a word as its unit keeps the number whole', [chipOf({path: 'x.years', label: 'Experience', display: '5 Years', hard: true})],
+            {lead: 'Requires: Experience', keep: ': 5 Years', sep: '', tail: ''}],
+        ['a one-entry list stands for itself', [chipOf({path: 'work_location.modes', label: 'Work arrangement', display: 'Remote', items: ['Remote'], hard: true})],
+            {lead: 'Requires: Remote', keep: '', sep: '', tail: ''}],
         ['a second requirement that just fits', [req(1), chipOf({path: 'r2', display: 'Ninechars', hard: true})],
             {lead: 'Requires: Need1, Ninechars', keep: '', sep: '', tail: ''}],
     ])('%s', (_name, chips, parts) => {
@@ -502,6 +515,65 @@ describe('final fixes after visual round 3 (issue #480)', () => {
             const outside = render(<ReviewChanges changes={one} {...all()}/>);
             act(() => outside.getByRole('button', {name: 'Edit'}).focus());
             expect(scroller.scrollTop).toBe(0);
+            // The main block's review sits in a list that scrolls too, and is not compact: focusing Edit does not scroll it.
+            outside.unmount();
+            render(inBlock(<ReviewChanges changes={one} {...all()}/>));
+            act(() => screen.getByRole('button', {name: 'Edit'}).focus());
+            expect(screen.getByTestId('scroller').scrollTop).toBe(0);
+            act(() => screen.getByRole('button', {name: 'This search only'}).focus());
+            expect(screen.getByTestId('scroller').scrollTop).toBe(0);
+        });
+
+        test('a press on Edit or This search only does not move its row, so the click lands; Tab and a cancelled press still do', () => {
+            const h = all();
+            render(inBlock(<ReviewChanges changes={one} compact {...h}/>));
+            const scroller = screen.getByTestId('scroller');
+            for (const name of ['Edit', 'This search only']) {
+                const button = screen.getByRole('button', {name});
+                // The pointer goes down, the button takes the focus, the pointer comes up and the click follows.
+                scroller.scrollTop = 0;
+                fireEvent.pointerDown(button);
+                act(() => button.focus());
+                expect(scroller.scrollTop).toBe(0);
+                fireEvent.pointerUp(button);
+                fireEvent.click(button);
+                act(() => button.blur());
+                // The press is over: a later focus by Tab shows the row.
+                act(() => button.focus());
+                expect(scroller.scrollTop).toBe(300);
+                act(() => button.blur());
+                // A press that leaves the button, or is cancelled, ends as well.
+                for (const end of [fireEvent.pointerLeave, fireEvent.pointerCancel]) {
+                    scroller.scrollTop = 0;
+                    fireEvent.pointerDown(button);
+                    end(button);
+                    act(() => button.focus());
+                    expect(scroller.scrollTop).toBe(300);
+                    act(() => button.blur());
+                }
+            }
+            expect(h.onEdit).toHaveBeenCalledTimes(1);
+            expect(h.onApplySearchOnly).toHaveBeenCalledTimes(1);
+        });
+
+        test('This search only keeps the focus while its request runs, ignores a second press, and has it after the failure', () => {
+            const h = all();
+            const {rerender} = render(inBlock(<ReviewChanges changes={one} compact {...h}/>));
+            const search = screen.getByRole('button', {name: 'This search only'});
+            act(() => search.focus());
+            rerender(inBlock(<ReviewChanges changes={one} compact pending {...h}/>));
+            const running = screen.getByRole('button', {name: 'This search only'});
+            expect(running).toBe(search);
+            expect(running).toHaveAttribute('aria-disabled', 'true');
+            expect(running).not.toBeDisabled();
+            expect(running).toHaveFocus();
+            fireEvent.click(running);
+            expect(h.onApplySearchOnly).not.toHaveBeenCalled();
+            rerender(inBlock(<ReviewChanges changes={one} compact error="Could not apply." {...h}/>));
+            expect(screen.getByRole('button', {name: 'This search only'})).toHaveFocus();
+            expect(screen.getByRole('button', {name: 'This search only'})).not.toHaveAttribute('aria-disabled');
+            fireEvent.click(screen.getByRole('button', {name: 'This search only'}));
+            expect(h.onApplySearchOnly).toHaveBeenCalledTimes(1);
         });
 
         test('More while Apply is running keeps the focus on Apply, which still has it after the failure', () => {

@@ -202,13 +202,23 @@ async function setPriorities(page: Page, patch: object | null): Promise<number> 
     return result.chips;
 }
 
+/** Opens the assistant when it is closed. The page may restore an open panel between the check and the click, which removes the launcher: that is not a failure. */
+async function openIfClosed(page: Page) {
+    const panel = page.getByTestId('assistant-panel');
+    const opener = page.locator('[data-testid="assistant-launcher"], [data-testid="assistant-restore"]');
+    if (await panel.isVisible()) return;
+    await opener.click({timeout: 3000}).catch(async () => {
+        await expect(panel).toBeVisible();
+    });
+}
+
 /** Opens the assistant on the rankings page (the launcher, or the restore pill after a reload) and returns the row. */
 async function openPanel(page: Page) {
     await page.goto('/');
     const panel = page.getByTestId('assistant-panel');
     const opener = page.locator('[data-testid="assistant-launcher"], [data-testid="assistant-restore"]');
     await expect(panel.or(opener).first()).toBeVisible();
-    if (!(await panel.isVisible())) await opener.click();
+    await openIfClosed(page);
     await expect(page.getByTestId('assistant-composer')).toBeVisible();
     // The chat takes focus once when its history has loaded; let that pass before driving the keyboard.
     await page.waitForLoadState('networkidle');
@@ -590,6 +600,106 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
             });
         }
     }
+
+    for (const viewport of [{width: 1280, height: 650}, {width: 320, height: 568}]) {
+        test(`${viewport.width}x${viewport.height}: a mouse press on Edit and on This search only acts while its row is only partly in view`, async ({page}) => {
+            await page.setViewportSize(viewport);
+            await page.goto('/');
+            expect(await setPriorities(page, TEN)).toBe(10);
+            const section = await openPanel(page);
+            const actions = section.getByRole('group', {name: 'Review actions'});
+            const toReview = async () => {
+                await section.getByRole('button', {name: 'Edit priorities'}).click();
+                await page.getByRole('spinbutton', {name: SALARY}).fill(String(160000 + Math.floor(Math.random() * 9000)));
+                await page.getByRole('checkbox', {name: 'Hybrid'}).uncheck();
+                await page.getByRole('spinbutton', {name: /equity/i}).fill('0.75');
+                await page.getByRole('button', {name: 'Review changes'}).click();
+                await expect(page.getByRole('list', {name: 'Proposed changes'})).toBeVisible();
+                await settleLayout(page);
+            };
+            // The list is scrolled until `left` px of the end are still below, and the press is at the middle of what shows of the row.
+            // Returns whether the row was partly in view (a position where it is whole or gone is skipped, and counted by the caller).
+            const pressPartlyShown = async (name: string, left: number): Promise<boolean> => {
+                const scroller = section.locator('.priorities-scroll');
+                await section.locator('.priorities-review .priorities-heading').evaluate((el) => (el as HTMLElement).focus({preventScroll: true}));
+                await scroller.evaluate((el, rest) => { el.scrollTop = el.scrollHeight - el.clientHeight - rest; }, left);
+                await settleLayout(page);
+                const target = actions.getByRole('button', {name, exact: true});
+                const shown = await target.evaluate((el) => {
+                    const r = el.getBoundingClientRect();
+                    const edge = el.closest('.priorities-scroll')!.getBoundingClientRect();
+                    const top = Math.max(r.top, edge.top, 0);
+                    const bottom = Math.min(r.bottom, edge.bottom, window.innerHeight);
+                    return {x: r.left + r.width / 2, y: (top + bottom) / 2, px: bottom - top, of: r.height};
+                });
+                if (shown.px < 4 || shown.px > shown.of - 2) return false;
+                await page.mouse.move(shown.x, shown.y);
+                await page.mouse.down();
+                await page.waitForTimeout(60);
+                await page.mouse.up();
+                return true;
+            };
+            const rests = [70, 60, 50, 40, 30, 20];
+            await toReview();
+            let editPressed = 0;
+            for (const left of rests) {
+                if (!(await pressPartlyShown('Edit', left))) continue;
+                editPressed += 1;
+                await expect(page.getByRole('form', {name: 'Edit priorities'}), `Edit pressed with ${left}px of the list below the edge`).toBeVisible();
+                await page.getByRole('button', {name: 'Review changes'}).click();
+                await expect(page.getByRole('list', {name: 'Proposed changes'})).toBeVisible();
+                await settleLayout(page);
+            }
+            expect(editPressed, 'positions where Edit was partly in view').toBeGreaterThanOrEqual(2);
+            // This search only: the press reaches the server (answered by a stub, so nothing is applied).
+            let sent = 0;
+            await page.route('**/api/agent/preferences/apply/', (route) => {
+                sent += 1;
+                return route.fulfill({status: 500, contentType: 'application/json', body: '{"error":{"type":"server","message":"stub"}}'});
+            });
+            let searchPressed = 0;
+            for (const left of rests) {
+                sent = 0;
+                if (!(await pressPartlyShown('This search only', left))) continue;
+                searchPressed += 1;
+                await expect.poll(() => sent, `This search only pressed with ${left}px of the list below the edge`).toBeGreaterThanOrEqual(1);
+                await expect(section.getByTestId('priorities-review-error')).toBeVisible();
+            }
+            expect(searchPressed, 'positions where This search only was partly in view').toBeGreaterThanOrEqual(2);
+            await page.unroute('**/api/agent/preferences/apply/');
+        });
+    }
+
+    test('320x568: This search only pressed by keyboard keeps the focus while it runs and after it fails', async ({page}) => {
+        await page.setViewportSize({width: 320, height: 568});
+        await page.goto('/');
+        expect(await setPriorities(page, TEN)).toBe(10);
+        const section = await openPanel(page);
+        await section.getByRole('button', {name: 'Edit priorities'}).click();
+        await page.getByRole('spinbutton', {name: SALARY}).fill('165000');
+        await page.getByRole('button', {name: 'Review changes'}).click();
+        await expect(page.getByRole('list', {name: 'Proposed changes'})).toBeVisible();
+        await settleLayout(page);
+        let release: () => void = () => undefined;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        await page.route('**/api/agent/preferences/apply/', async (route) => {
+            await held;
+            await route.fulfill({status: 500, contentType: 'application/json', body: '{"error":{"type":"server","message":"Could not apply your changes. Try again."}}'});
+        });
+        const searchOnly = section.getByRole('group', {name: 'Review actions'}).getByRole('button', {name: 'This search only'});
+        await searchOnly.focus();
+        await searchOnly.press('Enter');
+        // The request is under way: the button is dimmed for assistive technology and still holds the focus.
+        await expect(searchOnly).toHaveAttribute('aria-disabled', 'true');
+        await expect(searchOnly).toBeFocused();
+        release();
+        await expect(section.getByTestId('priorities-review-error')).toHaveText(/Could not apply your changes/);
+        await expect(searchOnly).toBeFocused();
+        expect(await page.evaluate(() => document.activeElement === document.body)).toBe(false);
+        await settleLayout(page);
+        expect(await wholeAndOnTop(section.getByTestId('priorities-review-error')), 'the reason is on screen').toBe(true);
+        await page.unroute('**/api/agent/preferences/apply/');
+    });
 
     for (const viewport of [{width: 320, height: 568}, {width: 360, height: 640}, {width: 375, height: 553}]) {
         test(`${viewport.width}x${viewport.height}: the result of "This search only" shows the job count whole`, async ({page}) => {
@@ -1050,6 +1160,34 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
     }
 
 
+    test('375x667 to 375x380 (a height-only shrink) with the editor open and a draft being typed: the composer stays on screen and the reader at the end', async ({page}) => {
+        test.setTimeout(120_000);
+        await page.setViewportSize({width: 375, height: 667});
+        await page.goto('/');
+        expect(await setPriorities(page, TEN)).toBe(10);
+        const section = await openPanel(page);
+        await ensureConversation(page, 6);
+        await section.getByRole('button', {name: 'Edit priorities'}).click();
+        await expect(page.getByRole('form', {name: 'Edit priorities'})).toBeVisible();
+        const composer = page.getByTestId('assistant-composer');
+        await composer.click();
+        await page.keyboard.type('Does this one sponsor visas');
+        const before = await readerAtRow(page, false, false);
+        expect(before.lastToComposer, 'the reader is at the end of the conversation').toBeGreaterThanOrEqual(-1);
+        await page.setViewportSize({width: 375, height: 380});
+        const now = await settledReader(page);
+        await expect(composer).toBeFocused();
+        await expect(composer).toHaveValue('Does this one sponsor visas');
+        expect(now.focus?.inside, 'the composer is on screen').toBe(true);
+        expect(now.focus?.hit, 'the composer is uncovered').toBe(true);
+        expect(now.lastToComposer, 'the reader is still at the end of the conversation').toBeGreaterThanOrEqual(-1);
+        expect(now.pill, '"Jump to latest" is not showing').toBe(false);
+        await page.setViewportSize({width: 375, height: 667});
+        const back = await settledReader(page);
+        expect(back.lastToComposer, 'and still there when the panel is tall again').toBeGreaterThanOrEqual(-1);
+        await composer.fill('');
+    });
+
     for (const {width, also} of SWEEP_WIDTHS) {
         test(`${width}px wide, every height from 380 to 900: what the reader opens is on screen, the chat's bars stay free and nothing jumps`, async ({page}) => {
             test.setTimeout(420_000);
@@ -1258,6 +1396,52 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
         await expectNoHorizontalOverflow(page);
     });
 
+    for (const viewport of [{width: 320, height: 568}, {width: 375, height: 700}, {width: 768, height: 800}, {width: 834, height: 1194}]) {
+        for (const [name, patch] of [
+            ['two work arrangements', {set: {'work_location.modes': ['remote', 'hybrid'], industry: ['fintech'], importance: {'work_location.modes': 1.0}}}],
+            ['three industries', {set: {industry: ['Financial technology', 'Developer tools', 'Healthcare'], 'work_location.countries': ['US'], importance: {industry: 1.0}}}],
+        ] as const) {
+            test(`${viewport.width}x${viewport.height}: a list of values as the first requirement (${name}) is cut with the lead, over nothing`, async ({page}) => {
+                await page.setViewportSize(viewport);
+                await page.goto('/');
+                await setPriorities(page, patch);
+                const section = await openPanel(page);
+                const fit = await section.evaluate((sec) => {
+                    const box = (el: Element) => el.getBoundingClientRect();
+                    const toggle = sec.querySelector<HTMLElement>('[data-testid="priorities-summary-toggle"]')!;
+                    const edit = sec.querySelector<HTMLElement>('.priorities-edit')!;
+                    const lead = sec.querySelector<HTMLElement>('.priorities-summary-lead')!;
+                    const tail = sec.querySelector<HTMLElement>('.priorities-summary-tail');
+                    const keep = sec.querySelector<HTMLElement>('.priorities-summary-keep');
+                    const visibleLead = lead.getBoundingClientRect();
+                    // Painted over one another: the boxes share area (below 375px the counts sit under the lead, not beside it).
+                    const overlap = (a: DOMRect, b: DOMRect) => Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left))
+                        * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+                    return {
+                        text: sec.querySelector('[data-testid="priorities-summary"]')!.textContent,
+                        leadWidth: Math.round(visibleLead.width),
+                        // What is painted of the lead is its box: the text beyond it is cut with an ellipsis.
+                        leadOverCounts: tail ? overlap(visibleLead, box(tail)) : 0,
+                        leadOverKeep: keep && keep.textContent ? overlap(visibleLead, box(keep)) : 0,
+                        countsOutsideToggle: tail ? Math.round(Math.max(0, box(tail).right - box(toggle).right)) : 0,
+                        toggleOverEdit: overlap(box(toggle), box(edit)),
+                        pastBlock: Math.round(Math.max(0, box(lead).right - box(sec).right, tail ? box(tail).right - box(sec).right : 0)),
+                        sideways: sec.scrollWidth - sec.clientWidth,
+                    };
+                });
+                expect(fit.text).toMatch(/^Requires: (Work arrangement: Remote, Hybrid|Industr(y|ies): Financial technology)/);
+                expect(fit.leadWidth, 'the lead keeps some room').toBeGreaterThan(0);
+                expect(fit.leadOverCounts).toBe(0);
+                expect(fit.leadOverKeep).toBe(0);
+                expect(fit.countsOutsideToggle).toBe(0);
+                expect(fit.toggleOverEdit).toBe(0);
+                expect(fit.pastBlock).toBe(0);
+                expect(fit.sideways).toBeLessThanOrEqual(1);
+                await expectNoHorizontalOverflow(page);
+            });
+        }
+    }
+
     test('an expired session is said once, with the sign-in link and no retry', async ({page}) => {
         await page.setViewportSize({width: 320, height: 640});
         await page.route('**/api/agent/preferences/', (route) => route.fulfill({
@@ -1267,7 +1451,7 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
         const panel = page.getByTestId('assistant-panel');
         const opener = page.locator('[data-testid="assistant-launcher"], [data-testid="assistant-restore"]');
         await expect(panel.or(opener).first()).toBeVisible();
-        if (!(await panel.isVisible())) await opener.click();
+        await openIfClosed(page);
         const section = page.getByTestId('priorities-sidebar');
         await expect(section.getByTestId('priorities-session-expired')).toBeVisible();
         await expect(section.getByRole('link', {name: 'Sign in'})).toBeVisible();
