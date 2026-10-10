@@ -121,3 +121,67 @@ export function expandChanges(changes: PreferenceChange[], labels?: Record<strin
     }
     return rows;
 }
+
+export interface SummaryChip {
+    path: string;
+    label: string;
+    display: string;
+    hard: boolean;
+    supported: boolean;
+    items?: string[];
+}
+
+// The lead names a second requirement only while it stays this short ("Requires: $150,000, Remote");
+// a longer one is counted with the rest, so the row does not cut the value it names.
+const SUMMARY_LEAD_CHARS = 26;
+
+// A value that says nothing alone ("Yes", "2") is named by its field; "Remote" or "$150,000" stands for itself.
+// Returned as the text that may be cut and the end that may not (the value after a field name).
+function summaryValue(chip: SummaryChip, currency?: unknown, choicePaths?: ReadonlySet<string>): [string, string] {
+    const value = chipValueLabel(chip.path, chip.display, currency, chip.items, choicePaths?.has(chip.path));
+    if (value === 'Yes') return [chip.label, ''];
+    // An excluded value alone would read as wanted ("Requires: Gambling"): it keeps its field's name, in the part that may be cut.
+    if (chip.path.startsWith('exclusions.')) return [`${chip.label}: ${value}`, ''];
+    // A bare number and a number with its unit ("0.5%") say little without their field.
+    return /^(No|-?[\d,.]+\s?(%|[A-Za-z]+)?)$/.test(value) ? [chip.label, `: ${value}`] : [value, ''];
+}
+
+export interface SummaryParts {
+    // Truncates first: "Requires: $150,000, Remote".
+    lead: string;
+    // The end of the lead that never truncates: the value after a field name (": 2").
+    keep: string;
+    sep: string;
+    // Never truncates: the counts ("+2 \u00b7 6 preferences").
+    tail: string;
+}
+
+/** The collapsed row's summary in the parts it is laid out in; joined they read as `prioritiesSummary`. */
+export function prioritiesSummaryParts(chips: SummaryChip[], currency?: unknown, choicePaths?: ReadonlySet<string>): SummaryParts {
+    const required = chips.filter((chip) => chip.hard)
+        .sort((a, b) => Number(!a.supported) - Number(!b.supported));
+    const preferences = chips.length - required.length;
+    const counted = preferences > 0 ? `${preferences} ${preferences === 1 ? 'preference' : 'preferences'}` : '';
+    if (required.length === 0) return {lead: counted, keep: '', sep: '', tail: ''};
+    const [first, second] = required.map((chip) => summaryValue(chip, currency, choicePaths));
+    let lead = `Requires: ${first[0]}`;
+    let keep = first[1];
+    let named = 1;
+    if (second && `${lead}${keep}, ${second.join('')}`.length <= SUMMARY_LEAD_CHARS) {
+        lead = `${lead}${keep}, ${second[0]}`;
+        keep = second[1];
+        named = 2;
+    }
+    const more = required.length - named;
+    if (more === 0) return counted ? {lead, keep, sep: ' \u00b7 ', tail: counted} : {lead, keep, sep: '', tail: ''};
+    // The comma belongs to what it follows, so a cut lead is never followed by a stray ", ".
+    const tail = [`+${more}`, ...(counted ? [counted] : [])].join(' \u00b7 ');
+    return keep ? {lead, keep: `${keep},`, sep: ' ', tail} : {lead: `${lead},`, keep, sep: ' ', tail};
+}
+
+/** One-line summary for the collapsed sidebar row: "Requires: $150,000, Remote, +1 · 5 preferences".
+ *  Values read as on the chips, in chip order (criteria the matcher uses first). Empty when nothing is saved. */
+export function prioritiesSummary(chips: SummaryChip[], currency?: unknown, choicePaths?: ReadonlySet<string>): string {
+    const {lead, keep, sep, tail} = prioritiesSummaryParts(chips, currency, choicePaths);
+    return `${lead}${keep}${sep}${tail}`;
+}

@@ -5,7 +5,8 @@
 // summary with Undo, and Reset priorities. One component serves the main
 // workspace and the assistant sidebar (`variant`); the workspace store
 // ensures at most one editor is open and carries the post-write revision so
-// other roots (job matches) refetch.
+// other roots (job matches) refetch. The sidebar shows one collapsed summary
+// row that expands to the chips, so the conversation below keeps its height.
 
 import * as React from 'react';
 import {
@@ -13,10 +14,10 @@ import {
     SESSION_EXPIRED_MESSAGE, applyProposal, proposePriorities, readPriorities, resetPriorities, undoApplied,
 } from './api';
 import AppliedChanges from './AppliedChanges';
-import PriorityChips, {PriorityChipsSkeleton} from './PriorityChips';
+import PriorityChips, {PriorityChipLegendItems, PriorityChipsSkeleton} from './PriorityChips';
 import PriorityEditor from './PriorityEditor';
 import ReviewChanges from './ReviewChanges';
-import {preferencePathLabel} from './format';
+import {preferencePathLabel, prioritiesSummaryParts} from './format';
 import {Draft, DraftValue, buildPatch, conflictingPaths, emptyDraft, isDirty, patchToDraft} from './patch';
 import {prioritiesSurface, subscribeDesktop} from './surface';
 import {useWorkspace} from './useWorkspace';
@@ -45,6 +46,17 @@ const ScrollRegion: React.FC<{children: React.ReactNode}> = ({children}) => {
         </div>
     );
 };
+
+// The sidebar block stays pinned above a scrolling panel while the chat keeps its header, its composer
+// band and this much under it: room for the chat's jump pill, which comes and goes as the reader scrolls
+// and so must not unpin the block, or else for two lines of transcript.
+export const PIN_TRANSCRIPT_PX = 56;
+// Before the chat has mounted: its header and an empty composer band.
+export const CHAT_BARS_FALLBACK_PX = 164;
+// The chat re-measures and follows the conversation a few frames after the block resizes.
+const REVEAL_FRAMES = 6;
+/** How long a press that never clicks keeps the collapsed row held after its pointer comes up. */
+const PRESS_LANDING_MS = 500;
 
 const STALE_COPY = 'Your priorities changed elsewhere. Review the latest before applying.';
 
@@ -77,7 +89,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const [proposal, setProposal] = React.useState<Proposal | null>(null);
     const [reviewError, setReviewError] = React.useState<string | null>(null);
     const [stale, setStale] = React.useState(false);
-    const [applied, setApplied] = React.useState<{result: AppliedResult; summary: string} | null>(null);
+    const [applied, setApplied] = React.useState<{result: AppliedResult; summary: string; scope: 'account' | 'search'} | null>(null);
     const [undoPending, setUndoPending] = React.useState(false);
     const [undoError, setUndoError] = React.useState<string | null>(null);
     const [undone, setUndone] = React.useState(false);
@@ -85,6 +97,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const [sessionExpired, setSessionExpired] = React.useState(false);
     const [rebasing, setRebasing] = React.useState(false);
     const [refreshed, setRefreshed] = React.useState(false);
+    const [expanded, setExpanded] = React.useState(false);
     const guard = React.useMemo(createLatestGuard, []);
     const mounted = React.useRef(true);
     const revisionRef = React.useRef<number | null>(null);
@@ -99,6 +112,18 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const editButton = React.useRef<HTMLButtonElement>(null);
     const resetButton = React.useRef<HTMLButtonElement>(null);
     const confirmHeading = React.useRef<HTMLParagraphElement>(null);
+    const sectionRef = React.useRef<HTMLElement>(null);
+    const following = React.useRef(false);
+    const moved = React.useRef(false);
+    // The block's height at the last sync: a block that grew (an error arrived) is told apart from a composer that grew.
+    const shown = React.useRef(0);
+    // The panel's height at the last sync: a panel that got shorter (a resize) un-pins a block the same way.
+    const panelShown = React.useRef(0);
+
+    // The chat shows its jump pill to a reader who is not at the end; one this block moved is still following.
+    const noteFollowing = (panelBody: HTMLElement) => {
+        if (!moved.current) following.current = panelBody.querySelector('[data-testid="jump-to-latest"]') === null;
+    };
 
     const beginWrite = () => {
         const controller = new AbortController();
@@ -125,6 +150,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             revisionRef.current = data.revision;
             setSnapshot(data);
             setLoadError(null);
+            setSessionExpired(false);
             setPhase('ready');
             return data;
         } catch (err) {
@@ -160,6 +186,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         setSessionExpired(false);
         setRebasing(false);
         setRefreshed(false);
+        setExpanded(false);
         setPhase('loading');
     }, [guard]);
 
@@ -230,11 +257,136 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         } else if (step === 'view' && focusAfter.current) {
             const target = focusAfter.current === 'reset' ? resetButton.current || editButton.current : editButton.current;
             focusAfter.current = null;
-            target?.focus();
+            // In the panel the row is at the top of the panel's content: focusing it must not scroll the reader up to it.
+            target?.focus({preventScroll: variant === 'sidebar'});
         }
-    }, [step]);
+    }, [step, variant]);
 
     appliedRef.current = applied;
+
+    // Sidebar: tell the panel how tall the block is and whether pinning it leaves the chat room. The open block is
+    // pinned, and so is the collapsed row while it holds the keyboard focus. Where the chat's own bars and a little
+    // transcript would not fit under it, it scrolls away with the panel instead of covering them.
+    const inSidebar = variant === 'sidebar' && authenticated;
+    React.useLayoutEffect(() => {
+        const section = sectionRef.current;
+        const panelBody = section?.closest<HTMLElement>('.assistant-panel-body');
+        if (!inSidebar || !section || !panelBody || typeof ResizeObserver === 'undefined') return undefined;
+        let card: HTMLElement | null = null;
+        let footer: HTMLElement | null = null;
+        const sync = (focused = section.contains(document.activeElement)) => {
+            const open = section.querySelector('.priorities-scroll') !== null;
+            const held = open || focused;
+            const height = held ? section.offsetHeight : 0;
+            const header = card?.querySelector<HTMLElement>('.card-header');
+            // The jump pill takes a row of the composer band only while the panel scrolls.
+            const pill = footer?.querySelector<HTMLElement>('.chat-jump-row');
+            const pillRow = pill && getComputedStyle(pill).position === 'static' ? pill.offsetHeight : 0;
+            const bars = header && footer ? header.offsetHeight + footer.offsetHeight - pillRow : CHAT_BARS_FALLBACK_PX;
+            panelBody.style.setProperty('--priorities-open-h', `${height}px`);
+            const pin = held && panelBody.clientHeight - height >= bars + PIN_TRANSCRIPT_PX;
+            const letGo = section.hasAttribute('data-pinned') && !pin;
+            section.toggleAttribute('data-pinned', pin);
+            // A block that grew, or a panel that got shorter under a field of the block that holds the focus, so that it no longer fits pinned is brought back, not left above the reader;
+            // a reader typing in the composer keeps it.
+            const shorter = focused && panelShown.current > 0 && panelBody.clientHeight < panelShown.current;
+            if (letGo && open && shown.current > 0 && (height > shown.current || shorter)) {
+                const above = section.getBoundingClientRect().top - panelBody.getBoundingClientRect().top;
+                if (above < 0) {
+                    // This block moves the reader: closing it returns one who was following to the end.
+                    noteFollowing(panelBody);
+                    panelBody.scrollTop += above;
+                    moved.current = true;
+                }
+            }
+            shown.current = height;
+            panelShown.current = panelBody.clientHeight;
+        };
+        const observer = new ResizeObserver(() => sync());
+        observer.observe(section);
+        observer.observe(panelBody);
+        // The chat mounts after this block and replaces its footer: keep its card and footer observed.
+        const watch = () => {
+            const nextCard = panelBody.querySelector<HTMLElement>('[data-testid="job-search-chat"]');
+            const nextFooter = nextCard?.querySelector<HTMLElement>('.chat-footer') ?? null;
+            if (nextCard === card && nextFooter === footer) return;
+            if (card) observer.unobserve(card);
+            if (footer) observer.unobserve(footer);
+            card = nextCard;
+            footer = nextFooter;
+            if (card) observer.observe(card);
+            if (footer) observer.observe(footer);
+            sync();
+        };
+        const mutations = new MutationObserver(watch);
+        mutations.observe(panelBody, {childList: true, subtree: true});
+        // Focus moving between the row's own buttons never lets go of it.
+        const entered = () => sync(true);
+        // Letting go of the row moves the chat's header up by the row's height: a press that took the focus away
+        // from the row is held until it has landed (click, cancel, or a moment after its pointer comes up), or it misses.
+        let pressed = false;
+        let owed = false;
+        let timer = 0;
+        const landed = () => {
+            window.clearTimeout(timer);
+            pressed = false;
+            if (owed) { owed = false; sync(); }
+        };
+        const down = () => { window.clearTimeout(timer); pressed = true; };
+        // A press that ends without a click lets go a moment later; a tap's mouse events follow its pointerup.
+        const lifted = () => { window.clearTimeout(timer); timer = window.setTimeout(landed, PRESS_LANDING_MS); };
+        const left = (event: FocusEvent) => {
+            if (section.contains(event.relatedTarget as Node | null)) return;
+            if (pressed) owed = true;
+            else sync(false);
+        };
+        const presses: Array<[string, EventListener]> = [
+            ['pointerdown', down], ['mousedown', down], ['pointerup', lifted], ['pointercancel', landed], ['click', landed],
+        ];
+        presses.forEach(([type, listener]) => document.addEventListener(type, listener, true));
+        section.addEventListener('focusin', entered);
+        section.addEventListener('focusout', left);
+        watch();
+        sync();
+        return () => {
+            observer.disconnect();
+            mutations.disconnect();
+            section.removeEventListener('focusin', entered);
+            section.removeEventListener('focusout', left);
+            presses.forEach(([type, listener]) => document.removeEventListener(type, listener, true));
+            window.clearTimeout(timer);
+            panelBody.style.removeProperty('--priorities-open-h');
+        };
+    }, [inSidebar, step, expanded, phase]);
+
+    // Just after a step changes, the chat re-measures and may scroll the panel. Where the block does not pin,
+    // keep what the reader opened (or the row that took the focus) on screen; where it does, or once the chat
+    // scrolls its own transcript again, a reader who was following the conversation stays at its end.
+    React.useEffect(() => {
+        const section = sectionRef.current;
+        const panelBody = section?.closest<HTMLElement>('.assistant-panel-body');
+        if (!inSidebar || !section || !panelBody) return undefined;
+        noteFollowing(panelBody);
+        const open = section.querySelector('.priorities-scroll') !== null;
+        let frames = REVEAL_FRAMES;
+        let raf = requestAnimationFrame(function keep() {
+            const pinned = section.hasAttribute('data-pinned');
+            const above = section.getBoundingClientRect().top - panelBody.getBoundingClientRect().top;
+            const log = panelBody.querySelector<HTMLElement>('[data-scroll-owner="transcript"] [role="log"]');
+            if ((open || section.contains(document.activeElement)) && !pinned && above < 0) {
+                panelBody.scrollTop += above;
+                moved.current = true;
+            } else if (following.current && (log || pinned)) {
+                const scroller = log ?? panelBody;
+                scroller.scrollTop = scroller.scrollHeight;
+                moved.current = false;
+            }
+            frames -= 1;
+            if (frames > 0) raf = requestAnimationFrame(keep);
+            else if (!open) moved.current = false;
+        });
+        return () => cancelAnimationFrame(raf);
+    }, [inSidebar, step, expanded]);
 
     const close = () => {
         if (applied) {
@@ -268,6 +420,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         }
         const write = beginWrite();
         setBusy(true);
+        setSessionExpired(false);
         setFormError(null);
         setFieldErrors({});
         try {
@@ -298,8 +451,8 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         }
     };
 
-    const finishWrite = (result: AppliedResult, summary: string) => {
-        setApplied({result, summary});
+    const finishWrite = (result: AppliedResult, summary: string, scope: 'account' | 'search' = 'account') => {
+        setApplied({result, summary, scope});
         setUndone(false);
         setUndoError(null);
         setStep('applied');
@@ -315,6 +468,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         if (!proposal || busy) return;
         const write = beginWrite();
         setBusy(true);
+        setSessionExpired(false);
         setReviewError(null);
         try {
             const result = await applyProposal({...proposal.token, scope}, write.signal);
@@ -322,6 +476,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             finishWrite(
                 result,
                 scope === 'search' ? searchOnlyCopy(result) : 'Priorities saved. Job matches will update.',
+                scope,
             );
         } catch (err) {
             if (!write.live()) return;
@@ -362,6 +517,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         if (!token || undoPending) return;
         const write = beginWrite();
         setUndoPending(true);
+        setSessionExpired(false);
         setUndoError(null);
         try {
             const revision = await undoApplied(token, write.signal);
@@ -389,6 +545,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         if (!snapshot || busy) return;
         const write = beginWrite();
         setBusy(true);
+        setSessionExpired(false);
         setFormError(null);
         try {
             const result = await resetPriorities(snapshot.revision, write.signal);
@@ -416,6 +573,11 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const choicePaths = new Set(fields.filter((f) => f.choices).map((f) => f.path));
     const readOnlyPaths = new Set(fields.filter((f) => f.type === 'float_map').map((f) => f.path));
     const titleId = `priorities-title-${variant}`;
+    const detailsId = `priorities-details-${variant}`;
+    const sidebar = variant === 'sidebar';
+    // The sidebar is bounded to a share of the panel, so every step scrolls inside it.
+    const bounded = (node: React.ReactNode) => (sidebar ? <ScrollRegion>{node}</ScrollRegion> : node);
+    let summaryRow = false;
 
     // Signed out: the page's own sign-in prompt is the call to action; the main block says what signing in is for.
     if (!authenticated) {
@@ -430,43 +592,60 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
 
     let body: React.ReactNode;
     if (phase === 'loading' && !snapshot) {
-        body = <div aria-busy="true"><PriorityChipsSkeleton/><span className="visually-hidden" role="status">Loading your priorities</span></div>;
-    } else if (phase === 'error' && !snapshot) {
+        // The sidebar's placeholder has the shape of the row that replaces it: title, summary, Edit.
         body = (
+            <div aria-busy="true">
+                {sidebar ? (
+                    <div className="priorities-summary-row priorities-summary-skeleton" aria-hidden="true" data-testid="priorities-summary-skeleton">
+                        <span className="priorities-summary-text">
+                            <span className="priorities-skeleton-bar priorities-skeleton-title"></span>
+                            <span className="priorities-skeleton-bar priorities-skeleton-summary"></span>
+                        </span>
+                        <span className="priorities-skeleton-bar priorities-skeleton-edit"></span>
+                    </div>
+                ) : <PriorityChipsSkeleton/>}
+                <span className="visually-hidden" role="status">Loading your priorities</span>
+            </div>
+        );
+    } else if (phase === 'error' && !snapshot) {
+        // An expired session is said once, by the sign-in line above.
+        body = sessionExpired ? null : (
             <div className="priorities-load-error" role="alert" data-testid="priorities-load-error">
                 <i className="fa-solid fa-triangle-exclamation priorities-load-error-icon" aria-hidden="true"></i>
                 <div className="priorities-load-error-text">
                     <strong>Couldn’t load your priorities.</strong>
                     {loadError && loadError !== GENERIC_ERROR_MESSAGE && <span className="d-block small">{loadError}</span>}
                 </div>
-                {!sessionExpired && (
-                    <button type="button" className="btn btn-sm btn-outline-light priorities-load-error-retry" onClick={() => void load()}>Try again</button>
-                )}
+                <button type="button" className="btn btn-sm btn-outline-light priorities-load-error-retry" onClick={() => void load()}>Try again</button>
             </div>
         );
     } else if (step === 'edit' && snapshot) {
         body = (
-            <ScrollRegion>
-                <PriorityEditor fields={fields} draft={draft} fieldErrors={fieldErrors} dirty={dirty}
-                                pending={busy} formError={formError} idPrefix={`priority-${variant}`}
-                                onChange={(path: string, value: DraftValue) =>
-                                    setDraft((d) => ({...d, values: {...d.values, [path]: value}}))}
-                                onToggleHard={(path, hard) =>
-                                    setDraft((d) => ({...d, hard: {...d.hard, [path]: hard}}))}
-                                onUndoClear={(path) => setDraft((d) => {
-                                    const values = {...d.values};
-                                    delete values[path];
-                                    return {...d, values};
-                                })}
-                                onReview={() => void startReview()} onCancel={close}/>
-            </ScrollRegion>
+            <>
+                {sidebar && <h3 className="priorities-step-title" data-testid="priorities-step-title">Edit priorities</h3>}
+                <ScrollRegion>
+                    <PriorityEditor fields={fields} draft={draft} fieldErrors={fieldErrors} dirty={dirty}
+                                    pending={busy} formError={formError} idPrefix={`priority-${variant}`}
+                                    onChange={(path: string, value: DraftValue) =>
+                                        setDraft((d) => ({...d, values: {...d.values, [path]: value}}))}
+                                    onToggleHard={(path, hard) =>
+                                        setDraft((d) => ({...d, hard: {...d.hard, [path]: hard}}))}
+                                    onUndoClear={(path) => setDraft((d) => {
+                                        const values = {...d.values};
+                                        delete values[path];
+                                        return {...d, values};
+                                    })}
+                                    onReview={() => void startReview()} onCancel={close}/>
+                </ScrollRegion>
+            </>
         );
     } else if (step === 'review' && proposal) {
         body = (
             <ScrollRegion>
                 <ReviewChanges key={proposal.id} changes={proposal.changes} labels={labels} currency={currency}
                                choicePaths={choicePaths} conflicts={conflicts} pending={busy || rebasing}
-                               error={reviewError} stale={stale}
+                               // In the sidebar an expired session is said once, by the sign-in line above.
+                               error={sidebar && sessionExpired ? null : reviewError} stale={stale} compact={sidebar}
                                onApply={() => void apply('account')}
                                onApplySearchOnly={() => void apply('search')}
                                onEdit={() => setStep('edit')} onCancel={close}
@@ -474,15 +653,15 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             </ScrollRegion>
         );
     } else if (step === 'applied' && applied) {
-        body = (
+        body = bounded(
             <AppliedChanges changes={applied.result.changes} labels={labels} currency={currency}
-                            choicePaths={choicePaths} summary={applied.summary}
+                            choicePaths={choicePaths} summary={applied.summary} scope={applied.scope}
                             canUndo={applied.result.undo !== null} undoPending={undoPending}
                             undoError={undoError} undone={undone} onUndo={() => void undo()}
-                            onDismiss={() => { focusAfter.current = 'edit'; setApplied(null); setStep('view'); }}/>
+                            onDismiss={() => { focusAfter.current = 'edit'; setApplied(null); setStep('view'); }}/>,
         );
     } else if (step === 'confirm-reset') {
-        body = (
+        body = bounded(
             <div className="priorities-card priorities-confirm" role="group" aria-label="Confirm reset">
                 <p className="priorities-heading mb-1" tabIndex={-1} ref={confirmHeading}>Reset priorities?</p>
                 <p>Reset all saved priorities to their defaults? Your conversations are not changed. Job matches will update.</p>
@@ -494,44 +673,121 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                     <button type="button" className="btn btn-sm btn-outline-light"
                             onClick={() => { focusAfter.current = 'reset'; setStep('view'); }} disabled={busy}>Keep priorities</button>
                 </div>
-            </div>
+            </div>,
         );
     } else {
         const chips = snapshot?.chips || [];
-        body = (
-            <>
-                {formError && (
-                    <div className="priorities-load-error" role="alert" data-testid="priorities-view-error">
-                        <i className="fa-solid fa-triangle-exclamation priorities-load-error-icon" aria-hidden="true"></i>
-                        <div className="priorities-load-error-text">{formError}</div>
-                    </div>
-                )}
-                {chips.length > 0 ? (
-                    <PriorityChips chips={chips} collapsedCount={variant === 'sidebar' ? 3 : 5}
-                                   currency={currency} readOnlyPaths={readOnlyPaths} choicePaths={choicePaths}
-                                   onEdit={() => setPrioritiesEditorOpen(variant)}/>
-                ) : (
-                    <p className="priorities-empty" data-testid="priorities-empty">
-                        No priorities saved yet. Add a few so job matches fit what you want.
-                    </p>
-                )}
-                <div className="priorities-actions" role="group" aria-label="Priorities actions">
-                    <button type="button" className="btn btn-sm btn-outline-primary priorities-edit" ref={editButton}
-                            onClick={() => setPrioritiesEditorOpen(variant)}>
-                        {chips.length > 0 ? 'Edit priorities' : 'Add priorities'}
-                    </button>
-                    {chips.length > 0 && (
-                        <button type="button" className="btn btn-sm btn-link link-danger priorities-reset" ref={resetButton}
-                                onClick={() => setStep('confirm-reset')}>Reset priorities</button>
-                    )}
-                </div>
-            </>
+        const viewError = formError && (
+            <div className="priorities-load-error" role="alert" data-testid="priorities-view-error">
+                <i className="fa-solid fa-triangle-exclamation priorities-load-error-icon" aria-hidden="true"></i>
+                <div className="priorities-load-error-text">{formError}</div>
+            </div>
         );
+        const resetAction = (
+            <button type="button" className="btn btn-sm btn-link link-danger priorities-reset" ref={resetButton}
+                    onClick={() => setStep('confirm-reset')}>Reset priorities</button>
+        );
+        if (sidebar) {
+            // One row: a disclosure with the summary, and Edit beside it (never nested in it).
+            summaryRow = true;
+            const open = expanded && chips.length > 0;
+            const summary = prioritiesSummaryParts(chips, currency, choicePaths);
+            const hard = chips.some((chip) => chip.hard);
+            const unsupported = chips.some((chip) => !chip.supported);
+            body = (
+                <>
+                    <div className="priorities-summary-row">
+                        <h2 className="priorities-summary-heading">
+                            {chips.length > 0 ? (
+                                <button type="button" className="priorities-summary-toggle"
+                                        data-testid="priorities-summary-toggle"
+                                        aria-expanded={open} aria-controls={detailsId}
+                                        onClick={() => setExpanded((was) => !was)}>
+                                    <span className="priorities-summary-text">
+                                        <span id={titleId} className="priorities-summary-title">
+                                            Your priorities
+                                            <i className={`fa-solid fa-chevron-${open ? 'up' : 'down'} priorities-summary-chevron`} aria-hidden="true"></i>
+                                        </span>
+                                        <span className="priorities-summary" data-testid="priorities-summary">
+                                            <span className="priorities-summary-first">
+                                                <span className="priorities-summary-lead">{summary.lead}</span>
+                                                {summary.keep && <span className="priorities-summary-keep">{summary.keep}</span>}
+                                            </span>
+                                            {summary.tail && (
+                                                <>
+                                                    <span className="priorities-summary-sep">{summary.sep}</span>
+                                                    <span className="priorities-summary-tail">{summary.tail}</span>
+                                                </>
+                                            )}
+                                        </span>
+                                        {/* Open, the chips say what the summary did; its line holds the key to their marks
+                                            (each chip names its own status for assistive technology). */}
+                                        {open && (hard || unsupported) && (
+                                            <span className="priority-chip-legend priorities-summary-legend" aria-hidden="true"
+                                                  data-testid="priority-chip-legend">
+                                                <PriorityChipLegendItems hard={hard} unsupported={unsupported}/>
+                                            </span>
+                                        )}
+                                    </span>
+                                </button>
+                            ) : (
+                                <span className="priorities-summary-text">
+                                    <span id={titleId} className="priorities-summary-title">Your priorities</span>
+                                    <span className="priorities-summary" data-testid="priorities-empty">None saved yet</span>
+                                </span>
+                            )}
+                        </h2>
+                        <button type="button" className="btn btn-sm btn-outline-primary priorities-edit" ref={editButton}
+                                onClick={() => setPrioritiesEditorOpen(variant)}>
+                            {chips.length > 0 ? 'Edit' : 'Add'}<span className="visually-hidden"> priorities</span>
+                        </button>
+                    </div>
+                    {/* Open, the error scrolls with the list instead of taking the list's room. */}
+                    {!open && viewError}
+                    <div id={detailsId} className="priorities-details" hidden={!open}>
+                        {open && (
+                            <>
+                                <ScrollRegion>
+                                    {viewError}
+                                    <PriorityChips chips={chips} collapsedCount={chips.length} legend={false}
+                                                   currency={currency} readOnlyPaths={readOnlyPaths} choicePaths={choicePaths}
+                                                   onEdit={() => setPrioritiesEditorOpen(variant)}/>
+                                </ScrollRegion>
+                                <div className="priorities-actions" role="group" aria-label="Priorities actions">
+                                    {resetAction}
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </>
+            );
+        } else {
+            body = (
+                <>
+                    {viewError}
+                    {chips.length > 0 ? (
+                        <PriorityChips chips={chips} currency={currency} readOnlyPaths={readOnlyPaths}
+                                       choicePaths={choicePaths} onEdit={() => setPrioritiesEditorOpen(variant)}/>
+                    ) : (
+                        <p className="priorities-empty" data-testid="priorities-empty">
+                            No priorities saved yet. Add a few so job matches fit what you want.
+                        </p>
+                    )}
+                    <div className="priorities-actions" role="group" aria-label="Priorities actions">
+                        <button type="button" className="btn btn-sm btn-outline-primary priorities-edit" ref={editButton}
+                                onClick={() => setPrioritiesEditorOpen(variant)}>
+                            {chips.length > 0 ? 'Edit priorities' : 'Add priorities'}
+                        </button>
+                        {chips.length > 0 && resetAction}
+                    </div>
+                </>
+            );
+        }
     }
 
     return (
-        <section className={className} aria-labelledby={titleId} data-testid={`priorities-${variant}`}>
-            <h2 id={titleId} className="h6 priorities-title">Your priorities</h2>
+        <section className={className} aria-labelledby={titleId} data-testid={`priorities-${variant}`} ref={sectionRef}>
+            {!summaryRow && <h2 id={titleId} className="h6 priorities-title">Your priorities</h2>}
             {sessionExpired && (
                 <p className="priorities-session-expired" role="alert" data-testid="priorities-session-expired">
                     {SESSION_EXPIRED_MESSAGE} <a href={signInHref()}>Sign in</a>
