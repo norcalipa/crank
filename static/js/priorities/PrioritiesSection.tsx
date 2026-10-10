@@ -87,7 +87,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const [proposal, setProposal] = React.useState<Proposal | null>(null);
     const [reviewError, setReviewError] = React.useState<string | null>(null);
     const [stale, setStale] = React.useState(false);
-    const [applied, setApplied] = React.useState<{result: AppliedResult; summary: string} | null>(null);
+    const [applied, setApplied] = React.useState<{result: AppliedResult; summary: string; scope: 'account' | 'search'} | null>(null);
     const [undoPending, setUndoPending] = React.useState(false);
     const [undoError, setUndoError] = React.useState<string | null>(null);
     const [undone, setUndone] = React.useState(false);
@@ -115,6 +115,8 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const moved = React.useRef(false);
     // The block's height at the last sync: a block that grew (an error arrived) is told apart from a composer that grew.
     const shown = React.useRef(0);
+    // The panel's height at the last sync: a panel that got shorter (rotation, resize) un-pins a block the same way.
+    const panelShown = React.useRef(0);
 
     // The chat shows its jump pill to a reader who is not at the end; one this block moved is still following.
     const noteFollowing = (panelBody: HTMLElement) => {
@@ -146,6 +148,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             revisionRef.current = data.revision;
             setSnapshot(data);
             setLoadError(null);
+            setSessionExpired(false);
             setPhase('ready');
             return data;
         } catch (err) {
@@ -282,8 +285,9 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             const pin = held && panelBody.clientHeight - height >= bars + PIN_TRANSCRIPT_PX;
             const letGo = section.hasAttribute('data-pinned') && !pin;
             section.toggleAttribute('data-pinned', pin);
-            // A block that grew and no longer fits pinned is brought back, not left above the reader.
-            if (letGo && open && shown.current > 0 && height > shown.current) {
+            // A block that grew, or a panel that got shorter, so that it no longer fits pinned is brought back, not left above the reader.
+            const shorter = panelShown.current > 0 && panelBody.clientHeight < panelShown.current;
+            if (letGo && open && shown.current > 0 && (height > shown.current || shorter)) {
                 const above = section.getBoundingClientRect().top - panelBody.getBoundingClientRect().top;
                 if (above < 0) {
                     // This block moves the reader: closing it returns one who was following to the end.
@@ -293,6 +297,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
                 }
             }
             shown.current = height;
+            panelShown.current = panelBody.clientHeight;
         };
         const observer = new ResizeObserver(() => sync());
         observer.observe(section);
@@ -389,6 +394,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         }
         const write = beginWrite();
         setBusy(true);
+        setSessionExpired(false);
         setFormError(null);
         setFieldErrors({});
         try {
@@ -419,8 +425,8 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         }
     };
 
-    const finishWrite = (result: AppliedResult, summary: string) => {
-        setApplied({result, summary});
+    const finishWrite = (result: AppliedResult, summary: string, scope: 'account' | 'search' = 'account') => {
+        setApplied({result, summary, scope});
         setUndone(false);
         setUndoError(null);
         setStep('applied');
@@ -436,6 +442,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         if (!proposal || busy) return;
         const write = beginWrite();
         setBusy(true);
+        setSessionExpired(false);
         setReviewError(null);
         try {
             const result = await applyProposal({...proposal.token, scope}, write.signal);
@@ -443,6 +450,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             finishWrite(
                 result,
                 scope === 'search' ? searchOnlyCopy(result) : 'Priorities saved. Job matches will update.',
+                scope,
             );
         } catch (err) {
             if (!write.live()) return;
@@ -483,6 +491,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         if (!token || undoPending) return;
         const write = beginWrite();
         setUndoPending(true);
+        setSessionExpired(false);
         setUndoError(null);
         try {
             const revision = await undoApplied(token, write.signal);
@@ -510,6 +519,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         if (!snapshot || busy) return;
         const write = beginWrite();
         setBusy(true);
+        setSessionExpired(false);
         setFormError(null);
         try {
             const result = await resetPriorities(snapshot.revision, write.signal);
@@ -619,7 +629,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     } else if (step === 'applied' && applied) {
         body = bounded(
             <AppliedChanges changes={applied.result.changes} labels={labels} currency={currency}
-                            choicePaths={choicePaths} summary={applied.summary}
+                            choicePaths={choicePaths} summary={applied.summary} scope={applied.scope}
                             canUndo={applied.result.undo !== null} undoPending={undoPending}
                             undoError={undoError} undone={undone} onUndo={() => void undo()}
                             onDismiss={() => { focusAfter.current = 'edit'; setApplied(null); setStep('view'); }}/>,

@@ -546,6 +546,77 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
         });
     }
 
+    for (const viewport of [{width: 320, height: 568}, {width: 1280, height: 650}]) {
+        for (const many of [false, true]) {
+            test(`${viewport.width}x${viewport.height}: Tab through the review's actions, with ${many ? 'four changes' : 'one change'}, never lands on a button that is not on screen`, async ({page}) => {
+                await page.setViewportSize(viewport);
+                await page.goto('/');
+                expect(await setPriorities(page, TEN)).toBe(10);
+                const section = await openPanel(page);
+                await section.getByRole('button', {name: 'Edit priorities'}).click();
+                await page.getByRole('spinbutton', {name: SALARY}).fill('165000');
+                if (many) {
+                    await page.getByRole('checkbox', {name: 'Hybrid'}).uncheck();
+                    await page.getByRole('spinbutton', {name: /equity/i}).fill('0.75');
+                    await page.getByRole('spinbutton', {name: /office days/i}).fill('3');
+                }
+                await page.getByRole('button', {name: 'Review changes'}).click();
+                await expect(page.getByRole('list', {name: 'Proposed changes'})).toBeVisible();
+                await expect(page.getByRole('list', {name: 'Proposed changes'}).getByRole('listitem')).toHaveCount(many ? 4 : 1);
+                await settleLayout(page);
+                const actions = section.getByRole('group', {name: 'Review actions'});
+                const apply = actions.getByRole('button', {name: 'Apply to account'});
+                await apply.focus();
+                // Where a button's ring and centre are: whole inside the block's scroller, and a pointer reaches it.
+                const stops: string[] = [];
+                const problems: string[] = [];
+                for (let i = 0; i < 4; i += 1) {
+                    await page.keyboard.press('Tab');
+                    const name = await page.evaluate(() => (document.activeElement as HTMLElement).getAttribute('aria-label') || document.activeElement!.textContent || '');
+                    stops.push(name.trim());
+                    const visible = await page.evaluate(() => {
+                        const el = document.activeElement as HTMLElement;
+                        const r = el.getBoundingClientRect();
+                        const scroller = el.closest('.priorities-scroll')!.getBoundingClientRect();
+                        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                        const top = Math.max(r.top, scroller.top, 0);
+                        const bottom = Math.min(r.bottom, scroller.bottom, window.innerHeight);
+                        return {px: Math.round(Math.max(0, bottom - top)), of: Math.round(r.height), reached: !!hit && el.contains(hit)};
+                    });
+                    if (visible.px < visible.of - 1 || !visible.reached) problems.push(`${name.trim()}: ${visible.px} of ${visible.of} px on screen, reached by a pointer: ${visible.reached}`);
+                }
+                expect(stops.slice(-2)).toEqual(['Edit', 'This search only']);
+                expect(problems, 'every stop of the walk is on screen and uncovered').toEqual([]);
+            });
+        }
+    }
+
+    for (const viewport of [{width: 320, height: 568}, {width: 360, height: 640}, {width: 375, height: 553}]) {
+        test(`${viewport.width}x${viewport.height}: the result of "This search only" shows the job count whole`, async ({page}) => {
+            await page.setViewportSize(viewport);
+            await page.goto('/');
+            expect(await setPriorities(page, TEN)).toBe(10);
+            const section = await openPanel(page);
+            await section.getByRole('button', {name: 'Edit priorities'}).click();
+            await page.getByRole('spinbutton', {name: SALARY}).fill('165000');
+            await page.getByRole('button', {name: 'Review changes'}).click();
+            await expect(page.getByRole('list', {name: 'Proposed changes'})).toBeVisible();
+            await settleLayout(page);
+            const searchOnly = section.getByRole('group', {name: 'Review actions'}).getByRole('button', {name: 'This search only'});
+            await searchOnly.focus();
+            await searchOnly.press('Enter');
+            const applied = section.getByTestId('priorities-applied');
+            await expect(applied.getByRole('heading')).toContainText(/\d+\+? jobs? match/);
+            await settleLayout(page);
+            const text = applied.locator('.priorities-heading > span');
+            expect(await wholeAndOnTop(text), 'the whole result is on screen').toBe(true);
+            // Cut to a line it would be wider than the box that shows it.
+            expect(await text.evaluate((el) => el.scrollWidth <= el.clientWidth + 1), 'the result is not cut off').toBe(true);
+            expect(await text.evaluate((el) => (el.textContent || '').includes('The list below still reflects your saved priorities'))).toBe(true);
+            await expectNoHorizontalOverflow(page);
+        });
+    }
+
     test('keyboard: Enter and Space toggle the row and focus stays on it; Cancel returns focus to Edit', async ({page}) => {
         await page.setViewportSize({width: 375, height: 700});
         await page.goto('/');
@@ -1069,8 +1140,14 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
 
             // Review, Apply, Done: the same.
             await section.getByRole('button', {name: 'Edit priorities'}).click();
+            await expect(page.getByRole('form', {name: 'Edit priorities'})).toBeVisible();
+            await settledReader(page);
             await page.getByRole('spinbutton', {name: SALARY}).fill('165000');
             await page.getByRole('button', {name: 'Review changes'}).click();
+            await expect(page.getByRole('list', {name: 'Proposed changes'})).toBeVisible();
+            // The chat re-measures and may scroll the panel after a step changes: press the next button once it has
+            // settled, so Playwright's own scroll into view cannot take the reader up in between.
+            await settledReader(page);
             await page.getByRole('button', {name: 'Apply to account'}).click();
             await expect(page.getByRole('list', {name: 'Changed priorities'})).toBeVisible();
             expect(readerProblems('applied', await settledReader(page), before, ['Done']), state).toEqual([]);

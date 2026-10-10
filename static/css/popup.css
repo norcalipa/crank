@@ -4143,7 +4143,15 @@ span.priority-chip-button { cursor: default; }
 .priorities-summary-tail { flex: 0 0 auto; white-space: pre; }
 @media (max-width: 374.98px) {
     .priorities-summary { flex-direction: column; }
-    .priorities-summary-sep { display: none; }
+    .priorities-summary-sep {
+        display: block;
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+    }
 }
 /* Open, the chips say it: the summary's line holds the key to their marks. */
 .priorities-summary-toggle[aria-expanded='true'] .priorities-summary { display: none; }
@@ -4327,7 +4335,7 @@ span.priority-chip-button { cursor: default; }
 }
 @media (max-width: 767.98px) and (max-height: 640px) {
     /* On the shortest sheets the summary keeps to one line, so the values it is about show. */
-    .priorities-sidebar .priorities-applied > .priorities-heading > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .priorities-sidebar .priorities-applied:not(.priorities-applied-search) > .priorities-heading > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 @media (max-width: 400px) {
     .assistant-panel-body #job-search-chat .empty-history-note { display: none; }

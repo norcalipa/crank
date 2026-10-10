@@ -159,7 +159,7 @@ describe('AssistantPanel priorities section (issue #480)', () => {
         expect(container.querySelector('.priorities-sidebar')).toBeNull();
         expect((global as any).fetch).not.toHaveBeenCalled();
         setWorkspaceAccount({status: 'authenticated', key: 'u'});
-        expect(await screen.findByTestId('priorities-summary')).toBeInTheDocument();
+        expect(await screen.findByTestId('priorities-summary')).toHaveTextContent('1 preference');
         expect(container.querySelector('.assistant-panel-body > .priorities-sidebar')).not.toBeNull();
         setWorkspaceAccount({status: 'anonymous', key: ''});
         await waitFor(() => expect(container.querySelector('.priorities-sidebar')).toBeNull());

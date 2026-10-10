@@ -140,7 +140,9 @@ const SUMMARY_LEAD_CHARS = 26;
 function summaryValue(chip: SummaryChip, currency?: unknown, choicePaths?: ReadonlySet<string>): [string, string] {
     const value = chipValueLabel(chip.path, chip.display, currency, chip.items, choicePaths?.has(chip.path));
     if (value === 'Yes') return [chip.label, ''];
-    return /^(No|-?[\d,.]+)$/.test(value) ? [chip.label, `: ${value}`] : [value, ''];
+    // A bare number, a number and its unit ("0.5%"), and a list of values ("US, CA") say little without their field.
+    const bare = /^(No|-?[\d,.]+\s?(%|[A-Za-z]+)?)$/.test(value) || (chip.items?.length ?? 0) > 1;
+    return bare ? [chip.label, `: ${value}`] : [value, ''];
 }
 
 export interface SummaryParts {
