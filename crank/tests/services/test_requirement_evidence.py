@@ -3,6 +3,7 @@
 """Read-time evidence status for stored match requirements (issue #473)."""
 
 from datetime import timedelta
+from unittest import mock
 
 from django.test import TestCase
 from django.utils import timezone
@@ -517,6 +518,41 @@ class RequirementStatedByEvidenceTests(TestCase):
         self.assertFalse(service._states_office_days("Remote", {**match, "observed": False}))
         self.assertFalse(service._states_funding_stage("Series Q", {**match, "observed": "series q"}))
         self.assertFalse(service._states_accelerated_vesting("sometimes", match))
+
+    def test_a_listed_reader_cannot_verify_a_value_with_no_strict_reading(self):
+        """The row-level check stands on its own too, whatever a reader lets through.
+
+        Every reader listed today refuses what ``_strictly_readable`` refuses,
+        so only a reader that accepts anything shows the check deciding: a
+        pair added to the allowlist cannot verify prose, or a field with no
+        strict reading at all (round-2 NIT 5).
+        """
+        from crank.services import company_evidence as service
+
+        strict = self._row(FieldKey.RTO_POLICY, "Hybrid")
+        prose = self._row(FieldKey.RTO_POLICY, "Remote first, with five office days a quarter")
+        locations = self._row(FieldKey.LOCATIONS, "Berlin, Germany")
+
+        def state(path, pk, observed):
+            requirement = {"path": path, "status": "match", "observed": observed,
+                           "source_kind": "evidence", "source_id": pk, "scope_ok": True}
+            return annotate_requirement_evidence([[requirement]], now=self.now)[0][0][
+                "evidence_status"]["state"]
+
+        accepts_anything = mock.Mock(return_value=True)
+        with mock.patch.dict(service._REQUIREMENT_STATED_BY, {
+            ("work_location.modes", FieldKey.RTO_POLICY): accepts_anything,
+            ("work_location.countries", FieldKey.LOCATIONS): accepts_anything,
+        }):
+            # The patched reader is the one consulted: it verifies an outcome
+            # the real reader refuses ("Hybrid" does not state "remote").
+            self.assertEqual(state("work_location.modes", strict.pk, "remote"), "verified")
+            accepts_anything.assert_called_once()
+            self.assertEqual(state("work_location.modes", prose.pk, "remote"), "sourced")
+            self.assertEqual(state("work_location.countries", locations.pk, "germany"), "sourced")
+            # ...and it was never asked about either value.
+            accepts_anything.assert_called_once()
+        self.assertEqual(state("work_location.modes", strict.pk, "remote"), "sourced")
 
     def test_only_a_stated_whole_value_can_be_verified(self):
         """Property: across every evidence-backed requirement, value and
