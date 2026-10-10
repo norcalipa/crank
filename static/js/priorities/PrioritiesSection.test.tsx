@@ -1356,11 +1356,12 @@ describe('PrioritiesSection', () => {
                 expect(body.scrollTop).toBe(2500);
 
                 // The composer grew instead (a draft): the block lets go, and a reader who is typing is not pulled away.
-                at.section = -2439;
                 heights.header = 0;
                 heights.footer = CHAT_BARS_FALLBACK_PX;
                 rerender(panel(node, chatCard('composer')));
                 await waitFor(() => expect(live()[0].observed).toHaveLength(4));
+                // Set after the wait: a frame of the toggle's own loop may run during it and would bring the block back.
+                at.section = -2439;
                 grow(241);
                 expect(section).toHaveAttribute('data-pinned');
                 heights.footer += 40;
@@ -1778,7 +1779,7 @@ describe('PrioritiesSection', () => {
                 return {...view, sizes, observers, run};
             }
 
-            test('a panel that got shorter (rotation, resize) brings back an open block that no longer fits pinned', async () => {
+            test('a panel that got shorter (a resize) brings back an open block that no longer fits pinned', async () => {
                 try {
                     // Reading older messages (the jump pill shows): the reader is not sent to the end of the conversation.
                     const {section, panel, toggle, sizes, run} = await mountSized(true);
