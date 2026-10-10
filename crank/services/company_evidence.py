@@ -50,7 +50,7 @@ from urllib.parse import urlsplit
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Count, F, Q, Window
+from django.db.models import Count, Exists, F, OuterRef, Q, Window
 from django.db.models.functions import RowNumber
 from django.utils import timezone
 
@@ -1395,6 +1395,14 @@ def _evidence_rows_and_statuses(evidence_ids, now: datetime | None):
     ``last_verified_at`` and ``source_domain``. It is never ``verified``:
     that is a claim about a requirement, and only
     :func:`_requirement_evidence_status` makes it.
+
+    A cited row that was superseded by an accepted row of the same
+    organization and field with the same value and scope (re-accepting an
+    unchanged value) reads as that accepted row: the fact did not change.
+    An accepted fact with an open claim behind it (a later observation
+    awaiting review) carries ``review`` (``pending`` or ``conflicted``): it
+    is still the accepted fact, but not plainly verified. The cited rows, the
+    accepted row to compare with and the open claims come in one query.
     """
     ids = {pk for pk in evidence_ids if _is_evidence_id(pk)}
     if not ids:
@@ -1405,22 +1413,63 @@ def _evidence_rows_and_statuses(evidence_ids, now: datetime | None):
         for pk in ids
     }
     accepted: dict[int, CompanyFieldEvidence] = {}
-    rows = CompanyFieldEvidence.objects.filter(pk__in=ids).only(
-        "field_key", "state", "value_text", "last_verified_at", "source_domain", "scope_json"
+    # Rows of the same organization and field as a cited row, but only those
+    # that can matter: the accepted one and open claims, never the history.
+    same_fact = CompanyFieldEvidence.objects.filter(
+        pk__in=ids,
+        organization_id=OuterRef("organization_id"),
+        field_key=OuterRef("field_key"),
     )
+    rows = CompanyFieldEvidence.objects.filter(
+        Q(pk__in=ids)
+        | (Q(state__in=(State.ACCEPTED, *OPEN_CLAIM_STATES)) & Exists(same_fact))
+    ).only(
+        "organization_id", "field_key", "state", "value_text", "last_verified_at",
+        "source_domain", "scope_json",
+    )
+    current: dict[tuple, list[CompanyFieldEvidence]] = {}
+    reviews: dict[tuple, str] = {}
+    cited = []
     for row in rows:
+        fact = (row.organization_id, row.field_key)
+        if row.state == State.ACCEPTED:
+            current.setdefault(fact, []).append(row)
+        elif row.state in OPEN_CLAIM_STATES:
+            reviews[fact] = _review_state(
+                row.state == State.CONFLICTED or reviews.get(fact) == "conflicted"
+            )
+        if row.pk in ids:
+            cited.append(row)
+    for row in cited:
+        fact = (row.organization_id, row.field_key)
+        match = row
         if row.state != State.ACCEPTED:
             statuses[row.pk]["state"] = "superseded"
-            continue
-        accepted[row.pk] = row
-        statuses[row.pk] = {
-            "state": "stale" if field_status(row, now=now) == "stale" else "sourced",
-            "last_verified_at": (
-                row.last_verified_at.isoformat() if row.last_verified_at else None
-            ),
-            "source_domain": row.source_domain or None,
-        }
+            match = None
+            if row.state == State.SUPERSEDED:
+                match = next(
+                    (
+                        candidate for candidate in current.get(fact, [])
+                        if candidate.value_text == row.value_text
+                        and (candidate.scope_json or {}) == (row.scope_json or {})
+                    ),
+                    None,
+                )
+        if match is not None:
+            accepted[row.pk] = match
+            statuses[row.pk] = _accepted_row_status(match, now, reviews.get(fact))
     return statuses, accepted
+
+
+def _accepted_row_status(row: CompanyFieldEvidence, now: datetime, review: str | None) -> dict:
+    status = {
+        "state": "stale" if field_status(row, now=now) == "stale" else "sourced",
+        "last_verified_at": row.last_verified_at.isoformat() if row.last_verified_at else None,
+        "source_domain": row.source_domain or None,
+    }
+    if review:
+        status["review"] = review
+    return status
 
 
 _PROFILE_EVIDENCE_STATUS = {
@@ -1539,7 +1588,7 @@ def annotate_requirement_evidence(requirement_lists, *, now: datetime | None = N
         and _is_evidence_id(requirement.get("source_id"))
     }
     statuses, rows = _evidence_rows_and_statuses(evidence_ids, now)
-    return [
+    annotated = [
         [
             {
                 **requirement,
@@ -1551,6 +1600,7 @@ def annotate_requirement_evidence(requirement_lists, *, now: datetime | None = N
         ]
         for requirements in requirement_lists
     ]
+    return annotated
 
 
 #: Evidence states whose outcome a reason must not restate as plain fact: the

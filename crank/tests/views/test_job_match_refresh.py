@@ -148,6 +148,45 @@ class JobMatchRefreshTests(TestCase):
         self.assertEqual(self.client.post(URL).json(), {"status": "published"})
         self.assertEqual(self._cited_states(), {"profile"})
 
+    def test_reaccepting_the_same_value_is_not_a_change(self):
+        """Acceptance replaces the row with an equal one; the fact is unchanged."""
+        State = CompanyFieldEvidence.State
+        CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).update(state=State.SUPERSEDED)
+        CompanyFieldEvidence.objects.create(
+            organization=self.organization,
+            field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
+            value_text="Remote",
+            source_url="https://acme.example/about",
+            source_domain="acme.example",
+            observed_at=self.now,
+            last_verified_at=self.now,
+            validation_version="v1",
+            extractor_version="v1",
+            state=State.ACCEPTED,
+        )
+        self.assertNotIn("superseded", self._cited_states())
+        with mock.patch(RECOMPUTE) as recompute:
+            self.assertEqual(self.client.post(URL).json(), {"status": "not_needed"})
+        recompute.assert_not_called()
+
+    def test_replacing_the_value_is_still_a_change(self):
+        State = CompanyFieldEvidence.State
+        CompanyFieldEvidence.objects.filter(pk=self.evidence.pk).update(state=State.SUPERSEDED)
+        CompanyFieldEvidence.objects.create(
+            organization=self.organization,
+            field_key=CompanyFieldEvidence.FieldKey.RTO_POLICY,
+            value_text="Hybrid",
+            source_url="https://acme.example/about",
+            source_domain="acme.example",
+            observed_at=self.now,
+            last_verified_at=self.now,
+            validation_version="v1",
+            extractor_version="v1",
+            state=State.ACCEPTED,
+        )
+        self.assertEqual(self._cited_states(), {"superseded"})
+        self.assertEqual(self.client.post(URL).json(), {"status": "published"})
+
     def test_the_check_reads_evidence_once_however_many_matches(self):
         with mock.patch(RECOMPUTE) as recompute:
             with CaptureQueriesContext(connection) as three:

@@ -49,14 +49,17 @@ def _evidence_flag(status: object) -> str:
 
     A stale fact carries its *own* last-verified day: the catalog row's
     ``newest_verified`` is the newest across all of an organization's facts
-    and would date an old fact last week. Only the ``verified`` state has no
-    flag; a missing status or an unlisted state reads ``,unconfirmed``.
+    and would date an old fact last week. Only a ``verified`` state with no open
+    review has no flag (``,under_review`` otherwise); a missing status or an
+    unlisted state reads ``,unconfirmed``.
     """
     state = status.get("state") if isinstance(status, dict) else None
     if not isinstance(state, str):
         return ",unconfirmed"
     if state == _VERIFIED_STATE:
-        return ""
+        # A later observation that disagrees is awaiting review: still the
+        # accepted fact, but never a bare (verified) reference.
+        return ",under_review" if status.get("review") else ""
     flag = _EVIDENCE_FLAGS.get(state, ",unconfirmed")
     if flag == ",stale":
         flag += ",last_verified=%s" % _utc_day(status.get("last_verified_at"))

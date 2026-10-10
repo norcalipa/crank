@@ -152,6 +152,16 @@ class TestStaleGoldenConversation:
 
 
 class TestContextRendering:
+    @pytest.mark.parametrize("review", ["pending", "conflicted"])
+    def test_verified_fact_under_review_is_never_a_bare_reference(self, review):
+        assert _evidence_flag({"state": "verified", "review": review}) == ",under_review"
+        assert _evidence_flag({"state": "verified", "review": None}) == ""
+        rendered = _requirements_text([{
+            "path": "work_location.modes", "status": "match", "source_kind": "evidence",
+            "source_id": 5, "evidence_status": {"state": "verified", "review": review},
+        }])
+        assert rendered == "[work_location.modes=match[evidence=5,under_review]]"
+
     @pytest.mark.parametrize(
         "state, flag",
         [("stale", ",stale,last_verified=never"), ("sourced", ",unconfirmed"),

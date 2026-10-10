@@ -26,9 +26,9 @@ class TestSystemPrompt:
 
         digests = {
             6: {
-                (False, True): "879a7ed183ca482b284cf735e304dac73592f2826b237269a988786fc77a80b7",
-                (True, True): "09e9771bdd1d4f4de807ceac6a02cb12fdf9cccbce5b6a9e480c5f494cd937d5",
-                (True, False): "67f3e8038f36664b492ce05b83b993c446fdcd2adbde416b06f062cd6adeddab",
+                (False, True): "26c667cb525dcc4a7b16019e63952d2d844d82ca03e3ecfe50336564add8f3ef",
+                (True, True): "8cc2e49c4498b1eb918592b01ae35d3f1bad75f85e8cb6cbd82515661a3b5686",
+                (True, False): "3b73a5f864c6929f8c8c18290794a872277a7c10e84013fe761339f8ab5753ca",
             },
         }
         for (with_context, with_actions), expected in digests[SYSTEM_PROMPT_VERSION].items():
@@ -95,6 +95,8 @@ class TestSystemPrompt:
         # Profile-backed outcomes have a rule of their own.
         assert "[source=organization.<field>,profile]" in text
         assert "call it profile data or not verified" in text
+        assert "[evidence=<id>,under_review]" in text
+        assert "never as plainly verified" in text
         assert (
             "Never call unknown, stale, unconfirmed, changed, profile or "
             "pending-review facts verified" in text

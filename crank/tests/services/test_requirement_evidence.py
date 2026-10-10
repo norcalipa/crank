@@ -21,7 +21,7 @@ FieldKey = CompanyFieldEvidence.FieldKey
 State = CompanyFieldEvidence.State
 
 
-class EvidenceStatusTests(TestCase):
+class _EvidenceFixture(TestCase):
     def setUp(self):
         self.now = timezone.now()
         self.organization = Organization.objects.create(
@@ -60,11 +60,15 @@ class EvidenceStatusTests(TestCase):
         annotated = annotate_requirement_evidence([requirements], now=now)[0]
         return {r["source_id"]: r["evidence_status"] for r in annotated}
 
+
+class EvidenceStatusTests(_EvidenceFixture):
     def test_verified_stale_superseded_and_missing_in_one_query(self):
         verified = self._row()
         stale = self._row(age_days=FIELD_FRESHNESS_POLICY[FieldKey.RTO_POLICY] + 1)
         never = self._row(age_days=None)
-        superseded = self._row(state=State.SUPERSEDED)
+        # A different value than the accepted row: an unchanged one reads as
+        # that row (see the re-acceptance tests below).
+        superseded = self._row(state=State.SUPERSEDED, value_text="Hybrid")
         rejected = self._row(state=State.REJECTED)
         missing_id = rejected.pk + 1000
 
@@ -597,3 +601,65 @@ class RequirementStatedByEvidenceTests(TestCase):
                 "evidence_status"]["state"],
             "sourced",
         )
+
+
+class ReacceptedEvidenceTests(_EvidenceFixture):
+    """Accepting an unchanged value replaces the row, not the fact (#473)."""
+
+    def test_row_superseded_by_the_same_value_reads_as_the_accepted_row(self):
+        old = self._row(state=State.SUPERSEDED)
+        current = self._row()
+        with self.assertNumQueries(1):
+            status = self._statuses([old.pk], now=self.now)[old.pk]
+        self.assertEqual(status["state"], "verified")
+        self.assertEqual(status["last_verified_at"], current.last_verified_at.isoformat())
+
+    def test_a_different_value_or_scope_still_reads_superseded(self):
+        changed = self._row(state=State.SUPERSEDED, value_text="Hybrid")
+        scoped = self._row(state=State.SUPERSEDED, scope_json={"countries": ["DE"]})
+        self._row()
+        statuses = self._statuses([changed.pk, scoped.pk], now=self.now)
+        self.assertEqual(statuses[changed.pk]["state"], "superseded")
+        self.assertEqual(statuses[scoped.pk]["state"], "superseded")
+
+    def test_another_field_or_organization_does_not_stand_in(self):
+        old = self._row(state=State.SUPERSEDED)
+        self._row(FieldKey.PUBLIC_STATUS)
+        other = Organization.objects.create(name="Other", url="https://other.test")
+        self._row(organization=other)
+        self.assertEqual(self._statuses([old.pk], now=self.now)[old.pk]["state"], "superseded")
+
+
+class OpenReviewTests(_EvidenceFixture):
+    """A verified fact with an open conflicting observation says so (#473)."""
+
+    def _claim(self, state, value="Hybrid"):
+        return self._row(state=state, value_text=value, last_verified_at=None)
+
+    def test_verified_status_carries_the_open_review_state(self):
+        row = self._row()
+        self._claim(State.CONFLICTED)
+        status = self._statuses([row.pk], now=self.now)[row.pk]
+        self.assertEqual(status["state"], "verified")
+        self.assertEqual(status["review"], "conflicted")
+
+    def test_pending_claim_reads_pending_and_other_fields_do_not_count(self):
+        row = self._row()
+        self._row(FieldKey.PUBLIC_STATUS, state=State.PENDING, value_text="Private")
+        self.assertNotIn("review", self._statuses([row.pk], now=self.now)[row.pk])
+        self._claim(State.PENDING)
+        self.assertEqual(self._statuses([row.pk], now=self.now)[row.pk]["review"], "pending")
+
+    def test_review_state_comes_with_the_one_query_and_conflict_wins(self):
+        row = self._row()
+        self._claim(State.PENDING)
+        self._claim(State.CONFLICTED, value="In-office")
+        with self.assertNumQueries(1):
+            status = self._statuses([row.pk], now=self.now)[row.pk]
+        self.assertEqual(status["review"], "conflicted")
+
+    def test_another_organizations_claim_is_not_this_facts_review(self):
+        row = self._row()
+        other = Organization.objects.create(name="Other", url="https://other.test")
+        self._row(organization=other, state=State.CONFLICTED, value_text="Hybrid")
+        self.assertNotIn("review", self._statuses([row.pk], now=self.now)[row.pk])
