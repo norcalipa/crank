@@ -128,14 +128,40 @@ describe('JobMatchPanel evidence qualifiers (issue #473)', () => {
 
     test('listing data and payloads without a status keep the plain chip', async () => {
         await renderRanked([job([
-            requirement('compensation.minimum_salary', 'match', null),
-            requirement('industry', 'mismatch'),
+            {...requirement('compensation.minimum_salary', 'match', null), source_kind: 'listing', source_id: 'salary'},
+            {...requirement('industry', 'mismatch'), source_kind: 'listing', source_id: 'industry'},
         ])]);
         expect(chip('compensation.minimum_salary')).toHaveAttribute('aria-label', 'Minimum salary: match');
         expect(chip('compensation.minimum_salary')).not.toHaveAttribute('data-evidence-state');
         expect(chip('compensation.minimum_salary').querySelector('.job-match-chip-qualifier')).toBeNull();
         expect(chip('industry')).toHaveClass('job-match-chip--mismatch');
         expect(chip('industry')).not.toHaveClass('job-match-chip--unverified');
+    });
+
+    test('evidence-backed requirements without a status read sourced, never the solid style', async () => {
+        // An older server can answer a newer bundle during a rolling update.
+        await renderRanked([job([
+            requirement('work_location.modes', 'match'),
+            requirement('industry', 'mismatch', null),
+            requirement('work_location.countries', 'unknown'),
+        ])]);
+        for (const path of ['work_location.modes', 'industry']) {
+            expect(chip(path)).toHaveClass('job-match-chip--unverified');
+            expect(chip(path)).toHaveTextContent(MATCH_TERMS.sourced.label);
+            expect(chip(path).getAttribute('aria-label')).toContain(MATCH_TERMS.sourced.label);
+        }
+        expect(chip('work_location.countries')).not.toHaveClass('job-match-chip--unverified');
+    });
+
+    test('a verified fact with an open conflicting observation says it is under review', async () => {
+        await renderRanked([job([
+            requirement('work_location.modes', 'match', {...status('verified', '2026-09-01T00:00:00Z'), review: 'conflicted'}),
+            requirement('industry', 'match', {...status('verified', '2026-09-01T00:00:00Z'), review: 'pending'}),
+        ])]);
+        expect(chip('work_location.modes')).toHaveTextContent('under review');
+        expect(chip('work_location.modes').getAttribute('aria-label')).toContain('conflicting observation is under review');
+        expect(chip('industry').getAttribute('aria-label')).toContain('awaiting review');
+        expect(chip('work_location.modes')).toHaveTextContent(EVIDENCE_STATUS_META.verified.label);
     });
 
     test('superseded or deleted evidence reads "Evidence changed — refresh" and offers one refresh', async () => {

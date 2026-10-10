@@ -51,6 +51,8 @@ interface RequirementEvidenceStatus {
     state: 'verified' | 'sourced' | 'stale' | 'profile' | 'superseded' | 'missing';
     last_verified_at: string | null;
     source_domain: string | null;
+    /** Open observation behind a verified fact; absent when none. */
+    review?: 'pending' | 'conflicted';
 }
 
 interface RevisionBlock {
@@ -452,7 +454,17 @@ const lastVerifiedText = (iso: string | null, long = false): string =>
  * stale- or prose-backed match never looks like a verified one. */
 function chipQualifier(req: RequirementOutcome): {node: React.ReactNode; spoken: string; unverified: boolean} | null {
     const evidence = req.evidence_status;
-    if (!evidence) return null;
+    // A requirement citing evidence with no status (an older server answering
+    // a newer bundle during a rolling update) gets the cautious default, the
+    // same as the model context: sourced, never the solid style.
+    if (!evidence) {
+        if (req.source_kind !== 'evidence' || req.status === 'unknown') return null;
+        return {
+            node: <span className="job-match-chip-qualifier-text" title={MATCH_TERMS.sourced.meaning}>{MATCH_TERMS.sourced.label}</span>,
+            spoken: MATCH_TERMS.sourced.label,
+            unverified: true,
+        };
+    }
     if (evidence.state === 'stale') {
         return {
             node: <><EvidenceBadge status="stale"/> ({lastVerifiedText(evidence.last_verified_at)})</>,
@@ -463,6 +475,16 @@ function chipQualifier(req: RequirementOutcome): {node: React.ReactNode; spoken:
     // A requirement the engine could not decide has no fact to qualify.
     if (req.status === 'unknown') return null;
     if (evidence.state === 'verified') {
+        // A later observation that disagrees is awaiting review: the fact is
+        // still the accepted one, but the chip says so.
+        if (evidence.review) {
+            const review = evidence.review === 'conflicted' ? 'a conflicting observation is under review' : 'an observation is awaiting review';
+            return {
+                node: <><EvidenceBadge status="verified"/> <span className="job-match-chip-qualifier-text" title={review}>(under review)</span></>,
+                spoken: `${EVIDENCE_STATUS_META.verified.label}, ${review}`,
+                unverified: false,
+            };
+        }
         return {node: <EvidenceBadge status="verified"/>, spoken: EVIDENCE_STATUS_META.verified.label, unverified: false};
     }
     if (evidence.state === 'profile') {
