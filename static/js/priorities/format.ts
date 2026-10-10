@@ -140,9 +140,10 @@ const SUMMARY_LEAD_CHARS = 26;
 function summaryValue(chip: SummaryChip, currency?: unknown, choicePaths?: ReadonlySet<string>): [string, string] {
     const value = chipValueLabel(chip.path, chip.display, currency, chip.items, choicePaths?.has(chip.path));
     if (value === 'Yes') return [chip.label, ''];
-    // A bare number, a number and its unit ("0.5%"), and a list of values ("US, CA") say little without their field.
-    const bare = /^(No|-?[\d,.]+\s?(%|[A-Za-z]+)?)$/.test(value) || (chip.items?.length ?? 0) > 1;
-    return bare ? [chip.label, `: ${value}`] : [value, ''];
+    // A list is as long as the user made it: with its field's name it stays in the part that may be cut.
+    if ((chip.items?.length ?? 0) > 1) return [`${chip.label}: ${value}`, ''];
+    // A bare number and a number with its unit ("0.5%") say little without their field.
+    return /^(No|-?[\d,.]+\s?(%|[A-Za-z]+)?)$/.test(value) ? [chip.label, `: ${value}`] : [value, ''];
 }
 
 export interface SummaryParts {

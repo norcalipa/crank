@@ -1245,6 +1245,7 @@ describe('PrioritiesSection', () => {
                 <section data-testid="job-search-chat">
                     <div className="card-header"></div>
                     <div className="chat-footer" key={footerKey}>
+                        <textarea aria-label="Message" defaultValue=""/>
                         {pill && <div className="chat-jump-row" style={{position: pill}}></div>}
                     </div>
                 </section>
@@ -1366,6 +1367,20 @@ describe('PrioritiesSection', () => {
                 act(() => live()[0].run());
                 expect(section).not.toHaveAttribute('data-pinned');
                 expect(body.scrollTop).toBe(2500);
+                // Nor by a panel 40px shorter, with the composer holding the focus (a soft keyboard, a split screen):
+                // the block stays where it is and the reader stays at the end, with the composer on screen.
+                heights.footer -= 40;
+                grow(241);
+                expect(section).toHaveAttribute('data-pinned');
+                const draft = screen.getByRole('textbox', {name: 'Message'});
+                act(() => draft.focus());
+                heights.body -= 40;
+                act(() => live()[0].run());
+                expect(section).not.toHaveAttribute('data-pinned');
+                expect(body.scrollTop).toBe(2500);
+                heights.body += 40;
+                heights.footer += 40;
+                act(() => draft.blur());
 
                 // Nor is the collapsed row, pinned only because it holds the focus.
                 heights.footer -= 40;
@@ -1769,6 +1784,8 @@ describe('PrioritiesSection', () => {
                     const {section, panel, toggle, sizes, run} = await mountSized(true);
                     sizes.section = 400;
                     fireEvent.click(toggle);
+                    // The reader is in a field of the block (here its row's own button).
+                    act(() => toggle.focus());
                     expect(section).toHaveAttribute('data-pinned');
                     // The reader is deep in the panel, the block's top 1,444px above the panel's.
                     panel.scrollTop = 1452;
@@ -1784,6 +1801,28 @@ describe('PrioritiesSection', () => {
                     run();
                     expect(section).not.toHaveAttribute('data-pinned');
                     expect(panel.scrollTop).toBe(1452 - 1444);
+                } finally {
+                    delete (global as any).ResizeObserver;
+                }
+            });
+
+            test('a panel that got shorter leaves a reader who is typing in the composer where they are', async () => {
+                try {
+                    const {section, panel, toggle, sizes, run} = await mountSized(true);
+                    sizes.section = 400;
+                    fireEvent.click(toggle);
+                    expect(section).toHaveAttribute('data-pinned');
+                    // The composer holds the focus; the block does not.
+                    const composer = document.createElement('textarea');
+                    panel.appendChild(composer);
+                    act(() => composer.focus());
+                    panel.scrollTop = 2000;
+                    tops.section = -1900;
+                    sizes.body = 400;
+                    run();
+                    expect(section).not.toHaveAttribute('data-pinned');
+                    expect(panel.scrollTop).toBe(2000);
+                    expect(composer).toHaveFocus();
                 } finally {
                     delete (global as any).ResizeObserver;
                 }
@@ -1940,6 +1979,121 @@ describe('PrioritiesSection', () => {
             expect(screen.queryByTestId('priorities-session-expired')).not.toBeInTheDocument();
         });
 
+        describe('the sign-in line goes as soon as a later request starts or succeeds', () => {
+            const expired = () => json({error: {type: 'auth_required'}}, 401);
+            const sessionLine = () => screen.queryByTestId('priorities-session-expired');
+
+            test('a review that goes through', async () => {
+                const answers: Array<() => Response> = [expired, () => json(proposal)];
+                mockFetch({
+                    '/api/agent/preferences/propose/': () => answers.shift()!(),
+                    '/api/agent/preferences/': () => json(snapshotBody(2, [chip])),
+                });
+                render(<PrioritiesSection variant="sidebar" authenticated/>);
+                const form = await openEditor('sidebar');
+                fireEvent.change(within(form).getByRole('spinbutton', {name: /Minimum base salary/}), {target: {value: '150000'}});
+                fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+                expect(await screen.findByTestId('priorities-session-expired')).toBeInTheDocument();
+                fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+                expect(await screen.findByTestId('priorities-review')).toBeInTheDocument();
+                expect(sessionLine()).not.toBeInTheDocument();
+            });
+
+            test('a review that is refused for another reason', async () => {
+                const answers: Array<() => Response> = [expired, () => json({error: {type: 'server', message: 'x'}}, 500)];
+                mockFetch({
+                    '/api/agent/preferences/propose/': () => answers.shift()!(),
+                    '/api/agent/preferences/': () => json(snapshotBody(2, [chip])),
+                });
+                render(<PrioritiesSection variant="sidebar" authenticated/>);
+                const form = await openEditor('sidebar');
+                fireEvent.change(within(form).getByRole('spinbutton', {name: /Minimum base salary/}), {target: {value: '150000'}});
+                fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+                expect(await screen.findByTestId('priorities-session-expired')).toBeInTheDocument();
+                let release: (r: Response) => void = () => undefined;
+                (global as any).fetch = jest.fn(() => new Promise<Response>((r) => { release = r; }));
+                fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+                // The request is under way: the old line is already gone.
+                await waitFor(() => expect(sessionLine()).not.toBeInTheDocument());
+                await act(async () => { release(json({error: {type: 'server', message: 'x'}}, 500)); });
+            });
+
+            // The second request is held: the old line must be gone while it is still under way, not only once it answers.
+            const held = () => {
+                let release: (r: Response) => void = () => undefined;
+                const answer = () => new Promise<Response>((resolve) => { release = resolve; }) as unknown as Response;
+                return {answer, release: (r: Response) => act(async () => { release(r); })};
+            };
+
+            test('an undo that starts', async () => {
+                const second = held();
+                const undos: Array<() => Response> = [expired, second.answer];
+                mockFetch({
+                    '/api/agent/preferences/propose/': () => json(proposal),
+                    '/api/agent/preferences/apply/': () => json({scope: 'account', revision: 3, changes: proposal.changes,
+                        undo: {expected_revision: 3, document: {}}}),
+                    '/api/agent/preferences/undo/': () => undos.shift()!(),
+                    '/api/agent/preferences/': () => json(snapshotBody(3, [chip])),
+                });
+                render(<PrioritiesSection variant="main" authenticated/>);
+                const form = await openEditor();
+                fireEvent.change(within(form).getByLabelText('Minimum base salary'), {target: {value: '150000'}});
+                fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+                fireEvent.click(await screen.findByRole('button', {name: 'Apply to account'}));
+                fireEvent.click(await screen.findByRole('button', {name: 'Undo'}));
+                expect(await screen.findByTestId('priorities-session-expired')).toBeInTheDocument();
+                fireEvent.click(screen.getByRole('button', {name: 'Undo'}));
+                await waitFor(() => expect(sessionLine()).not.toBeInTheDocument());
+                await second.release(json({revision: 4}));
+            });
+
+            test('a reset that starts', async () => {
+                const second = held();
+                const resets: Array<() => Response> = [expired, second.answer];
+                mockFetch({
+                    '/api/agent/preferences/reset/': () => resets.shift()!(),
+                    '/api/agent/preferences/': () => json(snapshotBody(5, [chip])),
+                });
+                render(<PrioritiesSection variant="main" authenticated/>);
+                fireEvent.click(await screen.findByRole('button', {name: 'Reset priorities'}));
+                fireEvent.click(screen.getByRole('button', {name: 'Reset priorities'}));
+                expect(await screen.findByTestId('priorities-session-expired')).toBeInTheDocument();
+                fireEvent.click(screen.getByRole('button', {name: 'Reset priorities'}));
+                fireEvent.click(screen.getByRole('button', {name: 'Reset priorities'}));
+                await waitFor(() => expect(sessionLine()).not.toBeInTheDocument());
+                await second.release(json({reset: true, revision: 6, changes: [], undo: null}));
+            });
+
+            test('the page drops private state, or the account changes', async () => {
+                mockFetch({
+                    '/api/agent/preferences/reset/': () => expired(),
+                    '/api/agent/preferences/': () => json(snapshotBody(5, [chip])),
+                });
+                render(<PrioritiesSection variant="main" authenticated/>);
+                fireEvent.click(await screen.findByRole('button', {name: 'Reset priorities'}));
+                fireEvent.click(screen.getByRole('button', {name: 'Reset priorities'}));
+                expect(await screen.findByTestId('priorities-session-expired')).toBeInTheDocument();
+                act(() => { document.dispatchEvent(new Event('crank:private-state-purged')); });
+                expect(sessionLine()).not.toBeInTheDocument();
+            });
+
+            test('priorities that load again', async () => {
+                const answers: Array<() => Response> = [expired];
+                mockFetch({
+                    '/api/agent/preferences/reset/': () => expired(),
+                    '/api/agent/preferences/': () => (answers.shift() ?? (() => json(snapshotBody(8, [chip]))))(),
+                });
+                // The first load itself is refused: the sign-in line is shown alone.
+                render(<PrioritiesSection variant="main" authenticated/>);
+                expect(await screen.findByTestId('priorities-session-expired')).toBeInTheDocument();
+                expect(screen.queryByTestId('priorities-load-error')).not.toBeInTheDocument();
+                // Signed in elsewhere, a write on the page bumps the revision: the section loads again.
+                act(() => setPrioritiesRevision(8));
+                await screen.findAllByTestId('priority-chip');
+                expect(sessionLine()).not.toBeInTheDocument();
+            });
+        });
+
         test('a search-only result is the whole message, so the one-line clamp is left off it; a saved one keeps it', async () => {
             serve(() => json({scope: 'search', matches: {job_matches: [1, 2], organization_matches: []}}));
             render(<PrioritiesSection variant="sidebar" authenticated/>);
@@ -1950,6 +2104,18 @@ describe('PrioritiesSection', () => {
             const searched = await screen.findByTestId('priorities-applied');
             expect(searched).toHaveClass('priorities-applied-search');
             expect(searched).toHaveTextContent('2 jobs match these priorities');
+        });
+
+        test('a saved result keeps the one-line clamp: only the search-only card is left without it', async () => {
+            serve(() => json({scope: 'account', revision: 3, changes: proposal.changes, undo: null}));
+            render(<PrioritiesSection variant="sidebar" authenticated/>);
+            const form = await openEditor('sidebar');
+            fireEvent.change(within(form).getByRole('spinbutton', {name: /Minimum base salary/}), {target: {value: '150000'}});
+            fireEvent.click(screen.getByRole('button', {name: 'Review changes'}));
+            fireEvent.click(await screen.findByRole('button', {name: 'Apply to account'}));
+            const saved = await screen.findByTestId('priorities-applied');
+            expect(saved).toHaveTextContent('Priorities saved');
+            expect(saved).not.toHaveClass('priorities-applied-search');
         });
 
         test('a failed Apply in the sidebar review says so in the review, with the actions still there', async () => {

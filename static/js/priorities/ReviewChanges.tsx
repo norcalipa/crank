@@ -134,10 +134,19 @@ export default function ReviewChanges({
         const scroller = compact ? rootRef.current?.closest<HTMLElement>('.priorities-scroll') : null;
         if (scroller) scroller.scrollTop = scroller.scrollHeight;
     };
+    // A press already has its button under the pointer: moving the row then would take it away before the click.
+    const pressing = React.useRef(false);
+    const revealOnFocus = () => { if (!pressing.current) revealSecondRow(); };
+    const press = {
+        onPointerDown: () => { pressing.current = true; },
+        onPointerUp: () => { pressing.current = false; },
+        onPointerCancel: () => { pressing.current = false; },
+        onPointerLeave: () => { pressing.current = false; },
+    };
     const showMore = () => {
         const root = rootRef.current as HTMLDivElement;
         // While a request runs the second row is disabled: the focus goes to a button that stays.
-        const target = root.querySelector<HTMLElement>('.priorities-review-edit:not(:disabled), .priorities-review-search:not(:disabled)')
+        const target = root.querySelector<HTMLElement>('.priorities-review-edit:not(:disabled), .priorities-review-search:not(:disabled):not([aria-disabled="true"])')
             ?? root.querySelector<HTMLElement>('.chat-actions > button:not(.priorities-review-more):not(:disabled)');
         target?.focus();
         revealSecondRow();
@@ -215,11 +224,15 @@ export default function ReviewChanges({
                 )}
                 {onEdit && (
                     <button type="button" className="btn btn-sm btn-link text-light priorities-review-edit"
-                            onClick={onEdit} onFocus={revealSecondRow} disabled={pending}>Edit</button>
+                            onClick={onEdit} onFocus={revealOnFocus} {...press} disabled={pending}>Edit</button>
                 )}
                 {onApplySearchOnly && !isSearch && (
                     <button type="button" className="btn btn-sm btn-outline-light priorities-review-search"
-                            onClick={onApplySearchOnly} onFocus={revealSecondRow} disabled={pending || changes.length === 0}>
+                            // In the bounded block the button keeps the focus through the request, as Apply does.
+                            onClick={() => { if (!(compact && pending)) onApplySearchOnly(); }}
+                            onFocus={revealOnFocus} {...press}
+                            disabled={(pending && !compact) || changes.length === 0}
+                            aria-disabled={compact && pending ? true : undefined}>
                         This search only
                     </button>
                 )}

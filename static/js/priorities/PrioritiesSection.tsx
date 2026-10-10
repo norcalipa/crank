@@ -285,8 +285,9 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             const pin = held && panelBody.clientHeight - height >= bars + PIN_TRANSCRIPT_PX;
             const letGo = section.hasAttribute('data-pinned') && !pin;
             section.toggleAttribute('data-pinned', pin);
-            // A block that grew, or a panel that got shorter, so that it no longer fits pinned is brought back, not left above the reader.
-            const shorter = panelShown.current > 0 && panelBody.clientHeight < panelShown.current;
+            // A block that grew, or a panel that got shorter under a field of the block that holds the focus, so that it no longer fits pinned is brought back, not left above the reader;
+            // a reader typing in the composer keeps it.
+            const shorter = focused && panelShown.current > 0 && panelBody.clientHeight < panelShown.current;
             if (letGo && open && shown.current > 0 && (height > shown.current || shorter)) {
                 const above = section.getBoundingClientRect().top - panelBody.getBoundingClientRect().top;
                 if (above < 0) {
