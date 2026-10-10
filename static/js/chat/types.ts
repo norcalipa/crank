@@ -1,5 +1,6 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
+import type {EvidenceSummaryData} from '../labels';
 
 export interface JobResult {
     id: number;
@@ -24,6 +25,9 @@ export interface OrganizationResult {
     url: string;
     funding_round: string;
     rto_policy: string;
+    // Fact summary at reply time (issue #473). Missing or null on replies
+    // stored before it existed.
+    evidence?: EvidenceSummaryData | null;
 }
 
 export interface StructuredResults {

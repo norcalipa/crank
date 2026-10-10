@@ -56,7 +56,7 @@ def test_context_org_outside_catalog_is_exposed_and_citable():
     assert "PAGE CONTEXT (server-resolved" in text
     assert "organization id=3 name='Initech'" in text
     assert "id=3 name='Initech'" in text.split("ORGANIZATION CATALOG", 1)[1]
-    assert result.prompt_id == "job_search_system_v5"
+    assert result.prompt_id == "job_search_system_v6"
 
 
 def test_context_org_not_resolved_cannot_be_cited():

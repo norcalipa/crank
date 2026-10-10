@@ -41,6 +41,7 @@ from crank.views.job_matches import (
     job_match_dismiss,
     job_match_list,
     job_match_ranked,
+    job_match_refresh,
     job_match_seen,
     job_match_status,
 )
@@ -105,6 +106,7 @@ urlpatterns = [
     path('api/job-matches/<int:match_id>/dismiss/', job_match_dismiss, name='job-match-dismiss'),
     path('api/job-matches/status/', job_match_status, name='job-match-status'),
     path('api/job-matches/ranked/', job_match_ranked, name='job-match-ranked'),
+    path('api/job-matches/refresh/', job_match_refresh, name='job-match-refresh'),
     path('help/', HelpView.as_view(), name='help'),
     path('privacy/', PrivacyView.as_view(), name='privacy'),
     path('staff/release-diagnostics/', release_diagnostics, name='release-diagnostics'),

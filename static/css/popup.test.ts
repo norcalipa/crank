@@ -395,3 +395,77 @@ describe('chat layering and pinned rows (issue #483 adversarial review round 1)'
         expect(rule('.chat-footer-notices')).toMatch(/max-height:\s*var\(--chat-notices-max,\s*40dvh\)/);
     });
 });
+
+describe('job-match figures, notices and contained transcript (issue #473 visual round 2)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const containerBlocks = (width: string) => Array.from(
+        popupCss.matchAll(new RegExp(`@container job-match \\(max-width: ${width}\\) \\{([\\s\\S]*?)\\n\\}`, 'g')),
+    ).map((match) => match[1]).join('\n');
+
+    it('sizes the panel as a container, since it is narrower at 768px than on a 375px phone', () => {
+        expect(popupCss).toMatch(/#job-match-panel\s*\{[^}]*container:\s*job-match \/ inline-size/);
+    });
+
+    it('puts the figure labels on one shared row and the values on the next', () => {
+        expect(popupCss).toMatch(/#job-match-panel \.job-match-figures\s*\{[^}]*grid-template-rows:\s*auto auto/);
+        expect(popupCss).toMatch(/#job-match-panel \.job-match-figure\s*\{[^}]*grid-row:\s*span 2;[^}]*grid-template-rows:\s*subgrid/);
+        expect(popupCss).toMatch(/#job-match-panel \.job-match-figure-label\s*\{[^}]*overflow-wrap:\s*anywhere/);
+        // No fixed-height label row is left to overprint a three-line label.
+        expect(popupCss).not.toMatch(/\.job-match-figure\s*\{[^}]*grid-template-rows:\s*2rem/);
+    });
+
+    it('lists the figures as label / value rows when the panel cannot hold three columns', () => {
+        const narrow = containerBlocks('24rem');
+        expect(narrow).toMatch(/\.job-match-figures\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[^}]*grid-template-rows:\s*none/);
+        expect(narrow).toMatch(/\.job-match-figure\s*\{[^}]*grid-row:\s*auto;[^}]*align-items:\s*baseline/);
+    });
+
+    it('gives a wrapped chip qualifier its own line without a leading separator, and stacks the notice', () => {
+        const narrow = containerBlocks('26rem');
+        expect(narrow).toMatch(/\.job-match-chip-qualifier\s*\{\s*flex-basis:\s*100%/);
+        expect(narrow).toMatch(/\.job-match-chip-sep\s*\{\s*display:\s*none/);
+        expect(narrow).toMatch(/\.job-match-stale-banner\s*\{[^}]*grid-template-columns:\s*auto minmax\(0, 1fr\);/);
+        expect(narrow).toMatch(/\.job-match-stale-refresh\s*\{[^}]*grid-column:\s*2/);
+        expect(popupCss).toMatch(/\.job-match-chip \.evidence-badge-profile \.evidence-badge-marker\s*\{\s*display:\s*none/);
+    });
+
+    it('makes the transcript the containing block of its visually-hidden text', () => {
+        expect(popupCss).toMatch(/#job-search-chat \.chat-transcript\s*\{[^}]*position:\s*relative/);
+    });
+
+    it('keeps the focused panel heading clear of the sticky phone top bar, with a visible ring', () => {
+        expect(popupCss).toMatch(/#job-match-panel \.job-match-panel-title\s*\{\s*scroll-margin-top:\s*4\.5rem/);
+        expect(popupCss).toMatch(/#job-match-panel \.job-match-panel-title:focus-visible\s*\{[^}]*outline:\s*3px solid/);
+    });
+
+    it('labels the reply-time snapshot on assistant cards in the card’s muted ink', () => {
+        expect(popupCss).toMatch(/\.org-card \.org-card-evidence-label\s*\{[^}]*color:\s*#cbd5e1/);
+    });
+
+    it('sits a one-line figure label on its value in the column layout only (visual round 3)', () => {
+        expect(popupCss).toMatch(/#job-match-panel \.job-match-figure-label\s*\{[^}]*align-self:\s*end/);
+        expect(containerBlocks('24rem')).toMatch(/\.job-match-figure-label\s*\{\s*align-self:\s*auto/);
+    });
+
+    it('makes qualified chips full-width rows on narrow panels and bolds the changed qualifier', () => {
+        expect(containerBlocks('26rem')).toMatch(/\.job-match-chip:has\(> \.job-match-chip-qualifier\)\s*\{\s*display:\s*flex/);
+        expect(popupCss).toMatch(/\.job-match-chip--changed \.job-match-chip-qualifier\s*\{\s*font-weight:\s*600/);
+    });
+
+    it('shows a busy re-check control as unavailable without removing it from the tab order', () => {
+        expect(popupCss).toMatch(/#job-match-panel \[aria-disabled="true"\]\s*\{[^}]*opacity:\s*\.65;[^}]*cursor:\s*default/);
+    });
+
+    it('gives the legend the panel\u2019s sky focus ring and a denser type size on narrow panels', () => {
+        expect(popupCss).toMatch(/#job-match-panel \.how-ranking-works-summary:focus-visible\s*\{\s*outline-color:\s*#38bdf8/);
+        const narrow = containerBlocks('26rem');
+        expect(narrow).toMatch(/\.job-match-legend \.how-ranking-works-content\s*\{\s*font-size:\s*\.875rem;\s*line-height:\s*1\.45/);
+        expect(narrow).toMatch(/\.job-match-legend \.ranking-definitions dt\s*\{\s*margin-top:\s*\.5rem/);
+    });
+
+    it('lets a reply with cards use the whole row in the narrowest assistant panel, in one line', () => {
+        const rule = popupCss.split('\n').filter((line) => line.includes('.chat-bubble-assistant:has(.org-card)'));
+        expect(rule).toHaveLength(1);
+        expect(rule[0]).toMatch(/^@container assistant-panel \(max-width: 20rem\) \{ #job-search-chat \.chat-bubble-assistant:has\(\.org-card\) \{ max-width: 100% !important; \} \}$/);
+    });
+});

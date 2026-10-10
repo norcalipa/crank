@@ -48,21 +48,10 @@ from crank.models.preference import UserPreference
 MAX_MATCH_RESULTS = 25
 
 #: RTO policy labels for human-readable reasons.
-_RTO_LABELS = {"R": "Remote", "H": "Hybrid", "O": "In-office"}
+_RTO_LABELS = {code: str(label) for code, label in Organization.RTOPolicy.choices}
 
 #: Funding round labels for human-readable reasons.
-_FUNDING_LABELS = {
-    "S": "Seed",
-    "A": "Series A",
-    "B": "Series B",
-    "C": "Series C",
-    "D": "Series D",
-    "E": "Series E",
-    "F": "Series F",
-    "X": "Series G+",
-    "O": "Other Private",
-    "P": "Public",
-}
+_FUNDING_LABELS = {code: str(label) for code, label in Organization.FundingRound.choices}
 
 
 @dataclass(frozen=True)
@@ -406,7 +395,11 @@ _EXCLUSION_TYPES = (
     ("excluded_locations", "locations"),
 )
 
-_MODE_LABELS = {"remote": "Remote", "hybrid": "Hybrid", "in-office": "In-office"}
+_MODE_LABELS = {
+    "remote": _RTO_LABELS["R"],
+    "hybrid": _RTO_LABELS["H"],
+    "in-office": _RTO_LABELS["O"],
+}
 
 
 def _bounded_join(values: Any, limit: int = 3) -> str:

@@ -18,6 +18,38 @@ export const isCorrectableFieldKey = (key: unknown): key is string =>
 
 export const fieldKeyLabel = (key: string): string => CORRECTABLE_FIELD_LABELS[key] || key;
 
+// Funding-round and RTO-policy words, equal to Organization.FundingRound /
+// RTOPolicy on the server (pinned by crank/tests/test_frontend_label_parity.py).
+// Every surface reads these; no component keeps its own map (#473).
+export const FUNDING_ROUND_LABELS: Record<string, string> = {
+    S: 'Seed',
+    A: 'Series A',
+    B: 'Series B',
+    C: 'Series C',
+    D: 'Series D',
+    E: 'Series E',
+    F: 'Series F',
+    X: 'Series G or Later',
+    O: 'Other Private',
+    P: 'Public',
+};
+
+export const RTO_POLICY_LABELS: Record<string, string> = {
+    R: 'Remote',
+    H: 'Hybrid',
+    O: 'In-Office',
+};
+
+const codeLabel = (labels: Record<string, string>, code: string | null | undefined, fallback: string): string =>
+    (code && Object.prototype.hasOwnProperty.call(labels, code) ? labels[code] : code) || fallback;
+
+// An unrecognized code is shown as-is; an empty one reads as `fallback`.
+export const fundingRoundLabel = (code: string | null | undefined, fallback = ''): string =>
+    codeLabel(FUNDING_ROUND_LABELS, code, fallback);
+
+export const rtoPolicyLabel = (code: string | null | undefined, fallback = ''): string =>
+    codeLabel(RTO_POLICY_LABELS, code, fallback);
+
 export type EvidenceStatusKey = 'verified' | 'stale' | 'unknown' | 'profile' | 'pending' | 'conflicted';
 
 interface EvidenceStatusMeta {
@@ -35,6 +67,47 @@ export const EVIDENCE_STATUS_META: Record<EvidenceStatusKey, EvidenceStatusMeta>
     profile: {label: 'Profile data', marker: '•', meaning: 'Curated profile value without field-level evidence.'},
     pending: {label: 'Pending review', marker: '…', meaning: 'An observation is waiting for review. Not verified.'},
     conflicted: {label: 'Conflicting observation', marker: '\u26A0\uFE0E', meaning: 'A later observation disagrees. Not verified.'},
+};
+
+// The first mark on a requirement chip: how the requirement came out. The
+// word is the chip's spoken outcome, so a mark is never the only cue.
+export const REQUIREMENT_MARKS: Record<'match' | 'mismatch' | 'unknown', EvidenceStatusMeta> = {
+    match: {label: 'Match', marker: '✓', meaning: 'The requirement is met.'},
+    mismatch: {label: 'Mismatch', marker: '✗', meaning: 'The requirement is not met.'},
+    unknown: {label: 'Unknown', marker: '?', meaning: 'The requirement could not be decided either way, so it does not count toward requirement coverage.'},
+};
+
+// Leads a chip whose stored outcome rests on evidence that has since changed.
+export const EVIDENCE_CHANGED_MARKER = '↻';
+
+// Job-card terms that are not a fact status of their own: what a requirement
+// chip rests on, and the three figures. The cards, their legend and "How
+// ranking works" all read these (pinned by test_frontend_label_parity.py).
+export const MATCH_TERMS: Record<string, {label: string; meaning: string}> = {
+    sourced: {
+        label: 'Sourced, not confirmed',
+        meaning: 'An accepted, current source backs this without stating it outright: matching read it from the wording of the source or inferred it (for example, a day count from "Hybrid"), or the source covers only some locations or roles. Not confirmed.',
+    },
+    changed: {
+        label: 'Evidence changed',
+        meaning: 'The fact behind this result was replaced or removed after matches were computed. Refresh matches to re-check it.',
+    },
+    unqualified: {
+        label: 'No qualifier',
+        meaning: 'A match or mismatch with no qualifier was decided from the job listing itself.',
+    },
+    companyScore: {
+        label: 'Company score (preset)',
+        meaning: 'The preset-weighted average of the rating dimensions. It is the same for everyone.',
+    },
+    fit: {
+        label: 'Fit',
+        meaning: 'Computed from your saved priorities and never mixed into the company score.',
+    },
+    requirementCoverage: {
+        label: 'Requirement coverage',
+        meaning: 'The share of your requirements that could be decided either way. It does not mean the facts behind them are verified.',
+    },
 };
 
 export interface EvidenceSummaryData {

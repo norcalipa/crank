@@ -339,7 +339,7 @@ reads its switch.
 | On-demand crawl | `crawl` | #328 | off | registered |
 | Publication consumer | `publication_consumer` | #470 | off | planned |
 | Assistant shell | `assistant_shell` | #472 | off | planned |
-| Match recompute | `match_recompute` + `MATCH_RECOMPUTE_ENABLED` | #475 | off | registered |
+| Match recompute | `match_recompute` + `MATCH_RECOMPUTE_ENABLED` | #475 | off | registered (also gates the user refresh, `POST /api/job-matches/refresh/`, #473; see docs/match-recompute.md) |
 | Match results read | `match_results_read` + `MATCH_RESULTS_READ_ENABLED` | #475 | off | registered |
 
 Independence rules: no two capabilities share a canary decision or a switch;

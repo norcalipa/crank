@@ -2,8 +2,12 @@
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 """Authenticated JSON endpoints for owner-scoped job matches."""
 
+import math
+import time
+
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
+from django.core.cache import cache
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.http import Http404, JsonResponse
@@ -21,7 +25,7 @@ from crank.empty_state import NO_MATCHES, derive_state
 from crank.models.job import JobListing
 from crank.models.job_match import JobMatch, MatchResultState
 from crank.models.preference import UserPreference
-from crank.services import match_recompute, match_results, monitoring
+from crank.services import company_evidence, match_recompute, match_results, monitoring
 from crank.services.job_matching import (
     MAX_MATCH_RESULTS,
     match_jobs,
@@ -80,14 +84,29 @@ def _reasons_from_stored_factors(requirements):
     return reasons_from_requirements(outcomes)
 
 
-def _match_payload(match, *, detail=False, user=None, revision=None):
-    """``revision`` overrides the per-row calculation with the shared,
+def _annotated_requirements(matches):
+    """Each match's stored requirements with a read-time ``evidence_status``.
+
+    One bulk evidence query for the whole response (issue #473); the stored
+    ``JobMatch.requirements`` are left untouched.
+    """
+    return company_evidence.annotate_requirement_evidence(
+        [o.as_dict() for o in outcomes_from_dicts(match.requirements)]
+        for match in matches
+    )
+
+
+def _match_payload(match, *, detail=False, user=None, revision=None, requirements=None):
+    """``requirements`` is this match's entry from :func:`_annotated_requirements`
+    (computed here for a single match). ``revision`` overrides the per-row calculation with the shared,
     generation-level block (issue #475 review, AC4): pass it whenever the
     match came from ``match_results.load_current`` so list/detail responses
     carry the identical ``revision`` block the ranked and assistant surfaces
     use, instead of recomputing from this one row's stamped fields."""
     current_revision, unsupported = _preference_meta(user)
     outcomes = outcomes_from_dicts(match.requirements)
+    if requirements is None:
+        requirements = _annotated_requirements([match])[0]
     if revision is None:
         stale = (
             match.preference_revision is not None
@@ -116,11 +135,13 @@ def _match_payload(match, *, detail=False, user=None, revision=None):
         "fit_score": match.score,
         "company_score": _company_score_of(match.organization),
         "coverage": coverage(outcomes),
-        "requirements": [o.as_dict() for o in outcomes],
+        "requirements": requirements,
         "unsupported": list(unsupported),
         "evidence_ids": list(match.evidence_ids or []),
         "revision": revision,
-        "reasons": reasons_from_requirements(outcomes),
+        "reasons": company_evidence.unqualified_reasons(
+            reasons_from_requirements(outcomes), requirements
+        ),
         "first_matched_at": match.first_matched_at,
         "last_matched_at": match.last_matched_at,
         "seen_at": match.seen_at,
@@ -143,13 +164,15 @@ def _parse_page(request):
 
 
 def _pagination_response(page, user=None, revision=None):
+    matches = list(page.object_list)
+    annotated = _annotated_requirements(matches)
     return {
         "count": page.paginator.count,
         "next": page.next_page_number() if page.has_next() else None,
         "previous": page.previous_page_number() if page.has_previous() else None,
         "results": [
-            _match_payload(match, user=user, revision=revision)
-            for match in page.object_list
+            _match_payload(match, user=user, revision=revision, requirements=requirements)
+            for match, requirements in zip(matches, annotated)
         ],
     }
 
@@ -363,6 +386,83 @@ def job_match_status(request):
     return JsonResponse(payload)
 
 
+_CHANGED_EVIDENCE_STATES = frozenset({"superseded", "missing"})
+
+
+def _refresh_cooldown():
+    return max(1, int(getattr(settings, "JOB_MATCH_REFRESH_COOLDOWN_SECONDS", 30)))
+
+
+def _seconds_left(expires_at, cooldown):
+    """Whole seconds until ``expires_at``, within ``1..cooldown``.
+
+    The entry can expire between the refused ``add`` and this read: the
+    window is over, so that reads 1, the shortest wait this can state. A
+    value written by an older release is not a timestamp and says nothing
+    about what is left, so it reads the whole window instead of failing the
+    request.
+    """
+    if expires_at is None:
+        return 1
+    if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
+        return cooldown
+    return max(1, min(cooldown, math.ceil(expires_at - time.time())))
+
+
+@login_required
+@require_POST
+def job_match_refresh(request):
+    """Recompute the requester's stored matches when they cite changed evidence.
+
+    The read endpoints stay read-only; this is the explicit action behind the
+    "Evidence changed" notice (issue #473). It recomputes only when the
+    committed generation on screen still rests on a fact that was replaced or
+    removed, so repeating the request once that is resolved does no work.
+    The recompute is forced because a deleted row does not advance the data
+    watermark. It runs inline like the preference hook, so it honors the same
+    operator switch.
+
+    Owner-scoped: it takes no parameters and acts only on ``request.user``.
+    One recompute per user per cooldown window: the atomic ``cache.add`` is
+    both the single-flight guard for concurrent requests and the rate limit,
+    so a client cannot queue recomputes. A request inside the window gets 429
+    with ``Retry-After`` (the seconds left of it) and does no recompute.
+
+    The body is ``{"status": ...}`` only: ``disabled``, ``not_needed``,
+    ``rate_limited`` (with ``retry_after`` seconds) or a ``RecomputeStatus``
+    value. The client re-reads either way.
+    """
+    if not match_recompute.recompute_enabled():
+        return JsonResponse({"status": "disabled"})
+    rows, revision = _reads_context(request.user)
+    if revision is None:
+        return JsonResponse({"status": "not_needed"})
+    annotated = company_evidence.annotate_requirement_evidence(
+        [match.requirements for match in rows]
+    )
+    changed = any(
+        isinstance(requirement, dict)
+        and (requirement.get("evidence_status") or {}).get("state") in _CHANGED_EVIDENCE_STATES
+        for requirements in annotated
+        for requirement in requirements
+    )
+    if not changed:
+        return JsonResponse({"status": "not_needed"})
+    cooldown = _refresh_cooldown()
+    key = f"job-match-refresh:{request.user.pk}"
+    # The value is when the window ends, so a refused request can say how
+    # much of it is left rather than the whole window.
+    if not cache.add(key, time.time() + cooldown, cooldown):
+        retry_after = _seconds_left(cache.get(key), cooldown)
+        response = JsonResponse(
+            {"status": "rate_limited", "retry_after": retry_after}, status=429
+        )
+        response["Retry-After"] = str(retry_after)
+        return response
+    outcome = match_recompute.recompute_user(request.user, reason="refresh", force=True)
+    return JsonResponse({"status": outcome.status.value})
+
+
 @login_required
 @require_GET
 def job_match_ranked(request):
@@ -380,6 +480,12 @@ def job_match_ranked(request):
 
     job_results = match_jobs(request.user, limit=limit)
     org_results = match_organizations(request.user, limit=limit)
+    # Read-time evidence status for every requirement, one bulk query (#473).
+    annotated = company_evidence.annotate_requirement_evidence(
+        [r.requirements for r in job_results] + [r.requirements for r in org_results]
+    )
+    job_requirements = annotated[:len(job_results)]
+    org_requirements = annotated[len(job_results):]
 
     return JsonResponse({
         "job_matches": [
@@ -396,14 +502,14 @@ def job_match_ranked(request):
                 "fit_score": r.fit_score,
                 "company_score": r.company_score,
                 "coverage": r.coverage,
-                "requirements": r.requirements,
+                "requirements": requirements,
                 "unsupported": r.unsupported,
                 "evidence_ids": r.evidence_ids,
                 "revision": r.revision(),
-                "reasons": r.reasons,
+                "reasons": company_evidence.unqualified_reasons(r.reasons, requirements),
                 "factors": r.factors,
             }
-            for r in job_results
+            for r, requirements in zip(job_results, job_requirements)
         ],
         "organization_matches": [
             {
@@ -416,13 +522,13 @@ def job_match_ranked(request):
                 "fit_score": r.fit_score,
                 "company_score": r.company_score,
                 "coverage": r.coverage,
-                "requirements": r.requirements,
+                "requirements": requirements,
                 "unsupported": r.unsupported,
                 "evidence_ids": r.evidence_ids,
                 "revision": r.revision(),
-                "reasons": r.reasons,
+                "reasons": company_evidence.unqualified_reasons(r.reasons, requirements),
             }
-            for r in org_results
+            for r, requirements in zip(org_results, org_requirements)
         ],
     })
 
@@ -432,6 +538,7 @@ __all__ = [
     "job_match_dismiss",
     "job_match_list",
     "job_match_ranked",
+    "job_match_refresh",
     "job_match_seen",
     "job_match_status",
 ]
