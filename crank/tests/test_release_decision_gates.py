@@ -3051,6 +3051,9 @@ PINNED_TEXT = {
         " `items_failed`, which the job pipeline's `source_stage` events do not"
         " carry, so it cannot open in this phase.",
         "a same-named alert with another threshold does not satisfy it.",
+        "| `interactive_replies` | `INTERACTIVE_AGENT_ENABLED`; provider and model"
+        " settings; `LLM_PRICE_PER_1K_TOKENS_USD` and"
+        " `LLM_PER_USER_COST_LIMIT_USD`, both above `0`",
     ),
     "docs/monitoring.md": (
         "**Locking a gate.** After at least 14 days of data with the capability"
@@ -3208,6 +3211,9 @@ REVIEWED_INVERSIONS = (
     ("docs/rollout-gates.md",
      "a same-named alert with another threshold does not satisfy it.",
      "a same-named alert with another threshold satisfies it."),
+    ("docs/rollout-gates.md",
+     "; `LLM_PRICE_PER_1K_TOKENS_USD` and `LLM_PER_USER_COST_LIMIT_USD`, both"
+     " above `0`", ""),
     ("docs/monitoring.md",
      "so no floor is invented here;", "so the floor is 1 until changed;"),
     ("docs/monitoring.md",
