@@ -3,7 +3,7 @@
 """Durable, versioned job-match recomputation (issue #475).
 
 Ties the snapshot -> compute -> CAS-publish primitives in
-:mod:`crank.agents.jobs.match_persist` to three triggers:
+:mod:`crank.agents.jobs.match_persist` to four triggers:
 
 - ``on_preference_committed`` — the fast path fired by the #466 preference
   hook (:func:`crank.services.preferences._schedule_recompute`) after a
@@ -11,6 +11,9 @@ Ties the snapshot -> compute -> CAS-publish primitives in
 - :func:`drain` — the bounded ``recompute_matches`` management command.
 - The job pipeline's ``_run_user`` (``crank/services/job_pipeline.py``),
   which calls :func:`recompute_user` directly.
+- The user refresh, ``POST /api/job-matches/refresh/`` (issue #473,
+  ``crank/views/job_matches.py``): :func:`recompute_user` with ``force=True``,
+  once per account per cooldown window, behind the same gates as the hook.
 
 There is no request queue: dirtiness is derived from the durable
 ``UserPreference`` row and the ``MatchResultState`` tags, so N committed

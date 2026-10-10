@@ -73,6 +73,20 @@ newer committed generation.
   directly. Not gated by the new switches — it fixes the existing,
   already-enabled `job_pipeline` capability (mis-stamped revisions and
   overwrite races in the pre-#475 `persist_matches` upsert path).
+- **User refresh** — `POST /api/job-matches/refresh/` (issue #473), the
+  "Refresh matches" button on a card that reads "Evidence changed". It
+  recomputes inline on a web request thread, with `force=True` (the drain
+  does not force). It only runs when a cited evidence row was replaced or
+  removed, and at most once per account per
+  `JOB_MATCH_REFRESH_COOLDOWN_SECONDS` (default 30, set by no manifest;
+  further presses answer 429 with `Retry-After`). The window bounds one
+  account, not the service, and the endpoint records no telemetry event;
+  use the access logs to watch a burst. It shares the `match_recompute`
+  switch and `MATCH_RECOMPUTE_ENABLED` with the preference fast path, so
+  switching those off pauses both and neither can be paused alone (the
+  endpoint answers `disabled`). Rollout steps 3 and 4 below therefore also
+  enable this trigger. A service-wide bound and an outcome event are tracked
+  in #556.
 
 ## Dirtiness (no request queue)
 
