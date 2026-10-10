@@ -619,6 +619,18 @@ describe('final fixes after visual round 3 (issue #480)', () => {
             act(() => screen.getByRole('button', {name: 'Cancel'}).focus());
             rerender(inBlock(<ReviewChanges changes={one} compact error="Could not apply." {...h}/>));
             expect(screen.getByRole('button', {name: 'Cancel'})).toHaveFocus();
+            // A message that clears, or a second-row button of another review, is not moved either.
+            const stray = document.createElement('button');
+            stray.className = 'priorities-review-edit';
+            document.body.appendChild(stray);
+            act(() => stray.focus());
+            rerender(inBlock(<ReviewChanges changes={one} compact error="Again." {...h}/>));
+            expect(stray).toHaveFocus();
+            stray.remove();
+            rerender(inBlock(<ReviewChanges changes={one} compact error="Again." {...h}/>));
+            act(() => screen.getByRole('button', {name: 'Edit'}).focus());
+            rerender(inBlock(<ReviewChanges changes={one} compact {...h}/>));
+            expect(screen.getByRole('button', {name: 'Edit'})).toHaveFocus();
             unmount();
             const outside = render(<ReviewChanges changes={one} {...h}/>);
             act(() => outside.getByRole('button', {name: 'This search only'}).focus());
