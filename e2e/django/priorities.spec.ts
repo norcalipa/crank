@@ -1183,6 +1183,47 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
     }
 
 
+    // A press takes the focus when the pointer goes down: letting go of the pinned row at that moment moves the chat's
+    // header up by the row's height, and the click lands nowhere. Up to about 500px of height, where the panel scrolls.
+    for (const [viewport, input] of [
+        [{width: 375, height: 480}, 'mouse'], [{width: 320, height: 460}, 'mouse'], [{width: 1280, height: 480}, 'mouse'],
+        [{width: 375, height: 480}, 'touch'],
+    ] as const) {
+        test.describe(`${input} input, More`, () => {
+        test.use({hasTouch: input === 'touch'});
+        test(`${viewport.width}x${viewport.height}: the first ${input} press on More opens its menu while the focus holds the collapsed row`, async ({page, browserName}) => {
+            test.skip(input === 'touch' && browserName !== 'chromium', 'touch is emulated in Chromium only');
+            test.setTimeout(120_000);
+            await page.setViewportSize(viewport);
+            await page.goto('/');
+            expect(await setPriorities(page, TEN)).toBe(10);
+            const section = await openPanel(page);
+            await ensureConversation(page, 2);
+            // Edit, then Cancel: the focus goes back to Edit, which holds the row pinned while the reader returns to the conversation.
+            await section.getByRole('button', {name: 'Edit priorities'}).click();
+            await expect(page.getByRole('form', {name: 'Edit priorities'})).toBeVisible();
+            await section.getByRole('button', {name: 'Cancel'}).click();
+            await expect(section.getByRole('button', {name: 'Edit priorities'})).toBeFocused();
+            await readerAtRow(page, false, false);
+            const more = page.getByTestId('conversation-more');
+            await expect(more).toBeVisible();
+            const box = (await more.boundingBox())!;
+            const x = box.x + box.width / 2;
+            const y = box.y + box.height / 2;
+            if (input === 'touch') {
+                await page.touchscreen.tap(x, y);
+            } else {
+                await page.mouse.move(x, y);
+                await page.mouse.down();
+                // The pointer is held: a row that lets go now moves the header out from under it.
+                await page.waitForTimeout(150);
+                await page.mouse.up();
+            }
+            await expect(page.getByTestId('conversation-menu'), 'the first press opens the menu').toBeVisible();
+        });
+        });
+    }
+
     test('375x667 to 375x380 (a height-only shrink) with the editor open and a draft being typed: the composer stays on screen and the reader at the end', async ({page}) => {
         test.setTimeout(120_000);
         await page.setViewportSize({width: 375, height: 667});
