@@ -705,6 +705,7 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
         // The request is under way: the button is dimmed for assistive technology and still holds the focus.
         await expect(searchOnly).toHaveAttribute('aria-disabled', 'true');
         await expect(searchOnly).toBeFocused();
+        expect(await searchOnly.evaluate((el) => getComputedStyle(el).opacity), 'dimmed while its request runs').toBe('0.65');
         release();
         await expect(section.getByTestId('priorities-review-error')).toHaveText(/Could not apply your changes/);
         await settleLayout(page);

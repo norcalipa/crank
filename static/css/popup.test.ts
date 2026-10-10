@@ -474,3 +474,17 @@ describe('job-match figures, notices and contained transcript (issue #473 visual
         expect(rule[0]).toMatch(/^@container assistant-panel \(max-width: 20rem\) \{ #job-search-chat \.chat-bubble-assistant:has\(\.org-card\) \{ max-width: 100% !important; \} \}$/);
     });
 });
+
+describe('collapsed priorities row and review step (issue #480 adversarial review round 3)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+
+    it('puts the counts on their own line on phones up to 374px and in the 768-999px drawer', () => {
+        expect(popupCss).toMatch(
+            /@media \(max-width: 374\.98px\), \(min-width: 768px\) and \(max-width: 999\.98px\) \{\s*\.priorities-summary \{ flex-direction: column; \}/,
+        );
+    });
+
+    it('dims This search only while its request runs', () => {
+        expect(popupCss).toMatch(/\.priorities-review-search\[aria-disabled='true'\] \{ opacity: 0\.65; \}/);
+    });
+});
