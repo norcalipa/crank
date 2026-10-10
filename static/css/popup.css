@@ -4141,7 +4141,8 @@ span.priority-chip-button { cursor: default; }
 .priorities-summary-keep,
 .priorities-summary-sep,
 .priorities-summary-tail { flex: 0 0 auto; white-space: pre; }
-@media (max-width: 374.98px) {
+/* The counts take their own line where the panel is narrowest: phones up to 374px and the 768-999px drawer (300-340px). */
+@media (max-width: 374.98px), (min-width: 768px) and (max-width: 999.98px) {
     .priorities-summary { flex-direction: column; }
     .priorities-summary-sep {
         display: block;
@@ -4299,6 +4300,8 @@ span.priority-chip-button { cursor: default; }
     box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.8);
 }
 .priorities-sidebar .priorities-review-compact > .chat-actions > .btn { min-width: 0; }
+/* A button held by a running request keeps the focus and looks as a disabled one does. */
+.priorities-sidebar .priorities-review-compact > .chat-actions > .priorities-review-search[aria-disabled='true'] { opacity: 0.65; }
 /* While the second row is out of sight the pinned one ends with More, which leads to it. */
 .priorities-sidebar .priorities-review-compact > .chat-actions:has(> .priorities-review-more) { grid-template-columns: minmax(0, 1fr) auto auto; }
 .priorities-sidebar .priorities-review-compact > .chat-actions:has(> .priorities-review-more) > .priorities-review-search { grid-column: 2 / -1; }

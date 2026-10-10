@@ -324,12 +324,12 @@ describe('prioritiesSummary (collapsed sidebar row)', () => {
         expect(prioritiesSummary([short, chipOf({...flag, label: 'Pub'})])).toBe('Requires: Days: 2, Pub: No');
     });
 
-    test('a number with its unit and a list of values are named by their field', () => {
+    test('a number with its unit is named by its field, a list of values shows them', () => {
         const equity = chipOf({path: 'compensation.minimum_equity_percent', label: 'Minimum equity (%)', display: '0.5%', hard: true});
         const countries = chipOf({path: 'work_location.countries', label: 'Work countries', display: 'US, CA', items: ['US', 'CA'], hard: true});
         expect(prioritiesSummary([equity])).toBe('Requires: Minimum equity (%): 0.5%');
-        expect(prioritiesSummary([countries])).toBe('Requires: Work countries: US, CA');
-        // One entry stands for itself.
+        // A list of required values shows its values; one entry stands for itself.
+        expect(prioritiesSummary([countries])).toBe('Requires: US, CA');
         expect(prioritiesSummary([modes])).toBe('Requires: remote');
     });
 });
@@ -362,19 +362,25 @@ describe('prioritiesSummaryParts (lead, separator, counts)', () => {
             {lead: 'Requires: Days: 2, Need1,', keep: '', sep: ' ', tail: '+1'}],
         ['a second requirement one character too long', [req(1), chipOf({path: 'r2', display: 'Tencharsxx', hard: true})],
             {lead: 'Requires: Need1,', keep: '', sep: ' ', tail: '+1'}],
-        // A list is as long as the user made it: with its field's name it is all in the part that may be cut.
-        ['a list first, named by its field and cut with the lead', [chipOf({path: 'work_location.modes', label: 'Work arrangement', display: 'Remote, Hybrid', items: ['Remote', 'Hybrid'], hard: true}), chipOf({})],
-            {lead: 'Requires: Work arrangement: Remote, Hybrid', keep: '', sep: ' \u00b7 ', tail: '1 preference'}],
+        // A list shows its values; an excluded value alone would read as wanted, so it keeps its field's name.
+        ['a list first shows its values and is cut with the lead', [chipOf({path: 'work_location.modes', label: 'Work arrangement', display: 'Remote, Hybrid', items: ['Remote', 'Hybrid'], hard: true}), chipOf({})],
+            {lead: 'Requires: Remote, Hybrid', keep: '', sep: ' \u00b7 ', tail: '1 preference'}],
         ['a long list first counts the second', [chipOf({path: 'work_location.countries', label: 'Work countries', display: 'United States, Canada, United Kingdom', items: ['United States', 'Canada', 'United Kingdom'], hard: true}), req(1)],
-            {lead: 'Requires: Work countries: United States, Canada, United Kingdom,', keep: '', sep: ' ', tail: '+1'}],
+            {lead: 'Requires: United States, Canada, United Kingdom,', keep: '', sep: ' ', tail: '+1'}],
         ['a list second that fits', [req(1), chipOf({path: 'work_location.countries', label: 'W', display: 'US, CA', items: ['US', 'CA'], hard: true})],
-            {lead: 'Requires: Need1, W: US, CA', keep: '', sep: '', tail: ''}],
+            {lead: 'Requires: Need1, US, CA', keep: '', sep: '', tail: ''}],
         ['a number with its unit keeps the number whole', [chipOf({path: 'compensation.minimum_equity_percent', label: 'Minimum equity (%)', display: '0.5%', hard: true})],
             {lead: 'Requires: Minimum equity (%)', keep: ': 0.5%', sep: '', tail: ''}],
         ['a number with a word as its unit keeps the number whole', [chipOf({path: 'x.years', label: 'Experience', display: '5 Years', hard: true})],
             {lead: 'Requires: Experience', keep: ': 5 Years', sep: '', tail: ''}],
         ['a one-entry list stands for itself', [chipOf({path: 'work_location.modes', label: 'Work arrangement', display: 'Remote', items: ['Remote'], hard: true})],
             {lead: 'Requires: Remote', keep: '', sep: '', tail: ''}],
+        ['an excluded value alone is not read as wanted', [chipOf({path: 'exclusions.industries', label: 'Excluded industries', display: 'Gambling', items: ['Gambling'], hard: true})],
+            {lead: 'Requires: Excluded industries: Gambling', keep: '', sep: '', tail: ''}],
+        ['excluded values are named by their field, a list too', [chipOf({path: 'exclusions.companies', label: 'Excluded companies', display: 'Acme Corp, Globex', items: ['Acme Corp', 'Globex'], hard: true})],
+            {lead: 'Requires: Excluded companies: Acme Corp, Globex', keep: '', sep: '', tail: ''}],
+        ['an excluded value after a wanted one is named too', [req(1), chipOf({path: 'exclusions.titles', label: 'Ex', display: 'Mgr', hard: true})],
+            {lead: 'Requires: Need1, Ex: Mgr', keep: '', sep: '', tail: ''}],
         ['a second requirement that just fits', [req(1), chipOf({path: 'r2', display: 'Ninechars', hard: true})],
             {lead: 'Requires: Need1, Ninechars', keep: '', sep: '', tail: ''}],
     ])('%s', (_name, chips, parts) => {
@@ -556,7 +562,37 @@ describe('final fixes after visual round 3 (issue #480)', () => {
             expect(h.onApplySearchOnly).toHaveBeenCalledTimes(1);
         });
 
-        test('This search only keeps the focus while its request runs, ignores a second press, and has it after the failure', () => {
+        test('a touch tap, whose mouse events follow its pointerup and come before the focus, lands too', () => {
+            const h = all();
+            render(inBlock(<ReviewChanges changes={one} compact {...h}/>));
+            const scroller = screen.getByTestId('scroller');
+            for (const name of ['Edit', 'This search only']) {
+                const button = screen.getByRole('button', {name});
+                scroller.scrollTop = 0;
+                fireEvent.pointerDown(button);
+                fireEvent.pointerUp(button);
+                fireEvent.mouseDown(button);
+                act(() => button.focus());
+                expect(scroller.scrollTop).toBe(0);
+                fireEvent.mouseUp(button);
+                fireEvent.click(button);
+                act(() => button.blur());
+                // The press is over: Tab shows the row again; so does a press that leaves the button.
+                act(() => button.focus());
+                expect(scroller.scrollTop).toBe(300);
+                act(() => button.blur());
+                scroller.scrollTop = 0;
+                fireEvent.mouseDown(button);
+                fireEvent.mouseLeave(button);
+                act(() => button.focus());
+                expect(scroller.scrollTop).toBe(300);
+                act(() => button.blur());
+            }
+            expect(h.onEdit).toHaveBeenCalledTimes(1);
+            expect(h.onApplySearchOnly).toHaveBeenCalledTimes(1);
+        });
+
+        test('This search only keeps the focus while its request runs and ignores a second press; after the failure the focus is in the pinned row', () => {
             const h = all();
             const {rerender} = render(inBlock(<ReviewChanges changes={one} compact {...h}/>));
             const search = screen.getByRole('button', {name: 'This search only'});
@@ -569,11 +605,25 @@ describe('final fixes after visual round 3 (issue #480)', () => {
             expect(running).toHaveFocus();
             fireEvent.click(running);
             expect(h.onApplySearchOnly).not.toHaveBeenCalled();
+            // The message pushes the second row out of sight: the focus is not left on a button nobody can see.
             rerender(inBlock(<ReviewChanges changes={one} compact error="Could not apply." {...h}/>));
-            expect(screen.getByRole('button', {name: 'This search only'})).toHaveFocus();
+            expect(screen.getByRole('button', {name: 'Apply to account'})).toHaveFocus();
             expect(screen.getByRole('button', {name: 'This search only'})).not.toHaveAttribute('aria-disabled');
             fireEvent.click(screen.getByRole('button', {name: 'This search only'}));
             expect(h.onApplySearchOnly).toHaveBeenCalledTimes(1);
+        });
+
+        test('an error moves only a focus held in the second row: one held elsewhere stays, and so does a review without the bounded block', () => {
+            const h = all();
+            const {rerender, unmount} = render(inBlock(<ReviewChanges changes={one} compact {...h}/>));
+            act(() => screen.getByRole('button', {name: 'Cancel'}).focus());
+            rerender(inBlock(<ReviewChanges changes={one} compact error="Could not apply." {...h}/>));
+            expect(screen.getByRole('button', {name: 'Cancel'})).toHaveFocus();
+            unmount();
+            const outside = render(<ReviewChanges changes={one} {...h}/>);
+            act(() => outside.getByRole('button', {name: 'This search only'}).focus());
+            outside.rerender(<ReviewChanges changes={one} error="Could not apply." {...h}/>);
+            expect(outside.getByRole('button', {name: 'This search only'})).toHaveFocus();
         });
 
         test('More while Apply is running keeps the focus on Apply, which still has it after the failure', () => {

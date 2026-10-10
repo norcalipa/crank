@@ -601,8 +601,15 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
         }
     }
 
-    for (const viewport of [{width: 1280, height: 650}, {width: 320, height: 568}]) {
-        test(`${viewport.width}x${viewport.height}: a mouse press on Edit and on This search only acts while its row is only partly in view`, async ({page}) => {
+    for (const [viewport, input] of [
+        [{width: 1280, height: 650}, 'mouse'], [{width: 320, height: 568}, 'mouse'],
+        [{width: 1280, height: 650}, 'touch'], [{width: 1024, height: 640}, 'touch'], [{width: 320, height: 568}, 'touch'],
+    ] as const) {
+        test.describe(`${input} input`, () => {
+        // Emulated touch in desktop Chromium: a tap sends its pointer events, then its mouse events, then the focus.
+        test.use({hasTouch: input === 'touch'});
+        test(`${viewport.width}x${viewport.height}: a ${input} press on Edit and on This search only acts while its row is only partly in view`, async ({page, browserName}) => {
+            test.skip(input === 'touch' && browserName !== 'chromium', 'touch is emulated in Chromium only');
             await page.setViewportSize(viewport);
             await page.goto('/');
             expect(await setPriorities(page, TEN)).toBe(10);
@@ -633,10 +640,14 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
                     return {x: r.left + r.width / 2, y: (top + bottom) / 2, px: bottom - top, of: r.height};
                 });
                 if (shown.px < 4 || shown.px > shown.of - 2) return false;
-                await page.mouse.move(shown.x, shown.y);
-                await page.mouse.down();
-                await page.waitForTimeout(60);
-                await page.mouse.up();
+                if (input === 'touch') {
+                    await page.touchscreen.tap(shown.x, shown.y);
+                } else {
+                    await page.mouse.move(shown.x, shown.y);
+                    await page.mouse.down();
+                    await page.waitForTimeout(60);
+                    await page.mouse.up();
+                }
                 return true;
             };
             const rests = [70, 60, 50, 40, 30, 20];
@@ -668,10 +679,12 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
             expect(searchPressed, 'positions where This search only was partly in view').toBeGreaterThanOrEqual(2);
             await page.unroute('**/api/agent/preferences/apply/');
         });
+        });
     }
 
-    test('320x568: This search only pressed by keyboard keeps the focus while it runs and after it fails', async ({page}) => {
-        await page.setViewportSize({width: 320, height: 568});
+    for (const viewport of [{width: 320, height: 568}, {width: 375, height: 553}, {width: 1024, height: 640}, {width: 1280, height: 650}]) {
+    test(`${viewport.width}x${viewport.height}: This search only pressed by keyboard keeps the focus while it runs; after it fails the focus is on a button on screen`, async ({page}) => {
+        await page.setViewportSize(viewport);
         await page.goto('/');
         expect(await setPriorities(page, TEN)).toBe(10);
         const section = await openPanel(page);
@@ -694,12 +707,21 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
         await expect(searchOnly).toBeFocused();
         release();
         await expect(section.getByTestId('priorities-review-error')).toHaveText(/Could not apply your changes/);
-        await expect(searchOnly).toBeFocused();
-        expect(await page.evaluate(() => document.activeElement === document.body)).toBe(false);
         await settleLayout(page);
+        // The message pushes the second row out of sight: the focus moved to the pinned row, to a button that shows.
+        expect(await page.evaluate(() => document.activeElement === document.body)).toBe(false);
+        await expect(section.getByRole('group', {name: 'Review actions'}).getByRole('button', {name: 'Apply to account'})).toBeFocused();
+        const focused = await page.evaluate(() => {
+            const el = document.activeElement as HTMLElement;
+            const r = el.getBoundingClientRect();
+            const edge = el.closest('.priorities-scroll')!.getBoundingClientRect();
+            return {px: Math.round(Math.max(0, Math.min(r.bottom, edge.bottom, window.innerHeight) - Math.max(r.top, edge.top, 0))), of: Math.round(r.height)};
+        });
+        expect(focused.px, 'the focused button is on screen').toBe(focused.of);
         expect(await wholeAndOnTop(section.getByTestId('priorities-review-error')), 'the reason is on screen').toBe(true);
         await page.unroute('**/api/agent/preferences/apply/');
     });
+    }
 
     for (const viewport of [{width: 320, height: 568}, {width: 360, height: 640}, {width: 375, height: 553}]) {
         test(`${viewport.width}x${viewport.height}: the result of "This search only" shows the job count whole`, async ({page}) => {
@@ -1396,17 +1418,31 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
         await expectNoHorizontalOverflow(page);
     });
 
-    for (const viewport of [{width: 320, height: 568}, {width: 375, height: 700}, {width: 768, height: 800}, {width: 834, height: 1194}]) {
-        for (const [name, patch] of [
-            ['two work arrangements', {set: {'work_location.modes': ['remote', 'hybrid'], industry: ['fintech'], importance: {'work_location.modes': 1.0}}}],
-            ['three industries', {set: {industry: ['Financial technology', 'Developer tools', 'Healthcare'], 'work_location.countries': ['US'], importance: {industry: 1.0}}}],
+    for (const viewport of [{width: 375, height: 700}, {width: 768, height: 800}, {width: 1280, height: 900}]) {
+        test(`${viewport.width}x${viewport.height}: an excluded value required is not read as wanted, in the row or in the toggle's name`, async ({page}) => {
+            await page.setViewportSize(viewport);
+            await page.goto('/');
+            await setPriorities(page, {set: {'exclusions.industries': ['Gambling'], importance: {'exclusions.industries': 1.0}}});
+            const section = await openPanel(page);
+            const summary = section.getByTestId('priorities-summary');
+            await expect(summary).toHaveText(/^Requires: Excluded industries: Gambling/);
+            await expect(summary).not.toHaveText(/^Requires: Gambling/);
+            await expect(section.getByTestId('priorities-summary-toggle')).toHaveAccessibleName(/Requires: Excluded industries: Gambling/);
+        });
+    }
+
+    for (const viewport of [{width: 320, height: 568}, {width: 375, height: 700}, {width: 768, height: 800}, {width: 834, height: 1194}, {width: 882, height: 800}, {width: 999, height: 800}]) {
+        // `floor` is what the lead must show whole: the first value of a short list, the first word of a long one.
+        for (const [name, patch, floor] of [
+            ['two work arrangements', {set: {'work_location.modes': ['remote', 'hybrid'], industry: ['fintech'], importance: {'work_location.modes': 1.0}}}, 'Requires: Remote'],
+            ['three industries', {set: {industry: ['Financial technology', 'Developer tools', 'Healthcare'], 'work_location.countries': ['US'], importance: {industry: 1.0}}}, 'Requires: Financial'],
         ] as const) {
-            test(`${viewport.width}x${viewport.height}: a list of values as the first requirement (${name}) is cut with the lead, over nothing`, async ({page}) => {
+            test(`${viewport.width}x${viewport.height}: a list of values as the first requirement (${name}) is cut with the lead after its first value, over nothing`, async ({page}) => {
                 await page.setViewportSize(viewport);
                 await page.goto('/');
                 await setPriorities(page, patch);
                 const section = await openPanel(page);
-                const fit = await section.evaluate((sec) => {
+                const fit = await section.evaluate((sec, shown) => {
                     const box = (el: Element) => el.getBoundingClientRect();
                     const toggle = sec.querySelector<HTMLElement>('[data-testid="priorities-summary-toggle"]')!;
                     const edit = sec.querySelector<HTMLElement>('.priorities-edit')!;
@@ -1417,8 +1453,17 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
                     // Painted over one another: the boxes share area (below 375px the counts sit under the lead, not beside it).
                     const overlap = (a: DOMRect, b: DOMRect) => Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left))
                         * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+                    // What the lead must show: "Requires:" and the first value, measured as the lead sets it.
+                    const text = sec.querySelector('[data-testid="priorities-summary"]')!.textContent!;
+                    const probe = lead.cloneNode(false) as HTMLElement;
+                    probe.textContent = shown;
+                    probe.style.cssText = 'position:absolute;visibility:hidden;overflow:visible;white-space:nowrap;flex:none';
+                    lead.parentElement!.appendChild(probe);
+                    const firstValueWidth = probe.getBoundingClientRect().width;
+                    probe.remove();
                     return {
-                        text: sec.querySelector('[data-testid="priorities-summary"]')!.textContent,
+                        text,
+                        firstValueFits: firstValueWidth <= visibleLead.width + 1,
                         leadWidth: Math.round(visibleLead.width),
                         // What is painted of the lead is its box: the text beyond it is cut with an ellipsis.
                         leadOverCounts: tail ? overlap(visibleLead, box(tail)) : 0,
@@ -1428,9 +1473,9 @@ test.describe('open priorities block over a conversation (issue #480)', () => {
                         pastBlock: Math.round(Math.max(0, box(lead).right - box(sec).right, tail ? box(tail).right - box(sec).right : 0)),
                         sideways: sec.scrollWidth - sec.clientWidth,
                     };
-                });
-                expect(fit.text).toMatch(/^Requires: (Work arrangement: Remote, Hybrid|Industr(y|ies): Financial technology)/);
-                expect(fit.leadWidth, 'the lead keeps some room').toBeGreaterThan(0);
+                }, floor);
+                expect(fit.text).toMatch(/^Requires: (Remote, Hybrid|Financial technology, Developer tools)/);
+                expect(fit.firstValueFits, `"${floor}" is whole in the lead`).toBe(true);
                 expect(fit.leadOverCounts).toBe(0);
                 expect(fit.leadOverKeep).toBe(0);
                 expect(fit.countsOutsideToggle).toBe(0);

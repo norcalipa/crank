@@ -115,7 +115,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const moved = React.useRef(false);
     // The block's height at the last sync: a block that grew (an error arrived) is told apart from a composer that grew.
     const shown = React.useRef(0);
-    // The panel's height at the last sync: a panel that got shorter (rotation, resize) un-pins a block the same way.
+    // The panel's height at the last sync: a panel that got shorter (a resize) un-pins a block the same way.
     const panelShown = React.useRef(0);
 
     // The chat shows its jump pill to a reader who is not at the end; one this block moved is still following.

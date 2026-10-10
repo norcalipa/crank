@@ -142,7 +142,21 @@ export default function ReviewChanges({
         onPointerUp: () => { pressing.current = false; },
         onPointerCancel: () => { pressing.current = false; },
         onPointerLeave: () => { pressing.current = false; },
+        // A tap sends its mouse events before the focus, after its pointerup: they hold the press as well.
+        onMouseDown: () => { pressing.current = true; },
+        onMouseUp: () => { pressing.current = false; },
+        onMouseLeave: () => { pressing.current = false; },
     };
+    // A failure's message arrives above the pinned row and pushes the second row out of sight: a focus held there
+    // moves to the pinned row, where the message and the focus are both on screen.
+    React.useEffect(() => {
+        const root = rootRef.current;
+        if (!error || !compact || !root) return;
+        const held = document.activeElement;
+        if (held?.matches('.priorities-review-edit, .priorities-review-search') && root.contains(held)) {
+            root.querySelector<HTMLElement>('.chat-actions > button:not(.priorities-review-more):not(:disabled)')?.focus();
+        }
+    }, [error, compact]);
     const showMore = () => {
         const root = rootRef.current as HTMLDivElement;
         // While a request runs the second row is disabled: the focus goes to a button that stays.
