@@ -55,6 +55,8 @@ export const PIN_TRANSCRIPT_PX = 56;
 export const CHAT_BARS_FALLBACK_PX = 164;
 // The chat re-measures and follows the conversation a few frames after the block resizes.
 const REVEAL_FRAMES = 6;
+/** How long a press that never clicks keeps the collapsed row held after its pointer comes up. */
+const PRESS_LANDING_MS = 500;
 
 const STALE_COPY = 'Your priorities changed elsewhere. Review the latest before applying.';
 
@@ -320,7 +322,28 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
         mutations.observe(panelBody, {childList: true, subtree: true});
         // Focus moving between the row's own buttons never lets go of it.
         const entered = () => sync(true);
-        const left = (event: FocusEvent) => { if (!section.contains(event.relatedTarget as Node | null)) sync(false); };
+        // Letting go of the row moves the chat's header up by the row's height: a press that took the focus away
+        // from the row is held until it has landed (click, cancel, or a moment after its pointer comes up), or it misses.
+        let pressed = false;
+        let owed = false;
+        let timer = 0;
+        const landed = () => {
+            window.clearTimeout(timer);
+            pressed = false;
+            if (owed) { owed = false; sync(); }
+        };
+        const down = () => { window.clearTimeout(timer); pressed = true; };
+        // A press that ends without a click lets go a moment later; a tap's mouse events follow its pointerup.
+        const lifted = () => { window.clearTimeout(timer); timer = window.setTimeout(landed, PRESS_LANDING_MS); };
+        const left = (event: FocusEvent) => {
+            if (section.contains(event.relatedTarget as Node | null)) return;
+            if (pressed) owed = true;
+            else sync(false);
+        };
+        const presses: Array<[string, EventListener]> = [
+            ['pointerdown', down], ['mousedown', down], ['pointerup', lifted], ['pointercancel', landed], ['click', landed],
+        ];
+        presses.forEach(([type, listener]) => document.addEventListener(type, listener, true));
         section.addEventListener('focusin', entered);
         section.addEventListener('focusout', left);
         watch();
@@ -330,6 +353,8 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
             mutations.disconnect();
             section.removeEventListener('focusin', entered);
             section.removeEventListener('focusout', left);
+            presses.forEach(([type, listener]) => document.removeEventListener(type, listener, true));
+            window.clearTimeout(timer);
             panelBody.style.removeProperty('--priorities-open-h');
         };
     }, [inSidebar, step, expanded, phase]);
