@@ -433,6 +433,7 @@ const JobSearchChat: React.FC<JobSearchChatProps> = (props) => {
         loading,
         // What can arrive under the last message after it has been followed.
         contentKey: [availability?.state ?? '', newestActionsId ?? '', lastMessage?.delivery_state ?? '', retryKey ?? ''].join('|'),
+        footerKey: initError,
     });
 
     // Advisory availability check (issue #457). Runs on mount and is re-run

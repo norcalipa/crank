@@ -6,16 +6,23 @@ import * as React from 'react';
 
 import {useTranscriptScroll} from './useTranscriptScroll';
 
-function Harness({assistantCount, extra = 0, loading = false, contentKey, band = false, log = true}: {assistantCount: number; extra?: number; loading?: boolean; contentKey?: string; log?: boolean; band?: boolean}) {
+function Harness({assistantCount, extra = 0, loading = false, contentKey, band = false, log = true, block, footerKey}: {assistantCount: number; extra?: number; loading?: boolean; contentKey?: string; log?: boolean; band?: boolean; block?: 'collapsed' | 'open'; footerKey?: unknown}) {
     const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend} = useTranscriptScroll({
         messagesLength: assistantCount + extra,
         assistantCount,
         pending: false,
         loading,
         contentKey,
+        footerKey,
     });
     return (
         <div className="assistant-panel-body" data-testid="panel">
+            {block && (
+                <div className="priorities-sidebar">
+                    <button data-testid="toggle">Priorities</button>
+                    {block === 'open' && <div className="priorities-scroll"/>}
+                </div>
+            )}
             <section>
                 <div className="card-header" data-testid="header"/>
                 {log && (
@@ -425,13 +432,104 @@ describe('useTranscriptScroll', () => {
             expect(panel.scrollTop).toBe(0);
         });
 
-        test('does nothing when the focus is elsewhere', () => {
-            render(<Harness assistantCount={1}/>);
+        test('keeps the composer whole when nothing in it has the focus and the priorities row is collapsed', () => {
+            render(<Harness assistantCount={1} block="collapsed"/>);
             const panel = screen.getByTestId('panel');
             bottoms(460, 380);
             screen.getByTestId('older-link').focus();
             act(() => { fireEvent(window, new Event('resize')); });
+            expect(panel.scrollTop).toBe(80);
+        });
+
+        test('does nothing when the focus is in the priorities block', () => {
+            render(<Harness assistantCount={1} block="collapsed"/>);
+            const panel = screen.getByTestId('panel');
+            bottoms(460, 380);
+            screen.getByTestId('toggle').focus();
+            act(() => { fireEvent(window, new Event('resize')); });
             expect(panel.scrollTop).toBe(0);
+        });
+
+        test('an open priorities block keeps its place unless the reader is typing', () => {
+            render(<Harness assistantCount={1} block="open"/>);
+            const panel = screen.getByTestId('panel');
+            bottoms(460, 380);
+            act(() => { fireEvent(window, new Event('resize')); });
+            expect(panel.scrollTop).toBe(0);
+            screen.getByTestId('composer').focus();
+            act(() => { fireEvent(window, new Event('resize')); });
+            expect(panel.scrollTop).toBe(80);
+        });
+
+        test('measures against the visual viewport when a keyboard covers the page without resizing it', () => {
+            const original = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+            Object.defineProperty(window, 'visualViewport', {
+                configurable: true,
+                value: {height: 300, offsetTop: 20, addEventListener: jest.fn(), removeEventListener: jest.fn()},
+            });
+            try {
+                render(<Harness assistantCount={1}/>);
+                const panel = screen.getByTestId('panel');
+                bottoms(460, 380);
+                screen.getByTestId('composer').focus();
+                act(() => { fireEvent(window, new Event('resize')); });
+                expect(panel.scrollTop).toBe(140);
+            } finally {
+                if (original) Object.defineProperty(window, 'visualViewport', original);
+                else delete (window as unknown as {visualViewport?: unknown}).visualViewport;
+            }
+        });
+
+        describe('when the footer grows (a failed send, a status notice, a longer draft)', () => {
+            const observers: Array<{cb: () => void; target: Element | null; disconnected: boolean}> = [];
+            const original = (window as unknown as {ResizeObserver?: unknown}).ResizeObserver;
+            beforeEach(() => {
+                observers.length = 0;
+                (window as unknown as {ResizeObserver: unknown}).ResizeObserver = class {
+                    private entry: {cb: () => void; target: Element | null; disconnected: boolean};
+                    constructor(cb: () => void) { this.entry = {cb, target: null, disconnected: false}; observers.push(this.entry); }
+                    observe(target: Element) { this.entry.target = target; }
+                    disconnect() { this.entry.disconnected = true; }
+                };
+            });
+            afterEach(() => {
+                (window as unknown as {ResizeObserver?: unknown}).ResizeObserver = original;
+            });
+            const footerObservers = () => observers.filter((o) => o.target === screen.getByTestId('footer'));
+
+            test('a reader typing keeps the composer on screen', () => {
+                render(<Harness assistantCount={1}/>);
+                const panel = screen.getByTestId('panel');
+                bottoms(424, 380);
+                screen.getByTestId('composer').focus();
+                expect(footerObservers()).toHaveLength(1);
+                act(() => { footerObservers()[0].cb(); });
+                expect(panel.scrollTop).toBe(44);
+            });
+
+            test('a notice on load, with nothing focused, leaves the composer whole', () => {
+                render(<Harness assistantCount={1} block="collapsed"/>);
+                const panel = screen.getByTestId('panel');
+                bottoms(437, 380);
+                act(() => { footerObservers()[0].cb(); });
+                expect(panel.scrollTop).toBe(57);
+            });
+
+            test('observes nothing while there is no transcript', () => {
+                render(<Harness assistantCount={1} log={false}/>);
+                expect(footerObservers()).toHaveLength(0);
+            });
+
+            test('the footer is observed again when it is mounted again, and released on unmount', () => {
+                const {rerender, unmount} = render(<Harness assistantCount={1} footerKey="error"/>);
+                const first = footerObservers()[0];
+                rerender(<Harness assistantCount={1} footerKey={null}/>);
+                expect(first.disconnected).toBe(true);
+                const second = footerObservers().filter((o) => !o.disconnected);
+                expect(second).toHaveLength(1);
+                unmount();
+                expect(second[0].disconnected).toBe(true);
+            });
         });
 
         test('does nothing outside the assistant panel', () => {

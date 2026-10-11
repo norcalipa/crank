@@ -11,7 +11,7 @@ const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home
 // Exactly one element scrolls the conversation: the transcript, at every
 // size. The assistant panel's body only scrolls as a last resort, when the
 // chat's own bars do not fit in it (issue #483).
-export function useTranscriptScroll({messagesLength, assistantCount, pending, loading, contentKey = ''}: {
+export function useTranscriptScroll({messagesLength, assistantCount, pending, loading, contentKey = '', footerKey}: {
     messagesLength: number;
     assistantCount: number;
     pending: boolean;
@@ -19,6 +19,8 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
     // Changes when content arrives in the transcript without a new message
     // (a notice under the last reply, a failed-turn card).
     contentKey?: string;
+    // Changes when the footer is mounted again (it is gone while the init error shows).
+    footerKey?: unknown;
 }) {
     const historyRef = React.useRef<HTMLDivElement>(null);
     const nearBottomRef = React.useRef(true);
@@ -208,17 +210,34 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
     // the reader's position when they are browsing older messages.
     React.useEffect(() => {
         // Where the chat's bars do not fit, the panel body scrolls as a last
-        // resort. A reader typing keeps the composer: the body is scrolled by
-        // the amount the footer is cut off.
+        // resort and the composer is kept whole: the body is scrolled by the
+        // amount the composer band is cut off. A reader working in the
+        // priorities block keeps the block instead.
+        const findFooter = () => historyRef.current?.closest('section')?.querySelector<HTMLElement>('.chat-footer');
         const keepComposerInView = () => {
-            const footer = historyRef.current?.closest('section')?.querySelector<HTMLElement>('.chat-footer');
+            const footer = findFooter();
             const panelBody = footer?.closest<HTMLElement>('.assistant-panel-body');
-            if (!footer || !panelBody || !footer.contains(document.activeElement)) return;
+            if (!footer || !panelBody) return;
+            if (!footer.contains(document.activeElement)) {
+                const block = panelBody.querySelector<HTMLElement>('.priorities-sidebar');
+                if (block && (block.contains(document.activeElement) || block.querySelector('.priorities-scroll'))) return;
+            }
             // The composer band reaches past the footer into the panel's padding.
             const band = footer.querySelector<HTMLElement>('form') ?? footer;
-            const cutOff = band.getBoundingClientRect().bottom - panelBody.getBoundingClientRect().bottom;
+            // An on-screen keyboard that does not resize the page still shrinks the visual viewport.
+            const viewport = window.visualViewport;
+            const visibleBottom = viewport ? viewport.offsetTop + viewport.height : Number.POSITIVE_INFINITY;
+            const limit = Math.min(panelBody.getBoundingClientRect().bottom, visibleBottom);
+            const cutOff = band.getBoundingClientRect().bottom - limit;
             if (cutOff > 0) panelBody.scrollTop += cutOff;
         };
+        // A notice or a longer draft grows the footer without any resize of the window.
+        const footerEl = findFooter();
+        let footerObserver: ResizeObserver | null = null;
+        if (footerEl && typeof ResizeObserver !== 'undefined') {
+            footerObserver = new ResizeObserver(keepComposerInView);
+            footerObserver.observe(footerEl);
+        }
         const handleViewportResize = () => {
             keepComposerInView();
             // A reader who is following keeps following: the keyboard opening
@@ -238,8 +257,9 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         return () => {
             window.removeEventListener('resize', handleViewportResize);
             window.visualViewport?.removeEventListener('resize', handleViewportResize);
+            footerObserver?.disconnect();
         };
-    }, [assistantCount]);
+    }, [assistantCount, footerKey]);
 
     return {historyRef, nearBottomRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend};
 }
