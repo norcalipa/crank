@@ -11,7 +11,7 @@ const COMPANY = 'E2E Alpha Corp';
 async function openDetails(page: import('@playwright/test').Page) {
     await page.goto('/');
     await page.locator(`[aria-label="View details for ${COMPANY}"] >> visible=true`).first().click();
-    const details = page.getByRole('dialog').filter({has: page.locator('#organization-details-title')});
+    const details = page.getByTestId('company-view');
     await expect(details).toBeVisible();
     return details;
 }
@@ -35,7 +35,7 @@ for (const {field, current, saved, ...viewport} of VIEWPORTS) {
 
             const form = page.getByRole('dialog', {name: new RegExp(`Suggest a correction ${COMPANY}`)});
             await expect(form).toBeVisible();
-            await expect(details).toBeHidden();
+            await expect(details).toBeVisible(); // 486b: the view stays under the form
             await expect(form.getByTestId('correction-field')).toHaveValue(field);
             await expect(form.getByTestId('correction-current-value')).toHaveText(current);
             await expect(form.getByTestId('correction-close')).toBeFocused();
@@ -66,24 +66,25 @@ for (const {field, current, saved, ...viewport} of VIEWPORTS) {
             await expect(form.getByTestId('correction-back')).toBeFocused();
 
             await form.getByRole('button', {name: `Back to ${COMPANY}`}).click();
-            const reopened = page.getByRole('dialog').filter({has: page.locator('#organization-details-title')});
-            await expect(reopened).toBeVisible();
-            const pending = reopened.getByTestId('your-pending-corrections');
+            await expect(form).toBeHidden();
+            // 486b: the view was never closed, so nothing reopens; it simply shows the saved correction.
+            await expect(details).toBeVisible();
+            const pending = details.getByTestId('your-pending-corrections');
             await expect(pending).toContainText('Pending review');
             await expect(pending).toContainText('Hybrid, 3 days');
         });
 
-        test('Escape closes the form and returns focus to the company entry', async ({page}) => {
+        test('Escape closes the form, keeps the company view and returns focus to the trigger', async ({page}) => {
             await login(page);
             const details = await openDetails(page);
-            await details.getByTestId('suggest-correction-link').click();
+            const trigger = details.getByTestId('suggest-correction-link');
+            await trigger.click();
             const form = page.getByRole('dialog', {name: /Suggest a correction/});
             await expect(form).toBeVisible();
             await page.keyboard.press('Escape');
             await expect(form).toBeHidden();
-            await expect.poll(() => page.evaluate(
-                () => document.activeElement?.closest('[data-organization-id]')?.getAttribute('data-organization-id') ?? null,
-            )).not.toBeNull();
+            await expect(details).toBeVisible();
+            await expect(trigger).toBeFocused();
         });
     });
 }

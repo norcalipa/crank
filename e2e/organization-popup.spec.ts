@@ -1,26 +1,41 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
-// E2E tests for the company details dialog layering and keyboard focus above
-// the fixed navigation rail (issue #464). Asserts visible bounds and hit
-// targets: the dialog title and Close button must not intersect the nav rail
-// at desktop width, and the dialog must be reachable and closable by keyboard
-// at both desktop and mobile widths.
+// E2E tests for the company view (issues #464, #486). The company opens as a
+// view inside main#main-content, not as a blocking dialog: it must sit beside
+// the navigation rail, leave the page scrollable and un-inert, add exactly one
+// history entry, return to the results with Back, and be reachable by
+// keyboard at both desktop and mobile widths. The correction and suggest
+// dialogs stay blocking and keep their own isolation checks.
 import {test, expect, Page} from '@playwright/test';
 
 const POPUP_FIXTURE = '/e2e/fixtures/organization-popup.html';
 
-async function openDetailsDialog(page: Page): Promise<void> {
+const view = (page: Page) => page.getByTestId('company-view');
+
+async function openCompanyView(page: Page): Promise<void> {
     // The rankings table is hidden at narrow widths; the mobile layout shows
     // cards instead. Pick whichever opener the current viewport renders.
     // Whichever is visible is resolved at each step rather than decided from
     // one read during page load, when neither layout has settled yet.
     const opener = page.locator('tr.organization-row:visible, .organization-card:visible').first();
     await expect(opener).toBeVisible();
-    // Enter/Space on a company row opens the dialog (issue #464 validation).
+    // Enter/Space on a company row opens the view (issue #464 validation).
     await opener.focus();
     await opener.press('Enter');
-    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(view(page)).toBeVisible();
+    await expect(page.locator('#organization-details-title')).toBeFocused();
 }
+
+const historyLength = (page: Page) => page.evaluate(() => window.history.length);
+const companyParam = (page: Page) => page.evaluate(() => new URLSearchParams(window.location.search).get('company'));
+
+// Boxes of the first visible results row or card, read in one evaluate so the
+// scroll position and the rectangle belong to the same moment.
+const anchorSnapshot = (page: Page, id = '1') => page.evaluate((organizationId) => {
+    const element = Array.from(document.querySelectorAll<HTMLElement>(`[data-organization-id="${organizationId}"]`))
+        .find((candidate) => candidate.getBoundingClientRect().height > 0);
+    return {scrollY: Math.round(window.scrollY), top: element ? Math.round(element.getBoundingClientRect().top) : null};
+}, id);
 
 // Review r3: Bootstrap sets `:root { scroll-behavior: smooth }`, so
 // window.scrollTo animates and an immediate exact read of window.scrollY
@@ -86,135 +101,62 @@ test.beforeEach(async ({page}) => {
     await stubProvenance(page, 'populated');
 });
 
-test.describe('company details dialog layering (issue #464) — desktop', () => {
+test.describe('company view in the main workspace (issues #464, #486) — desktop', () => {
     test.use({viewport: {width: 1280, height: 800}});
 
-    test('dialog title and Close button are hit targets above the nav rail', async ({page}) => {
+    test('the heading and Back to results are hit targets inside the main content, beside the nav rail', async ({page}) => {
         await page.goto(POPUP_FIXTURE);
-        await openDetailsDialog(page);
+        await openCompanyView(page);
 
-        const dialog = page.getByRole('dialog');
         const rail = page.locator('[data-nav-rail]');
         await expect(rail).toBeVisible();
-
-        // A centered dialog necessarily overlaps the fixed rail's bounding
-        // box; the issue's requirement is that the dialog renders ABOVE it and
-        // its title and Close control remain real hit targets (visible
-        // bounds). Assert the topmost element at each control's center belongs
-        // to the dialog overlay (never the rail) and both controls sit inside
-        // the viewport.
+        const railBox = (await rail.boundingBox())!;
         const viewport = page.viewportSize()!;
         const targets = [
-            {name: 'dialog title', locator: page.locator('#organization-details-title')},
-            {name: 'Close button', locator: dialog.getByRole('button', {name: 'Close'})},
+            {name: 'heading', locator: page.locator('#organization-details-title')},
+            {name: 'Back to results', locator: view(page).getByRole('button', {name: 'Back to results'})},
         ] as const;
         for (const {name, locator} of targets) {
             const box = await locator.boundingBox();
             expect(box, `${name} must be visible`).not.toBeNull();
-            expect(box!.x + box!.width / 2, `${name} center x inside viewport`).toBeGreaterThanOrEqual(0);
-            expect(box!.x + box!.width / 2, `${name} center x inside viewport`).toBeLessThanOrEqual(viewport.width);
-            expect(box!.y + box!.height / 2, `${name} center y inside viewport`).toBeGreaterThanOrEqual(0);
-            expect(box!.y + box!.height / 2, `${name} center y inside viewport`).toBeLessThanOrEqual(viewport.height);
+            // Beside the rail, never under it, and inside the viewport.
+            expect(box!.x, `${name} must start to the right of the nav rail`).toBeGreaterThanOrEqual(railBox.x + railBox.width - 1);
+            expect(box!.x + box!.width, `${name} inside viewport`).toBeLessThanOrEqual(viewport.width);
+            expect(box!.y + box!.height / 2, `${name} inside viewport`).toBeLessThanOrEqual(viewport.height);
 
-            const onTop = await page.evaluate(([x, y]) => {
+            const hit = await page.evaluate(([x, y]) => {
                 const el = document.elementFromPoint(x, y);
-                return Boolean(el && el.closest('.popup-overlay'));
+                return {inView: Boolean(el && el.closest('[data-testid="company-view"]')), inRail: Boolean(el && el.closest('[data-nav-rail]'))};
             }, [box!.x + box!.width / 2, box!.y + box!.height / 2]);
-            expect(onTop,
-                `${name} must render above the nav rail (hit target resolves inside the dialog overlay)`)
-                .toBe(true);
+            expect(hit, `${name} hit target resolves inside the view, not the rail`).toEqual({inView: true, inRail: false});
         }
     });
 
-    test('blocking dialog renders above the navigation rail', async ({page}) => {
+    test('the view is an in-flow region of main#main-content: no dialog, no overlay, no fixed positioning', async ({page}) => {
         await page.goto(POPUP_FIXTURE);
-        await openDetailsDialog(page);
+        await openCompanyView(page);
 
-        const overlayZ = await page.locator('.popup-overlay').evaluate(
-            (el) => parseInt(getComputedStyle(el).zIndex, 10)
-        );
-        const railZ = await page.locator('[data-nav-rail]').evaluate(
-            (el) => parseInt(getComputedStyle(el).zIndex, 10)
-        );
-
-        expect(overlayZ, 'popup overlay must stack above the nav rail').toBeGreaterThan(railZ);
+        const region = view(page);
+        await expect(page.locator('main#main-content').getByTestId('company-view')).toBeVisible();
+        await expect(page.getByRole('region', {name: 'Acme Robotics'})).toHaveCount(1);
+        await expect(page.getByRole('dialog')).toHaveCount(0);
+        await expect(page.locator('.popup-overlay')).toHaveCount(0);
+        await expect(page.locator('[aria-modal]')).toHaveCount(0);
+        const styles = await region.evaluate((el) => {
+            const style = getComputedStyle(el);
+            return {position: style.position, maxHeight: style.maxHeight, overflowY: style.overflowY};
+        });
+        expect(styles.position).toBe('static');
+        expect(styles.maxHeight).toBe('none');
+        expect(styles.overflowY).toBe('visible');
+        // The results are hidden, not gone: search, filters and page stay.
+        await expect(page.getByTestId('organization-results-region')).toBeHidden();
+        await expect(page.getByTestId('organization-results-region')).toHaveCount(1);
     });
 
-    test('large content scrolls inside the card body while the header stays pinned', async ({page}) => {
+    test('the page behind keeps working: not inert, not scroll-locked, the document scrolls and focus can leave the view', async ({page}) => {
         await page.goto(POPUP_FIXTURE);
-        await openDetailsDialog(page);
-
-        const dialog = page.getByRole('dialog');
-        const body = dialog.locator('.card-body');
-        const header = dialog.locator('.card-header');
-
-        // The checked-in fixture's live content may not overflow, which made
-        // the original test vacuous (review r1): force deterministic overflow
-        // so the substantive assertions always run.
-        await body.evaluate((el) => {
-            const filler = document.createElement('div');
-            filler.setAttribute('data-testid', 'scroll-filler');
-            filler.setAttribute('aria-hidden', 'true');
-            filler.style.cssText = 'height: 2400px;';
-            el.appendChild(filler);
-        });
-        const scrollInfo = await body.evaluate((el) => ({
-            overflowY: getComputedStyle(el).overflowY,
-            scrollHeight: el.scrollHeight,
-            clientHeight: el.clientHeight,
-        }));
-        expect(scrollInfo.overflowY).toBe('auto');
-        expect(scrollInfo.scrollHeight, 'card body must actually overflow').toBeGreaterThan(scrollInfo.clientHeight);
-
-        // The pinned-header contract (review r2): the header is a flex SIBLING
-        // of the .card-body scroll container, so sibling geometry alone cannot
-        // detect a `position: sticky` regression — removing sticky leaves the
-        // header in place while the body scrolls beneath it. Pin the contract
-        // itself, then prove the header is a real on-screen hit target.
-        const headerPosition = await header.evaluate((el) => getComputedStyle(el).position);
-        expect(headerPosition, 'the pinned header must keep position: sticky').toBe('sticky');
-
-        // Record the pinned header's position, then scroll the body to its
-        // maximum and prove the scroll actually advanced.
-        const headerBoxBefore = await header.boundingBox();
-        await body.evaluate((el) => {
-            el.scrollTop = el.scrollHeight;
-        });
-        const scrollTop = await body.evaluate((el) => el.scrollTop);
-        expect(scrollTop, 'card body scrolls to its maximum').toBeGreaterThan(0);
-
-        // The header keeps its exact position while the body scrolls beneath it.
-        const headerBoxAfter = await header.boundingBox();
-        expect(headerBoxAfter!.y).toBe(headerBoxBefore!.y);
-        expect(headerBoxAfter!.x).toBe(headerBoxBefore!.x);
-        const dialogBox = await dialog.boundingBox();
-        expect(headerBoxAfter!.y).toBeGreaterThanOrEqual(dialogBox!.y - 1);
-        expect(headerBoxAfter!.y + headerBoxAfter!.height)
-            .toBeLessThanOrEqual(dialogBox!.y + dialogBox!.height + 1);
-
-        // Viewport-relative bounds and hit target (review r2): the pinned
-        // header must be a real, visible on-screen target after the scroll —
-        // Playwright `toBeVisible()` does not require viewport intersection,
-        // and dialog-relative bounds alone would pass an off-screen header.
-        const viewport = page.viewportSize()!;
-        expect(headerBoxAfter!.x).toBeGreaterThanOrEqual(0);
-        expect(headerBoxAfter!.y).toBeGreaterThanOrEqual(0);
-        expect(headerBoxAfter!.x + headerBoxAfter!.width).toBeLessThanOrEqual(viewport.width);
-        expect(headerBoxAfter!.y + headerBoxAfter!.height).toBeLessThanOrEqual(viewport.height);
-        const headerOnTop = await page.evaluate((box) => {
-            const el = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
-            return Boolean(el && el.closest('.card-header'));
-        }, headerBoxAfter!);
-        expect(headerOnTop, 'the pinned header must remain the topmost hit target at its center').toBe(true);
-        await expect(header).toBeVisible();
-    });
-
-    test('background content is unreachable and document scrolling is locked while the dialog is open', async ({page}) => {
-        await page.goto(POPUP_FIXTURE);
-
-        // Review r2: the checked-in fixture is exactly viewport-high, so the
-        // old wheel probe passed vacuously. Make the document provably tall
-        // first and prove it actually scrolls before the dialog opens.
+        // The fixture is exactly viewport-high: make the document provably tall.
         await page.evaluate(() => {
             const filler = document.createElement('div');
             filler.setAttribute('data-testid', 'document-filler');
@@ -222,196 +164,195 @@ test.describe('company details dialog layering (issue #464) — desktop', () => 
             filler.style.cssText = 'height: 2400px;';
             document.querySelector('main.app-content')!.appendChild(filler);
         });
-        await scrollWindowTo(page, 300, 'sanity: the tall document scrolls before the dialog opens');
-        await scrollWindowTo(page, 0);
-
         const overflowBefore = await page.evaluate(() => ({
             body: getComputedStyle(document.body).overflow,
             root: getComputedStyle(document.documentElement).overflow,
         }));
-        await openDetailsDialog(page);
+        await openCompanyView(page);
 
-        const dialog = page.getByRole('dialog');
-
-        // Background isolation (issue #464 "prevent background interaction"):
-        // everything outside the dialog — app shell, page content and the
-        // modal-external skip link (review r2) — is inert and hidden from
-        // the accessibility tree while it is open.
-        const backgroundState = await page.evaluate(() => {
+        const state = await page.evaluate(() => {
             const roots = Array.from(document.querySelectorAll<HTMLElement>('.app-shell, main.app-content, .skip-to-content'));
-            return roots.map((el) => ({
-                cls: el.className,
-                inert: el.hasAttribute('inert'),
-                ariaHidden: el.getAttribute('aria-hidden'),
-            }));
+            return {
+                count: roots.length,
+                inert: roots.filter((el) => el.hasAttribute('inert')).length,
+                ariaHidden: roots.filter((el) => el.hasAttribute('aria-hidden')).length,
+                overflow: {body: getComputedStyle(document.body).overflow, root: getComputedStyle(document.documentElement).overflow},
+            };
         });
-        expect(backgroundState.length).toBeGreaterThanOrEqual(3);
-        for (const state of backgroundState) {
-            expect(state.inert, `${state.cls} must be inert while the dialog is open`).toBe(true);
-            expect(state.ariaHidden, `${state.cls} must be aria-hidden while the dialog is open`).toBe('true');
-        }
+        expect(state.count).toBeGreaterThanOrEqual(3);
+        expect(state.inert).toBe(0);
+        expect(state.ariaHidden).toBe(0);
+        expect(state.overflow).toEqual(overflowBefore);
 
-        // Document scroll lock (review r2): under the stylesheet's
-        // `html, body { overflow-x: hidden }` rule the ROOT element carries
-        // the viewport overflow, so locking body alone left the actual
-        // viewport scroller free. Both the root element and body must be
-        // locked while the dialog is open.
-        const overflowWhileOpen = await page.evaluate(() => ({
-            body: getComputedStyle(document.body).overflow,
-            root: getComputedStyle(document.documentElement).overflow,
-        }));
-        expect(overflowWhileOpen.body).toBe('hidden');
-        expect(overflowWhileOpen.root).toBe('hidden');
-
-        // Wheel input over the backdrop cannot move the (provably tall)
-        // document behind the blocking dialog.
+        // Wheel input moves the document.
+        await page.evaluate(() => {
+            document.documentElement.style.scrollBehavior = 'auto';
+        });
+        await page.mouse.move(700, 400);
         await page.mouse.wheel(0, 600);
-        await page.waitForTimeout(100);
-        const scrollYWhileOpen = await page.evaluate(() => window.scrollY);
-        expect(scrollYWhileOpen, 'wheel scrolling over the backdrop must not move the document').toBe(0);
+        await expect.poll(() => page.evaluate(() => window.scrollY), {message: 'the document scrolls while the view is open'})
+            .toBeGreaterThan(0);
 
-        // Programmatic focus on background elements is a no-op while inert —
-        // including the modal-external skip link, which used to remain a
-        // reachable page-level focus target (review r2).
-        const focusProbes = await page.evaluate(() => {
-            const dialogEl = document.querySelector('[role="dialog"]');
-            const results: Record<string, boolean> = {};
-            for (const id of ['nav-rankings']) {
-                document.getElementById(id)?.focus();
-                results[id] = Boolean(dialogEl && dialogEl.contains(document.activeElement));
-            }
-            (document.querySelector('.skip-to-content') as HTMLElement | null)?.focus();
-            results['skip-to-content'] = Boolean(dialogEl && dialogEl.contains(document.activeElement));
-            return results;
+        // The navigation behind it can take focus.
+        await page.evaluate(() => document.getElementById('nav-rankings')?.focus());
+        await expect(page.locator('#nav-rankings')).toBeFocused();
+    });
+
+    test('Tab from the heading reaches Back to results first; Escape does nothing', async ({page}) => {
+        await page.goto(POPUP_FIXTURE);
+        await openCompanyView(page);
+
+        await page.keyboard.press('Escape');
+        await expect(view(page)).toBeVisible();
+        await expect(page.locator('#organization-details-title')).toBeFocused();
+
+        await page.keyboard.press('Tab');
+        await expect(view(page).getByRole('button', {name: 'Back to results'})).toBeFocused();
+        // Close button, overlay and focus trap are gone with the dialog.
+        await expect(view(page).getByRole('button', {name: 'Close'})).toHaveCount(0);
+        await page.keyboard.press('Tab');
+        const next = await page.evaluate(() => document.activeElement?.closest('[data-testid="company-view"]') !== null);
+        expect(next, 'the next stop is still inside the view, in document order').toBe(true);
+    });
+
+    test('opening a row adds one history entry; Back returns to the results with the row focused and in place, Forward reopens', async ({page}) => {
+        await page.goto(`${POPUP_FIXTURE}?search=a`);
+        await page.evaluate(() => {
+            document.documentElement.style.scrollBehavior = 'auto';
+            const filler = document.createElement('div');
+            filler.setAttribute('aria-hidden', 'true');
+            filler.style.cssText = 'height: 2400px;';
+            document.querySelector('main.app-content')!.appendChild(filler);
         });
-        expect(focusProbes['nav-rankings'], 'nav focus probe must stay inside the dialog').toBe(true);
-        expect(focusProbes['skip-to-content'], 'skip-link focus probe must stay inside the dialog').toBe(true);
+        const row = page.locator('tr.organization-row:visible').nth(2);
+        await row.scrollIntoViewIfNeeded();
+        await page.evaluate(() => window.scrollBy(0, 40));
+        const before = await anchorSnapshot(page, '3');
+        const lengthBefore = await historyLength(page);
 
-        // Keyboard walk: Tab never leaves the dialog for the page behind it —
-        // not for the nav rail and not for the skip link.
-        for (let i = 0; i < 8; i++) {
-            await page.keyboard.press('Tab');
-            const inside = await dialog.evaluate((el) => el.contains(document.activeElement));
-            expect(inside, `Tab #${i + 1} must stay inside the dialog`).toBe(true);
-        }
+        await row.focus();
+        await row.press('Enter');
+        await expect(view(page)).toBeVisible();
+        await expect.poll(() => companyParam(page)).toBe('3');
+        expect(await historyLength(page)).toBe(lengthBefore + 1);
 
-        // Closing the dialog releases the isolation and the document
-        // scrolls again.
-        await page.keyboard.press('Escape');
-        await expect(dialog).toHaveCount(0);
-        const overflowAfter = await page.evaluate(() => ({
-            body: getComputedStyle(document.body).overflow,
-            root: getComputedStyle(document.documentElement).overflow,
-        }));
-        expect(overflowAfter).toEqual(overflowBefore);
-        const stillInert = await page.evaluate(() =>
-            Array.from(document.querySelectorAll('.app-shell, main.app-content, .skip-to-content'))
-                .some((el) => el.hasAttribute('inert')));
-        expect(stillInert).toBe(false);
-        await scrollWindowTo(page, 150, 'sanity: the document scrolls again after the close');
+        await page.goBack();
+        await expect(view(page)).toHaveCount(0);
+        await expect.poll(() => companyParam(page)).toBeNull();
+        expect(new URL(page.url()).searchParams.get('search')).toBe('a');
+        await expect(row).toBeFocused();
+        await expect.poll(async () => (await anchorSnapshot(page, '3')).top, {message: 'the row is back at the same viewport offset'})
+            .toBeGreaterThanOrEqual(before.top! - 2);
+        const after = await anchorSnapshot(page, '3');
+        expect(Math.abs(after.top! - before.top!)).toBeLessThanOrEqual(2);
+
+        await page.goForward();
+        await expect(view(page)).toBeVisible();
+        await expect.poll(() => companyParam(page)).toBe('3');
     });
 
-    test('Tab cycles inside the dialog and Escape restores focus to the opener row', async ({page}) => {
+    test('the Back to results button does the same as the browser Back, once', async ({page}) => {
         await page.goto(POPUP_FIXTURE);
-        await openDetailsDialog(page);
+        const lengthBefore = await historyLength(page);
+        await openCompanyView(page);
 
-        const dialog = page.getByRole('dialog');
-        await expect(dialog.getByRole('button', {name: 'Close'})).toBeFocused();
+        await view(page).getByRole('button', {name: 'Back to results'}).click();
 
-        // Tab cycles among the dialog's own focusable elements and never
-        // lands on the navigation rail behind the dialog.
-        for (let i = 0; i < 6; i++) {
-            await page.keyboard.press('Tab');
-            const focusedInDialog = await dialog.evaluate((el) => el.contains(document.activeElement));
-            expect(focusedInDialog, `Tab #${i + 1} must stay inside the dialog`).toBe(true);
-        }
-
-        await page.keyboard.press('Escape');
-        await expect(page.getByRole('dialog')).toHaveCount(0);
+        await expect(view(page)).toHaveCount(0);
+        await expect.poll(() => companyParam(page)).toBeNull();
         await expect(page.locator('tr.organization-row').first()).toBeFocused();
+        // Back moved within the entries the open added: forward is still possible.
+        await page.goForward();
+        await expect(view(page)).toBeVisible();
+        expect(await historyLength(page)).toBe(lengthBefore + 1);
     });
 
-    test('overlay click closes and returns focus to the opener row', async ({page}) => {
+    test('Suggest correction opens the blocking correction dialog over the view; the view stays and focus returns to the trigger', async ({page}) => {
         await page.goto(POPUP_FIXTURE);
-        await openDetailsDialog(page);
+        await openCompanyView(page);
+        const trigger = view(page).getByTestId('suggest-correction-link');
+        await trigger.focus();
+        await trigger.press('Enter');
 
-        // Click the overlay padding outside the dialog card.
-        await page.locator('.popup-overlay').click({position: {x: 10, y: 10}});
-        await expect(page.getByRole('dialog')).toHaveCount(0);
-        await expect(page.locator('tr.organization-row').first()).toBeFocused();
+        const form = page.getByRole('dialog', {name: /Suggest a correction/});
+        await expect(form).toBeVisible();
+        // Exactly one modal at any time, and the view is still in the page under it.
+        await expect(page.locator('[aria-modal="true"]')).toHaveCount(1);
+        await expect(view(page)).toHaveCount(1);
+
+        await page.keyboard.press('Escape');
+        await expect(form).toHaveCount(0);
+        await expect(view(page)).toBeVisible();
+        await expect(trigger).toBeFocused();
     });
 
-    test('only one blocking dialog is active at a time', async ({page}) => {
-        await page.goto(POPUP_FIXTURE);
-        await openDetailsDialog(page);
-
-        // While the details dialog blocks the page, the suggest modal is not
-        // open (mutual exclusion enforced by OrganizationList state).
-        await expect(page.getByTestId('suggest-company-modal')).toHaveCount(0);
-
-        // Escape, then open the suggest modal: the details dialog stays closed.
-        await page.keyboard.press('Escape');
-        await expect(page.getByRole('dialog')).toHaveCount(0);
-        await page.getByTestId('suggest-company-btn').click();
-        await expect(page.getByTestId('suggest-company-modal')).toBeVisible();
-        await expect(page.getByRole('dialog', {name: /Acme Robotics/})).toHaveCount(0);
-
-        // The suggest modal is the topmost (and only) blocking dialog: the
-        // background stays fully isolated while it is open — including the
-        // modal-external skip link and the actual document scroller (r2).
-        const suggestIsolation = await page.evaluate(() => ({
-            anyNotInert: Array.from(document.querySelectorAll<HTMLElement>('.app-shell, main.app-content, .skip-to-content'))
-                .some((el) => !el.hasAttribute('inert')),
-            rootOverflow: getComputedStyle(document.documentElement).overflow,
-        }));
-        expect(suggestIsolation.anyNotInert).toBe(false);
-        expect(suggestIsolation.rootOverflow).toBe('hidden');
-
-        // Escape again, then reopen the details dialog: the suggest modal
-        // stays closed — at most one blocking dialog is ever active.
-        await page.keyboard.press('Escape');
-        await expect(page.getByTestId('suggest-company-modal')).toHaveCount(0);
-        await page.locator('tr.organization-row').first().click();
-        await expect(page.getByRole('dialog', {name: /Acme Robotics/})).toBeVisible();
-        await expect(page.getByTestId('suggest-company-modal')).toHaveCount(0);
-    });
-
-    test('suggest modal Escape returns keyboard focus to the toolbar button that opened it', async ({page}) => {
+    test('the suggest modal opens from the results and Escape returns focus to the button that opened it', async ({page}) => {
         // Real-browser assertion of the #464 focus-restore contract on the
         // suggest modal: the opener must be captured BEFORE lockBackground()
         // inerts the shell, because inerting blurs the trigger and resets
         // activeElement to <body>.
         await page.goto(POPUP_FIXTURE);
+        // The results, including Suggest a company, are hidden while a view is open.
+        await openCompanyView(page);
+        await expect(page.getByTestId('suggest-company-btn')).toBeHidden();
+        await view(page).getByRole('button', {name: 'Back to results'}).click();
+        await expect(view(page)).toHaveCount(0);
+
         await page.getByTestId('suggest-company-btn').click();
         await expect(page.getByTestId('suggest-company-modal')).toBeVisible();
+        const isolation = await page.evaluate(() => ({
+            anyNotInert: Array.from(document.querySelectorAll<HTMLElement>('.app-shell, main.app-content, .skip-to-content'))
+                .some((el) => !el.hasAttribute('inert')),
+            rootOverflow: getComputedStyle(document.documentElement).overflow,
+        }));
+        expect(isolation.anyNotInert).toBe(false);
+        expect(isolation.rootOverflow).toBe('hidden');
         await page.keyboard.press('Escape');
         await expect(page.getByTestId('suggest-company-modal')).toHaveCount(0);
         await expect(page.getByTestId('suggest-company-btn')).toBeFocused();
     });
+
+    test('a company that is no longer listed says so, with Back to results and no evidence request', async ({page}) => {
+        let evidenceRequests = 0;
+        await page.route('**/api/organizations/*/provenance/', route => {
+            evidenceRequests += 1;
+            return route.fulfill({status: 404, body: '{}'});
+        });
+        await page.route('**/api/organizations/99/', route => route.fulfill({status: 404, contentType: 'application/json', body: '{}'}));
+        await page.goto(`${POPUP_FIXTURE}?company=99`);
+
+        await expect(page.getByTestId('company-not-found')).toHaveText('This company is no longer listed.');
+        await expect(page.locator('#organization-details-title')).toBeFocused();
+        expect(evidenceRequests).toBe(0);
+        await view(page).getByRole('button', {name: 'Back to results'}).click();
+        await expect(view(page)).toHaveCount(0);
+        await expect.poll(() => companyParam(page)).toBeNull();
+        await expect(page.locator('tr.organization-row').first()).toBeVisible();
+    });
 });
 
-test.describe('company details dialog layering (issue #464) — mobile', () => {
+test.describe('company view in the main workspace (issues #464, #486) — mobile', () => {
     test.use({viewport: {width: 375, height: 667}, isMobile: true, hasTouch: true});
 
-    test('dialog title and Close button are fully visible at narrow width', async ({page}) => {
+    test('heading and Back to results are fully visible in the first screen and at least 44px tall', async ({page}) => {
         await page.goto(POPUP_FIXTURE);
-        await openDetailsDialog(page);
+        await openCompanyView(page);
 
         const viewport = page.viewportSize()!;
-        const dialog = page.getByRole('dialog');
         const titleBox = await page.locator('#organization-details-title').boundingBox();
-        const closeButtonBox = await dialog.getByRole('button', {name: 'Close'}).boundingBox();
+        const backBox = await view(page).getByRole('button', {name: 'Back to results'}).boundingBox();
 
-        for (const [name, box] of [['title', titleBox], ['Close button', closeButtonBox]] as const) {
+        for (const [name, box] of [['title', titleBox], ['Back to results', backBox]] as const) {
             expect(box, `${name} must be visible`).not.toBeNull();
             expect(box!.x, `${name} must start inside the viewport`).toBeGreaterThanOrEqual(0);
             expect(box!.x + box!.width, `${name} must end inside the viewport`).toBeLessThanOrEqual(viewport.width);
             expect(box!.y, `${name} must start inside the viewport`).toBeGreaterThanOrEqual(0);
-            expect(box!.y + box!.height, `${name} must end inside the viewport`).toBeLessThanOrEqual(viewport.height);
+            expect(box!.y + box!.height, `${name} must end inside the first screen`).toBeLessThanOrEqual(viewport.height);
         }
+        expect(backBox!.height).toBeGreaterThanOrEqual(44);
     });
 
-    test('dialog opens via keyboard and Escape restores focus to the opener card', async ({page}) => {
+    test('the view opens via keyboard and Back to results returns focus to the opener card', async ({page}) => {
         await page.goto(POPUP_FIXTURE);
 
         // Mobile view renders cards instead of the table.
@@ -419,19 +360,15 @@ test.describe('company details dialog layering (issue #464) — mobile', () => {
         await expect(card).toBeVisible();
         await card.focus();
         await card.press('Enter');
-        await expect(page.getByRole('dialog')).toBeVisible();
+        await expect(view(page)).toBeVisible();
 
-        await page.keyboard.press('Escape');
-        await expect(page.getByRole('dialog')).toHaveCount(0);
+        await view(page).getByRole('button', {name: 'Back to results'}).click();
+        await expect(view(page)).toHaveCount(0);
         await expect(page.locator('.organization-card').first()).toBeFocused();
     });
 
-    test('background is inert and document scrolling is locked at mobile width', async ({page, browserName}) => {
+    test('nothing is inert or scroll-locked and the document scrolls at mobile width', async ({page}) => {
         await page.goto(POPUP_FIXTURE);
-
-        // Review r2: the mobile test previously checked only the computed
-        // overflow string and never wheeled. Make the document provably tall,
-        // prove it scrolls, and wheel over the backdrop at this width too.
         await page.evaluate(() => {
             const filler = document.createElement('div');
             filler.setAttribute('data-testid', 'document-filler');
@@ -439,99 +376,56 @@ test.describe('company details dialog layering (issue #464) — mobile', () => {
             filler.style.cssText = 'height: 2400px;';
             document.querySelector('main.app-content')!.appendChild(filler);
         });
-        await scrollWindowTo(page, 300, 'sanity: the tall document scrolls before the dialog opens');
-        await scrollWindowTo(page, 0);
-
         const overflowBefore = await page.evaluate(() => ({
             body: getComputedStyle(document.body).overflow,
             root: getComputedStyle(document.documentElement).overflow,
         }));
-        await openDetailsDialog(page);
+        await openCompanyView(page);
 
-        // Same isolation contract as desktop, asserted at the narrow width:
-        // every non-dialog focus target — shell, content, skip link — is
-        // inert, and the actual document scroller (root element) is locked.
-        const state = await page.evaluate(() => {
-            const roots = Array.from(document.querySelectorAll<HTMLElement>('.app-shell, main.app-content, .skip-to-content'));
-            return {
-                count: roots.length,
-                inert: roots.map((el) => el.hasAttribute('inert')),
-                ariaHidden: roots.map((el) => el.getAttribute('aria-hidden')),
-                overflow: {
-                    body: getComputedStyle(document.body).overflow,
-                    root: getComputedStyle(document.documentElement).overflow,
-                },
-            };
-        });
-        expect(state.count).toBeGreaterThanOrEqual(3);
-        expect(state.inert).not.toContain(false);
-        expect(state.ariaHidden).not.toContain(null);
-        expect(state.ariaHidden).not.toContain('false');
-        expect(state.overflow.body).toBe('hidden');
-        expect(state.overflow.root).toBe('hidden');
-
-        // Review r3 follow-up: Playwright cannot dispatch a synthetic mouse
-        // wheel in mobile WebKit, so the wheel probe is Chromium/Firefox-only
-        // at this width — desktop WebKit still exercises the same
-        // wheel-over-backdrop scroll-chaining contract in the desktop test
-        // above. The lock itself stays asserted in every engine via the
-        // computed root/body overflow and the inert state above.
-        if (browserName !== 'webkit') {
-            await page.mouse.wheel(0, 600);
-            await page.waitForTimeout(100);
-            expect(await page.evaluate(() => window.scrollY), 'wheel over the backdrop must not move the document at mobile width').toBe(0);
-        }
-
-        await page.keyboard.press('Escape');
-        await expect(page.getByRole('dialog')).toHaveCount(0);
-        const released = await page.evaluate(() => ({
-            inert: Array.from(document.querySelectorAll('.app-shell, main.app-content, .skip-to-content'))
-                .some((el) => el.hasAttribute('inert')),
-            overflow: {
-                body: getComputedStyle(document.body).overflow,
-                root: getComputedStyle(document.documentElement).overflow,
-            },
+        const state = await page.evaluate(() => ({
+            inert: document.querySelectorAll('[inert]').length,
+            ariaHidden: document.querySelectorAll('.app-shell[aria-hidden], main.app-content[aria-hidden], .skip-to-content[aria-hidden]').length,
+            overflow: {body: getComputedStyle(document.body).overflow, root: getComputedStyle(document.documentElement).overflow},
         }));
-        expect(released.inert).toBe(false);
-        expect(released.overflow).toEqual(overflowBefore);
-        await scrollWindowTo(page, 150, 'sanity: the document scrolls again after the close');
+        expect(state.inert).toBe(0);
+        expect(state.ariaHidden).toBe(0);
+        expect(state.overflow).toEqual(overflowBefore);
+        await scrollWindowTo(page, 150, 'the document scrolls while the view is open');
     });
 });
 
-test.describe('evidence states in the details dialog (#473a, fixture tier)', () => {
+test.describe('evidence states in the company view (#473a, #486, fixture tier)', () => {
     test.use({viewport: {width: 1280, height: 800}});
 
     test('populated state shows rating coverage and verified facts', async ({page}) => {
         await page.goto(POPUP_FIXTURE);
-        await openDetailsDialog(page);
-        const dialog = page.getByRole('dialog');
-        await expect(dialog.getByTestId('rating-coverage')).toContainText('5 of 5');
-        await expect(dialog.getByTestId('coverage-summary')).toBeVisible();
+        await openCompanyView(page);
+        await expect(view(page).getByTestId('rating-coverage')).toContainText('5 of 5');
+        await expect(view(page).getByTestId('coverage-summary')).toBeVisible();
     });
 
     test('stale state labels the fact as stale', async ({page}) => {
         await stubProvenance(page, 'stale');
         await page.goto(POPUP_FIXTURE);
-        await openDetailsDialog(page);
-        await expect(page.getByRole('dialog').getByTestId('field-stale-rto_policy')).toBeVisible();
+        await openCompanyView(page);
+        await expect(view(page).getByTestId('field-stale-rto_policy')).toBeVisible();
     });
 
     test('pending state lists every open claim with its own source', async ({page}) => {
         await stubProvenance(page, 'pending');
         await page.goto(POPUP_FIXTURE);
-        await openDetailsDialog(page);
-        const dialog = page.getByRole('dialog');
-        await expect(dialog).toContainText('Remote');
-        await expect(dialog).toContainText('one.example');
-        await expect(dialog).toContainText('On-site');
-        await expect(dialog).toContainText('two.example');
+        await openCompanyView(page);
+        await expect(view(page)).toContainText('Remote');
+        await expect(view(page)).toContainText('one.example');
+        await expect(view(page)).toContainText('On-site');
+        await expect(view(page)).toContainText('two.example');
     });
 
     test('the failure state keeps rating coverage visible', async ({page}) => {
         await page.route('**/api/organizations/*/provenance/', route => route.fulfill({status: 500, body: 'no'}));
         await page.goto(POPUP_FIXTURE);
-        await openDetailsDialog(page);
-        await expect(page.getByRole('dialog').getByTestId('rating-coverage')).toContainText('of');
+        await openCompanyView(page);
+        await expect(view(page).getByTestId('rating-coverage')).toContainText('of');
     });
 
     const describedNodes = async (page: Page, roles: string[]) => {
@@ -565,23 +459,22 @@ test.describe('evidence states in the details dialog (#473a, fixture tier)', () 
     });
 });
 
-test.describe('evidence states at 320px (#473a, fixture tier)', () => {
+test.describe('evidence states at 320px (#473a, #486, fixture tier)', () => {
     test.use({viewport: {width: 320, height: 640}});
 
     test('long source and value text wraps without horizontal overflow', async ({page}) => {
         await stubProvenance(page, 'long');
         await page.goto(POPUP_FIXTURE);
-        await openDetailsDialog(page);
-        const dialog = page.getByRole('dialog');
-        await expect(dialog).toContainText('extremely long qualifying clause');
+        await openCompanyView(page);
+        await expect(view(page)).toContainText('extremely long qualifying clause');
         const overflow = await page.evaluate(() => {
-            const body = document.querySelector('.popup-details .card-body') as HTMLElement;
+            const region = document.querySelector('[data-testid="company-view"]') as HTMLElement;
             return {
-                body: body.scrollWidth - body.clientWidth,
+                view: region.scrollWidth - region.clientWidth,
                 page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
             };
         });
-        expect(overflow.body).toBeLessThanOrEqual(1);
+        expect(overflow.view).toBeLessThanOrEqual(1);
         expect(overflow.page).toBeLessThanOrEqual(1);
     });
 });

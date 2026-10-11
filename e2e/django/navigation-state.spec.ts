@@ -13,10 +13,11 @@ const STRIP = '[data-testid="assistant-context-strip"]';
 async function askAboutCompany(page: Page): Promise<void> {
     await page.goto('/');
     await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
-    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.getByTestId('company-view')).toBeVisible();
     await page.getByTestId('company-chat-cta').click();
-    // The 375px sheet is itself a dialog, so only the details dialog must be gone.
-    await expect(page.locator('#organization-details-title')).toHaveCount(0);
+    // 486b: Ask no longer closes the company view; it stays rendered.
+    await expect(page.getByTestId('company-view')).toBeVisible();
+    await expect(page.locator('#organization-details-title')).toHaveCount(1);
     await expect(page.locator(STRIP)).toContainText(`About ${COMPANY}`);
 }
 
@@ -36,8 +37,9 @@ async function companyIdFor(page: Page, name: string): Promise<string> {
     const href = await page.getByTestId('company-chat-cta').getAttribute('href');
     const match = /^\/chat\/\?company=(\d+)$/.exec(href ?? '');
     expect(match).not.toBeNull();
-    await page.keyboard.press('Escape');
-    await expect(page.getByRole('dialog')).toHaveCount(0);
+    // 486b: the view has no Escape handling; "Back to results" leaves it.
+    await page.getByRole('button', {name: 'Back to results'}).click();
+    await expect(page.getByTestId('company-view')).toHaveCount(0);
     return (match as RegExpExecArray)[1];
 }
 
@@ -151,12 +153,12 @@ test.describe('navigation state (issue #479)', () => {
 
     // Issue #479 journey. The comparison leg stays open until #490 ships a
     // comparison surface; every leg that exists today is covered here.
-    test('Rankings → company dialog → jobs → Back → Forward restores each step', async ({page}) => {
+    test('Rankings → company view → jobs → Back → Forward restores each step', async ({page}) => {
         await page.setViewportSize({width: 1280, height: 900});
         await login(page);
         await page.goto('/');
         await page.locator(`[aria-label="View details for ${COMPANY}"]:visible`).first().click();
-        await expect(page.getByRole('dialog')).toBeVisible();
+        await expect(page.getByTestId('company-view')).toBeVisible();
         await expect.poll(() => new URL(page.url()).searchParams.has('company')).toBe(true);
         const rankingsUrl = page.url();
 
@@ -166,7 +168,7 @@ test.describe('navigation state (issue #479)', () => {
 
         await page.goBack();
         expect(page.url()).toBe(rankingsUrl);
-        await expect(page.getByRole('dialog')).toBeVisible();
+        await expect(page.getByTestId('company-view')).toBeVisible();
         await expect(page.locator('#organization-details-title')).toHaveText(COMPANY);
 
         await page.goForward();

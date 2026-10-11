@@ -196,7 +196,8 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await expectNoHorizontalOverflow(page);
     });
 
-    test('one blocking surface at a time: a details dialog over the sheet closes it', async ({page}) => {
+    // 486b: was "a details dialog over the sheet closes it"; the details are now a non-blocking view.
+    test('one blocking surface at a time: opening the company view over the sheet closes it and leaves nothing inert', async ({page}) => {
         await page.setViewportSize({width: 375, height: 700});
         await login(page);
         await page.goto('/');
@@ -209,12 +210,14 @@ test.describe('shared assistant workspace (issue #472)', () => {
         await page.evaluate(() => {
             document.querySelector<HTMLElement>('tr[aria-label="View details for E2E Alpha Corp"]')?.click();
         });
-        await expect(page.getByRole('dialog').first()).toBeVisible();
+        await expect(page.getByTestId('company-view')).toBeVisible();
+        // 486b: the sheet must still yield to the view; once it is gone nothing is blocking.
         await expect(page.locator('[data-testid="assistant-panel"]')).toHaveCount(0);
         const inertCount = await page.evaluate(
-            () => document.querySelectorAll('.app-shell[inert], main.app-content[inert]').length,
+            () => document.querySelectorAll('.app-shell[inert], main.app-content[inert], main#main-content[inert]').length,
         );
-        expect(inertCount).toBeGreaterThan(0);
+        expect(inertCount).toBe(0);
+        await expect(page.locator('[aria-modal="true"]')).toHaveCount(0);
     });
 
     test('admin and login pages render no workspace anchor', async ({page}) => {

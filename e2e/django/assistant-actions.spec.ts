@@ -202,12 +202,15 @@ test.describe('assistant actions (issue #484)', () => {
         await expect(page.getByRole('button', {name: 'Remote filter applied'})).toBeDisabled();
         await expect(open).toBeEnabled();
         await expect(page.getByTestId('assistant-actions-stale')).toHaveText('');
+        // 486b: Ask no longer closes the company view, so leave it first to prove Open reopens it.
+        await page.getByRole('button', {name: 'Back to results'}).click();
+        await expect(page.getByTestId('company-view')).toHaveCount(0);
         await open.click();
-        await expect(page.getByRole('dialog')).toBeVisible();
+        await expect(page.getByTestId('company-view')).toBeVisible();
         await expect(page.getByRole('button', {name: /^Opened E2E Beta/})).toBeDisabled();
     });
 
-    test('Open, close the dialog, then Apply: the sibling stays usable whatever the click order', async ({page}) => {
+    test('Open, return to results, then Apply: the sibling stays usable whatever the click order', async ({page}) => {
         await login(page);
         await page.getByRole('button', {name: /View details for E2E Beta/}).first().click();
         await page.getByRole('link', {name: /Ask the assistant about E2E Beta/}).click();
@@ -215,10 +218,13 @@ test.describe('assistant actions (issue #484)', () => {
         await ask(page, 'Show only remote companies and open it');
         const open = page.getByRole('button', {name: /^Open E2E Beta/});
         await expect(applyRemote(page)).toBeVisible();
+        // 486b: Ask keeps the company view open; leave it so Open has something to reopen.
+        await page.getByRole('button', {name: 'Back to results'}).click();
+        await expect(page.getByTestId('company-view')).toHaveCount(0);
         await open.click();
-        await expect(page.getByRole('dialog')).toBeVisible();
-        await page.keyboard.press('Escape');
-        await expect(page.getByRole('dialog')).toHaveCount(0);
+        await expect(page.getByTestId('company-view')).toBeVisible();
+        await page.getByRole('button', {name: 'Back to results'}).click();
+        await expect(page.getByTestId('company-view')).toHaveCount(0);
         // Past any short window a time-based check would allow.
         await page.waitForTimeout(600);
         await expect(applyRemote(page)).toBeEnabled();
@@ -230,17 +236,20 @@ test.describe('assistant actions (issue #484)', () => {
         await expect(page.getByTestId('assistant-actions-stale')).toHaveText('');
     });
 
-    test('an open_company suggestion reopens the company dialog from the assistant', async ({page}) => {
+    test('an open_company suggestion reopens the company view from the assistant', async ({page}) => {
         await login(page);
         await page.getByRole('button', {name: /View details for E2E Alpha/}).first().click();
         await page.getByRole('link', {name: /Ask the assistant about E2E Alpha/}).click();
         await expect(page.getByTestId('assistant-panel')).toBeVisible();
-        await expect(page.getByRole('dialog')).toHaveCount(0);
+        // 486b: Ask keeps the view open; leave it so the suggestion has to reopen it.
+        await expect(page.getByTestId('company-view')).toBeVisible();
+        await page.getByRole('button', {name: 'Back to results'}).click();
+        await expect(page.getByTestId('company-view')).toHaveCount(0);
         await ask(page, 'Open this company');
         const open = page.getByRole('button', {name: /^Open E2E Alpha/});
         await expect(open).toBeVisible();
         await open.click();
-        await expect(page.getByRole('dialog')).toBeVisible();
+        await expect(page.getByTestId('company-view')).toBeVisible();
     });
 
     test('signing in as another account leaves no actions behind', async ({page}) => {

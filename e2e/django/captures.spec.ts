@@ -37,12 +37,13 @@ test.describe.serial('sanitized captures', () => {
             });
             if (bp.width >= 768) {
                 await page.getByRole('button', {name: 'View details for E2E Alpha Corp'}).first().click();
-                await expect(page.getByRole('dialog')).toBeVisible();
+                await expect(page.getByTestId('company-view')).toBeVisible();
                 await page.screenshot({
                     path: `${captureDir}/dialog-evidence-${bp.name}.png`,
                     fullPage: false,
                 });
-                await page.keyboard.press('Escape');
+                // 486b: Escape does nothing in the view; the next iteration navigates anyway.
+                await page.getByRole('button', {name: 'Back to results'}).click();
             }
         }
     });

@@ -1,7 +1,7 @@
 // Copyright (c) 2024 Isaac Adams
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 // Coverage, freshness and evidence status in the rankings and the details
-// dialog over the seeded Django server (issue #473a).
+// company view over the seeded Django server (issue #473a, view since #486b).
 import {expect, Page, test} from '@playwright/test';
 import {expectNoHorizontalOverflow, requireDjangoTier} from './support';
 
@@ -10,9 +10,9 @@ requireDjangoTier();
 async function openDialog(page: Page, name: string) {
     await page.goto('/');
     await page.getByRole('button', {name: `View details for ${name}`}).locator('visible=true').first().click();
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-    return dialog;
+    const view = page.getByTestId('company-view');
+    await expect(view).toBeVisible();
+    return view;
 }
 
 function results(page: Page) {
@@ -123,34 +123,27 @@ for (const [width, height] of [[1280, 800], [375, 800]] as const) {
 }
 
 for (const [width, height] of [[1280, 900], [375, 800], [320, 800]] as const) {
-    test(`the details dialog never scrolls apart and fits the viewport at ${width}px`, async ({page}) => {
+    // 486b: replaces "the details dialog never scrolls apart and fits the viewport"; the view is
+    // in-page content, so the document scrolls and there is no overlay to pin.
+    test(`the company view scrolls with the document, has no overlay and fits the width at ${width}px`, async ({page}) => {
         await page.setViewportSize({width, height});
-        const dialog = await openDialog(page, 'E2E Beta Labs');
-        await expect(dialog.getByTestId('coverage-summary')).toBeVisible();
-        const overlay = page.getByTestId('popup-overlay');
-        const metrics = () => overlay.evaluate((el) => {
-            const box = el.querySelector('[role="dialog"]')!.getBoundingClientRect();
-            return {
-                scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight,
-                top: box.top, bottom: box.bottom, innerHeight: window.innerHeight,
-            };
-        });
-        const before = await metrics();
-        expect(before.scrollHeight).toBe(before.clientHeight);
-        expect(before.bottom).toBeLessThanOrEqual(before.innerHeight);
+        const view = await openDialog(page, 'E2E Beta Labs');
+        await expect(view.getByTestId('coverage-summary')).toBeVisible();
+        await expect(page.getByTestId('popup-overlay')).toHaveCount(0);
+        await expect(page.locator('[aria-modal="true"]')).toHaveCount(0);
+        await expectNoHorizontalOverflow(page);
+        const box = await view.boundingBox();
+        expect(box!.x).toBeGreaterThanOrEqual(0);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(width);
 
-        await page.mouse.move(4, Math.round(height / 2));
+        await view.getByRole('button', {name: 'Back to results'}).focus();
+        await page.mouse.move(Math.round(width / 2), Math.round(height / 2));
         await page.mouse.wheel(0, 900);
-        await page.mouse.move(Math.round(width / 2), 55);
-        await page.mouse.wheel(0, 900);
-        await dialog.getByRole('button', {name: 'Close'}).focus();
         for (let i = 0; i < 3; i++) {
             await page.keyboard.press('PageDown');
         }
-        const after = await metrics();
-        expect(after.scrollTop).toBe(0);
-        expect(after.top).toBe(before.top);
-        expect(after.bottom).toBeLessThanOrEqual(after.innerHeight);
+        await expect(view).toBeVisible();
+        await expectNoHorizontalOverflow(page);
     });
 }
 
@@ -171,7 +164,7 @@ test('a focused Retry stays inside the card body when scores arrive late at 320p
     expect(box!.y + box!.height + 5).toBeLessThanOrEqual(body!.y + body!.height);
 });
 
-test('Retry keeps keyboard focus in the dialog through a failed retry', async ({page}) => {
+test('Retry keeps keyboard focus in the company view through a failed retry', async ({page}) => {
     await page.route('**/api/organizations/*/provenance/', route => route.abort());
     const dialog = await openDialog(page, 'E2E Beta Labs');
     const retry = dialog.getByRole('button', {name: 'Retry'});

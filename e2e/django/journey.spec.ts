@@ -55,14 +55,18 @@ test.describe.serial('priorities → companies → evidence → jobs journey', (
             .toContainText('E2E Alpha Corp');
     });
 
-    test('company details dialog opens with evidence provenance and closes cleanly', async ({page}) => {
+    test('company view opens with evidence provenance and returns to results cleanly', async ({page}) => {
         await login(page);
         await page.goto('/');
         const trigger = page.locator('tr[aria-label="View details for E2E Alpha Corp"]');
+        const historyBefore = await page.evaluate(() => window.history.length);
         await trigger.click();
 
-        const dialog = page.getByRole('dialog');
+        const dialog = page.getByTestId('company-view');
         await expect(dialog).toBeVisible();
+        // 486b: opening adds exactly one history entry and puts the company in the URL.
+        await expect.poll(() => new URL(page.url()).searchParams.has('company')).toBe(true);
+        expect(await page.evaluate(() => window.history.length)).toBe(historyBefore + 1);
         await expect(page.locator('#organization-details-title')).toHaveText('E2E Alpha Corp');
         // Evidence/provenance section renders the accepted seeded observation.
         const provenance = page.getByTestId('provenance-section');
@@ -71,11 +75,12 @@ test.describe.serial('priorities → companies → evidence → jobs journey', (
         await expect(page.getByTestId('observation-details')).toContainText('accepted', {ignoreCase: true});
         await expect(page.getByTestId('last-updated')).not.toHaveText('');
 
-        // Close restores focus to the opening trigger (asserted in depth by
+        // Back to results restores focus to the opening row (asserted in depth by
         // a11y-keyboard.spec.ts; here we pin the outcome).
-        await page.locator('.popup-details button[aria-label="Close"]').click();
-        await expect(dialog).toBeHidden();
+        await page.getByRole('button', {name: 'Back to results'}).click();
+        await expect(dialog).toHaveCount(0);
         await expect(trigger).toBeFocused();
+        await expect.poll(() => new URL(page.url()).searchParams.has('company')).toBe(false);
     });
 
     test('match panel shows the ranked seeded listing with reasons', async ({page}) => {
