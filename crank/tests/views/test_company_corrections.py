@@ -612,10 +612,17 @@ class CompanyCorrectionsAddressLimitTest(TestCase):
                         self.assertEqual(self.post(index, **spoofed).status_code, 201)
                     self.assertEqual(self.rejected(0).status_code, 400)
                     users = sorted(str(user.pk) for user in self.users)
+                    # Today's keys, plus one in-flight count per account. The
+                    # rejected window exists only for the account that was
+                    # rejected, as before #538.
                     expected = [
-                        f"company-correction-{kind}:{user}{suffix}"
-                        for kind in ("rate", "rejected")
+                        f"company-correction-rate:{user}{suffix}"
                         for user in users
+                        for suffix in ("", ":reset")
+                    ]
+                    expected += [f"company-correction-rejected:{user}:pending" for user in users]
+                    expected += [
+                        f"company-correction-rejected:{self.users[0].pk}{suffix}"
                         for suffix in ("", ":reset")
                     ]
                     self.assertEqual(self.cache_keys(), sorted(expected))
@@ -842,11 +849,111 @@ class CompanyCorrectionsAddressLimitTest(TestCase):
         for needle in (ADDRESS_X, "2001:db8", PEER):
             self.assertNotIn(needle, stored)
         keys = [key for key in self.cache_keys() if "-ip-" in key]
-        self.assertEqual(len(keys), 8)
+        self.assertEqual(len(keys), 10)
         for key in keys:
             self.assertRegex(
-                key, r"^company-correction-ip-(rate|rejected):[0-9a-f]{32}(:reset)?$"
+                key,
+                r"^company-correction-ip-(rate:[0-9a-f]{32}(:reset)?"
+                r"|rejected:[0-9a-f]{32}(:reset|:pending)?)$",
             )
+
+    def pending(self, index=0, address=ADDRESS_X):
+        """In-flight holds on the (account, address) rejected allowances."""
+        return (
+            cache.get(f"company-correction-rejected:{self.users[index].pk}:pending", 0),
+            cache.get(f"company-correction-ip-rejected:{_address_key(address)}:pending", 0),
+        )
+
+    def test_nothing_stays_in_flight_after_any_outcome(self):
+        from crank.views import company_corrections as view
+
+        self.clients[0].raise_request_exception = False
+        with override_settings(COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR=2, **ADDRESS_ON):
+            self.assertEqual(self.post(0).status_code, 201)
+            self.assertEqual(self.rejected(0).status_code, 400)
+            with patch.object(view, "resolve_field_evidence", side_effect=RuntimeError("boom")):
+                self.assertEqual(self.post(0, data=self.body(field_key="locations")).status_code, 500)
+            self.assertEqual(self.post(0, data=self.body(field_key="locations")).status_code, 201)
+            self.assertEqual(self.post(0, data=self.body(field_key="funding_round")).status_code, 429)
+            self.assertEqual(self.pending(), (0, 0))
+            self.assertEqual(self.counts(), (1, 1, 2, 2))
+
+    def test_base_exception_releases_every_allowance(self):
+        """A request torn down mid-store (not an ``Exception``) holds nothing."""
+        from crank.views import company_corrections as view
+
+        class Stopped(BaseException):
+            pass
+
+        with override_settings(
+            COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR=1,
+            COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR=1,
+            **ADDRESS_ON,
+        ):
+            with patch.object(view, "resolve_field_evidence", side_effect=Stopped()):
+                with self.assertRaises(Stopped):
+                    self.post(0)
+            self.assertEqual(self.counts(), (0, 0, 0, 0))
+            self.assertEqual(self.pending(), (0, 0))
+            # The single stored allowance is still available afterwards.
+            self.assertEqual(self.post(0).status_code, 201)
+
+    def test_a_refusal_caused_only_by_requests_in_flight_asks_for_a_short_wait(self):
+        from crank.views import company_corrections as view
+
+        cases = (
+            ("COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR", 0, "account"),
+            ("COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR", 1, "network"),
+        )
+        real = view.resolve_field_evidence
+        for setting, second, scope in cases:
+            cache.clear()
+            CompanyCorrection.objects.all().delete()
+            inner = {}
+
+            def interleave(organization, inner=inner, second=second):
+                if not inner:
+                    inner["response"] = self.post(second, data=self.body(field_key="locations"))
+                return real(organization)
+
+            with self.subTest(setting=setting), override_settings(**{setting: 1}, **ADDRESS_ON):
+                with patch.object(view, "resolve_field_evidence", side_effect=interleave):
+                    self.assertEqual(self.post(0).status_code, 201)
+                refused = inner["response"]
+                self.assertEqual(refused.status_code, 429)
+                self.assertEqual(refused.json()["limit_scope"], scope)
+                # Nothing was counted, so there is no hour to wait out.
+                self.assertEqual(refused["Retry-After"], "1")
+                self.assertEqual(self.counts(0)[:2], (0, 0))
+                self.assertEqual(self.pending(0), (0, 0))
+                # The cap was not weakened: once it is really reached the
+                # refusal carries the window.
+                self.assertEqual(self.rejected(second).status_code, 400)
+                limited = self.post(second, data=self.body(field_key="locations"))
+                self.assertEqual(limited.status_code, 429)
+                self.assertEqual(limited.json()["limit_scope"], scope)
+                self.assertTrue(3500 <= int(limited["Retry-After"]) <= 3600)
+
+    def test_an_in_flight_refusal_at_a_stored_cap_keeps_the_window(self):
+        """Documented limit: a stored cap is also a cap on concurrent requests."""
+        from crank.views import company_corrections as view
+
+        real = view.resolve_field_evidence
+        inner = {}
+
+        def interleave(organization):
+            if not inner:
+                inner["response"] = self.rejected(1)
+            return real(organization)
+
+        with override_settings(COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR=1, **ADDRESS_ON):
+            with patch.object(view, "resolve_field_evidence", side_effect=interleave):
+                self.assertEqual(self.rejected(0, proposed_value="Remote-first").status_code, 400)
+            refused = inner["response"]
+            self.assertEqual(refused.status_code, 429)
+            self.assertEqual(refused.json()["limit_scope"], "network")
+            self.assertTrue(3500 <= int(refused["Retry-After"]) <= 3600)
+            self.assertEqual(self.counts(1), (0, 1, 0, 0))
 
     def test_counters_default_when_settings_are_absent(self):
         from django.conf import settings
@@ -869,7 +976,110 @@ class CompanyCorrectionsAddressLimitTest(TestCase):
             ],
         )
         self.assertEqual(counters[0].keys[1], "company-correction-rejected:7:reset")
+        self.assertEqual(counters[0].pending_key, "company-correction-rejected:7:pending")
         self.assertEqual([c.scope for c in view._counters(7)], ["account", "account"])
+
+
+class _Clock:
+    """Stands in for the ``time`` module wherever the limiter reads the clock."""
+
+    def __init__(self):
+        self.now = time.time()
+
+    def time(self):
+        return self.now
+
+    def at_minute(self, minute, start):
+        self.now = start + minute * 60
+
+
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+class CompanyCorrectionsRejectedWindowTest(TestCase):
+    """The rejected-attempt hour starts at the first rejection, as before #538.
+
+    These sequences give the same answers on ``main``: the window is not
+    started by a request that is stored, so a user is refused neither earlier
+    nor later than today, whether the client address source is off or on.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.user = User.objects.create_user(username="w0", password="pw-538-xyz")
+        self.client = Client()
+        self.client.force_login(self.user)
+        self.org = Organization.objects.create(name="Acme", status=1)
+        self.clock = _Clock()
+        self.start = self.clock.now
+        from crank.views import company_corrections as view
+
+        # The cache computes expiry in one module and checks it in another.
+        for patcher in (
+            patch("django.core.cache.backends.base.time", self.clock),
+            patch("django.core.cache.backends.locmem.time", self.clock),
+            patch.object(view, "time", self.clock),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def post(self, field_key="rto_policy", evidence_url="https://acme.example.com/careers"):
+        return self.client.post(
+            URL,
+            json.dumps(
+                {
+                    "organization_id": self.org.pk,
+                    "field_key": field_key,
+                    "proposed_value": "Hybrid, 3 days",
+                    "evidence_url": evidence_url,
+                    "scope": {"level": "company", "value": ""},
+                    "note": "",
+                    "idempotency_key": str(uuid.uuid4()),
+                }
+            ),
+            content_type="application/json",
+            HTTP_CF_CONNECTING_IP=ADDRESS_X,
+        )
+
+    def reject(self, minute, count):
+        self.clock.at_minute(minute, self.start)
+        for _ in range(count):
+            self.assertEqual(self.post(evidence_url="http://acme.example.com/").status_code, 400)
+
+    def modes(self):
+        for name, overrides in (("off", {"ENV": "prod"}), ("on", ADDRESS_ON)):
+            cache.clear()
+            CompanyCorrection.objects.all().delete()
+            self.clock.at_minute(0, self.start)
+            with self.subTest(source=name), override_settings(**overrides):
+                yield name
+
+    def test_a_stored_correction_does_not_start_the_rejected_window(self):
+        # 201 at 0 min, then 30 rejections at each of 50, 61 and 111 min. The
+        # window opened at 50 min has ended by 111 min, so 30 are counted and
+        # the next attempt at 112 min is allowed.
+        for _ in self.modes():
+            self.assertEqual(self.post().status_code, 201)
+            self.reject(50, 30)
+            self.reject(61, 30)
+            self.reject(111, 30)
+            self.clock.at_minute(112, self.start)
+            self.assertEqual(self.post(field_key="locations").status_code, 201)
+
+    def test_the_rejected_window_runs_an_hour_from_the_first_rejection(self):
+        # 201 at 0 min and 60 rejections at 59 min: the 61st attempt at 62 min
+        # is refused until an hour after the first rejection, not after the 201.
+        for _ in self.modes():
+            self.assertEqual(self.post().status_code, 201)
+            self.reject(59, 60)
+            self.clock.at_minute(62, self.start)
+            refused = self.post(field_key="locations")
+            self.assertEqual(refused.status_code, 429)
+            self.assertEqual(refused.json()["limit_scope"], "account")
+            self.assertTrue(56 * 60 <= int(refused["Retry-After"]) <= 57 * 60 + 1)
+            self.clock.at_minute(118, self.start)
+            self.assertEqual(self.post(field_key="locations").status_code, 429)
+            self.clock.at_minute(120, self.start)
+            self.assertEqual(self.post(field_key="locations").status_code, 201)
 
 
 class RedisRateLimitTest(TestCase):
@@ -920,6 +1130,15 @@ class RedisRateLimitTest(TestCase):
         for thread in threads:
             thread.join()
 
+    @staticmethod
+    def _all_keys(accounts):
+        return [
+            key
+            for counters in accounts
+            for row in counters
+            for key in (*row.keys, row.pending_key)
+        ]
+
     def _assert_window(self, default_cache, counter):
         for key in counter.keys:
             self.assertTrue(1 <= default_cache.ttl(key) <= 3600, key)
@@ -953,50 +1172,64 @@ class RedisRateLimitTest(TestCase):
             self._assert_window(default_cache, address_stored)
             self.assertEqual(sum(default_cache.get(c[2].key) for c in accounts), 20)
             for counters in accounts:
-                self.assertEqual(default_cache.get(counters[0].key), 0)
-                self.assertEqual(default_cache.get(counters[1].key), 0)
+                for row in counters[:2]:
+                    self.assertIsNone(default_cache.get(row.key))
+                    self.assertEqual(default_cache.get(row.pending_key, 0), 0)
         finally:
-            default_cache.delete_many([key for c in accounts for row in c for key in row.keys])
+            default_cache.delete_many(self._all_keys(accounts))
 
     def test_rejected_caps_hold_under_concurrency(self):
+        """Asserts only what holds whichever threads win the race."""
         from django.core.cache import cache as default_cache
 
         from crank.views import company_corrections as view
 
         cases = (
-            ("COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR", 1, 0, "account"),
-            ("COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR", 8, 1, "network"),
+            ("COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR", 1, "account"),
+            ("COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR", 8, "network"),
         )
-        for setting, account_count, row, scope in cases:
+        for setting, account_count, scope in cases:
             run = f"test-redis-{uuid.uuid4()}"
             with override_settings(**{setting: 10}):
                 accounts = [
                     view._counters(f"{run}-{index}", run) for index in range(account_count)
                 ]
-            kept = []
+            outcomes = []
 
-            def worker(index, accounts=accounts, kept=kept):
+            def worker(index, accounts=accounts, outcomes=outcomes):
                 counters = accounts[index % len(accounts)]
                 refused = view._reserve_all(counters)
                 if refused is None:
                     view._settle(counters, 400)
-                kept.append(refused)
+                outcomes.append((index % len(accounts), refused))
 
             with self.subTest(setting=setting):
                 try:
                     self._run_threads(worker)
-                    self.assertEqual(kept.count(None), 10)
-                    self.assertEqual({r.scope for r in kept if r}, {scope})
-                    capped = accounts[0][row]
-                    self.assertEqual(default_cache.get(capped.key), 10)
-                    self._assert_window(default_cache, capped)
-                    for counters in accounts:
-                        self.assertEqual(default_cache.get(counters[2].key), 0)
-                        self.assertEqual(default_cache.get(counters[3].key), 0)
-                finally:
-                    default_cache.delete_many(
-                        [key for c in accounts for row_ in c for key in row_.keys]
+                    accepted = [account for account, refused in outcomes if refused is None]
+                    # Requests settle while others arrive, so in-flight holds
+                    # only ever refuse early: never more than the cap is kept.
+                    self.assertTrue(1 <= len(accepted) <= 10, len(accepted))
+                    self.assertEqual(
+                        {refused.scope for _, refused in outcomes if refused}, {scope}
                     )
+                    for index, counters in enumerate(accounts):
+                        kept = accepted.count(index)
+                        for row in counters:
+                            value = default_cache.get(row.key, 0)
+                            self.assertTrue(0 <= value <= row.limit, (row.key, value))
+                            self.assertEqual(default_cache.get(row.pending_key, 0), 0)
+                        # Every counter equals the outcomes kept against it.
+                        self.assertEqual(default_cache.get(counters[0].key, 0), kept)
+                        self.assertEqual(default_cache.get(counters[2].key, 0), 0)
+                        self.assertEqual(default_cache.get(counters[3].key, 0), 0)
+                        if kept:
+                            self._assert_window(default_cache, counters[0])
+                    shared = accounts[0][1]
+                    self.assertEqual(default_cache.get(shared.key, 0), len(accepted))
+                    self._assert_window(default_cache, shared)
+                finally:
+                    default_cache.delete_many(self._all_keys(accounts))
 
     def test_one_real_request_counts_against_its_address(self):
         import random
@@ -1010,7 +1243,7 @@ class RedisRateLimitTest(TestCase):
         client = Client()
         client.force_login(self.user)
         counters = view._counters(self.user.pk, _address_key(address))
-        keys = [key for counter in counters for key in counter.keys]
+        keys = self._all_keys([counters])
         default_cache.delete_many(keys)
         body = {
             "organization_id": organization.pk,
@@ -1029,9 +1262,12 @@ class RedisRateLimitTest(TestCase):
                 )
             self.assertEqual(response.status_code, 201)
             self.assertEqual(
-                [default_cache.get(counter.key) for counter in counters], [0, 0, 1, 1]
+                [default_cache.get(counter.key) for counter in counters], [None, None, 1, 1]
             )
-            for counter in counters:
+            for counter in counters[:2]:
+                self.assertEqual(default_cache.get(counter.pending_key), 0)
+                self.assertTrue(1 <= default_cache.ttl(counter.pending_key) <= 3600)
+            for counter in counters[2:]:
                 self._assert_window(default_cache, counter)
             self.assertIsNotNone(default_cache.get(counters[3].keys[1]))
             self.assertNotIn("2001", " ".join(keys))

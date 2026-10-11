@@ -133,6 +133,11 @@ class _Counter(NamedTuple):
     def keys(self):
         return self.key, f"{self.key}:reset"
 
+    @property
+    def pending_key(self):
+        """Counts requests in flight against a rejected-attempt allowance."""
+        return f"{self.key}:pending"
+
 
 def _counters(user_pk, address_key=None):
     """The request's allowances, in the fixed order they are reserved.
@@ -180,6 +185,49 @@ def _counters(user_pk, address_key=None):
     return counters
 
 
+def _hold_pending(key):
+    """Atomically count one request in flight and return how many there are.
+
+    The key outlives every request it counts: each hold renews its lifetime,
+    so it can only expire after an hour without a request.
+    """
+    cache.add(key, 0, RATE_LIMIT_SECONDS)
+    try:
+        pending = cache.incr(key)
+    except ValueError:
+        cache.set(key, 1, RATE_LIMIT_SECONDS)
+        return 1
+    cache.touch(key, RATE_LIMIT_SECONDS)
+    return pending
+
+
+def _rejections(counter):
+    value = cache.get(counter.key)
+    return value if isinstance(value, int) else 0
+
+
+def _take(counter):
+    """Reserve one allowance; False, with nothing held, once over the limit.
+
+    A stored allowance is held in its own counter, whose window starts at the
+    first request. A rejected-attempt allowance is counted only when an
+    attempt is rejected, so its window starts at the first rejection, as it
+    did before #538; until the request settles it is held in a separate
+    in-flight count, and the two together never exceed the limit.
+    """
+    if counter.kind == STORED:
+        return _reserve(counter.keys, counter.limit)
+    pending = _hold_pending(counter.pending_key)
+    if _rejections(counter) + pending > counter.limit:
+        _release(counter.pending_key)
+        return False
+    return True
+
+
+def _give_back(counter):
+    _release(counter.key if counter.kind == STORED else counter.pending_key)
+
+
 def _reserve_all(counters):
     """Take one of every allowance atomically; the refusing counter, else None.
 
@@ -187,9 +235,9 @@ def _reserve_all(counters):
     """
     held = []
     for counter in counters:
-        if not _reserve(counter.keys, counter.limit):
+        if not _take(counter):
             for taken in held:
-                _release(taken.key)
+                _give_back(taken)
             return counter
         held.append(counter)
     return None
@@ -199,12 +247,17 @@ def _settle(counters, status=None):
     """Keep only what the outcome spends and release the rest.
 
     A stored correction (201) keeps the stored allowances, a rejected attempt
-    (400, 404, 409) keeps the rejected ones, and anything else keeps nothing.
+    (400, 404, 409) is counted against the rejected ones, and anything else
+    keeps nothing.
     """
     kept = STORED if status == 201 else REJECTED if status in (400, 404, 409) else None
     for counter in counters:
-        if counter.kind != kept:
-            _release(counter.key)
+        if counter.kind == REJECTED and kept == REJECTED:
+            # Count the rejection before dropping the in-flight hold, so the
+            # sum a concurrent request reads is never short.
+            _bump(*counter.keys)
+        if counter.kind != kept or counter.kind == REJECTED:
+            _give_back(counter)
 
 
 def _normalized(value):
@@ -275,7 +328,12 @@ def _too_many(request, counter):
     response = _error_response(
         _LIMIT_MESSAGES[counter.scope], status=429, extra={"limit_scope": counter.scope}
     )
-    response["Retry-After"] = str(_retry_after(request, counter.keys[1]))
+    if counter.kind == REJECTED and _rejections(counter) < counter.limit:
+        # Refused only by requests still in flight: nothing to wait an hour for.
+        retry_after = 1
+    else:
+        retry_after = _retry_after(request, counter.keys[1])
+    response["Retry-After"] = str(retry_after)
     return response
 
 
@@ -284,8 +342,11 @@ def _limited_store(request, payload, idempotency_key):
 
     Every allowance is reserved before the work, so none can grant more than
     its limit under concurrency. A stored (201) correction holds the stored
-    allowances and a rejected attempt holds the rejected ones; every other
-    outcome, including a refusal, holds nothing.
+    allowances and a rejected attempt is counted against the rejected ones;
+    every other outcome, including a refusal, holds nothing. The allowances
+    are released on any exit, including a ``BaseException`` such as a worker
+    being stopped mid-request, which would otherwise leave them held for the
+    rest of the hour.
     """
     address = client_address(request)
     counters = _counters(request.user.pk, address.key if address else None)
