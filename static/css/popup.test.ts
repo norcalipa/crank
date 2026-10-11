@@ -97,13 +97,6 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         {selector: /^\.chat-panel-stack$/, value: '6'},
         {selector: /^#job-search-chat \.chat-footer > \.chat-jump-row$/, value: '2'},
         {selector: /^\.chat-confirm-dismiss$/, value: '1'},
-        {selector: /^\.assistant-panel #job-search-chat > section\[data-scroll-owner='panel'\] > \.card-header$/, value: '4'},
-        {selector: /^#job-search-chat > \[data-scroll-owner='panel'\] \.chat-footer$/, value: '3'},
-        // The priorities block, where it is pinned (data-pinned) while the
-        // panel body scrolls, sits above the transcript inside the assistant
-        // panel body only; the chat's pinned header (4) is offset below it
-        // (issue #480).
-        {selector: /^\.assistant-panel-body:has\(#job-search-chat > \[data-scroll-owner='panel'\]\) > \.priorities-sidebar\[data-pinned\]$/, value: '5'},
     ];
 
     // Splits a stylesheet into (selector, declarations) rules. Pairing both
@@ -381,16 +374,7 @@ describe('chat layering and pinned rows (issue #483 adversarial review round 1)'
         expect(zIndex('.chat-more-menu')).toBeGreaterThan(zIndex('.chat-panel-stack'));
     });
 
-    it('keeps the jump pill in the band flow in panel mode so the sticky header cannot cover it', () => {
-        expect(popupCss).toMatch(
-            /#job-search-chat > \[data-scroll-owner='panel'\] \.chat-footer > \.chat-jump-row\s*\{[^}]*position:\s*static/,
-        );
-    });
-
-    it('keeps transcript scroll-into-view clear of the bands with a content margin, never panel-body scroll-padding', () => {
-        expect(popupCss).toMatch(
-            /#job-search-chat > \[data-scroll-owner='panel'\] \[role='log'\] :is\([^)]*h3[^)]*\[tabindex\]\)\s*\{[^}]*scroll-margin-top:\s*var\(--chat-band-top[^}]*scroll-margin-bottom:\s*var\(--chat-band-bottom/,
-        );
+    it('never gives the panel body scroll-padding, which would scroll it whenever focus lands in a chat bar', () => {
         expect(popupCss).not.toMatch(/\.assistant-panel-body[^{]*\{[^}]*scroll-padding/);
     });
 
@@ -398,6 +382,79 @@ describe('chat layering and pinned rows (issue #483 adversarial review round 1)'
         expect(rule('.chat-confirm-dismiss')).toMatch(/position:\s*sticky/);
         expect(popupCss).not.toMatch(/\.chat-panel-stack \.chat-confirm-actions\s*\{/);
         expect(rule('.chat-footer-notices')).toMatch(/max-height:\s*var\(--chat-notices-max,\s*40dvh\)/);
+    });
+});
+
+describe('one transcript scroller in the assistant panel (issue #483)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    // Every rule as (selector, declarations); a rule inside @media keeps its own selector.
+    const rules = Array.from(popupCss.matchAll(/([^{}]+)\{([^{}]*)\}/g))
+        .map(([, selector, declarations]) => ({selector: selector.trim().replace(/\s+/g, ' '), declarations}));
+    const declared = (selector: string): string => {
+        const found = rules.filter((r) => r.selector === selector);
+        expect(found.length).toBeGreaterThan(0);
+        return found.map((r) => r.declarations).join('\n');
+    };
+
+    it('gives the transcript a length flex-basis, so the card\'s minimum is its bars and not the whole conversation', () => {
+        const transcript = declared('#job-search-chat .chat-transcript');
+        expect(transcript).toMatch(/flex:\s*1 1 0px;/);
+        expect(transcript).toMatch(/min-height:\s*0;/);
+        expect(transcript).toMatch(/overflow-y:\s*auto;/);
+        // `auto` makes the minimum the content; `0%` (what `flex: 1` expands to) is treated as content in an auto-height column.
+        const flexes = rules.filter((r) => /\.chat-transcript$|\[role='log'\]$/.test(r.selector) && r.selector.includes('#job-search-chat'))
+            .flatMap((r) => r.declarations.match(/flex(?:-basis)?:[^;]*;/g) ?? []);
+        expect(flexes).toEqual(['flex: 1 1 0px;']);
+    });
+
+    it('lets the chat grow into the panel but never shrink below its own bars', () => {
+        expect(declared('.assistant-panel-body #job-search-chat')).toMatch(/flex:\s*1 0 auto;/);
+        expect(declared('.assistant-panel-body #job-search-chat')).not.toMatch(/min-height/);
+        expect(declared('.assistant-panel-body #job-search-chat > section.card')).toMatch(/flex:\s*1 1 auto;/);
+    });
+
+    it('ends the card at the visual viewport with the measured keyboard inset', () => {
+        expect(declared('.assistant-panel-body #job-search-chat > section.card'))
+            .toMatch(/margin-bottom:\s*var\(--chat-keyboard-inset, 0px\);/);
+    });
+
+    it('makes the open priorities block the one that gives way, down to 11rem and never above 60%', () => {
+        const row = declared('.priorities-sidebar');
+        expect(row).toMatch(/flex:\s*0 0 auto;/);
+        expect(row).toMatch(/max-height:\s*60%;/);
+        expect(row.match(/max-height:/g)).toHaveLength(1);
+        const open = declared('.priorities-sidebar:has(.priorities-scroll)');
+        expect(open).toMatch(/flex-shrink:\s*1;/);
+        expect(open).toMatch(/min-height:\s*min\(11rem, 100%\);/);
+        expect(declared('.assistant-panel-body:has(> .priorities-sidebar .priorities-scroll) #job-search-chat .chat-transcript'))
+            .toMatch(/min-height:\s*4\.5rem;/);
+    });
+
+    it('pins nothing in the chat: no rule that names the chat is sticky', () => {
+        const sticky = rules.filter((r) => /#job-search-chat|\.chat-footer|\.chat-transcript|\.chat-jump-row/.test(r.selector)
+            && /position:\s*sticky/.test(r.declarations));
+        expect(sticky.map((r) => r.selector)).toEqual([]);
+        expect(declared('.priorities-sidebar')).not.toMatch(/position:\s*sticky/);
+    });
+
+    it('has no trace of the panel-scroll mode or the priorities pin', () => {
+        ['data-scroll-owner', 'data-pinned', '--chat-band-top', '--chat-band-bottom', '--priorities-open-h',
+            '--priorities-body-pad', '--priorities-room', '--priorities-chat-floor'].forEach((name) => {
+            expect(popupCss).not.toContain(name);
+        });
+    });
+
+    it('at 480px tall and less hides the disclaimer and the row\'s summary visually, keeping both for assistive technology', () => {
+        const short = popupCss.split('@media (max-height: 480px)').slice(1).map((part) => part.slice(0, part.indexOf('\n}')));
+        expect(short).toHaveLength(2);
+        const clipped = /position:\s*absolute;[^}]*width:\s*1px;[^}]*height:\s*1px;[^}]*clip:\s*rect\(0, 0, 0, 0\);/;
+        const all = short.join('\n');
+        expect(all).toMatch(new RegExp(`#job-search-chat form \\.chat-disclaimer\\s*\\{[^}]*${clipped.source}`));
+        expect(all).toMatch(new RegExp(`\\.priorities-summary-toggle\\[aria-expanded='false'\\] \\.priorities-summary\\s*\\{[^}]*${clipped.source}`));
+        expect(all).toMatch(/\.assistant-panel-body > \.priorities-sidebar\s*\{\s*padding-block:\s*0;/);
+        expect(all).not.toMatch(/display:\s*none|visibility:\s*hidden/);
+        // Above 480px the disclaimer is laid out normally.
+        expect(declared('#job-search-chat form .chat-disclaimer')).toMatch(/margin:\s*\.5rem 0 0;/);
     });
 });
 
