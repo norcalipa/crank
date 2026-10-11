@@ -1,6 +1,7 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import json
+import re
 import time
 import uuid
 from unittest.mock import patch
@@ -508,6 +509,16 @@ ADDRESS_Y = "198.51.100.8"
 FIELDS = ("rto_policy", "locations", "funding_round")
 
 
+def _in_flight(base):
+    """Holds on one rejected allowance, over every slice still in the cache."""
+    prefix = f"{base}:pending:"
+    return sum(
+        cache.get(key.split(":", 2)[2], 0)
+        for key in list(cache._cache)
+        if key.split(":", 2)[2].startswith(prefix)
+    )
+
+
 def _address_key(address):
     from django.test import RequestFactory
 
@@ -588,7 +599,10 @@ class CompanyCorrectionsAddressLimitTest(TestCase):
         )
 
     def cache_keys(self):
-        return sorted(key.split(":", 2)[2] for key in cache._cache)
+        """Every key in the cache, with the in-flight slice number masked."""
+        return sorted(
+            {re.sub(r":pending:\d+$", ":pending:N", key.split(":", 2)[2]) for key in cache._cache}
+        )
 
     def test_off_by_default_ignores_every_header(self):
         from django.conf import settings
@@ -620,7 +634,7 @@ class CompanyCorrectionsAddressLimitTest(TestCase):
                         for user in users
                         for suffix in ("", ":reset")
                     ]
-                    expected += [f"company-correction-rejected:{user}:pending" for user in users]
+                    expected += [f"company-correction-rejected:{user}:pending:N" for user in users]
                     expected += [
                         f"company-correction-rejected:{self.users[0].pk}{suffix}"
                         for suffix in ("", ":reset")
@@ -854,14 +868,14 @@ class CompanyCorrectionsAddressLimitTest(TestCase):
             self.assertRegex(
                 key,
                 r"^company-correction-ip-(rate:[0-9a-f]{32}(:reset)?"
-                r"|rejected:[0-9a-f]{32}(:reset|:pending)?)$",
+                r"|rejected:[0-9a-f]{32}(:reset|:pending:N)?)$",
             )
 
     def pending(self, index=0, address=ADDRESS_X):
         """In-flight holds on the (account, address) rejected allowances."""
         return (
-            cache.get(f"company-correction-rejected:{self.users[index].pk}:pending", 0),
-            cache.get(f"company-correction-ip-rejected:{_address_key(address)}:pending", 0),
+            _in_flight(f"company-correction-rejected:{self.users[index].pk}"),
+            _in_flight(f"company-correction-ip-rejected:{_address_key(address)}"),
         )
 
     def test_nothing_stays_in_flight_after_any_outcome(self):
@@ -965,7 +979,8 @@ class CompanyCorrectionsAddressLimitTest(TestCase):
             del settings.COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR
             del settings.COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR
             del settings.COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR
-            counters = view._counters(7, "k")
+            with patch.object(view, "_time_slice", return_value=5):
+                counters = view._counters(7, "k")
         self.assertEqual(
             [(c.kind, c.scope, c.key, c.limit) for c in counters],
             [
@@ -976,7 +991,12 @@ class CompanyCorrectionsAddressLimitTest(TestCase):
             ],
         )
         self.assertEqual(counters[0].keys[1], "company-correction-rejected:7:reset")
-        self.assertEqual(counters[0].pending_key, "company-correction-rejected:7:pending")
+        self.assertEqual(counters[0].pending_key, "company-correction-rejected:7:pending:5")
+        self.assertEqual(
+            counters[0].earlier_pending_key, "company-correction-rejected:7:pending:4"
+        )
+        self.assertEqual({counter.time_slice for counter in counters}, {5})
+        self.assertEqual(view._time_slice(), int(time.time() // 60))
         self.assertEqual([c.scope for c in view._counters(7)], ["account", "account"])
 
 
@@ -1136,7 +1156,7 @@ class RedisRateLimitTest(TestCase):
             key
             for counters in accounts
             for row in counters
-            for key in (*row.keys, row.pending_key)
+            for key in (*row.keys, row.pending_key, row.earlier_pending_key)
         ]
 
     def _assert_window(self, default_cache, counter):
@@ -1265,11 +1285,240 @@ class RedisRateLimitTest(TestCase):
                 [default_cache.get(counter.key) for counter in counters], [None, None, 1, 1]
             )
             for counter in counters[:2]:
-                self.assertEqual(default_cache.get(counter.pending_key), 0)
-                self.assertTrue(1 <= default_cache.ttl(counter.pending_key) <= 3600)
+                # The request's own slice, wherever the minute fell: released,
+                # and never kept longer than two slices.
+                held = default_cache.keys(f"{counter.key}:pending:*")
+                keys.extend(held)
+                self.assertEqual(len(held), 1)
+                self.assertEqual(default_cache.get(held[0]), 0)
+                self.assertTrue(1 <= default_cache.ttl(held[0]) <= 120)
             for counter in counters[2:]:
                 self._assert_window(default_cache, counter)
             self.assertIsNotNone(default_cache.get(counters[3].keys[1]))
             self.assertNotIn("2001", " ".join(keys))
         finally:
             default_cache.delete_many(keys)
+
+
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+class CompanyCorrectionsInFlightTest(TestCase):
+    """The in-flight count behind the rejected caps, with the source off.
+
+    A hold that is never released expires on its own, a cache error leaves
+    nothing held, and the two orderings that make the cap atomic are pinned by
+    interleaving one request inside another at the exact point, without threads.
+    """
+
+    def setUp(self):
+        from crank.views import company_corrections as view
+
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.view = view
+        self.user = User.objects.create_user(username="f0", password="pw-538-xyz")
+        self.client = Client()
+        self.client.force_login(self.user)
+        self.client.raise_request_exception = False
+        self.org = Organization.objects.create(name="Acme", status=1)
+        self.clock = _Clock()
+        # Start exactly on a slice boundary, so the offsets below are exact.
+        self.clock.now = self.start = (int(self.clock.now) // 60 + 1) * 60
+        for patcher in (
+            patch("django.core.cache.backends.base.time", self.clock),
+            patch("django.core.cache.backends.locmem.time", self.clock),
+            patch.object(view, "time", self.clock),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def post(self, field_key="rto_policy", evidence_url="https://acme.example.com/careers", **meta):
+        return self.client.post(
+            URL,
+            json.dumps(
+                {
+                    "organization_id": self.org.pk,
+                    "field_key": field_key,
+                    "proposed_value": "Hybrid, 3 days",
+                    "evidence_url": evidence_url,
+                    "scope": {"level": "company", "value": ""},
+                    "note": "",
+                    "idempotency_key": str(uuid.uuid4()),
+                }
+            ),
+            content_type="application/json",
+            **meta,
+        )
+
+    def reject(self, **meta):
+        return self.post(evidence_url="http://acme.example.com/", **meta)
+
+    def at(self, seconds):
+        self.clock.now = self.start + seconds
+
+    def state(self):
+        """(rejections counted, requests in flight, stored allowances held)."""
+        return (
+            cache.get(f"company-correction-rejected:{self.user.pk}", 0),
+            _in_flight(f"company-correction-rejected:{self.user.pk}"),
+            cache.get(f"company-correction-rate:{self.user.pk}", 0),
+        )
+
+    def strand(self):
+        """A request that reserved its allowances and never settled."""
+        self.assertIsNone(self.view._reserve_all(self.view._counters(self.user.pk)))
+
+    def test_a_stranded_hold_expires_under_steady_traffic(self):
+        with override_settings(COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR=1):
+            self.strand()
+            self.assertEqual(self.state(), (0, 1, 1))
+            # Refused attempts keep arriving; none of them keeps the hold alive.
+            for seconds in (0, 30, 59, 60, 90, 119):
+                self.at(seconds)
+                refused = self.post()
+                self.assertEqual(refused.status_code, 429, seconds)
+                self.assertEqual(refused["Retry-After"], "1")
+            self.at(120)
+            self.assertEqual(self.post().status_code, 201)
+            self.assertEqual(self.state(), (0, 0, 2))
+            # The cap itself is unchanged once the hold is gone.
+            self.assertEqual(self.reject().status_code, 400)
+            limited = self.post(field_key="locations")
+            self.assertEqual(limited.status_code, 429)
+            self.assertTrue(3500 <= int(limited["Retry-After"]) <= 3600)
+
+    def test_a_hold_lifetime_is_set_once(self):
+        self.strand()
+        key = f"company-correction-rejected:{self.user.pk}:pending:{self.start // 60}"
+        self.assertEqual(cache.get(key), 1)
+        self.at(59)
+        self.assertEqual(self.reject().status_code, 400)
+        self.assertEqual(self.reject().status_code, 400)
+        self.at(119)
+        self.assertEqual(cache.get(key), 1)
+        self.at(120)
+        self.assertIsNone(cache.get(key))
+        self.assertEqual(self.state(), (2, 0, 1))
+
+    def test_a_request_still_in_flight_from_the_slice_before_is_counted(self):
+        with override_settings(COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR=1):
+            self.at(59)
+            self.strand()
+            self.at(61)
+            refused = self.post()
+            self.assertEqual(refused.status_code, 429)
+            self.assertEqual(refused.json()["limit_scope"], "account")
+            self.assertEqual(refused["Retry-After"], "1")
+            self.assertEqual(self.state(), (0, 1, 1))
+
+    def test_a_released_slice_is_not_counted_below_zero(self):
+        view = self.view
+        counter = view._counters(self.user.pk)[0]
+        cache.set(counter.earlier_pending_key, -3, 60)
+        self.assertEqual(view._hold_pending(counter), 1)
+        cache.set(counter.earlier_pending_key, "not a number", 60)
+        self.assertEqual(view._hold_pending(counter), 2)
+        with patch.object(cache, "incr", side_effect=ValueError):
+            self.assertEqual(view._hold_pending(counter), 1)
+        self.assertEqual(cache.get(counter.pending_key), 1)
+
+    def test_a_cache_error_while_reserving_holds_nothing(self):
+        view = self.view
+        with patch.object(view, "_reserve", side_effect=ConnectionError("cache down")):
+            self.assertEqual(self.post().status_code, 500)
+        self.assertEqual(self.state(), (0, 0, 0))
+        self.assertEqual(self.post().status_code, 201)
+        self.assertEqual(self.state(), (0, 0, 1))
+
+    def test_a_cache_error_while_counting_a_rejection_holds_nothing(self):
+        view = self.view
+        real = view._bump
+        failed = []
+
+        def bump(key, reset_key):
+            if key.startswith("company-correction-rejected") and not failed:
+                failed.append(key)
+                raise ConnectionError("cache down")
+            return real(key, reset_key)
+
+        with override_settings(COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR=2, **ADDRESS_ON):
+            with patch.object(view, "_bump", side_effect=bump):
+                response = self.reject(HTTP_CF_CONNECTING_IP=ADDRESS_X)
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(len(failed), 1)
+            # Nothing is held, and the address counter after the failing one
+            # was still settled.
+            address = f"company-correction-ip-rejected:{_address_key(ADDRESS_X)}"
+            self.assertEqual(self.state(), (0, 0, 0))
+            self.assertEqual((cache.get(address), _in_flight(address)), (1, 0))
+            self.assertEqual(
+                cache.get(f"company-correction-ip-rate:{_address_key(ADDRESS_X)}"), 0
+            )
+            for _ in range(2):
+                self.assertEqual(self.reject(HTTP_CF_CONNECTING_IP=ADDRESS_Y).status_code, 400)
+            self.assertEqual(self.reject(HTTP_CF_CONNECTING_IP=ADDRESS_Y).status_code, 429)
+
+    def test_a_cache_error_on_one_release_still_releases_the_rest(self):
+        view = self.view
+        for settle in (view._settle, view._give_back_all):
+            cache.clear()
+            counters = view._counters(self.user.pk, "k")
+            self.assertIsNone(view._reserve_all(counters))
+            real = view._release
+            calls = []
+
+            def release(key, real=real, calls=calls):
+                calls.append(key)
+                if len(calls) == 1:
+                    raise ConnectionError("cache down")
+                return real(key)
+
+            with self.subTest(settle=settle.__name__):
+                with patch.object(view, "_release", side_effect=release):
+                    with self.assertRaises(ConnectionError):
+                        settle(counters)
+                self.assertEqual(len(calls), 4)
+                held = [
+                    cache.get(c.key if c.kind == view.STORED else c.pending_key)
+                    for c in counters
+                ]
+                self.assertEqual(sorted(held), [0, 0, 0, 1])
+
+    def test_the_hold_is_taken_before_the_rejections_are_read(self):
+        """A rejection that lands just before the hold is seen by the read."""
+        view = self.view
+        real = view._hold_pending
+        inner = []
+
+        def hold(counter):
+            if not inner:
+                inner.append(None)
+                inner[0] = self.reject()
+            return real(counter)
+
+        with override_settings(COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR=1):
+            with patch.object(view, "_hold_pending", side_effect=hold):
+                outer = self.reject()
+            self.assertEqual(inner[0].status_code, 400)
+            self.assertEqual(outer.status_code, 429)
+            self.assertTrue(3500 <= int(outer["Retry-After"]) <= 3600)
+            self.assertEqual(self.state(), (1, 0, 0))
+
+    def test_a_rejection_is_counted_before_its_hold_is_dropped(self):
+        """A request arriving while a rejection settles sees it either way."""
+        view = self.view
+        real = view._bump
+        inner = []
+
+        def bump(key, reset_key):
+            if key.startswith("company-correction-rejected") and not inner:
+                inner.append(None)
+                inner[0] = self.reject()
+            return real(key, reset_key)
+
+        with override_settings(COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR=1):
+            with patch.object(view, "_bump", side_effect=bump):
+                outer = self.reject()
+            self.assertEqual(outer.status_code, 400)
+            self.assertEqual(inner[0].status_code, 429)
+            self.assertEqual(inner[0]["Retry-After"], "1")
+            self.assertEqual(self.state(), (1, 0, 0))

@@ -90,6 +90,11 @@ The table says who is supposed to; the gate below is what makes it true.
   rest of the hour, as it did before #538, even if none of the requests in
   flight ends up stored; the app cannot tell the two cases apart there. It
   takes more than 20 simultaneous submissions from one address to see this.
+- The in-flight count behind the rejected-attempt limits cleans up after
+  itself. If a request never finishes (the cache fails mid-request, or a
+  worker is stopped), its place stops counting within two minutes, however
+  busy the account or address is. A request that runs longer than a minute
+  may stop being counted as in flight before it ends.
 - The limiter keeps a keyed digest of the address in the cache for up to one
   hour. No address is written to the database, logs or telemetry.
 

@@ -30,6 +30,11 @@ DEFAULT_RATE_LIMIT = 10
 DEFAULT_REJECTED_LIMIT = 60
 DEFAULT_IP_RATE_LIMIT = 20
 DEFAULT_IP_REJECTED_LIMIT = 120
+# A request in flight is counted in the slice of time it started in, and read
+# from that slice and the one before it. Each slice expires on its own, so a
+# hold that is never released (a cache error or a stopped worker mid-request)
+# is gone within two slices whatever traffic follows.
+PENDING_SLICE_SECONDS = 60
 STORED = "stored"
 REJECTED = "rejected"
 SCOPE_ACCOUNT = "account"
@@ -128,6 +133,7 @@ class _Counter(NamedTuple):
     scope: str
     key: str
     limit: int
+    time_slice: int = 0
 
     @property
     def keys(self):
@@ -136,7 +142,16 @@ class _Counter(NamedTuple):
     @property
     def pending_key(self):
         """Counts requests in flight against a rejected-attempt allowance."""
-        return f"{self.key}:pending"
+        return f"{self.key}:pending:{self.time_slice}"
+
+    @property
+    def earlier_pending_key(self):
+        """The in-flight count of the slice before this request's."""
+        return f"{self.key}:pending:{self.time_slice - 1}"
+
+
+def _time_slice():
+    return int(time.time() // PENDING_SLICE_SECONDS)
 
 
 def _counters(user_pk, address_key=None):
@@ -144,14 +159,17 @@ def _counters(user_pk, address_key=None):
 
     Per-account caps come first within each kind, so the per-address layer can
     only add refusals. The per-address rows exist only for an identified
-    client address, and carry its keyed digest, never the address.
+    client address, and carry its keyed digest, never the address. Every row
+    carries the slice of time the request started in, which names where its
+    in-flight hold is kept until it settles.
     """
+    now = _time_slice()
     rate = getattr(settings, "COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR", DEFAULT_RATE_LIMIT)
     rejected = getattr(
         settings, "COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR", DEFAULT_REJECTED_LIMIT
     )
     counters = [
-        _Counter(REJECTED, SCOPE_ACCOUNT, f"company-correction-rejected:{user_pk}", rejected)
+        _Counter(REJECTED, SCOPE_ACCOUNT, f"company-correction-rejected:{user_pk}", rejected, now)
     ]
     if address_key:
         counters.append(
@@ -164,10 +182,11 @@ def _counters(user_pk, address_key=None):
                     "COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR",
                     DEFAULT_IP_REJECTED_LIMIT,
                 ),
+                now,
             )
         )
     counters.append(
-        _Counter(STORED, SCOPE_ACCOUNT, f"company-correction-rate:{user_pk}", rate)
+        _Counter(STORED, SCOPE_ACCOUNT, f"company-correction-rate:{user_pk}", rate, now)
     )
     if address_key:
         counters.append(
@@ -180,25 +199,29 @@ def _counters(user_pk, address_key=None):
                     "COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR",
                     DEFAULT_IP_RATE_LIMIT,
                 ),
+                now,
             )
         )
     return counters
 
 
-def _hold_pending(key):
+def _hold_pending(counter):
     """Atomically count one request in flight and return how many there are.
 
-    The key outlives every request it counts: each hold renews its lifetime,
-    so it can only expire after an hour without a request.
+    The hold lives in the request's own slice, whose lifetime is set once,
+    when the slice is created, and is never renewed: a hold nobody releases
+    stops counting after at most two slices.
     """
-    cache.add(key, 0, RATE_LIMIT_SECONDS)
+    key = counter.pending_key
+    lifetime = 2 * PENDING_SLICE_SECONDS
+    cache.add(key, 0, lifetime)
     try:
         pending = cache.incr(key)
     except ValueError:
-        cache.set(key, 1, RATE_LIMIT_SECONDS)
-        return 1
-    cache.touch(key, RATE_LIMIT_SECONDS)
-    return pending
+        cache.set(key, 1, lifetime)
+        pending = 1
+    earlier = cache.get(counter.earlier_pending_key)
+    return pending + (earlier if isinstance(earlier, int) and earlier > 0 else 0)
 
 
 def _rejections(counter):
@@ -213,11 +236,13 @@ def _take(counter):
     first request. A rejected-attempt allowance is counted only when an
     attempt is rejected, so its window starts at the first rejection, as it
     did before #538; until the request settles it is held in a separate
-    in-flight count, and the two together never exceed the limit.
+    in-flight count, and the two together never exceed the limit. The hold is
+    taken before the rejections are read, so two requests cannot both read a
+    count that leaves out the other.
     """
     if counter.kind == STORED:
         return _reserve(counter.keys, counter.limit)
-    pending = _hold_pending(counter.pending_key)
+    pending = _hold_pending(counter)
     if _rejections(counter) + pending > counter.limit:
         _release(counter.pending_key)
         return False
@@ -228,19 +253,37 @@ def _give_back(counter):
     _release(counter.key if counter.kind == STORED else counter.pending_key)
 
 
+def _give_back_all(counters):
+    """Release every counter, even when the cache fails on one of them."""
+    failure = None
+    for counter in counters:
+        try:
+            _give_back(counter)
+        except Exception as error:  # the cache backend: keep releasing the rest
+            failure = failure or error
+    if failure is not None:
+        raise failure
+
+
 def _reserve_all(counters):
     """Take one of every allowance atomically; the refusing counter, else None.
 
-    A refusal releases what was already taken, so it holds and spends nothing.
+    A refusal releases what was already taken, so it holds and spends nothing,
+    and so does a cache error part of the way through.
     """
     held = []
-    for counter in counters:
-        if not _take(counter):
-            for taken in held:
-                _give_back(taken)
-            return counter
-        held.append(counter)
-    return None
+    try:
+        for counter in counters:
+            if not _take(counter):
+                break
+            held.append(counter)
+        else:
+            return None
+    except Exception:
+        _give_back_all(held)
+        raise
+    _give_back_all(held)
+    return counter
 
 
 def _settle(counters, status=None):
@@ -248,16 +291,33 @@ def _settle(counters, status=None):
 
     A stored correction (201) keeps the stored allowances, a rejected attempt
     (400, 404, 409) is counted against the rejected ones, and anything else
-    keeps nothing.
+    keeps nothing. The stored allowances are released first, as they were
+    before #538, and a cache error on one counter does not leave the others
+    held.
     """
     kept = STORED if status == 201 else REJECTED if status in (400, 404, 409) else None
+    failure = None
+    try:
+        _give_back_all(
+            counter for counter in counters if counter.kind == STORED and kept != STORED
+        )
+    except Exception as error:  # the cache backend: settle the rest first
+        failure = error
     for counter in counters:
-        if counter.kind == REJECTED and kept == REJECTED:
-            # Count the rejection before dropping the in-flight hold, so the
-            # sum a concurrent request reads is never short.
-            _bump(*counter.keys)
-        if counter.kind != kept or counter.kind == REJECTED:
-            _give_back(counter)
+        if counter.kind != REJECTED:
+            continue
+        try:
+            try:
+                if kept == REJECTED:
+                    # Count the rejection before dropping the in-flight hold,
+                    # so the sum a concurrent request reads is never short.
+                    _bump(*counter.keys)
+            finally:
+                _give_back(counter)
+        except Exception as error:  # the cache backend, as above
+            failure = failure or error
+    if failure is not None:
+        raise failure
 
 
 def _normalized(value):

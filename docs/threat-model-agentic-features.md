@@ -465,6 +465,12 @@ creating accounts. Company corrections therefore have two layers.
   spent one. Against the rejected-attempt caps the two are counted apart and
   such a refusal carries `Retry-After: 1`. Unlikely at this site's volume;
   the remedy if it is seen is to raise `COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR`.
+- **A hold nobody releases:** the in-flight count for the rejected caps is
+  kept per minute of arrival and each minute's key expires on its own, two
+  minutes after it is created; no later request renews it. A cache error or
+  a stopped worker mid-request therefore lowers a rejected cap by one for at
+  most two minutes, with the switch off as well as on. The price is that a
+  request running for more than a minute can drop out of the count early.
 - **At rest:** the limiter's cache keys carry a keyed digest of the address
   for up to one hour. No address is written to the database, logs or
   telemetry. The staff diagnostics page shows the viewing staff member their
