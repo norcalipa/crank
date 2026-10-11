@@ -460,8 +460,11 @@ DOTENV_NAME = ".env"
 DOCKERIGNORE_FILE = ".dockerignore"
 DOCKERIGNORE_RULES = (".env", "**/.env")
 # Tracked files named like an env file that the gate knowingly leaves unread.
-# ``.env-prod`` reaches the image build as build arguments only, never as a
-# file ``load_dotenv()`` looks for.
+# Today ``.env-prod`` is inside the image (``ADD . /app`` and ``.dockerignore``
+# does not exclude it) and the image build job reads it, but nothing loads it
+# at run time: ``load_dotenv()`` looks only for a file named ``.env``, no
+# Dockerfile or manifest names it, and no Dockerfile declares an ``ARG``.
+# ``test_nothing_loads_the_unread_env_file_at_run_time`` pins that.
 UNREAD_ENV_FILES = frozenset({".env-prod"})
 # Secrets nothing in the repository creates or changes: the operator makes
 # them in the cluster. A merge cannot put a key into one, so the gate accepts
@@ -1003,6 +1006,28 @@ class DeploymentGateTests(SimpleTestCase):
         self.assertEqual(gate_problems(manifests, texts, document, datetime.date.today()), [])
         self.assertEqual(self.problems(), [])
 
+    def test_nothing_loads_the_unread_env_file_at_run_time(self):
+        manifests, texts = self.checked_in
+        naming = sorted(
+            name
+            for name, text in {**manifests, **texts}.items()
+            if any(unread in text for unread in UNREAD_ENV_FILES)
+        )
+        # Only the image build job names it; no Dockerfile or manifest does.
+        self.assertEqual(naming, [".github/workflows/build-image.yml"])
+        calls = []
+        for name in tracked_files():
+            if not name.endswith(".py") or name.startswith("crank/tests/"):
+                continue
+            text = (REPO_ROOT / name).read_text(encoding="utf-8")
+            calls += [
+                (name, arguments.strip())
+                for arguments in re.findall(r"\bload_dotenv\(([^)]*)\)", text)
+            ]
+        self.assertTrue(calls)
+        # No argument: only a file named ``.env`` is looked for.
+        self.assertEqual({arguments for _, arguments in calls}, {""}, calls)
+
     def test_the_scan_covers_the_real_deployment(self):
         manifests, texts = self.checked_in
         self.assertIn("k8s/crank-configmap.yml", manifests)
@@ -1013,8 +1038,8 @@ class DeploymentGateTests(SimpleTestCase):
         self.assertIn(".github/workflows/update-home-deployment.yml", texts)
         self.assertIn("Dockerfile", texts)
         self.assertIn("Base.Dockerfile", texts)
-        # .env-prod is passed to the build as arguments only: with no ARG in
-        # an image file, none of them can become environment.
+        # The build job hands the lines of .env-prod to the build as build
+        # arguments: with no ARG in an image file, none can become environment.
         for name in ("Dockerfile", "Base.Dockerfile"):
             self.assertNotRegex(texts[name], r"(?im)^\s*ARG\b", name)
         self.assertIn("docker-compose.yml", texts)

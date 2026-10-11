@@ -1156,7 +1156,12 @@ class RedisRateLimitTest(TestCase):
             key
             for counters in accounts
             for row in counters
-            for key in (*row.keys, row.pending_key, row.earlier_pending_key)
+            for key in (
+                *row.keys,
+                row.pending_key,
+                row.earlier_pending_key,
+                row.later_pending_key,
+            )
         ]
 
     def _assert_window(self, default_cache, counter):
@@ -1197,6 +1202,33 @@ class RedisRateLimitTest(TestCase):
                     self.assertEqual(default_cache.get(row.pending_key, 0), 0)
         finally:
             default_cache.delete_many(self._all_keys(accounts))
+
+    def test_rejected_cap_holds_across_a_slice_boundary_under_concurrency(self):
+        """Requests that started either side of a minute boundary share the cap."""
+        from django.core.cache import cache as default_cache
+
+        from crank.views import company_corrections as view
+
+        run = f"test-redis-{uuid.uuid4()}"
+        rows = []
+        with override_settings(COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR=10):
+            for time_slice in (101, 100):  # the later slice reaches the cache first
+                with patch.object(view, "_time_slice", return_value=time_slice):
+                    rows.append([view._counters(run)[:1] for _ in range(20)])
+        counters = [row for group in rows for row in group]
+
+        def worker(index):
+            row = counters[index]
+            if view._reserve_all(row) is None:
+                view._settle(row, 400)
+
+        try:
+            self._run_threads(worker)
+            self.assertLessEqual(default_cache.get(counters[0][0].key), 10)
+            self.assertEqual(default_cache.get(counters[0][0].pending_key, 0), 0)
+            self.assertEqual(default_cache.get(counters[-1][0].pending_key, 0), 0)
+        finally:
+            default_cache.delete_many(self._all_keys(counters))
 
     def test_rejected_caps_hold_under_concurrency(self):
         """Asserts only what holds whichever threads win the race."""
@@ -1502,6 +1534,87 @@ class CompanyCorrectionsInFlightTest(TestCase):
             self.assertEqual(outer.status_code, 429)
             self.assertTrue(3500 <= int(outer["Retry-After"]) <= 3600)
             self.assertEqual(self.state(), (1, 0, 0))
+
+    def _interleave_across_a_boundary(self, outer_at, inner_at):
+        """The outer request starts at one time; one starts inside it at another.
+
+        The inner request reserves and stays in flight, as a request that has
+        not settled yet does, so only the hold of the outer request can see it.
+        """
+        view = self.view
+        real = view._hold_pending
+        inner = []
+
+        def hold(counter):
+            if not inner:
+                inner.append(None)
+                self.at(inner_at)
+                inner[0] = view._reserve_all(view._counters(self.user.pk))
+                self.at(outer_at)
+            return real(counter)
+
+        self.at(outer_at)
+        with override_settings(COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR=1):
+            with patch.object(view, "_hold_pending", side_effect=hold):
+                outer = self.reject()
+        self.assertIsNone(inner[0])
+        return outer
+
+    def test_a_hold_taken_in_the_next_slice_is_seen(self):
+        outer = self._interleave_across_a_boundary(outer_at=59.999, inner_at=60.001)
+        self.assertEqual(outer.status_code, 429)
+        self.assertEqual(outer["Retry-After"], "1")
+        self.assertEqual(self.state()[0], 0)
+
+    def test_a_hold_taken_in_the_earlier_slice_is_seen(self):
+        outer = self._interleave_across_a_boundary(outer_at=60.001, inner_at=59.999)
+        self.assertEqual(outer.status_code, 429)
+        self.assertEqual(outer["Retry-After"], "1")
+        self.assertEqual(self.state()[0], 0)
+
+    def test_a_hold_in_the_same_slice_is_seen(self):
+        outer = self._interleave_across_a_boundary(outer_at=10.0, inner_at=10.001)
+        self.assertEqual(outer.status_code, 429)
+        self.assertEqual(outer["Retry-After"], "1")
+
+    def test_a_hold_two_slices_away_is_not_counted(self):
+        outer = self._interleave_across_a_boundary(outer_at=10.0, inner_at=130.0)
+        self.assertEqual(outer.status_code, 400)
+
+    def _fail_decr_once_stored(self, post):
+        """Fail every ``decr`` from the moment ``_store`` has returned."""
+        view = self.view
+        real = view._store
+        real_decr = cache.decr
+        failing = []
+
+        def store(*args):
+            response = real(*args)
+            failing.append(None)
+            return response
+
+        def decr(key, *args):
+            if failing:
+                raise ConnectionError("cache dropped")
+            return real_decr(key, *args)
+
+        with patch.object(view, "_store", side_effect=store):
+            with patch.object(cache, "decr", side_effect=decr):
+                return post()
+
+    def test_a_failed_release_after_a_stored_correction_keeps_the_201(self):
+        with self.assertLogs("crank.company_corrections", "WARNING") as logs:
+            response = self._fail_decr_once_stored(self.post)
+        logs = logs.output
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(CompanyCorrection.objects.filter(requester=self.user).count(), 1)
+        self.assertEqual(cache.get(f"company-correction-rate:{self.user.pk}"), 1)
+        self.assertEqual(len(logs), 1)
+        self.assertNotIn(str(self.user.pk), logs[0])
+        self.assertNotIn("acme", logs[0])
+
+    def test_a_failed_release_after_a_rejection_is_still_an_error(self):
+        self.assertEqual(self._fail_decr_once_stored(self.reject).status_code, 500)
 
     def test_a_rejection_is_counted_before_its_hold_is_dropped(self):
         """A request arriving while a rejection settles sees it either way."""

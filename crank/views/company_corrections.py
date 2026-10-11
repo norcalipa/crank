@@ -8,6 +8,7 @@ fetches the evidence URL.
 """
 
 import json
+import logging
 import time
 import uuid
 from typing import NamedTuple
@@ -25,13 +26,16 @@ from crank.models.company_profile import CompanyFieldEvidence
 from crank.models.organization import Organization
 from crank.services.company_evidence import resolve_field_evidence, scoped_correction_blocked
 
+logger = logging.getLogger("crank.company_corrections")
+
 RATE_LIMIT_SECONDS = 60 * 60
 DEFAULT_RATE_LIMIT = 10
 DEFAULT_REJECTED_LIMIT = 60
 DEFAULT_IP_RATE_LIMIT = 20
 DEFAULT_IP_REJECTED_LIMIT = 120
 # A request in flight is counted in the slice of time it started in, and read
-# from that slice and the one before it. Each slice expires on its own, so a
+# from that slice and both neighbours, so two requests that start either side
+# of a boundary still see each other. Each slice expires on its own, so a
 # hold that is never released (a cache error or a stopped worker mid-request)
 # is gone within two slices whatever traffic follows.
 PENDING_SLICE_SECONDS = 60
@@ -149,6 +153,11 @@ class _Counter(NamedTuple):
         """The in-flight count of the slice before this request's."""
         return f"{self.key}:pending:{self.time_slice - 1}"
 
+    @property
+    def later_pending_key(self):
+        """The in-flight count of the slice after this request's."""
+        return f"{self.key}:pending:{self.time_slice + 1}"
+
 
 def _time_slice():
     return int(time.time() // PENDING_SLICE_SECONDS)
@@ -210,7 +219,9 @@ def _hold_pending(counter):
 
     The hold lives in the request's own slice, whose lifetime is set once,
     when the slice is created, and is never renewed: a hold nobody releases
-    stops counting after at most two slices.
+    stops counting after at most two slices. The count returned includes the
+    holds in the slices on either side, read with one cache call, so the cost
+    stays three cache calls (add, incr, one read) per allowance.
     """
     key = counter.pending_key
     lifetime = 2 * PENDING_SLICE_SECONDS
@@ -220,8 +231,13 @@ def _hold_pending(counter):
     except ValueError:
         cache.set(key, 1, lifetime)
         pending = 1
-    earlier = cache.get(counter.earlier_pending_key)
-    return pending + (earlier if isinstance(earlier, int) and earlier > 0 else 0)
+    # One read for both neighbours. Each request raises its own slice and then
+    # reads the others, so of two requests that start either side of a boundary
+    # one always sees the other's hold.
+    neighbours = cache.get_many([counter.earlier_pending_key, counter.later_pending_key])
+    return pending + sum(
+        value for value in neighbours.values() if isinstance(value, int) and value > 0
+    )
 
 
 def _rejections(counter):
@@ -418,7 +434,14 @@ def _limited_store(request, payload, idempotency_key):
     except BaseException:
         _settle(counters)
         raise
-    _settle(counters, response.status_code)
+    try:
+        _settle(counters, response.status_code)
+    except Exception:  # the cache backend
+        if response.status_code != 201:
+            raise
+        # The correction is stored and its allowances are kept, as on main; only
+        # an in-flight hold failed to release, and it stops counting by itself.
+        logger.warning("Releasing an in-flight hold failed after a correction was stored")
     return response
 
 

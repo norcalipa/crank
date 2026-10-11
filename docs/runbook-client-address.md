@@ -258,7 +258,9 @@ cluster.
    The enabling pull request therefore changes two files, the ConfigMap and
    the record, and no test.
 
-   What CI cannot see. This is the whole list:
+   What CI cannot see. The list below is what is known today, not a proof
+   that nothing else passes; closing the routes marked "open" is tracked in
+   <https://github.com/norcalipa/crank/issues/566>:
 
    - anything applied to the cluster by hand: `kubectl edit`,
      `kubectl set env`, `kubectl apply` of a file that is not in the
@@ -267,8 +269,16 @@ cluster.
      (`db-connect-credentials`, accepted by name);
    - the contents of secrets-named files and of `.env-prod`: the test never
      opens them. The deploy workflows copy `k8s/crank-capability-secrets.yml`
-     to the node and do not apply it. `.env-prod` reaches the image build as
-     build arguments only, and neither Dockerfile declares an `ARG`;
+     to the node and do not apply it. `.env-prod` is a file inside the image
+     (`ADD . /app`, and `.dockerignore` excludes only `.env` and `**/.env`),
+     and the image build job reads it: it runs `source .env-prod` and passes
+     its lines to the build as build arguments, and neither Dockerfile
+     declares an `ARG`. Nothing loads it at run time today, which the tests
+     pin: every `load_dotenv()` call takes no argument, so only a file named
+     `.env` is looked for, and no Dockerfile or manifest names `.env-prod`.
+     A change that made the build copy it to `.env`, loaded it by name, or
+     had a container command source it would not be seen by name alone
+     (open);
    - a secrets-named file copied to another name and applied under that name;
    - a name put together at run time instead of written out: by the shell,
      by `envsubst`, by a YAML escape inside a command, or by a Dockerfile
@@ -280,10 +290,24 @@ cluster.
    - environment set outside the repository at run time: on the node, in a
      `.env` file written into a running container or a mounted volume, or in
      an image built from something other than this repository;
+   - a second document in `k8s/crank-configmap.yml` that is not a ConfigMap
+     and names the switch in a container `command:`: that one file is
+     excluded from the text scan, and both deploy workflows apply it as it
+     is (open);
+   - a secrets-named file handed to `kubectl create -f` or
+     `kubectl replace -f` (the check looks for `apply`), or picked up by
+     `kubectl apply -f` on a directory (open);
    - whether the record is true.
 
-   V1 below reads the value the running pod actually has, and is the check
-   for every item on this list.
+   V1 below reads the environment of one running pod, so it sees what the
+   pod's spec and the image put in the environment of a new process. It
+   cannot see a value that `load_dotenv()` reads from a `.env` file inside
+   the running container or a mounted volume: that value exists only inside
+   the Python process, and `printenv` in a fresh process prints nothing for
+   it. The check for that route is V2 below: before enabling, "Client
+   address source" must read `none`, the value the serving process has
+   (the pod that answered the request, so repeat it if there are several).
+   Run both before opening the enabling pull request.
 4. Merge only after the "Deploy to Kubernetes (prod)" run of the release that
    contains the limiter has finished. The manifest-only workflow deploys image
    tag `latest`, and that run is what moves `latest`.

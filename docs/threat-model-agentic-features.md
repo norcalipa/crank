@@ -471,6 +471,12 @@ creating accounts. Company corrections therefore have two layers.
   a stopped worker mid-request therefore lowers a rejected cap by one for at
   most two minutes, with the switch off as well as on. The price is that a
   request running for more than a minute can drop out of the count early.
+  A request counts the holds in its own minute and in the minutes on either
+  side, so two requests that start either side of a minute boundary still see
+  each other. If releasing a hold fails after a correction was stored, the
+  response stays the `201` it is on `main`; the failure is logged once as a
+  warning with no address or user content, and the hold stops counting within
+  two minutes. After a rejected attempt the same failure is still an error.
 - **At rest:** the limiter's cache keys carry a keyed digest of the address
   for up to one hour. No address is written to the database, logs or
   telemetry. The staff diagnostics page shows the viewing staff member their
@@ -502,9 +508,16 @@ applied under it; a name assembled at run time (by the shell, `envsubst`, a
 YAML escape inside a command, or a Dockerfile `ENV` named by a build
 argument); a command written inside a test or document that may name the
 switch; files that are not UTF-8 text or not tracked; and environment set
-outside the repository at run time. The runbook lists these under "What CI
-cannot see", and its V1 step, which reads the value the running pod has, is
-the check for them. The record is an attestation, not proof.
+outside the repository at run time. It is also known to pass a second,
+non-ConfigMap document in `k8s/crank-configmap.yml` and a secrets-named file
+given to `kubectl create -f` or `kubectl replace -f`; those are tracked in
+issue #566. The runbook lists all of these under "What CI cannot see". Its V1
+step reads the environment of a running pod, which does not show a value that
+`load_dotenv()` reads from a `.env` file in the container; the staff page's
+"Client address source" row (V2) shows the value the serving process has and
+is the check for that route. `.env-prod` is inside the image and read by the
+build job, but nothing loads it at run time, which a test pins. The record is
+an attestation, not proof.
 
 **Tests:** `crank/tests/test_client_address.py` (parsing, the single header,
 production-only, the warning, the underscore-header twin through Django's WSGI
