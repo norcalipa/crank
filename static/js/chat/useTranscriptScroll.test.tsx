@@ -515,6 +515,13 @@ describe('useTranscriptScroll', () => {
                 expect(panel.scrollTop).toBe(57);
             });
 
+            test('an empty conversation is observed once its history has loaded', () => {
+                const {rerender} = render(<Harness assistantCount={0} loading log={false}/>);
+                expect(footerObservers()).toHaveLength(0);
+                rerender(<Harness assistantCount={0}/>);
+                expect(footerObservers()).toHaveLength(1);
+            });
+
             test('observes nothing while there is no transcript', () => {
                 render(<Harness assistantCount={1} log={false}/>);
                 expect(footerObservers()).toHaveLength(0);

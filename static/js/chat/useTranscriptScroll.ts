@@ -259,7 +259,8 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
             window.visualViewport?.removeEventListener('resize', handleViewportResize);
             footerObserver?.disconnect();
         };
-    }, [assistantCount, footerKey]);
+    // `loading`: the transcript, and so the footer, is found only once the history has loaded.
+    }, [assistantCount, footerKey, loading]);
 
     return {historyRef, nearBottomRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend};
 }
