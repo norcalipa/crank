@@ -85,9 +85,6 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
     // selector and the exact value — any other raw z-index in the stylesheet
     // fails the sweep.
     const LOCAL_STACKING_CONTEXTS: Array<{selector: RegExp; value: string}> = [
-        // The sticky dialog header's z-index: 1 stacks the header above the
-        // card body content inside the dialog's own stacking context only.
-        {selector: /^\.popup-details \.card-header$/, value: '1'},
         // The chat More menu floats over the transcript inside the assistant
         // card only; it never competes with the page-level layers (issue #483).
         {selector: /^\.chat-more-menu$/, value: '7'},
@@ -232,13 +229,13 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
             // raw value wins in CSS.
             '.app-mobile-topbar { position: sticky; z-index: var(--z-mobile-topbar); z-index: 9999; }',
             // Whitelisted dialog-local context smuggling an extra raw value.
-            '.popup-details .card-header { position: sticky; z-index: 1; z-index: 15; }',
+            '.chat-confirm-dismiss { position: absolute; z-index: 1; z-index: 15; }',
             // Page-level positioned layer with no token at all.
             '.app-messages { position: relative; z-index: 1500; }',
         ].join('\n');
         expect(zIndexViolations(mutantCss)).toEqual([
             ['.app-mobile-topbar', 'z-index: 9999;'],
-            ['.popup-details .card-header', 'z-index: 15;'],
+            ['.chat-confirm-dismiss', 'z-index: 15;'],
             ['.app-messages', 'z-index: 1500;'],
         ]);
 
@@ -247,55 +244,30 @@ describe('shared z-index layer tokens and blocking dialogs (issue #464)', () => 
         // not over-block the legitimate contract.
         const cleanCss = [
             '.app-nav-rail { position: fixed; z-index: var(--z-nav-rail); }',
-            '.popup-details .card-header { position: sticky; z-index: 1; }',
+            '.chat-confirm-dismiss { position: absolute; z-index: 1; }',
         ].join('\n');
         expect(zIndexViolations(cleanCss)).toEqual([]);
     });
 
-    it('popup overlay and suggest modal use the blocking dialog token', () => {
-        expect(popupCss).toMatch(/\.popup-overlay\s*\{[^}]*z-index:\s*var\(--z-blocking-dialog\)/);
+    it('the suggest modal uses the blocking dialog token and no company overlay is left', () => {
+        expect(popupCss).not.toContain('.popup-overlay');
         expect(popupCss).toMatch(/\.modal\.blocking-modal\s*\{[^}]*z-index:\s*var\(--z-blocking-dialog\)/);
     });
 
-    it('keeps the dialog header pinned while the card body scrolls internally', () => {
-        const details = popupCss.match(/\.popup-details\s*\{[^}]*\}/);
-        expect(details).not.toBeNull();
-        expect(details![0]).toMatch(/max-height:\s*90vh/);
-        expect(details![0]).toMatch(/display:\s*flex/);
-        expect(details![0]).toMatch(/flex-direction:\s*column/);
-        // Whole-card scrolling must not come back: the body is the scroll
-        // container, the header stays sticky above it.
-        expect(details![0]).not.toMatch(/overflow-y:\s*auto/);
-
-        const header = popupCss.match(/\.popup-details \.card-header\s*\{[^}]*\}/);
-        expect(header).not.toBeNull();
-        expect(header![0]).toMatch(/position:\s*sticky/);
-        expect(header![0]).toMatch(/flex-shrink:\s*0/);
-
-        const body = popupCss.match(/\.popup-details \.card-body\s*\{[^}]*\}/);
-        expect(body).not.toBeNull();
-        expect(body![0]).toMatch(/overflow-y:\s*auto/);
-        expect(body![0]).toMatch(/min-height:\s*0/);
+    it('the company is not a dialog: no overlay, no pinned header and no inner scroll container', () => {
+        // The details used to be a blocking dialog with a sticky header over
+        // an internally scrolling body (issue #464); they are a view in the
+        // page now (issue #486), so none of that may come back.
+        expect(popupCss).not.toMatch(/\.popup-details\s*\{/);
+        expect(popupCss).not.toMatch(/\.popup-details \.card-header/);
+        const body = popupCss.match(/\.popup-details \.card-body\s*\{[^}]*\}/g) ?? [];
+        expect(body.join('\n')).not.toMatch(/overflow-y:\s*auto/);
+        expect(body.join('\n')).not.toMatch(/max-height/);
     });
 });
 
 describe('blocking-dialog close targets and row focus perimeter (issue #464 r2)', () => {
     const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
-
-    it('gives the popup Close control a 44×44px touch target with a compact glyph', () => {
-        const rule = popupCss.match(/\.popup-details \.card-header \.btn-close\s*\{[^}]*\}/);
-        expect(rule).not.toBeNull();
-        for (const decl of ['inline-size: 44px', 'block-size: 44px', 'min-inline-size: 44px', 'min-block-size: 44px']) {
-            expect(rule![0]).toContain(decl);
-        }
-        // The glyph stays visually compact inside the larger hit box.
-        expect(rule![0]).toMatch(/background-size:\s*1rem/);
-        expect(rule![0]).toMatch(/padding:\s*0/);
-        // The keyboard focus indicator survives the larger control.
-        expect(popupCss).toMatch(
-            /\.popup-details \.card-header \.btn-close:focus-visible\s*\{[^}]*outline:\s*3px solid #93c5fd/,
-        );
-    });
 
     it('keeps the suggest-modal Close target on the same 44px contract', () => {
         const rule = popupCss.match(/\.modal\.blocking-modal \.btn-close\s*\{[^}]*\}/);
@@ -307,13 +279,6 @@ describe('blocking-dialog close targets and row focus perimeter (issue #464 r2)'
         expect(popupCss).toMatch(
             /\.modal\.blocking-modal \.btn-close:focus-visible\s*\{[^}]*outline:\s*3px solid var\(--bs-warning\)/,
         );
-    });
-
-    it('compensates the taller Close target by shrinking the header padding-block', () => {
-        // The 44px control must not balloon the pinned header: the container
-        // (not the target) absorbs the height.
-        const headerRules = popupCss.match(/\.popup-details \.card-header\s*\{[^}]*\}/g) ?? [];
-        expect(headerRules.join('\n')).toMatch(/padding-block:\s*\.375rem/);
     });
 
     it('draws the focused row perimeter on cells so the wrapper cannot clip it', () => {
@@ -338,6 +303,49 @@ describe('blocking-dialog close targets and row focus perimeter (issue #464 r2)'
             /\.organization-card:focus-visible[\s\S]*?\{[^}]*outline:\s*3px solid var\(--bs-warning\)/,
         );
         expect(grouped).not.toBeNull();
+    });
+});
+
+describe('company view (issue #486)', () => {
+    const popupCss = fs.readFileSync(path.join(__dirname, 'popup.css'), 'utf8');
+    const section = popupCss.slice(popupCss.indexOf('/* issue #486 company view */'));
+    const rule = (selector: string) => {
+        const match = section.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`));
+        return match ? match[1] : null;
+    };
+
+    it('has its own section at the end of the stylesheet', () => {
+        expect(popupCss.indexOf('/* issue #486 company view */')).toBeGreaterThan(0);
+        expect(section.length).toBeGreaterThan(200);
+        expect(section).not.toMatch(/z-index/);
+    });
+
+    it('is an in-flow card: nothing fixed, sticky or internally scrolling', () => {
+        for (const selector of ['.company-view', '.company-view-header', '.company-view .card-body']) {
+            const declarations = rule(selector);
+            expect(declarations).not.toBeNull();
+            expect(declarations).not.toMatch(/position:\s*(fixed|sticky)/);
+            expect(declarations).not.toMatch(/overflow(-y)?:\s*(auto|scroll)/);
+            expect(declarations).not.toMatch(/max-height/);
+        }
+        expect(rule('.company-view')).toMatch(/min-width:\s*0/);
+    });
+
+    it('gives Back to results and the content controls a 44px target', () => {
+        expect(rule('.company-view-back')).toMatch(/min-height:\s*44px/);
+        expect(section).toMatch(/\.company-view \.popup-company-actions \.btn,\s*\.company-view \.card-body :is\(\.btn, \.btn-link\)\s*\{[^}]*min-height:\s*44px/);
+    });
+
+    it('wraps a long name instead of overflowing, and stacks the grid before a column gets narrow', () => {
+        expect(rule('.company-view-header h2')).toMatch(/overflow-wrap:\s*anywhere/);
+        expect(rule('.company-view-header h2')).toMatch(/min-width:\s*0/);
+        expect(rule('.company-view .popup-details-grid')).toMatch(/minmax\(min\(100%, 22rem\), 1fr\)/);
+    });
+
+    it('puts Back to results on its own line on phones and keeps the heading outline off', () => {
+        expect(section).toMatch(/@media \(max-width: 767\.98px\)\s*\{[\s\S]*\.company-view-back\s*\{[^}]*width:\s*100%/);
+        expect(rule('.company-view-header h2:focus')).toMatch(/outline:\s*none/);
+        expect(rule('.organization-results-region:focus')).toMatch(/outline:\s*none/);
     });
 });
 

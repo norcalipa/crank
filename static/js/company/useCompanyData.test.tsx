@@ -3,7 +3,8 @@
 import {act, renderHook, waitFor} from '@testing-library/react';
 
 import {clearProvenanceCache, getCachedProvenance} from '../provenanceCache';
-import {useCompanyData} from './useCompanyData';
+import {getWorkspaceSnapshot, resetWorkspaceForTests, setWorkspaceAccount} from '../workspace/store';
+import {COMPANY_CORRECTION_SAVED_EVENT, useCompanyData} from './useCompanyData';
 
 interface Deferred {
     url: string;
@@ -417,5 +418,129 @@ describe('useCompanyData', () => {
         expect(result.current.provenanceLoading).toBe(true);
         expect(result.current.provenance).toEqual(provenanceOf(1));
         await waitFor(() => expect(requested('/provenance/')).toBe(2));
+    });
+    describe.each([['abc'], [1.5], [-1], [0], ['1/../2'], [''], [Number.NaN], [2 ** 31]])(
+        'an id that is not a positive integer (%p)', (bad) => {
+            test('requests nothing and shows nothing', () => {
+                const {result} = renderHook(() => useCompanyData(bad as unknown as number, true));
+
+                expect(global.fetch).not.toHaveBeenCalled();
+                expect(result.current).toMatchObject({
+                    scores: [], scoresLoading: false, provenance: null, provenanceLoading: false, pendingCorrections: [],
+                });
+            });
+        });
+
+    describe('private state (issue #486)', () => {
+        const loadPending = async (isAuthenticated = true) => {
+            const hook = renderHook(() => useCompanyData(1, isAuthenticated, {skipScores: true}));
+            await settle('/provenance/', ok(provenanceOf(1)));
+            if (isAuthenticated) {
+                await settle('/company-corrections/', ok({corrections: [correction(7)]}));
+                expect(hook.result.current.pendingCorrections.map(item => item.id)).toEqual([7]);
+            }
+            return hook;
+        };
+
+        beforeEach(() => {
+            resetWorkspaceForTests();
+        });
+
+        test('crank:private-state-purged removes the pending suggestions while isAuthenticated stays true', async () => {
+            const {result} = await loadPending();
+
+            act(() => {
+                document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
+            });
+
+            expect(result.current.pendingCorrections).toEqual([]);
+            // The public evidence stays; only the account's rows go.
+            expect(result.current.provenance).toEqual(provenanceOf(1));
+        });
+
+        test('a purge also drops a pending-suggestions answer that was still in flight', async () => {
+            const {result} = renderHook(() => useCompanyData(1, true, {skipScores: true}));
+            await settle('/provenance/', ok(provenanceOf(1)));
+
+            act(() => {
+                document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
+            });
+            await settle('/company-corrections/', ok({corrections: [correction(9)]}));
+
+            expect(result.current.pendingCorrections).toEqual([]);
+        });
+
+        test('an account switch in the store removes the pending suggestions, whoever is signed in after it', async () => {
+            act(() => setWorkspaceAccount({status: 'authenticated', key: 'alice'}));
+            const {result} = await loadPending();
+
+            act(() => setWorkspaceAccount({status: 'unknown', key: ''}));
+            expect(result.current.pendingCorrections).toEqual([]);
+            act(() => setWorkspaceAccount({status: 'authenticated', key: 'bob'}));
+            expect(result.current.pendingCorrections).toEqual([]);
+            expect(getWorkspaceSnapshot().account.key).toBe('bob');
+        });
+
+        test('a direct switch from one account to another also clears them', async () => {
+            act(() => setWorkspaceAccount({status: 'authenticated', key: 'alice'}));
+            const {result} = await loadPending();
+
+            act(() => setWorkspaceAccount({status: 'authenticated', key: 'bob'}));
+
+            expect(result.current.pendingCorrections).toEqual([]);
+        });
+
+        test('the first hydration (unknown to a known account) and an unrelated store change keep them', async () => {
+            const {result} = await loadPending();
+
+            act(() => setWorkspaceAccount({status: 'authenticated', key: 'alice'}));
+            expect(result.current.pendingCorrections.map(item => item.id)).toEqual([7]);
+            act(() => setWorkspaceAccount({status: 'authenticated', key: 'alice'}));
+            expect(result.current.pendingCorrections.map(item => item.id)).toEqual([7]);
+        });
+
+        test('the listeners are released on unmount', async () => {
+            const removeSpy = jest.spyOn(document, 'removeEventListener');
+            const {unmount} = await loadPending(false);
+
+            unmount();
+
+            expect(removeSpy).toHaveBeenCalledWith('crank:private-state-purged', expect.any(Function));
+            removeSpy.mockRestore();
+        });
+    });
+
+    describe('a correction stored while the view stays open (issue #486)', () => {
+        const saved = (organizationId: unknown) => act(() => {
+            window.dispatchEvent(new CustomEvent(COMPANY_CORRECTION_SAVED_EVENT, {detail: {organizationId}}));
+        });
+
+        test('the pending suggestions are requested again and the new one appears without a flash of emptiness', async () => {
+            const {result} = renderHook(() => useCompanyData(1, true, {skipScores: true}));
+            await settle('/provenance/', ok(provenanceOf(1)));
+            await settle('/company-corrections/', ok({corrections: [correction(7)]}));
+
+            saved(1);
+            expect(requested('/company-corrections/')).toBe(2);
+            expect(result.current.pendingCorrections.map(item => item.id)).toEqual([7]);
+            await settle('/company-corrections/', ok({corrections: [correction(7), correction(8)]}));
+
+            expect(result.current.pendingCorrections.map(item => item.id)).toEqual([7, 8]);
+        });
+
+        test('another company\'s or a malformed event changes nothing; signed out, nothing is requested', async () => {
+            renderHook(() => useCompanyData(1, true, {skipScores: true}));
+            await settle('/provenance/', ok(provenanceOf(1)));
+            await settle('/company-corrections/', ok({corrections: []}));
+
+            saved(2);
+            saved(undefined);
+            expect(requested('/company-corrections/')).toBe(1);
+
+            const signedOut = renderHook(() => useCompanyData(3, false, {skipScores: true}));
+            saved(3);
+            expect(requested('/organization=3')).toBe(0);
+            expect(signedOut.result.current.pendingCorrections).toEqual([]);
+        });
     });
 });

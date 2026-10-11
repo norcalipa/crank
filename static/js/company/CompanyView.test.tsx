@@ -933,3 +933,135 @@ describe('CompanyView', () => {
         });
     });
 });
+
+describe('CompanyView states (issue #486)', () => {
+    const ranked: CompanyDetailsOrganization = {
+        id: 5, name: 'Rank Five', ranking: 5, avg_score: 4.1, funding_round: 'S', rto_policy: 'R',
+        profile_completeness: 60, accelerated_vesting: false, type: 'C', url: 'https://five.example', avg_scores: [],
+    };
+    let scrollTo: jest.Mock;
+
+    beforeEach(() => {
+        scrollTo = jest.fn();
+        window.scrollTo = scrollTo as unknown as typeof window.scrollTo;
+        global.fetch = jest.fn().mockImplementation((url: string) => Promise.resolve({
+            ok: true, status: 200,
+            json: () => Promise.resolve(url.includes('/provenance/')
+                ? {organization_id: 5, organization_modified: null, organization_created: null, latest_observation: null}
+                : []),
+        }));
+    });
+
+    const view = (props: Partial<React.ComponentProps<typeof CompanyView>> = {}) => render(
+        <CompanyView organizationId={5} status="ready" organization={ranked} onBack={() => {}}
+                     onAsk={() => {}} onSuggestCorrection={() => {}} {...props}/>);
+
+    test('is a named region whose heading takes focus, and it starts at the top of the page', async () => {
+        view();
+
+        const region = screen.getByRole('region', {name: 'Rank Five'});
+        expect(region).toHaveAttribute('aria-labelledby', 'organization-details-title');
+        expect(region).not.toHaveAttribute('role');
+        expect(region).not.toHaveAttribute('aria-modal');
+        expect(screen.getByRole('heading', {level: 2, name: 'Rank Five'})).toHaveFocus();
+        expect(scrollTo).toHaveBeenCalledWith({top: 0, behavior: 'instant'});
+        await waitFor(() => expect(screen.getByTestId('provenance-section')).toBeInTheDocument());
+    });
+
+    test('Tab from the heading reaches Back to results first, then the actions', () => {
+        view({isAuthenticated: true});
+
+        const focusable = Array.from(document.querySelectorAll<HTMLElement>('a[href], button, [tabindex="0"]'));
+        expect(focusable[0]).toBe(screen.getByRole('button', {name: 'Back to results'}));
+        expect(focusable[1]).toBe(screen.getByTestId('company-chat-cta'));
+        expect(screen.getByRole('heading', {level: 2})).toHaveAttribute('tabindex', '-1');
+    });
+
+    test('Back to results calls onBack; Escape does nothing', () => {
+        const onBack = jest.fn();
+        view({onBack});
+
+        fireEvent.keyDown(document, {key: 'Escape'});
+        expect(onBack).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole('button', {name: 'Back to results'}));
+
+        expect(onBack).toHaveBeenCalledTimes(1);
+        expect(screen.getByTestId('company-view')).toBeInTheDocument();
+    });
+
+    test('focus moves to the heading when another company replaces this one, not when the record arrives', () => {
+        const {rerender} = view({status: 'loading', organization: null, name: 'Rank Five'});
+        expect(screen.getByRole('heading', {level: 2, name: 'Rank Five'})).toHaveFocus();
+        expect(screen.getByTestId('company-view-loading')).toHaveAttribute('aria-busy', 'true');
+        expect(scrollTo).toHaveBeenCalledTimes(1);
+
+        const other = {...ranked, id: 6, name: 'Rank Six'};
+        screen.getByRole('button', {name: 'Back to results'}).focus();
+        rerender(<CompanyView organizationId={5} status="ready" organization={ranked} onBack={() => {}}
+                              onAsk={() => {}} onSuggestCorrection={() => {}}/>);
+        expect(screen.getByRole('button', {name: 'Back to results'})).toHaveFocus();
+        expect(scrollTo).toHaveBeenCalledTimes(1);
+
+        rerender(<CompanyView organizationId={6} status="ready" organization={other} onBack={() => {}}
+                              onAsk={() => {}} onSuggestCorrection={() => {}}/>);
+        expect(screen.getByRole('heading', {level: 2, name: 'Rank Six'})).toHaveFocus();
+        expect(scrollTo).toHaveBeenCalledTimes(2);
+    });
+
+    test('loading with no name yet says so, and makes no evidence request', () => {
+        view({status: 'loading', organization: null});
+
+        expect(screen.getByRole('heading', {level: 2, name: 'Loading company…'})).toBeInTheDocument();
+        expect(screen.getByTestId('company-view-loading')).toHaveTextContent('Loading company details');
+        expect(screen.queryByTestId('popup-details-grid')).not.toBeInTheDocument();
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('not found says the company is no longer listed, with Back to results and no evidence request', () => {
+        const onBack = jest.fn();
+        view({status: 'not-found', organization: null, onBack});
+
+        expect(screen.getByRole('heading', {level: 2, name: 'Company not found'})).toHaveFocus();
+        expect(screen.getByTestId('company-not-found')).toHaveTextContent('This company is no longer listed.');
+        expect(screen.queryByTestId('provenance-retry')).not.toBeInTheDocument();
+        expect(global.fetch).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole('button', {name: 'Back to results'}));
+        expect(onBack).toHaveBeenCalledTimes(1);
+    });
+
+    test('a load error says so and offers Retry only when the container can retry', () => {
+        const onRetry = jest.fn();
+        const {rerender} = view({status: 'error', organization: null});
+
+        expect(screen.getByRole('heading', {level: 2, name: 'Company'})).toBeInTheDocument();
+        expect(screen.getByRole('alert')).toHaveTextContent('This company could not be loaded.');
+        expect(screen.queryByTestId('company-view-retry')).not.toBeInTheDocument();
+
+        rerender(<CompanyView organizationId={5} status="error" organization={null} onBack={() => {}}
+                              onRetry={onRetry} onAsk={() => {}} onSuggestCorrection={() => {}}/>);
+        fireEvent.click(screen.getByTestId('company-view-retry'));
+        expect(onRetry).toHaveBeenCalledTimes(1);
+        expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    test('a company that is not ranked in the list says so where rank and coverage would be', async () => {
+        const unranked: CompanyDetailsOrganization = {
+            id: 9, name: 'Unlisted Labs', funding_round: 'S', rto_policy: 'R', accelerated_vesting: false,
+            type: 'C', url: 'https://unlisted.example',
+        };
+        view({organizationId: 9, organization: unranked});
+
+        expect(screen.getByTestId('not-ranked')).toHaveTextContent('Not ranked in this list');
+        expect(screen.queryByText('Rank:')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('rating-coverage')).not.toBeInTheDocument();
+        // With no breakdown and no overall score the card says so rather than showing NaN.
+        await waitFor(() => expect(screen.getByTestId('no-scores')).toHaveTextContent('No scores recorded'));
+    });
+
+    test('a very long company name stays in the heading, in full', () => {
+        const longName = 'A'.repeat(100);
+        view({organization: {...ranked, name: longName}});
+
+        expect(screen.getByRole('heading', {level: 2, name: longName})).toBeInTheDocument();
+    });
+});

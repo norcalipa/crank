@@ -59,12 +59,13 @@ describe('OrganizationList', () => {
                 });
             }
             if (url.includes('/api/organizations/')) {
+                const id = Number((url.match(/organizations\/(\d+)\//) || [])[1] || 1);
                 return Promise.resolve({
                     json: () => Promise.resolve({
-                        id: 1,
-                        name: 'Organization 1',
+                        id,
+                        name: `Organization ${id}`,
                         type: 'C',
-                        url: 'https://org1.example.com',
+                        url: `https://org${id}.example.com`,
                         gives_ratings: true,
                         public: true
                     }),
@@ -1187,6 +1188,307 @@ describe('OrganizationList', () => {
             const {unmount} = render(<OrganizationList organizations={organizations} />);
             unmount();
             expect(() => act(() => clearWorkspaceContext())).not.toThrow();
+        });
+    });
+
+    describe('company view history, position and stale ids (issue #486)', () => {
+        const flush = () => act(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+        });
+        const ok = (body: unknown) => ({ok: true, status: 200, json: () => Promise.resolve(body)});
+        const record = (id: number, name: string) => ({
+            id, name, type: 'C', url: `https://org${id}.example.com`, gives_ratings: true, public: true,
+            accelerated_vesting: false, funding_round: 'S', rto_policy: 'R',
+        });
+        let scrollTo: jest.Mock;
+        let rowTop: number;
+        let rectSpy: jest.SpyInstance;
+
+        const requests = (fragment: string) => (global.fetch as jest.Mock).mock.calls
+            .filter(([url]) => String(url).includes(fragment)).length;
+
+        beforeEach(() => {
+            window.history.pushState = realPushState;
+            scrollTo = jest.fn();
+            window.scrollTo = scrollTo as unknown as typeof window.scrollTo;
+            rowTop = 120;
+            // jsdom lays nothing out: give every result row a box, and move it
+            // between save and restore so the restore has something to undo.
+            rectSpy = jest.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+                const visible = this.hasAttribute('data-organization-id');
+                return {top: visible ? rowTop : 0, bottom: visible ? rowTop + 40 : 0, height: visible ? 40 : 0,
+                    left: 0, right: 0, width: 0, x: 0, y: rowTop, toJSON: () => ({})} as DOMRect;
+            });
+        });
+
+        afterEach(() => {
+            rectSpy.mockRestore();
+        });
+
+        const results = () => screen.getByTestId('organization-results-region');
+
+        test('opening a row adds exactly one history entry; Back returns to the results, Forward reopens the view', async () => {
+            const pushSpy = jest.spyOn(window.history, 'pushState');
+            const lengthBefore = window.history.length;
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await screen.findByTestId('popup-details-grid');
+
+            expect(pushSpy).toHaveBeenCalledTimes(1);
+            expect(window.history.length).toBe(lengthBefore + 1);
+            expect(new URLSearchParams(window.location.search).get('company')).toBe('1');
+            expect(window.history.state).toMatchObject({crankCompanyView: true});
+            expect(getWorkspaceSnapshot().context).toMatchObject({
+                surface: 'company', organizationId: 1, organizationName: 'Organization 1',
+            });
+
+            // The browser's Back.
+            act(() => window.history.back());
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            expect(window.location.search).toBe('');
+            expect(results()).not.toHaveAttribute('hidden');
+            expect(getWorkspaceSnapshot().context?.organizationId).toBeUndefined();
+            expect(getWorkspaceSnapshot().context?.surface).toBe('rankings');
+
+            // Forward opens the same view again, with no new entry.
+            act(() => window.history.forward());
+            await screen.findByTestId('company-view');
+            expect(new URLSearchParams(window.location.search).get('company')).toBe('1');
+            expect(pushSpy).toHaveBeenCalledTimes(1);
+        });
+
+        test('the Back to results button goes back through the entry the open added, once', async () => {
+            const backSpy = jest.spyOn(window.history, 'back');
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await screen.findByTestId('company-view');
+
+            const button = screen.getByRole('button', {name: 'Back to results'});
+            fireEvent.click(button);
+            fireEvent.click(button);
+
+            expect(backSpy).toHaveBeenCalledTimes(1);
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            expect(window.location.search).toBe('');
+        });
+
+        test('Back keeps search, filters and page, restores the row position and focuses the opened row', async () => {
+            window.history.replaceState({}, '', '/?search=Organization&page=2&accelerated_vesting=0');
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+            expect(screen.getByRole('textbox', {name: 'Search organizations'})).toHaveValue('Organization');
+            fireEvent.click(screen.getAllByText('Organization 2')[0]);
+            await screen.findByTestId('company-view');
+            expect(window.history.state).toMatchObject({crankCompanyView: true});
+
+            rowTop = 500;
+            act(() => window.history.back());
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+
+            expect(screen.getByRole('textbox', {name: 'Search organizations'})).toHaveValue('Organization');
+            expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+            expect(window.history.state.crankPosition).toMatchObject({anchor: '2', anchorOffset: 120});
+            await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({top: 380, behavior: 'instant'}));
+            const row = screen.getAllByRole('button', {name: 'View details for Organization 2'})[0];
+            await waitFor(() => expect(row).toHaveFocus());
+        });
+
+        test('opening another company from inside a view replaces the entry: Back still returns to the results', async () => {
+            const pushSpy = jest.spyOn(window.history, 'pushState');
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await screen.findByTestId('company-view');
+            const length = window.history.length;
+
+            act(() => {
+                expect(openWorkspaceCompany(2)).toBe('opened');
+            });
+
+            await screen.findByTestId('popup-details-grid');
+            expect(pushSpy).toHaveBeenCalledTimes(1);
+            expect(window.history.length).toBe(length);
+            expect(new URLSearchParams(window.location.search).get('company')).toBe('2');
+            expect(window.history.state).toMatchObject({crankCompanyView: true});
+            expect(screen.getByRole('heading', {level: 2})).toHaveFocus();
+            expect(screen.getByTestId('company-view')).toHaveAttribute('data-organization-id', '2');
+
+            act(() => window.history.back());
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            expect(window.location.search).toBe('');
+        });
+
+        test('from a deep link there is no entry to go back through: Back to results rewrites the URL in place', async () => {
+            window.history.replaceState({}, '', '/?company=1&search=Organization');
+            const backSpy = jest.spyOn(window.history, 'back');
+            const pushSpy = jest.spyOn(window.history, 'pushState');
+            render(<OrganizationList organizations={organizations} />);
+            await screen.findByTestId('company-view');
+            expect(pushSpy).not.toHaveBeenCalled();
+
+            fireEvent.click(screen.getByRole('button', {name: 'Back to results'}));
+
+            expect(backSpy).not.toHaveBeenCalled();
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            expect(window.location.search).toBe('?search=Organization');
+            expect(screen.getAllByRole('button', {name: 'View details for Organization 1'})[0]).toHaveFocus();
+        });
+
+        test('with the opened row off the page, focus lands on the results region instead', async () => {
+            window.history.replaceState({}, '', '/?company=2&page=1');
+            global.fetch = jest.fn().mockImplementation((url) => {
+                if (url === '/api/organizations/2/') return Promise.resolve(ok(record(2, 'Organization 2')));
+                if (url.endsWith('/scores/')) return Promise.resolve(ok([]));
+                if (url.endsWith('/provenance/')) return Promise.resolve(ok(null));
+                return Promise.resolve(ok({}));
+            });
+            render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
+            await screen.findByTestId('company-view');
+
+            fireEvent.click(screen.getByRole('button', {name: 'Back to results'}));
+
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            await waitFor(() => expect(results()).toHaveFocus());
+        });
+
+        test('a popstate to a URL without a company shows the results; one to a malformed company does too', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            act(() => {
+                openWorkspaceCompany(1);
+            });
+            await screen.findByTestId('company-view');
+            window.history.replaceState({}, '', '/?company=abc');
+
+            act(() => {
+                window.dispatchEvent(new PopStateEvent('popstate'));
+            });
+
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+        });
+
+        test('Ask opens the assistant with this company and the view stays; no dialog is opened', async () => {
+            const workspace = document.createElement('div');
+            workspace.id = 'assistant-workspace';
+            document.body.appendChild(workspace);
+            const onFocusRequest = jest.fn();
+            window.addEventListener('crank:assistant-focus', onFocusRequest);
+            try {
+                render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+                fireEvent.click(screen.getAllByText('Organization 1')[0]);
+                fireEvent.click(await screen.findByTestId('company-chat-cta'));
+
+                expect(getWorkspaceSnapshot().visibility).toBe('open');
+                expect(getWorkspaceSnapshot().context).toMatchObject({
+                    surface: 'company', organizationId: 1, organizationName: 'Organization 1',
+                });
+                expect(onFocusRequest).toHaveBeenCalledTimes(1);
+                expect(screen.getByTestId('company-view')).toBeInTheDocument();
+                expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            } finally {
+                window.removeEventListener('crank:assistant-focus', onFocusRequest);
+                workspace.remove();
+            }
+        });
+
+        test('a company the server no longer lists shows the not-found state, with no evidence request and no console error', async () => {
+            const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+            window.history.replaceState({}, '', '/?company=777');
+            global.fetch = jest.fn().mockImplementation((url) => (url === '/api/organizations/777/'
+                ? Promise.resolve({ok: false, status: 404, json: () => Promise.resolve({detail: 'Not found'})})
+                : Promise.resolve(ok({}))));
+
+            render(<OrganizationList organizations={organizations} />);
+
+            const notFound = await screen.findByTestId('company-not-found');
+            expect(notFound).toHaveTextContent('This company is no longer listed.');
+            expect(screen.getByRole('heading', {level: 2, name: 'Company not found'})).toHaveFocus();
+            expect(requests('/provenance/')).toBe(0);
+            expect(requests('/scores/')).toBe(0);
+            expect(requests('/company-corrections/')).toBe(0);
+            expect(screen.queryByTestId('provenance-retry')).not.toBeInTheDocument();
+            expect(consoleError).not.toHaveBeenCalled();
+
+            fireEvent.click(screen.getByRole('button', {name: 'Back to results'}));
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            expect(window.location.search).toBe('');
+            consoleError.mockRestore();
+        });
+
+        test('a listed row that now answers 404 also shows the not-found state', async () => {
+            global.fetch = jest.fn().mockImplementation((url) => (url === '/api/organizations/1/'
+                ? Promise.resolve({ok: false, status: 404, json: () => Promise.resolve({})})
+                : Promise.resolve(ok({}))));
+            render(<OrganizationList organizations={organizations} />);
+
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+
+            expect(await screen.findByTestId('company-not-found')).toBeInTheDocument();
+            expect(requests('/provenance/')).toBe(0);
+        });
+
+        test('an active company that is not in the ranked list opens and says it is not ranked', async () => {
+            global.fetch = jest.fn().mockImplementation((url) => {
+                if (url === '/api/organizations/42/') return Promise.resolve(ok(record(42, 'Unlisted Labs')));
+                if (url.endsWith('/scores/')) return Promise.resolve(ok([{type__name: 'Culture', avg_score: 4.5}]));
+                if (url.endsWith('/provenance/')) return Promise.resolve(ok(null));
+                return Promise.resolve(ok({}));
+            });
+            render(<OrganizationList organizations={organizations} />);
+
+            act(() => {
+                expect(openWorkspaceCompany(42)).toBe('opened');
+            });
+
+            expect(await screen.findByRole('region', {name: 'Unlisted Labs'})).toBeInTheDocument();
+            expect(screen.getByTestId('not-ranked')).toHaveTextContent('Not ranked in this list');
+            expect(screen.queryByTestId('rating-coverage')).not.toBeInTheDocument();
+            expect(await screen.findByText('Culture')).toBeInTheDocument();
+            expect(getWorkspaceSnapshot().context).toMatchObject({surface: 'company', organizationId: 42});
+        });
+
+        test('crank:private-state-purged closes the view, even when the store held nothing', async () => {
+            render(<OrganizationList organizations={organizations} isAuthenticated={true} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await screen.findByTestId('company-view');
+
+            act(() => {
+                document.dispatchEvent(new CustomEvent('crank:private-state-purged'));
+            });
+
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+            await flush();
+            expect(screen.queryByTestId('your-pending-corrections')).not.toBeInTheDocument();
+        });
+
+        test('wiping the account in the store closes the view; an unobserved hydration does not', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            await screen.findByTestId('company-view');
+
+            act(() => {
+                document.dispatchEvent(new CustomEvent('crank:auth-hydrated', {detail: {unobserved: true}}));
+            });
+            await flush();
+            expect(screen.getByTestId('company-view')).toBeInTheDocument();
+
+            act(() => {
+                setWorkspaceContext({surface: 'rankings'});
+                clearWorkspaceContext();
+            });
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
+        });
+
+        test('closing with no view open does nothing and retrying with none open does nothing', async () => {
+            const ref = React.createRef<OrganizationList>();
+            render(<OrganizationList ref={ref} organizations={organizations} />);
+            const backSpy = jest.spyOn(window.history, 'back');
+
+            ref.current?.closeView();
+            ref.current?.retryView();
+            ref.current?.handleAsk();
+            ref.current?.handleSuggestCorrection('company_details');
+
+            expect(backSpy).not.toHaveBeenCalled();
+            expect(screen.queryByTestId('company-view')).not.toBeInTheDocument();
+            expect(openSuggestCompanySpy).not.toHaveBeenCalled();
         });
     });
 

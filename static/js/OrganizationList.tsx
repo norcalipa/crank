@@ -664,9 +664,13 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
         const id = this.state.view?.id;
         ++this.modalGeneration;
         this.setState({view: null}, () => {
-            restoreResultPosition(this.findOrganizationAnchor);
-            const row = id === undefined ? null : this.findOrganizationAnchor(String(id));
-            (row ?? this.resultsRef.current)?.focus({preventScroll: true});
+            // After the commit that shows the results again (and any list
+            // state a popstate restored in the same turn) has painted.
+            window.requestAnimationFrame(() => {
+                restoreResultPosition(this.findOrganizationAnchor);
+                const row = id === undefined ? null : this.findOrganizationAnchor(String(id));
+                (row ?? this.resultsRef.current)?.focus({preventScroll: true});
+            });
         });
     };
 
@@ -812,7 +816,8 @@ class OrganizationList extends React.Component<OrganizationListProps, Organizati
                     onSuggestCorrection={this.handleSuggestCorrection}
                 />
             )}
-            <div ref={this.resultsRef} tabIndex={-1} hidden={view !== null} data-testid="organization-results-region">
+            <div ref={this.resultsRef} tabIndex={-1} hidden={view !== null} className="organization-results-region"
+                 data-testid="organization-results-region">
             <div className="rankings-toolbar" data-testid="rankings-toolbar">
                 <div className="rankings-toolbar-search">
                     <label className="form-label" htmlFor="organization-search">Search organizations</label>
