@@ -112,3 +112,56 @@ class ReleaseDiagnosticsViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Release integrity warning")
         self.assertContains(response, "could not be verified")
+
+    def _rows(self, response):
+        import re
+
+        html = response.content.decode()
+        rows = dict(re.findall(r'<tr><th scope="row">([^<]+)</th><td>([^<]*)</td></tr>', html))
+        return rows["Client address source"], rows["Client address for this request"]
+
+    def test_client_address_rows_default_to_off(self):
+        self.client.force_login(self.staff)
+        response = self.client.get(
+            reverse("release-diagnostics"),
+            HTTP_CF_CONNECTING_IP="198.51.100.7",
+            HTTP_X_FORWARDED_FOR="198.51.100.8",
+            REMOTE_ADDR="192.0.2.10",
+        )
+        self.assertEqual(self._rows(response), ("none", "not identified"))
+        for address in ("198.51.100.7", "198.51.100.8", "192.0.2.10"):
+            self.assertNotContains(response, address)
+
+    @override_settings(
+        ENV="prod",
+        CLIENT_IP_SOURCE="cloudflare",
+        CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+    )
+    def test_client_address_rows_when_enabled(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.client.force_login(self.staff)
+        url = reverse("release-diagnostics")
+        identified = self.client.get(
+            url, HTTP_CF_CONNECTING_IP="198.51.100.7", HTTP_X_FORWARDED_FOR="198.51.100.8"
+        )
+        self.assertEqual(self._rows(identified), ("cloudflare", "198.51.100.7"))
+        self.assertNotContains(identified, "198.51.100.8")
+        network = self.client.get(url, HTTP_CF_CONNECTING_IP="2001:db8:1:2::9")
+        self.assertEqual(self._rows(network), ("cloudflare", "2001:db8:1:2::/64"))
+        unidentified = self.client.get(url, HTTP_X_FORWARDED_FOR="198.51.100.8")
+        self.assertEqual(self._rows(unidentified), ("cloudflare", "not identified"))
+        self.assertNotContains(unidentified, "198.51.100.8")
+
+    @override_settings(ENV="prod", CLIENT_IP_SOURCE="cloudflare")
+    def test_client_address_is_never_shown_to_non_staff(self):
+        for login in (None, self.user):
+            if login:
+                self.client.force_login(login)
+            response = self.client.get(
+                reverse("release-diagnostics"), HTTP_CF_CONNECTING_IP="198.51.100.7"
+            )
+            self.assertEqual(response.status_code, 302)
+            self.assertNotIn(b"198.51.100.7", response.content)

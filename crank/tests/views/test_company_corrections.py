@@ -1,6 +1,7 @@
 # Copyright (c) 2024 Isaac Adams
 # Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import json
+import time
 import uuid
 from unittest.mock import patch
 
@@ -500,6 +501,377 @@ class CompanyCorrectionsViewTest(TestCase):
         self.assertEqual(missing["Cache-Control"], "private, no-store")
 
 
+ADDRESS_ON = {"ENV": "prod", "CLIENT_IP_SOURCE": "cloudflare"}
+PEER = "192.0.2.10"
+ADDRESS_X = "198.51.100.7"
+ADDRESS_Y = "198.51.100.8"
+FIELDS = ("rto_policy", "locations", "funding_round")
+
+
+def _address_key(address):
+    from django.test import RequestFactory
+
+    from crank.client_address import client_address
+
+    with override_settings(**ADDRESS_ON):
+        return client_address(RequestFactory().get("/", HTTP_CF_CONNECTING_IP=address)).key
+
+
+@override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+class CompanyCorrectionsAddressLimitTest(TestCase):
+    """The per-address layer of issue #538, and proof that it is off by default."""
+
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.users = [
+            User.objects.create_user(username=f"a{index}", password="pw-538-xyz")
+            for index in range(3)
+        ]
+        self.clients = []
+        for user in self.users:
+            client = Client()
+            client.force_login(user)
+            self.clients.append(client)
+        self.org = Organization.objects.create(name="Acme", status=1)
+        CompanyFieldEvidence.objects.create(
+            organization=self.org,
+            field_key="rto_policy",
+            value_text="Remote-first",
+            source_url="https://acme.example.com/p",
+            observed_at=timezone.now(),
+            validation_version="v",
+            extractor_version="v",
+        )
+
+    def body(self, **overrides):
+        data = {
+            "organization_id": self.org.pk,
+            "field_key": "rto_policy",
+            "proposed_value": "Hybrid, 3 days",
+            "evidence_url": "https://acme.example.com/careers",
+            "scope": {"level": "company", "value": ""},
+            "note": "",
+            "idempotency_key": str(uuid.uuid4()),
+        }
+        data.update(overrides)
+        return data
+
+    def post(self, index=0, address=ADDRESS_X, data=None, **headers):
+        if address is not None:
+            headers["HTTP_CF_CONNECTING_IP"] = address
+        return self.clients[index].post(
+            URL,
+            json.dumps(data if data is not None else self.body()),
+            content_type="application/json",
+            REMOTE_ADDR=PEER,
+            **headers,
+        )
+
+    def rejected(self, index=0, address=ADDRESS_X, **overrides):
+        """A 400: by default the evidence link is not https."""
+        overrides = overrides or {"evidence_url": "http://acme.example.com/"}
+        return self.post(index, address, self.body(**overrides))
+
+    def counts(self, index=0, address=ADDRESS_X):
+        """(account rejected, address rejected, account stored, address stored)."""
+        user = self.users[index].pk
+        key = _address_key(address)
+        return tuple(
+            cache.get(name, 0)
+            for name in (
+                f"company-correction-rejected:{user}",
+                f"company-correction-ip-rejected:{key}",
+                f"company-correction-rate:{user}",
+                f"company-correction-ip-rate:{key}",
+            )
+        )
+
+    def cache_keys(self):
+        return sorted(key.split(":", 2)[2] for key in cache._cache)
+
+    def test_off_by_default_ignores_every_header(self):
+        from django.conf import settings
+
+        self.assertEqual(settings.CLIENT_IP_SOURCE, "")
+        spoofed = {
+            "HTTP_X_FORWARDED_FOR": ADDRESS_X,
+            "HTTP_X_REAL_IP": ADDRESS_X,
+            "HTTP_TRUE_CLIENT_IP": ADDRESS_X,
+            "HTTP_FORWARDED": f"for={ADDRESS_X}",
+        }
+        with override_settings(
+            COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR=0,
+            COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR=0,
+        ):
+            for env in ("dev", "staging", "prod"):
+                cache.clear()
+                CompanyCorrection.objects.all().delete()
+                with self.subTest(env=env), override_settings(ENV=env):
+                    for index in range(3):
+                        self.assertEqual(self.post(index, **spoofed).status_code, 201)
+                    self.assertEqual(self.rejected(0).status_code, 400)
+                    users = sorted(str(user.pk) for user in self.users)
+                    expected = [
+                        f"company-correction-{kind}:{user}{suffix}"
+                        for kind in ("rate", "rejected")
+                        for user in users
+                        for suffix in ("", ":reset")
+                    ]
+                    self.assertEqual(self.cache_keys(), sorted(expected))
+                    self.assertEqual(self.counts(0), (1, 0, 1, 0))
+
+    def test_off_keeps_todays_per_account_limits_and_responses(self):
+        """With the source unset, production answers exactly as before #538."""
+        with override_settings(ENV="prod", COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR=1):
+            self.assertEqual(self.post(0).status_code, 201)
+            limited = self.post(0, data=self.body(field_key="locations"))
+            self.assertEqual(limited.status_code, 429)
+            self.assertEqual(
+                limited.json(),
+                {
+                    "error": "You have reached the correction limit. Please try again later.",
+                    "limit_scope": "account",
+                },
+            )
+            self.assertTrue(3500 <= int(limited["Retry-After"]) <= 3600)
+            self.assertEqual(self.post(1).status_code, 201)
+        with override_settings(ENV="prod", COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR=2):
+            for _ in range(2):
+                self.assertEqual(self.rejected(2).status_code, 400)
+            self.assertEqual(self.post(2).status_code, 429)
+            self.assertEqual(self.post(1, data=self.body(field_key="locations")).status_code, 201)
+        self.assertFalse([key for key in self.cache_keys() if "-ip-" in key])
+
+    def test_setting_outside_production_is_ignored(self):
+        with override_settings(
+            ENV="staging", CLIENT_IP_SOURCE="cloudflare",
+            COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR=0,
+        ):
+            self.assertEqual(self.post(0).status_code, 201)
+        self.assertFalse([key for key in self.cache_keys() if "-ip-" in key])
+
+    def test_two_clients_behind_one_peer_do_not_share_a_cap(self):
+        limits = override_settings(COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR=2)
+        with limits, override_settings(**ADDRESS_ON):
+            self.assertEqual(self.post(0, ADDRESS_X).status_code, 201)
+            self.assertEqual(self.post(1, ADDRESS_X).status_code, 201)
+            limited = self.post(2, ADDRESS_X)
+            self.assertEqual(limited.status_code, 429)
+            payload = limited.json()
+            self.assertEqual(payload["limit_scope"], "network")
+            self.assertEqual(
+                payload["error"],
+                "Too many corrections were sent from your network this hour. "
+                "Please try again later.",
+            )
+            self.assertTrue(1 <= int(limited["Retry-After"]) <= 3600)
+            # Blocked by the network: the account's own counters hold nothing.
+            self.assertEqual(self.counts(2, ADDRESS_X), (0, 0, 0, 2))
+            self.assertEqual(CompanyCorrection.objects.filter(requester=self.users[2]).count(), 0)
+            # The same account from another address, behind the same peer, stores.
+            self.assertEqual(self.post(2, ADDRESS_Y).status_code, 201)
+            self.assertEqual(self.counts(2, ADDRESS_Y), (0, 0, 1, 1))
+
+    def test_source_off_accounts_sharing_everything_stay_independent(self):
+        with override_settings(COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR=2):
+            for index in range(3):
+                self.assertEqual(self.post(index, ADDRESS_X).status_code, 201)
+
+    def test_account_cap_binds_one_account_across_addresses(self):
+        with override_settings(COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR=2, **ADDRESS_ON):
+            addresses = (ADDRESS_X, ADDRESS_Y, "2001:db8:5::1")
+            for address, field in zip(addresses[:2], FIELDS):
+                self.assertEqual(
+                    self.post(0, address, self.body(field_key=field)).status_code, 201
+                )
+            limited = self.post(0, addresses[2], self.body(field_key=FIELDS[2]))
+            self.assertEqual(limited.status_code, 429)
+            self.assertEqual(limited.json()["limit_scope"], "account")
+            self.assertIn("You have reached the correction limit", limited.json()["error"])
+            self.assertEqual(self.counts(0, addresses[2]), (0, 0, 2, 0))
+
+    def test_address_rejected_cap_accumulates_across_accounts(self):
+        with override_settings(COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR=2, **ADDRESS_ON):
+            self.assertEqual(self.rejected(0).status_code, 400)
+            self.assertEqual(self.rejected(1).status_code, 400)
+            limited = self.post(2)
+            self.assertEqual(limited.status_code, 429)
+            self.assertEqual(limited.json()["limit_scope"], "network")
+            self.assertEqual(self.counts(2), (0, 2, 0, 0))
+            self.assertEqual(self.post(2, ADDRESS_Y).status_code, 201)
+
+    def test_address_rejected_cap_is_shared_inside_an_ipv6_64(self):
+        with override_settings(COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR=2, **ADDRESS_ON):
+            self.assertEqual(self.rejected(0, "2001:db8:1:2::1").status_code, 400)
+            self.assertEqual(self.rejected(1, "2001:db8:1:2:aaaa:bbbb:cccc:dddd").status_code, 400)
+            limited = self.post(2, "2001:db8:1:2::3")
+            self.assertEqual(limited.status_code, 429)
+            self.assertEqual(limited.json()["limit_scope"], "network")
+            self.assertEqual(self.post(2, "2001:db8:1:3::3").status_code, 201)
+
+    def test_counters_after_each_outcome(self):
+        with override_settings(**ADDRESS_ON):
+            first = self.body()
+            self.assertEqual(self.post(0, data=first).status_code, 201)
+            self.assertEqual(self.counts(), (0, 0, 1, 1))
+            self.assertEqual(self.post(0, data=self.body(proposed_value="Onsite")).status_code, 409)
+            self.assertEqual(self.counts(), (1, 1, 1, 1))
+            self.assertEqual(self.post(0, data=self.body(organization_id=999999)).status_code, 404)
+            self.assertEqual(self.counts(), (2, 2, 1, 1))
+            self.assertEqual(self.rejected(0).status_code, 400)
+            self.assertEqual(self.counts(), (3, 3, 1, 1))
+            self.assertEqual(self.post(0, data=first).status_code, 200)
+            self.assertEqual(self.counts(), (3, 3, 1, 1))
+            # A same-key pending replay found inside the store also keeps nothing.
+            from crank.views import company_corrections as view
+
+            replay = view.JsonResponse({}, status=200)
+            with patch.object(view, "_store", return_value=replay):
+                self.assertEqual(self.post(0).status_code, 200)
+            self.assertEqual(self.counts(), (3, 3, 1, 1))
+            self.assertEqual(self.post(0, data=self.body(note="x" * 9000)).status_code, 413)
+            self.assertEqual(self.counts(), (3, 3, 1, 1))
+
+    def test_exception_keeps_nothing(self):
+        from crank.views import company_corrections as view
+
+        self.clients[0].raise_request_exception = False
+        with override_settings(**ADDRESS_ON):
+            with patch.object(view, "resolve_field_evidence", side_effect=RuntimeError("boom")):
+                self.assertEqual(self.post(0).status_code, 500)
+            self.assertEqual(self.counts(), (0, 0, 0, 0))
+
+    def test_refusal_at_each_counter_keeps_nothing(self):
+        rows = (
+            ("COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR", "account"),
+            ("COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR", "network"),
+            ("COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR", "account"),
+            ("COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR", "network"),
+        )
+        for setting, scope in rows:
+            cache.clear()
+            with self.subTest(setting=setting), override_settings(**{setting: 0}, **ADDRESS_ON):
+                for response in (self.post(0), self.rejected(0)):
+                    self.assertEqual(response.status_code, 429)
+                    self.assertEqual(response.json()["limit_scope"], scope)
+                    self.assertTrue(1 <= int(response["Retry-After"]) <= 3600)
+                self.assertEqual(self.counts(), (0, 0, 0, 0))
+        self.assertEqual(CompanyCorrection.objects.count(), 0)
+
+    def test_a_refusal_is_not_counted_as_a_rejected_attempt(self):
+        with override_settings(COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR=1, **ADDRESS_ON):
+            self.assertEqual(self.post(0).status_code, 201)
+            for _ in range(5):
+                self.assertEqual(self.post(1).status_code, 429)
+            self.assertEqual(self.counts(1), (0, 0, 0, 1))
+
+    def test_interleaved_rejected_attempts_cannot_overshoot(self):
+        from crank.views import company_corrections as view
+
+        settings_cases = (
+            ("COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR", 0, "account"),
+            ("COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR", 1, "network"),
+        )
+        real = view.resolve_field_evidence
+        for setting, second, scope in settings_cases:
+            cache.clear()
+            inner = {}
+
+            def interleave(organization, inner=inner, second=second):
+                if not inner:
+                    inner["response"] = self.rejected(second, proposed_value="Remote-first")
+                return real(organization)
+
+            with self.subTest(setting=setting), override_settings(**{setting: 1}, **ADDRESS_ON):
+                with patch.object(view, "resolve_field_evidence", side_effect=interleave):
+                    first = self.rejected(0, proposed_value="Remote-first")
+                self.assertEqual(first.status_code, 400)
+                self.assertEqual(inner["response"].status_code, 429)
+                self.assertEqual(inner["response"].json()["limit_scope"], scope)
+                self.assertEqual(self.counts(0)[:2], (1, 1))
+                self.assertEqual(self.counts(second)[1], 1)
+
+    def test_unidentified_request_keeps_the_per_account_caps(self):
+        with override_settings(
+            COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR=1,
+            COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR=0,
+            **ADDRESS_ON,
+        ):
+            with self.assertLogs("crank.client_address", level="WARNING") as logs:
+                self.assertEqual(self.post(0, address=None).status_code, 201)
+            self.assertEqual(
+                [record.getMessage() for record in logs.records],
+                ["client address unavailable: source=cloudflare reason=missing"],
+            )
+            with self.assertNoLogs("crank.client_address", level="WARNING"):
+                malformed = self.post(1, address="198.51.100.7, 198.51.100.8")
+                self.assertEqual(malformed.status_code, 201)
+                limited = self.post(0, address=None, data=self.body(field_key="locations"))
+            self.assertEqual(limited.status_code, 429)
+            self.assertEqual(limited.json()["limit_scope"], "account")
+        self.assertFalse([key for key in self.cache_keys() if "-ip-" in key])
+
+    def test_untrusted_headers_cannot_move_a_client_to_another_bucket(self):
+        with override_settings(COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR=1, **ADDRESS_ON):
+            self.assertEqual(self.post(0).status_code, 201)
+            limited = self.post(
+                1, ADDRESS_X, HTTP_X_FORWARDED_FOR=ADDRESS_Y, HTTP_X_REAL_IP=ADDRESS_Y,
+                HTTP_TRUE_CLIENT_IP=ADDRESS_Y, HTTP_FORWARDED=f"for={ADDRESS_Y}",
+            )
+            self.assertEqual(limited.status_code, 429)
+            self.assertEqual(limited.json()["limit_scope"], "network")
+
+    def test_network_retry_after_follows_the_address_window(self):
+        with override_settings(COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR=1, **ADDRESS_ON):
+            self.assertEqual(self.post(0).status_code, 201)
+            key = _address_key(ADDRESS_X)
+            cache.set(f"company-correction-ip-rate:{key}:reset", time.time() + 120, 120)
+            cache.set(f"company-correction-rate:{self.users[1].pk}:reset", time.time() + 3000, 3000)
+            limited = self.post(1)
+            self.assertEqual(limited.status_code, 429)
+            self.assertTrue(115 <= int(limited["Retry-After"]) <= 121)
+
+    def test_no_address_is_kept_in_the_cache(self):
+        addresses = (ADDRESS_X, "2001:db8:1:2::1")
+        with override_settings(**ADDRESS_ON):
+            for index, address in enumerate(addresses):
+                self.assertEqual(self.post(index, address).status_code, 201)
+                self.assertEqual(self.rejected(index, address).status_code, 400)
+        stored = repr(sorted(cache._cache.items()))
+        for needle in (ADDRESS_X, "2001:db8", PEER):
+            self.assertNotIn(needle, stored)
+        keys = [key for key in self.cache_keys() if "-ip-" in key]
+        self.assertEqual(len(keys), 8)
+        for key in keys:
+            self.assertRegex(
+                key, r"^company-correction-ip-(rate|rejected):[0-9a-f]{32}(:reset)?$"
+            )
+
+    def test_counters_default_when_settings_are_absent(self):
+        from django.conf import settings
+
+        from crank.views import company_corrections as view
+
+        with self.settings():
+            del settings.COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR
+            del settings.COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR
+            del settings.COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR
+            del settings.COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR
+            counters = view._counters(7, "k")
+        self.assertEqual(
+            [(c.kind, c.scope, c.key, c.limit) for c in counters],
+            [
+                ("rejected", "account", "company-correction-rejected:7", 60),
+                ("rejected", "network", "company-correction-ip-rejected:k", 120),
+                ("stored", "account", "company-correction-rate:7", 10),
+                ("stored", "network", "company-correction-ip-rate:k", 20),
+            ],
+        )
+        self.assertEqual(counters[0].keys[1], "company-correction-rejected:7:reset")
+        self.assertEqual([c.scope for c in view._counters(7)], ["account", "account"])
+
+
 class RedisRateLimitTest(TestCase):
     """Locks in the django_redis atomicity the locmem tests only approximate."""
 
@@ -538,3 +910,130 @@ class RedisRateLimitTest(TestCase):
             self.assertEqual(default_cache.ttl(keys[0]), 3600)
         finally:
             default_cache.delete_many(list(keys))
+
+    def _run_threads(self, work, count=40):
+        import threading
+
+        threads = [threading.Thread(target=work, args=(index,)) for index in range(count)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+    def _assert_window(self, default_cache, counter):
+        for key in counter.keys:
+            self.assertTrue(1 <= default_cache.ttl(key) <= 3600, key)
+
+    def test_address_stored_cap_holds_across_accounts_under_concurrency(self):
+        from django.core.cache import cache as default_cache
+
+        from crank.views import company_corrections as view
+
+        run = f"test-redis-{uuid.uuid4()}"
+        with override_settings(
+            COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR=10,
+            COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR=20,
+        ):
+            accounts = [view._counters(f"{run}-{index}", run) for index in range(8)]
+        granted = []
+
+        def worker(index):
+            counters = accounts[index % 8]
+            refused = view._reserve_all(counters)
+            if refused is None:
+                view._settle(counters, 201)
+            granted.append(refused)
+
+        try:
+            self._run_threads(worker)
+            self.assertEqual(granted.count(None), 20)
+            self.assertEqual({r.scope for r in granted if r}, {"network"})
+            address_stored = accounts[0][3]
+            self.assertEqual(default_cache.get(address_stored.key), 20)
+            self._assert_window(default_cache, address_stored)
+            self.assertEqual(sum(default_cache.get(c[2].key) for c in accounts), 20)
+            for counters in accounts:
+                self.assertEqual(default_cache.get(counters[0].key), 0)
+                self.assertEqual(default_cache.get(counters[1].key), 0)
+        finally:
+            default_cache.delete_many([key for c in accounts for row in c for key in row.keys])
+
+    def test_rejected_caps_hold_under_concurrency(self):
+        from django.core.cache import cache as default_cache
+
+        from crank.views import company_corrections as view
+
+        cases = (
+            ("COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR", 1, 0, "account"),
+            ("COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR", 8, 1, "network"),
+        )
+        for setting, account_count, row, scope in cases:
+            run = f"test-redis-{uuid.uuid4()}"
+            with override_settings(**{setting: 10}):
+                accounts = [
+                    view._counters(f"{run}-{index}", run) for index in range(account_count)
+                ]
+            kept = []
+
+            def worker(index, accounts=accounts, kept=kept):
+                counters = accounts[index % len(accounts)]
+                refused = view._reserve_all(counters)
+                if refused is None:
+                    view._settle(counters, 400)
+                kept.append(refused)
+
+            with self.subTest(setting=setting):
+                try:
+                    self._run_threads(worker)
+                    self.assertEqual(kept.count(None), 10)
+                    self.assertEqual({r.scope for r in kept if r}, {scope})
+                    capped = accounts[0][row]
+                    self.assertEqual(default_cache.get(capped.key), 10)
+                    self._assert_window(default_cache, capped)
+                    for counters in accounts:
+                        self.assertEqual(default_cache.get(counters[2].key), 0)
+                        self.assertEqual(default_cache.get(counters[3].key), 0)
+                finally:
+                    default_cache.delete_many(
+                        [key for c in accounts for row_ in c for key in row_.keys]
+                    )
+
+    def test_one_real_request_counts_against_its_address(self):
+        import random
+
+        from django.core.cache import cache as default_cache
+
+        from crank.views import company_corrections as view
+
+        address = "2001:db8:%x:%x::1" % (random.getrandbits(16), random.getrandbits(16))
+        organization = Organization.objects.create(name="Redis Acme", status=1)
+        client = Client()
+        client.force_login(self.user)
+        counters = view._counters(self.user.pk, _address_key(address))
+        keys = [key for counter in counters for key in counter.keys]
+        default_cache.delete_many(keys)
+        body = {
+            "organization_id": organization.pk,
+            "field_key": "rto_policy",
+            "proposed_value": "Hybrid, 3 days",
+            "evidence_url": "https://acme.example.com/careers",
+            "scope": {"level": "company", "value": ""},
+            "note": "",
+            "idempotency_key": str(uuid.uuid4()),
+        }
+        try:
+            with override_settings(**ADDRESS_ON):
+                response = client.post(
+                    URL, json.dumps(body), content_type="application/json",
+                    HTTP_CF_CONNECTING_IP=address,
+                )
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(
+                [default_cache.get(counter.key) for counter in counters], [0, 0, 1, 1]
+            )
+            for counter in counters:
+                self._assert_window(default_cache, counter)
+            self.assertIsNotNone(default_cache.get(counters[3].keys[1]))
+            self.assertNotIn("2001", " ".join(keys))
+        finally:
+            default_cache.delete_many(keys)

@@ -554,6 +554,31 @@ class JobSearchCoverageEdges(TestCase):
         ):
             self.assertFalse(_check_rate_limit(req))
 
+    def test_rate_limit_key_is_per_user_whatever_the_address(self):
+        """One user shares one budget from any peer or claimed client address
+        (issue #538): the key carries neither."""
+        from crank.views.job_search import _check_rate_limit, _hour_key
+        from django.test import RequestFactory
+
+        prod = override_settings(
+            JOB_SEARCH_RATE_LIMIT_PER_HOUR=2, ENV="prod", CLIENT_IP_SOURCE="cloudflare"
+        )
+        with prod:
+            results = []
+            for peer in ("10.0.0.1", "10.0.0.2", "10.0.0.3"):
+                req = RequestFactory().post(
+                    "/",
+                    REMOTE_ADDR=peer,
+                    HTTP_CF_CONNECTING_IP=peer.replace("10.0.0", "198.51.100"),
+                    HTTP_X_FORWARDED_FOR=peer.replace("10.0.0", "203.0.113"),
+                )
+                req.user = self.user
+                results.append(_check_rate_limit(req))
+        self.assertEqual(results, [False, False, True])
+        keys = [key.split(":", 2)[2] for key in cache._cache]
+        self.assertEqual(keys, [f"job_search_rl:{self.user.pk}:{_hour_key()}"])
+        self.assertEqual(cache.get(keys[0]), 3)
+
 
 class JobSearchViewEdgeCases(TestCase):
     """Additional view branches for the 99.25% patch target."""

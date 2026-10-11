@@ -7,7 +7,12 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase, override_settings
 
-from crank.checks import check_capability_config, check_job_search_provider, is_non_dev_environment
+from crank.checks import (
+    check_capability_config,
+    check_client_ip_source,
+    check_job_search_provider,
+    is_non_dev_environment,
+)
 
 
 class IsNonDevEnvironmentTests(SimpleTestCase):
@@ -166,3 +171,73 @@ class CheckCapabilityConfigTests(SimpleTestCase):
         from django.core.checks.registry import registry
 
         self.assertIn(check_capability_config, registry.registered_checks)
+
+
+class CheckClientIpSourceTests(SimpleTestCase):
+    """``crank.W003`` / ``crank.W004`` (issue #538): warn, never block boot."""
+
+    def ids(self):
+        return [warning.id for warning in check_client_ip_source()]
+
+    def test_default_is_silent(self):
+        self.assertEqual(check_client_ip_source(), [])
+
+    def test_empty_is_silent_in_every_environment(self):
+        for env in ("dev", "staging", "prod"):
+            with self.subTest(env=env), override_settings(ENV=env, CLIENT_IP_SOURCE=""):
+                self.assertEqual(check_client_ip_source(), [])
+
+    @override_settings(ENV="prod", CLIENT_IP_SOURCE="cloudflare")
+    def test_recognised_source_in_production_is_silent(self):
+        self.assertEqual(check_client_ip_source(), [])
+
+    def test_unrecognised_value_in_production_warns_w003(self):
+        for value in ("x-forwarded-for", "remote_addr", "Cloudflare", " cloudflare", None, 1, True):
+            with self.subTest(value=value), override_settings(ENV="prod", CLIENT_IP_SOURCE=value):
+                self.assertEqual(self.ids(), ["crank.W003"])
+
+    def test_recognised_source_outside_production_warns_w004(self):
+        for env in ("dev", "staging", ""):
+            with self.subTest(env=env), override_settings(ENV=env, CLIENT_IP_SOURCE="cloudflare"):
+                self.assertEqual(self.ids(), ["crank.W004"])
+
+    @override_settings(ENV="dev", CLIENT_IP_SOURCE="x-forwarded-for")
+    def test_unrecognised_value_outside_production_warns_both(self):
+        self.assertEqual(self.ids(), ["crank.W003", "crank.W004"])
+
+    @override_settings(ENV="prod", CLIENT_IP_SOURCE="https://user:hunter2@example.invalid/")
+    def test_warnings_are_warnings_and_never_echo_the_value(self):
+        from django.core.checks import WARNING
+
+        from crank.client_address import effective_source
+
+        (warning,) = check_client_ip_source()
+        self.assertEqual(warning.level, WARNING)
+        self.assertNotIn("hunter2", f"{warning.msg} {warning.hint}")
+        self.assertIn("docs/runbook-client-address.md", warning.hint)
+        self.assertIn("cloudflare", warning.hint)
+        # The value the check warns about is the value the resolver ignores.
+        self.assertEqual(effective_source(), "")
+
+    def test_ignored_values_resolve_no_source(self):
+        from crank.client_address import effective_source
+
+        for env, value in (("dev", "cloudflare"), ("prod", "x-forwarded-for")):
+            with self.subTest(env=env), override_settings(ENV=env, CLIENT_IP_SOURCE=value):
+                self.assertTrue(check_client_ip_source())
+                self.assertEqual(effective_source(), "")
+
+    def test_client_ip_source_check_is_registered(self):
+        from django.core.checks.registry import registry
+
+        self.assertIn(check_client_ip_source, registry.registered_checks)
+
+    @override_settings(ENV="prod", CLIENT_IP_SOURCE="nonsense")
+    def test_manage_check_does_not_fail_on_a_bad_value(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        stderr = StringIO()
+        call_command("check", stdout=StringIO(), stderr=stderr)
+        self.assertIn("crank.W003", stderr.getvalue())
