@@ -123,6 +123,84 @@ describe('useCompanyData', () => {
         expect(result.current.scores).toEqual(scoresOf('Leadership'));
     });
 
+    // The tests above read the hook after React has run its effects. These
+    // record what every single render returned, including the one between an
+    // id change and the effect that starts the new requests.
+    describe('every render, not only the settled one', () => {
+        interface Seen {
+            id: number | null;
+            signedIn: boolean;
+            scores: unknown[];
+            scoresLoading: boolean;
+            provenance: unknown;
+            provenanceLoading: boolean;
+            pendingCorrections: unknown[];
+        }
+        const recordingHook = (
+            initialProps: {id: number | null; signedIn: boolean}, options?: {skipScores?: boolean},
+        ) => {
+            const renders: Seen[] = [];
+            const view = renderHook(({id, signedIn}) => {
+                const data = useCompanyData(id, signedIn, options);
+                renders.push({
+                    id, signedIn, scores: data.scores, scoresLoading: data.scoresLoading,
+                    provenance: data.provenance, provenanceLoading: data.provenanceLoading,
+                    pendingCorrections: data.pendingCorrections,
+                });
+                return data;
+            }, {initialProps});
+            return {...view, renders};
+        };
+
+        test('no render for company 2 returns anything of company 1, and each one reports loading', async () => {
+            const {renders, rerender} = recordingHook({id: 1, signedIn: true});
+            // Loading from the very first render, before any effect has run.
+            expect(renders[0]).toMatchObject({id: 1, scoresLoading: true, provenanceLoading: true});
+            await settle('/scores/', ok(scoresOf('Culture')));
+            await settle('/provenance/', ok(provenanceOf(1)));
+            await settle('/company-corrections/', ok({corrections: [correction(7)]}));
+            expect(renders[renders.length - 1]).toMatchObject({
+                id: 1, scores: scoresOf('Culture'), provenance: provenanceOf(1), pendingCorrections: [correction(7)],
+            });
+
+            rerender({id: 2, signedIn: true});
+
+            const forTwo = renders.filter(entry => entry.id === 2);
+            // The render before the effects and the one their state updates cause.
+            expect(forTwo.length).toBeGreaterThanOrEqual(2);
+            for (const entry of forTwo) {
+                expect(entry).toEqual({
+                    id: 2, signedIn: true, scores: [], scoresLoading: true, provenance: null,
+                    provenanceLoading: true, pendingCorrections: [],
+                });
+            }
+        });
+
+        test('with skipScores no render reports scores as loading, across a company change', async () => {
+            const {renders, rerender} = recordingHook({id: 1, signedIn: false}, {skipScores: true});
+            await settle('/provenance/', ok(provenanceOf(1)));
+            rerender({id: 2, signedIn: false});
+            await settle('/organizations/2/provenance/', ok(provenanceOf(2)));
+
+            expect(renders.filter(entry => entry.id === 2).length).toBeGreaterThanOrEqual(2);
+            expect(renders.map(entry => entry.scoresLoading)).toEqual(renders.map(() => false));
+            expect(renders.map(entry => entry.scores)).toEqual(renders.map(() => []));
+            expect(requested('/scores/')).toBe(0);
+        });
+
+        test('no signed-out render returns the pending suggestions loaded while signed in', async () => {
+            const {renders, rerender} = recordingHook({id: 1, signedIn: true});
+            await settle('/company-corrections/', ok({corrections: [correction(7)]}));
+            expect(renders[renders.length - 1].pendingCorrections).toEqual([correction(7)]);
+
+            rerender({id: 1, signedIn: false});
+
+            const signedOut = renders.filter(entry => !entry.signedIn);
+            expect(signedOut.length).toBeGreaterThanOrEqual(1);
+            for (const entry of signedOut) expect(entry.pendingCorrections).toEqual([]);
+        });
+    });
+
     test('a non-OK scores response leaves the scores empty', async () => {
         const {result, rerender} = renderHook(({id}) => useCompanyData(id, false), {initialProps: {id: 1}});
         await settle('/scores/', ok(scoresOf('Culture')));
@@ -233,6 +311,38 @@ describe('useCompanyData', () => {
         rerender({id: 3});
         await settle('organization=3', new Error('offline'));
         expect(result.current.pendingCorrections).toEqual([]);
+        expect(errorSpy).not.toHaveBeenCalled();
+    });
+
+    test('a late failure for the previous company does not hide the loaded list', async () => {
+        const {result, rerender} = renderHook(({id}) => useCompanyData(id, true), {initialProps: {id: 1}});
+        rerender({id: 2});
+        await settle('organization=2', ok({corrections: [correction(9)]}));
+
+        await settle('organization=1', new Error('late failure'));
+
+        expect(result.current.pendingCorrections.map(item => item.id)).toEqual([9]);
+    });
+
+    test('a non-OK answer that carries a corrections list shows nothing', async () => {
+        const {result} = renderHook(() => useCompanyData(1, true));
+        // The error body has the shape of a real answer on purpose: only the
+        // status may decide that it is not shown.
+        await settle('/company-corrections/', failed(403, {corrections: [correction(7)]}));
+
+        expect(result.current.pendingCorrections).toEqual([]);
+    });
+
+    test('requests that fail after the unmount change nothing and log nothing', async () => {
+        const {result, unmount} = renderHook(() => useCompanyData(5, true));
+        const before = result.current;
+        unmount();
+
+        await settle('/scores/', new Error('late failure'));
+        await settle('/provenance/', new Error('late failure'));
+        await settle('/company-corrections/', new Error('late failure'));
+
+        expect(result.current).toBe(before);
         expect(errorSpy).not.toHaveBeenCalled();
     });
 
