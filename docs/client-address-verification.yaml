@@ -1,0 +1,21 @@
+# Copyright (c) 2024 Isaac Adams
+# Licensed under the MIT License. See LICENSE file in the project root for full license information.
+#
+# Operator verification records for the trusted client address (issue #538).
+# How to fill one in: docs/runbook-client-address.md ("Record, then enable").
+#
+# Rule: a record holds dates and pass/fail values only. Never write an
+# address, a hostname, a tunnel id or any other detail of the network here.
+#
+# CI (crank/tests/test_client_address.py) refuses CLIENT_IP_SOURCE: "cloudflare"
+# in k8s/crank-configmap.yml unless the LAST record below passes. A record is
+# the operator's attestation; CI cannot check that it is true.
+#
+# Fields of one record:
+#   date: "YYYY-MM-DD"            the day the checks were run; not in the future
+#   verified_by: "<name>"         a name or handle
+#   g1_public_path: pass | fail
+#   g2_private_path: pass | waived | fail
+#   g2_method: nodeport-addresses | clusterip | firewall | waived
+#   edge_header_checks: pass | fail
+verifications: []
