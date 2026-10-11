@@ -1195,7 +1195,7 @@ body.app-nav-drawer-open {
     /* Tighten the gap between the yielding history and the bottom stack
        (overrides the .mb-3 utility, which is !important). */
     #job-search-chat .card-body [role='log'] {
-        margin-bottom: .5rem !important;
+        margin-bottom: .25rem !important;
     }
 
     /* Keep the notice itself as compact as the touch-target contract allows. */
