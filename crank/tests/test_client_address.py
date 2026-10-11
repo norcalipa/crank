@@ -937,6 +937,8 @@ class DeploymentGateTests(SimpleTestCase):
     def setUp(self):
         self.manifests, self.texts = (dict(group) for group in self.checked_in)
         self.edit(CONFIGMAP_FILE, switch_off)
+        # The record is passed to each case explicitly, never read from disk.
+        del self.manifests[RECORD_FILE]
 
     def record(self, **overrides):
         record = {
@@ -1006,6 +1008,16 @@ class DeploymentGateTests(SimpleTestCase):
         self.assertIn(".github/workflows/update-home-deployment.yml", texts)
         self.assertIn("Dockerfile", texts)
         self.assertIn("Base.Dockerfile", texts)
+        # .env-prod is passed to the build as arguments only: with no ARG in
+        # an image file, none of them can become environment.
+        for name in ("Dockerfile", "Base.Dockerfile"):
+            self.assertNotRegex(texts[name], r"(?im)^\s*ARG\b", name)
+        self.assertIn("docker-compose.yml", texts)
+        self.assertNotIn("docker-compose.yml", manifests)
+        self.assertIn(self.workflow, manifests)
+        self.assertIn("run_test_with_timeout.sh", texts)
+        self.assertIn("manage.py", texts)
+        self.assertIn(RECORD_FILE, manifests)
         configmap, problems = deployment_problems(manifests, texts)
         self.assertEqual(problems, [])
         self.assertEqual(

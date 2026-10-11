@@ -485,12 +485,25 @@ pod can send `CF-Connecting-IP`, and the app cannot tell a tunnel request from
 a direct one. The header is trustworthy only while Cloudflare is the only way
 in. `docs/runbook-client-address.md` is the gate that confirms this. A CI test
 refuses a merge that sets the switch in the ConfigMap `crank-config` without a
-passing record in `docs/client-address-verification.yaml`, and refuses one
-that sets it anywhere else a merge could: another ConfigMap, a container
-`env:` entry or command line, a Secret a workflow creates, a workflow, or an
-image default. It does not open secrets files and cannot see the cluster, so
-a value set there by hand is outside it; the runbook's V1 step checks for
-that. The record is an attestation, not proof.
+passing record in `docs/client-address-verification.yaml`. It also walks
+every tracked file and refuses a merge that sets the switch in another
+ConfigMap, a container `env:` entry or a Secret in any YAML or JSON manifest
+in the repository (including inside a `kind: List`), that names it in any
+other file than the code, tests and documents that read it (so in a workflow,
+a composite action, a script, a Dockerfile or `docker-compose.yml`), that
+tracks a `.env` file, or that stops `.dockerignore` from keeping `.env` out
+of the image, since the app calls `load_dotenv()`.
+
+The gate covers what is written out in tracked text files and nothing else.
+It does not see: anything applied to the cluster by hand; the contents of
+Secrets the operator creates; the contents of secrets-named files and of
+`.env-prod`, which it never opens; a secrets file copied to another name and
+applied under it; a name assembled at run time (by the shell, `envsubst`, a
+YAML escape inside a command, or a Dockerfile `ENV` named by a build
+argument); files that are not UTF-8 text or not tracked; and environment set
+outside the repository at run time. The runbook lists these under "What CI
+cannot see", and its V1 step, which reads the value the running pod has, is
+the check for them. The record is an attestation, not proof.
 
 **Tests:** `crank/tests/test_client_address.py` (parsing, the single header,
 production-only, the warning, the underscore-header twin through Django's WSGI

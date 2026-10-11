@@ -233,19 +233,53 @@ cluster.
    The record is the operator's attestation; CI cannot check that it is true.
 
    `data` of the ConfigMap `crank-config` is the only place the switch may be
-   set. The same test reads every manifest under `k8s/` and `deploy/`, the
-   deploy workflows, the Dockerfiles and `docker-compose.yml`, and fails,
-   whatever the record says, if `CLIENT_IP_SOURCE` appears in another
-   ConfigMap, a container `env:` entry or command line, a Secret created by a
-   workflow or defined in a manifest, a workflow, or an image default. It also
-   fails if a container loads a ConfigMap or Secret it cannot account for, or
-   if a workflow applies a secrets file.
+   set. The same test walks every file git tracks, wherever it lives, and
+   fails, whatever the record says, if:
 
-   What CI cannot see: the contents of secrets files (it never opens them; no
-   workflow applies one), the `db-connect-credentials` Secret, which the
-   operator creates in the cluster, and anything changed in the cluster by
-   hand (`kubectl edit`, `kubectl set env`, a key added to a Secret). V1 below
-   is the check for those.
+   - a YAML or JSON manifest anywhere in the repository sets
+     `CLIENT_IP_SOURCE` in another ConfigMap, a second `crank-config`, a
+     container `env:` entry or a Secret, including inside a `kind: List`;
+   - any other tracked file names `CLIENT_IP_SOURCE` outside a comment: a
+     workflow, a composite action, a script, a Dockerfile,
+     `docker-compose.yml` or application code. Only the code that reads the
+     switch (`crank/settings/base.py`, `crank/settings/prod.py`,
+     `crank/checks.py`, `crank/client_address.py`, `crank/release.py`),
+     `crank/tests/` and `docs/` may name it;
+   - a workflow creates a Secret that carries it, or creates one from a file;
+   - a container loads a ConfigMap or Secret the test cannot account for;
+   - a workflow or script hands a secrets-named file to `kubectl apply`, on
+     one line or continued over several;
+   - a file named `.env` is tracked anywhere, any `.env*` file other than
+     `.env-prod` is tracked, or `.dockerignore` no longer keeps `.env` out of
+     the image. The app calls `load_dotenv()`, so a `.env` inside the image
+     would set the variable.
+
+   The enabling pull request therefore changes two files, the ConfigMap and
+   the record, and no test.
+
+   What CI cannot see. This is the whole list:
+
+   - anything applied to the cluster by hand: `kubectl edit`,
+     `kubectl set env`, `kubectl apply` of a file that is not in the
+     repository, a key added to a ConfigMap or Secret;
+   - the contents of Secrets the operator creates in the cluster
+     (`db-connect-credentials`, accepted by name);
+   - the contents of secrets-named files and of `.env-prod`: the test never
+     opens them. The deploy workflows copy `k8s/crank-capability-secrets.yml`
+     to the node and do not apply it. `.env-prod` reaches the image build as
+     build arguments only, and neither Dockerfile declares an `ARG`;
+   - a secrets-named file copied to another name and applied under that name;
+   - a name put together at run time instead of written out: by the shell,
+     by `envsubst`, by a YAML escape inside a command, or by a Dockerfile
+     `ENV` whose name is a build argument;
+   - files that are not UTF-8 text, and files git does not track;
+   - environment set outside the repository at run time: on the node, in a
+     `.env` file written into a running container or a mounted volume, or in
+     an image built from something other than this repository;
+   - whether the record is true.
+
+   V1 below reads the value the running pod actually has, and is the check
+   for every item on this list.
 4. Merge only after the "Deploy to Kubernetes (prod)" run of the release that
    contains the limiter has finished. The manifest-only workflow deploys image
    tag `latest`, and that run is what moves `latest`.

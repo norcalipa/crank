@@ -11,6 +11,13 @@
 # in k8s/crank-configmap.yml unless the LAST record below passes. A record is
 # the operator's attestation; CI cannot check that it is true.
 #
+# The same test refuses the switch in any other tracked file: another
+# manifest, a workflow, a script, an image file, a tracked .env. It cannot see
+# what is applied to the cluster by hand, the contents of Secrets the operator
+# creates or of secrets files (it never opens them), a name assembled at run
+# time, or environment set outside the repository. The runbook's "What CI
+# cannot see" is the whole list; its V1 step checks the running pod.
+#
 # Fields of one record:
 #   date: "YYYY-MM-DD"            the day the checks were run; not in the future
 #   verified_by: "<name>"         a name or handle
