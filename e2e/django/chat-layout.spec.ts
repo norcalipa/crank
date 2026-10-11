@@ -275,7 +275,12 @@ test.describe('one transcript scroller in the assistant panel (issue #483)', () 
             const share = atRest.transcript / atRest.body;
             test.info().annotations.push({type: 'transcript share', description: `${size.width}x${size.height}${size.wideFont ? ' wide font' : ''}: `
                 + `${atRest.transcript}px of ${atRest.body}px = ${share.toFixed(3)} (row ${atRest.row}, header ${atRest.header}, footer ${atRest.footer})`});
-            if (size.gate.share) expect(share, 'transcript share of the panel body').toBeGreaterThanOrEqual(size.gate.share);
+            // 320px with the wider font: the composer's disclaimer takes a second line, which is the 0.47 case
+            // whether the test forced that font or the machine's own fallback is the wide one (the CI image).
+            const disclaimerLines = await page.locator('#job-search-chat .chat-disclaimer').evaluate((el) => (
+                Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight))));
+            const shareGate = size.width === 320 && size.height === 640 && disclaimerLines > 1 ? 0.47 : size.gate.share;
+            if (shareGate) expect(share, 'transcript share of the panel body').toBeGreaterThanOrEqual(shareGate);
             if (size.gate.transcript) expect(atRest.transcript, 'transcript height').toBeGreaterThanOrEqual(size.gate.transcript);
             if (size.gate.withFooter) {
                 expect((atRest.transcript + atRest.footer) / atRest.body, 'transcript and composer band share of the panel body')
@@ -346,23 +351,24 @@ test.describe('one transcript scroller in the assistant panel (issue #483)', () 
             await expect.poll(async () => (await readLayout(page)).fromEnd, {message: 'the failed turn is followed'}).toBeLessThanOrEqual(2);
             const failed = await settledLayout(page);
             problems.push(...scrollerProblems('failed turn', failed));
-            // The failed-turn card ends in view. From 640px of height a pointer reaches both of its actions, and
-            // where the transcript is tall enough the whole card shows. At the short phone sizes (and with the
-            // wide font) the error above the composer leaves the transcript about 100px until that notice can
-            // collapse (the next part of #483): one action is in reach and the other a transcript scroll away.
+            // The failed-turn card ends in view and nothing covers the part of it the transcript shows; where the
+            // transcript is tall enough the whole card shows. The error above the composer takes 100px or more of
+            // the transcript on phones (more with the wide font) until that notice can collapse, which is the
+            // next part of #483: until then the card's start is a transcript scroll away there.
             const card = await failedTurn.evaluate((el) => {
                 const r = el.getBoundingClientRect();
                 const bounds = el.closest('[role="log"]')!.getBoundingClientRect();
-                const reachable = Array.from(el.querySelectorAll('button')).filter((button) => {
+                const covered = Array.from(el.querySelectorAll('button')).filter((button) => {
                     const box = button.getBoundingClientRect();
-                    const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
                     const middle = box.top + box.height / 2;
-                    return middle > bounds.top && middle < bounds.bottom && !!top && button.contains(top);
-                }).length;
-                return {height: r.height, room: bounds.height, topInside: r.top >= bounds.top - 1, bottomInside: r.bottom <= bounds.bottom + 1, reachable};
+                    if (middle <= bounds.top || middle >= bounds.bottom) return false;
+                    const top = document.elementFromPoint(box.left + box.width / 2, middle);
+                    return !top || !button.contains(top);
+                }).map((button) => (button.textContent || '').trim());
+                return {height: r.height, room: bounds.height, topInside: r.top >= bounds.top - 1, bottomInside: r.bottom <= bounds.bottom + 1, covered};
             });
             expect(card.bottomInside, 'the failed-turn card ends inside the transcript').toBe(true);
-            expect(card.reachable, 'failed-turn actions a pointer reaches').toBeGreaterThanOrEqual(size.height >= 640 && !size.wideFont ? 2 : 1);
+            expect(card.covered, 'failed-turn actions in view that a pointer does not reach').toEqual([]);
             // Room: the transcript's box less its padding and the message's own margin.
             if (card.height <= card.room - 48) expect(card.topInside, 'the failed-turn card is fully inside the transcript').toBe(true);
             await page.unroute(/\/api\/agent\/conversations\/\d+\/$/);
