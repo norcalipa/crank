@@ -33,14 +33,10 @@ test.describe('priorities editor (issue #480)', () => {
         requireDjangoTier();
         await page.setViewportSize({width: 1280, height: 900});
         await login(page, PREFS_USER, E2E_PASSWORD);
-        // Start every journey from the defaults.
+        // Start every journey from the defaults. The reset goes through the API: the Reset button only
+        // exists once the priorities have loaded, so looking for it right after a navigation races that load.
+        expect(await setPriorities(page, null)).toBe(0);
         await page.goto('/chat/');
-        const reset = page.getByTestId('priorities-main').getByRole('button', {name: 'Reset priorities'});
-        if (await reset.isVisible().catch(() => false)) {
-            await reset.click();
-            await page.getByTestId('priorities-main').getByRole('button', {name: 'Reset priorities'}).click();
-            await expect(page.getByTestId('priorities-main').getByRole('group', {name: 'Confirm reset'})).toHaveCount(0);
-        }
     });
 
     test('edit, review, apply and undo from the editor', async ({page}) => {
