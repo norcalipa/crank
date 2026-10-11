@@ -40,6 +40,43 @@ const mockFetch = (routes: Array<[string, Reply | Promise<Reply>]>) => {
     });
 };
 
+// Every module reachable through static or dynamic imports, as paths relative
+// to static/js, and every package imported along the way (the same walk as
+// workspace/bundleIsolation.test.ts).
+const JS_ROOT = path.resolve(__dirname, '..');
+const IMPORT_RE = /(?:import|export)\s[^'"]*?from\s+['"]([^'"]+)['"]|import\(\s*['"]([^'"]+)['"]\s*\)|import\s+['"]([^'"]+)['"]/g;
+
+const resolveModule = (from: string, spec: string): string | null => {
+    const base = path.resolve(path.dirname(from), spec);
+    const candidates = [base, `${base}.ts`, `${base}.tsx`, `${base}.js`,
+        path.join(base, 'index.ts'), path.join(base, 'index.tsx')];
+    return candidates.find(candidate => fs.existsSync(candidate) && fs.statSync(candidate).isFile()) ?? null;
+};
+
+const reachable = (entry: string): {files: string[]; packages: string[]} => {
+    const seen = new Set<string>();
+    const packages = new Set<string>();
+    const queue = [entry];
+    while (queue.length) {
+        const file = queue.pop() as string;
+        if (seen.has(file)) continue;
+        seen.add(file);
+        for (const match of fs.readFileSync(file, 'utf8').matchAll(IMPORT_RE)) {
+            const spec = match[1] || match[2] || match[3];
+            if (!spec.startsWith('.')) {
+                packages.add(spec);
+                continue;
+            }
+            const resolved = resolveModule(file, spec);
+            if (resolved) queue.push(resolved);
+        }
+    }
+    return {
+        files: Array.from(seen).map(file => path.relative(JS_ROOT, file).split(path.sep).join('/')).sort(),
+        packages: Array.from(packages).sort(),
+    };
+};
+
 const loaded = () => waitFor(() => {
     expect(screen.queryByTestId('scores-loading')).not.toBeInTheDocument();
     expect(screen.queryByTestId('provenance-loading')).not.toBeInTheDocument();
@@ -112,13 +149,25 @@ describe('CompanyDetails', () => {
         expect(ids.filter(id => order.includes(id as string))).toEqual(order);
     });
 
-    test('the module reaches neither the modal lock nor a portal', () => {
-        for (const file of ['CompanyDetails.tsx', 'useCompanyData.ts']) {
-            const source = fs.readFileSync(path.resolve(__dirname, file), 'utf8');
-            expect(source).not.toContain('modalIsolation');
-            expect(source).not.toContain('createPortal');
-            expect(source).not.toContain('react-dom');
+    test('the module graph of the content reaches neither the modal lock nor a portal', () => {
+        const graph = reachable(path.resolve(__dirname, 'CompanyDetails.tsx'));
+
+        expect(graph.files).toContain('company/useCompanyData.ts');
+        expect(graph.files.length).toBeGreaterThan(2);
+        expect(graph.files).not.toContain('modalIsolation.ts');
+        expect(graph.packages).toContain('react');
+        expect(graph.packages).not.toContain('react-dom');
+        for (const file of graph.files) {
+            expect(fs.readFileSync(path.join(JS_ROOT, file), 'utf8')).not.toContain('createPortal');
         }
+    });
+
+    test('the same walk does find the modal lock and the portal from the dialog shell', () => {
+        const graph = reachable(path.join(JS_ROOT, 'OrganizationDetailsPopup.tsx'));
+
+        expect(graph.files).toContain('company/CompanyDetails.tsx');
+        expect(graph.files).toContain('modalIsolation.ts');
+        expect(graph.packages).toContain('react-dom');
     });
 
     test('a plain click on Ask calls onAsk and prevents the navigation', async () => {
@@ -227,6 +276,47 @@ describe('CompanyDetails', () => {
         await waitFor(() => expect(screen.getByTestId('provenance-retry')).toHaveFocus());
     });
 
+    // The date helpers moved with the markup. Dates are placed relative to
+    // the real clock, an hour inside each range, so no timer is replaced.
+    describe('dates in "Data Freshness & Sources"', () => {
+        const HOUR = 60 * 60 * 1000;
+        const ago = (days: number) => new Date(Date.now() - days * 24 * HOUR - HOUR).toISOString();
+        const showProvenance = async (overrides: Record<string, unknown>) => {
+            mockFetch([
+                ['/scores/', reply([])],
+                ['/provenance/', reply(provenance(1, overrides))],
+                ['/api/company-corrections/', reply({corrections: []})],
+            ]);
+            renderDetails();
+            await loaded();
+        };
+
+        test.each([
+            [0, 'Today ('],
+            [1, '1 day ago ('],
+            [3, '3 days ago ('],
+        ])('a record edited %i day(s) ago reads "%s…"', async (days, text) => {
+            await showProvenance({organization_modified: ago(days)});
+
+            expect(screen.getByTestId('last-updated').textContent).toContain(text);
+        });
+
+        test('a missing date reads "Unknown"', async () => {
+            await showProvenance({
+                organization_modified: null,
+                organization_created: null,
+                latest_observation: {
+                    source_url: 'https://example.com/careers', observed_domain: 'example.com', observed_at: null,
+                    extraction_version: 'v1', status: 'accepted',
+                },
+            });
+
+            expect(screen.getByTestId('last-updated')).toHaveTextContent(/^Unknown$/);
+            expect(screen.getByTestId('added-to-catalog')).toHaveTextContent(/^Unknown$/);
+            expect(screen.getByTestId('observation-details')).toHaveTextContent('Last Observed:Unknown (Unknown)');
+        });
+    });
+
     // Issue #486: the score breakdown of one company must never be shown for
     // another. Rendered through the dialog, whose props did not change, so the
     // same tests run against the code before the extraction.
@@ -256,6 +346,32 @@ describe('CompanyDetails', () => {
             expect(screen.queryByText('Culture')).not.toBeInTheDocument();
             expect(screen.queryByText('4.50')).not.toBeInTheDocument();
             // With no breakdown, the card falls back to the company's own overall score.
+            expect(screen.getByText('Overall Score')).toBeInTheDocument();
+            expect(screen.getByText('3.10')).toBeInTheDocument();
+        });
+
+        // The path a modal dialog actually takes: A is closed before B is opened.
+        test('open A, close the dialog, open B with a failing scores request: B shows no scores of A', async () => {
+            mockFetch([
+                ['/api/organizations/1/scores/', reply([{type__name: 'Culture', avg_score: 4.5}])],
+                ['/api/organizations/2/scores/', {
+                    ok: false, status: 500, json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+                }],
+                ['/provenance/', reply(provenance(1))],
+            ]);
+            const {rerender} = render(openDialog(company(1)));
+            await loaded();
+            expect(screen.getByText('Culture')).toBeInTheDocument();
+
+            // Closing keeps the company selected, as the list does.
+            rerender(<OrganizationDetailsPopup organization={company(1)} visible={false} onClose={() => {}}/>);
+            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            rerender(openDialog(company(2, {avg_score: 3.1})));
+            await loaded();
+
+            expect(screen.getByRole('heading', {name: 'Company 2'})).toBeInTheDocument();
+            expect(screen.queryByText('Culture')).not.toBeInTheDocument();
+            expect(screen.queryByText('4.50')).not.toBeInTheDocument();
             expect(screen.getByText('Overall Score')).toBeInTheDocument();
             expect(screen.getByText('3.10')).toBeInTheDocument();
         });
