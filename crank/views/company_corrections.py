@@ -10,6 +10,7 @@ fetches the evidence URL.
 import json
 import time
 import uuid
+from typing import NamedTuple
 
 from django.conf import settings
 from django.core.cache import cache
@@ -17,6 +18,7 @@ from django.db import IntegrityError, transaction
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_protect
 
+from crank.client_address import client_address
 from crank.forms.company_correction import CompanyCorrectionForm
 from crank.models.company_correction import CompanyCorrection, canonical_text
 from crank.models.company_profile import CompanyFieldEvidence
@@ -26,6 +28,19 @@ from crank.services.company_evidence import resolve_field_evidence, scoped_corre
 RATE_LIMIT_SECONDS = 60 * 60
 DEFAULT_RATE_LIMIT = 10
 DEFAULT_REJECTED_LIMIT = 60
+DEFAULT_IP_RATE_LIMIT = 20
+DEFAULT_IP_REJECTED_LIMIT = 120
+STORED = "stored"
+REJECTED = "rejected"
+SCOPE_ACCOUNT = "account"
+SCOPE_NETWORK = "network"
+_LIMIT_MESSAGES = {
+    SCOPE_ACCOUNT: "You have reached the correction limit. Please try again later.",
+    SCOPE_NETWORK: (
+        "Too many corrections were sent from your network this hour. "
+        "Please try again later."
+    ),
+}
 MAX_ID_DIGITS = 18
 MAX_ORGANIZATION_ID = 2**63 - 1
 MAX_BODY_BYTES = 8 * 1024
@@ -68,11 +83,6 @@ def _payload(correction):
     }
 
 
-def _rate_keys(request):
-    base = f"company-correction-rate:{request.user.pk}"
-    return base, f"{base}:reset"
-
-
 def _retry_after(request, reset_key):
     """Seconds until the caller's hourly window ends (at least 1)."""
     reset_at = cache.get(reset_key)
@@ -111,30 +121,90 @@ def _reserve(keys, limit):
     return True
 
 
-def _reserve_slot(request):
-    """Take one allowance atomically; False (and nothing held) once over the limit."""
-    limit = getattr(settings, "COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR", DEFAULT_RATE_LIMIT)
-    return _reserve(_rate_keys(request), limit)
+class _Counter(NamedTuple):
+    """One hourly allowance: what it counts, who it binds, and its limit."""
+
+    kind: str
+    scope: str
+    key: str
+    limit: int
+
+    @property
+    def keys(self):
+        return self.key, f"{self.key}:reset"
 
 
-def _rejection_keys(request):
-    base = f"company-correction-rejected:{request.user.pk}"
-    return base, f"{base}:reset"
+def _counters(user_pk, address_key=None):
+    """The request's allowances, in the fixed order they are reserved.
 
-
-def _rejections_exhausted(request):
-    """The reset key of the exhausted rejection cap, else None."""
-    limit = getattr(
+    Per-account caps come first within each kind, so the per-address layer can
+    only add refusals. The per-address rows exist only for an identified
+    client address, and carry its keyed digest, never the address.
+    """
+    rate = getattr(settings, "COMPANY_CORRECTION_RATE_LIMIT_PER_HOUR", DEFAULT_RATE_LIMIT)
+    rejected = getattr(
         settings, "COMPANY_CORRECTION_REJECTED_LIMIT_PER_HOUR", DEFAULT_REJECTED_LIMIT
     )
-    keys = _rejection_keys(request)
-    if (cache.get(keys[0]) or 0) >= limit:
-        return keys[1]
+    counters = [
+        _Counter(REJECTED, SCOPE_ACCOUNT, f"company-correction-rejected:{user_pk}", rejected)
+    ]
+    if address_key:
+        counters.append(
+            _Counter(
+                REJECTED,
+                SCOPE_NETWORK,
+                f"company-correction-ip-rejected:{address_key}",
+                getattr(
+                    settings,
+                    "COMPANY_CORRECTION_IP_REJECTED_LIMIT_PER_HOUR",
+                    DEFAULT_IP_REJECTED_LIMIT,
+                ),
+            )
+        )
+    counters.append(
+        _Counter(STORED, SCOPE_ACCOUNT, f"company-correction-rate:{user_pk}", rate)
+    )
+    if address_key:
+        counters.append(
+            _Counter(
+                STORED,
+                SCOPE_NETWORK,
+                f"company-correction-ip-rate:{address_key}",
+                getattr(
+                    settings,
+                    "COMPANY_CORRECTION_IP_RATE_LIMIT_PER_HOUR",
+                    DEFAULT_IP_RATE_LIMIT,
+                ),
+            )
+        )
+    return counters
+
+
+def _reserve_all(counters):
+    """Take one of every allowance atomically; the refusing counter, else None.
+
+    A refusal releases what was already taken, so it holds and spends nothing.
+    """
+    held = []
+    for counter in counters:
+        if not _reserve(counter.keys, counter.limit):
+            for taken in held:
+                _release(taken.key)
+            return counter
+        held.append(counter)
     return None
 
 
-def _count_rejection(request):
-    _bump(*_rejection_keys(request))
+def _settle(counters, status=None):
+    """Keep only what the outcome spends and release the rest.
+
+    A stored correction (201) keeps the stored allowances, a rejected attempt
+    (400, 404, 409) keeps the rejected ones, and anything else keeps nothing.
+    """
+    kept = STORED if status == 201 else REJECTED if status in (400, 404, 409) else None
+    for counter in counters:
+        if counter.kind != kept:
+            _release(counter.key)
 
 
 def _normalized(value):
@@ -201,35 +271,33 @@ def _create(request):
     return _limited_store(request, payload, idempotency_key)
 
 
-def _too_many(request, reset_key):
+def _too_many(request, counter):
     response = _error_response(
-        "You have reached the correction limit. Please try again later.", status=429
+        _LIMIT_MESSAGES[counter.scope], status=429, extra={"limit_scope": counter.scope}
     )
-    response["Retry-After"] = str(_retry_after(request, reset_key))
+    response["Retry-After"] = str(_retry_after(request, counter.keys[1]))
     return response
 
 
 def _limited_store(request, payload, idempotency_key):
-    """Run the store under an atomically reserved slot.
+    """Run the store under atomically reserved allowances.
 
-    The slot is held only by a stored (201) correction; every other outcome
-    releases it, and rejected attempts count against a separate, larger cap.
+    Every allowance is reserved before the work, so none can grant more than
+    its limit under concurrency. A stored (201) correction holds the stored
+    allowances and a rejected attempt holds the rejected ones; every other
+    outcome, including a refusal, holds nothing.
     """
-    exhausted = _rejections_exhausted(request)
-    if exhausted:
-        return _too_many(request, exhausted)
-    if not _reserve_slot(request):
-        return _too_many(request, _rate_keys(request)[1])
-    key = _rate_keys(request)[0]
+    address = client_address(request)
+    counters = _counters(request.user.pk, address.key if address else None)
+    refused = _reserve_all(counters)
+    if refused is not None:
+        return _too_many(request, refused)
     try:
         response = _store(request, payload, idempotency_key)
     except BaseException:
-        _release(key)
+        _settle(counters)
         raise
-    if response.status_code != 201:
-        _release(key)
-        if response.status_code in (400, 404, 409):
-            _count_rejection(request)
+    _settle(counters, response.status_code)
     return response
 
 

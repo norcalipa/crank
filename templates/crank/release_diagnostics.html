@@ -45,6 +45,8 @@
             <tr><th scope="row">LLM configured</th><td>{{ diagnostics.config.llm_configured }}</td></tr>
             <tr><th scope="row">Job pipeline enabled</th><td>{{ diagnostics.config.job_pipeline_enabled }}</td></tr>
             <tr><th scope="row">Crawl scheduling enabled</th><td>{{ diagnostics.config.crawl_scheduling_enabled }}</td></tr>
+            <tr><th scope="row">Client address source</th><td>{{ diagnostics.config.client_ip_source }}</td></tr>
+            <tr><th scope="row">Client address for this request</th><td>{{ client_address_bucket|default:"not identified" }}</td></tr>
         </tbody>
     </table>
 
