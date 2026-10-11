@@ -44,8 +44,15 @@ describe('bundle isolation', () => {
         expect(names).not.toContain('modalIsolation.ts');
     });
 
-    test('the walker does see modalIsolation from the main-bundle popup', () => {
-        const graph = reachable(path.join(JS_ROOT, 'OrganizationDetailsPopup.tsx'));
+    test('the walker does see modalIsolation from a main-bundle dialog', () => {
+        const graph = reachable(path.join(JS_ROOT, 'CompanyCorrectionForm.tsx'));
         expect(Array.from(graph).map((file) => path.basename(file))).toContain('modalIsolation.ts');
+    });
+
+    test('the company view is not a blocking dialog: its graph never reaches modalIsolation', () => {
+        const graph = reachable(path.join(JS_ROOT, 'company', 'CompanyView.tsx'));
+        const names = Array.from(graph).map((file) => path.basename(file));
+        expect(names).toContain('CompanyDetails.tsx');
+        expect(names).not.toContain('modalIsolation.ts');
     });
 });

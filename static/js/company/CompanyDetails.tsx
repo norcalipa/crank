@@ -9,11 +9,14 @@ import {ScoreDetail, useCompanyData} from './useCompanyData';
 export interface CompanyDetailsOrganization {
     id: number;
     name: string;
-    ranking: number;
-    avg_score: number;
+    // The rank fields come from the ranked list. A company opened by id that
+    // is not in the current list (an `?company=` link, the assistant) has none
+    // of them and says so instead of inventing a rank (issue #486).
+    ranking?: number;
+    avg_score?: number;
     funding_round: string;
     rto_policy: string;
-    profile_completeness: number;
+    profile_completeness?: number;
     rating_dimensions_covered?: number;
     rating_dimensions_total?: number;
     accelerated_vesting: boolean;
@@ -187,6 +190,7 @@ const CompanyDetails: React.FC<CompanyDetailsProps> = ({
 
     const displayScores = organization.avg_scores || scores;
 
+    const ranked = organization.ranking !== undefined && organization.avg_score !== undefined;
     const ratingCoverage = organization.rating_dimensions_total !== undefined
         && organization.rating_dimensions_covered !== undefined
         ? {covered: organization.rating_dimensions_covered, total: organization.rating_dimensions_total}
@@ -270,18 +274,26 @@ const CompanyDetails: React.FC<CompanyDetailsProps> = ({
                     )}
                 </div>
                 <div className="popup-details-scores" data-testid="popup-details-score-card">
-                    <div className="popup-details-score-row">
-                        <span className="fw-bold">Rank:</span>
-                        <span>{organization.ranking}</span>
-                    </div>
-                    <div className="popup-details-score-row">
-                        <span className="fw-bold">Rating coverage:</span>
-                        <span data-testid="rating-coverage">
-                            {ratingCoverage
-                                ? `${ratingCoverage.covered} of ${ratingCoverage.total} rating dimensions`
-                                : `${organization.profile_completeness.toFixed(0)}% of rating dimensions`}
-                        </span>
-                    </div>
+                    {ranked ? (
+                        <>
+                            <div className="popup-details-score-row">
+                                <span className="fw-bold">Rank:</span>
+                                <span>{organization.ranking}</span>
+                            </div>
+                            <div className="popup-details-score-row">
+                                <span className="fw-bold">Rating coverage:</span>
+                                <span data-testid="rating-coverage">
+                                    {ratingCoverage
+                                        ? `${ratingCoverage.covered} of ${ratingCoverage.total} rating dimensions`
+                                        : `${(organization.profile_completeness ?? 0).toFixed(0)}% of rating dimensions`}
+                                </span>
+                            </div>
+                        </>
+                    ) : (
+                        <p className="popup-details-not-ranked text-muted mb-2" data-testid="not-ranked">
+                            Not ranked in this list
+                        </p>
+                    )}
                     {loading ? (
                         <table className="table table-dark" aria-busy="true" data-testid="scores-loading">
                             <tbody>
@@ -303,10 +315,14 @@ const CompanyDetails: React.FC<CompanyDetailsProps> = ({
                                             <td className="text-end w-25">{score.avg_score.toFixed(2)}</td>
                                         </tr>
                                     ))
-                                ) : (
+                                ) : organization.avg_score !== undefined ? (
                                     <tr>
                                         <td className="w-75">Overall Score</td>
                                         <td className="text-end w-25">{organization.avg_score.toFixed(2)}</td>
+                                    </tr>
+                                ) : (
+                                    <tr>
+                                        <td className="w-75 text-muted" data-testid="no-scores">No scores recorded</td>
                                     </tr>
                                 )}
                             </tbody>

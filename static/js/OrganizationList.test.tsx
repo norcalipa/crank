@@ -21,6 +21,9 @@ interface Organization {
     accelerated_vesting: boolean;
 }
 
+// beforeEach replaces history.pushState with a stub; the history tests put this back.
+const realPushState = window.history.pushState;
+
 describe('OrganizationList', () => {
     let openSuggestCompanySpy: jest.SpyInstance;
     let closeSuggestCompanySpy: jest.SpyInstance;
@@ -347,7 +350,7 @@ describe('OrganizationList', () => {
         expect(global.window.history.pushState).toHaveBeenCalled();
     });
 
-    test('opens and closes popup', async () => {
+    test('opens and closes the company view', async () => {
         render(<OrganizationList organizations={organizations} />);
 
         // Wait for the component to render
@@ -369,11 +372,11 @@ describe('OrganizationList', () => {
             expect(screen.getByText('Company (for profit)')).toBeInTheDocument();
         });
 
-        // Click the close button
-        const closeButton = screen.getByRole('button', { name: 'Close' });
+        // Back to results closes the view
+        const closeButton = screen.getByRole('button', { name: 'Back to results' });
         fireEvent.click(closeButton);
 
-        // Check that the popup is closed
+        // Check that the view is closed
         await waitFor(() => {
             expect(screen.queryByText('Company (for profit)')).not.toBeInTheDocument();
         });
@@ -406,7 +409,7 @@ describe('OrganizationList', () => {
         expect(screen.getByText('https://org1.example.com')).toBeInTheDocument();
     });
 
-    test('does not blur the focused element when opening or closing the popup (#409)', async () => {
+    test('does not blur the focused element when opening or closing the company view (#409)', async () => {
         // Guard against the removed `document.activeElement.blur()` workaround:
         // keyboard focus must survive row activation and popup close so the
         // restored `:focus-visible` indicators remain meaningful.
@@ -432,8 +435,8 @@ describe('OrganizationList', () => {
             });
             expect(blurSpy).not.toHaveBeenCalled();
 
-            // Close the popup.
-            fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+            // Back to results.
+            fireEvent.click(screen.getByRole('button', { name: 'Back to results' }));
             await waitFor(() => {
                 expect(screen.queryByText('https://org1.example.com')).not.toBeInTheDocument();
             });
@@ -448,32 +451,25 @@ describe('OrganizationList', () => {
         }
     });
 
-    test('opening the suggest modal closes the details dialog (#464)', async () => {
+    test('the results, with Suggest a company, are hidden while a company view is open', async () => {
         render(<><OrganizationList organizations={organizations} isAuthenticated={true} /><SuggestCompanyHost /></>);
 
         await waitFor(() => {
             expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
         });
+        expect(screen.getByTestId('organization-results-region')).not.toHaveAttribute('hidden');
 
-        // Open the details dialog first.
         fireEvent.click(screen.getAllByText('Organization 1')[0]);
-        await waitFor(() => {
-            expect(screen.getByText('Company (for profit)')).toBeInTheDocument();
-        });
-        expect(screen.getByRole('dialog')).toBeInTheDocument();
+        await screen.findByTestId('company-view');
 
-        // Opening the suggest modal must close the details dialog.
-        fireEvent.click(screen.getByTestId('suggest-company-btn'));
-
-        await waitFor(() => {
-            expect(screen.getByTestId('suggest-company-modal')).toBeInTheDocument();
-        });
-        expect(screen.queryByText('Company (for profit)')).not.toBeInTheDocument();
-        expect(screen.getAllByRole('dialog')).toHaveLength(1);
-        expect(openSuggestCompanySpy).toHaveBeenCalledWith({source: 'rankings', searchTerm: '', page: 1});
+        // The region stays mounted, so search, filters and page need no restoring.
+        expect(screen.getByTestId('organization-results-region')).toHaveAttribute('hidden');
+        expect(screen.queryByRole('button', {name: 'Suggest a company'})).not.toBeInTheDocument();
+        expect(screen.queryByRole('textbox', {name: 'Search organizations'})).not.toBeInTheDocument();
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
 
-    test('opening the details dialog closes the suggest modal (#464)', async () => {
+    test('opening the company view closes the suggest modal (#464)', async () => {
         render(<><OrganizationList organizations={organizations} isAuthenticated={true} /><SuggestCompanyHost /></>);
 
         await waitFor(() => {
@@ -491,7 +487,8 @@ describe('OrganizationList', () => {
             expect(screen.getByText('Company (for profit)')).toBeInTheDocument();
         });
         expect(screen.queryByTestId('suggest-company-modal')).not.toBeInTheDocument();
-        expect(screen.getAllByRole('dialog')).toHaveLength(1);
+        expect(screen.getByTestId('company-view')).toBeInTheDocument();
+        expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
         expect(closeSuggestCompanySpy).toHaveBeenCalled();
     });
 
@@ -883,37 +880,40 @@ describe('OrganizationList', () => {
             window.dispatchEvent(new CustomEvent('crank:company-open', {detail}));
         });
 
-        test('opens the details dialog for a listed organization', async () => {
+        test('opens the company view for a listed organization', async () => {
             render(<OrganizationList organizations={organizations} />);
-            expect(screen.queryByRole('dialog')).toBeNull();
+            expect(screen.queryByTestId('company-view')).toBeNull();
             fire({organizationId: 1});
             await waitFor(() => {
-                expect(screen.getByRole('dialog')).toBeInTheDocument();
+                expect(screen.getByTestId('company-view')).toBeInTheDocument();
             });
         });
 
-        test.each([[999999], ['1'], [1.5], [undefined]])('ignores an unknown or non-integer id (%p)', async (id) => {
+        test.each([['1'], [1.5], [0], [-1], [undefined], [null]])('ignores a non-integer or non-positive id (%p) without a request', async (id) => {
             render(<OrganizationList organizations={organizations} />);
+            const before = (global.fetch as jest.Mock).mock.calls.length;
             fire({organizationId: id});
-            expect(screen.queryByRole('dialog')).toBeNull();
+            expect(screen.queryByTestId('company-view')).toBeNull();
+            expect((global.fetch as jest.Mock).mock.calls.slice(before).filter(([url]) => String(url).includes('/api/organizations/'))).toEqual([]);
         });
 
         test('ignores an event with no detail', () => {
             render(<OrganizationList organizations={organizations} />);
             fire(null);
-            expect(screen.queryByRole('dialog')).toBeNull();
+            expect(screen.queryByTestId('company-view')).toBeNull();
         });
 
-        test('the typed company target opens a listed company, reports a missing one, and is released on unmount', async () => {
+        test('the typed company target opens any valid id, refuses one that cannot be an id, and is released on unmount', async () => {
             const {unmount} = render(<OrganizationList organizations={organizations} />);
             act(() => {
-                expect(openWorkspaceCompany(999999)).toBe('not-found');
+                expect(openWorkspaceCompany(0)).toBe('not-found');
+                expect(openWorkspaceCompany(1.5)).toBe('not-found');
             });
-            expect(screen.queryByRole('dialog')).toBeNull();
+            expect(screen.queryByTestId('company-view')).toBeNull();
             act(() => {
                 expect(openWorkspaceCompany(1)).toBe('opened');
             });
-            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+            await waitFor(() => expect(screen.getByTestId('company-view')).toBeInTheDocument());
             unmount();
             expect(openWorkspaceCompany(1)).toBe('no-target');
         });
@@ -922,52 +922,50 @@ describe('OrganizationList', () => {
             const {unmount} = render(<OrganizationList organizations={organizations} />);
             unmount();
             fire({organizationId: 1});
-            expect(screen.queryByRole('dialog')).toBeNull();
+            expect(screen.queryByTestId('company-view')).toBeNull();
+        });
+
+        test('an event for the company already shown changes nothing', async () => {
+            render(<OrganizationList organizations={organizations} />);
+            fire({organizationId: 1});
+            await screen.findByTestId('company-view');
+            const calls = (global.fetch as jest.Mock).mock.calls.length;
+            fire({organizationId: 1});
+            expect((global.fetch as jest.Mock).mock.calls.length).toBe(calls);
+            expect(screen.getAllByTestId('company-view')).toHaveLength(1);
         });
     });
 
-    describe('deep-linked company dialog (issue #465 AC-7)', () => {
+    describe('deep-linked company view (issue #465 AC-7)', () => {
         afterEach(() => {
             window.history.replaceState({}, '', '/');
         });
 
-        test('?company=<id> matching a listed organization opens that dialog on mount', async () => {
+        test('?company=<id> matching a listed organization opens that view on mount', async () => {
             window.history.replaceState({}, '', '/?company=1');
 
             render(<OrganizationList organizations={organizations} />);
 
             await waitFor(() => {
-                expect(screen.getByRole('dialog')).toBeInTheDocument();
+                expect(screen.getByTestId('company-view')).toBeInTheDocument();
             });
         });
 
-        test('?company=<unknown id> mounts cleanly with no dialog and no console error', async () => {
-            const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
-            window.history.replaceState({}, '', '/?company=999999');
+        test.each(['abc', '1.5', '-1', '0', '1/../2', '', '1e3', ' 1'])(
+            '?company=%p mounts cleanly with no view, no request and no console error', async (value) => {
+                const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+                window.history.replaceState({}, '', `/?company=${encodeURIComponent(value)}`);
 
-            render(<OrganizationList organizations={organizations} />);
+                render(<OrganizationList organizations={organizations} />);
 
-            await waitFor(() => {
-                expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+                await waitFor(() => {
+                    expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
+                });
+                expect(screen.queryByTestId('company-view')).not.toBeInTheDocument();
+                expect((global.fetch as jest.Mock).mock.calls.filter(([url]) => String(url).includes('/api/organizations/'))).toEqual([]);
+                expect(consoleError).not.toHaveBeenCalled();
+                consoleError.mockRestore();
             });
-            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-            expect(consoleError).not.toHaveBeenCalled();
-            consoleError.mockRestore();
-        });
-
-        test('?company=abc mounts cleanly with no dialog and no console error', async () => {
-            const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
-            window.history.replaceState({}, '', '/?company=abc');
-
-            render(<OrganizationList organizations={organizations} />);
-
-            await waitFor(() => {
-                expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
-            });
-            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-            expect(consoleError).not.toHaveBeenCalled();
-            consoleError.mockRestore();
-        });
 
         test('?company=<id> combined with ?page=2&search=acme preserves the existing filter state', async () => {
             window.history.replaceState({}, '', '/?company=1&page=2&search=Organization%202');
@@ -975,9 +973,9 @@ describe('OrganizationList', () => {
             render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
 
             await waitFor(() => {
-                expect(screen.getByRole('dialog')).toBeInTheDocument();
+                expect(screen.getByTestId('company-view')).toBeInTheDocument();
             });
-            expect(screen.getByRole('textbox', {name: 'Search organizations'})).toHaveValue('Organization 2');
+            expect(screen.getByRole('textbox', {name: 'Search organizations', hidden: true})).toHaveValue('Organization 2');
             expect(screen.queryByText('Page 1 of 1')).not.toBeInTheDocument();
         });
     });
@@ -996,7 +994,7 @@ describe('OrganizationList', () => {
         async function openFirstCompany(props: Record<string, unknown> = {}) {
             render(<OrganizationList organizations={organizations} {...props} />);
             fireEvent.click(screen.getAllByText('Organization 1')[0]);
-            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+            await waitFor(() => expect(screen.getByTestId('company-view')).toBeInTheDocument());
         }
 
         test('a signed-out visitor gets a sign-in CTA carrying this company in the validated next', async () => {
@@ -1014,8 +1012,8 @@ describe('OrganizationList', () => {
             render(<OrganizationList organizations={organizations} isAuthenticated
                                      signInUrlTemplate={signInTemplate} />);
 
-            // The dialog reopens itself from the URL the sign-in CTA built.
-            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+            // The view reopens itself from the URL the sign-in CTA built.
+            await waitFor(() => expect(screen.getByTestId('company-view')).toBeInTheDocument());
             const cta = screen.getByTestId('company-chat-cta');
             expect(cta).toHaveAttribute('href', '/chat/?company=1');
             expect(cta).toHaveTextContent('Ask the assistant about Organization 1');
@@ -1046,29 +1044,12 @@ describe('OrganizationList', () => {
             await waitFor(() => expect(getWorkspaceSnapshot().context).toMatchObject({page: 2}));
         });
 
-        test('opening a company writes company= via replaceState (no new history entry) and closing removes it', async () => {
-            const pushSpy = jest.spyOn(window.history, 'pushState');
-            render(<OrganizationList organizations={organizations} />);
-            fireEvent.click(screen.getAllByText('Organization 1')[0]);
-            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
-            expect(new URLSearchParams(window.location.search).get('company')).toBe('1');
-            expect(getWorkspaceSnapshot().context).toMatchObject({
-                surface: 'company', organizationId: 1, organizationName: 'Organization 1',
-            });
-            expect(pushSpy).not.toHaveBeenCalled();
-
-            fireEvent.click(screen.getByRole('button', {name: 'Close'}));
-            await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-            expect(new URLSearchParams(window.location.search).has('company')).toBe(false);
-            expect(getWorkspaceSnapshot().context?.organizationId).toBeUndefined();
-            expect(getWorkspaceSnapshot().context?.surface).toBe('rankings');
-        });
-
         test('the URL only ever carries the allowlisted params', async () => {
+            window.history.pushState = realPushState;
             render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
             fireEvent.change(screen.getByPlaceholderText('Search organizations'), {target: {value: 'Organization 1'}});
             fireEvent.click(screen.getAllByText('Organization 1')[0]);
-            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+            await waitFor(() => expect(screen.getByTestId('company-view')).toBeInTheDocument());
             const keys = Array.from(new URLSearchParams(window.location.search).keys());
             const allowed = ['search', 'accelerated_vesting', 'page', 'company', 'rto'];
             expect(keys.length).toBeGreaterThan(0);
@@ -1079,10 +1060,10 @@ describe('OrganizationList', () => {
         test('an incoming unknown param is dropped by every URL writer', async () => {
             window.history.replaceState({}, '', '/?foo=secret&search=Organization&company=1&bar=2');
             render(<OrganizationList organizations={organizations} itemsPerPage={1} />);
-            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
-            // Closing rewrites the query through syncCompanyParam.
-            fireEvent.click(screen.getByRole('button', {name: 'Close'}));
-            await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+            await waitFor(() => expect(screen.getByTestId('company-view')).toBeInTheDocument());
+            // Closing a deep-linked view rewrites the query in place.
+            fireEvent.click(screen.getByRole('button', {name: 'Back to results'}));
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
             expect(window.location.search).not.toContain('foo');
             expect(window.location.search).not.toContain('bar');
             expect(new URLSearchParams(window.location.search).get('search')).toBe('Organization');
@@ -1182,14 +1163,14 @@ describe('OrganizationList', () => {
             expect(scrollTo).toHaveBeenCalledWith({top: 480, behavior: 'instant'});
         });
 
-        test('clearing the workspace context closes the company dialog and leaves the list', async () => {
+        test('clearing the workspace context closes the company view and leaves the list', async () => {
             render(<OrganizationList organizations={organizations} />);
             fireEvent.click(screen.getAllByText('Organization 1')[0]);
-            await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
+            await waitFor(() => expect(screen.getByTestId('company-view')).toBeInTheDocument());
 
             act(() => clearWorkspaceContext());
 
-            await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+            await waitFor(() => expect(screen.queryByTestId('company-view')).not.toBeInTheDocument());
             expect(new URLSearchParams(window.location.search).has('company')).toBe(false);
             expect(screen.getAllByText('Organization 1').length).toBeGreaterThan(0);
         });
@@ -1516,30 +1497,19 @@ describe('OrganizationList', () => {
                 return Promise.reject(new Error('Fetch not mocked for this URL'));
             });
 
-        test('a slow details response cannot reopen the dialog over the suggest modal', async () => {
+        test('while the record loads the view shows the list row\'s name and no details', async () => {
             const org1 = detailsDeferred();
             global.fetch = deferredDetailsFetch({'/api/organizations/1/': org1});
 
-            render(<><OrganizationList organizations={organizations} isAuthenticated={true} /><SuggestCompanyHost /></>);
-
-            // Open the first row: the details request stays pending (deferred).
+            render(<OrganizationList organizations={organizations} />);
             fireEvent.click(screen.getAllByText('Organization 1')[0]);
-            expect(global.fetch).toHaveBeenCalledWith('/api/organizations/1/');
 
-            // While the request is in flight the user opens the suggest modal.
-            fireEvent.click(screen.getByTestId('suggest-company-btn'));
-            expect(await screen.findByTestId('suggest-company-modal')).toBeInTheDocument();
-            fireEvent.change(screen.getByLabelText(/Company name/), {target: {value: 'Typed Co'}});
-
-            // The stale details response finally resolves: it must be ignored.
-            await act(async () => {
-                org1.resolveResponse({json: () => Promise.resolve({id: 1, name: 'Organization 1', type: 'C', url: 'https://org1.example.com'})});
-            });
-
-            // The suggest modal and its typed input survive; no details dialog appears.
-            expect(screen.getByTestId('suggest-company-modal')).toBeInTheDocument();
-            expect((screen.getByLabelText(/Company name/) as HTMLInputElement).value).toBe('Typed Co');
-            expect(screen.queryByText('Company (for profit)')).not.toBeInTheDocument();
+            expect(screen.getByTestId('company-view')).toBeInTheDocument();
+            expect(screen.getByRole('heading', {level: 2, name: 'Organization 1'})).toHaveFocus();
+            expect(screen.getByTestId('company-view-loading')).toBeInTheDocument();
+            expect(screen.queryByTestId('popup-details-grid')).not.toBeInTheDocument();
+            // No evidence request for a company that has not been confirmed to exist.
+            expect((global.fetch as jest.Mock).mock.calls.map(([url]) => url)).not.toContain('/api/organizations/1/provenance/');
         });
 
         test('an out-of-order older response cannot replace the newer company selection', async () => {
@@ -1552,59 +1522,43 @@ describe('OrganizationList', () => {
 
             render(<OrganizationList organizations={organizations} />);
 
-            // Two rapid clicks: the second selection supersedes the first.
+            // Two selections: the second (from inside the view) supersedes the first.
             fireEvent.click(screen.getAllByText('Organization 1')[0]);
-            fireEvent.click(screen.getAllByText('Organization 2')[0]);
+            act(() => {
+                openWorkspaceCompany(2);
+            });
 
-            // The newer selection resolves first: its dialog opens.
+            // The newer selection resolves first: its view is ready.
             await act(async () => {
                 org2.resolveResponse({json: () => Promise.resolve({id: 2, name: 'Organization 2', type: 'C', url: 'https://org2.example.com'})});
             });
-            expect(await screen.findByRole('dialog', {name: 'Organization 2'})).toBeInTheDocument();
+            expect(await screen.findByRole('region', {name: 'Organization 2'})).toBeInTheDocument();
 
-            // The older, slower response arrives last and must be ignored: the
-            // dialog keeps showing the newer selection.
+            // The older, slower response arrives last and must be ignored.
             await act(async () => {
                 org1.resolveResponse({json: () => Promise.resolve({id: 1, name: 'Organization 1', type: 'C', url: 'https://org1.example.com'})});
             });
-            expect(screen.queryByRole('dialog', {name: 'Organization 1'})).not.toBeInTheDocument();
-            expect(screen.getByRole('dialog', {name: 'Organization 2'})).toBeInTheDocument();
+            expect(screen.queryByRole('region', {name: 'Organization 1'})).not.toBeInTheDocument();
+            expect(screen.getByRole('region', {name: 'Organization 2'})).toBeInTheDocument();
         });
 
-        test('a slow response does not reopen a dialog the user has closed', async () => {
+        test('a slow response does not reopen a view the user has left', async () => {
             const org1 = detailsDeferred();
-            const org2 = detailsDeferred();
-            global.fetch = deferredDetailsFetch({
-                '/api/organizations/1/': org1,
-                '/api/organizations/2/': org2,
-            });
+            global.fetch = deferredDetailsFetch({'/api/organizations/1/': org1});
 
             render(<OrganizationList organizations={organizations} />);
-
             fireEvent.click(screen.getAllByText('Organization 1')[0]);
-            fireEvent.click(screen.getAllByText('Organization 2')[0]);
+            fireEvent.click(await screen.findByRole('button', {name: 'Back to results'}));
+            expect(screen.queryByTestId('company-view')).not.toBeInTheDocument();
 
-            await act(async () => {
-                org2.resolveResponse({json: () => Promise.resolve({id: 2, name: 'Organization 2', type: 'C', url: 'https://org2.example.com'})});
-            });
-            expect(await screen.findByRole('dialog', {name: 'Organization 2'})).toBeInTheDocument();
-
-            // The user closes the dialog before the older response arrives.
-            fireEvent.keyDown(document, {key: 'Escape'});
-            await waitFor(() => {
-                expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-            });
-
-            // The stale org-1 response lands after the close: it must not
-            // reopen anything.
             await act(async () => {
                 org1.resolveResponse({json: () => Promise.resolve({id: 1, name: 'Organization 1', type: 'C', url: 'https://org1.example.com'})});
             });
-            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('company-view')).not.toBeInTheDocument();
             expect(screen.queryByText('Company (for profit)')).not.toBeInTheDocument();
         });
 
-        test('a failing slow details response is ignored once superseded', async () => {
+        test('a failing slow details response is ignored once the user has left', async () => {
             let rejectOrg1: (reason?: unknown) => void = () => {};
             global.fetch = jest.fn().mockImplementation((url) => {
                 if (url === '/api/funding-round-choices/' || url === '/api/rto-policy-choices/') {
@@ -1619,26 +1573,21 @@ describe('OrganizationList', () => {
             });
             const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
 
-            render(<><OrganizationList organizations={organizations} isAuthenticated={true} /><SuggestCompanyHost /></>);
-
+            render(<OrganizationList organizations={organizations} />);
             fireEvent.click(screen.getAllByText('Organization 1')[0]);
-            fireEvent.click(screen.getByTestId('suggest-company-btn'));
-            expect(await screen.findByTestId('suggest-company-modal')).toBeInTheDocument();
+            fireEvent.click(await screen.findByRole('button', {name: 'Back to results'}));
 
-            // The failed details request settles after the newer intent: the
-            // error path must not clobber the suggest modal either.
             await act(async () => {
                 rejectOrg1(new Error('network down'));
             });
 
-            expect(screen.getByTestId('suggest-company-modal')).toBeInTheDocument();
-            expect(screen.queryByText('Company (for profit)')).not.toBeInTheDocument();
+            expect(screen.queryByTestId('company-view')).not.toBeInTheDocument();
             expect(consoleSpy).not.toHaveBeenCalled();
 
             consoleSpy.mockRestore();
         });
 
-        test('a current slow response still opens the details dialog', async () => {
+        test('a current slow response still opens the company view', async () => {
             const org1 = detailsDeferred();
             global.fetch = deferredDetailsFetch({'/api/organizations/1/': org1});
 
@@ -1650,105 +1599,116 @@ describe('OrganizationList', () => {
             await act(async () => {
                 org1.resolveResponse({json: () => Promise.resolve({id: 1, name: 'Organization 1', type: 'C', url: 'https://org1.example.com'})});
             });
-            expect(await screen.findByRole('dialog', {name: 'Organization 1'})).toBeInTheDocument();
+            expect(await screen.findByRole('region', {name: 'Organization 1'})).toBeInTheDocument();
             expect(screen.getByText('https://org1.example.com')).toBeInTheDocument();
+        });
+
+        test('a failing record request for a list row still shows the row; for another id it shows an error with Retry', async () => {
+            const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+            let fail = true;
+            global.fetch = jest.fn().mockImplementation((url) => {
+                if (url === '/api/funding-round-choices/' || url === '/api/rto-policy-choices/') {
+                    return Promise.resolve(choicesResponse);
+                }
+                if (url === '/api/organizations/1/' || url === '/api/organizations/77/') {
+                    return fail ? Promise.resolve({ok: false, status: 503, json: () => Promise.resolve({})})
+                        : Promise.resolve({ok: true, status: 200, json: () => Promise.resolve({
+                            id: 77, name: 'Seventy Seven', type: 'C', url: 'https://77.example.com',
+                            funding_round: 'S', rto_policy: 'R', accelerated_vesting: false,
+                        })});
+                }
+                if (url.endsWith('/scores/')) return Promise.resolve(scoresResponse);
+                if (url.endsWith('/provenance/')) return Promise.resolve(provenanceResponse);
+                return Promise.reject(new Error('Fetch not mocked for this URL'));
+            });
+
+            render(<OrganizationList organizations={organizations} />);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            // A row the list already knows is shown from what the list has.
+            expect(await screen.findByTestId('popup-details-grid')).toBeInTheDocument();
+            expect(consoleSpy).toHaveBeenCalledWith('Error fetching organization details:', expect.any(Error));
+
+            fireEvent.click(screen.getByRole('button', {name: 'Back to results'}));
+            act(() => {
+                openWorkspaceCompany(77);
+            });
+            expect(await screen.findByTestId('company-view-error')).toHaveTextContent('could not be loaded');
+
+            fail = false;
+            fireEvent.click(screen.getByTestId('company-view-retry'));
+            expect(await screen.findByRole('region', {name: 'Seventy Seven'})).toBeInTheDocument();
+            expect(screen.getByTestId('not-ranked')).toHaveTextContent('Not ranked in this list');
+            expect(screen.queryByTestId('company-view-error')).not.toBeInTheDocument();
+            consoleSpy.mockRestore();
         });
     });
 
-    describe('background isolation across the dialog handoff (issue #464 review r2)', () => {
-        // The details→suggest mutual-exclusion handoff replaces one blocking
-        // dialog with another across a single render commit. The isolation
-        // must hold without a gap (no interaction window over the background)
-        // and without a leak (the page must not stay inert/locked after the
-        // last dialog closes). Includes the modal-external skip link.
-        let backgroundRoots: HTMLElement[];
-
+    describe('the company view is not a blocking dialog (issue #486)', () => {
         beforeEach(() => {
+            document.body.style.overflow = '';
+            document.documentElement.style.overflow = '';
+        });
+
+        test('opening it locks nothing, makes nothing inert and adds no overlay', async () => {
             const shell = document.createElement('aside');
             shell.className = 'app-shell';
             document.body.appendChild(shell);
             const content = document.createElement('main');
             content.className = 'app-content';
             document.body.appendChild(content);
-            const skipLink = document.createElement('a');
-            skipLink.className = 'skip-to-content';
-            skipLink.href = '#main-content';
-            document.body.appendChild(skipLink);
-            backgroundRoots = [shell, content, skipLink];
-            // Defensive: start from a clean isolation baseline even if an
-            // earlier test leaked inline overflow styles.
-            document.body.style.overflow = '';
-            document.documentElement.style.overflow = '';
-        });
+            try {
+                render(<OrganizationList organizations={organizations} />);
+                fireEvent.click(screen.getAllByText('Organization 1')[0]);
+                await screen.findByTestId('company-view');
 
-        afterEach(() => {
-            for (const root of backgroundRoots) {
-                root.remove();
+                expect(document.documentElement.style.overflow).toBe('');
+                expect(document.body.style.overflow).toBe('');
+                expect(document.querySelector('[inert]')).toBeNull();
+                expect(document.querySelector('[aria-hidden="true"].app-shell, .app-content[aria-hidden]')).toBeNull();
+                expect(document.querySelector('.popup-overlay')).toBeNull();
+                expect(document.querySelector('[aria-modal]')).toBeNull();
+                expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            } finally {
+                shell.remove();
+                content.remove();
             }
-            document.body.style.overflow = '';
-            document.documentElement.style.overflow = '';
         });
 
-        test('isolation persists through the details→suggest handoff and releases on final close', async () => {
-            const org1 = {
-                promise: new Promise<{json: () => Promise<unknown>}>((resolve) => {
-                    resolve({json: () => Promise.resolve({id: 1, name: 'Organization 1', type: 'C', url: 'https://org1.example.com'})});
-                }),
-            };
-            global.fetch = jest.fn().mockImplementation((url) => {
-                if (url === '/api/funding-round-choices/' || url === '/api/rto-policy-choices/') {
-                    return Promise.resolve({json: () => Promise.resolve({})});
-                }
-                if (url.endsWith('/scores/')) {
-                    return Promise.resolve({json: () => Promise.resolve([])});
-                }
-                if (url.endsWith('/provenance/')) {
-                    return Promise.resolve({json: () => Promise.resolve(null)});
-                }
-                if (url === '/api/organizations/1/') {
-                    return org1.promise;
-                }
-                return Promise.reject(new Error('Fetch not mocked for this URL'));
-            });
-
-            render(<><OrganizationList organizations={organizations} isAuthenticated={true} /><SuggestCompanyHost /></>);
-
-            // Details dialog opens: background isolated (shell, content, skip
-            // link) and the actual document scroller locked.
+        test('Escape does nothing in the view', async () => {
+            render(<OrganizationList organizations={organizations} />);
             fireEvent.click(screen.getAllByText('Organization 1')[0]);
-            expect(await screen.findByRole('dialog', {name: 'Organization 1'})).toBeInTheDocument();
-            expect(document.documentElement.style.overflow).toBe('hidden');
-            expect(document.body.style.overflow).toBe('hidden');
-            for (const root of backgroundRoots) {
-                expect(root).toHaveAttribute('inert');
-                expect(root).toHaveAttribute('aria-hidden', 'true');
-            }
+            await screen.findByTestId('company-view');
 
-            // Handoff: opening the suggest modal closes the details dialog in
-            // the same commit — the isolation must survive it uninterrupted.
-            fireEvent.click(screen.getByTestId('suggest-company-btn'));
-            expect(await screen.findByTestId('suggest-company-modal')).toBeInTheDocument();
-            expect(screen.queryByRole('dialog', {name: 'Organization 1'})).not.toBeInTheDocument();
-            expect(document.documentElement.style.overflow).toBe('hidden');
-            expect(document.body.style.overflow).toBe('hidden');
-            for (const root of backgroundRoots) {
-                expect(root).toHaveAttribute('inert');
-                expect(root).toHaveAttribute('aria-hidden', 'true');
-            }
-
-            // Final close releases everything: no inert leak, no scroll lock.
             fireEvent.keyDown(document, {key: 'Escape'});
-            await waitFor(() => {
-                expect(screen.queryByTestId('suggest-company-modal')).not.toBeInTheDocument();
-            });
-            expect(document.documentElement.style.overflow).toBe('');
-            expect(document.body.style.overflow).toBe('');
-            for (const root of backgroundRoots) {
-                expect(root).not.toHaveAttribute('inert');
-                expect(root).not.toHaveAttribute('aria-hidden');
-            }
+
+            expect(screen.getByTestId('company-view')).toBeInTheDocument();
+        });
+
+        test('Suggest correction opens the correction dialog over the view and the view stays; Cancel returns focus to the trigger', async () => {
+            render(<><OrganizationList organizations={[{...organizations[0], url: 'https://org1.example.com', type: 'C'} as Organization]}
+                                       isAuthenticated={true}/><SuggestCompanyHost/></>);
+            fireEvent.click(screen.getAllByText('Organization 1')[0]);
+            const trigger = await screen.findByTestId('evidence-empty-action');
+            trigger.focus();
+
+            fireEvent.click(trigger);
+
+            const dialog = await screen.findByRole('dialog');
+            expect(dialog).toHaveAttribute('aria-modal', 'true');
+            expect(document.querySelectorAll('[aria-modal="true"]')).toHaveLength(1);
+            expect(openSuggestCompanySpy).toHaveBeenCalledWith(expect.objectContaining({
+                kind: 'correction', source: 'company_details', companyName: 'Organization 1', organizationId: 1,
+            }));
+            // The view is still in the document under the dialog.
+            expect(screen.getByTestId('company-view')).toBeInTheDocument();
+
+            fireEvent.click(within(dialog).getByRole('button', {name: 'Cancel'}));
+            await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+            expect(screen.getByTestId('company-view')).toBeInTheDocument();
+            expect(trigger).toHaveFocus();
         });
     });
+
     describe('rankings toolbar and empty states (issue #478)', () => {
         const presets = [{id: 1, name: 'Balanced'}, {id: 2, name: 'Culture'}];
         const longName = 'L'.repeat(100);

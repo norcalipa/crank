@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as React from 'react';
 
-import OrganizationDetailsPopup from '../OrganizationDetailsPopup';
+import CompanyView from './CompanyView';
 import CompanyDetails, {CompanyDetailsOrganization} from './CompanyDetails';
 
 const company = (id: number, overrides: Partial<CompanyDetailsOrganization> = {}): CompanyDetailsOrganization => ({
@@ -162,12 +162,18 @@ describe('CompanyDetails', () => {
         }
     });
 
-    test('the same walk does find the modal lock and the portal from the dialog shell', () => {
-        const graph = reachable(path.join(JS_ROOT, 'OrganizationDetailsPopup.tsx'));
+    test('the same walk does find the modal lock and the portal from a real dialog', () => {
+        const graph = reachable(path.join(JS_ROOT, 'CompanyCorrectionForm.tsx'));
+
+        expect(graph.files).toContain('modalIsolation.ts');
+    });
+
+    test('the view around the content reaches neither the modal lock nor a portal', () => {
+        const graph = reachable(path.resolve(__dirname, 'CompanyView.tsx'));
 
         expect(graph.files).toContain('company/CompanyDetails.tsx');
-        expect(graph.files).toContain('modalIsolation.ts');
-        expect(graph.packages).toContain('react-dom');
+        expect(graph.files).not.toContain('modalIsolation.ts');
+        expect(graph.packages).not.toContain('react-dom');
     });
 
     test('a plain click on Ask calls onAsk and prevents the navigation', async () => {
@@ -322,7 +328,8 @@ describe('CompanyDetails', () => {
     // same tests run against the code before the extraction.
     describe('scores do not carry over between companies', () => {
         const openDialog = (organization: CompanyDetailsOrganization) => (
-            <OrganizationDetailsPopup organization={organization} visible onClose={() => {}}/>
+            <CompanyView organizationId={organization.id} status="ready" organization={organization}
+                         onBack={() => {}} onAsk={() => {}} onSuggestCorrection={() => {}}/>
         );
 
         test('open A (scores load), open B with a failing scores request: B shows no scores of A', async () => {
@@ -350,7 +357,7 @@ describe('CompanyDetails', () => {
             expect(screen.getByText('3.10')).toBeInTheDocument();
         });
 
-        // The path a modal dialog actually takes: A is closed before B is opened.
+        // The path a modal dialog actually takes: A is closed before B is opened (Back to results, then another row).
         test('open A, close the dialog, open B with a failing scores request: B shows no scores of A', async () => {
             mockFetch([
                 ['/api/organizations/1/scores/', reply([{type__name: 'Culture', avg_score: 4.5}])],
@@ -364,8 +371,8 @@ describe('CompanyDetails', () => {
             expect(screen.getByText('Culture')).toBeInTheDocument();
 
             // Closing keeps the company selected, as the list does.
-            rerender(<OrganizationDetailsPopup organization={company(1)} visible={false} onClose={() => {}}/>);
-            expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+            rerender(<div/>);
+            expect(screen.queryByTestId('company-view')).not.toBeInTheDocument();
             rerender(openDialog(company(2, {avg_score: 3.1})));
             await loaded();
 

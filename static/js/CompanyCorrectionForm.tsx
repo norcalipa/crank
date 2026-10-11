@@ -6,6 +6,7 @@ import EvidenceBadge from './evidence/EvidenceBadge';
 import {CORRECTABLE_FIELD_LABELS, fieldKeyLabel, formatEvidenceDate} from './labels';
 import {lockBackground, unlockBackground} from './modalIsolation';
 import {getCachedProvenance, setCachedProvenance} from './provenanceCache';
+import {COMPANY_CORRECTION_SAVED_EVENT} from './company/useCompanyData';
 import {COMPANY_OPEN_EVENT} from './suggestCompany/controller';
 import {getWorkspaceSnapshot, openAssistant} from './workspace/store';
 import type {SuggestCompanyContext} from './suggestCompany/controller';
@@ -351,7 +352,12 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
 
     const handleBack = () => {
         onClose();
-        if (backToCompany) {
+        // The company's view stays open under the form (issue #486): when it
+        // is still showing this company there is nothing to reopen and focus
+        // returns to the control that opened the form.
+        const viewIsOpen = document.querySelector(
+            `[data-testid="company-view"][data-organization-id="${organizationId}"]`) !== null;
+        if (backToCompany && !viewIsOpen) {
             // After the form has unmounted and returned focus to the opener.
             window.setTimeout(() => {
                 window.dispatchEvent(new CustomEvent(COMPANY_OPEN_EVENT, {detail: {organizationId}}));
@@ -413,6 +419,8 @@ const CompanyCorrectionForm: React.FC<CompanyCorrectionFormProps> = ({context, o
             });
             const data = await response.json();
             if (response.ok) {
+                // A view that stays open lists the new suggestion as pending.
+                window.dispatchEvent(new CustomEvent(COMPANY_CORRECTION_SAVED_EVENT, {detail: {organizationId}}));
                 setSaved({
                     field_label: data.field_label || fieldKeyLabel(fieldKey),
                     proposed_value: data.proposed_value,

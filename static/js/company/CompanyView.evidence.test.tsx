@@ -4,9 +4,30 @@ import '@testing-library/jest-dom';
 import {render, screen, fireEvent, waitFor} from '@testing-library/react';
 import * as React from 'react';
 
-import OrganizationDetailsPopup from './OrganizationDetailsPopup';
-import * as suggestCompanyController from './suggestCompany/controller';
-import {resetWorkspaceForTests} from './workspace/store';
+import CompanyView from './CompanyView';
+import {CompanyDetailsOrganization, CorrectionSource} from './CompanyDetails';
+import {resetWorkspaceForTests} from '../workspace/store';
+
+interface HostProps {
+    organization: CompanyDetailsOrganization | null;
+    visible?: boolean;
+    onClose?: () => void;
+    isAuthenticated?: boolean;
+    signInUrlTemplate?: string;
+    onAsk?: () => void;
+    onSuggestCorrection?: (source: CorrectionSource, fieldKey?: string) => void;
+}
+
+// CompanyView for a record that is already loaded; `visible={false}` unmounts
+// it the way the list does when the results come back.
+const CompanyViewHost: React.FC<HostProps> = ({
+    organization, visible = true, onClose = () => {}, isAuthenticated, signInUrlTemplate,
+    onAsk = () => {}, onSuggestCorrection = () => {},
+}) => (organization && visible ? (
+    <CompanyView organizationId={organization.id} status="ready" organization={organization}
+                 isAuthenticated={isAuthenticated} signInUrlTemplate={signInUrlTemplate}
+                 onBack={onClose} onAsk={onAsk} onSuggestCorrection={onSuggestCorrection}/>
+) : null);
 
 const organization = {
     id: 1, name: 'Beta Corp', ranking: 1, avg_score: 4, funding_round: 'S', rto_policy: 'R',
@@ -45,9 +66,9 @@ const mockProvenance = (handler: () => Promise<unknown>) => {
 const ok = (body: unknown) => Promise.resolve({ok: true, json: () => Promise.resolve(body)});
 
 const open = (props: Record<string, unknown> = {}) =>
-    render(<OrganizationDetailsPopup organization={organization} visible={true} onClose={() => {}} {...props}/>);
+    render(<CompanyViewHost organization={organization} visible={true} onClose={() => {}} {...props}/>);
 
-describe('OrganizationDetailsPopup evidence status (#473)', () => {
+describe('CompanyView evidence status (#473)', () => {
     beforeEach(() => {
         resetWorkspaceForTests();
     });
@@ -369,7 +390,7 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
         consoleSpy.mockRestore();
     });
 
-    test('Retry keeps focus in the dialog through the reload and returns to Retry when it fails again', async () => {
+    test('Retry keeps focus in the view through the reload and returns to Retry when it fails again', async () => {
         const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
         let calls = 0;
         mockProvenance(() => {
@@ -391,11 +412,11 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
         mockProvenance(() => Promise.resolve({ok: false, status: 503, json: () => Promise.resolve({})}));
         const alpha = {...organization, id: 1, name: 'Alpha'};
         const beta = {...organization, id: 2, name: 'Beta'};
-        const view = render(<OrganizationDetailsPopup organization={alpha} visible={true} onClose={() => {}}/>);
+        const view = render(<CompanyViewHost organization={alpha} visible={true} onClose={() => {}}/>);
         fireEvent.click(await screen.findByTestId('provenance-retry'));
         await waitFor(() => expect(screen.getByTestId('provenance-retry')).toHaveFocus());
-        view.rerender(<OrganizationDetailsPopup organization={alpha} visible={false} onClose={() => {}}/>);
-        view.rerender(<OrganizationDetailsPopup organization={beta} visible={true} onClose={() => {}}/>);
+        view.rerender(<CompanyViewHost organization={alpha} visible={false} onClose={() => {}}/>);
+        view.rerender(<CompanyViewHost organization={beta} visible={true} onClose={() => {}}/>);
         const retry = await screen.findByTestId('provenance-retry');
         await waitFor(() => expect((global.fetch as jest.Mock).mock.calls.length).toBe(3));
         expect(retry).not.toHaveFocus();
@@ -413,11 +434,11 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
         });
         const alpha = {...organization, id: 1, name: 'Alpha'};
         const beta = {...organization, id: 2, name: 'Beta'};
-        const view = render(<OrganizationDetailsPopup organization={alpha} visible={true} onClose={() => {}}/>);
+        const view = render(<CompanyViewHost organization={alpha} visible={true} onClose={() => {}}/>);
         fireEvent.click(await screen.findByTestId('provenance-retry'));
-        view.rerender(<OrganizationDetailsPopup organization={alpha} visible={false} onClose={() => {}}/>);
+        view.rerender(<CompanyViewHost organization={alpha} visible={false} onClose={() => {}}/>);
         release({ok: false, status: 503, json: () => Promise.resolve({})});
-        view.rerender(<OrganizationDetailsPopup organization={beta} visible={true} onClose={() => {}}/>);
+        view.rerender(<CompanyViewHost organization={beta} visible={true} onClose={() => {}}/>);
         const retry = await screen.findByTestId('provenance-retry');
         await waitFor(() => expect(calls).toBe(3));
         expect(retry).not.toHaveFocus();
@@ -447,12 +468,11 @@ describe('OrganizationDetailsPopup evidence status (#473)', () => {
         summary: {verified: 0, stale: 0, unknown: 7, total: 7, fact_coverage: 0, last_verified_at: null, pending_review: 0}});
 
     test('the empty-state action opens the correction flow when signed in', async () => {
-        const spy = jest.spyOn(suggestCompanyController, 'openSuggestCompany').mockImplementation(() => {});
+        const onSuggestCorrection = jest.fn();
         mockProvenance(() => ok(emptyPayload()));
-        open({isAuthenticated: true});
+        open({isAuthenticated: true, onSuggestCorrection});
         fireEvent.click(await screen.findByTestId('evidence-empty-action'));
-        expect(spy).toHaveBeenCalled();
-        spy.mockRestore();
+        expect(onSuggestCorrection).toHaveBeenCalledWith('company_details');
     });
 
     test('the empty-state action links to sign-in when anonymous', async () => {

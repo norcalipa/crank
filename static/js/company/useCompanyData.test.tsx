@@ -81,7 +81,6 @@ describe('useCompanyData', () => {
         expect(result.current.scoresLoading).toBe(false);
         expect(result.current.scores).toEqual(scoresOf('Culture'));
         expect(result.current.provenanceLoading).toBe(false);
-        expect(result.current.provenanceFailed).toBe(false);
         expect(result.current.provenance).toEqual(provenanceOf(1));
         expect(getCachedProvenance(1)).toEqual(provenanceOf(1));
         expect(result.current.pendingCorrections.map(item => item.id)).toEqual([7]);
@@ -255,7 +254,6 @@ describe('useCompanyData', () => {
 
         expect(result.current.scoresLoading).toBe(true);
         expect(result.current.provenanceLoading).toBe(true);
-        expect(result.current.provenanceFailed).toBe(false);
         expect(errorSpy).not.toHaveBeenCalled();
     });
 
@@ -366,7 +364,7 @@ describe('useCompanyData', () => {
         expect(global.fetch).not.toHaveBeenCalled();
         expect(result.current).toMatchObject({
             scores: [], scoresLoading: false, provenance: null, provenanceLoading: false,
-            provenanceFailed: false, pendingCorrections: [],
+            pendingCorrections: [],
         });
 
         rerender({id: 1});
@@ -376,15 +374,13 @@ describe('useCompanyData', () => {
 
         expect(result.current).toMatchObject({
             scores: [], scoresLoading: false, provenance: null, provenanceLoading: false,
-            provenanceFailed: false, pendingCorrections: [],
+            pendingCorrections: [],
         });
     });
 
     test('a failed provenance request can be retried; only a retry that fails is counted', async () => {
         const {result} = renderHook(() => useCompanyData(1, false));
         await settle('/provenance/', failed(503));
-
-        expect(result.current.provenanceFailed).toBe(true);
         expect(result.current.provenanceLoading).toBe(false);
         expect(result.current.provenance).toBeNull();
         // The first, automatic attempt is not a retry.
@@ -393,16 +389,13 @@ describe('useCompanyData', () => {
 
         act(() => result.current.retryProvenance());
         expect(result.current.provenanceLoading).toBe(true);
-        expect(result.current.provenanceFailed).toBe(false);
         expect(requested('/provenance/')).toBe(2);
         await settle('/provenance/', new Error('offline'));
-        expect(result.current.provenanceFailed).toBe(true);
         expect(result.current.retryFailures).toBe(1);
 
         act(() => result.current.retryProvenance());
         await settle('/provenance/', ok(provenanceOf(1)));
         expect(result.current.provenance).toEqual(provenanceOf(1));
-        expect(result.current.provenanceFailed).toBe(false);
         expect(result.current.retryFailures).toBe(1);
     });
 
@@ -413,8 +406,6 @@ describe('useCompanyData', () => {
 
         rerender({id: 2});
         await settle('/organizations/2/provenance/', failed(500));
-
-        expect(result.current.provenanceFailed).toBe(true);
         expect(result.current.retryFailures).toBe(0);
     });
 
