@@ -466,8 +466,8 @@ describe('one transcript scroller in the assistant panel (issue #483)', () => {
         expect(declared('.priorities-sidebar .priorities-footer')).toMatch(/z-index:\s*var\(--z-assistant\);/);
     });
 
-    it('keeps the docked transcript box clear of the composer band', () => {
-        expect(popupCss).toMatch(/@media \(min-width: 768px\) \{[^@]*\.assistant-panel #job-search-chat \.chat-transcript\s*\{\s*margin-bottom:\s*\.5rem;/);
+    it('keeps the docked transcript box clear of the composer band, except on short panels', () => {
+        expect(popupCss).toMatch(/@media \(min-width: 768px\) and \(min-height: 481px\) \{\s*\.assistant-panel #job-search-chat \.chat-transcript\s*\{\s*margin-bottom:\s*\.5rem;/);
     });
 });
 

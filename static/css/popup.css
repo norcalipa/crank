@@ -3520,8 +3520,11 @@ body.assistant-open .app-content .table-responsive,
     .assistant-panel #job-search-chat .card-body {
         padding-top: .5rem;
     }
+}
 
-    /* Docked: the transcript's box and the composer band read as two boxes. */
+/* Docked and drawer: the transcript's box and the composer band read as two
+   boxes. Short panels keep the tighter gap for the transcript. */
+@media (min-width: 768px) and (min-height: 481px) {
     .assistant-panel #job-search-chat .chat-transcript {
         margin-bottom: .5rem;
     }
