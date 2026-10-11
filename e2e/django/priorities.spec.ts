@@ -170,6 +170,8 @@ const PANEL_VIEWPORTS = [
 ];
 const COLLAPSED_MAX_PX = 72;
 const EXPANDED_MAX_SHARE = 0.6;
+// The review shows More while this much of it is still below its scroller (ReviewChanges.tsx).
+const MORE_BELOW_PX = 22;
 
 /** Resets the saved priorities, then applies `patch` (if any) through the real API. Returns the chip count.
  *  The dev server's SQLite answers 409 "retry" while another request holds the write lock, so a write is retried. */
@@ -518,7 +520,13 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
             const more = actions.getByRole('button', {name: 'More options'});
             const edit = actions.getByRole('button', {name: 'Edit'});
             const searchOnly = actions.getByRole('button', {name: 'This search only'});
-            if (viewport.more) {
+            // With one transcript scroller (issue #483) the open block gets the room the chat does not need, so
+            // whether the second row is below the fold follows from that room, not from the viewport alone
+            // (it is taller with no notice above the transcript). More shows exactly when a second row is below.
+            const below = await section.locator('.priorities-scroll').evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
+            const hasMore = below > MORE_BELOW_PX;
+            if (!viewport.more) expect(hasMore, 'both rows fit at this size').toBe(false);
+            if (hasMore) {
                 // The block shows one row of actions: Apply, Cancel and More, each whole and reachable; the change is not hidden.
                 for (const button of [actions.getByRole('button', {name: 'Apply to account'}), actions.getByRole('button', {name: 'Cancel'}), more]) {
                     expect(await wholeAndOnTop(button), await button.textContent() || '').toBe(true);
@@ -533,6 +541,8 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
             } else {
                 // Both rows fit: nothing to lead to.
                 await expect(more).toHaveCount(0);
+                // Short of More's threshold a sliver of the second row may still be below the fold: the list scrolls to it.
+                if (viewport.more) await section.locator('.priorities-scroll').evaluate((el) => { el.scrollTop = el.scrollHeight; });
             }
             await expect.poll(() => wholeAndOnTop(edit)).toBe(true);
             await expect.poll(() => wholeAndOnTop(searchOnly)).toBe(true);
@@ -580,7 +590,9 @@ test.describe('collapsed priorities row in the assistant sidebar (issue #480)', 
                 // Where a button's ring and centre are: whole inside the block's scroller, and a pointer reaches it.
                 const stops: string[] = [];
                 const problems: string[] = [];
-                for (let i = 0; i < 4; i += 1) {
+                // Cancel, More where the second row is below the fold (issue #483 gives the block more room), Edit, This search only.
+                const tabs = (await actions.getByRole('button', {name: 'More options'}).count()) ? 4 : 3;
+                for (let i = 0; i < tabs; i += 1) {
                     await page.keyboard.press('Tab');
                     const name = await page.evaluate(() => (document.activeElement as HTMLElement).getAttribute('aria-label') || document.activeElement!.textContent || '');
                     stops.push(name.trim());
