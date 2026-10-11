@@ -6,7 +6,7 @@ import * as React from 'react';
 
 import {useTranscriptScroll} from './useTranscriptScroll';
 
-function Harness({assistantCount, extra = 0, loading = false, contentKey}: {assistantCount: number; extra?: number; loading?: boolean; contentKey?: string}) {
+function Harness({assistantCount, extra = 0, loading = false, contentKey, band = false}: {assistantCount: number; extra?: number; loading?: boolean; contentKey?: string; band?: boolean}) {
     const {historyRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend} = useTranscriptScroll({
         messagesLength: assistantCount + extra,
         assistantCount,
@@ -23,7 +23,9 @@ function Harness({assistantCount, extra = 0, loading = false, contentKey}: {assi
                     <article data-testid="a2"/>
                     <button data-testid="older-link">older</button>
                 </div>
-                <div className="chat-footer" data-testid="footer"><textarea data-testid="composer"/></div>
+                <div className="chat-footer" data-testid="footer">
+                    {band ? <form data-testid="band"><textarea data-testid="composer"/></form> : <textarea data-testid="composer"/>}
+                </div>
             </section>
             <span data-testid="state">{`${showJumpToLatest}:${unreadCount}`}</span>
             <button onClick={() => scrollToLatest('auto')}>latest</button>
@@ -372,6 +374,16 @@ describe('useTranscriptScroll', () => {
             screen.getByTestId('composer').focus();
             act(() => { fireEvent(window, new Event('resize')); });
             expect(panel.scrollTop).toBe(90);
+        });
+
+        test('measures the composer band, which reaches past the footer into the panel\'s padding', () => {
+            render(<Harness assistantCount={1} band/>);
+            const panel = screen.getByTestId('panel');
+            bottoms(380, 380);
+            jest.spyOn(screen.getByTestId('band'), 'getBoundingClientRect').mockReturnValue(rect(396) as DOMRect);
+            screen.getByTestId('composer').focus();
+            act(() => { fireEvent(window, new Event('resize')); });
+            expect(panel.scrollTop).toBe(16);
         });
 
         test('does nothing when the footer is not cut off', () => {

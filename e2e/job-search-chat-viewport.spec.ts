@@ -272,11 +272,11 @@ test.describe('assistant availability layout (#457)', () => {
                     await expect(notice).toBeVisible();
                     await expect(notice.locator('a, button').first()).toBeVisible();
 
-                    // Wait for deterministic layout: the measured card height is
-                    // applied and web fonts have finished loading.
+                    // Wait for deterministic layout: the chat has measured (it
+                    // publishes its notice cap) and web fonts have finished loading.
                     await page.waitForFunction(() => {
                         const card = document.getElementById('job-search-chat')?.firstElementChild as HTMLElement | null;
-                        return !!card && card.style.height !== '' && document.fonts.status === 'loaded';
+                        return !!card && card.style.getPropertyValue('--chat-notices-max') !== '' && document.fonts.status === 'loaded';
                     });
                     await page.evaluate(() => new Promise<void>((resolve) => {
                         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
@@ -284,6 +284,7 @@ test.describe('assistant availability layout (#457)', () => {
 
                     const layout = await page.evaluate(() => {
                         const cardBody = document.querySelector('#job-search-chat .card-body') as HTMLElement;
+                        const panelBody = document.querySelector('.assistant-panel-body') as HTMLElement;
                         const history = document.querySelector('[role="log"][aria-label="Message history"]') as HTMLElement;
                         const noticeEl = document.querySelector('[data-testid="assistant-status-notice"]') as HTMLElement;
                         const composer = document.querySelector('textarea[aria-label="Message"]') as HTMLElement;
@@ -293,7 +294,11 @@ test.describe('assistant availability layout (#457)', () => {
                             return r.top >= -1 && r.bottom <= viewportHeight + 1;
                         };
                         return {
-                            cardBodyScrolls: cardBody.scrollHeight > cardBody.clientHeight + 1,
+                            // The chat mounts in the assistant panel (issue #483): the panel
+                            // body is what would scroll if the notice pushed the composer out.
+                            // (On the sheet the composer band reaches into the panel's padding
+                            // on purpose, so the card body's own scrollHeight says nothing.)
+                            panelBodyScrolls: panelBody.scrollHeight > panelBody.clientHeight + 1,
                             cardBodyOverflowY: getComputedStyle(cardBody).overflowY,
                             historyOverflowY: getComputedStyle(history).overflowY,
                             noticeWithinViewport: withinViewport(noticeEl),
@@ -302,7 +307,7 @@ test.describe('assistant availability layout (#457)', () => {
                     });
 
                     expect(layout.cardBodyOverflowY, 'card body must not become a scroll container').toBe('visible');
-                    expect(layout.cardBodyScrolls, 'card body must not scroll; history yields instead').toBe(false);
+                    expect(layout.panelBodyScrolls, 'the panel body must not scroll; history yields instead').toBe(false);
                     expect(layout.historyOverflowY, 'history must be the sole scroll region').toBe('auto');
                     expect(layout.noticeWithinViewport, 'complete notice must be visible on initial load').toBe(true);
                     expect(layout.composerWithinViewport, 'composer must be visible on initial load').toBe(true);
@@ -416,163 +421,268 @@ test.describe('200% zoom', () => {
     });
 });
 
-const expectPanelAtLatest = async (page: Page) => {
-    await expect.poll(() => page.evaluate(() => {
-        const panel = document.querySelector('.assistant-panel-body') as HTMLElement;
-        return panel.scrollHeight - panel.clientHeight - panel.scrollTop;
-    }), {message: 'the panel opens at the latest message'}).toBeLessThanOrEqual(2);
-    await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+// One reading of the panel, taken in a single evaluate so no number is paired
+// with a later layout (issue #483).
+const readPanel = (page: Page) => page.evaluate(() => {
+    const body = document.querySelector('.assistant-panel-body') as HTMLElement;
+    const card = body.querySelector('[data-testid="job-search-chat"]') as HTMLElement;
+    const log = card.querySelector('[role="log"]') as HTMLElement;
+    const header = card.querySelector('.card-header') as HTMLElement;
+    const footer = card.querySelector('.chat-footer') as HTMLElement;
+    const form = card.querySelector('form') as HTMLElement;
+    const block = body.querySelector('[data-testid="priorities-sidebar"]') as HTMLElement | null;
+    const formRect = form.getBoundingClientRect();
+    const hit = document.elementFromPoint(formRect.left + formRect.width / 2, formRect.top + formRect.height / 2);
+    const top = log.getBoundingClientRect().top;
+    const articles = Array.from(log.querySelectorAll('article'));
+    const firstVisible = articles.findIndex((a) => a.getBoundingClientRect().bottom > top + 1);
+    return {
+        bodyScrollRange: body.scrollHeight - body.clientHeight,
+        bodyScrollTop: body.scrollTop,
+        bodyHeight: body.clientHeight,
+        logHeight: log.clientHeight,
+        logScrollRange: log.scrollHeight - log.clientHeight,
+        logScrollTop: log.scrollTop,
+        logFromEnd: log.scrollHeight - log.clientHeight - log.scrollTop,
+        logOverflowY: getComputedStyle(log).overflowY,
+        blockHeight: block ? block.getBoundingClientRect().height : 0,
+        blockBottom: block ? block.getBoundingClientRect().bottom : 0,
+        headerTop: header.getBoundingClientRect().top,
+        formTop: formRect.top,
+        formBottom: formRect.bottom,
+        composerInViewport: formRect.top >= -0.5 && formRect.bottom <= window.innerHeight + 0.5,
+        composerHit: !!hit && form.contains(hit),
+        positions: [header, footer, log].map((el) => getComputedStyle(el).position),
+        firstVisible,
+        firstVisibleOffset: firstVisible < 0 ? 0 : articles[firstVisible].getBoundingClientRect().top - top,
+        pill: !!card.querySelector('[data-testid="jump-to-latest"]'),
+    };
+});
+
+// Polls until two consecutive readings agree, then returns the settled one.
+async function settledPanel(page: Page): Promise<Awaited<ReturnType<typeof readPanel>>> {
+    await page.evaluate(() => document.fonts.ready.then(() => undefined));
+    let previous = '';
+    let reading = await readPanel(page);
+    await expect.poll(async () => {
+        reading = await readPanel(page);
+        const now = JSON.stringify(reading);
+        const same = now === previous;
+        previous = now;
+        return same;
+    }, {message: 'the panel layout settles'}).toBe(true);
+    return reading;
+}
+
+const expectOneScroller = (reading: Awaited<ReturnType<typeof readPanel>>, label: string) => {
+    expect(reading.bodyScrollRange, `${label}: the panel body does not scroll`).toBeLessThanOrEqual(1);
+    expect(reading.bodyScrollTop, `${label}: the panel body is not scrolled`).toBe(0);
+    expect(reading.logOverflowY, `${label}: the transcript scrolls`).toBe('auto');
+    expect(reading.composerInViewport, `${label}: the composer is inside the viewport`).toBe(true);
+    expect(reading.composerHit, `${label}: nothing covers the composer`).toBe(true);
+    expect(reading.positions, `${label}: no chat bar is pinned`).not.toContain('sticky');
 };
 
-test.describe('scroll position across a viewport resize (issue #483)', () => {
-    test.skip(({browserName}) => browserName !== 'chromium', 'resize anchoring is verified in Chromium');
+async function loadPanel(page: Page, query: string, scenario: 'empty' | 'populated' | 'long' = 'long') {
+    await mockJobSearchApi(page, scenario);
+    await page.goto(`${PANEL_CHAT_FIXTURE}?${query}`);
+    if (scenario === 'empty') await expect(page.getByTestId('empty-history')).toBeVisible();
+    else await expect(page.getByRole('log').locator('article').first()).toBeVisible();
+}
 
-    test('the article the reader was on stays in view when the viewport shrinks', async ({page}) => {
-        await page.setViewportSize({width: 375, height: 700});
-        await mockJobSearchApi(page, 'long');
-        await page.goto(CHAT_FIXTURE);
-        const log = page.getByRole('log');
-        await expect(log.locator('article').first()).toBeVisible();
-        const box = (await log.boundingBox())!;
-        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-        await page.mouse.wheel(0, -300);
-        await page.waitForTimeout(300);
-        const readerArticle = await page.evaluate(() => {
-            const top = document.querySelector('[role="log"]')!.getBoundingClientRect().top;
-            const articles = Array.from(document.querySelectorAll('[role="log"] article'));
-            const first = articles.find((a) => a.getBoundingClientRect().bottom > top + 1)!;
-            return articles.indexOf(first);
-        });
-        await page.setViewportSize({width: 375, height: 380});
-        await page.waitForTimeout(400);
-        const inView = await page.evaluate((index) => {
-            const article = document.querySelectorAll('[role="log"] article')[index] as HTMLElement;
-            const rect = article.getBoundingClientRect();
-            return rect.bottom > 0 && rect.top < window.innerHeight;
-        }, readerArticle);
-        expect(inView).toBe(true);
-    });
-
-    for (const priorities of [120, 400]) {
-        test(`transcript to panel flip keeps the reader's place with ${priorities}px above the card`, async ({page}) => {
-            await page.setViewportSize({width: 375, height: 1100});
-            await mockJobSearchApi(page, 'long');
-            await page.goto(`${PANEL_CHAT_FIXTURE}?priorities=${priorities}`);
-            const card = page.getByTestId('job-search-chat');
-            const log = page.getByRole('log');
-            await expect(log.locator('article').first()).toBeVisible();
-            await expect(card).toHaveAttribute('data-scroll-owner', 'transcript');
-            const box = (await log.boundingBox())!;
-            await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-            await page.mouse.wheel(0, -700);
-            await page.waitForTimeout(300);
-            const measure = () => page.evaluate((index) => {
-                const articles = Array.from(document.querySelectorAll('[role="log"] article'));
-                const header = document.querySelector('.card-header') as HTMLElement;
-                const owner = document.querySelector('[data-testid="job-search-chat"]')!.getAttribute('data-scroll-owner');
-                const scroller = owner === 'panel' ? document.querySelector('.assistant-panel-body')! : document.querySelector('[role="log"]')!;
-                const top = owner === 'panel'
-                    ? scroller.getBoundingClientRect().top + header.offsetHeight
-                    : scroller.getBoundingClientRect().top;
-                const pick = index === null
-                    ? articles.findIndex((a) => a.getBoundingClientRect().bottom > top + 1)
-                    : index;
-                return {index: pick, offset: articles[pick].getBoundingClientRect().top - top, owner};
-            }, null as number | null);
-            const before = await measure();
-            await page.setViewportSize({width: 375, height: 420});
-            await expect(card).toHaveAttribute('data-scroll-owner', 'panel');
-            await page.waitForTimeout(400);
-            const after = await page.evaluate(({index}) => {
-                const articles = Array.from(document.querySelectorAll('[role="log"] article'));
-                const header = document.querySelector('.card-header') as HTMLElement;
-                const panel = document.querySelector('.assistant-panel-body')!;
-                const top = panel.getBoundingClientRect().top + header.offsetHeight;
-                return articles[index].getBoundingClientRect().top - top;
-            }, {index: before.index});
-            expect(before.owner).toBe('transcript');
-            expect(Math.abs(after - before.offset)).toBeLessThanOrEqual(6);
-        });
-    }
-
-    test('panel to transcript flip keeps the reader\'s place', async ({page}) => {
-        await page.setViewportSize({width: 375, height: 420});
-        await mockJobSearchApi(page, 'long');
-        await page.goto(`${PANEL_CHAT_FIXTURE}?priorities=120`);
-        const card = page.getByTestId('job-search-chat');
-        await expect(card).toHaveAttribute('data-scroll-owner', 'panel');
-        await expect(page.getByRole('log').locator('article').first()).toBeVisible();
-        await expectPanelAtLatest(page);
-        const read = () => page.evaluate(() => {
-            const panel = document.querySelector('.assistant-panel-body') as HTMLElement;
-            const header = document.querySelector('.card-header') as HTMLElement;
-            const owner = document.querySelector('[data-testid="job-search-chat"]')!.getAttribute('data-scroll-owner');
-            const scroller = owner === 'panel' ? panel : document.querySelector('[role="log"]')!;
-            const top = owner === 'panel' ? Math.max(panel.getBoundingClientRect().top, header.getBoundingClientRect().bottom) : scroller.getBoundingClientRect().top;
-            const articles = Array.from(document.querySelectorAll('[role="log"] article'));
-            const index = articles.findIndex((a) => a.getBoundingClientRect().bottom > top + 1);
-            return {index, offset: articles[index].getBoundingClientRect().top - top};
-        });
-        await page.mouse.move(150, 300);
-        await page.mouse.wheel(0, -500);
-        await page.waitForTimeout(300);
-        const before = await read();
-        expect(before.index).toBeGreaterThan(0);
-        await page.setViewportSize({width: 375, height: 900});
-        await expect(card).toHaveAttribute('data-scroll-owner', 'transcript');
-        await page.waitForTimeout(400);
-        const after = await page.evaluate((index) => {
-            const log = document.querySelector('[role="log"]')!;
-            return document.querySelectorAll('[role="log"] article')[index].getBoundingClientRect().top - log.getBoundingClientRect().top;
-        }, before.index);
-        expect(Math.abs(after - before.offset)).toBeLessThanOrEqual(6);
-    });
-
-    for (const size of [{width: 375, height: 420}, {width: 320, height: 420}]) {
-        test(`panel mode loads at the latest message, ${size.width}x${size.height}`, async ({page}) => {
+// Runs in Chromium, Firefox and WebKit: the nested flex minimums that keep the
+// transcript the only scroller must resolve the same way in all three.
+test.describe('one transcript scroller (issue #483)', () => {
+    for (const size of [{width: 320, height: 420}, {width: 320, height: 640}, {width: 375, height: 380}, {width: 375, height: 667},
+        {width: 1024, height: 800}, {width: 1280, height: 900}]) {
+        test(`only the transcript scrolls and the composer is on screen, ${size.width}x${size.height}`, async ({page}) => {
             await page.setViewportSize(size);
-            await mockJobSearchApi(page, 'long');
-            await page.goto(`${PANEL_CHAT_FIXTURE}?priorities=120`);
-            await expect(page.getByTestId('job-search-chat')).toHaveAttribute('data-scroll-owner', 'panel');
-            await expect(page.getByRole('log').locator('article').first()).toBeVisible();
-            await expectPanelAtLatest(page);
+            await loadPanel(page, 'priorities=57');
+            const reading = await settledPanel(page);
+            expectOneScroller(reading, 'on load');
+            expect(reading.logScrollRange, 'the long conversation overflows the transcript, not the panel').toBeGreaterThan(100);
+            expect(reading.logHeight, 'the transcript keeps a usable height').toBeGreaterThanOrEqual(56);
+            expect(reading.logFromEnd, 'the conversation opens at its latest message').toBeLessThanOrEqual(2);
+            expect(reading.pill, 'a reader at the end sees no jump pill').toBe(false);
+            // The transcript takes the wheel; the panel body stays where it is.
+            await page.getByRole('log').evaluate((el) => { el.scrollTop -= 80; });
+            await expect(page.getByTestId('jump-to-latest')).toBeVisible();
+            const scrolled = await settledPanel(page);
+            expect(scrolled.bodyScrollTop).toBe(0);
+            expect(scrolled.logFromEnd).toBeGreaterThan(48);
+            const pillHit = await page.getByTestId('jump-to-latest').evaluate((el) => {
+                const r = el.getBoundingClientRect();
+                const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                return !!top && (top === el || el.contains(top));
+            });
+            expect(pillHit, 'nothing covers the jump pill').toBe(true);
         });
     }
 
-    test('focusing into the pinned bands does not scroll the panel', async ({page}) => {
+    test('an empty conversation does not scroll the panel and shows no jump pill at 320x420', async ({page}) => {
+        await page.setViewportSize({width: 320, height: 420});
+        await loadPanel(page, 'priorities=57', 'empty');
+        const reading = await settledPanel(page);
+        expectOneScroller(reading, 'empty');
+        await page.getByRole('log').evaluate((el) => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll')); el.scrollTop = 0; });
+        await expect(page.getByTestId('jump-to-latest')).toHaveCount(0);
+    });
+
+    test('the article the reader was on stays where it was when the viewport shrinks', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 700});
+        await loadPanel(page, 'priorities=57');
+        await settledPanel(page);
+        await page.getByRole('log').evaluate((el) => { el.scrollTop -= 300; });
+        await expect(page.getByTestId('jump-to-latest')).toBeVisible();
+        const before = await settledPanel(page);
+        expect(before.firstVisible).toBeGreaterThan(0);
+        await page.setViewportSize({width: 375, height: 380});
+        await expect.poll(async () => (await readPanel(page)).bodyHeight).toBeLessThan(before.bodyHeight);
+        const after = await settledPanel(page);
+        expectOneScroller(after, 'after the shrink');
+        expect(after.firstVisible, 'the same article is first in view').toBe(before.firstVisible);
+        expect(Math.abs(after.firstVisibleOffset - before.firstVisibleOffset)).toBeLessThanOrEqual(1);
+        expect(Math.abs(after.logScrollTop - before.logScrollTop)).toBeLessThanOrEqual(1);
+        expect(after.pill, 'the reader is still away from the end').toBe(true);
+    });
+
+    test('a reader at the end stays at the end when the viewport shrinks and grows', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 700});
+        await loadPanel(page, 'priorities=57');
+        const before = await settledPanel(page);
+        await page.setViewportSize({width: 375, height: 380});
+        await expect.poll(async () => (await readPanel(page)).bodyHeight).toBeLessThan(before.bodyHeight);
+        const short = await settledPanel(page);
+        expectOneScroller(short, 'short');
+        expect(short.logFromEnd).toBeLessThanOrEqual(2);
+        await page.setViewportSize({width: 375, height: 700});
+        await expect.poll(async () => (await readPanel(page)).bodyHeight).toBe(before.bodyHeight);
+        const tall = await settledPanel(page);
+        expect(tall.logFromEnd).toBeLessThanOrEqual(2);
+        expect(tall.pill).toBe(false);
+    });
+
+    test('focus moving into the chat header or the composer scrolls nothing', async ({page}) => {
         await page.setViewportSize({width: 375, height: 420});
-        await mockJobSearchApi(page, 'long');
-        await page.goto(`${PANEL_CHAT_FIXTURE}?priorities=120`);
-        await expect(page.getByTestId('job-search-chat')).toHaveAttribute('data-scroll-owner', 'panel');
-        await expectPanelAtLatest(page);
-        await page.mouse.move(150, 300);
-        await page.mouse.wheel(0, -700);
-        await page.waitForTimeout(300);
-        const scrollTop = () => page.evaluate(() => (document.querySelector('.assistant-panel-body') as HTMLElement).scrollTop);
-        const before = await scrollTop();
-        expect(before).toBeGreaterThan(0);
-        for (const focusTarget of ['conversation-more', 'jump-to-latest']) {
-            await page.getByTestId(focusTarget).focus();
-            await page.waitForTimeout(150);
-            expect(Math.abs((await scrollTop()) - before), `focus on ${focusTarget}`).toBeLessThanOrEqual(2);
+        await loadPanel(page, 'priorities=57');
+        await settledPanel(page);
+        await page.getByRole('log').evaluate((el) => { el.scrollTop -= 400; });
+        await expect(page.getByTestId('jump-to-latest')).toBeVisible();
+        const before = await settledPanel(page);
+        for (const target of ['conversation-more', 'jump-to-latest', 'assistant-composer']) {
+            await page.getByTestId(target).focus();
+            await expect(page.getByTestId(target)).toBeFocused();
+            const after = await settledPanel(page);
+            expect(after.bodyScrollTop, `focus on ${target}`).toBe(0);
+            expect(Math.abs(after.logScrollTop - before.logScrollTop), `focus on ${target}`).toBeLessThanOrEqual(1);
         }
-        await page.locator('textarea[aria-label="Message"]').focus();
-        await page.waitForTimeout(150);
-        expect(Math.abs((await scrollTop()) - before)).toBeLessThanOrEqual(2);
+    });
+
+    for (const priorities of [120, 240, 400]) {
+        test(`an open block of ${priorities}px above the chat leaves the transcript 4.5rem or gives way itself`, async ({page}) => {
+            await page.setViewportSize({width: 375, height: 600});
+            await loadPanel(page, `priorities=${priorities}&open=1`);
+            const reading = await settledPanel(page);
+            expectOneScroller(reading, `block ${priorities}`);
+            // 4.5rem box less its 1px borders.
+            expect(reading.logHeight).toBeGreaterThanOrEqual(70);
+            expect(reading.blockHeight / reading.bodyHeight, 'the block never takes more than 60% of the panel').toBeLessThanOrEqual(0.6 + 0.005);
+            expect(reading.blockBottom, 'the chat header is under the block, not behind it').toBeLessThanOrEqual(reading.headerTop + 0.5);
+            if (priorities === 400) {
+                // The content is taller than the room: the block gave way and scrolls inside.
+                expect(reading.blockHeight).toBeLessThan(400);
+                expect(reading.blockHeight).toBeGreaterThanOrEqual(176);
+                const inner = await page.getByTestId('priorities-scroll').evaluate((el) => el.scrollHeight - el.clientHeight);
+                expect(inner).toBeGreaterThan(0);
+            } else {
+                expect(reading.blockHeight).toBeGreaterThanOrEqual(priorities);
+            }
+        });
+    }
+
+    test('below the floor the panel body scrolls as a plain scroller, starting at its top, with nothing pinned', async ({page}) => {
+        await page.setViewportSize({width: 320, height: 420});
+        await loadPanel(page, 'priorities=400&open=1');
+        const reading = await settledPanel(page);
+        expect(reading.bodyScrollRange).toBeGreaterThan(1);
+        expect(reading.bodyScrollTop).toBe(0);
+        expect(reading.blockHeight, 'the open block keeps 11rem').toBeGreaterThanOrEqual(176);
+        expect(reading.logHeight).toBeGreaterThanOrEqual(70);
+        expect(reading.positions).not.toContain('sticky');
+        expect(reading.blockBottom).toBeLessThanOrEqual(reading.headerTop + 0.5);
+        expect(reading.formTop, 'no chat bar overlaps another').toBeGreaterThanOrEqual(reading.headerTop);
+    });
+
+    test('with the composer focused, a shrink below the floor keeps the composer on screen', async ({page}) => {
+        await page.setViewportSize({width: 375, height: 667});
+        await loadPanel(page, 'priorities=400&open=1');
+        await settledPanel(page);
+        await page.getByTestId('assistant-composer').focus();
+        await page.setViewportSize({width: 375, height: 380});
+        await expect.poll(async () => (await readPanel(page)).bodyScrollRange).toBeGreaterThan(1);
+        await expect.poll(async () => (await readPanel(page)).composerInViewport, {message: 'the composer is brought back'}).toBe(true);
+        const reading = await settledPanel(page);
+        expect(reading.composerHit).toBe(true);
+        expect(reading.logFromEnd, 'the reader is still at the end').toBeLessThanOrEqual(2);
+    });
+
+    test.describe('on-screen keyboard that does not resize the page', () => {
+        test('a visual viewport 300px shorter moves the composer up 300px; without one the layout is unchanged', async ({page}) => {
+            await page.setViewportSize({width: 375, height: 700});
+            await loadPanel(page, 'priorities=57');
+            const plain = await settledPanel(page);
+
+            // The same page with a visualViewport the test controls.
+            await page.addInitScript(() => {
+                const state = {inset: 0};
+                (window as unknown as {__keyboard: typeof state}).__keyboard = state;
+                const target = new EventTarget();
+                const fake = {
+                    get height() { return window.innerHeight - state.inset; },
+                    get width() { return window.innerWidth; },
+                    offsetTop: 0, offsetLeft: 0, pageTop: 0, pageLeft: 0, scale: 1,
+                    addEventListener: target.addEventListener.bind(target),
+                    removeEventListener: target.removeEventListener.bind(target),
+                    dispatchEvent: target.dispatchEvent.bind(target),
+                };
+                Object.defineProperty(window, 'visualViewport', {configurable: true, get: () => fake});
+            });
+            await page.reload();
+            await expect(page.getByRole('log').locator('article').first()).toBeVisible();
+            const before = await settledPanel(page);
+            expect(before.formBottom, 'a visual viewport as tall as the page changes nothing').toBe(plain.formBottom);
+            expect(before.logHeight).toBe(plain.logHeight);
+
+            await page.evaluate(() => {
+                (window as unknown as {__keyboard: {inset: number}}).__keyboard.inset = 300;
+                window.visualViewport!.dispatchEvent(new Event('resize'));
+            });
+            await expect.poll(async () => (await readPanel(page)).formBottom).toBeLessThan(before.formBottom);
+            const up = await settledPanel(page);
+            expect(Math.abs(before.formBottom - up.formBottom - 300)).toBeLessThanOrEqual(1);
+            expect(up.formBottom, 'the composer band ends at the visual viewport').toBeLessThanOrEqual(400 + 1);
+            expect(up.bodyScrollRange).toBeLessThanOrEqual(1);
+            expect(up.logFromEnd, 'the reader is still at the end').toBeLessThanOrEqual(2);
+
+            await page.evaluate(() => {
+                (window as unknown as {__keyboard: {inset: number}}).__keyboard.inset = 0;
+                window.visualViewport!.dispatchEvent(new Event('resize'));
+            });
+            await expect.poll(async () => (await readPanel(page)).formBottom).toBe(before.formBottom);
+        });
     });
 
     for (const size of [{width: 320, height: 420}, {width: 320, height: 640}]) {
         for (const [trigger, label] of [['conversation-new', 'new'], ['conversation-delete', 'delete']]) {
             test(`the ${label} confirm shows its action and Cancel together on open, ${size.width}x${size.height}`, async ({page}) => {
                 await page.setViewportSize(size);
-                await mockJobSearchApi(page, 'long');
-                await page.goto(`${PANEL_CHAT_FIXTURE}?priorities=120`);
-                if (size.height < 500) await expect(page.getByTestId('job-search-chat')).toHaveAttribute('data-scroll-owner', 'panel');
-                await expect(page.getByRole('log').locator('article').first()).toBeVisible();
+                await loadPanel(page, 'priorities=57');
+                await settledPanel(page);
                 await page.getByTestId('conversation-more').click();
                 await page.getByTestId(trigger).click();
                 await expect(page.getByTestId('confirm-panel')).toBeVisible();
-                await page.waitForTimeout(300);
+                const reading = await settledPanel(page);
+                expectOneScroller(reading, 'with the confirmation open');
                 for (const id of ['confirm-action', 'confirm-cancel']) {
                     const topmost = await page.getByTestId(id).evaluate((el) => {
                         const r = el.getBoundingClientRect();
@@ -587,19 +697,19 @@ test.describe('scroll position across a viewport resize (issue #483)', () => {
         }
     }
 
-    test('after a failed delete in panel mode the focused retry is topmost, not under the pinned Cancel row', async ({page}) => {
+    test('after a failed delete at 320x420 the focused retry is topmost, not under the Cancel row', async ({page}) => {
         await page.setViewportSize({width: 320, height: 420});
-        await mockJobSearchApi(page, 'long');
+        await loadPanel(page, 'priorities=57');
+        // Registered after the catch-all mock so it wins for the delete call.
         await page.route('**/api/agent/conversations/*/delete/**', (route) => route.fulfill({status: 500, contentType: 'application/json', body: '{}'}));
-        await page.goto(`${PANEL_CHAT_FIXTURE}?priorities=120`);
-        await expect(page.getByTestId('job-search-chat')).toHaveAttribute('data-scroll-owner', 'panel');
         await page.getByTestId('conversation-more').click();
         await page.getByTestId('conversation-delete').click();
         await page.getByTestId('confirm-action').click();
         const retry = page.getByTestId('confirm-action');
         await expect(page.getByRole('alert').filter({hasText: /delete/i})).toBeVisible();
         await expect(retry).toBeFocused();
-        await page.waitForTimeout(300);
+        const reading = await settledPanel(page);
+        expectOneScroller(reading, 'after the failed delete');
         const topmost = await retry.evaluate((el) => {
             const r = el.getBoundingClientRect();
             return [r.top + 2, r.top + r.height / 2, r.bottom - 2].map((y) => {

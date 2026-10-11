@@ -41,11 +41,34 @@
         <div class="container py-4 page-container">
             <div class="row">
                 <div class="col-12 col-lg-8">
-                    <div id="job-search-chat"></div>
+                    <p class="text-muted">Results</p>
                 </div>
             </div>
         </div>
     </main>
+    <!-- The chat mounts where production mounts it: inside the assistant panel, whose flex column gives the
+         card its height (issue #483). The panel mode follows the viewport width, like the workspace shell. -->
+    <aside class="assistant-panel" id="fixture-panel" aria-label="Assistant">
+        <div class="assistant-panel-inner">
+            <div class="assistant-panel-header"><h2 class="assistant-panel-title">Assistant</h2></div>
+            <div class="assistant-panel-body" data-testid="assistant-panel-body">
+                <div id="job-search-chat"></div>
+            </div>
+        </div>
+    </aside>
+    <script>
+        (function () {
+            var panel = document.getElementById('fixture-panel');
+            function apply() {
+                var mode = window.innerWidth < 768 ? 'sheet' : window.innerWidth < 1280 ? 'drawer' : 'docked';
+                panel.className = 'assistant-panel assistant-panel--' + mode;
+                document.body.classList.remove('assistant-docked', 'assistant-drawer', 'assistant-sheet');
+                document.body.classList.add('assistant-' + mode);
+            }
+            apply();
+            window.addEventListener('resize', apply);
+        })();
+    </script>
     <!-- Single shared "Suggest a company" host (issue #471): outside .app-shell/main.app-content per the modal isolation contract -->
     <div id="suggest-company-host"></div>
     <script src="/static/dist/e2e.js"></script>

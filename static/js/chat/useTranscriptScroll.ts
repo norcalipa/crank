@@ -214,7 +214,9 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
             const footer = historyRef.current?.closest('section')?.querySelector<HTMLElement>('.chat-footer');
             const panelBody = footer?.closest<HTMLElement>('.assistant-panel-body');
             if (!footer || !panelBody || !footer.contains(document.activeElement)) return;
-            const cutOff = footer.getBoundingClientRect().bottom - panelBody.getBoundingClientRect().bottom;
+            // The composer band reaches past the footer into the panel's padding.
+            const band = footer.querySelector<HTMLElement>('form') ?? footer;
+            const cutOff = band.getBoundingClientRect().bottom - panelBody.getBoundingClientRect().bottom;
             if (cutOff > 0) panelBody.scrollTop += cutOff;
         };
         const handleViewportResize = () => {
