@@ -47,17 +47,6 @@ const ScrollRegion: React.FC<{children: React.ReactNode}> = ({children}) => {
     );
 };
 
-// The sidebar block stays pinned above a scrolling panel while the chat keeps its header, its composer
-// band and this much under it: room for the chat's jump pill, which comes and goes as the reader scrolls
-// and so must not unpin the block, or else for two lines of transcript.
-export const PIN_TRANSCRIPT_PX = 56;
-// Before the chat has mounted: its header and an empty composer band.
-export const CHAT_BARS_FALLBACK_PX = 164;
-// The chat re-measures and follows the conversation a few frames after the block resizes.
-const REVEAL_FRAMES = 6;
-/** How long a press that never clicks keeps the collapsed row held after its pointer comes up. */
-const PRESS_LANDING_MS = 500;
-
 const STALE_COPY = 'Your priorities changed elsewhere. Review the latest before applying.';
 
 // The page's own sign-in link when it renders one; otherwise the login page, returning to the current page.
@@ -112,18 +101,6 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     const editButton = React.useRef<HTMLButtonElement>(null);
     const resetButton = React.useRef<HTMLButtonElement>(null);
     const confirmHeading = React.useRef<HTMLParagraphElement>(null);
-    const sectionRef = React.useRef<HTMLElement>(null);
-    const following = React.useRef(false);
-    const moved = React.useRef(false);
-    // The block's height at the last sync: a block that grew (an error arrived) is told apart from a composer that grew.
-    const shown = React.useRef(0);
-    // The panel's height at the last sync: a panel that got shorter (a resize) un-pins a block the same way.
-    const panelShown = React.useRef(0);
-
-    // The chat shows its jump pill to a reader who is not at the end; one this block moved is still following.
-    const noteFollowing = (panelBody: HTMLElement) => {
-        if (!moved.current) following.current = panelBody.querySelector('[data-testid="jump-to-latest"]') === null;
-    };
 
     const beginWrite = () => {
         const controller = new AbortController();
@@ -263,130 +240,6 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     }, [step, variant]);
 
     appliedRef.current = applied;
-
-    // Sidebar: tell the panel how tall the block is and whether pinning it leaves the chat room. The open block is
-    // pinned, and so is the collapsed row while it holds the keyboard focus. Where the chat's own bars and a little
-    // transcript would not fit under it, it scrolls away with the panel instead of covering them.
-    const inSidebar = variant === 'sidebar' && authenticated;
-    React.useLayoutEffect(() => {
-        const section = sectionRef.current;
-        const panelBody = section?.closest<HTMLElement>('.assistant-panel-body');
-        if (!inSidebar || !section || !panelBody || typeof ResizeObserver === 'undefined') return undefined;
-        let card: HTMLElement | null = null;
-        let footer: HTMLElement | null = null;
-        const sync = (focused = section.contains(document.activeElement)) => {
-            const open = section.querySelector('.priorities-scroll') !== null;
-            const held = open || focused;
-            const height = held ? section.offsetHeight : 0;
-            const header = card?.querySelector<HTMLElement>('.card-header');
-            // The jump pill takes a row of the composer band only while the panel scrolls.
-            const pill = footer?.querySelector<HTMLElement>('.chat-jump-row');
-            const pillRow = pill && getComputedStyle(pill).position === 'static' ? pill.offsetHeight : 0;
-            const bars = header && footer ? header.offsetHeight + footer.offsetHeight - pillRow : CHAT_BARS_FALLBACK_PX;
-            panelBody.style.setProperty('--priorities-open-h', `${height}px`);
-            const pin = held && panelBody.clientHeight - height >= bars + PIN_TRANSCRIPT_PX;
-            const letGo = section.hasAttribute('data-pinned') && !pin;
-            section.toggleAttribute('data-pinned', pin);
-            // A block that grew, or a panel that got shorter under a field of the block that holds the focus, so that it no longer fits pinned is brought back, not left above the reader;
-            // a reader typing in the composer keeps it.
-            const shorter = focused && panelShown.current > 0 && panelBody.clientHeight < panelShown.current;
-            if (letGo && open && shown.current > 0 && (height > shown.current || shorter)) {
-                const above = section.getBoundingClientRect().top - panelBody.getBoundingClientRect().top;
-                if (above < 0) {
-                    // This block moves the reader: closing it returns one who was following to the end.
-                    noteFollowing(panelBody);
-                    panelBody.scrollTop += above;
-                    moved.current = true;
-                }
-            }
-            shown.current = height;
-            panelShown.current = panelBody.clientHeight;
-        };
-        const observer = new ResizeObserver(() => sync());
-        observer.observe(section);
-        observer.observe(panelBody);
-        // The chat mounts after this block and replaces its footer: keep its card and footer observed.
-        const watch = () => {
-            const nextCard = panelBody.querySelector<HTMLElement>('[data-testid="job-search-chat"]');
-            const nextFooter = nextCard?.querySelector<HTMLElement>('.chat-footer') ?? null;
-            if (nextCard === card && nextFooter === footer) return;
-            if (card) observer.unobserve(card);
-            if (footer) observer.unobserve(footer);
-            card = nextCard;
-            footer = nextFooter;
-            if (card) observer.observe(card);
-            if (footer) observer.observe(footer);
-            sync();
-        };
-        const mutations = new MutationObserver(watch);
-        mutations.observe(panelBody, {childList: true, subtree: true});
-        // Focus moving between the row's own buttons never lets go of it.
-        const entered = () => sync(true);
-        // Letting go of the row moves the chat's header up by the row's height: a press that took the focus away
-        // from the row is held until it has landed (click, cancel, or a moment after its pointer comes up), or it misses.
-        let pressed = false;
-        let owed = false;
-        let timer = 0;
-        const landed = () => {
-            window.clearTimeout(timer);
-            pressed = false;
-            if (owed) { owed = false; sync(); }
-        };
-        const down = () => { window.clearTimeout(timer); pressed = true; };
-        // A press that ends without a click lets go a moment later; a tap's mouse events follow its pointerup.
-        const lifted = () => { window.clearTimeout(timer); timer = window.setTimeout(landed, PRESS_LANDING_MS); };
-        const left = (event: FocusEvent) => {
-            if (section.contains(event.relatedTarget as Node | null)) return;
-            if (pressed) owed = true;
-            else sync(false);
-        };
-        const presses: Array<[string, EventListener]> = [
-            ['pointerdown', down], ['mousedown', down], ['pointerup', lifted], ['pointercancel', landed], ['click', landed],
-        ];
-        presses.forEach(([type, listener]) => document.addEventListener(type, listener, true));
-        section.addEventListener('focusin', entered);
-        section.addEventListener('focusout', left);
-        watch();
-        sync();
-        return () => {
-            observer.disconnect();
-            mutations.disconnect();
-            section.removeEventListener('focusin', entered);
-            section.removeEventListener('focusout', left);
-            presses.forEach(([type, listener]) => document.removeEventListener(type, listener, true));
-            window.clearTimeout(timer);
-            panelBody.style.removeProperty('--priorities-open-h');
-        };
-    }, [inSidebar, step, expanded, phase]);
-
-    // Just after a step changes, the chat re-measures and may scroll the panel. Where the block does not pin,
-    // keep what the reader opened (or the row that took the focus) on screen; where it does, or once the chat
-    // scrolls its own transcript again, a reader who was following the conversation stays at its end.
-    React.useEffect(() => {
-        const section = sectionRef.current;
-        const panelBody = section?.closest<HTMLElement>('.assistant-panel-body');
-        if (!inSidebar || !section || !panelBody) return undefined;
-        noteFollowing(panelBody);
-        const open = section.querySelector('.priorities-scroll') !== null;
-        let frames = REVEAL_FRAMES;
-        let raf = requestAnimationFrame(function keep() {
-            const pinned = section.hasAttribute('data-pinned');
-            const above = section.getBoundingClientRect().top - panelBody.getBoundingClientRect().top;
-            const log = panelBody.querySelector<HTMLElement>('[data-scroll-owner="transcript"] [role="log"]');
-            if ((open || section.contains(document.activeElement)) && !pinned && above < 0) {
-                panelBody.scrollTop += above;
-                moved.current = true;
-            } else if (following.current && (log || pinned)) {
-                const scroller = log ?? panelBody;
-                scroller.scrollTop = scroller.scrollHeight;
-                moved.current = false;
-            }
-            frames -= 1;
-            if (frames > 0) raf = requestAnimationFrame(keep);
-            else if (!open) moved.current = false;
-        });
-        return () => cancelAnimationFrame(raf);
-    }, [inSidebar, step, expanded]);
 
     const close = () => {
         if (applied) {
@@ -786,7 +639,7 @@ const PrioritiesSection: React.FC<Props> = ({variant, authenticated}) => {
     }
 
     return (
-        <section className={className} aria-labelledby={titleId} data-testid={`priorities-${variant}`} ref={sectionRef}>
+        <section className={className} aria-labelledby={titleId} data-testid={`priorities-${variant}`}>
             {!summaryRow && <h2 id={titleId} className="h6 priorities-title">Your priorities</h2>}
             {sessionExpired && (
                 <p className="priorities-session-expired" role="alert" data-testid="priorities-session-expired">

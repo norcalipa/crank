@@ -2,35 +2,30 @@
 // Licensed under the MIT License. See LICENSE file in the project root for full license information.
 import * as React from 'react';
 
-export type ScrollOwner = 'transcript' | 'panel';
-
 const NEAR_BOTTOM_PX = 48;
 // Our own scrollTo/scrollTop writes (a smooth scroll fires scroll events for a
 // while) must not read as the reader scrolling away.
 const PROGRAMMATIC_WINDOW_MS = 1000;
 const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 
-interface ScrollAnchor {
-    element: HTMLElement;
-    offset: number;
-}
-
-// Exactly one element scrolls the conversation. Normally that is the
-// transcript; when the assistant panel is too short to give the transcript a
-// usable height, the transcript grows to its content and the panel body is the
-// single scroller instead of nesting a second scrollbar inside it (issue #483).
-export function useTranscriptScroll({messagesLength, assistantCount, pending, loading, scrollOwner = 'transcript'}: {
+// Exactly one element scrolls the conversation: the transcript, at every
+// size. The assistant panel's body only scrolls as a last resort, when the
+// chat's own bars do not fit in it (issue #483).
+export function useTranscriptScroll({messagesLength, assistantCount, pending, loading, contentKey = ''}: {
     messagesLength: number;
     assistantCount: number;
     pending: boolean;
     loading: boolean;
-    scrollOwner?: ScrollOwner;
+    // Changes when content arrives in the transcript without a new message
+    // (a notice under the last reply, a failed-turn card).
+    contentKey?: string;
 }) {
     const historyRef = React.useRef<HTMLDivElement>(null);
     const nearBottomRef = React.useRef(true);
     const seenAssistantRef = React.useRef(assistantCount);
     const programmaticUntilRef = React.useRef(0);
-    const anchorRef = React.useRef<ScrollAnchor | null>(null);
+    const emptyRef = React.useRef(messagesLength === 0);
+    emptyRef.current = messagesLength === 0;
     const [showJumpToLatest, setShowJumpToLatest] = React.useState(false);
     const [unreadCount, setUnreadCount] = React.useState(0);
 
@@ -38,12 +33,7 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
     );
 
-    const getScroller = (): HTMLElement | null => {
-        const history = historyRef.current;
-        if (!history) return null;
-        if (scrollOwner === 'panel') return history.closest<HTMLElement>('.assistant-panel-body') ?? history;
-        return history;
-    };
+    const getScroller = (): HTMLElement | null => historyRef.current;
 
     // The window also ends as soon as a scroll event reaches `target`, so a
     // later scroll with no input behind it (find-in-page, a screen-reader
@@ -62,54 +52,10 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         programmaticTargetRef.current = resolved;
     };
 
-    // The top edge of what the reader can see: the scroller's own top, or in
-    // panel mode the bottom of the pinned header.
-    const visibleTop = (scroller: HTMLElement): number => {
-        const rect = scroller.getBoundingClientRect();
-        const history = historyRef.current;
-        if (scroller === history) return rect.top;
-        const header = history?.closest('section')?.querySelector<HTMLElement>('.card-header');
-        return Math.max(rect.top, header ? header.getBoundingClientRect().bottom : rect.top);
-    };
-
-    // Where the visible top will be once the panel has scrolled far enough for
-    // the sticky header to stick: the scroller's top plus the header's height.
-    // Before the first write the header may still sit unstuck lower down.
-    const stuckTop = (scroller: HTMLElement): number => {
-        const history = historyRef.current;
-        if (scroller === history) return scroller.getBoundingClientRect().top;
-        const header = history?.closest('section')?.querySelector<HTMLElement>('.card-header');
-        return scroller.getBoundingClientRect().top + (header ? header.offsetHeight : 0);
-    };
-
-    // Remember the first message the reader can see, and how far below the
-    // visible top it sits, so the position survives the scroll owner changing.
-    const captureAnchor = () => {
-        const history = historyRef.current;
-        const scroller = getScroller();
-        anchorRef.current = null;
-        if (!history || !scroller || nearBottomRef.current) return;
-        const top = visibleTop(scroller);
-        for (const element of Array.from(history.querySelectorAll<HTMLElement>('article'))) {
-            const rect = element.getBoundingClientRect();
-            if (rect.bottom > top) {
-                anchorRef.current = {element, offset: rect.top - top};
-                return;
-            }
-        }
-    };
-
     const isNearBottom = (): boolean => {
         const history = historyRef.current;
-        const scroller = getScroller();
-        if (!history || !scroller) return true;
-        if (scroller === history) {
-            return history.scrollHeight - history.scrollTop - history.clientHeight <= NEAR_BOTTOM_PX;
-        }
-        // Panel scroller: the reader is "at the bottom" once the end of the
-        // transcript clears the pinned composer band that overlays the panel.
-        const footer = history.closest('section')!.querySelector<HTMLElement>('.chat-footer')!;
-        return history.getBoundingClientRect().bottom - footer.getBoundingClientRect().top <= NEAR_BOTTOM_PX;
+        if (!history) return true;
+        return history.scrollHeight - history.scrollTop - history.clientHeight <= NEAR_BOTTOM_PX;
     };
 
     const settleAtBottom = () => {
@@ -119,10 +65,7 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         setUnreadCount(0);
     };
 
-    // A smooth scroll in the panel body is cut short when the pending indicator
-    // is replaced by the reply, stranding the last turn behind the pinned
-    // composer band, so panel mode jumps instead.
-    const scrollToLatest = (behavior: ScrollBehavior = prefersReducedMotion() || scrollOwner === 'panel' ? 'auto' : 'smooth') => {
+    const scrollToLatest = (behavior: ScrollBehavior = prefersReducedMotion() ? 'auto' : 'smooth') => {
         const scroller = getScroller();
         if (!scroller) return;
         markProgrammatic(scroller);
@@ -164,7 +107,7 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         // the programmatic window so it can interrupt a smooth scroll.
         const cancelProgrammatic = (e?: Event) => {
             // Only focus inside the transcript can scroll the reader away. Focus in
-            // the pinned bands (composer, More, the pill) is already in view, and
+            // the chat's bars (composer, More, the pill) is already in view, and
             // cancelling on it would turn a load-time write's own late scroll event
             // into "the reader scrolled away".
             if (e?.type === 'focusin' && !historyRef.current?.contains(e.target as Node)) return;
@@ -175,7 +118,8 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
             programmaticUntilRef.current = 0;
         };
         const handleScroll = () => {
-            const atBottom = isNearBottom();
+            // An empty conversation has nothing to jump to, however short the log.
+            const atBottom = emptyRef.current || isNearBottom();
             const ownScroll = Date.now() < programmaticUntilRef.current;
             const target = programmaticTargetRef.current;
             if (ownScroll && target !== null && Math.abs(scroller.scrollTop - target) <= 2) {
@@ -196,35 +140,12 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
             scroller.removeEventListener('scroll', handleScroll);
             inputEvents.forEach((name) => scroller.removeEventListener(name, cancelProgrammatic));
         };
-    }, [scrollOwner, assistantCount]);
+    }, [assistantCount]);
 
-    // Changing who scrolls changes what "the bottom" means. A reader who was
-    // following the conversation stays at the end in either mode; one reading
-    // older messages keeps their place: the message that was at the top of the
-    // view (recorded by captureAnchor before the switch) is put back at the
-    // same offset on the new scroller, and the jump pill stays up.
-    const previousOwnerRef = React.useRef(scrollOwner);
-    React.useLayoutEffect(() => {
-        const previous = previousOwnerRef.current;
-        previousOwnerRef.current = scrollOwner;
-        if (previous === scrollOwner) return;
-        if (nearBottomRef.current) {
-            scrollToLatest('auto');
-            return;
-        }
-        const anchor = anchorRef.current;
-        anchorRef.current = null;
-        const scroller = getScroller();
-        if (anchor && scroller && anchor.element.isConnected) {
-            markProgrammatic(null);
-            scroller.scrollTop += anchor.element.getBoundingClientRect().top - stuckTop(scroller) - anchor.offset;
-        }
-        setShowJumpToLatest(true);
-    }, [scrollOwner]);
-
-    // The transcript's box changes size when banners or confirmations appear
-    // above it. A reader who is following the conversation stays at the end;
-    // someone reading older messages is left where they are.
+    // The transcript's box changes size when the priorities block above the
+    // chat opens or closes, or the composer grows. A reader who is following
+    // the conversation stays at the end; someone reading older messages is
+    // left where they are.
     React.useEffect(() => {
         const history = historyRef.current;
         if (!history || typeof ResizeObserver === 'undefined') return undefined;
@@ -237,7 +158,7 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         });
         observer.observe(history);
         return () => observer.disconnect();
-    }, [scrollOwner, assistantCount]);
+    }, [assistantCount]);
 
     // Initial history, optimistic turns, replies, and the pending indicator all append
     // content to the same viewport. Do not interrupt someone reading older messages.
@@ -272,10 +193,32 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
         scrollToLatest(justLoaded ? 'auto' : undefined);
     }, [messagesLength, assistantCount, pending, loading]);
 
+    // Content that arrives without a new message (the availability notice under
+    // the last reply, a failed-turn card) is followed once, by a jump: a smooth
+    // scroll started for the message itself would stop short of it.
+    const contentKeyRef = React.useRef(contentKey);
+    React.useEffect(() => {
+        if (contentKeyRef.current === contentKey) return;
+        contentKeyRef.current = contentKey;
+        if (messagesLength === 0 || loading || !nearBottomRef.current) return;
+        scrollToLatest('auto');
+    }, [contentKey, messagesLength, loading]);
+
     // Visual viewport changes cover mobile keyboards and orientation changes. Preserve
     // the reader's position when they are browsing older messages.
     React.useEffect(() => {
+        // Where the chat's bars do not fit, the panel body scrolls as a last
+        // resort. A reader typing keeps the composer: the body is scrolled by
+        // the amount the footer is cut off.
+        const keepComposerInView = () => {
+            const footer = historyRef.current?.closest('section')?.querySelector<HTMLElement>('.chat-footer');
+            const panelBody = footer?.closest<HTMLElement>('.assistant-panel-body');
+            if (!footer || !panelBody || !footer.contains(document.activeElement)) return;
+            const cutOff = footer.getBoundingClientRect().bottom - panelBody.getBoundingClientRect().bottom;
+            if (cutOff > 0) panelBody.scrollTop += cutOff;
+        };
         const handleViewportResize = () => {
+            keepComposerInView();
             // A reader who is following keeps following: the keyboard opening
             // shrinks the scroller before the end of the transcript can be
             // re-read, which would otherwise look like scrolling away.
@@ -294,7 +237,7 @@ export function useTranscriptScroll({messagesLength, assistantCount, pending, lo
             window.removeEventListener('resize', handleViewportResize);
             window.visualViewport?.removeEventListener('resize', handleViewportResize);
         };
-    }, [scrollOwner, assistantCount]);
+    }, [assistantCount]);
 
-    return {historyRef, nearBottomRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend, captureAnchor};
+    return {historyRef, nearBottomRef, showJumpToLatest, unreadCount, scrollToLatest, followNextAppend};
 }
