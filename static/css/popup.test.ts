@@ -451,10 +451,23 @@ describe('one transcript scroller in the assistant panel (issue #483)', () => {
         const all = short.join('\n');
         expect(all).toMatch(new RegExp(`#job-search-chat form \\.chat-disclaimer\\s*\\{[^}]*${clipped.source}`));
         expect(all).toMatch(new RegExp(`\\.priorities-summary-toggle\\[aria-expanded='false'\\] \\.priorities-summary\\s*\\{[^}]*${clipped.source}`));
-        expect(all).toMatch(/\.assistant-panel-body > \.priorities-sidebar\s*\{\s*padding-block:\s*0;/);
+        // The one-line row keeps its Edit button off the divider under it.
+        expect(all).toMatch(/\.assistant-panel-body > \.priorities-sidebar\s*\{\s*padding-block:\s*0 \.25rem;/);
+        // More opens over its button and scrolls inside itself, so Delete is reachable with the body at rest.
+        expect(all).toMatch(/\.chat-more-menu\s*\{\s*top:\s*0;[^}]*max-height:\s*calc\(100dvh - 11rem\);[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior:\s*contain;/);
+        expect(all).toMatch(/#job-search-chat \.empty-history-lead\s*\{[^}]*font-size:\s*\.875rem;[^}]*line-height:\s*1\.3;/);
         expect(all).not.toMatch(/display:\s*none|visibility:\s*hidden/);
         // Above 480px the disclaimer is laid out normally.
         expect(declared('#job-search-chat form .chat-disclaimer')).toMatch(/margin:\s*\.5rem 0 0;/);
+    });
+
+    it('pins the editor footer over the fields that scroll under it, inside the block\'s own stacking context', () => {
+        expect(declared('.priorities-sidebar .priorities-scroll')).toMatch(/isolation:\s*isolate;/);
+        expect(declared('.priorities-sidebar .priorities-footer')).toMatch(/z-index:\s*var\(--z-assistant\);/);
+    });
+
+    it('keeps the docked transcript box clear of the composer band', () => {
+        expect(popupCss).toMatch(/@media \(min-width: 768px\) \{[^@]*\.assistant-panel #job-search-chat \.chat-transcript\s*\{\s*margin-bottom:\s*\.5rem;/);
     });
 });
 

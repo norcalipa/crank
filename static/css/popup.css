@@ -3520,6 +3520,11 @@ body.assistant-open .app-content .table-responsive,
     .assistant-panel #job-search-chat .card-body {
         padding-top: .5rem;
     }
+
+    /* Docked: the transcript's box and the composer band read as two boxes. */
+    .assistant-panel #job-search-chat .chat-transcript {
+        margin-bottom: .5rem;
+    }
 }
 
 /* The jump pill lives in the footer and floats over the transcript bottom, so
@@ -4075,7 +4080,10 @@ span.priority-chip-button { cursor: default; }
 }
 .priorities-sidebar > * { flex: 0 0 auto; }
 /* The one scroller of the block; it contains the chips' hidden text, so the section itself never scrolls. */
-.priorities-sidebar .priorities-scroll { position: relative; flex: 1 1 auto; min-height: 0; max-height: none; overflow-x: hidden; }
+.priorities-sidebar .priorities-scroll { position: relative; flex: 1 1 auto; min-height: 0; max-height: none; overflow-x: hidden; isolation: isolate; }
+/* The pinned footer paints over the fields that scroll under it (Bootstrap lifts an input group's button). The
+   scroller above is its own stacking context, so the shared token orders nothing outside the block. */
+.priorities-sidebar .priorities-footer { z-index: var(--z-assistant); }
 /* A field that takes the focus is scrolled clear of the editor's pinned footer (44px button, padding, rule), not
    under it. Only the editor: the review's pinned buttons are themselves in that band and would scroll its list. */
 .priorities-scroll:has(> .priorities-editor) { scroll-padding-bottom: calc(2.75rem + 1.5rem); }
@@ -4085,7 +4093,7 @@ span.priority-chip-button { cursor: default; }
 .priorities-sidebar .priorities-field { gap: 0.125rem; }
 @media (max-height: 480px) {
     /* Short panels: the collapsed row is one line. Its summary stays in the toggle's accessible name. */
-    .assistant-panel-body > .priorities-sidebar { padding-block: 0; }
+    .assistant-panel-body > .priorities-sidebar { padding-block: 0 .25rem; }
     .priorities-sidebar .priorities-summary-toggle[aria-expanded='false'] .priorities-summary {
         position: absolute;
         width: 1px;
@@ -4631,6 +4639,22 @@ span.priority-chip-button { cursor: default; }
         overflow: hidden;
         clip: rect(0, 0, 0, 0);
         white-space: nowrap;
+    }
+
+    /* The More menu opens over its own button and scrolls inside itself, so
+       every item is reachable without the panel body moving. */
+    .chat-more-menu {
+        top: 0;
+        max-height: calc(100vh - 11rem);
+        max-height: calc(100dvh - 11rem);
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
+
+    /* The empty state's lead fits the few lines a short transcript has. */
+    #job-search-chat .empty-history-lead {
+        font-size: .875rem;
+        line-height: 1.3;
     }
 }
 
